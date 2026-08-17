@@ -1,6 +1,8 @@
 # Expansion Guide
 
-This guide reflects the current architecture. The important change is that provider expansion is now Rust-first.
+How to add things to Aurora, against the current architecture (apps/kernel frontend, Rust-owned
+runtime and tools). The general rule: put code in the module that owns the concern, and keep
+the model-facing surface single-sourced from Rust.
 
 ## 1. Daily Commands
 
@@ -11,152 +13,106 @@ This guide reflects the current architecture. The important change is that provi
 | `pnpm test` | Run Vitest |
 | `pnpm build` | Frontend production build |
 | `pnpm tauri:build` | Build desktop installer |
+| `cargo check --lib --tests` (in `src-tauri/`) | Fast Rust gate |
 
 ## 2. General Feature Checklist
 
-- add or update frontend UI under `src/components/`
-- add or update state in the relevant store under `src/store/`
-- add a frontend service under `src/services/` if the feature needs orchestration
-- add Rust commands under `src-tauri/src/commands/` if desktop capabilities or backend ownership are needed
-- register new commands in `src-tauri/src/lib.rs`
-- add tests if the feature changes behavior at a service or store boundary
-- update `DOCS/` when architecture or extension steps change
+- frontend UI under `src/apps/<product>/components|features/…` (concern-grouped, never a folder root)
+- state in the owning store (`src/kernel/store/` if shared, else `src/apps/<product>/store/<concern>/`)
+- a frontend service under `src/apps/<product>/services/<concern>/` if orchestration is needed
+- Rust commands under `src-tauri/src/commands/` if backend ownership is needed — **registered in `lib.rs` `generate_handler!`**
+- tests at the seam you changed; update `DOCS/` when architecture or extension steps change
 
-## 3. Adding a New Provider
+## 3. Adding a Native Agent Tool
 
-Do not add a new TypeScript provider class.
+1. Implement in the owning bucket `src-tauri/src/tools/<bucket>/` (create the bucket if a new
+   domain; add its `mod` to `tools/mod.rs`).
+2. Add the name to the bucket's `TOOL_NAMES` const.
+3. Bump `BUILTIN_TOOL_COUNT` and the derived `count_without_browser` in `tools/mod.rs` — tests
+   assert the arithmetic.
+4. Wrap with `install_permission_gate` if it mutates anything; declare its risk level in
+   `src/apps/agent/tools/definitions/risk-levels-enhanced.ts` (metadata for the UI).
+5. Give it a transcript presence: icon mapping (`AgentIcon` + `toolIcon()`), a result branch in
+   `tool-result.ts` (say *which* answer came back), and a dynamic title in `ToolCallCard` if the
+   label depends on arguments.
+6. Tests: bucket-level unit tests + card/parser tests frontend-side.
 
-### Backend steps
+Tool descriptions are executable policy — when a tool's guidance changes, update the
+description in the same change, and **replace** (don't supplement) prompt lines that point the
+model at an older way.
 
-1. Add or extend the preset/config logic in:
-   - `src-tauri/src/commands/provider_catalog/types.rs`
-   - `src-tauri/src/commands/provider_kernel/presets.rs`
+## 4. Adding a Frontend-Bridged Tool
 
-2. If the provider is OpenAI-compatible or Anthropic-compatible:
-   - extend existing request shaping in `builders.rs`
-   - extend parsing/streaming behavior in `parsers.rs` and `streaming.rs`
+For tools whose state lives in the window (MCP, team UI, skills, ask_question):
 
-3. If the provider has unique quirks:
-   - add a focused helper module or helper function in `provider_kernel/`
-   - do not bloat `commands.rs`
+1. Define the schema in `src/apps/agent/tools/definitions/<domain>-tools.ts`.
+2. Implement the executor in `src/apps/agent/services/<concern>/`.
+3. The runtime bridges it automatically: any `AllowedTool` carried on the request gets a
+   `FrontendBridgeExecutor`; results return via `agent_post_tool_result`.
 
-4. If the provider should appear in Settings by default:
-   - add it to `built_in_provider_presets()` in `provider_catalog/types.rs`
+## 5. Adding a New Provider
 
-### Frontend steps
+Do **not** add a TypeScript provider class.
 
-Usually no new provider class is needed.
+1. Wire format: extend `src-tauri/src/api/` — usually `openai_compat.rs` covers an
+   OpenAI-compatible endpoint; a genuinely different wire shape gets its own adapter file
+   registered in `client.rs::build_api_client`.
+2. Catalog entry (Settings by default): add to `built_in_provider_presets()` in
+   `src-tauri/src/commands/provider_catalog/types.rs`.
+3. Frontend only if user-visible config appears: types in
+   `src/apps/agent/services/providers/`, hydration in `useSettingsStore`.
+4. Reasoning replay policy: if the provider streams thinking differently, extend
+   `ReasoningReplay` (`api/client.rs`) — never leave it implicit.
+5. Local-model providers (detection, lifecycle) go in `src-tauri/src/commands/local_providers/`
+   as a first-class adapter, not a "custom endpoint" hack.
 
-Only update frontend if required:
-
-- `src/services/provider-catalog.ts` types if new fields are added
-- `src/store/useSettingsStore.ts` if preset hydration rules change
-- provider settings UI if the provider introduces new user-visible config
-
-## 4. Adding a New Local Provider
-
-If the provider is local-model related, treat it as a first-class local adapter.
-
-Use:
-
-- `src-tauri/src/commands/local_providers/detect.rs`
-- `src-tauri/src/commands/local_providers/http.rs`
-- `src-tauri/src/commands/local_providers/types.rs`
-
-If it supports lifecycle actions like Ollama:
-
-- add a dedicated file similar to `ollama.rs`
-- expose commands through `commands.rs`
-- wrap them in `src/services/local-model-detector.ts`
-
-Do not hide local-provider logic inside generic provider code if it needs detection, probing, or model management.
-
-## 5. Adding a New Tauri Command Domain
-
-Preferred structure:
+## 6. Adding a Tauri Command Domain
 
 ```text
 src-tauri/src/commands/my_domain/
-├── commands.rs
-├── mod.rs
-├── types.rs
-└── helpers.rs
+├── mod.rs          # exports (+ module doc)
+├── commands.rs     # #[tauri::command] entry points (thin)
+├── types.rs        # payloads
+└── …               # real logic in focused files
 ```
 
-Pattern:
+Then register in `src-tauri/src/lib.rs` `generate_handler!`. Anything touching disk/DB must be
+`async` (sync commands run on the UI thread — the thread-safety test enforces this). Add an
+arm to `commands/command_thread_safety.rs` if the command can block.
 
-- `commands.rs` for Tauri entry points
-- `types.rs` for payloads
-- helper files for real logic
-- `mod.rs` for exports
+## 7. Adding Settings
 
-Then register in `src-tauri/src/lib.rs`.
+Backend-owned (preferred when behavior depends on it): add a field to `AppSettings`
+(Rust `settings.rs`: struct + read arm + save call), then hydrate/use from
+`useSettingsStore`. Follow the exact round-trip pattern of an existing field
+(e.g. `titleMaker*`, `allowOutsideWorkspace`).
 
-## 6. Adding a Frontend Service
+Agent-window UI settings are declared once in `src/apps/agent/settings/settings-catalog.ts`
+(leaf, no JSX) — Settings search and the command center both read that catalog; a second list
+will drift.
 
-Good service responsibilities:
+## 8. Adding an IDE Theme Token
 
-- bridge to Tauri
-- request/response mapping
-- stream-state assembly
-- domain-specific orchestration
+Follow `DOCS/theme-dev.md` §"Adding a new token": type → both default token sets → every
+built-in theme JSON → (optional) Tailwind alias / Monaco mapping → doc table. The agent window
+has its own token set (`src/apps/agent/theme/tokens.ts` → `--agw-*`); a new visual role there
+means a token, never a hardcoded value.
 
-Bad service responsibilities:
+## 9. Verification Checklist
 
-- giant mixed UI and protocol logic
-- hardcoded provider presets duplicated from Rust
-- hidden persistence logic that belongs in stores or Rust
+Before claiming done:
 
-## 7. Adding a Tool
+- `pnpm test`, `pnpm build` (and `tsc -b` implicitly via build)
+- Rust changed → `cargo check --lib --tests`, plus `cargo test --lib` for the touched modules
+- new/changed tool → its card renders and its result parses
+- provider change → `scripts/probe-provider.mjs` or a real turn against a live endpoint
+- UI change → eyes in `pnpm tauri:dev` (most Rust changes need a restart; frontend hot-reloads)
 
-1. Define the schema under `src/tools/definitions/`
-2. Implement the executor under `src/tools/executors/`
-3. Register it through the tool registry
-4. Verify risk level and approval behavior
-5. Test agent execution flow if the tool materially changes chat behavior
+## 10. Anti-Patterns to Refuse
 
-## 8. Adding Settings
-
-Use the existing persistence pattern:
-
-- add frontend type/state in `useSettingsStore.ts`
-- ensure DB persistence paths exist
-- if the setting is backend-owned, keep the source of truth in Rust and only hydrate/use it in the store
-
-Provider-related settings should prefer Rust ownership whenever they affect provider behavior.
-
-## 9. Files to Touch for Current Provider Work
-
-### Frontend
-
-- `src/services/providers/rust-provider.ts`
-- `src/services/providers/rust-message-mapper.ts`
-- `src/services/providers/rust-stream-state.ts`
-- `src/services/provider-catalog.ts`
-- `src/services/local-model-detector.ts`
-- `src/store/useSettingsStore.ts`
-
-### Rust
-
-- `src-tauri/src/commands/provider_kernel/`
-- `src-tauri/src/commands/provider_catalog/`
-- `src-tauri/src/commands/local_providers/`
-
-## 10. Verification Checklist
-
-Before you claim a provider-related change is done:
-
-- run `pnpm test`
-- run `pnpm build`
-- if Rust changed, run `cargo check --manifest-path src-tauri/Cargo.toml`
-- verify at least one real provider path if the change touched live provider behavior
-
-## 11. Current Anti-Patterns
-
-Avoid reintroducing:
-
-- per-provider TypeScript clients
-- store-owned provider preset catalogs
-- browser-side local provider probing
-- one-file Rust command modules that mix types, HTTP, parsing, and command handlers
-
+- per-provider TypeScript clients; store-owned provider catalogs
+- advertising native tools from TS definitions (Rust registry is the only roster source)
+- one-file Rust command modules mixing types, HTTP, parsing, and handlers
+- Tailwind utilities or hardcoded colors in the agent window
+- files dropped at a folder root instead of the concern that owns them
+- new CSS partials without a numeric prefix, or reordering existing ones (cascade order is load-bearing)

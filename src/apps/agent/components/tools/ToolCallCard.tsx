@@ -515,7 +515,7 @@ const StandardToolCallCard: React.FC<{
   }, [call.arguments]);
 
   const status = toolStatus(call, isActivelyStreaming);
-  const title = getProfessionalToolName(call.name);
+  const defaultTitle = getProfessionalToolName(call.name);
   const icon = toolIcon(call.name);
   const activity = useMemo(
     () => describeToolActivity(call.name, call.arguments),
@@ -561,6 +561,12 @@ const StandardToolCallCard: React.FC<{
         })
       : [];
   const activityTargets = resultFileTargets.length > 0 ? resultFileTargets : narratedTargets;
+  const isMultiFileEdit = call.name === "file_edit" && activityTargets.length > 1;
+  const title = isMultiFileEdit
+    ? status === "running"
+      ? "Editing Multiple Files"
+      : "Edit Files"
+    : defaultTitle;
   const isSelectableMultiFileResult = resultFileTargets.length > 1;
   const selectedFileIndex = isSelectableMultiFileResult
     ? Math.min(activeFileIndex, activityTargets.length - 1)

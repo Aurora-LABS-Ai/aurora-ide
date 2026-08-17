@@ -264,8 +264,7 @@ mod tests {
     fn a_marker_inside_a_json_field_is_never_spilled() {
         let dir = tempfile::tempdir().unwrap();
         let b64 = "QUJD".repeat(60_000);
-        let marker =
-            format!("<aurora_image media_type=\"image/png\">{b64}</aurora_image>");
+        let marker = format!("<aurora_image media_type=\"image/png\">{b64}</aurora_image>");
         let raw = serde_json::json!({ "success": true, "content": marker }).to_string();
 
         let out = spill_oversized(dir.path(), "call-json-shot", raw.clone());

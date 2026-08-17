@@ -311,6 +311,25 @@ mod tests {
     }
 
     #[test]
+    fn side_effect_imports_are_dependencies_even_without_a_local_binding() {
+        let (_d, idx) = build_index(&[
+            ("src/core/setup.ts", "export const ready = true;\n"),
+            (
+                "src/app/main.ts",
+                "import '../core/setup';\nexport const app = true;\n",
+            ),
+        ]);
+        let g = build(&idx, Granularity::Dir);
+        assert!(
+            g.edges
+                .iter()
+                .any(|(from, to, count)| from == "src/app" && to == "src/core" && *count == 1),
+            "a side-effect import must still create an edge: {:?}",
+            g.edges
+        );
+    }
+
+    #[test]
     fn a_two_directory_loop_is_reported_in_full() {
         let (_d, idx) = build_index(&[
             (

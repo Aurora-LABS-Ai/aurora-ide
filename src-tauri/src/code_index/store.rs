@@ -60,11 +60,14 @@ pub struct Reference {
     pub from: Option<String>,
 }
 
-/// One `local -> module` binding, attributed to the file that wrote it.
+/// One `local -> imported -> module` binding, attributed to the file that
+/// wrote it. Empty names represent a module-only dependency such as a
+/// side-effect import or a re-export.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Import {
     pub file: u32,
     pub local: String,
+    pub imported: String,
     pub module: String,
 }
 
@@ -142,9 +145,9 @@ pub struct CodeIndex {
     by_name: HashMap<String, Vec<u32>>,
     #[serde(skip)]
     refs_by_name: HashMap<String, Vec<u32>>,
-    /// `(file, local name) -> module specifier`.
+    /// `(file, local name) -> (imported name, module specifier)`.
     #[serde(skip)]
-    imports_by_file: HashMap<(u32, String), String>,
+    imports_by_file: HashMap<(u32, String), (String, String)>,
     /// Forward-slashed relative path -> file id, for module resolution.
     #[serde(skip)]
     file_ids: HashMap<String, u32>,
@@ -297,16 +300,18 @@ impl CodeIndex {
                     from,
                 },
             ));
-            idx.imports.extend(
-                facts
-                    .imports
-                    .into_iter()
-                    .map(|RawImport { local, module }| Import {
-                        file: file_id,
-                        local,
-                        module,
-                    }),
-            );
+            idx.imports.extend(facts.imports.into_iter().map(
+                |RawImport {
+                     local,
+                     imported,
+                     module,
+                 }| Import {
+                    file: file_id,
+                    local,
+                    imported,
+                    module,
+                },
+            ));
         }
 
         idx.stats.files = idx.files.len();
@@ -337,8 +342,13 @@ impl CodeIndex {
                 .push(i as u32);
         }
         for imp in &self.imports {
-            self.imports_by_file
-                .insert((imp.file, imp.local.clone()), imp.module.clone());
+            if imp.local.is_empty() {
+                continue;
+            }
+            self.imports_by_file.insert(
+                (imp.file, imp.local.clone()),
+                (imp.imported.clone(), imp.module.clone()),
+            );
         }
         for (i, f) in self.files.iter().enumerate() {
             self.file_ids.insert(f.path.clone(), i as u32);
@@ -525,19 +535,28 @@ impl CodeIndex {
     /// the same shape and reached the same conclusion about refusing rather
     /// than guessing on call edges.
     pub fn resolve(&self, name: &str, from_file: u32) -> (Vec<&Symbol>, Confidence) {
-        let defs = self.definitions(name);
-        if defs.len() <= 1 {
-            return (defs, Confidence::Unique);
-        }
         let bare = name.rsplit("::").next().unwrap_or(name);
 
-        if let Some(module) = self.imports_by_file.get(&(from_file, bare.to_string())) {
+        // References use the local spelling. Resolve the imported spelling
+        // before looking at same-file or unique-name candidates, otherwise
+        // `formatTokens as fmtTokens` becomes an external `fmtTokens` lookup.
+        if let Some((imported, module)) = self.imports_by_file.get(&(from_file, bare.to_string())) {
+            let imported_defs = self.definitions(imported);
             if let Some(target) = self.resolve_module(from_file, module) {
-                let hit: Vec<&Symbol> = defs.iter().copied().filter(|s| s.file == target).collect();
+                let hit: Vec<&Symbol> = imported_defs
+                    .iter()
+                    .copied()
+                    .filter(|s| s.file == target)
+                    .collect();
                 if !hit.is_empty() {
                     return (hit, Confidence::Import);
                 }
             }
+        }
+
+        let defs = self.definitions(name);
+        if defs.len() <= 1 {
+            return (defs, Confidence::Unique);
         }
 
         let same_file: Vec<&Symbol> = defs
@@ -562,6 +581,14 @@ impl CodeIndex {
                         .rsplit_once('/')
                         .map_or("", |(d, _)| d)
                         == dir
+                        // A local binding in a sibling file is not visible from
+                        // this file. Import resolution handles explicit
+                        // cross-file bindings; the same-dir fallback must not
+                        // let a local variable steal a global name.
+                        && !matches!(
+                            s.kind.as_str(),
+                            "variable" | "const" | "field" | "variant"
+                        )
                 })
                 .collect();
             if !same_dir.is_empty() {
@@ -585,7 +612,37 @@ impl CodeIndex {
     pub fn references_to(&self, target: &Symbol) -> (Vec<&Reference>, usize) {
         let mut hits = Vec::new();
         let mut unresolved = 0usize;
-        for r in self.references(&target.name) {
+        let mut candidate_refs = self.references(&target.name);
+        for imp in &self.imports {
+            if imp.local.is_empty()
+                || imp.local == imp.imported
+                || imp.imported != target.name
+                || self.resolve_module(imp.file, &imp.module) != Some(target.file)
+            {
+                continue;
+            }
+            candidate_refs.extend(
+                self.references(&imp.local)
+                    .into_iter()
+                    .filter(|r| r.file == imp.file),
+            );
+        }
+
+        for r in candidate_refs {
+            // An import reference names the exported spelling even when the
+            // local binding is aliased. Resolve it from the import table rather
+            // than treating the import line as a normal local reference.
+            if r.kind == "import" {
+                if self.imports.iter().any(|imp| {
+                    imp.file == r.file
+                        && imp.imported == target.name
+                        && self.resolve_module(imp.file, &imp.module) == Some(target.file)
+                }) {
+                    hits.push(r);
+                }
+                continue;
+            }
+
             // A call site can only mean something callable. Without this, a
             // struct field named `reset` collects the calls of the function
             // `reset` that happens to share its file — the two are
@@ -595,7 +652,7 @@ impl CodeIndex {
                 continue;
             }
 
-            let (mut defs, confidence) = self.resolve(&target.name, r.file);
+            let (mut defs, confidence) = self.resolve(&r.name, r.file);
             if call_site {
                 defs.retain(|s| is_callable(&s.kind));
             }
@@ -878,6 +935,34 @@ mod tests {
             "the other module's caller must NOT be: {callers:?}"
         );
         assert_eq!(unresolved, 0, "both call sites were import-resolved");
+    }
+
+    #[test]
+    fn aliased_imports_resolve_to_the_exported_definition_and_its_caller() {
+        let (_d, idx) = index_of(&[
+            ("src/a/format.ts", "export function formatTokens() {}\n"),
+            ("src/b/format.ts", "export function formatTokens() {}\n"),
+            (
+                "src/app/use.ts",
+                "import { formatTokens as fmt } from '../a/format';\nexport function go() { return fmt(1); }\n",
+            ),
+        ]);
+        let target = idx
+            .definitions("formatTokens")
+            .into_iter()
+            .find(|s| idx.file_path(s.file) == "src/a/format.ts")
+            .expect("the selected formatTokens definition");
+        let (hits, unresolved) = idx.references_to(target);
+        assert_eq!(unresolved, 0, "the alias is import-resolved");
+        assert_eq!(
+            hits.iter().filter(|r| r.kind == "call").count(),
+            1,
+            "{hits:?}"
+        );
+        assert!(
+            hits.iter().any(|r| r.from.as_deref() == Some("go")),
+            "the aliased call must retain its caller: {hits:?}"
+        );
     }
 
     #[test]

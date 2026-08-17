@@ -36,11 +36,15 @@ pub struct RawRef {
 ///
 /// The pair, not either half alone, is what makes name resolution possible: a
 /// bare `Session` matches thirty definitions, `Session` imported from
-/// `./session` matches one.
+/// `./session` matches one. `local == imported` is the ordinary case; an alias
+/// keeps both names because references use the local spelling while definitions
+/// use the imported one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImport {
     /// The name as it is used in THIS file (an alias when there is one).
     pub local: String,
+    /// The name exported by the target module.
+    pub imported: String,
     /// The module specifier exactly as written — `./session`, `crate::db`,
     /// `react`. Turning it into a file is the store's job, because only the
     /// store knows what files exist.
@@ -253,6 +257,12 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
     // patterns deliberately overlap, so the most specific kind must win.
     let mut refs: std::collections::HashMap<std::ops::Range<usize>, (Node, &str)> =
         std::collections::HashMap::new();
+    // Alias declarations match the broad identifier rule, but introducing
+    // `fmt` in `import { formatTokens as fmt }` is not a read of the target.
+    // Keep their ranges separately because aliases are bindings, not ordinary
+    // definitions owned by this file.
+    let mut import_locals: std::collections::HashSet<std::ops::Range<usize>> =
+        std::collections::HashSet::new();
 
     let capture_names = spec.query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -265,25 +275,59 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
         // grouped by match and by nothing else, so the pairing has to be read
         // here, before the per-capture loop flattens them.
         let mut module: Option<&str> = None;
+        let mut imported: Vec<&str> = Vec::new();
         let mut locals: Vec<&str> = Vec::new();
         for cap in m.captures {
             match capture_names[cap.index as usize] {
                 "import.module" => module = Some(strip_module_quotes(text(cap.node, src))),
-                "import.local" | "ref.import" => locals.push(text(cap.node, src)),
+                "import.local" => locals.push(text(cap.node, src)),
+                "ref.import" => imported.push(text(cap.node, src)),
                 _ => {}
             }
         }
         if let Some(module) = module.filter(|m| !m.is_empty()) {
-            for local in &locals {
-                facts.imports.push(RawImport {
-                    local: (*local).to_string(),
+            match (imported.as_slice(), locals.as_slice()) {
+                // An empty pair is a side-effect import or re-export. Keep the
+                // module edge without inventing a local symbol binding.
+                ([], []) => facts.imports.push(RawImport {
+                    local: String::new(),
+                    imported: String::new(),
                     module: module.to_string(),
-                });
+                }),
+                // The alias and the exported name were captured by the same
+                // query match, so this is the only safe place to pair them.
+                ([imported], [local]) => facts.imports.push(RawImport {
+                    local: (*local).to_string(),
+                    imported: (*imported).to_string(),
+                    module: module.to_string(),
+                }),
+                // A non-aliased import uses the same spelling on both sides.
+                (imported, []) => {
+                    for imported_name in imported {
+                        facts.imports.push(RawImport {
+                            local: (*imported_name).to_string(),
+                            imported: (*imported_name).to_string(),
+                            module: module.to_string(),
+                        });
+                    }
+                }
+                // No local binding exists for a side-effect import or a
+                // re-export pattern. Keep the module-only fact for the graph,
+                // but do not invent a symbol binding from incomplete captures.
+                _ => facts.imports.push(RawImport {
+                    local: String::new(),
+                    imported: String::new(),
+                    module: module.to_string(),
+                }),
             }
         }
 
         for cap in m.captures {
             let full = capture_names[cap.index as usize];
+            if full == "import.local" {
+                import_locals.insert(cap.node.byte_range());
+                continue;
+            }
             let Some((role, kind)) = full.split_once('.') else {
                 continue;
             };
@@ -327,7 +371,7 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
         // A definition's own name is not a usage of itself. This is what lets
         // the reference patterns stay broad (a bare `(type_identifier)` catches
         // every type mention, including the `struct Foo` that declares it).
-        if defs.contains_key(&node.byte_range()) {
+        if defs.contains_key(&node.byte_range()) || import_locals.contains(&node.byte_range()) {
             continue;
         }
         let pos = node.start_position();
@@ -478,6 +522,47 @@ mod tests {
         let reads: Vec<_> = f.refs.iter().filter(|r| r.name == "HEADERS").collect();
         assert_eq!(reads.len(), 2, "argument + shorthand property: {reads:?}");
         assert!(reads.iter().all(|r| r.kind == "ident"));
+    }
+
+    #[test]
+    fn rust_let_bindings_are_definitions_not_reads() {
+        let f = facts(Lang::Rust, "fn go() { let scan = 1; take(scan); }");
+        assert_eq!(sym(&f, "scan").kind, "variable");
+        assert_eq!(
+            f.refs.iter().filter(|r| r.name == "scan").count(),
+            1,
+            "the binding itself must not be a usage"
+        );
+    }
+
+    #[test]
+    fn aliased_and_module_only_imports_keep_their_resolution_facts() {
+        let f = facts(
+            Lang::TypeScript,
+            "import { formatTokens as fmt } from './format';\nimport './setup';\nexport * from './barrel';\n",
+        );
+
+        assert!(
+            f.imports.iter().any(|i| {
+                i.local == "fmt" && i.imported == "formatTokens" && i.module == "./format"
+            }),
+            "alias pairing was lost: {:?}",
+            f.imports
+        );
+        assert!(
+            f.imports
+                .iter()
+                .any(|i| i.local.is_empty() && i.imported.is_empty() && i.module == "./setup"),
+            "side-effect import was lost: {:?}",
+            f.imports
+        );
+        assert!(
+            f.imports
+                .iter()
+                .any(|i| i.local.is_empty() && i.imported.is_empty() && i.module == "./barrel"),
+            "re-export dependency was lost: {:?}",
+            f.imports
+        );
     }
 
     #[test]

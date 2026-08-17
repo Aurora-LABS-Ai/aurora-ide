@@ -85,6 +85,17 @@ pub fn config_dir() -> PathBuf {
     ensure_subdir("config")
 }
 
+/// `<root>/limits/` — what Aurora has LEARNED about an endpoint rather than
+/// been told, currently `context-limits.json` (see
+/// `agent_runtime::context_limits`).
+///
+/// Deliberately not `config/` (nobody authors this) and not `cache/` (it is
+/// not derivable from anything on disk — it is only relearned by having a
+/// request refused, which costs a real round-trip).
+pub fn limits_dir() -> PathBuf {
+    ensure_subdir("limits")
+}
+
 /// `<root>/typing-assist/` — bundled frequency dictionaries (copied here on
 /// first activation) + the personal `lexicon.json` learned from what you type.
 pub fn typing_assist_dir() -> PathBuf {
@@ -137,8 +148,7 @@ pub fn team_projects_dir() -> PathBuf {
     dir
 }
 
-/// `<root>/logs/` — reserved for future file-based logging.
-#[allow(dead_code)]
+/// `<root>/logs/` — home of the rotating `aurora.log` written by [`crate::logging`].
 pub fn logs_dir() -> PathBuf {
     ensure_subdir("logs")
 }

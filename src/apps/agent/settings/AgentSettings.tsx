@@ -48,6 +48,8 @@ const GLOBAL_INSTRUCTIONS_MAX = 4000;
 
 export const AgentSettings: React.FC = () => {
   const browserTools = useSettingsStore((s) => s.browserTools);
+  const deferTools = useSettingsStore((s) => s.deferTools);
+  const setDeferTools = useSettingsStore((s) => s.setDeferTools);
   const setBrowserTools = useSettingsStore((s) => s.setBrowserTools);
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
@@ -223,6 +225,26 @@ export const AgentSettings: React.FC = () => {
             checked={browserTools}
             onChange={setBrowserTools}
             ariaLabel="Give the agent the browser toolset"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Tool loading"
+        icon="layers"
+        description="How many tools the agent carries at once. Every tool it is offered costs its full description on every request of every turn, whether or not it is ever used."
+      >
+        <SettingsRow
+          last
+          alignTop
+          label="Load optional tools only when needed"
+          searchTerms="defer deferred tools on demand load lazy mcp browser team tokens cost roster tool_search search"
+          hint="The agent normally carries every tool at once. Turn this on and the optional ones — connected apps, the browser, team work — are listed by name only; the agent loads a tool's details the moment it needs it, and keeps it for the rest of the chat. Nothing becomes unavailable, it just costs one extra step the first time. Worth it when you have several apps connected: those alone can add a hundred tools you never use in a given chat."
+        >
+          <AgwSwitch
+            checked={deferTools}
+            onChange={setDeferTools}
+            ariaLabel="Load optional tools only when needed"
           />
         </SettingsRow>
       </SettingsSection>

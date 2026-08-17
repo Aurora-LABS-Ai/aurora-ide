@@ -1,15 +1,14 @@
 # Code Index — Handoff
 
-> **Status 2026-08-10 (v4). ⚠️ START HERE: the app needs a `tauri:dev` RESTART.** The v4 Rust
-> changes (§5.3) are on disk but not in the running process, and they change what gets indexed.
+> **Status 2026-08-17: shipped, cache format v6.** Everything below landed and is live; the
+> index ships with no on/off toggle (Settings → Agent → Code index shows status + Rebuild).
+> §4 (the verification flow) is the permanent tuning loop — repeat it exactly when changing
+> `resolve_module`, ranking, or any query. §5 records the design decisions and why alternatives
+> failed; §5.2b lists what is still not built.
 >
-> Repo-map ranking fixed (§5.1), resolution is import-aware (§5.0), coupling-by-kind / module graph
-> / churn / Settings panel landed (§5.2), and two monorepo bugs are fixed (§5.3).
-> **Read §5 first**, then §6 for the ordered next steps.
->
-> Verified: 1171 Rust + 455 frontend tests, `tsc -b`, eslint, `pnpm build`, `cargo check --bins`,
-> plus measurement harnesses over four real repositories. The **Settings panel is live-confirmed**
-> by the owner. §5.2 and §5.3 have otherwise not been driven through a real agent turn — §6 step 1.
+> Format history: v2 imports · v3 write-captures + module graph + churn · v4 workspace package
+> map · v5 Rust `let` bindings · v6 import aliases/side-effect imports. Mismatched caches are
+> rebuilt, never migrated.
 
 ---
 
@@ -27,9 +26,8 @@ Cache is 4.9 MB (31% of naive JSON, thanks to string interning).
 will not catch type errors — that stays `read_lints`' job. The upside: no toolchain needed, sub-second,
 and it keeps working on a file the agent has half-rewritten.
 
-**Semantic/embedding search is dead and is not coming back** (dropped at migration v12). `README.md`
-and `DOCS/01-ARCHITECTURE.md` were corrected on 2026-08-09; `CLAUDE.md` still advertises
-`aurora-semantic` in its stack table and Semantic Search section — **it is wrong**.
+**Semantic/embedding search is dead and is not coming back** (dropped at migration v12). No
+current doc advertises it; if you see a reference, it is stale — fix the doc.
 
 ---
 
@@ -58,7 +56,8 @@ Languages: Rust, TypeScript, TSX/JSX, Python. **A C# project indexes as 0 files*
 ## 3. How it is wired
 
 ### 3.1 The `code` tool
-- Registered in `tools/mod.rs` (`code_intel::register`). `BUILTIN_TOOL_COUNT` **36 → 37**.
+- Registered in `tools/mod.rs` (`code_intel::register`). `BUILTIN_TOOL_COUNT` is **41** today
+  (37 when this doc was written; every tool added since bumps it).
 - **If you add a tool, also update `tools/mod.rs::count_without_browser`** and the literal in
   `builtin_tool_count_is_correct`, or 3 tests fail.
 - Ops: `definition` | `usages` | `outline` | `modules` | `refresh`. One tool with a typed op, not
@@ -66,7 +65,8 @@ Languages: Rust, TypeScript, TSX/JSX, Python. **A C# project indexes as 0 files*
   `usages`; `granularity` belongs to `modules`.
 
 ### 3.2 The repo map
-- `conversation.rs::inject_repo_map`, called right after `inject_ide_context` in the turn loop.
+- `conversation/context_injection.rs::inject_repo_map`, called right after `inject_ide_context`
+  in the turn loop (`conversation/mod.rs`).
 - **First user message, not the latest.** At the head it sits in the provider's cached prefix and is
   billed once; on the newest message it would re-send ~5k tokens every turn.
 - **Memoized** per runtime (`ConversationRuntime.repo_map: Arc<OnceLock<Option<String>>>`). If the
@@ -251,7 +251,7 @@ Both carry the reason in their doc comment. Do not delete either as "unused":
   file-mutating tool succeeds. Staleness is normally caught by the walk fingerprint, but mtime has
   one-second resolution, so an edit landing in the same second as the previously-newest file is
   invisible — the only reason `op: "refresh"` exists. Calling this on every successful write closes
-  that window. Unwired because `conversation.rs` has no single "a file changed" seam to hang it on;
+  that window. Unwired because `conversation/` has no single "a file changed" seam to hang it on;
   adding one is the actual work.
 - **`CodeIndex::unreferenced`** — dead-code detection. Cheap and already computed, but the caveats
   are large (public API used outside the workspace, dynamic dispatch, macro/string reach) so a tool
@@ -312,24 +312,11 @@ first run was a cold OS file cache, not a regression — re-measure before chasi
 
 ---
 
-## 6. Next steps, in order
+## 6. Remaining next steps, in order
 
-0. **RESTART `tauri:dev`** — v4 is Rust-side and the running app predates it. Then hit **Rebuild**
-   in Settings → Agent → Code index on the monorepo, and confirm the file count jumps to ~1,544
-   (it was 1,262 before the `packages/` fix).
-1. **Drive v3/v4 from a real agent turn.** The Settings panel is confirmed on screen; the tool
-   surface is not. Prompts with verifiable answers, on the whole monorepo:
-   - *"Use `code` with op `modules` at granularity `area`. Which areas depend on which?"* — must now
-     show edges from `apps/*` into `packages/*`. **Zero edges means the v4 fix is not loaded.**
-   - *"Where is `<a class exported from a package under packages/>` defined?"* — must find it.
-     Anything under `packages/` returning "not found" means the walk fix is not loaded.
-   - *"Who uses `<that class>`? Break the coupling down."* — must return a `coupling` block with
-     calls / writes / imports separated, and cross-package callers from `apps/*`.
-   - *"Do NOT call any tools. From the repository map alone, name four areas of this project."* —
-     tests the repo map at monorepo scale, the way §4.4 does for one app.
-2. **Add C# and other languages (§5.2b).** The largest real gap: a C# project indexes as 0 files.
-3. **Usages-warning before edits** — now cheap, see §5.2b.
-4. Consider extending resolution to re-export barrels (`export * from './x'`), which currently
+1. **Add C# and other languages (§5.2b).** The largest real gap: a C# project indexes as 0 files.
+2. **Usages-warning before edits** — cheap now via `references_to`; see §5.2b.
+3. Consider extending resolution to re-export barrels (`export * from './x'`), which currently
    break the import chain one hop early.
 
 **House rule reaffirmed 2026-08-10:** no real project, package, or repo names in `src/` or
@@ -379,12 +366,11 @@ identity. One pre-existing leak is left for the owner to judge:
 
 ## 9. State
 
-**1171 Rust + 455 frontend tests green.** `cargo check --bins`, `tsc -b`, eslint, `pnpm build`,
-rustfmt all clean. **The running app is older than v4 — restart `tauri:dev` (§6 step 0).**
-
-Live-verified through v2 against `quantumhub-client`: `definition` line-exact, the repo map answers
-§4.4's tool-free prompt correctly (`ai-orchestrator.ts` plus four real service areas), and the model
-reaches for `code` unprompted. **Everything in §5.2 is offline-verified only.**
+**Shipped and live** (cache format v6 as of 2026-08-15). Live-verified in `tauri:dev` against a
+real Electron client: `definition` line-exact, the repo map answers §4.4's tool-free prompt
+correctly, and the model reaches for `code` unprompted. The adversarial audit (2026-08-15)
+fixed aliased imports, side-effect imports/re-exports in the module graph, and Rust `let`
+binding shadowing — each with regression coverage at the owning layer.
 
 Measured, same repo (728 files): index 4.9 MB / 655 ms; 5,691 imports → 3,358 resolved to files,
 2,243 external packages, 90 unresolved (all assets); 65% of ambiguous-name references now resolve;

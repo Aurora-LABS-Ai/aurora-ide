@@ -102,7 +102,10 @@ pub struct Driven {
 }
 
 impl Driven {
-    pub fn wrap(inner: Arc<dyn ToolExecutor>, signal: Arc<dyn PanelSignal>) -> Arc<dyn ToolExecutor> {
+    pub fn wrap(
+        inner: Arc<dyn ToolExecutor>,
+        signal: Arc<dyn PanelSignal>,
+    ) -> Arc<dyn ToolExecutor> {
         let name: &'static str = Box::leak(inner.name().to_string().into_boxed_str());
         Arc::new(Self {
             inner,
@@ -259,7 +262,10 @@ mod tests {
         let tool = Driven::wrap(Arc::new(fake), recorder.clone());
 
         assert!(tool.execute(json!({}), &ctx()).await.is_err());
-        assert_eq!(recorder.taken().last(), Some(&("browser_fill".into(), false)));
+        assert_eq!(
+            recorder.taken().last(),
+            Some(&("browser_fill".into(), false))
+        );
     }
 
     /// Cancelling a turn drops the tool's future mid-await — it never returns,
@@ -272,13 +278,13 @@ mod tests {
         fake.hang = true;
         let tool = Driven::wrap(Arc::new(fake), recorder.clone());
 
-        let cut_short = tokio::time::timeout(
-            Duration::from_millis(20),
-            tool.execute(json!({}), &ctx()),
-        )
-        .await;
+        let cut_short =
+            tokio::time::timeout(Duration::from_millis(20), tool.execute(json!({}), &ctx())).await;
 
-        assert!(cut_short.is_err(), "the fake should have outlived the timeout");
+        assert!(
+            cut_short.is_err(),
+            "the fake should have outlived the timeout"
+        );
         assert_eq!(
             recorder.taken(),
             vec![
@@ -303,7 +309,10 @@ mod tests {
 
         assert_eq!(tool.name(), "browser_navigate");
         assert_eq!(tool.schema().name, "browser_navigate");
-        assert!(tool.requires_permission(), "the permission gate was dropped");
+        assert!(
+            tool.requires_permission(),
+            "the permission gate was dropped"
+        );
         assert!(tool.concurrency_safe());
         assert!(tool.uses_frontend_lifecycle());
     }

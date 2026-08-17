@@ -124,20 +124,24 @@ export function codexFmtDuration(totalSeconds: number): string {
 // ── Seeded provider preset ───────────────────────────────────────────────────
 
 /**
- * Codex-entitled model roster. Pricing is pinned to $0 on purpose: usage
- * bills against the ChatGPT subscription, and a zeroed row also stops the
- * models.dev enrichment pass from backfilling platform API prices that
- * don't apply here.
+ * Codex-entitled model roster: the GPT-5.5 and GPT-5.6 families, matching the
+ * "OpenAI (Responses)" preset they share a dialect with. Everything older was
+ * retired upstream — a seeded row for a retired model looks selectable, is
+ * priced, and then fails at the first request, which is worse than not
+ * offering it. Rows seeded by an earlier build stay in the user's database
+ * (this seeds, it does not prune); remove those in Settings › Providers.
+ *
+ * Pricing is pinned to $0 on purpose: usage bills against the ChatGPT
+ * subscription, and a zeroed row also stops the models.dev enrichment pass
+ * from backfilling platform API prices that don't apply here.
  */
 const CODEX_SEED_MODELS = [
-  { id: "gpt-5.6", alias: "GPT-5.6" },
+  // No bare `gpt-5.6`: the 5.6 generation ships only as the named variants.
+  { id: "gpt-5.6-sol", alias: "GPT-5.6 Sol" },
   { id: "gpt-5.6-terra", alias: "GPT-5.6 Terra" },
   { id: "gpt-5.6-luna", alias: "GPT-5.6 Luna" },
   { id: "gpt-5.5", alias: "GPT-5.5" },
-  { id: "gpt-5.4", alias: "GPT-5.4" },
-  { id: "gpt-5.4-mini", alias: "GPT-5.4 Mini" },
-  { id: "gpt-5.3-codex", alias: "GPT-5.3 Codex" },
-  { id: "gpt-5.3-codex-spark", alias: "GPT-5.3 Codex Spark" },
+  { id: "gpt-5.5-pro", alias: "GPT-5.5 Pro" },
 ];
 
 export const CODEX_PRESET: ProviderCatalogPreset = {
@@ -154,6 +158,11 @@ export const CODEX_PRESET: ProviderCatalogPreset = {
   maxOutputTokens: 128_000,
   supportsThinking: true,
   supportsToolStream: true,
+  // Same family as the "OpenAI (Responses)" preset, so the same answer: these
+  // models take images. Stated here rather than left to the seeding default,
+  // which used to assume no vision for every preset and made the user switch
+  // it on per model before a screenshot would go through.
+  supportsVision: true,
   providerType: "codex",
   requiresApiKey: false,
   customModels: CODEX_SEED_MODELS.map((m) => m.id),

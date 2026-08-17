@@ -16,15 +16,15 @@ the folder in Settings > Speech.
 
 ## Runtime Flow
 
-1. The user enables Speech in Settings > Speech.
+1. The user enables Speech in Settings (Agent Window → Preferences → Speech).
 2. The user selects a local Qwen3-ASR model folder.
-3. The chat input shows the microphone button.
+3. The composer shows the microphone button.
 4. The frontend records microphone audio in the WebView.
 5. Audio is resampled to 16 kHz mono PCM.
 6. The frontend sends PCM to the Tauri command `speech_transcribe_pcm`.
-7. Rust loads or reuses the cached Qwen3-ASR model.
+7. Rust loads or reuses the cached Qwen3-ASR model (`speech_validate_config` checks the folder).
 8. Rust returns the transcript.
-9. The transcript is inserted into the input box.
+9. The transcript is inserted into the composer.
 
 No external speech API is called.
 
@@ -35,7 +35,7 @@ Aurora binary.
 
 - Default build: CPU-only, widest compatibility.
 - CUDA build: compile with Aurora's `cuda` feature.
-- Settings > Speech disables GPU when the current build cannot use it.
+- The Speech settings page disables GPU when the current build cannot use it.
 
 Local CUDA development:
 
@@ -70,12 +70,13 @@ and a GGUF speech model. Aurora runs CrispASR as a child process so a native ggm
 cannot terminate Aurora.
 
 Aurora does not bundle CrispASR by default. Users who choose this engine must select
-their own CrispASR runtime folder in Settings > Speech.
+their own CrispASR runtime folder in the Speech settings.
 
-To create a separate runtime zip for distribution:
+To create a separate runtime zip for distribution (example path — adjust to wherever the
+runtime was unpacked):
 
 ```bash
-pnpm crispasr:package -- --source "C:\Users\Alvan\AppData\Local\Aurora\crispasr-runtime\windows-x64"
+pnpm crispasr:package -- --source "C:\Users\<you>\AppData\Local\AuroraIDE\crispasr-runtime\windows-x64"
 ```
 
 The generated zip is written to `dist/aurora-crispasr-runtime-windows-x64.zip` by

@@ -17,10 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Bump when the packed layout changes. A cache written by an older Aurora is
-/// discarded and rebuilt rather than misread — the rebuild is sub-second, so
-/// there is never a reason to attempt migration.
-pub const FORMAT_VERSION: u32 = 4;
+/// Bump when the packed layout or extraction semantics change. A cache written
+/// by an older Aurora is discarded and rebuilt rather than reused with stale
+/// facts — the rebuild is sub-second, so there is never a reason to migrate it.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.
@@ -39,10 +39,11 @@ pub struct Packed {
     pub symbols: Vec<[u32; 7]>,
     /// `[name, kind, file, line, col, from]`
     pub refs: Vec<[u32; 6]>,
-    /// `[file, local, module]`. Module specifiers repeat once per imported
-    /// name, so they ride the same table as everything else.
+    /// `[file, local, imported, module]`. Module specifiers repeat once per
+    /// imported name, so they ride the same table as everything else. Empty
+    /// name ids represent module-only dependencies.
     #[serde(default)]
-    pub imports: Vec<[u32; 3]>,
+    pub imports: Vec<[u32; 4]>,
     /// Workspace package name -> directory. A handful of entries at most, so
     /// they are stored plainly rather than interned.
     #[serde(default)]
@@ -126,7 +127,14 @@ pub fn pack(idx: &CodeIndex) -> Packed {
     let imports = idx
         .imports
         .iter()
-        .map(|i| [i.file, names.put(&i.local), names.put(&i.module)])
+        .map(|i| {
+            [
+                i.file,
+                names.put(&i.local),
+                names.put(&i.imported),
+                names.put(&i.module),
+            ]
+        })
         .collect();
 
     Packed {
@@ -188,7 +196,8 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
             Ok(Import {
                 file: r[0],
                 local: get(&p.names, r[1])?,
-                module: get(&p.names, r[2])?,
+                imported: get(&p.names, r[2])?,
+                module: get(&p.names, r[3])?,
             })
         })
         .collect::<Result<Vec<_>>>()?;

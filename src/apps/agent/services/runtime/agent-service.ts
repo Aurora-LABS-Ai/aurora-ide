@@ -310,6 +310,7 @@ export class AgentService {
         // switched by one value. A surface that doesn't set it (the IDE chat)
         // gets neither, instead of an instruction with no tool behind it.
         transcriptChapters: this.config.transcriptChapters,
+        deferTools: this.config.deferTools,
       });
 
       if (composedPrompt.explicitSkills.length > 0) {

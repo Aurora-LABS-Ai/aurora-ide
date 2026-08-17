@@ -20,6 +20,14 @@ import { useSettingsStore, type LLMModel, type LLMProvider } from "@/kernel/stor
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud";
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
+import { groupProviders, isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
+import {
+  isKenariProvider,
+  kenariWire,
+  KENARI_WIRES,
+  type KenariWire,
+} from "@/apps/agent/services/providers/kenari";
+import { ProviderAvatar } from "./ProviderAvatar";
 import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
@@ -876,10 +884,14 @@ const ProviderDetail: React.FC<{
   const [confirmRemove, setConfirmRemove] = useState(false);
   const atlas = isAtlasCloudProvider(provider);
   const codex = isCodexProvider(provider);
+  const builtIn = isBuiltInProvider(provider);
+  const kenari = isKenariProvider(provider);
+  const wire = kenariWire(provider);
 
-  // Remove = delete for custom providers, hide-and-persist for built-in
-  // presets (which would otherwise re-seed on every launch). Two-click
-  // confirm so it isn't a one-tap destructive action.
+  // Only a provider the user added can be deleted. The ones Aurora ships with
+  // are theirs to configure, not to remove — so the destructive control simply
+  // is not there for them, rather than being present and refusing. Two-click
+  // confirm on the ones that can go, so it isn't a one-tap loss.
   const doRemove = () => {
     if (!confirmRemove) {
       setConfirmRemove(true);
@@ -888,7 +900,6 @@ const ProviderDetail: React.FC<{
     removeProvider(provider.id);
     onDeleted();
   };
-  const removeLabel = provider.isCustom ? "Delete provider" : "Remove from list";
 
   return (
     <div className="agw-prov-detail" data-atlas={atlas || undefined}>
@@ -908,9 +919,7 @@ const ProviderDetail: React.FC<{
         />
       ) : (
         <div className="agw-prov-detail-head">
-          <span className="agw-prov-avatar">
-            {(provider.nickname || provider.name || "?").trim().charAt(0).toUpperCase()}
-          </span>
+          <ProviderAvatar provider={provider} />
           <div className="agw-prov-detail-titles">
             <div className="agw-prov-detail-name">{provider.nickname || provider.name}</div>
             <div className="agw-prov-detail-sub">{provider.providerType ?? "custom"}</div>
@@ -927,6 +936,25 @@ const ProviderDetail: React.FC<{
           by the sign-in card above (the Rust adapter pins the URL). */}
       {!codex && (
       <div className="agw-prov-conn">
+        {/* kenari answers the same account on three different wires, and the
+            choice changes real behaviour — not a preference. Offered here
+            rather than buried in Extra request fields, with what each one
+            costs you written underneath, because the two non-default options
+            both give something up. */}
+        {kenari && (
+          <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>API format</span>
+            <AgwSegmented<KenariWire>
+              ariaLabel="kenari API format"
+              value={wire}
+              options={KENARI_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+              onChange={(next) => updateProvider(provider.id, { providerType: next })}
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {KENARI_WIRES.find((w) => w.value === wire)?.detail}
+            </span>
+          </label>
+        )}
         {provider.isCustom && (
           <>
             <label className="agw-prov-edit-field">
@@ -1019,22 +1047,62 @@ const ProviderDetail: React.FC<{
       </div>
       <AddModelRow providerId={provider.id} providerType={provider.providerType} />
 
-      {/* Remove — deletes a custom provider, or drops a built-in preset so it
-          stops re-seeding. Two-click confirm; the second click commits. */}
-      <div className="agw-prov-detail-danger">
-        <button
-          type="button"
-          className="agw-prov-remove-btn"
-          data-confirm={confirmRemove || undefined}
-          onClick={doRemove}
-          onMouseLeave={() => setConfirmRemove(false)}
-          title={removeLabel}
-        >
-          <AgentIcon name="close" size={13} />
-          {confirmRemove ? "Click again" : removeLabel}
-        </button>
-      </div>
+      {/* Delete, for providers the user added. Two-click confirm; the second
+          click commits. A built-in gets a line saying why there is nothing to
+          click here — a missing control with no explanation reads as a bug. */}
+      {builtIn ? (
+        <div className="agw-prov-detail-note">
+          Comes with Aurora. Change its address, key and models freely — the provider
+          itself stays in the list.
+        </div>
+      ) : (
+        <div className="agw-prov-detail-danger">
+          <button
+            type="button"
+            className="agw-prov-remove-btn"
+            data-confirm={confirmRemove || undefined}
+            onClick={doRemove}
+            onMouseLeave={() => setConfirmRemove(false)}
+            title="Delete provider"
+          >
+            <AgentIcon name="close" size={13} />
+            {confirmRemove ? "Click again to delete" : "Delete provider"}
+          </button>
+        </div>
+      )}
     </div>
+  );
+};
+
+// ── Sidebar row ──────────────────────────────────────────────────────────────
+
+const ProviderRow: React.FC<{
+  provider: LLMProvider;
+  modelCount: number;
+  active: boolean;
+  onSelect: () => void;
+}> = ({ provider, modelCount, active, onSelect }) => {
+  const ready = providerReady(provider);
+  return (
+    <button
+      type="button"
+      className="agw-prov-item"
+      data-active={active || undefined}
+      onClick={onSelect}
+    >
+      <ProviderAvatar provider={provider} small />
+      <span className="agw-prov-item-text">
+        <span className="agw-prov-item-name">{provider.nickname || provider.name}</span>
+        <span className="agw-prov-item-sub">
+          {modelCount} {modelCount === 1 ? "model" : "models"}
+        </span>
+      </span>
+      <span
+        className="agw-prov-status-dot"
+        data-tone={ready ? "ready" : "off"}
+        title={ready ? "Ready" : "Needs API key"}
+      />
+    </button>
   );
 };
 
@@ -1067,11 +1135,28 @@ export const ProvidersSettings: React.FC = () => {
         enrichedModelIds.add(m.id);
         const e = await lookupModel(m.modelKey);
         if (!alive || !e) continue;
-        // Fill ONLY genuinely-empty fields; never touch `reasoning` or flip a
-        // capability the user may have turned off.
+        // Fill ONLY genuinely-empty fields; `reasoning` is never touched —
+        // that one is the user's to configure, and models.dev must not
+        // restore it after they clear it.
+        //
+        // Capabilities ARE filled, by OR. models.dev publishes vision, tool
+        // calling and reasoning support for every model it knows, and this
+        // pass was throwing all three away — so a seeded model kept the
+        // `false` that preset seeding wrote as a placeholder, and the user
+        // had to switch vision and tool-streaming on by hand, per model,
+        // before the provider they had just added could take a screenshot.
+        // OR rather than assignment so this can only ever turn a capability
+        // ON: whatever the user has enabled survives untouched. The one thing
+        // it can undo is a capability switched OFF on a model seeded this
+        // session and not yet backfilled — a narrow window, since the model
+        // stops qualifying (`contextWindow` becomes non-null) the first time
+        // this runs.
         updateModel(m.id, {
           contextWindow: m.contextWindow ?? e.contextWindow,
           maxOutputTokens: m.maxOutputTokens ?? e.maxOutputTokens,
+          supportsVision: m.supportsVision || e.supportsVision,
+          supportsThinking: m.supportsThinking || e.supportsThinking,
+          supportsToolStream: m.supportsToolStream || e.supportsToolStream,
           priceCacheHitPerMtok: m.priceCacheHitPerMtok ?? e.priceCacheHitPerMtok,
           priceCacheMissPerMtok: m.priceCacheMissPerMtok ?? e.priceCacheMissPerMtok,
           priceOutputPerMtok: m.priceOutputPerMtok ?? e.priceOutputPerMtok,
@@ -1084,8 +1169,15 @@ export const ProvidersSettings: React.FC = () => {
     };
   }, [models, updateModel]);
 
-  // Keep a valid selection as the provider list changes.
-  const selected = providers.find((p) => p.id === activeId) ?? providers[0] ?? null;
+  // Shipped-with-Aurora rows first, then the user's own. Sorting is stable, so
+  // providers the user added stay in the order they added them.
+  const { builtIn, custom } = useMemo(() => groupProviders(providers), [providers]);
+
+  // Keep a valid selection as the provider list changes. The fallback follows
+  // the order the rail DRAWS, not the order the store happens to hold — picking
+  // `providers[0]` would highlight a row further down the list on first open.
+  const selected =
+    providers.find((p) => p.id === activeId) ?? builtIn[0] ?? custom[0] ?? null;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep a valid provider selected
     if (selected && selected.id !== activeId) setActiveId(selected.id);
@@ -1127,37 +1219,57 @@ export const ProvidersSettings: React.FC = () => {
           <span>Providers</span>
           <span className="agw-prov-side-count">{providers.length}</span>
         </div>
+        {/* Two groups, because the two kinds of row behave differently: the
+            ones Aurora ships with can be configured but not removed, the ones
+            below are the user's own. Grouping is carried by a label and a
+            hairline rather than by boxing each group — the rail already has
+            enough edges. */}
         <div className="agw-prov-side-scroll agw-scroll">
-          {providers.map((p) => {
-            const ready = providerReady(p);
-            const count = modelsByProvider.get(p.id)?.length ?? 0;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                className="agw-prov-item"
-                data-active={p.id === selected?.id || undefined}
-                onClick={() => setActiveId(p.id)}
-              >
-                <span className="agw-prov-avatar agw-prov-avatar-sm">
-                  {(p.nickname || p.name || "?").trim().charAt(0).toUpperCase()}
-                </span>
-                <span className="agw-prov-item-text">
-                  <span className="agw-prov-item-name">{p.nickname || p.name}</span>
-                  <span className="agw-prov-item-sub">
-                    {count} {count === 1 ? "model" : "models"}
-                  </span>
-                </span>
-                <span
-                  className="agw-prov-status-dot"
-                  data-tone={ready ? "ready" : "off"}
-                  title={ready ? "Ready" : "Needs API key"}
-                />
-              </button>
-            );
-          })}
-          {providers.length === 0 && (
+          {providers.length === 0 ? (
             <div className="agw-prov-empty">No providers yet.</div>
+          ) : (
+            <>
+              {builtIn.length > 0 && (
+                <div className="agw-prov-group">
+                  <h3 className="agw-prov-group-label">
+                    Built-in
+                    <span className="agw-prov-group-count">{builtIn.length}</span>
+                  </h3>
+                  {builtIn.map((p) => (
+                    <ProviderRow
+                      key={p.id}
+                      provider={p}
+                      modelCount={modelsByProvider.get(p.id)?.length ?? 0}
+                      active={p.id === selected?.id}
+                      onSelect={() => setActiveId(p.id)}
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="agw-prov-group" data-divided={builtIn.length > 0 || undefined}>
+                <h3 className="agw-prov-group-label">
+                  Custom
+                  {custom.length > 0 && (
+                    <span className="agw-prov-group-count">{custom.length}</span>
+                  )}
+                </h3>
+                {custom.length > 0 ? (
+                  custom.map((p) => (
+                    <ProviderRow
+                      key={p.id}
+                      provider={p}
+                      modelCount={modelsByProvider.get(p.id)?.length ?? 0}
+                      active={p.id === selected?.id}
+                      onSelect={() => setActiveId(p.id)}
+                    />
+                  ))
+                ) : (
+                  <p className="agw-prov-group-empty">
+                    Anything you add below lands here.
+                  </p>
+                )}
+              </div>
+            </>
           )}
         </div>
         <div className="agw-prov-list-foot">

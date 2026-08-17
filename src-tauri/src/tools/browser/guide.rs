@@ -116,12 +116,23 @@ wrong, not just quietly wrong.
 `browser_click` and `browser_fill` return a `changed` block, not just success.
 It reports navigation with both URLs, console errors that THIS action caused
 (counted as a delta, so a page that was already throwing does not frame every
-later click), scroll movement, and page height change when content rendered or
-collapsed.
+later click), scroll movement, page height change when content rendered or
+collapsed, and what the page is now showing:
+
+- `text_changed` with `text_length_delta` — the rendered text differs. A label
+  that swapped, a status line that appeared, a value that updated.
+- `elements_added` / `elements_removed` — a menu, overlay, toast or row mounted
+  or unmounted. Catches out-of-flow elements that change no height at all.
+- `focus_moved_to` — what ended up focused. On its own this proves the click
+  landed on a real control.
 
 `"nothing_observable_changed": true` is a real result and usually a problem. It
 means the element was found and acted on and the page did not react — a dead
 handler, a disabled control, or the wrong element. Do not read it as success.
+
+When it comes back with `dom_mutations`, the DOM WAS touched but nothing it
+renders differs — the shape of an attribute, class or style toggle. Inspect the
+element before concluding the action did nothing.
 
 ## Act and look in ONE call
 

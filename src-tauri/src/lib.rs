@@ -35,10 +35,11 @@ mod agent_runtime;
 mod agent_safety;
 mod api;
 mod checkpoints;
-mod code_index;
 pub mod cli;
+mod code_index;
 mod commands;
 mod context;
+mod crash;
 mod db;
 mod explorer;
 mod file_cache;
@@ -391,6 +392,39 @@ pub fn run_with_args(cli_args: CliArgs) {
     // including startup itself — must leave a trace on disk in the packaged
     // exe, where stderr goes nowhere.
     logging::init();
+    // …and the nets for the failures a panic hook never sees. A stack overflow
+    // or an access violation terminates the process without unwinding, so
+    // before this the log simply stopped mid-session and the only evidence was
+    // an exception code in the Windows event log.
+    crash::install();
+
+    // The agent runs on tokio workers, and that is where the 2026-08-17
+    // overflow happened. Reporting a stack overflow needs stack for the handler
+    // to run on, and a reservation made on the main thread says nothing about a
+    // worker — so every worker gets one as it starts. Tauri would otherwise
+    // build this runtime itself with the same shape (multi-thread, all drivers
+    // enabled); the only addition is the hook.
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(crash::reserve_handler_stack)
+        .build()
+    {
+        Ok(runtime) => {
+            tauri::async_runtime::set(runtime.handle().clone());
+            // Deliberately leaked: it must outlive every task Tauri spawns on
+            // it, which is the life of the process. Dropping it here would
+            // block on shutdown and then tear down the runtime we just set.
+            std::mem::forget(runtime);
+        }
+        Err(error) => logging::log_error(
+            "crash.install",
+            &format!(
+                "could not install the stack-guaranteed async runtime ({error}); \
+                 Tauri's default is used instead and a worker stack overflow may \
+                 go unreported"
+            ),
+        ),
+    }
 
     // Convert CLI args to open request
     let open_request: CliOpenRequest = (&cli_args).into();
@@ -451,10 +485,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // An un-queryable window cannot be shown to the user either, so a
             // failure here counts as "not visible" rather than keeping a
             // headless process alive on the strength of an error.
-            if remaining
-                .iter()
-                .any(|w| w.is_visible().unwrap_or(false))
-            {
+            if remaining.iter().any(|w| w.is_visible().unwrap_or(false)) {
                 return;
             }
             // CLOSE the leftovers rather than calling `app.exit`. Two reasons,
@@ -1259,9 +1290,7 @@ pub fn run_with_args(cli_args: CliArgs) {
                         {
                             logging::log_error(
                                 "webview.recovery",
-                                &format!(
-                                    "failed to install webview crash recovery (agent): {err}"
-                                ),
+                                &format!("failed to install webview crash recovery (agent): {err}"),
                             );
                         }
                         if let Some(main_win) = app.get_webview_window("main") {

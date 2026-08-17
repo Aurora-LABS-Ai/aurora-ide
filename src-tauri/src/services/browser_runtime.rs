@@ -1198,12 +1198,10 @@ fn encode_screenshot(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
     let rgb = img.to_rgb8();
     let mut out = Vec::new();
     let mut cursor = IoCursor::new(&mut out);
-    let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        &mut cursor,
-        SCREENSHOT_JPEG_QUALITY,
-    )
-    .encode_image(&rgb)
-    .is_ok();
+    let encoded =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, SCREENSHOT_JPEG_QUALITY)
+            .encode_image(&rgb)
+            .is_ok();
     if encoded {
         (out, ow, oh)
     } else {
@@ -1632,6 +1630,35 @@ const BROWSER_INIT_SCRIPT: &str = r#"
     window.addEventListener('unhandledrejection', (e) => {
       record('error', '[unhandled-rejection] ' + stringify(e.reason));
     });
+  }
+
+  // ---- DOM change counter ------------------------------------------
+  // "Did my click do anything" cannot be answered from URL, title and page
+  // height alone. A label swapping to 'Dark detected', a button's pressed
+  // state flipping, and an absolutely-positioned overlay mounting all leave
+  // those three identical — so the action reported that nothing changed about
+  // a page that had visibly changed, which is worse than reporting nothing.
+  //
+  // A counter is O(1) to read. The alternative, serialising the whole DOM
+  // twice per action to compare it, is not.
+  if (!ns.__mutations) {
+    ns.__mutations = { count: 0, last: 0 };
+    try {
+      const observer = new MutationObserver(function (records) {
+        ns.__mutations.count += records.length;
+        ns.__mutations.last = Date.now();
+      });
+      const observe = function () {
+        if (!document.documentElement) return;
+        observer.observe(document.documentElement, {
+          subtree: true, childList: true, attributes: true, characterData: true,
+        });
+      };
+      // The init script runs before the first paint, so on most loads there is
+      // no documentElement to observe yet.
+      if (document.documentElement) observe();
+      else document.addEventListener('DOMContentLoaded', observe, { once: true });
+    } catch (e) { /* never break the page over a debugging aid */ }
   }
 
   ns.getLogs = function (level, sinceMs) {

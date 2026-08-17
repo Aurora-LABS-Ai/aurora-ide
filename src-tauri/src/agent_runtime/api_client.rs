@@ -166,12 +166,59 @@ impl ApiError {
     /// - `Unauthorized` — a key does not become valid by waiting.
     /// - `Cancelled` — the user pressed Stop. Retrying would be the
     ///   opposite of what they asked for.
+    /// - `Provider` carrying a context-overflow rejection — see
+    ///   [`Self::is_context_overflow`]. It arrives in the retryable bucket
+    ///   and must be pulled back out: the request is byte-identical on
+    ///   every attempt and too big on every attempt.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
+        if self.is_context_overflow() {
+            return false;
+        }
         matches!(
             self,
             ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit
         )
+    }
+
+    /// The provider refused the request because the prompt is larger than the
+    /// model's **real** context window.
+    ///
+    /// Matched on the message text because no two providers agree on a code:
+    /// the OpenAI Responses stream sends `"code": "context_too_large"`, chat
+    /// completions `"context_length_exceeded"`, Anthropic answers
+    /// `"prompt is too long"`. All of them land in [`ApiError::Provider`],
+    /// which is otherwise the transient-5xx bucket — so before this predicate
+    /// existed the runtime re-sent the same oversized body three times, waited
+    /// out the backoff, and then killed the turn
+    /// (`aurora.log`, 2026-08-15T03:43:42 → 03:43:59, three attempts).
+    ///
+    /// This is not a user error and not a transient one. It means the
+    /// configured context window is larger than what the endpoint actually
+    /// serves, so the ONLY thing that clears it is sending less — which is
+    /// exactly what the forced-compaction branch in `Conversation::run_turn`
+    /// does. The configured window cannot be trusted to predict it, which is
+    /// why the runtime waits to be told rather than trying to stay under a
+    /// number it now knows is wrong.
+    #[must_use]
+    pub fn is_context_overflow(&self) -> bool {
+        let text = match self {
+            ApiError::Provider(message) | ApiError::InvalidRequest(message) => message,
+            _ => return false,
+        };
+        let lower = text.to_ascii_lowercase();
+        [
+            "context_too_large",
+            "context_length_exceeded",
+            "exceeds the context window",
+            "maximum context length",
+            "prompt is too long",
+            "too many total text bytes",
+            "reduce the length of the messages",
+            "input is too long",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     }
 }
 
@@ -278,6 +325,53 @@ mod tests {
         assert!(!ApiError::InvalidRequest("missing field".into()).is_recoverable());
         assert!(!ApiError::Cancelled.is_recoverable());
         assert!(!ApiError::Decode("bad json".into()).is_recoverable());
+    }
+
+    /// The verbatim rejection from `aurora.log` 2026-08-15T03:43, which the
+    /// runtime re-sent three times (8s of backoff) before killing the turn —
+    /// because it arrives as `Provider`, the transient-5xx bucket.
+    #[test]
+    fn context_overflow_is_recognised_and_pulled_out_of_the_retry_bucket() {
+        let measured = ApiError::Provider(
+            "Your input exceeds the context window of this model. \
+             Please adjust your input and try again."
+                .into(),
+        );
+        assert!(measured.is_context_overflow());
+        assert!(
+            !measured.is_retryable(),
+            "an oversized body is byte-identical on every attempt"
+        );
+        // Still worth telling the user a retry may help: the forced
+        // compaction that answers it makes the next one smaller.
+        assert!(measured.is_recoverable());
+    }
+
+    #[test]
+    fn context_overflow_spans_the_provider_wordings_aurora_talks_to() {
+        for message in [
+            r#"{"type":"error","code":"context_too_large","message":"…"}"#,
+            r#"{"error":{"code":"context_length_exceeded"}}"#,
+            "prompt is too long: 219431 tokens > 200000 maximum",
+            "This model's maximum context length is 128000 tokens",
+        ] {
+            assert!(
+                ApiError::Provider(message.into()).is_context_overflow(),
+                "should classify: {message}"
+            );
+        }
+    }
+
+    /// The predicate keys on text, so it has to stay narrow: a 5xx that merely
+    /// mentions a window must still be retried, or a transient gateway blip
+    /// would trigger a full-history summarization request instead.
+    #[test]
+    fn ordinary_failures_are_not_mistaken_for_context_overflow() {
+        assert!(!ApiError::Provider("503 upstream unavailable".into()).is_context_overflow());
+        assert!(!ApiError::Network("connection reset".into()).is_context_overflow());
+        assert!(!ApiError::RateLimit.is_context_overflow());
+        assert!(!ApiError::Unauthorized.is_context_overflow());
+        assert!(ApiError::Provider("503 upstream unavailable".into()).is_retryable());
     }
 
     #[test]

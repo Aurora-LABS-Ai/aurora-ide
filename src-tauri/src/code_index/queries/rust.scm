@@ -23,6 +23,10 @@
 (macro_definition   name: (identifier)       @def.macro)
 (enum_variant       name: (identifier)       @def.variant)
 (field_declaration  name: (field_identifier) @def.field)
+; Local `let` bindings must be definitions too. Otherwise a local value such as
+; `let scan = ...` is recorded only as an identifier read and can be mistaken
+; for the workspace's one exported `scan()` function.
+(let_declaration pattern: (identifier) @def.variable)
 
 ; ---------------------------------------------------------------- references
 (call_expression function: (identifier) @ref.call)

@@ -15,9 +15,9 @@
 | Todo rebuild | `src-tauri/src/tools/shell_editor_todo/{todo_store,todo_write,todo_read,todo_update}.rs` |
 | Commands | `src-tauri/src/commands/plans.rs` |
 | Event | `agent_plan_changed` via `IdeEventSink::emit_plan_changed` |
-| Frontend state | `src/services/agent-plans.ts`, `src/agent-window/store/useAgentPlanStore.ts` |
-| UI | `src/agent-window/components/PlanCanvas.tsx`, wired into `CanvasPanel.tsx` |
-| Mode + prompts | `src/services/agent-execution-mode.ts` |
+| Frontend state | `src/apps/agent/services/plans/agent-plans.ts`, `src/apps/agent/store/artifacts/useAgentPlanStore.ts` |
+| UI | `src/apps/agent/components/canvas/PlanCanvas.tsx`, wired into `CanvasPanel.tsx` |
+| Mode + prompts | `src/apps/agent/services/runtime/agent-execution-mode.ts` |
 
 ### Known gaps
 
@@ -129,13 +129,13 @@ Authoring and status marking are deliberately split by mode.
 | `plan_step_update` | **Agent / Team** | Flip one step's status. Stamps `runId`. Returns the full step list. |
 
 `plan_write` is the one permitted write in Plan mode — the mode is otherwise
-strictly read-only (`WRITE_TOOL_NAMES` in `src/services/agent-execution-mode.ts`
+strictly read-only (`WRITE_TOOL_NAMES` in `src/apps/agent/services/runtime/agent-execution-mode.ts`
 blocks even `todo_write`). Status marking must work during *execution*, so
 `plan_step_update` is Agent/Team only. Authoring ≠ marking.
 
 ## Todo rebuild
 
-Today's `todo_write` (`src-tauri/src/tools/shell_editor_todo/todo_write.rs`) is
+Today's `todo_write` (now the single `todo` tool in `src-tauri/src/tools/shell_editor_todo/todo.rs`) is
 structurally unable to be followed:
 
 1. **No read-back.** There is no `todo_read`; the result is `{success, count, inProgressCount}`.

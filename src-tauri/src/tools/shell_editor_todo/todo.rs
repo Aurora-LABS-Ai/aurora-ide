@@ -452,15 +452,14 @@ fn parse_updates(input: &Value) -> Result<Vec<(String, TodoStatus)>, ToolError> 
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    ToolError::InvalidInput(format!(
-                        "updates[{idx}].id must be a non-empty string"
-                    ))
+                    ToolError::InvalidInput(format!("updates[{idx}].id must be a non-empty string"))
                 })?
                 .to_string();
-            let status = TodoStatus::parse(obj.get("status").and_then(Value::as_str).ok_or_else(
-                || ToolError::InvalidInput(format!("updates[{idx}].status must be a string")),
-            )?)
-            .map_err(|e| ToolError::InvalidInput(format!("updates[{idx}]: {e}")))?;
+            let status =
+                TodoStatus::parse(obj.get("status").and_then(Value::as_str).ok_or_else(|| {
+                    ToolError::InvalidInput(format!("updates[{idx}].status must be a string"))
+                })?)
+                .map_err(|e| ToolError::InvalidInput(format!("updates[{idx}]: {e}")))?;
             out.push((id, status));
         }
         return Ok(out);
@@ -478,10 +477,11 @@ fn parse_updates(input: &Value) -> Result<Vec<(String, TodoStatus)>, ToolError> 
             )
         })?
         .to_string();
-    let status = TodoStatus::parse(input.get("status").and_then(Value::as_str).ok_or_else(
-        || ToolError::InvalidInput("`status` must be a string when op is `update`".into()),
-    )?)
-    .map_err(ToolError::InvalidInput)?;
+    let status =
+        TodoStatus::parse(input.get("status").and_then(Value::as_str).ok_or_else(|| {
+            ToolError::InvalidInput("`status` must be a string when op is `update`".into())
+        })?)
+        .map_err(ToolError::InvalidInput)?;
     Ok(vec![(id, status)])
 }
 
@@ -708,7 +708,10 @@ mod tests {
         assert!(parsed.get("warning").is_none(), "{parsed}");
         assert_eq!(parsed["cursor"]["activeId"], "t2");
         let message = parsed["message"].as_str().unwrap();
-        assert!(message.contains("Step 1") && message.contains("Step 2"), "{message}");
+        assert!(
+            message.contains("Step 1") && message.contains("Step 2"),
+            "{message}"
+        );
 
         todo_store::clear(&thread).ok();
     }

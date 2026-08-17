@@ -38,10 +38,18 @@
 ; that share the name. A separate `@ref.import` pattern could never express it,
 ; because captures are only grouped by match.
 (import_statement
-  (import_clause (named_imports (import_specifier name: (identifier) @ref.import)))
+  (import_clause
+    (named_imports
+      (import_specifier
+        name: (identifier) @ref.import
+        alias: (identifier) @import.local)))
   source: (string) @import.module)
 (import_statement
-  (import_clause (named_imports (import_specifier alias: (identifier) @import.local)))
+  (import_clause
+    (named_imports
+      (import_specifier
+        name: (identifier) @ref.import
+        !alias)))
   source: (string) @import.module)
 (import_statement
   (import_clause (namespace_import (identifier) @ref.import))
@@ -50,7 +58,10 @@
   (import_clause (identifier) @ref.import)
   source: (string) @import.module)
 ; `import "./side-effect"` and re-exports bind no local name but still tell us
-; the file depends on that module.
+; the file depends on that module. The import pattern also matches binding
+; imports; the graph de-duplicates file pairs and the empty binding is ignored
+; by name resolution.
+(import_statement source: (string) @import.module)
 (export_statement source: (string) @import.module)
 
 ; Assignment TARGETS. A write from outside is a different — and much more

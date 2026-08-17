@@ -58,9 +58,8 @@ pub async fn aurora_issues_read() -> Result<IssueReport, String> {
     let path = crate::tools::diagnostics::issues_path();
     let exists = path.is_file();
     let content = if exists {
-        std::fs::read_to_string(&path).map_err(|err| {
-            format!("could not read {}: {err}", path.display())
-        })?
+        std::fs::read_to_string(&path)
+            .map_err(|err| format!("could not read {}: {err}", path.display()))?
     } else {
         String::new()
     };

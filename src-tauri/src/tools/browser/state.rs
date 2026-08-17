@@ -35,14 +35,48 @@ use super::AGENT_BROWSER_LABEL;
 /// Kept to one round trip on purpose — a status call that costs four evals is a
 /// status call the agent learns to avoid, and then we are back to guessing.
 const SNAPSHOT_EXPR: &str = r#"(() => {
-  const logs = (window.__aurora && typeof window.__aurora.getLogs === 'function')
-    ? window.__aurora.getLogs(null, null) : [];
+  const aurora = window.__aurora;
+  const logs = (aurora && typeof aurora.getLogs === 'function')
+    ? aurora.getLogs(null, null) : [];
   let errors = 0, warnings = 0, lastError = null;
   for (const entry of logs) {
-    if (entry.level === 'error') { errors++; lastError = entry.text; }
+    if (entry.level === 'error') { errors++; lastError = entry.message || null; }
     else if (entry.level === 'warn') warnings++;
   }
   const scroller = document.scrollingElement || document.documentElement;
+
+  // ---- What the page is SHOWING -------------------------------------
+  // Rendered text, not markup: innerText already respects CSS, so a panel
+  // that opened counts and a display:none branch does not.
+  let text = '';
+  try { text = document.body ? document.body.innerText : ''; } catch (e) {}
+  // Cost-bounded on purpose: a 5MB page samples the same ~4096 characters a
+  // 4KB page reads in full, so this stays cheap on the pages that need it
+  // most. Length is compared separately and exactly, which is what catches
+  // the small edits sampling could step over.
+  const length = text.length;
+  let hash = 0;
+  if (length) {
+    hash = 0x811c9dc5;
+    const step = length > 4096 ? Math.ceil(length / 4096) : 1;
+    for (let i = 0; i < length; i += step) {
+      hash ^= text.charCodeAt(i);
+      hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+    }
+  }
+  let elements = 0;
+  try { elements = document.getElementsByTagName('*').length; } catch (e) {}
+  const active = document.activeElement;
+  let focus = null;
+  try {
+    if (active && active !== document.body && active.tagName) {
+      const label = active.getAttribute ? active.getAttribute('aria-label') : null;
+      focus = active.tagName.toLowerCase()
+        + (active.id ? '#' + active.id : '')
+        + (label ? '[' + label.slice(0, 40) + ']' : '');
+    }
+  } catch (e) {}
+
   return {
     url: location.href,
     title: document.title || null,
@@ -55,6 +89,13 @@ const SNAPSHOT_EXPR: &str = r#"(() => {
     page_height: scroller ? scroller.scrollHeight : null,
     scroll_y: window.scrollY,
     console: { errors, warnings, last_error: lastError },
+    content: {
+      text_length: length,
+      text_hash: hash,
+      elements: elements,
+      focus: focus,
+      mutations: (aurora && aurora.__mutations) ? aurora.__mutations.count : null,
+    },
   };
 })()"#;
 
@@ -141,7 +182,10 @@ pub async fn snapshot(manager: &BrowserManager) -> Value {
     // page that hung. Fall back to what the RUST side knows rather than
     // failing the whole call: a partial answer beats none, and claiming the
     // panel is shut when it is open would be the worst of the three.
-    match manager.eval_with_result(AGENT_BROWSER_LABEL, SNAPSHOT_EXPR).await {
+    match manager
+        .eval_with_result(AGENT_BROWSER_LABEL, SNAPSHOT_EXPR)
+        .await
+    {
         Ok(result) if result.ok => {
             let mut value = result.value.unwrap_or(Value::Null);
             if let Some(object) = value.as_object_mut() {
@@ -156,7 +200,9 @@ pub async fn snapshot(manager: &BrowserManager) -> Value {
         }
         Ok(result) => fallback(
             manager,
-            &result.error.unwrap_or_else(|| "the page did not respond".into()),
+            &result
+                .error
+                .unwrap_or_else(|| "the page did not respond".into()),
         ),
         Err(error) => fallback(manager, &error),
     }
@@ -169,6 +215,19 @@ fn fallback(manager: &BrowserManager, why: &str) -> Value {
         "ready_state": "unknown",
         "note": format!("Panel is open but the page could not be read ({why}). It may still be loading."),
     })
+}
+
+/// The same snapshot with the comparison basis stripped out.
+///
+/// `content` exists so [`change_between`] can tell a page that reacted from one
+/// that did not. A text hash and an element count mean nothing to the model
+/// reading the result, and spending context on them would buy it nothing — so
+/// every snapshot that goes back as an ANSWER goes through here first.
+pub fn presentable(mut snapshot: Value) -> Value {
+    if let Some(object) = snapshot.as_object_mut() {
+        object.remove("content");
+    }
+    snapshot
 }
 
 /// What changed between two snapshots taken around an action.
@@ -236,10 +295,98 @@ pub fn change_between(before: &Value, after: &Value) -> Value {
         }
     }
 
+    // ---- What the page is showing -------------------------------------
+    //
+    // Everything above is URL, chrome and geometry, and a page can change
+    // completely without moving any of it. The reported miss: a click swapped a
+    // label to "Dark detected", mounted an overlay, flipped a button's pressed
+    // state and appended a status line — same URL, same title, same height —
+    // and the action answered `nothing_observable_changed`. The model was told
+    // its click was dead while holding a view that showed otherwise.
+    //
+    // Compared only when BOTH snapshots carry a content block: a read that fell
+    // back to the Rust-side view has none, and scoring "we could not read the
+    // page" as "the page changed" would make every mid-navigation action lie in
+    // the other direction.
+    fn content(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+        value.get("content").and_then(Value::as_object)
+    }
+    let mut mutations = 0i64;
+    if let (Some(before), Some(after)) = (content(before), content(after)) {
+        let at = |map: &serde_json::Map<String, Value>, key: &str| {
+            map.get(key).cloned().unwrap_or(Value::Null)
+        };
+        let number = |map: &serde_json::Map<String, Value>, key: &str| {
+            map.get(key).and_then(Value::as_i64).unwrap_or(0)
+        };
+
+        // Length is exact; the hash catches same-length edits the length
+        // cannot see ("Light detected" -> "Dark detected!" is 14 either way).
+        let (length_before, length_after) = (number(before, "text_length"), number(after, "text_length"));
+        if length_before != length_after || at(before, "text_hash") != at(after, "text_hash") {
+            change.insert("text_changed".into(), json!(true));
+            if length_before != length_after {
+                change.insert(
+                    "text_length_delta".into(),
+                    json!(length_after - length_before),
+                );
+            }
+        }
+
+        // An overlay, a menu or a toast that mounted — the halo case, which no
+        // amount of height-watching catches because it is out of flow.
+        let (elements_before, elements_after) = (number(before, "elements"), number(after, "elements"));
+        match elements_after.cmp(&elements_before) {
+            std::cmp::Ordering::Greater => {
+                change.insert(
+                    "elements_added".into(),
+                    json!(elements_after - elements_before),
+                );
+            }
+            std::cmp::Ordering::Less => {
+                change.insert(
+                    "elements_removed".into(),
+                    json!(elements_before - elements_after),
+                );
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+
+        // Clicking a control focuses it. Cheap, exact, and on its own enough to
+        // prove the click landed on something real.
+        let (focus_before, focus_after) = (at(before, "focus"), at(after, "focus"));
+        if focus_before != focus_after {
+            change.insert("focus_moved_to".into(), focus_after);
+        }
+
+        mutations = number(after, "mutations").saturating_sub(number(before, "mutations"));
+    }
+
     if change.is_empty() {
         // Said plainly, because "nothing happened" is a RESULT. Silence here
         // reads as success and sends the agent looking for an effect that was
         // never produced.
+        //
+        // The mutation count is the tie-breaker, and it is deliberately not
+        // enough on its own to count as a change: React re-renders, CSS
+        // animations and style ticks touch the DOM constantly, so promoting
+        // any mutation to "something changed" would retire the one signal this
+        // function exists to give. Reported alongside instead, because "the DOM
+        // was touched but nothing it renders differs" is exactly the shape of
+        // an attribute or class toggle, and the model should go look rather
+        // than conclude its click was dead.
+        if mutations > 0 {
+            return json!({
+                "nothing_observable_changed": true,
+                "dom_mutations": mutations,
+                "note": format!(
+                    "The DOM was touched {mutations} times, but the rendered text, element count, \
+                     focus and layout are all unchanged. That is what an attribute, class or style \
+                     toggle looks like — check the element itself before concluding the action did \
+                     nothing."
+                ),
+            });
+        }
         return json!({ "nothing_observable_changed": true });
     }
     Value::Object(change)
@@ -284,7 +431,7 @@ Read-only and cheap. It never opens the panel, never navigates, and never clears
 
     async fn execute(&self, _input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        Ok(snapshot(&self.manager).await.to_string())
+        Ok(presentable(snapshot(&self.manager).await).to_string())
     }
 }
 
@@ -307,7 +454,28 @@ mod tests {
         // before the init script ran all have no `window.__aurora`. The
         // expression must degrade to zero counts rather than throw, or status
         // fails exactly when the agent most needs it.
-        assert!(SNAPSHOT_EXPR.contains("window.__aurora && typeof"));
+        assert!(SNAPSHOT_EXPR.contains("(aurora && typeof aurora.getLogs === 'function')"));
+        // Same for the mutation counter, which only exists on pages our init
+        // script reached.
+        assert!(SNAPSHOT_EXPR.contains("(aurora && aurora.__mutations)"));
+    }
+
+    #[test]
+    fn the_last_error_reads_the_field_the_page_actually_writes() {
+        // `record()` in the init script pushes `{ ts, level, message }`. This
+        // read asked for `entry.text` for as long as it existed, so every
+        // `last_error` in every status and every action result was null while
+        // the count next to it said errors had happened.
+        assert!(SNAPSHOT_EXPR.contains("entry.message"));
+        assert!(!SNAPSHOT_EXPR.contains("entry.text"));
+    }
+
+    #[test]
+    fn reading_the_page_text_is_bounded_on_huge_pages() {
+        // Two snapshots ride on every action. An unbounded scan of a multi-MB
+        // page would put that cost on every click, which is how a correctness
+        // fix turns into a performance complaint.
+        assert!(SNAPSHOT_EXPR.contains("length > 4096 ? Math.ceil(length / 4096) : 1"));
     }
 
     fn snap(url: &str, errors: u64, scroll: f64, height: f64) -> Value {
@@ -332,8 +500,14 @@ mod tests {
             &snap("http://localhost:5173/", 0, 0.0, 900.0),
             &snap("http://localhost:5173/settings", 0, 0.0, 900.0),
         );
-        assert_eq!(change.get("navigated_to"), Some(&json!("http://localhost:5173/settings")));
-        assert_eq!(change.get("navigated_from"), Some(&json!("http://localhost:5173/")));
+        assert_eq!(
+            change.get("navigated_to"),
+            Some(&json!("http://localhost:5173/settings"))
+        );
+        assert_eq!(
+            change.get("navigated_from"),
+            Some(&json!("http://localhost:5173/"))
+        );
     }
 
     #[test]
@@ -377,12 +551,20 @@ mod tests {
         clear_emulation();
         assert!(emulation_block().is_null());
 
-        set_emulation(Emulation { width: 390.0, height: 844.0, scale: 2.0, mobile: true });
+        set_emulation(Emulation {
+            width: 390.0,
+            height: 844.0,
+            scale: 2.0,
+            mobile: true,
+        });
         let block = emulation_block();
         assert_eq!(block.get("width"), Some(&json!(390.0)));
         let warning = block.get("warning").and_then(Value::as_str).unwrap();
         assert!(warning.contains("390"), "names the emulated width");
-        assert!(warning.contains("EMULATED"), "says the size is not the real one");
+        assert!(
+            warning.contains("EMULATED"),
+            "says the size is not the real one"
+        );
         assert!(warning.contains("reset"), "says how to get out of it");
         clear_emulation();
     }
@@ -391,10 +573,139 @@ mod tests {
     fn resetting_the_viewport_stops_the_warning() {
         // A stale warning is its own lie: it would have the model discount real
         // empty space on a page that is no longer emulated at all.
-        set_emulation(Emulation { width: 390.0, height: 844.0, scale: 1.0, mobile: true });
+        set_emulation(Emulation {
+            width: 390.0,
+            height: 844.0,
+            scale: 1.0,
+            mobile: true,
+        });
         clear_emulation();
         assert!(emulation().is_none());
         assert!(emulation_block().is_null());
+    }
+
+    /// A snapshot with a content block: text fingerprint, element count, what
+    /// is focused, and how many times the DOM was touched.
+    fn showing(text: &str, elements: i64, focus: Value, mutations: i64) -> Value {
+        // The JS hashes; here any stable function of the text will do, since
+        // what is under test is the COMPARISON, not the digest.
+        let hash: u32 = text
+            .chars()
+            .fold(0x811c_9dc5u32, |h, c| h.rotate_left(5) ^ (c as u32));
+        json!({
+            "open": true, "url": "http://x/", "title": "t", "scroll_y": 0.0,
+            "page_height": 900.0,
+            "console": { "errors": 0, "warnings": 0, "last_error": null },
+            "content": {
+                "text_length": text.len(), "text_hash": hash,
+                "elements": elements, "focus": focus, "mutations": mutations
+            }
+        })
+    }
+
+    #[test]
+    fn a_click_that_only_changed_what_the_page_shows_is_not_reported_as_dead() {
+        // The reported miss, verbatim: `browser_click` on a theme toggle swapped
+        // a label to "Dark detected", mounted a halo, flipped the button's
+        // pressed state and appended a status line. Same URL, same title, same
+        // height, no console output — and the result said
+        // `nothing_observable_changed`, contradicting the view returned beside
+        // it. The model was told its click was dead while looking at the proof
+        // that it was not.
+        let change = change_between(
+            &showing("Light detected", 120, Value::Null, 0),
+            &showing("Dark detected  Theme applied", 122, json!("button#on-btn"), 9),
+        );
+        assert_eq!(change.get("text_changed"), Some(&json!(true)));
+        assert_eq!(change.get("elements_added"), Some(&json!(2)));
+        assert_eq!(change.get("focus_moved_to"), Some(&json!("button#on-btn")));
+        assert!(
+            change.get("nothing_observable_changed").is_none(),
+            "a page that changed must never claim it did not: {change}"
+        );
+    }
+
+    #[test]
+    fn a_same_length_edit_is_caught_by_the_fingerprint() {
+        // Length alone would call these identical. Both labels are 14
+        // characters, and a swap between them is exactly the kind of toggle
+        // these tools are pointed at.
+        let change = change_between(
+            &showing("Light detected", 120, Value::Null, 1),
+            &showing("Ready detected", 120, Value::Null, 2),
+        );
+        assert_eq!(change.get("text_changed"), Some(&json!(true)));
+        assert!(change.get("text_length_delta").is_none(), "same length");
+    }
+
+    #[test]
+    fn an_overlay_that_mounted_out_of_flow_still_counts() {
+        // A fixed-position halo or toast adds no page height at all, so the
+        // geometry checks above see nothing. The element count is what catches
+        // it.
+        let change = change_between(
+            &showing("same text", 120, Value::Null, 0),
+            &showing("same text", 137, Value::Null, 40),
+        );
+        assert_eq!(change.get("elements_added"), Some(&json!(17)));
+        assert!(change.get("nothing_observable_changed").is_none());
+    }
+
+    #[test]
+    fn a_dom_touch_with_no_visible_result_is_reported_but_not_promoted() {
+        // React re-renders and CSS animations touch the DOM constantly. If any
+        // mutation counted as a change, "nothing happened" would never fire
+        // again and this whole function would stop being worth reading. So it
+        // rides along instead — enough to send the model to look at the
+        // element, not enough to claim an effect.
+        let change = change_between(
+            &showing("same", 100, Value::Null, 4),
+            &showing("same", 100, Value::Null, 16),
+        );
+        assert_eq!(change.get("nothing_observable_changed"), Some(&json!(true)));
+        assert_eq!(change.get("dom_mutations"), Some(&json!(12)));
+        let note = change.get("note").and_then(Value::as_str).unwrap();
+        assert!(note.contains("attribute"), "names the likely cause: {note}");
+    }
+
+    #[test]
+    fn a_page_that_could_not_be_read_is_not_scored_as_a_change() {
+        // `fallback()` returns no content block. Comparing it against a real
+        // snapshot must not invent a change out of "we could not look" — that
+        // would make every action taken mid-navigation lie in the opposite
+        // direction to the bug this fixes.
+        let unreadable = json!({ "open": true, "url": "http://x/", "ready_state": "unknown" });
+        let readable = showing("hello", 120, Value::Null, 3);
+
+        for (before, after) in [(&unreadable, &readable), (&readable, &unreadable)] {
+            let change = change_between(before, after);
+            for invented in ["text_changed", "elements_added", "elements_removed", "focus_moved_to"]
+            {
+                assert!(
+                    change.get(invented).is_none(),
+                    "{invented} reported from a page that was never read: {change}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_identical_page_still_says_nothing_changed() {
+        // The signal this function exists to give, now that there are four more
+        // ways to trip it. A content block that matches must stay silent.
+        let state = showing("steady", 210, json!("input#q"), 77);
+        let change = change_between(&state, &state);
+        assert_eq!(change.get("nothing_observable_changed"), Some(&json!(true)));
+        assert!(change.get("dom_mutations").is_none(), "no new mutations");
+    }
+
+    #[test]
+    fn the_comparison_basis_never_reaches_the_model() {
+        // A text hash and an element count are meaningless to read and cost
+        // context to carry. They exist for `change_between` and stop there.
+        let stripped = presentable(showing("hello", 12, Value::Null, 0));
+        assert!(stripped.get("content").is_none());
+        assert_eq!(stripped.get("url"), Some(&json!("http://x/")));
     }
 
     #[test]

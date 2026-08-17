@@ -125,7 +125,27 @@ single-instance = "0.3"
 winreg = "0.55"
 # `Win32_Globalization` supplies MultiByteToWideChar, used to decode console
 # output that PowerShell / cmd emit in the OEM code page rather than UTF-8.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# `Win32_System_Diagnostics_Debug` + `Win32_System_Threading` are the fatal-crash
+# reporter in `crash.rs`: a vectored exception handler plus the stack guarantee
+# that lets it run when the crash IS an exhausted stack. The FileSystem/Time
+# groups are its allocation-free writer (a handle opened at install, raw
+# `WriteFile`, no `format!`).
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    # `EXCEPTION_POINTERS`, `PVECTORED_EXCEPTION_HANDLER` and
+    # `AddVectoredExceptionHandler` are all gated on this one, not on
+    # `Diagnostics_Debug` as their documentation placement suggests.
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+] }
 # Higher-level COM-friendly bindings used by the WebView2-native screenshot
 # path in `services::browser_native_capture::windows`. The version is pinned
 # to whatever `webview2-com` itself depends on so we share one copy of the
@@ -227,4 +247,12 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+# Line tables, kept. `strip = true` was why the 2026-08-17 stack overflow could
+# not be diagnosed: the pdb held 6,685 public symbols and no line coverage for
+# the crate's own code, so every frame in `aurora-crash.log` resolved to a
+# WebView2 trace-logging annotation 400 KB away. On MSVC the debug info lives in
+# the .pdb, not the .exe, so this costs binary size nothing — it only makes the
+# pdb bigger and the crash reports readable. Keep the pdb for any build whose
+# crash logs you may need to read.
+strip = false
+debug = "line-tables-only"

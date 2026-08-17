@@ -1,43 +1,44 @@
 # Documentation Index
 
-Aurora technical documentation for the current Rust-provider-kernel architecture.
+Aurora technical documentation. **Validated against the working tree: 2026-08-17** (branch `split-css`).
 
-**Last updated:** 2026-03-30
-**Last validated:** 2026-03-30  
-**Current branch baseline:** `codex/aurora-provider-kernel`
+The most current knowledge in this repo is not here — it is `.knowledge/knowledge.md`
+(working memory) and `.knowledge/lesson.md` (lessons learned), both appended continuously.
+When a doc below disagrees with them, they win.
 
-**Last validation result:** ✅ Fully in sync — no mismatches found, no changes made
+## Core guides
 
-## Files
+| Doc | Purpose |
+|-----|---------|
+| [GETTING-STARTED.md](./GETTING-STARTED.md) | Setup, run, first provider, local models, troubleshooting |
+| [01-ARCHITECTURE.md](./01-ARCHITECTURE.md) | System overview, directory map, agent path, provider paths, data locations |
+| [02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md) | Module boundaries, store/CSS/command/tool conventions, testing |
+| [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md) | Adding tools, commands, providers, settings, theme tokens |
+| [04-PROVIDER-KERNEL.md](./04-PROVIDER-KERNEL.md) | Provider adapters, catalog, reasoning accounting, retries |
+| [05-ICON-PACKS.md](./05-ICON-PACKS.md) | Explorer icon packs and the `.aurora` bundle format |
+| [06-SPEECH-INPUT.md](./06-SPEECH-INPUT.md) | Local Qwen3-ASR speech input, CUDA builds, CrispASR compat |
+| [theme-dev.md](./theme-dev.md) | IDE theme token contract (`--aurora-*`) |
 
-- [01-ARCHITECTURE.md](./01-ARCHITECTURE.md)  
-  Current system overview, module map, provider kernel placement, runtime flow.
+## Design records and future plans
 
-- [02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md)  
-  Implementation patterns for modular files, Tauri boundaries, stores, and provider work.
+| Doc | Status |
+|-----|--------|
+| [code-index-handoff.md](./code-index-handoff.md) | Shipped (cache format v6) — design + verification recipe for the tree-sitter index |
+| [agent-plan-canvas.md](./agent-plan-canvas.md) | Shipped — Plan Canvas + todo unification design |
+| [agent-window-lsp-plan.md](./agent-window-lsp-plan.md) | Partially superseded — Phase 0 shipped as shell-checker `read_lints`; headless LSP remains open |
+| [desktop-control-plan.md](./desktop-control-plan.md) | Agreed, deliberately not built — resume here if taken up |
 
-- [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md)  
-  How to add features, Tauri command domains, tools, and new providers in the Rust-first architecture.
+## Visual studies
 
-- [04-PROVIDER-KERNEL.md](./04-PROVIDER-KERNEL.md)  
-  Current provider-kernel design and implementation status.
+Dated measurement records of competitor/own UIs (2026-08-09), kept for design reference:
+[visual-studies/](./visual-studies/) — `VISUAL-STUDY-02-ANTIGRAVITY.md`,
+`VISUAL-STUDY-03-AURORA.md` (Study 01 no longer exists), plus captured frames for
+antigravity, aurora, and minimax-code.
 
-- [GETTING-STARTED.md](./GETTING-STARTED.md)  
-  Setup, run, local model notes, and first-provider guidance.
+## House rules for this folder
 
-## Current Reality Check
-
-These docs are aligned to the current implementation where:
-
-- provider execution is Rust-owned
-- provider presets are loaded from Rust catalog data
-- local provider detection is Rust-owned
-- frontend provider code is a thin bridge
-
-## Verification Reference
-
-At the time of this doc refresh:
-
-- `pnpm test` passes
-- `pnpm build` passes
-
+- Replace stale sections; never layer patches over an obsolete mental model.
+- Every path a doc mentions must exist — validate after moves.
+- Point-in-time plans carry a **Status** header; update it when reality diverges, or delete
+  the doc when its subject is finished and absorbed elsewhere.
+- No real project, package, or customer names — neutral fixture names only.

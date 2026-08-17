@@ -1,0 +1,400 @@
+All three failures were my issue, not Aurora’s. I passed the entire payload as a JSON **string** instead of an argument object like `{ path, content }`; Aurora correctly rejected it. My earlier Aurora fault report was incorrect and should be disregarded.
+
+No analysis file was written. The intended content was:
+
+```markdown
+C:\Users\Alvan\Documents\deepseek-harness-master\deepseek-harness-master
+
+# DeepSeek Harness (`dsh`) analysis
+
+## 1. What dsh is and what it is for
+
+DeepSeek Harness is a TypeScript runtime for model-driven agents. It accepts user input, derives a model request from a durable session plus the composed prompt and tool set, streams a model response, runs requested tools, logs the results, and repeats until no work is owed. The model adapter, session store, prompt assembly, tool registry, loop, compaction, subagents, hooks, and UI-facing projections are replaceable services or consumers rather than one hard-coded core.
+
+Evidence: `docs/architecture.md` — “Core packages”, “Turn flow”, and “Where new behavior goes”; `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::turn`, `ReactLoopAgent::step`; `packages/core/session/src/index.ts` — `Session::deriveMessages`.
+
+The practical use is to assemble coding or automation agents from a `cordis.yml` composition, select a model provider, give the agent a controlled capability set, preserve history for resume, and intercept lifecycle points without editing the loop. It is not only a chat client or an LLM wrapper; its central product is the replaceable runtime around a model call.
+
+Evidence: `README.md` — “DeepSeek Harness”; `packages/README.md` — package hierarchy; `packages/core/agent/src/index.ts` — `CreateAgentOptions::setup`, `AgentFactory`.
+
+The repository is in developer preview. `AGENTS.md` explicitly prefers changing the foundation over preserving compatibility, and `SESSION_FORMAT_VERSION` is `0` with no compatibility promise.
+
+Evidence: `README.md` — “Developer preview”; `AGENTS.md` — “Pre-release stance”; `packages/core/session/src/types.ts` — `SESSION_FORMAT_VERSION`.
+
+## 2. The plugin model
+
+### Cordis and plugins
+
+Cordis is the vendored service/plugin framework underneath dsh. A plugin is either a function with an `apply(ctx)` entry point, optionally an `inject` declaration, or a `Service` subclass mounted into a context. The context is a service repository: plugins publish stable keys such as `ctx.llm`, `ctx.sessions`, `ctx.tools`, `ctx.agents`, and `ctx.systemPrompt`; consumers depend on the key instead of a concrete provider. `inject` expresses service dependencies and lets activation wait for those services.
+
+Evidence: `docs/cordis-primer.md` — “Cordis In Five Ideas”; `docs/architecture.md` — “Core packages”; `packages/llm/llm/src/index.ts` — `LlmRuntime`; `packages/core/agent/src/index.ts` — `Context::agents`.
+
+Events are the communication and interception mechanism. `ctx.on()` installs a listener for an event whose declared mode is `emit`, `waterfall`, `parallel`, or `serial`. Waterfall listeners receive `next()`: calling it delegates to the rest of the chain; returning without it short-circuits.
+
+Evidence: `docs/cordis-primer.md` — “Dispatch Modes”, “Cordis Waterfall Semantics”; `packages/core/tools/src/index.ts` — `Events::'tools/pre-execute'`, `Events::'tools/execute'`, `Events::'tools/post-execute'`.
+
+`ctx.effect()` makes a registration reversible and owned by the current Cordis fiber. It installs an action and retains the disposer returned by the action; fiber unload runs that disposer. Prompt sections, tools, adapters, providers, and many listeners therefore unwind with their owner.
+
+Evidence: `docs/cordis-primer.md` — “Registrations are reversible effects”; `packages/core/scope/src/store.ts` — `ScopedLayers::effect`; `packages/core/tools/src/index.ts` — `ToolRuntime::register`; `packages/llm/llm/src/index.ts` — `LlmRuntime::registerAdapter`.
+
+Scope controls visibility. Global registrations are visible to every agent. Registrations through `agent.ctx` belong to that agent scope; scoped layers shadow globals, and restrictions filter inherited global tools. The glossary defines scope as two-level and flat; subagent lineage is data, not accidental visibility inheritance.
+
+Evidence: `docs/glossary.md` — `agent-scope`, `shadowing`, `restriction / scope-local registration`; `packages/core/tools/src/index.ts` — `ToolRuntime::view`, `ToolRuntime::restrict`; `packages/core/system-prompt/src/index.ts` — `SystemPrompt::assemble`.
+
+### `cordis.yml` composition
+
+A `cordis.yml` is a list of rows containing an id, module name, optional configuration, and sometimes a `disabled` expression. The loader activates rows as service dependencies become available. Profiles and bundles layer rows; later patches address a row by id and replace its configuration. `!!js` is evaluated only in supported configuration positions.
+
+Evidence: `docs/architecture.md` — “Profiles and bundles”; `docs/cordis-primer.md` — “Loader Configuration”; `packages/bundle/base/cordis.patch.yml` — patch semantics.
+
+`examples/headless-agent/cordis.yml` is concrete: it mounts settings, credentials, a DeepSeek adapter, subprocess and Bash services, an agent spine, JSONL persistence, checkpointing, token metering, compaction, session projections, subagent providers, delegation tools, workflow, Ralph, todo, filesystem policy, and filesystem tools. The `agent-spine` row creates `main` with provider, model, cwd, workspace context, and persona.
+
+Evidence: `examples/headless-agent/cordis.yml` — rows `llm-deepseek`, `agent-spine`, `persistence`, `compaction-basic`, `subagent`, `tool-subagent`, and `tool-fs`.
+
+Real repository code copied from `packages/preset/persona/src/index.ts` — `apply`:
+
+```ts
+export function apply(ctx: Context, config: Config): void {
+  ctx.effect(() => ctx.systemPrompt.section({
+    name: PERSONA_SECTION,
+    order: PERSONA_ORDER,
+    text: config.text,
+    ...(config.complete ? { complete: true } : {}),
+  }), 'persona.section()')
+  if (!(config.includeRuntimeContext ?? true)) ctx.systemPrompt.suppressRuntimeContext()
+}
+```
+
+The repeat guard demonstrates event composition instead of direct service registration. `packages/guard/repeat-tool-reminder/src/index.ts` — `apply` installs `tools/post-execute`, calls `next()`, then adds a reminder to accepted or blocked results; its `agent/pre-step` listener clears the repeat chain when a direct user message appears.
+
+## 3. The agent loop: one user message end to end
+
+1. A caller reaches `ReactLoopAgent::send`, `followup`, `steer`, or `inject`. Those methods put user messages into `Inbox`; `kick` wakes the driver. The inbox is the only queue.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::send`, `followup`, `steer`, `inject`, `kick`; `packages/core/agent/src/inbox.ts` — `Inbox`.
+
+2. `ReactLoopAgent::turn` increments the turn and appends `turn/start`. It calls `preStep`, which claims the next-turn or next-step batch, calls `SystemPrompt::assemble`, renders context, projects dynamic runtime context, and runs the `agent/pre-step` waterfall. `reject` closes the turn without a model call; `enter(messages)` is authoritative.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::turn`, `preStep`; `packages/core/system-prompt/src/index.ts` — `SystemPrompt::assemble`; `packages/core/agent-loop/src/runtime-context.ts` — `RuntimeContextProjection::project`.
+
+3. An entered step appends `step/start` and one `user/message` for each entered message. Then `ReactLoopAgent::step` starts.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::turn`; `packages/core/session/src/index.ts` — `Session::append`; `packages/core/session/src/types.ts` — `SessionEventMap::'user/message'`.
+
+4. `step` calls `buildRequest`. `buildRequest` starts from the persisted request header when present, runs the `agent/request` waterfall, calls `LlmRuntime::prepareCall`, and appends a `request/header` snapshot containing effective call config, system prompt, and tool schemas.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::buildRequest`; `packages/llm/llm/src/index.ts` — `LlmRuntime::prepareCall`; `packages/core/session/src/types.ts` — `EpochHeader`, `SessionEventMap::'request/header'`.
+
+5. The model call occurs in `step` through `preparedCall.stream(request)` or `ctx.llm.stream(request)`. `LlmRuntime::streamWithRegistration` applies `llm/stream` and delegates to `adapterStream`. `adapterStream` selects the adapter, constructs and iterates its async stream, and maps adapter failures to terminal finish chunks while leaving consumer failures thrown.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::step`; `packages/llm/llm/src/index.ts` — `LlmRuntime::streamWithRegistration`, `adapterStream`.
+
+6. Each chunk is appended as `assistant/chunk`; `BlockAssembler::push` reconstructs the response. A successful finish appends `assistant/message` with blocks, usage, provenance, and chunk `sourceEventSeqs`. Empty assistant content is retained for usage/replay but omitted from derived history.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::step`; `packages/core/session/src/types.ts` — `SessionEventMap::'assistant/chunk'`, `'assistant/message'`; `packages/core/session/src/surface.ts` — `deriveEventMessage`.
+
+7. An error or abort finish runs `agent/request-error`. A listener may return `{ kind: 'retry' }`; otherwise `step` throws `LlmError` and `turn` records an error in `turn/end`. `BasicCompactionEngine` uses this point for context-window overflow: it compacts, proves surface progress, increments its retry count, and returns retry.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::step`, `turn`; `packages/compaction/compaction-basic/src/index.ts` — `_registerAutomaticCompaction`, `compactIfNeeded`; `packages/llm/llm/src/retry-policy.ts` — `resolveRetryPolicy`.
+
+8. If there are no tool-call blocks, `step` returns completed. Otherwise `executeToolCalls` parses calls, classifies them through `ToolRuntime::executionMode`, runs exclusive barriers or a bounded parallel pool, and commits results in model order. It appends `tool/call` before execution and `tool/result` after settlement; additional contexts enter the next-step inbox.
+
+   Evidence: `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::step`; `packages/core/agent-loop/src/tool-calls.ts` — `executeToolCalls`, `runGroup`, `commitReady`, `appendToolCall`, `appendToolResult`.
+
+9. A successful tool can set `concludesTurn`; otherwise a tool batch creates another model step. `turn` appends `step/end`, runs serial `agent/turn-stopping` only when no next-step input exists, claims pending next-step messages, and eventually appends `turn/end`. `kick` contains failures, resets idle state, and wakes again if work arrived during teardown.
+
+   Evidence: `packages/core/tools/src/index.ts` — `ToolExecutionSuccess::concludesTurn`, `ToolRuntime::finishScheduledExecution`; `packages/core/agent-loop/src/agent.ts` — `ReactLoopAgent::turn`, `kick`.
+
+Errors are layered: adapter failures become finish chunks; `agent/request-error` decides model retries; tool and policy failures become model-visible error results; cancellation distinguishes before-dispatch from after-body invocation; and `AgentLoop::prepare` installs a disposer that aborts, drains, unregisters, and unwinds scopes.
+
+Evidence: `packages/llm/llm/src/index.ts` — `adapterFailureChunk`, `adapterStream`; `packages/core/tools/src/index.ts` — `prepareExecution`, `dispatchToolBody`, `toolAbortedResult`, `toolAbortedBeforeDispatchResult`; `packages/core/agent-loop/src/index.ts` — `AgentLoop::prepare`.
+
+## 4. The tool system
+
+A tool definition contains name, description, parameter schema, output schema, `execute`, and optional timeout, concurrency, finalization, and presentation callbacks. `defineTool` converts typed specs to JSON Schema, validates arguments, validates successful values, and projects only `name`, `description`, and `parameters` to the model.
+
+Evidence: `packages/core/tools/src/schema.ts` — `DefineToolOptions`, `defineTool`; `packages/core/tools/src/index.ts` — `ToolDefinition`, `ToolOutputDefinition`, `ToolRuntime::schemaOf`.
+
+`ToolRuntime::register` validates the output contract, schema, timeout, and reserved `run_code` name, then effect-registers the definition in a global or scoped `ToolLayer`. `ToolRuntime::view` is the shared resolver for visibility, lookup, schema projection, and execution.
+
+Evidence: `packages/core/tools/src/index.ts` — `ToolRuntime::register`, `view`, `get`.
+
+At every assembly, `SystemPrompt::assemble` calls registered tool providers. `ToolRuntime::wireSchemas` builds the visible view, projects schemas, applies ordering, and optionally collapses the model-facing set to `run_code` for Code Mode. The complete effective header is logged.
+
+Evidence: `packages/core/system-prompt/src/index.ts` — `SystemPrompt::tools`, `assemble`, `PromptAssembly`; `packages/core/tools/src/index.ts` — `wireSchemas`, `modeFor`; `packages/core/session/src/types.ts` — `EpochHeader::tools`.
+
+The pipeline is:
+
+```text
+tools/pre-execute
+  -> approval
+  -> monotonic guards
+  -> tools/execute
+  -> tool body
+  -> tools/post-execute
+  -> final normalization
+  -> lossless materialization
+  -> tools/result
+  -> durable tool/result
+```
+
+Evidence: `docs/tool-execution-pipeline.md`; `packages/core/tools/src/index.ts` — `Events`, `prepareExecution`, `serviceAsk`, `postExecute`, `finishScheduledExecution`.
+
+Permission is composition, not a boolean on a definition. `ToolRuntime::restrict` filters inherited global tools, making a restricted tool absent from prompt and lookup. `ToolRuntime::guard` is monotonic: a guard may deny, but a later guard cannot re-allow. `serviceAsk` maps approval to allowed-once, rejected, cancelled, or unavailable.
+
+Evidence: `packages/core/tools/src/index.ts` — `restrict`, `guard`, `guardReason`, `serviceAsk`; `packages/interaction/user-approval/src/index.ts` — `ApprovalService::request`.
+
+Successful values are validated, rendered into model-facing `ContentBlock[]`, optionally projected into JSON presentation metadata, and frozen. `tool/result` stores the result message, error identity, and optional JSON `meta`; it does not store the private canonical value.
+
+Evidence: `packages/core/tools/src/index.ts` — `createSuccessResult`, `materializeFinalResult`; `packages/core/session/src/types.ts` — `SessionEventMap::'tool/result'`; `packages/core/agent-loop/src/tool-calls.ts` — `appendToolResult`.
+
+### UI render intent
+
+UI render intent is a pure, provider-neutral presentation request declared by the tool. `presentCall(args)` describes a pending card; `presentResult(args, result)` describes the completed card. Tagged call views include `generic`, `terminal`, and `diff`; result views also include `search`, `read`, and `web`. A capable UI maps the tag to a card; an incapable UI falls back to model-facing content.
+
+Evidence: `packages/core/tools/src/presentation.ts` — `ToolCallView`, `ToolResultView`, `TerminalCallView`, `DiffCallView`; `packages/core/tools/src/schema.ts` — `DefineToolOptions::presentCall`, `presentResult`.
+
+The intent is declared with the definition, not inferred from names. `presentationMeta` is snapshotted for top-level calls and persisted in `tool/result`, so replay can reconstruct structured cards.
+
+Evidence: `packages/core/tools/src/presentation.ts` — `FileDiff`, `ReadResultView`; `packages/core/tools/src/index.ts` — `ToolOutputDefinition::presentationMeta`, `createSuccessResult`; `packages/core/agent-loop/src/tool-calls.ts` — `appendToolResult`.
+
+## 5. Context and compaction
+
+History is an append-only event log plus a derived ordered surface, not a mutable `Message[]`. Only `user/message`, `assistant/message`, and `tool/result` may join the surface. `SurfaceManager` supports append or positional replacement. `Session::deriveMessages` folds surface nodes with `deriveEventMessage`, caches unseen nodes, and rebuilds after `replaceGeneration` changes.
+
+Evidence: `packages/core/session/src/types.ts` — `SurfaceEventType`, `SurfaceOp`; `packages/core/session/src/surface.ts` — `SessionSurface`, `deriveEventMessage`, `SurfaceManager`; `packages/core/session/src/index.ts` — `Session::deriveMessages`.
+
+Raw chunks preserve streaming fidelity; boundaries preserve lifecycle trace; usage stays with assistant messages; tool-result provenance links back to the tool call. The model sees the surface while UI and replay see the complete log.
+
+Evidence: `packages/core/session/src/types.ts` — `SessionEventMap`; `packages/core/agent-loop/src/agent.ts` — `step`; `packages/core/agent-loop/src/tool-calls.ts` — `appendToolCall`, `appendToolResult`.
+
+`BasicCompactionEngine::compactIfNeeded` runs before a step for pressure and from `agent/request-error` for context-window overflow. It measures the routed request, optionally prunes oversized tool results, selects a head-anchored range while retaining a priced tail, preserves tool-call/result pairing, and calls `compactRegion`.
+
+Evidence: `packages/compaction/compaction-basic/src/index.ts` — `_registerAutomaticCompaction`, `compactIfNeeded`; `packages/compaction/compaction-basic/src/region.ts` — `selectCompactableRange`.
+
+`compactSurfaceRegion` opens `compaction/start`, snapshots selection and prices, summarizes, checks surface stability, appends `compaction/summary`, appends one replacement `user/message` with `surfaceOp: { op: 'replace', ... }`, and closes with `compaction/end`. Old events remain as cited shadowed source.
+
+Evidence: `packages/compaction/compaction-basic/src/region.ts` — `compactSurfaceRegion`, `prepareCompaction`, `assertWholeSurfaceUnchanged`, `assertSelectedSpanStable`, `commitCompactionBody`; `packages/compaction/compaction/src/types.ts` — compaction event declarations.
+
+The default summarizer reuses the original system prompt, tool schemas, and selected messages as the prefix of a one-shot `ctx.llm.stream()` call, then adds a compaction instruction. It requires text-only output and a smaller framed summary.
+
+Evidence: `packages/compaction/compaction-basic/src/summarizer.ts` — `summarizeWithLlm`, `summaryText`, `frameSummary`; `packages/compaction/compaction-basic/src/region.ts` — `summarizeCompaction`.
+
+The provider decides trigger, retention, summarization, and retry policy; the token meter supplies pricing; the surface enforces structural legality; and the loop honors a retry decision.
+
+Evidence: `packages/compaction/compaction/src/index.ts` — `CompactionEngine`; `packages/compaction/compaction-basic/src/config.ts` — `resolveConfig`, `resolveCompactSpec`; `packages/core/agent-loop/src/agent.ts` — `step`.
+
+## 6. Sessions
+
+A `Session` has an append-only contiguous event log and a separate immutable `SessionHeader`. The header stores version, id, creation time, cwd, fork lineage, seed length, origin, delegation depth, and preset. The event log stores lifecycle, model, tool, request, plan, todo, compaction, hook, and extension events.
+
+Evidence: `packages/core/session/src/index.ts` — `Session::header`, `Session::append`; `packages/core/session/src/types.ts` — `SessionHeader`, `SessionEventMap`.
+
+`Session::append` snapshots and validates JSON data and surface metadata before changing the log, assigns `seq = log.length`, freezes the event, validates the transition, appends it, and notifies observers.
+
+Evidence: `packages/core/session/src/index.ts` — `Session::append`.
+
+The JSONL backend writes one artifact under a project/session directory. The first record is a `type: "session"` header line; event records follow as JSONL. `packChunks` can combine chunk runs into storage rows while readers decode them back into ordinary events. Physical encoding is plaintext `.jsonl` or independently framed `.jsonl.zstd`.
+
+Evidence: `packages/session/session-persistence-jsonl/src/format.ts` — `HeaderLine`, `toHeaderLine`, `eventLines`, `logSuffix`; `packages/session/session-persistence-jsonl/src/index.ts` — `encodeMaterialization`, `appendLines`.
+
+JSONL materialization is atomic on first append, fsynced, and never overwrites an existing id. Later appends are fsynced and rolled back to the prior size on failure. A torn final frame can be truncated and repaired with synthetic closers.
+
+Evidence: `packages/session/session-persistence-jsonl/src/index.ts` — `materialize`, `appendLines`, `commitRepair`; `packages/session/session-persistence-jsonl/src/format.ts` — `SessionLogScanner::finish`.
+
+SQLite stores metadata in `sessions` and event envelopes in `events`; appending a batch, lazy row creation, and revision update are one transaction. Crash repair deletes the torn tail and inserts synthetic closers in one transaction.
+
+Evidence: `packages/session/session-persistence-sqlite/src/index.ts` — `appendBatch`, `commitRepair`.
+
+### `SESSION_FORMAT_VERSION`
+
+`SESSION_FORMAT_VERSION` is the structural durable-format version, currently `0`. It is stamped into `SessionHeader.version`; persistence rejects any other version before interpretation. Ordinary vocabulary additions can use `ignorable: true`; structural changes to the header, envelope, core semantics, or surface mechanism require a bump.
+
+Evidence: `packages/core/session/src/types.ts` — `SESSION_FORMAT_VERSION`, `SessionHeader::version`, `SessionEvent::ignorable`; `packages/session/session-persistence/src/coordinator.ts` — `sessionFormatVersionRefusal`, `PersistenceCoordinator::assertVersion`.
+
+The refusal is directional: newer versions ask for an upgrade; older unsupported versions report no upgrade path. Unknown required event types are refused, while unknown ignorable events may be skipped.
+
+Evidence: `packages/session/session-persistence/src/coordinator.ts` — `sessionFormatVersionRefusal`, `PersistenceCoordinator::assertEventsSupported`.
+
+### “Model-visible implies logged”
+
+The rule means every input reaching a model request is reconstructable from the log. User messages, injected runtime context, skill catalogs, plan notices, and continuation messages are `user/message`; assistant output and tool results are surface events; request headers capture system text and tool schemas.
+
+Evidence: `AGENTS.md` — “Model-visible ⟺ logged”; `packages/core/agent-loop/src/runtime-context.ts` — `RuntimeContextProjection`; `packages/skill/tool-skill/src/index.ts` — `renderCatalogMessage`, `catalogHistory`; `packages/core/session/src/types.ts` — `EpochHeader`.
+
+The payoff is deterministic resume, fork boundaries, replayable UI, cited compaction, and a rule preventing new model-visible features from relying on transient memory.
+
+Evidence: `packages/core/session/src/index.ts` — `Session::fromRestore`, `deriveMessages`; `packages/compaction/compaction-basic/src/region.ts` — `commitCompactionBody`.
+
+## 7. Secondary mechanisms
+
+### Subagents
+
+Subagents are a provider registry, not a second hard-coded loop. `SubagentRuntime::registerProvider` effect-registers named providers; `start` checks capabilities, depth, schema, and policy. One-shot runs return provider-owned runs. Continuable children use `SubagentContinuationManager`: one durable session, at most one process-local `Activation`, many FIFO turns, and child-first disposal. `tool-subagent` chooses foreground, one-shot background, or continuable background and can return a durable child id immediately.
+
+Evidence: `packages/subagent/subagent/src/index.ts` — `registerProvider`, `start`, `startContinuable`; `packages/subagent/subagent/src/continuation.ts` — `Activation`, `ActivationState`; `packages/subagent/tool-subagent/src/index.ts` — `apply`, `resolveDelegationRun`.
+
+### Skills
+
+Skills are discoverable instruction resources. `SkillRegistry` composes runtime entries and providers in global/scoped layers, collects candidate summaries with completeness, resolves shadowing and priority, caches only complete stable observations, and loads the winning body on demand. `tool-skill` publishes a durable catalog through `agent/pre-step`, uses a digest to avoid duplicate catalog messages, and replaces the catalog when it changes.
+
+Evidence: `packages/skill/skill/src/index.ts` — `registerProvider`, `register`, `snapshot`, `get`; `packages/skill/tool-skill/src/index.ts` — `renderCatalogMessage`, `renderCatalogUpdate`, `catalogHistory`, `invokedSkillNames`.
+
+### Hooks
+
+The hook packages bridge Claude Code and Codex command protocols. `runHook` serializes JSON to stdin, runs through `ctx.shell` with timeout and cancellation, parses stdout/stderr, and converts infrastructure failure to a non-throwing outcome. `appendHookInvoked` and `appendHookResult` pair durable log-only records inside open turns. The bridges map prompt submit, pre-tool, post-tool, session start, and stop to dsh waterfalls or detached injected context.
+
+Evidence: `packages/hooks/hook-protocol/src/runner.ts` — `runHook`; `packages/hooks/hook-protocol/src/events.ts` — `appendHookInvoked`, `appendHookResult`; `packages/hooks/hooks-claude-code/src/index.ts` — `runPoint`; `packages/hooks/hooks-codex/src/index.ts` — `runPoint`.
+
+### Plan mode
+
+Plan mode is logged state, not a loop mode. `PlanModeController` declares `plan/mode`, folds the latest value, queues a selection during an open turn, commits it at the next accepted `agent/pre-step`, and renders `plan:policy` only while active. The `exit_plan_mode` tool validates a Markdown plan, asks the user for approval, and queues the inactive transition only after approval.
+
+Evidence: `packages/plan/plan-mode/src/index.ts` — `foldPlanMode`, `PlanModeController::set`, `onBoundary`, and the `exit_plan_mode` registration.
+
+### Self-modification
+
+There is no `packages/self-modification` directory in this checkout; the implementation is under `packages/extensions`. `tool-cordis` exposes `cordis_define`, `cordis_run`, `cordis_stop`, and `cordis_undefine`. `DynamicCordisRunnerService::define` stores immutable package versions under a session-owned dynamic plugin; `run` handles approval and host/client activation; `undefine` removes the plugin and active run. Host/client halves, approval state, inspection, version identities, and sandboxing are explicit.
+
+Evidence: `packages/extensions/tool-cordis/src/index.ts` — tool registrations; `packages/extensions/cordis-host-runner/src/index.ts` — `define`, `run`, `runHostHalf`, `getClientCode`, `undefine`; `packages/extensions/cordis-host-runner/src/sandbox.ts` — sandbox boundary.
+
+### Guard: loop hygiene and tool timeout
+
+The repeat guard canonicalizes arguments, tracks consecutive identical calls per agent, and adds reminders through `tools/post-execute`; it counts denied calls too. The timeout guard wraps `tools/execute`, arms a cooperative deadline from `timeoutMs`, swaps `exec.signal`, waits for body quiescence, and maps its own deadline to `TOOL_TIMEOUT` without abandoning the promise.
+
+Evidence: `packages/guard/repeat-tool-reminder/src/index.ts` — `apply`, `observe`, `canonicalize`; `packages/guard/timeout-policy/src/index.ts` — `apply`, `toolTimeoutResult`.
+
+### Preset
+
+A preset is a per-session Cordis composition loaded under an agent scope. `mountPreset` waits until rows are usable, rejects missing-service rows, and rejects a service published into the root realm instead of an isolated realm. The agent scope owns teardown. `resolveSessionPreset` reads the latest `agent-preset/selected` event rather than only the creation header.
+
+Evidence: `packages/preset/agent-presets/src/mount.ts` — `mountPreset`, `inactiveRows`, `leakedServices`; `packages/preset/agent-presets/src/session.ts` — `resolveSessionPreset`.
+
+## 8. What is genuinely clever here
+
+1. **Ordered model-visible surface.** `surfaceOp` supports durable positional replacement while retaining the append-only source log. A replacement cites inputs with `sourceEventSeqs`, and `Session::deriveMessages` rebuilds exactly what the model should see.
+
+   Evidence: `packages/core/session/src/surface.ts` — `SurfaceManager`, `deriveEventMessage`; `packages/core/session/src/types.ts` — `SurfaceOp`; `packages/compaction/compaction-basic/src/region.ts` — `commitCompactionBody`.
+
+2. **Model-visible implies logged.** Prompt context, tool schemas, skill catalogs, plan transitions, compaction summaries, and subagent messages all have a durable reconstruction path. This directly prevents resume bugs caused by transient prompt state.
+
+   Evidence: `AGENTS.md`; `packages/core/agent-loop/src/runtime-context.ts` — `RuntimeContextProjection`; `packages/core/session/src/types.ts` — `EpochHeader`.
+
+3. **Registration-bound LLM calls.** `prepareCall` resolves exact model metadata, freezes defaults, and binds one dispatch to one adapter registration, preventing hot-reload races.
+
+   Evidence: `packages/llm/llm/src/index.ts` — `LlmRuntime::prepareCall`, `PreparedLlmCall`.
+
+4. **Parallel execution with ordered commits.** `executeToolCalls` overlaps only calls that classify as safe, while `commitReady` preserves model order and reclassification can insert a barrier.
+
+   Evidence: `packages/core/agent-loop/src/tool-calls.ts` — `executeToolCalls`, `runGroup`, `commitReady`; `packages/core/tools/src/index.ts` — `executionMode`.
+
+5. **Cache-local compaction.** The summarizer reuses the original system/tools/message prefix and adds only the compaction instruction.
+
+   Evidence: `packages/compaction/compaction-basic/src/summarizer.ts` — `summarizeWithLlm`, `SummarizationInput`.
+
+6. **Complete capability seams.** Definitions, providers, and consumers are explicit, so subagent, model, persistence, skill, and compaction implementations can be swapped behind a service.
+
+   Evidence: `docs/glossary.md` — `capability-seam`; `packages/subagent/subagent/src/index.ts` — `registerProvider`; `packages/llm/llm/src/index.ts` — `registerAdapter`.
+
+7. **Scoped composition without forked registries.** Per-agent tools, prompt sections, restrictions, hooks, and Code Mode use ordinary scoped layers and effect ownership.
+
+   Evidence: `packages/core/scope/src/store.ts` — `ScopedLayers`; `packages/core/tools/src/index.ts` — `view`, `presentAs`; `packages/core/system-prompt/src/index.ts` — `assemble`.
+
+## 9. What is over-engineered or would hurt in practice
+
+1. **The tool registry is a policy machine.** `packages/core/tools/src/index.ts` is nearly 2,000 lines and owns schema validation, visibility, Code Mode, cancellation, approval, guards, around-dispatch, post-policy, result materialization, presentation metadata, and notification. Consistency is valuable, but a simple tool addition requires understanding many contracts.
+
+   Evidence: `ToolRuntime`, `prepareExecution`, `dispatchToolBody`, `postExecute`, `finishScheduledExecution`.
+
+2. **Durable-log ceremony is expensive.** A model-visible feature needs a declaration-merged event, JSON validation, surface/log-only classification, replay behavior, persistence support, and usually invariants.
+
+   Evidence: `AGENTS.md` — session rules; `packages/core/session/src/types.ts` — `SessionEventMap`, `SessionEvent`; `packages/core/session/src/index.ts` — `Session::append`.
+
+3. **Compaction has many failure states.** Lock markers, pricing, prune passes, summary-size checks, cancellation, stability checks, retries, checkpoints, and interrupted-tail repair create a large operational state space.
+
+   Evidence: `packages/compaction/compaction-basic/src/region.ts` — `compactSurfaceRegion`, `assertSelectedSpanStable`, `throwManualFailure`; `packages/compaction/compaction/src/index.ts` — `compactNow`.
+
+4. **Hook bridges duplicate dialect plumbing.** Claude Code and Codex each implement `runPoint`, payload mapping, context folding, and Stop behavior.
+
+   Evidence: `packages/hooks/hooks-claude-code/src/index.ts` — `runPoint`; `packages/hooks/hooks-codex/src/index.ts` — `runPoint`.
+
+5. **Self-modification is operationally difficult.** Model-written plugins combine code prechecks, host limits, client approval, immutable versions, live activation, browser state, rollback, inspection, and ownership.
+
+   Evidence: `packages/extensions/cordis-host-runner/src/index.ts` — `run`, `runHostHalf`, `resolveRequestRun`; `packages/extensions/cordis-host-runner/src/sandbox.ts`; `packages/extensions/tool-cordis/src/index.ts` — `cordis_run`.
+
+6. **No-compatibility persistence can hurt production.** Refusing older formats and unknown required events is safer than silently misreading logs, but long-lived deployments would need export/migration tooling.
+
+   Evidence: `AGENTS.md` — pre-release format stance; `packages/session/session-persistence/src/coordinator.ts` — `SessionFormatUnsupportedError`, `sessionFormatVersionRefusal`.
+
+## 10. AURORA VS DSH
+
+### Evidence boundary
+
+DSH claims below are from the source named in this document. Aurora source was not present in this workspace and was not read. Aurora facts are limited to the task statement: Rust `ConversationRuntime::run_turn` under `src-tauri/src/agent_runtime/conversation/`, a fixed Rust tool registry, and a React agent window. Any exact Aurora leaf not supplied is marked “not read”.
+
+### Comparison
+
+| Area | Who does it better | Why |
+|---|---|---|
+| Agent loop | **DSH for extensibility; Aurora for local comprehensibility** | DSH exposes `agent/pre-step`, `agent/request`, `llm/stream`, `agent/request-error`, and `agent/turn-stopping` without loop edits. `ReactLoopAgent::turn` and `step` are explicit but complex. Aurora’s stated fixed `ConversationRuntime::run_turn` is likely easier to follow, but Aurora source was not read. |
+| Tool registration | **DSH** | Effect-scoped registration, scoped shadowing, restrictions, Code Mode, schemas, concurrency, timeout metadata, and render intent share one resolver. Aurora’s fixed registry is simpler for a closed tool set, but adding a capability requires a Rust change rather than composition. Aurora registry source was not read. |
+| Context compaction | **DSH** | DSH has a durable ordered surface, replacement nodes, cited sources, balanced tool-pair checks, stability validation, token pricing, and a cache-aligned summary call. Aurora compaction source was not read, so no equivalent can be claimed. |
+| Session log | **DSH** | DSH separates immutable header metadata from a contiguous event log, supports JSONL/Zstandard and SQLite, logs chunks and UI metadata, validates `SESSION_FORMAT_VERSION`, and refuses unknown required events. Aurora session-log source was not read. |
+| Subagents | **DSH** | DSH provides provider registration, one-shot and continuable children, durable ids, depth, parent authority, FIFO delivery, cold resume, and activation residency. Aurora subagent source was not read. |
+| Extensibility | **DSH by a wide margin** | “Everything is a plugin” is implemented by Cordis services, effects, scopes, declaration-merged events, bundle patches, presets, and provider/consumer seams. Aurora’s fixed registry and React window are more controlled but not equivalent to TypeScript composition. |
+| Testing | **DSH for lifecycle/invariant breadth; Aurora may win local type-level simplicity** | DSH has focused loop cancellation, request reconstruction, tool ordering, compaction, persistence repair, loader composition, provider topology, and snapshot tests. Rust may make local transitions easier to test, but Aurora tests were not read. |
+
+DSH evidence for the table: `packages/core/agent-loop/src/agent.ts` — `turn`, `step`; `packages/core/tools/src/index.ts` — `register`, `view`, `executionMode`; `packages/core/session/src/surface.ts` — `SurfaceManager`; `packages/compaction/compaction-basic/src/region.ts` — `compactSurfaceRegion`; `packages/subagent/subagent/src/index.ts` — `SubagentRuntime`; `packages/core/scope/src/store.ts` — `ScopedLayers`; tests under `packages/core/agent-loop/tests/`, `packages/core/tools/tests/`, `packages/compaction/compaction-basic/tests/`, and `packages/session/session-persistence-jsonl/tests/`.
+
+### Concrete ideas Aurora should steal, ranked
+
+1. **Durable model-visible surface with replacement nodes — 4–8 days, high effort.** Keep an append-only event stream and derived surface; let compaction append a summary node replacing a positional range while retaining source ids.
+
+   Touch: `src-tauri/src/agent_runtime/conversation/` — exact log/surface leaf not read; anchor on `ConversationRuntime::run_turn` — not read.
+
+2. **Logged request reconstruction — 2–4 days, medium effort.** Persist effective provider/model, adapter defaults, system prompt, tool schemas, and request context before dispatch; derive resume requests from the latest header and surface.
+
+   Touch: `src-tauri/src/agent_runtime/conversation/` and the Rust tool-registry file — exact leaves not read.
+
+3. **Pre/guard/around/post/result tool stages — 2–4 days, medium effort.** Keep the fixed registry but add policy, approval, timeout, retry, output-rewrite, and final-observation hooks. Make guards monotonic.
+
+   Touch: the fixed Rust registry and conversation pipeline files — exact paths not read.
+
+4. **Tool-owned render intent — 1–3 days, low-to-medium effort.** Add tagged pending/completed views such as `generic`, `terminal`, `diff`, `read`, and `search`, with generic fallback; persist metadata separately from model content.
+
+   Touch: the fixed Rust registry and React agent-window tool-card component — exact Aurora paths not read.
+
+   DSH model: `packages/core/tools/src/presentation.ts` — `ToolCallView`, `ToolResultView`.
+
+5. **Registration-bound prepared model calls — 1–2 days, medium effort.** Resolve model capabilities and defaults once, freeze the request, and dispatch through the same provider registration.
+
+   Touch: Aurora’s model/provider dispatch and conversation path — exact files not read.
+
+   DSH model: `packages/llm/llm/src/index.ts` — `prepareCall`, `PreparedLlmCall`.
+
+6. **Subagent provider seam with continuable activation — 1–2 weeks, high effort.** Start with one in-process provider, durable child identity, parent authorization, depth budget, one activation per child, FIFO followups, and cold resume.
+
+   Touch: `src-tauri/src/agent_runtime/` — exact subagent module not read.
+
+   DSH model: `packages/subagent/subagent/src/index.ts` — `SubagentRuntime`; `packages/subagent/subagent/src/continuation.ts` — `Activation`.
+
+7. **Effect-scoped optional capabilities — 3–7 days per capability family, high effort in Rust.** Tie tools, prompt sections, hooks, and policies to owned scopes with deterministic disposal.
+
+   Touch: Aurora’s Rust runtime/plugin ownership module and React wiring that renders a capability — exact paths not read.
+
+   DSH model: `docs/cordis-primer.md`; `packages/core/scope/src/store.ts` — `ScopedLayers::effect`.
+
+8. **Keyless replay and invariant fixtures — 2–5 days, medium effort.** Add deterministic transcripts, log/surface parity checks, crash repair/cancellation cases, and UI fallback cases for structured tool views.
+
+   Touch: Aurora’s conversation and agent-window test trees — exact paths not read.
+
+   DSH model: `AGENTS.md` — testing policy; `packages/core/agent-loop/tests/`, `packages/core/session/tests/`, `packages/compaction/compaction-basic/tests/`.
+
+9. **Small external-hook protocol — 2–4 days, medium effort.** Run JSON hooks through the same shell executor, enforce bounded timeout, pair invoked/result records, and map hook output to pre-step, pre-tool, post-tool, and stop.
+
+   Touch: Aurora’s hook integration and React event surface — exact paths not read.
+
+   DSH model: `packages/hooks/hook-protocol/src/runner.ts` — `runHook`; `packages/hooks/hook-protocol/src/events.ts` — `appendHookInvoked`, `appendHookResult`.
+```
+
+Also, the earlier run created and updated `.knowledge/` because of the standing workspace instruction, although the requested analysis file itself was never created.

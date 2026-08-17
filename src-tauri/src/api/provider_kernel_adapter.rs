@@ -1506,6 +1506,14 @@ pub(crate) fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
         // Including it is safe; omitting it is also safe (the model
         // just re-thinks). Match real behaviour and emit it.
         "openrouter" | "lmstudio" | "lm-studio" => Some("reasoning"),
+        // kenari serves DeepSeek and GLM models, so the obvious move is to put
+        // it on the `reasoning_content` line above. Measured against the live
+        // API, that would be waste: a second turn on `deepseek-v4-pro` returns
+        // 200 with `prompt_tokens: 7661` whether the assistant message carries
+        // `reasoning_content`, `reasoning`, or neither. Identical to the token
+        // — the gateway strips the field before forwarding, so replaying it
+        // buys nothing and costs the user its tokens on the way out.
+        "kenari" | "kenari-messages" | "kenari-responses" => None,
         // Fireworks, OpenAI proper, MiniMax, Ollama, "custom" and
         // everyone else: NEVER include reasoning fields. Fireworks in
         // particular validates schema strictly and rejects the request
@@ -1991,6 +1999,18 @@ pub fn parse_tool_input(raw: &str) -> Value {
     if raw.trim().is_empty() {
         return json!({});
     }
+    // Valid JSON is NEVER rewritten. The repair below is a recovery pass for
+    // payloads that do not parse; running it on a well-formed one can only
+    // damage it. It did: a `file_write` whose `content` merely began with an
+    // absolute path had the whole document treated as a path, which doubled
+    // every `\n` and ended the string at the first `\"` — so a correct call
+    // came back "malformed", and did so again on every retry, because nothing
+    // about the corruption was random.
+    if let Ok(value) = serde_json::from_str::<Value>(raw) {
+        if value.is_object() {
+            return value;
+        }
+    }
     let normalized = normalize_absolute_windows_paths(raw);
     match serde_json::from_str::<Value>(&normalized) {
         Ok(value) if value.is_object() => value,
@@ -2023,6 +2043,52 @@ pub fn malformed_tool_input(input: &Value) -> Option<&str> {
 /// others are valid escapes with the wrong meaning (`\r`, `\n`, `\t`). Repair
 /// only strings that unmistakably start with an absolute drive path, leaving
 /// command strings, file contents, and already-correct JSON escapes untouched.
+/// Longest run of bytes a drive-path candidate may occupy.
+///
+/// Generous next to any real path, and the point is only to stop a large text
+/// value that happens to open with `C:\` from being walked as one.
+const MAX_DRIVE_PATH_SCAN: usize = 1_024;
+
+/// Whether the JSON string opening at `open_quote` is plausibly ONE Windows
+/// path: it terminates within [`MAX_DRIVE_PATH_SCAN`] bytes and holds no real
+/// line break.
+///
+/// A drive letter at the head is not enough. A document whose first line is an
+/// absolute path opens exactly the same way, and rewriting its escapes as
+/// though it were a path destroys it.
+fn is_drive_path_value(bytes: &[u8], open_quote: usize) -> bool {
+    let mut index = open_quote + 1;
+    let limit = (index + MAX_DRIVE_PATH_SCAN).min(bytes.len());
+    while index < limit {
+        match bytes[index] {
+            // A real line break cannot occur inside a path.
+            b'\n' | b'\r' => return false,
+            b'\\' => {
+                let run_start = index;
+                while index < limit && bytes[index] == b'\\' {
+                    index += 1;
+                }
+                // An EVEN run is an already-escaped backslash, so this value was
+                // written as correct JSON — which means its other escapes are
+                // real: `\n` is a newline, `\"` is a quote, and rewriting either
+                // corrupts it. Only a raw unescaped path needs repair, and every
+                // run in one is odd. This is the whole difference between
+                // `C:\ws\repo` (broken, repairable) and a document that merely
+                // opens with `C:\\ws\\repo\n` (correct, untouchable).
+                if (index - run_start).is_multiple_of(2) {
+                    return false;
+                }
+                // Step over the character the odd backslash escapes, so a `\"`
+                // cannot be mistaken for the end of the value.
+                index += 1;
+            }
+            b'"' => return true,
+            _ => index += 1,
+        }
+    }
+    false
+}
+
 fn normalize_absolute_windows_paths(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut output = String::with_capacity(raw.len());
@@ -2038,7 +2104,8 @@ fn normalize_absolute_windows_paths(raw: &str) -> String {
         let is_drive_path = index + 3 < bytes.len()
             && bytes[index + 1].is_ascii_alphabetic()
             && bytes[index + 2] == b':'
-            && bytes[index + 3] == b'\\';
+            && bytes[index + 3] == b'\\'
+            && is_drive_path_value(bytes, index);
 
         if is_drive_path {
             output.push_str(&raw[cursor..=index]);
@@ -2138,7 +2205,12 @@ mod tests {
     fn a_modern_claude_gets_adaptive_thinking_and_no_sampling_params() {
         // `budget_tokens` and `temperature` are each a 400 on Opus 4.7+ — this
         // is the shape Aurora used to send to every Anthropic model.
-        for model in ["claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"] {
+        for model in [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-fable-5",
+        ] {
             let s = anthropic_surface_for(model);
             assert!(s.adaptive, "{model} must use adaptive thinking");
             assert!(!s.allows_sampling, "{model} rejects sampling parameters");
@@ -2179,7 +2251,9 @@ mod tests {
             anthropic_surface_for("anthropic.claude-opus-5"),
             anthropic_surface_for("claude-opus-5"),
         );
-        assert!(anthropic_surface_for("claude-opus-4-5-20251101").max_effort.is_some());
+        assert!(anthropic_surface_for("claude-opus-4-5-20251101")
+            .max_effort
+            .is_some());
     }
 
     #[test]
@@ -2190,7 +2264,10 @@ mod tests {
             Some(AnthropicEffort::Max),
         );
         assert!(AnthropicEffort::XHigh < AnthropicEffort::Max);
-        assert_eq!(AnthropicEffort::parse("x-high"), Some(AnthropicEffort::XHigh));
+        assert_eq!(
+            AnthropicEffort::parse("x-high"),
+            Some(AnthropicEffort::XHigh)
+        );
     }
 
     #[test]
@@ -2921,34 +2998,83 @@ mod tests {
 
     #[test]
     fn parse_tool_input_repairs_unescaped_windows_path() {
-        let raw = r#"{"path":"C:\Users\Alvan\project\repo\src\main\index.ts"}"#;
+        let raw = r#"{"path":"C:\ws\dev\project\repo\src\main\index.ts"}"#;
         assert_eq!(
             parse_tool_input(raw),
-            json!({"path": r"C:\Users\Alvan\project\repo\src\main\index.ts"})
+            json!({"path": r"C:\ws\dev\project\repo\src\main\index.ts"})
         );
     }
 
     #[test]
     fn parse_tool_input_repairs_windows_paths_array() {
-        let raw = r#"{"paths":["C:\Users\Alvan\long\repo\src\main\index.ts","E:\rust\new\tests\read.rs"]}"#;
+        let raw =
+            r#"{"paths":["C:\ws\dev\long\repo\src\main\index.ts","E:\rust\new\tests\read.rs"]}"#;
         assert_eq!(
             parse_tool_input(raw),
             json!({
                 "paths": [
-                    r"C:\Users\Alvan\long\repo\src\main\index.ts",
+                    r"C:\ws\dev\long\repo\src\main\index.ts",
                     r"E:\rust\new\tests\read.rs"
                 ]
             })
         );
     }
 
+    /// A long text VALUE that merely BEGINS with a drive path is not a path.
+    ///
+    /// Observed live: a `file_write` whose report started with the absolute
+    /// workspace path was rejected as malformed and never executed — twice, and
+    /// it would have failed on every retry, because the corruption is
+    /// deterministic. The scan matched `"C:\` at the head of `content` and then
+    /// treated the whole document as a path, doubling every `\n` and breaking
+    /// the string at the first `\"`.
+    #[test]
+    fn a_text_value_beginning_with_a_drive_path_is_not_mangled() {
+        // What the model actually sends: correctly escaped JSON whose `content`
+        // opens with a Windows path and later contains an escaped quote.
+        let raw = concat!(
+            r#"{"path":"REPORT.md","content":"C:\\ws\\repo\n"#,
+            r#"\n# Analysis\n\nThe \"type\": \"module\" field matters.\n"}"#
+        );
+
+        // Precondition: the payload the model sent is valid JSON.
+        serde_json::from_str::<Value>(raw).expect("the model's own payload parses");
+
+        let parsed = parse_tool_input(raw);
+        assert!(
+            parsed.is_object(),
+            "a valid file_write payload must not be reported as malformed: {parsed}"
+        );
+        assert_eq!(
+            parsed["content"],
+            "C:\\ws\\repo\n\n# Analysis\n\nThe \"type\": \"module\" field matters.\n",
+            "content must survive byte for byte — real newlines, not literal backslash-n"
+        );
+    }
+
+    /// The same shape, but with the unescaped path the repair pass exists for.
+    /// Recovery may fix the `path` field; it must still not walk the multi-line
+    /// `content` as though that were a path.
+    #[test]
+    fn recovery_repairs_a_path_field_without_walking_a_multiline_value() {
+        let raw = concat!(
+            r#"{"path":"C:\ws\repo\out.md","content":"C:\\ws\\repo\n"#,
+            r#"\nsecond line\n"}"#
+        );
+        let parsed = parse_tool_input(raw);
+        assert!(parsed.is_object(), "expected recovery to succeed: {parsed}");
+        assert_eq!(parsed["path"], r"C:\ws\repo\out.md");
+        assert_eq!(parsed["content"], "C:\\ws\\repo\n\nsecond line\n");
+    }
+
     #[test]
     fn parse_tool_input_preserves_escaped_windows_paths_and_other_escapes() {
-        let raw = r#"{"paths":["C:\\Users\\Alvan\\repo\\src\\main\\index.ts"],"content":"first\nsecond"}"#;
+        let raw =
+            r#"{"paths":["C:\\ws\\dev\\repo\\src\\main\\index.ts"],"content":"first\nsecond"}"#;
         assert_eq!(
             parse_tool_input(raw),
             json!({
-                "paths": [r"C:\Users\Alvan\repo\src\main\index.ts"],
+                "paths": [r"C:\ws\dev\repo\src\main\index.ts"],
                 "content": "first\nsecond"
             })
         );

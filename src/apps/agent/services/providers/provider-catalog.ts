@@ -22,6 +22,17 @@ export interface ProviderCatalogPreset {
   maxOutputTokens: number;
   supportsThinking: boolean;
   supportsToolStream?: boolean;
+  /**
+   * Whether the seeded models accept images.
+   *
+   * Absent means "no" for a preset that genuinely has no vision — but it used
+   * to be the ONLY answer, because seeding hardcoded `supportsVision: false`
+   * for every preset. A vision model therefore arrived switched off and every
+   * user had to find the toggle in Settings › Providers before they could
+   * paste a screenshot. A preset that knows its models see has to be able to
+   * say so.
+   */
+  supportsVision?: boolean;
   customModels?: string[];
   modelAliases?: Record<string, string>;
   providerType: string;

@@ -263,6 +263,20 @@ interface SettingsState {
   browserTools: boolean;
   setBrowserTools: (value: boolean) => void;
   /**
+   * Load the optional tool buckets on demand instead of advertising them.
+   *
+   * When on, `mcp_*`, `browser_*` and `team_*` are held out of the roster and
+   * the model reaches them through `tool_search`, which lists their NAMES. The
+   * saving is per request, not per turn: those schemas ride in every single
+   * request of every turn, and only Anthropic receives a `cache_control` marker
+   * from Aurora.
+   *
+   * Defaults OFF. It changes how the model must REACH a tool, so it is the
+   * user's call rather than something switched on underneath them.
+   */
+  deferTools: boolean;
+  setDeferTools: (value: boolean) => void;
+  /**
    * Resolve the {@link ProviderConfig} the Lead should run on — the
    * `teamLeadModel` override when set and valid, otherwise the active chat
    * config (`getLLMConfig`).
@@ -503,7 +517,13 @@ export interface LLMProvider {
   modelAliases?: Record<string, string>;
   name: string;
   nickname?: string;
-  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "custom"; // Explicit provider type
+  // `kenari` / `kenari-messages` / `kenari-responses` are ONE provider whose
+  // wire format is switchable — kenari serves the same account over OpenAI
+  // chat completions, the Anthropic Messages shape, and the Codex Responses
+  // shape. The choice rides here rather than in a separate field so everything
+  // downstream (URL builder, streaming client, reasoning replay) follows from
+  // one value that cannot disagree with itself.
+  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -617,6 +637,29 @@ const presetToProvider = (preset: ProviderCatalogPreset): LLMProvider => ({
   enabled: true,
   isCustom: false,
 });
+
+/**
+ * Which provider type survives a merge with the catalogue.
+ *
+ * The catalogue normally wins, and should: a stored type can be stale or was
+ * never written at all, and repairing it on load is what keeps an upgraded
+ * install pointed at the right wire.
+ *
+ * The exception is a provider whose wire FORMAT is the user's choice. kenari
+ * answers the same account over three of them (`kenari`, `kenari-messages`,
+ * `kenari-responses`), and blindly restoring the catalogue's value would undo
+ * that setting on every launch — the setting would appear to save, work for the
+ * session, and be gone the next morning, which is the worst way for a control
+ * to fail. A stored type that is a variant of the preset's own is therefore
+ * kept.
+ */
+export function resolveProviderType(
+  presetType: LLMProvider["providerType"],
+  storedType: LLMProvider["providerType"],
+): LLMProvider["providerType"] {
+  if (!storedType || !presetType) return presetType;
+  return storedType.startsWith(`${presetType}-`) ? storedType : presetType;
+}
 
 const createDefaultProviders = (presets: ProviderCatalogPreset[]): LLMProvider[] => {
   return presets.map((preset) => presetToProvider(preset));
@@ -893,7 +936,12 @@ function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
       label: aliases[modelKey] || undefined,
       contextWindow: undefined,
       maxOutputTokens: undefined,
-      supportsVision: false,
+      // From the preset, not hardcoded `false`. Every seeded model used to
+      // arrive claiming no vision regardless of what it actually does, so a
+      // user who added OpenAI (Responses) and pasted a screenshot got nothing
+      // until they hunted down the per-model toggle. A capability the
+      // catalogue knows about must not need re-entering by hand.
+      supportsVision: !!preset.supportsVision,
       supportsThinking: !!preset.supportsThinking,
       supportsToolStream: !!preset.supportsToolStream,
       enabled: true,
@@ -1119,6 +1167,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Chapters change what the agent is told to do, so they stay off until asked for.
   transcriptChapters: false,
   browserTools: true,
+  deferTools: false,
 
   // File Changes Approval
   autoAcceptChanges: false,
@@ -1248,7 +1297,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               ...presetProvider,
               ...dbProvider,
               isCustom: false,
-              providerType: presetProvider.providerType,
+              providerType: resolveProviderType(
+                presetProvider.providerType,
+                dbProvider.providerType,
+              ),
+              // The catalogue owns a built-in's display name — it cannot be
+              // edited in the UI, so a stored one is only ever a stale copy,
+              // and letting it win would freeze a name we later corrected.
+              name: presetProvider.name,
               supportsToolStream: presetProvider.supportsToolStream ?? dbProvider.supportsToolStream,
               nickname: dbProvider.nickname || presetProvider.nickname,
             };
@@ -1413,6 +1469,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           showActivityInTitle: appSettings.showActivityInTitle ?? true,
           transcriptChapters: appSettings.transcriptChapters ?? false,
           browserTools: appSettings.browserTools ?? true,
+          deferTools: appSettings.deferTools ?? false,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -1514,6 +1571,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         showActivityInTitle: state.showActivityInTitle,
         transcriptChapters: state.transcriptChapters,
         browserTools: state.browserTools,
+        deferTools: state.deferTools,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -2083,6 +2141,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setBrowserTools: (value: boolean) => {
     set({ browserTools: value });
+    get().saveToDatabase();
+  },
+
+  setDeferTools: (value: boolean) => {
+    set({ deferTools: value });
     get().saveToDatabase();
   },
 

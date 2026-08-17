@@ -197,6 +197,12 @@ export interface AgentChatRequest {
    */
   browserTools: boolean | null;
   /**
+   * Whether the deferrable buckets (`mcp_*`, `browser_*`, `team_*`) are held
+   * back this turn and reached through `tool_search`. `null` means an older
+   * caller and resolves to OFF in Rust — see `defer_tools` in `ipc.rs`.
+   */
+  deferTools: boolean | null;
+  /**
    * Browser-inspector element chips attached to this user turn. Persisted
    * by the runtime onto the user `ConversationMessage` in the session JSONL
    * (camelCase on the wire → Rust `attached_selected_elements`). `null`/
@@ -590,6 +596,8 @@ export class AgentRuntimeClient {
           : null,
       browserTools:
         typeof config.browserTools === "boolean" ? config.browserTools : null,
+      deferTools:
+        typeof config.deferTools === "boolean" ? config.deferTools : null,
       attachedSelectedElements:
         input.attachedSelectedElements && input.attachedSelectedElements.length > 0
           ? input.attachedSelectedElements

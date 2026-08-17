@@ -1,5 +1,156 @@
 # Aurora IDE — Working Memory
 
+## 2026-08-17 (2nd) — A tool card resolves on its own clock, not its batch's
+
+`execute_tool_calls` awaited the whole concurrent group under `join_all` and only then emitted
+`ToolExecutionResult` for each call, so **the slowest tool in a group set every card's clock**.
+Measured in session `9db4f0f0`: one message held `2x shell_execute + read_lints + 3x grep`; the
+three greps finish in single-digit ms and sat spinning for the full **24.79s**. Reported as
+"`file_read` feels slow now" — the reads in that same turn took **1–4 ms** (7 files in one call:
+2 ms). Whole turn 867s, of which tools were 26.8s (3.1%) and the model 840.5s (96.9%).
+- Each future now emits its own result event the moment it resolves. The **fold stays ordered** —
+  result blocks, spill, and rich sidecars all follow the model's call order and always must; a
+  card belongs to one call and nothing else reads it. Two orderings, only one of them a constraint.
+- Needed a shareable counter: `emit_native_tool_event_shared(&AtomicU64)` in `util.rs`, seeded from
+  the caller's `seq` and written back after the loop, since `&mut u64` cannot cross concurrent
+  futures. Bind `let seq_cell = &event_seq;` outside the closure or `async move` swallows it.
+- The repeat-failure escalation (`FailureLoopGuard`) is deliberately NOT on the card: it is
+  addressed to the model ("do not issue this call again") and is counted per batch in call order.
+- Regression test `a_finished_call_resolves_its_own_card_without_waiting_for_the_batch` gates a
+  slow neighbour on the fast call's event — deadlock IS the assertion. Verified it fails (5.00s
+  timeout) with the early emit disabled and passes (0.00s) with it. 1,310 Rust tests green.
+- STILL OPEN: the card looks identical whether the model is still typing the call, it is queued
+  behind a solo tool, or it is running. Tools do not start until the whole assistant message has
+  finished streaming, so a card can shimmer for the rest of the message before anything runs.
+
+## 2026-08-17 — Fatal crashes now write their own report; `workspace_tree` bounded by BYTES
+
+**`crash.rs`** — a Windows exception handler registered `CALL_FIRST` catches stack overflow,
+access violation and four other fatal codes and writes `logs/aurora-crash.log`: exception name,
+faulting address, thread id, **module base**, and every return address with its RVA. It records and
+steps aside (`CONTINUE_SEARCH`) — never alters the crash. Verified end-to-end by a test that kills a
+child process with real recursion.
+- It cannot use `logging::write_entry`: that allocates, opens a file and takes a `Mutex` the
+  crashing thread may hold. Instead — handle opened at install, fixed 1 KB stack buffer, hand-rolled
+  hex, no lock, one atomic against re-entry.
+- **`SetThreadStackGuarantee(64 KiB)` on every tokio worker** (`lib.rs` builds the runtime with an
+  `on_thread_start` hook) — without reserved stack there is nowhere to run the handler when the
+  crash IS an exhausted stack, and the agent runs on those workers.
+- **`[profile.release] strip = true` made crash reports useless**: the pdb held 6,685 public symbols
+  and no line coverage, so every frame resolved to a WebView2 annotation 400 KB away. Now
+  `strip = false`, `debug = "line-tables-only"` — pdb 6.7 MB → 68 MB, **exe unchanged** (MSVC keeps
+  debug info in the pdb). Keep the pdb of any build whose crash logs you may need.
+
+**`workspace_tree`** — same JSON contract (the agent-window tree card reads `children` / `elided` /
+`depthLimited` / `lineCount`; do not change the shape), new engine:
+- **Byte budget, measured not estimated.** `MAX_TREE_BYTES` (48 KiB) is checked against the real
+  serialized tree; over it, the per-directory quota halves and the tree is re-selected, up to 8
+  passes. This finishes the half-learned lesson at lesson.md 2026-08-10 — one live call on a pnpm
+  monorepo produced **79,491 bytes against a 500-node budget** and now lands at 36,360.
+- **Each retry restores a pristine copy of the children lists first** (`reset_selection`). Trimming
+  is destructive, so a second pass over an already-trimmed tree computes every "+N more" from a
+  short list and under-reports what was left out.
+- `render` was the last recursive walker in the file — now iterative, matching the walk and both
+  quota passes which were already explicit-stack for exactly this reason.
+- Line counting uses `memchr` (lf + cr − crlf per chunk, CRLF split across reads handled); the two
+  pre-existing line-counter tests pin the semantics unchanged.
+- Every stage logs: start (path/depth/flags), walked (nodes, ms), stats (counted, too_big, ms),
+  each byte-budget tightening, and done (nodes/discovered, elided, bytes, total ms).
+
+**Still open:** the stack overflow is NOT diagnosed. It reproduced with journaling disabled, so that
+change is cleared; a test firing the exact 7 concurrent `workspace_tree` calls at the real checkout
+passes, so the tool is cleared too. It crashed on one build and not the next when only debug-info
+settings differed — so it is marginal or timing-dependent and WILL return. The reporter is armed and
+the build now has line tables, so the next occurrence names the function.
+
+## 2026-08-16 — Messages reach disk as they happen, not at turn end
+
+A turn used to live entirely in RAM until `run_turn` returned; `turn_driver` step 9 wrote the whole
+session once. A 74-message, 20-minute analysis turn was therefore one kill away from nothing at all.
+`Session` now owns an optional `Journal` (path + `AtomicUsize` written count) and `append_message`
+streams each message to the thread's JSONL. The end-of-turn `save_to_path` is still the authority —
+it rewrites the file and re-syncs the counter.
+- **The journal only ever says "one more line."** Any rewrite it cannot express — Retry rewind,
+  compaction replacing the head, `clear` — leaves `written != len-1`, which silences it until the
+  next full save. Appending across one of those would produce a transcript that never happened.
+- **`Journal` has a hand-written `Clone` that yields `None`.** A fork/duplicate inheriting the
+  source's path would interleave two conversations into one file. Not remembering to clear it at
+  each fork site is exactly the bug that impl makes impossible.
+- **Torn-tail repair, or this change would make crashes worse.** `parse_jsonl` drops a malformed
+  FINAL record when the file lacks a trailing newline (an interrupted write) and still fails loud
+  on a malformed line anywhere else. `load_from_path` reads whole rather than streaming, because a
+  line iterator has discarded the trailing-newline fact by the time parsing fails.
+- One `write_all` per record (line + `\n` together): two calls can be interrupted between them.
+  No `sync_all` per message — the target is process death, which the page cache survives; the
+  end-of-turn save syncs.
+- Attached in ONE place, `registry.rs::load_or_create_session`, which is the only funnel for
+  sessions a turn can run on. Read-only `store.load()` and `duplicate()` get no journal by
+  construction. Team member sessions (`team/member_actor.rs`) are still unjournaled.
+- Multi-project safe: one journal per thread, one `Mutex<Session>` per thread, threads are
+  per project — two open projects write two files and never contend.
+- 1,291 Rust tests green. **NOT runtime-verified.**
+
+## 2026-08-16 — `file_read` serves a line range across several files
+
+`paths: [4 files] + start_line/end_line` was rejected ("a line range needs one file"). Observed
+live: ten batch reads in one assistant message, all ten failed, one full iteration burned. The
+request is not ambiguous — it means the same range from each file — and the rejection existed only
+because the batch case was never implemented. `multi_file_read` now takes an optional `Window` and
+slices per file through `file_read::slice_window`, the same function and 1000-line cap the
+single-file form uses; the `largeFile` bail-out is skipped when a window is present (a window is
+*how* you read part of a big file). The size budget is spent on sliced bytes, not whole files.
+- The input was always SCHEMA-VALID: `path` xor `paths` cannot be expressed (a top-level `oneOf`
+  makes xAI/grok 400), so the rule lived in prose only. Same reasoning already applied to
+  1-element `paths` + window; this finishes the job for N.
+- 1,283 Rust tests green, clippy clean on both files. **NOT runtime-verified** — needs a rebuild.
+
+## 2026-08-15 — Tools can be loaded on demand (`tool_search`), and `agent_v2.rs` split
+
+**`commands/agent_v2.rs` (3,238) → `commands/agent_v2/`**: mod.rs (225) · registry.rs (300) ·
+turn_driver.rs (503) · tool_policy.rs (301) · tauri_layer.rs (204) · tests.rs (1,737). Same proof
+as the conversation split: ranges tile the file, item names identical (108 fns / 18 types / 2
+consts), tests green. Two things needed care — `mod tauri_layer` stays declared in mod.rs with its
+`pub use tauri_layer::*` (the `__cmd__*` companions `generate_handler!` needs are only reachable
+through the glob), and trait-impl methods must NOT take `pub(super)` (E0449).
+
+**Deferred tools.** New `tools/tool_search/` bucket. When `defer_tools` is on, the deferrable
+buckets — `mcp_*`, `browser_*`, `team_*` — are built as usual but held in a catalogue instead of
+the per-turn registry, and one `tool_search` entry is registered in their place. Its DESCRIPTION
+carries the names (capped at 4,000 chars, then a "+N more" note), so the model sees what exists
+without paying for schemas. `select:a,b` loads exact names; keywords rank name hits over
+description hits; `+term` requires the term in the name.
+- **The mechanism is `ToolRegistry` being `Arc<DashMap>`**: the executor holds a CLONE of the live
+  per-turn registry, and `conversation/mod.rs:436` re-reads `schemas()` INSIDE the turn loop — so a
+  tool loaded on iteration N is advertised and callable on N+1. No runtime change was needed.
+- The catalogue holds the real `Arc<dyn ToolExecutor>`, not a copy of the schema, so a native tool
+  keeps its `install_permission_gate` wrapper and an MCP tool keeps its bridge routing.
+- Defaults OFF (`None` on the wire = off, unlike `browser_tools` whose `None` = on): this one
+  changes how the model REACHES a tool, so it is the user's call. Settings → Agent → Tool loading.
+- The 3-line prompt section is gated on the same flag the request carries (same contract as
+  chapters), so the instruction and the roster can never disagree.
+- NOT saved: the IPC payload still carries every `AllowedTool` — the bridge executors must exist to
+  be loadable. Only the model-facing roster shrinks, which is the part that costs money.
+- Rust 1,279 tests (+15) and 572 frontend tests green; tsc + eslint clean. **NOT runtime-verified.**
+
+## 2026-08-15 — `conversation.rs` (7,466 lines) split into a directory module
+
+`agent_runtime/conversation/` — mod.rs (1,090: config, struct, `run_turn` loop) + compaction.rs
+(988) · tool_exec.rs (611) · tool_results.rs (507) · trim.rs (184) · tokens.rs (168) ·
+context_injection.rs (188) · util.rs (105) · tests.rs (3,703). Moved VERBATIM, then rustfmt.
+- **Children are descendants, which is the whole trick**: they read `mod.rs`'s private imports via
+  `use super::*`, and reach `ConversationRuntime`'s private fields because privacy is
+  module-tree-based. Methods and struct fields that were file-wide became `pub(super)` — that is
+  the *exact* reach they had before, not a widening.
+- Verified three ways: the cut ranges are asserted to TILE 1..7467 with no hole or overlap (a hole
+  failed the first run — line 2025); function/type/const/test-name sets are identical before and
+  after (187/25/26/85); `cargo test --lib` 1,264 passed / 0 failed, before AND after rustfmt.
+- Two seams exposed PRE-EXISTING doc drift, moved verbatim rather than silently fixed:
+  the block describing `fixed_request_overhead_tokens` is attached to `transcript_hint`, and
+  `execute_tool_calls`' doc sits on `concurrent_batch_len`. Owner's call whether to re-attach.
+- `tool_results.rs` needed NO import from its parent — that seam is genuinely decoupled.
+- Remaining files ≥2,500 lines: `commands/agent_v2.rs` (3,238), `commands/mod.rs` (3,234),
+  `api/provider_kernel_adapter.rs` (2,956), and `conversation/tests.rs` itself (3,703).
+
 ## 2026-08-15 — `read_lints` implementation traced and verified
 - Rust-owned `tools/shell_editor_todo/read_lints.rs` runs project-wide `tsc -b`, `cargo check`, Ruff/compileall, or direct `node --check`; requested paths select checker families and only filter diagnostic lines, not checker scope.
 - The `agent_read_lints` frontend event is debug-only; Rust returns the real output. The legacy frontend metadata still incorrectly describes Monaco/open-file diagnostics. Focused implementation suite: 12/12 passed.
@@ -1419,3 +1570,43 @@ is transient and never persisted; a recovered hiccup is meant to leave no trace 
 ## 2026-08-15 — Code-index false `scan` usages investigation
 - Plan: reproduce the reported `in_file` query with a minimal same-name fixture, trace reference extraction/import resolution through `store::resolve` and `references_to`, then fix the narrowest owning layer.
 - Add a regression that prevents unrelated same-name calls from being attributed to the selected definition, then run focused Rust checks before broader validation.
+- Root cause confirmed: Rust `let` bindings were only `ref.ident` facts, so a local `scan` fell through the unique-definition shortcut and was attributed to `shell::discovery::scan`.
+- Fix landed: index simple Rust `let` bindings as variables, exclude value bindings that cannot be inferred safely by directory alone from the same-directory fallback, and bump the code-index cache format from 4 to 5 so stale indexes rebuild.
+- Verified: 16 code-tool tests, 61 code-index tests (58 passed / 3 ignored), `cargo check`, and focused diff checks pass.
+
+## 2026-08-15 — Code-index adversarial correctness audit
+- Plan: probe import aliases, renamed calls, and lexical-shadowing cases against extraction, resolution, and the end-user `usages` result.
+- Confirm defects with minimal multi-definition fixtures before changing production semantics; add regression coverage at the owning extraction/store/tool layers, then bump persisted semantics only if facts on disk change.
+- Confirmed: aliased TypeScript imports (for example `formatTokens as fmtTokens`) recorded the import but lost every aliased call; side-effect imports and re-exports were absent from module-graph edges.
+- Fixed: retain local + exported import names, exclude alias declarations from reads, retain module-only imports, resolve alias references to their exported definition, and bump the persisted cache to v6.
+- Multi-file `file_edit` cards now say `Editing Multiple Files` while running and settle to `Edit Files`; one-file edits remain `Edit File`.
+- Verified: 61/64 code-index tests (3 measurement harnesses ignored), 17/17 code-tool tests, 43 focused frontend tests, TypeScript build, Rust check, and focused diff check all pass. The final dynamic-title correction adds 20/20 focused card tests and a clean TypeScript build.
+
+## 2026-08-15 — Context-overflow compaction + cost-card accuracy
+- The provider is the only reliable source for the real context window: `gpt-5.6-sol` is configured at 1,050,000 but the endpoint rejected ~355K with `context_too_large`, so the 85%-of-window threshold never fires. `ApiError::is_context_overflow()` now pulls that error out of the retry bucket (it was re-sent 3x, byte-identical) and `run_turn` force-compacts and re-issues, capped at `MAX_OVERFLOW_COMPACTIONS`.
+- Anthropic emitted `AssistantEvent::Usage` twice per request (message_start + message_delta) while the frontend ACCUMULATES every usage event, so live turn cost double-counted input/cache and requests. Only `message_delta` emits now; all providers behave alike.
+- Compaction can bill two full-history requests (the cache-sharing attempt falls back to a no-tools one when the model answers with a tool call instead of the note). The discarded attempt's usage is now summed into the marker, and the fallback logs to `aurora.log` instead of stderr.
+- Preset seeding hardcoded `supportsVision: false` for every model; models.dev already publishes vision/tool/reasoning support and the settings backfill was discarding it. Presets can now declare `supportsVision`, and the one-time backfill ORs models.dev capabilities in.
+- Follow-up: the size guess is now measurement-anchored ONLY on requests issued after the newest compaction marker (`last_compaction_timestamp`) — the kept tail carries usage measured while the dropped head was still on the wire, so the old anchor reported the pre-shrink size. Compaction card `after` is now derived by scaling the estimator's reading of the new view by measured/estimated on the old one, so after < before is structural.
+- New: `agent_runtime/context_limits.rs` + `paths::limits_dir()` — learns each endpoint's REAL ceiling into `<root>/limits/context-limits.json` (largest accepted / smallest rejected, 0.9 safety margin). `maybe_compact` and `compact_inner` budget against `effective_window(model, configured)`, so a model configured at 1.05M but served at ~355K now compacts on time instead of never.
+
+## kenari provider (2026-08-17)
+
+One gateway account (`kn-` key, `https://kenari.id/v1`) reaching 54 chat models over **three
+wires**, selected by `providerType`: `kenari` (chat completions, the default), `kenari-messages`
+(Anthropic shape), `kenari-responses` (Codex shape). Measured live on `deepseek-v4-pro`, not read
+off the docs:
+
+- **All three return the model's raw reasoning trace, not a summary.** The Responses wire ships it
+  through events named `response.reasoning_summary_text.*` — that name is inherited from OpenAI's
+  schema and says nothing about the content.
+- **Reasoning replay is pointless here.** A second turn returns `prompt_tokens: 7661` whether the
+  assistant message carries `reasoning_content`, `reasoning`, or neither — the gateway strips it.
+  Hence `reasoning_field_for("kenari*") == None`.
+- Only `kenari-messages` streams a thinking `signature`; `kenari-responses` has no
+  `encrypted_content`, so nothing can be replayed there.
+- `x-api-key` authenticates on `/messages`, so Aurora's Anthropic client works unchanged.
+- The preset seeds **zero models on purpose** (`model: ""`) — the catalogue is live at
+  `GET /v1/models` (public, no key) and carries context, vision, `tool_call`, `reasoning_options`
+  and Rupiah pricing. Prices are **IDR per 1M tokens** (`micro_idr / 1e6`); Aurora's cost UI is
+  still USD-only, so kenari model rows carry no price yet.

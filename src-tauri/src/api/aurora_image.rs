@@ -71,10 +71,7 @@ pub struct AuroraImageMarker<'a> {
 impl<'a> AuroraImageMarker<'a> {
     /// Attribute value by name, or `None` when absent.
     pub fn attr(&self, name: &str) -> Option<&'a str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map(|(_, v)| *v)
+        self.attrs.iter().find(|(k, _)| *k == name).map(|(_, v)| *v)
     }
 
     /// The `media_type` attribute. Always present and always `image/…` —
@@ -324,7 +321,9 @@ mod tests {
     #[test]
     fn rejects_malformed_headers_and_bodies() {
         // No media_type.
-        assert!(!has_marker(r#"<aurora_image width="10">aGVsbG8=</aurora_image>"#));
+        assert!(!has_marker(
+            r#"<aurora_image width="10">aGVsbG8=</aurora_image>"#
+        ));
         // media_type is not an image type.
         assert!(!has_marker(
             r#"<aurora_image media_type="text/plain">aGVsbG8=</aurora_image>"#
@@ -342,7 +341,9 @@ mod tests {
             r#"<aurora_image media_type="image/png">not base64!</aurora_image>"#
         ));
         // No close tag.
-        assert!(!has_marker(r#"<aurora_image media_type="image/png">aGVsbG8="#));
+        assert!(!has_marker(
+            r#"<aurora_image media_type="image/png">aGVsbG8="#
+        ));
     }
 
     #[test]

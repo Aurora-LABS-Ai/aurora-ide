@@ -28,15 +28,20 @@ The only legitimate hardcoded colors are:
 
 | File | Role |
 |------|------|
-| `src/types/theme.ts` | `ThemeTokens`, `ThemeFile`, `ThemeDefinition` shapes |
-| `src/services/theme-service.ts` | Validation, CSS variable injection, Monaco conversion, `DEFAULT_DARK_TOKENS` / `DEFAULT_LIGHT_TOKENS` |
-| `src/themes/*.json` | Built-in themes (`aurora-dark`, `aurora-light`, `aurora-high-contrast`, `aurora-dark-neutral`, `alvan-aurora-dark`) |
+| `src/kernel/types/theme.ts` | `ThemeTokens`, `ThemeFile`, `ThemeDefinition` shapes |
+| `src/apps/ide/services/theme-service.ts` | Validation, CSS variable injection, Monaco conversion, `DEFAULT_DARK_TOKENS` / `DEFAULT_LIGHT_TOKENS` |
+| `src/themes/*.json` | Built-in themes (`dark`, `light`, `high-contrast`, `dark-neutral`, `alvan-aurora-dark`) |
 | `src/themes/index.ts` | Built-in theme registry and IDs |
-| `src/store/useThemeStore.ts` | Theme persistence, active-theme switching, cross-window sync |
+| `src/apps/ide/store/useThemeStore.ts` | Theme persistence, active-theme switching, custom-theme rows from SQLite |
 | `tailwind.config.js` | Tailwind utilities mapped onto theme variables |
 | `src/index.css` | Body, scrollbars, focus rings, markdown-content — all theme-driven |
-| `src/components/modals/ThemeSettingsTab.tsx` | Appearance UI |
-| `src/components/theme/ThemeEditorTab.tsx` | In-app theme editor |
+| `src/apps/ide/features/settings/ThemeSettingsTab.tsx` | Appearance UI |
+| `src/apps/ide/features/theme/ThemeEditorTab.tsx` | In-app theme editor |
+
+> This contract covers the **IDE** surface. The Agent Window is a separate theme system:
+> `src/apps/agent/theme/tokens.ts` maps `AgentThemeTokens` onto `--agw-*` custom properties on
+> `.agw-root`, and all its styles live in the numbered partials under
+> `src/apps/agent/theme/agent-window/` (no Tailwind, no hardcoded colors).
 
 ## Theme file shape
 
@@ -362,8 +367,8 @@ If a token isn't aliased, use the arbitrary-value form: `bg-[var(--aurora-common
 
 ## Adding a new token
 
-1. Add the field to the right interface in `src/types/theme.ts`.
-2. Add a default value in **both** `DEFAULT_DARK_TOKENS` and `DEFAULT_LIGHT_TOKENS` in `src/services/theme-service.ts`.
+1. Add the field to the right interface in `src/kernel/types/theme.ts`.
+2. Add a default value in **both** `DEFAULT_DARK_TOKENS` and `DEFAULT_LIGHT_TOKENS` in `src/apps/ide/services/theme-service.ts`.
 3. Add the same field to every built-in theme in `src/themes/*.json` with a value tuned for that theme's palette. Partial themes (custom themes from users) will fall back to the default, but built-ins should declare every token explicitly.
 4. (Optional) Add a Tailwind alias in `tailwind.config.js` if it will be used as `bg-`/`text-`/`border-` frequently.
 5. (Optional) Map it into Monaco in `convertToMonacoTheme()` if it should affect the editor.

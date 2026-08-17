@@ -280,8 +280,22 @@ async fn handle_anthropic_event(
         "message_start" => {
             if let Some(envelope) = event.message {
                 if let Some(wire) = envelope.usage {
+                    // Merged, NOT emitted. Anthropic reports the input and
+                    // cache counts here and the final output count again on
+                    // `message_delta`, and `merge_usage` keeps the earlier
+                    // fields — so both events carry the full input. The cost
+                    // card ADDS every usage event it receives into the running
+                    // turn, which made one Anthropic request count its input
+                    // and cache-read tokens twice and register as two
+                    // requests. One request must produce exactly one usage
+                    // event; `message_delta` is the one that is complete.
+                    //
+                    // The counts are not lost — they live in `usage` and ride
+                    // out on that event. The only cost is that the context ring
+                    // updates when the reply finishes rather than when it
+                    // starts, which is already how every other provider here
+                    // behaves.
                     merge_usage(usage, &wire);
-                    let _ = event_sink.send(AssistantEvent::Usage(usage.clone())).await;
                 }
             }
         }

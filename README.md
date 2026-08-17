@@ -42,7 +42,7 @@
 | **Main IDE** | Default app window | Full editor workflow: tabs, terminal, Git, settings, checkpoints |
 | **Agent Window** | `/agent-window` (standalone Tauri window) | Conversation-first workspace: left rail (projects + chats), center transcript, right dock (Review, Canvas, Files, Browser, Terminal) |
 
-The Agent Window has its own theme tokens (`--agw-*`), settings, and stores under `src/agent-window/`. The main IDE and Agent Window hand off files through `agent_open_in_ide` when you want to edit in Monaco.
+The Agent Window has its own theme tokens (`--agw-*`), settings, and stores under `src/apps/agent/`. The main IDE and Agent Window hand off files through `agent_open_in_ide` when you want to edit in Monaco.
 
 ### Highlights
 
@@ -58,7 +58,7 @@ The Agent Window has its own theme tokens (`--agw-*`), settings, and stores unde
 - **Speech input** — Local Qwen3-ASR transcription in Rust (CPU by default; optional CUDA build).
 - **Prompt refine** — Optional local llama.cpp pass to rewrite composer text before sending.
 - **Project workflow** — Git panel, per-message workspace checkpoints (git CLI shadow repo), per-file undo/redo, skills catalog, detachable Agent Window.
-- **Models** — Built-in presets: Fireworks, GLM, Anthropic, MiniMax, DeepSeek, OpenAI, LM Studio, Ollama, custom. Reasoning/thinking blocks wired where the provider supports them.
+- **Models** — Built-in presets: Fireworks, GLM, Anthropic, MiniMax, DeepSeek, OpenAI, OpenAI Responses, Kenari, LM Studio, Ollama, custom — plus frontend-integrated Codex (ChatGPT subscription), Atlas Cloud, and AgentRouter. Reasoning/thinking blocks wired where the provider supports them.
 
 ### Built-in browser inspector
 
@@ -79,7 +79,7 @@ The agent can open real WebView windows. Element picker, computed styles, consol
 | Layer | Stack |
 |--------|--------|
 | **UI** | React 18.3, TypeScript 5.9, Vite 8, Tailwind, Monaco, Zustand 5, Framer Motion, Lucide, XTerm.js, Shiki, Mermaid |
-| **Agent UI** | `src/agent-window/` — isolated theme, 3-zone shell, Canvas, team screen, command center |
+| **Agent UI** | `src/apps/agent/` — isolated theme, 3-zone shell, Canvas, team screen, command center |
 | **Desktop** | Tauri 2, Rust 2021, rusqlite, tokio, reqwest, rmcp (MCP), tiktoken-rs, tauri-plugin-pty |
 | **AI backend** | Rust provider kernel, `agent_runtime`, context engine (legacy turn storage), Qwen3-ASR, `code_index` (tree-sitter), aurora_websearch |
 
@@ -143,19 +143,19 @@ See [DOCS/06-SPEECH-INPUT.md](DOCS/06-SPEECH-INPUT.md) for model setup and runti
 ```
 Frontend (React/TS)          Tauri IPC          Rust backend
 ├─ Main IDE (MainLayout)  ←──────────────→  ├─ agent_runtime (turn loop)
-├─ Agent Window (/agent-window)            ├─ provider_kernel (LLM streaming)
-├─ Zustand stores (src/store/)             ├─ MCP manager (rmcp)
-├─ Agent stores (src/agent-window/store/)  ├─ Context engine + SQLite
+├─ Agent Window (/agent-window)            ├─ api/ provider adapters + SSE
+├─ Zustand stores (kernel + per-app)       ├─ MCP manager (rmcp)
+├─ Agent stores (src/apps/agent/store/)    ├─ JSONL sessions + SQLite
 └─ Tool bridge (TS executors)              ├─ Checkpoints, undo/redo, Git
                                            ├─ Code index, browser, speech
-                                           └─ Native tools (file, shell, grep, …)
+                                           └─ Native tools (41 registered)
 ```
 
-**Provider path:** Frontend `RustProvider` → `aurora_provider_stream` → SSE parsing in Rust → events back to UI.
+**Provider path:** Frontend `RustProvider` → `aurora_provider_stream` → SSE parsing in Rust → events back to UI. Agent turns go through the runtime below instead.
 
-**Agent path:** Frontend `agent-runtime-client.ts` → `agent_chat_v2` → Rust `conversation.rs` drives turns → tool calls execute in Rust or bridge to frontend (MCP, browser, team UI, artifacts).
+**Agent path:** Frontend `agent-runtime-client.ts` → `agent_chat_v2` → Rust `agent_runtime/conversation/` drives turns → tool calls execute in Rust natively or bridge to the frontend (MCP, team UI, skills, ask_question).
 
-**Persistence:** Threads, providers, themes, workspace state, artifacts, and settings in SQLite (`%APPDATA%/com.aurora.agent/aurora.db` on Windows).
+**Persistence:** Chat sessions are JSONL under `%LOCALAPPDATA%\AuroraIDE\sessions\`; providers, themes, workspace state, artifacts metadata, and settings in SQLite (`%LOCALAPPDATA%\AuroraIDE\data\aurora.db`).
 
 For module-level detail, start with **`CLAUDE.md`**, **`AGENTS.md`**, and **`DOCS/01-ARCHITECTURE.md`**.
 
@@ -163,21 +163,28 @@ For module-level detail, start with **`CLAUDE.md`**, **`AGENTS.md`**, and **`DOC
 
 ## Tool categories
 
-| Category | Examples |
-|----------|----------|
-| File | `file_read`, `file_write`, `file_edit`, `grep`, `move_path`, `delete_path` |
-| Workspace | `workspace_tree`, `folder_create` |
-| Shell | `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes` |
-| Editor | `editor_open_file`, `read_lints` |
-| Search | `auroro_websearch` |
-| Browser | `browser_navigate`, `browser_click`, `browser_eval`, `browser_get_dom`, … |
+41 tools execute natively in Rust; the rest bridge to frontend executors.
+
+| Category | Tools |
+|----------|-------|
+| File & search | `file_read`, `file_write`, `file_edit`, `move_path`, `delete_path`, `glob`, `grep`, `workspace_tree`, `folder_create`, `auroro_websearch` |
+| Shell | `shell_execute`, `shell_spawn`, `shell_kill`, `shell_list_processes`, `shell_read_output` |
+| Code intel | `code` (definition / usages / outline / modules / refresh, tree-sitter index) |
+| Plan | `plan_write`, `plan_read`, `plan_step_update` |
+| Todo | `todo` (batched updates, durable per-thread store) |
+| Editor | `read_lints` (tsc / cargo check / Ruff runners) |
+| Browser | `browser_navigate`, `browser_view`, `browser_click`, `browser_fill`, `browser_screenshot`, `browser_page_outline`, `browser_inspect_element`, `browser_a11y_tree`, … (16 total) |
+| Guidelines | `design_guidelines`, `canvas_guidelines`, `browser_guidelines` |
+| Diagnostics | `report_aurora_issue` |
+| Transcript | `chapter` (optional chapter narration) |
 | Artifacts | `present_artifact`, `read_artifact` |
 | Team | `team_dispatch`, `team_status`, `team_chat`, `team_show`, … |
-| Skills | `skill_search`, `skill_apply` |
-| Todo | `todo_write` |
+| Skills | `aurora_skill_search`, `aurora_skill_load` |
+| Terminal | `terminal_list`, `terminal_read` (read the user's live PTY sessions) |
 | MCP | `mcp_{serverId}_{toolName}` (dynamic) |
+| Ask | `ask_question` |
 
-Risk levels and approval modes: `src/tools/definitions/risk-levels-enhanced.ts`.
+Optional `tool_search` defers the `mcp_*` / `browser_*` / `team_*` schemas behind an on-demand lookup (Settings → Agent → Tool loading). Risk levels and approval modes: `src/apps/agent/tools/definitions/risk-levels-enhanced.ts`, enforced by the Rust permission gate.
 
 ---
 
@@ -186,14 +193,17 @@ Risk levels and approval modes: `src/tools/definitions/risk-levels-enhanced.ts`.
 | Doc | Purpose |
 |-----|---------|
 | [DOCS/GETTING-STARTED.md](DOCS/GETTING-STARTED.md) | Install, run, first provider, local models |
-| [DOCS/01-ARCHITECTURE.md](DOCS/01-ARCHITECTURE.md) | System overview, provider kernel, module map |
-| [DOCS/02-CODE-STYLE-PATTERNS.md](DOCS/02-CODE-STYLE-PATTERNS.md) | Patterns for stores, IPC, and providers |
-| [DOCS/03-EXPANSION-GUIDE.md](DOCS/03-EXPANSION-GUIDE.md) | Adding tools, commands, and providers |
-| [DOCS/04-PROVIDER-KERNEL.md](DOCS/04-PROVIDER-KERNEL.md) | Provider kernel design and status |
+| [DOCS/01-ARCHITECTURE.md](DOCS/01-ARCHITECTURE.md) | System overview, module map, runtime flows |
+| [DOCS/02-CODE-STYLE-PATTERNS.md](DOCS/02-CODE-STYLE-PATTERNS.md) | Patterns for boundaries, stores, IPC, and CSS |
+| [DOCS/03-EXPANSION-GUIDE.md](DOCS/03-EXPANSION-GUIDE.md) | Adding tools, commands, providers, and settings |
+| [DOCS/04-PROVIDER-KERNEL.md](DOCS/04-PROVIDER-KERNEL.md) | Provider adapters, catalog, and streaming design |
 | [DOCS/05-ICON-PACKS.md](DOCS/05-ICON-PACKS.md) | Explorer icon packs |
 | [DOCS/06-SPEECH-INPUT.md](DOCS/06-SPEECH-INPUT.md) | Local speech recognition setup |
 | [DOCS/theme-dev.md](DOCS/theme-dev.md) | IDE theme tokens (`--aurora-*`) |
+| [DOCS/code-index-handoff.md](DOCS/code-index-handoff.md) | Tree-sitter code index design + verification recipe |
+| [DOCS/desktop-control-plan.md](DOCS/desktop-control-plan.md) | Desktop control design (agreed, not built) |
 | [CLAUDE.md](CLAUDE.md) | Agent-oriented architecture reference |
+| [DOCS/README.md](DOCS/README.md) | Documentation index |
 
 ---
 

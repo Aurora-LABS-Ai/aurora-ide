@@ -89,6 +89,9 @@ describe("ToolCallCard streamed file targets", () => {
     );
 
     expect(html.match(/class="agw-tool-chip"/g)).toHaveLength(4);
+    expect(html).toContain(">Editing Multiple Files</span>");
+    expect(html).not.toContain(">Edit Files</span>");
+    expect(html).not.toContain(">Edit File</span>");
     expect(html).toContain("a.test.ts");
     expect(html).toContain("b.test.ts");
     expect(html).toContain("c.test.ts");
@@ -273,6 +276,8 @@ describe("ToolCallCard streamed file targets", () => {
 
     const header = mountedContainer.querySelector<HTMLButtonElement>(".agw-tool-head")!;
     const tabs = mountedContainer.querySelectorAll<HTMLElement>('[role="tab"]');
+    expect(mountedContainer.textContent).toContain("Edit Files");
+    expect(mountedContainer.textContent).not.toContain("Editing Multiple Files");
     expect(tabs).toHaveLength(2);
     expect(header.getAttribute("aria-expanded")).toBe("false");
     await act(async () => tabs[1].click());

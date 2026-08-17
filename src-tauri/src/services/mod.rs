@@ -1,17 +1,14 @@
 //! Aurora Services Module
 //!
-//! This module contains business logic services that provide:
-//! - Thread management with per-message persistence
-//! - Token counting using real tokenizers (tiktoken)
-//! - API message format conversion
-//!
-//! These services are the single source of truth - TypeScript frontend
-//! should subscribe to events and maintain read-only caches.
+//! Cross-cutting support services behind the commands layer:
+//! - Message format conversion between UI and API shapes (`api_converter`)
+//! - Token counting with real tokenizers — tiktoken (`token_service`)
+//! - Native WebView browser runtime, DevTools, and capture (`browser_*`)
+//! - WebView permission handling and renderer crash recovery (`webview_*`)
 //!
 //! ## Usage
-//! - `crate::services::thread_service::ThreadService` - Thread management
-//! - `crate::services::token_service::TokenService` - Token counting with tiktoken
-//! - `crate::services::api_converter::ApiConverter` - Message format conversion
+//! - `crate::services::api_converter::{ApiConverter, ApiMessage, UiMessage}` - message format conversion
+//! - `crate::services::token_service::{TokenService, EncodingType, ChatMessage}` - token counting
 
 pub mod api_converter;
 pub mod browser_devtools;

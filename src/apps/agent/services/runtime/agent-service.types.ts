@@ -104,6 +104,8 @@ export interface AgentConfig {
    * every request, so it is switchable — Settings → Agent → Browser control.
    */
   browserTools?: boolean;
+  /** Hold `mcp_*` / `browser_*` / `team_*` back and advertise `tool_search`. */
+  deferTools?: boolean;
   providerConfig?: import("@/apps/agent/services/providers").ProviderConfig;
   systemPrompt?: string;
   temperature?: number;

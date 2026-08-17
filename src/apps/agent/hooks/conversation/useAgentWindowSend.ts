@@ -1311,6 +1311,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // so a turn can never have the tool without the instruction or vice versa.
       transcriptChapters: settings.transcriptChapters,
       browserTools: settings.browserTools,
+      deferTools: settings.deferTools,
     });
 
     try {
@@ -1345,6 +1346,15 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // cost. Attributed to the model running this turn so a later
             // model switch prices its own requests, not these.
             context.addTurnUsage(threadId, turnModel, usage);
+            // The conversation total is read from the transcript, and the
+            // transcript just grew by this request. Marking it stale PER
+            // REQUEST — not only at turn end — is what stops "This chat" from
+            // reporting a figure that predates the turn you are watching: it
+            // used to sit at the last completed turn's total, so a card opened
+            // mid-turn showed a chat cost missing both the running turn and any
+            // compaction it triggered. Marking is free; the refetch happens
+            // only while the card is actually open.
+            context.invalidateBreakdown(threadId);
           },
           onQueuedMessageInjected: (text, chips) => {
             // The runtime drained the queue and stapled the user's text onto the

@@ -3126,7 +3126,11 @@ mod tests {
                 .block_on(ripgrep_search(request))
                 .expect("search ran");
 
-            assert_eq!(response.success, true, "pattern {pattern:?} failed: {:?}", response.error);
+            assert_eq!(
+                response.success, true,
+                "pattern {pattern:?} failed: {:?}",
+                response.error
+            );
             let expected = if is_regex { 2 } else { 1 };
             assert_eq!(
                 response.total_matches,

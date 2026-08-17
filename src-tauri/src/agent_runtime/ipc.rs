@@ -213,6 +213,24 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub browser_tools: Option<bool>,
 
+    /// Hold the deferrable buckets (`mcp_*`, `browser_*`, `team_*`) out of the
+    /// advertised roster and give the model `tool_search` to load them by name
+    /// (user opt-in, Settings → Agent → Load tools on demand).
+    ///
+    /// The saving is the whole point: those schemas are sent on EVERY request
+    /// of every turn, and only Anthropic receives a `cache_control` marker from
+    /// Aurora, so on every other provider they are paid in full each time. A
+    /// workspace with several MCP servers connected can carry a hundred-plus
+    /// tools the conversation never touches.
+    ///
+    /// `None` means an older client that does not know about the switch, and
+    /// resolves to OFF — every tool advertised up front, exactly as before.
+    /// Unlike [`Self::browser_tools`], the safe default here is the old
+    /// behaviour: this one changes how the model must REACH a tool, and a
+    /// client that cannot say what it wants should not have that changed for it.
+    #[serde(default)]
+    pub defer_tools: Option<bool>,
+
     /// Browser-inspector element chips the user attached to this message
     /// in the composer. Persisted verbatim onto the user
     /// [`crate::agent_runtime::types::ConversationMessage`] so the chips
@@ -315,6 +333,7 @@ mod tests {
             allow_outside_workspace: None,
             transcript_chapters: None,
             browser_tools: None,
+            defer_tools: None,
         }
     }
 
@@ -476,6 +495,7 @@ mod tests {
             allow_outside_workspace: None,
             transcript_chapters: None,
             browser_tools: None,
+            defer_tools: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on

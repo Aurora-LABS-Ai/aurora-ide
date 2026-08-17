@@ -12,7 +12,10 @@
 import type { ModelReasoning } from "@/kernel/types/database";
 
 const API_URL = "https://models.dev/api.json";
-const CACHE_KEY = "aurora-modelsdev-cache-v1";
+// v2: the cache stores ALREADY-NORMALIZED entries, so a fix to normalization
+// does not reach anyone holding a v1 copy until its 24h TTL runs out. Bumped
+// when zero-cost placeholders stopped being read as a price of zero.
+const CACHE_KEY = "aurora-modelsdev-cache-v2";
 const TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
 /** A models.dev model normalized to the fields Aurora stores. */
@@ -39,6 +42,27 @@ export interface ModelsDevEntry {
   priceCacheWritePerMtok?: number;
   reasoning?: ModelReasoning;
 }
+
+/**
+ * A published rate, or `undefined` when the catalogue has no real answer.
+ *
+ * **Zero is not a price.** models.dev carries a `kenari` provider whose 38
+ * models are ALL listed as `{input: 0, output: 0}` — kenari bills in Rupiah and
+ * this schema is USD, so those entries hold a placeholder rather than a rate.
+ * Copying it through is how a paid model ends up showing "$0 / $0" and every
+ * conversation on it reports as free.
+ *
+ * Unknown is the better answer, and the UI already handles it properly: the
+ * price chip shows a dash and the cost card says "no price set — add one in
+ * Settings › Providers", which is something a person can act on. `$0.0000`
+ * looks measured and is silently wrong, which is the class of bug the cost work
+ * exists to remove.
+ *
+ * A genuinely free model loses nothing worth having: it gets that same note
+ * instead of a zero.
+ */
+const rate = (value: number | undefined): number | undefined =>
+  typeof value === "number" && value > 0 ? value : undefined;
 
 // ── Raw API shapes (only the fields we read) ─────────────────────────────────
 
@@ -138,10 +162,10 @@ function normalize(catalog: RawCatalog): ModelsDevEntry[] {
         supportsVision: input.includes("image"),
         supportsThinking: !!m.reasoning,
         supportsToolStream: !!m.tool_call,
-        priceCacheMissPerMtok: m.cost?.input,
-        priceCacheHitPerMtok: m.cost?.cache_read,
-        priceOutputPerMtok: m.cost?.output,
-        priceCacheWritePerMtok: m.cost?.cache_write,
+        priceCacheMissPerMtok: rate(m.cost?.input),
+        priceCacheHitPerMtok: rate(m.cost?.cache_read),
+        priceOutputPerMtok: rate(m.cost?.output),
+        priceCacheWritePerMtok: rate(m.cost?.cache_write),
         reasoning: normalizeReasoning(m),
       });
     }
@@ -263,3 +287,6 @@ export async function searchModels(query: string, limit = 24): Promise<ModelsDev
     .sort((a, b) => a.score - b.score || a.e.modelKey.localeCompare(b.e.modelKey));
   return scored.slice(0, limit).map((x) => x.e);
 }
+
+/** Internals exposed for tests only — not part of this module's public surface. */
+export const __testing = { rate };

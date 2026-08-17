@@ -1,24 +1,31 @@
 # Agent Window — Headless LSP / Code Intelligence — Implementation Plan
 
-> **Status:** planned, not started.
-> **Owner surface:** the **agent window only** (`src/agent-window/**` + `src-tauri/src/**`).
-> **How to resume:** point the next session at this file. It is written to be executed top-to-bottom. Confirm the "Open decisions" (§13) first, then work the "File-by-file work breakdown" (§12).
+> **Status update 2026-08-17: Phase 0 shipped (differently), Phase 2 partly superseded.**
+> - `read_lints` is **real** since 2026-08-15: `tools/shell_editor_todo/read_lints.rs` runs
+>   project-wide checkers (`tsc -b`, `cargo check`, Ruff/compileall, `node --check`) and singles
+>   out diagnostics for requested paths. No LSP involved — the shell-checker route won.
+> - Semantic navigation (definition/references/outline) shipped via the tree-sitter
+>   **code index** and its `code` tool (see [code-index-handoff.md](./code-index-handoff.md)).
+> - **What remains open from this plan: the headless LspManager (Phase 1)** — real language
+>   servers for type-accurate diagnostics and hover types. Treat the sections below as the
+>   design for that remaining work; skip the already-shipped parts.
+>
+> **Owner surface:** the agent window + Rust backend (`src/apps/agent/**` + `src-tauri/src/**`).
 
 ---
 
 ## 0. Framing — read this first
 
-**There is NO Monaco in the agent window.** The agent window renders code with a **read-only Shiki viewer** (`src/agent-window/components/FileViewer.tsx`, `useShikiTokens`), tool cards, and the Review diff. Monaco lives only in the legacy IDE. So this is **NOT** an editor-LSP integration (no `monaco-languageclient`, no squiggles, no as-you-type completion, no frontend LSP bridge).
+**There is NO Monaco in the agent window.** The agent window renders code with a **read-only Shiki viewer** (`src/apps/agent/components/files/FileViewer.tsx`, `useShikiTokens`), tool cards, and the Review diff. Monaco lives only in the IDE. So this is **NOT** an editor-LSP integration (no `monaco-languageclient`, no squiggles, no as-you-type completion, no frontend LSP bridge).
 
-This is a **headless LSP client**: Rust drives real language servers (rust-analyzer, pyright, typescript-language-server, gopls…) as child processes, and exposes their intelligence **to the AI agent as tools**. The value is agentic, not editorial: the agent gets **real diagnostics** and **semantic navigation** (go-to-def, find-refs, hover types, symbol search) instead of guessing with grep.
+This is a **headless LSP client**: Rust drives real language servers (rust-analyzer, pyright, typescript-language-server, gopls…) as child processes, and exposes their intelligence **to the AI agent as tools**. The value is agentic, not editorial: the agent gets **real diagnostics** and **semantic navigation** (go-to-def, find-refs, hover types, symbol search) beyond what the tree-sitter index's syntactic resolution can say.
 
-### Why now (the trigger)
-`read_lints` is currently a **stub that catches nothing**. Verified this session:
-- `src-tauri/src/tools/shell_editor_todo/read_lints.rs` — `execute()` emits an `agent_read_lints` event and returns a hardcoded `{"success":true,"message":"lints requested for <paths>"}`. `uses_frontend_lifecycle()` is `false`, so the runtime sends **that placeholder** to the model.
-- `src/services/agent-ide-events.ts:204` — the `agent_read_lints` listener is a **deliberate no-op** (`console.debug` only, "no UI mutation").
-- `src/services/agent-prompt.ts` tells the model *"After edits, run `read_lints`… and fix the issues"* — an instruction pointed at a tool that returns nothing. The tool description even claims it "Returns TypeScript, JavaScript, Rust… errors" — currently false.
-
-**Goal of this project:** make `read_lints` return real diagnostics, and (phase 2) give the agent semantic-navigation tools — all headless in Rust, no editor UI.
+### The original trigger (now resolved)
+`read_lints` used to be a stub that caught nothing (frontend-event emit + hardcoded success);
+that gap is closed by the shell-checker implementation. The remaining argument for LSP is
+**type truth**: hover types, precise overloads, and diagnostics that only a type checker
+produces — which is also why `read_lints` keeps a per-language runner architecture an LSP
+fallback can slot into.
 
 ---
 
@@ -107,7 +114,11 @@ After a successful `file_write` / `file_edit` / `move_path` / `delete_path`, not
 
 ---
 
-## 7. Semantic tools (phase 2 — optional but high value for an agentic IDE)
+## 7. Semantic tools (phase 2 — partly superseded by the tree-sitter `code` tool)
+
+> **2026-08-17:** definition/references/outline now exist via the structural code index
+> (`code` tool). What LSP would still add: **hover types**, type-accurate references, and
+> workspace symbols that respect the type system rather than name resolution.
 
 Expose new native Rust tools that drive LSP requests and map results to `file:line` + a code snippet:
 - `code_definition(path, line, col)` → `textDocument/definition`.
@@ -122,7 +133,7 @@ These make the agent navigate by **meaning**. Each is a small native tool that c
 
 ## 8. Settings & toolchain
 
-- **Settings section** (Agent settings, `src/agent-window/settings/AgentSettings.tsx` + `useSettingsStore` + Rust `AppSettings`): "Code intelligence".
+- **Settings section** (Agent settings, `src/apps/agent/settings/AgentSettings.tsx` + `useSettingsStore` + Rust `AppSettings`): "Code intelligence".
   - Master enable (default off until stable — rust-analyzer is heavy).
   - Per-language: enable, command path override, extra args.
   - "Detect installed servers" action (check PATH) + status chips.
@@ -140,7 +151,7 @@ These make the agent navigate by **meaning**. Each is a small native tool that c
 - **Server not installed** — detect, fall back to shell checker, surface a settings hint. Never fake success.
 - **Diagnostics volume** — cap + summarize; don't dump 500 warnings into context.
 - **TS double-source** — for TS you can use either the LSP or one-shot `tsc --noEmit`. For agent `read_lints`, a one-shot compiler is often simpler than a persistent server; the plan supports **LSP-first with shell fallback**, so pick per-language.
-- **Concurrency** — tool calls run sequentially (`conversation.rs`), so no intra-turn races; still guard the manager with async-safe state (Arc + Mutex/DashMap), mirroring MCP.
+- **Concurrency** — tool calls run sequentially (the `conversation/` turn loop), so no intra-turn races; still guard the manager with async-safe state (Arc + Mutex/DashMap), mirroring MCP.
 - **Lifecycle** — lazy spawn, reuse per root+lang, restart-on-crash with capped backoff, shutdown on app exit / workspace switch.
 - **Resource gating** — master setting off by default; one rust-analyzer per workspace; kill idle servers after N minutes (phase 3).
 
@@ -161,19 +172,19 @@ Recommend **(A)** — the manager is inherently global/singleton and per-workspa
 This session established: **native tools are advertised to the model from the Rust registry only.** `AgentService.buildAvailableTools` filters out `nativeRustOwned` tools from `request.tools`, so the frontend TS definitions never reach the model for native tools. Therefore:
 - `read_lints` stays a **native Rust tool** → its real Rust implementation is what the model sees/executes. No frontend executor, no Monaco. Good — the whole design fits.
 - New semantic tools should be **native Rust** too (registered in `src-tauri/src/tools/…`), so they're single-source and never drift.
-- Keep the frontend TS definition (`src/tools/definitions/editor-tools.ts` for read_lints) synced for display/approval metadata only; it is NOT sent to the model.
+- Keep the frontend TS definition (`src/apps/agent/tools/definitions/editor-tools.ts` for read_lints) synced for display/approval metadata only; it is NOT sent to the model.
 
 ---
 
 ## 12. File-by-file work breakdown (execution checklist)
 
-**Phase 0 — make read_lints real via shell checkers (fast, high value, no persistent LSP):**
-- [ ] `src-tauri/src/services/diagnostics/` (new) — per-language runners: `cargo check --message-format=json`, `tsc --noEmit`, `pyright --outputjson`; parse → common `Diagnostic` struct; workspace/crate-root resolution; output cap.
-- [ ] `src-tauri/src/tools/shell_editor_todo/read_lints.rs` — replace the event-emit stub: call the diagnostics service, return structured diagnostics; keep `requires_permission=false`.
-- [ ] `src/services/agent-prompt.ts` — keep the "run read_lints after edits" line (now valid); tighten wording.
-- [ ] `src/tools/definitions/editor-tools.ts` — fix `read_lints` description to match reality.
-- [ ] `src/services/agent-ide-events.ts` — delete the dead `agent_read_lints` no-op listener (and the Rust event emit) once the stub is gone.
-- [ ] Tests: diagnostics parsing per language; read_lints returns real errors on a fixture with a known error.
+**Phase 0 — make read_lints real via shell checkers — ✅ SHIPPED 2026-08-15** (the logic lives
+in `tools/shell_editor_todo/read_lints.rs` itself: `tsc -b`, `cargo check --message-format=short`,
+Ruff/compileall, `node --check`; requested paths select checker families and filter diagnostic
+lines only — checkers stay project-wide; 12 focused tests pass). Checklist kept for the record:
+- [x] per-language checker runners with structured diagnostic output
+- [x] `read_lints.rs` returns real diagnostics (no frontend event dependency)
+- [x] `read_lints` description matches reality
 
 **Phase 1 — headless LspManager:**
 - [ ] `src-tauri/src/lsp/mod.rs`, `manager.rs`, `transport.rs` (Content-Length codec + child stdio), `servers.rs` (catalog + root resolution), `types.rs`, `diagnostics.rs`.
@@ -186,7 +197,7 @@ This session established: **native tools are advertised to the model from the Ru
 **Phase 2 — semantic tools:**
 - [ ] `src-tauri/src/tools/lsp_nav/` (new): `code_definition`, `code_references`, `code_hover`, `document_symbols`, `workspace_symbols`.
 - [ ] Register in `src-tauri/src/tools/*/mod.rs` + bump the registry counts (`tools/mod.rs BUILTIN_TOOL_COUNT`, bucket `TOOL_NAMES`, count tests).
-- [ ] Frontend definition mirrors (display/approval only) in `src/tools/definitions/`.
+- [ ] Frontend definition mirrors (display/approval only) in `src/apps/agent/tools/definitions/`.
 - [ ] Agent-window tool-card views/icons for the new tools (`AgentIcon`, `toolIcon`, `tool-result.ts`).
 
 **Phase 3 — settings, detection, polish:**

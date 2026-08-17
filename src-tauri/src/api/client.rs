@@ -174,9 +174,11 @@ impl ProviderKind {
     #[must_use]
     pub fn detect(provider_type: &str) -> Self {
         match provider_type.trim() {
-            "anthropic" | "minimax" => ProviderKind::Anthropic,
+            "anthropic" | "minimax" | "kenari-messages" => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
-            "openai-responses" | "openai_responses" => ProviderKind::OpenAIResponses,
+            "openai-responses" | "openai_responses" | "kenari-responses" => {
+                ProviderKind::OpenAIResponses
+            }
             "codex" => ProviderKind::Codex,
             _ => ProviderKind::OpenAICompat,
         }

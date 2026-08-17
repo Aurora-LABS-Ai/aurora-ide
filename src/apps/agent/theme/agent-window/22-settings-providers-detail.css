@@ -39,6 +39,42 @@
   overflow-y: auto;
   padding: 0 8px 8px;
 }
+/* ── Provider groups ──────────────────────────────────────────────────────
+   The rail holds two kinds of row — the providers Aurora ships with, then the
+   ones the user added — and they behave differently, so the boundary has to be
+   visible. Carried by a label plus one hairline, not by boxing each group:
+   the rail already has a border of its own, and a second frame inside it turns
+   a list into a stack of cards. */
+.agw-prov-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 10px 6px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-group-count {
+  letter-spacing: normal;
+}
+/* Second group only. The hairline spans the rail's inner width rather than the
+   padded row width, so it reads as a divider between sections instead of an
+   underline belonging to the label. */
+.agw-prov-group[data-divided] {
+  margin-top: 8px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-group-empty {
+  margin: 0;
+  padding: 2px 10px 6px;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
 .agw-prov-main {
   flex: 1;
   min-width: 0;
@@ -160,6 +196,16 @@
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--agw-border);
+}
+/* Sits where the delete control sits on a user-added provider, so the reason
+   the control is absent lands in the place the eye already went looking. */
+.agw-prov-detail-note {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
 }
 .agw-prov-remove-btn {
   display: inline-flex;

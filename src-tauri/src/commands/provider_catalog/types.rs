@@ -13,6 +13,14 @@ pub struct ProviderCatalogPreset {
     pub max_output_tokens: u32,
     pub supports_thinking: bool,
     pub supports_tool_stream: Option<bool>,
+    /// Whether the seeded models accept images. `None` = no.
+    ///
+    /// Seeding hardcoded "no vision" for every preset, so a vision-capable
+    /// model arrived with the capability switched off and the user had to
+    /// find the toggle in Settings › Providers before they could paste a
+    /// screenshot. A preset that knows its models see now says so.
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
     pub custom_models: Option<Vec<String>>,
     pub model_aliases: Option<HashMap<String, String>>,
     pub provider_type: String,
@@ -70,6 +78,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 32768,
             supports_thinking: true,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(vec![
                 "accounts/fireworks/routers/glm-5p2-fast".to_string(),
                 "accounts/fireworks/routers/kimi-k2p7-code-fast".to_string(),
@@ -100,6 +109,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 128000,
             supports_thinking: true,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(vec![
                 "glm-4.7".to_string(),
                 "glm-4.6".to_string(),
@@ -123,6 +133,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 8192,
             supports_thinking: true,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(vec![
                 "claude-opus-4-5-20251101".to_string(),
                 "claude-sonnet-4-20250514".to_string(),
@@ -167,6 +178,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 128000,
             supports_thinking: true,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(vec![
                 "MiniMax-M2.7".to_string(),
                 "MiniMax-M2.7-highspeed".to_string(),
@@ -215,6 +227,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 384_000,
             supports_thinking: true,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(vec![
                 "deepseek-v4-pro".to_string(),
                 "deepseek-v4-flash".to_string(),
@@ -274,7 +287,10 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             name: "OpenAI".to_string(),
             nickname: None,
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-5.6".to_string(),
+            // A named variant, not a bare `gpt-5.6` — the 5.6 generation
+            // ships only as sol/terra/luna, so the bare id 404s and would
+            // make this preset's DEFAULT model the one that cannot answer.
+            model: "gpt-5.6-terra".to_string(),
             // GPT-5.4 and up carry a ~1.05M context; the mini/nano tier
             // stays at 400K and the 4.x rows lower still. Per-model
             // overrides enrich from models.dev in the UI.
@@ -288,8 +304,9 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             // "OpenAI (Responses)" preset below exists to provide.
             supports_thinking: false,
             supports_tool_stream: None,
+            // The GPT-5.x rows all take images.
+            supports_vision: Some(true),
             custom_models: Some(vec![
-                "gpt-5.6".to_string(),
                 "gpt-5.6-terra".to_string(),
                 "gpt-5.6-luna".to_string(),
                 "gpt-5.5".to_string(),
@@ -301,7 +318,6 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 "gpt-4o".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
-                ("gpt-5.6".to_string(), "GPT-5.6".to_string()),
                 ("gpt-5.6-terra".to_string(), "GPT-5.6 Terra".to_string()),
                 ("gpt-5.6-luna".to_string(), "GPT-5.6 Luna".to_string()),
                 ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
@@ -321,7 +337,6 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             // from — so a seeded row and an enriched row agree instead of
             // the seed quietly reporting a stale rate.
             model_pricing: Some(HashMap::from([
-                ("gpt-5.6".to_string(), ModelPricing::usd(0.50, 5.0, 30.0)),
                 (
                     "gpt-5.6-terra".to_string(),
                     ModelPricing::usd(0.20, 2.0, 12.0),
@@ -358,43 +373,41 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             // reasoning persistence across tool calls), not a
             // replacement for the "openai" preset above.
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-5.6".to_string(),
+            // A named variant, not a bare `gpt-5.6` — the 5.6 generation
+            // ships only as sol/terra/luna, so the bare id 404s.
+            model: "gpt-5.6-sol".to_string(),
             // GPT-5.4 and up carry a ~1.05M context, 128K max output. The
             // mini/nano tier stays at 400K; per-model overrides enrich from
             // models.dev in the UI.
             context_window: 1_050_000,
             max_output_tokens: 128_000,
             supports_thinking: true,
-            supports_tool_stream: None,
+            // Both TRUE, not left to the seeding default. These models stream
+            // tool calls and take images, and seeding them as incapable meant
+            // the user had to switch both on by hand, per model, before the
+            // provider they had just added could do what it does.
+            supports_tool_stream: Some(true),
+            supports_vision: Some(true),
+            // The GPT-5.5 and GPT-5.6 families only. Everything older was
+            // retired upstream, and a preset that keeps offering a retired
+            // model is worse than one that offers nothing: the row looks
+            // selectable, is priced, and fails at the first request. Rows
+            // seeded before this trim stay in the user's database — the
+            // catalogue seeds, it does not prune — so a stale one is removed
+            // in Settings › Providers.
             custom_models: Some(vec![
-                "gpt-5.6".to_string(),
                 "gpt-5.6-sol".to_string(),
                 "gpt-5.6-terra".to_string(),
                 "gpt-5.6-luna".to_string(),
                 "gpt-5.5".to_string(),
                 "gpt-5.5-pro".to_string(),
-                "gpt-5.4".to_string(),
-                "gpt-5.4-pro".to_string(),
-                "gpt-5.4-mini".to_string(),
-                "gpt-5.4-nano".to_string(),
-                "gpt-5.3-codex".to_string(),
-                "gpt-5.2".to_string(),
-                "gpt-5.1".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
-                ("gpt-5.6".to_string(), "GPT-5.6".to_string()),
                 ("gpt-5.6-sol".to_string(), "GPT-5.6 Sol".to_string()),
                 ("gpt-5.6-terra".to_string(), "GPT-5.6 Terra".to_string()),
                 ("gpt-5.6-luna".to_string(), "GPT-5.6 Luna".to_string()),
                 ("gpt-5.5".to_string(), "GPT-5.5".to_string()),
                 ("gpt-5.5-pro".to_string(), "GPT-5.5 Pro".to_string()),
-                ("gpt-5.4".to_string(), "GPT-5.4".to_string()),
-                ("gpt-5.4-pro".to_string(), "GPT-5.4 Pro".to_string()),
-                ("gpt-5.4-mini".to_string(), "GPT-5.4 Mini".to_string()),
-                ("gpt-5.4-nano".to_string(), "GPT-5.4 Nano".to_string()),
-                ("gpt-5.3-codex".to_string(), "GPT-5.3 Codex".to_string()),
-                ("gpt-5.2".to_string(), "GPT-5.2".to_string()),
-                ("gpt-5.1".to_string(), "GPT-5.1".to_string()),
             ])),
             provider_type: "openai-responses".to_string(),
             // Reasoning models reject `temperature` on /responses; the
@@ -407,6 +420,47 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             model_pricing: None,
         },
         ProviderCatalogPreset {
+            id: "kenari".to_string(),
+            // "Kenari", capitalised, even though the brand styles itself
+            // lowercase. This string sits in a list beside Anthropic, OpenAI
+            // and DeepSeek, where a lowercase entry reads as a typo rather than
+            // as a style. The MARK keeps their lowercase "k" — that is the part
+            // that is actually their identity.
+            name: "Kenari".to_string(),
+            nickname: None,
+            // One account reaches 54 chat models across 17 vendors — Anthropic,
+            // OpenAI, Google, DeepSeek, Qwen, GLM, MiniMax, xAI — over ONE key
+            // and one address. The wire is chosen by `provider_type`
+            // (`kenari` / `kenari-messages` / `kenari-responses`); all three
+            // hang off this same base URL, because every client appends its own
+            // path to it (`/chat/completions`, `/messages`, `/responses`).
+            base_url: "https://kenari.id/v1".to_string(),
+            // NO seeded model, deliberately. The catalogue is live and moves
+            // (`GET /v1/models`, public, no key) and their own docs say not to
+            // hard-code a list. A seeded id would be a guess that goes stale
+            // and then 404s in the user's face — worse than an empty list with
+            // a working Add box. `model: ""` is what produces zero rows:
+            // `modelsFromPreset` filters empty keys out.
+            model: String::new(),
+            // Provider-level fallbacks only, for a model row added by hand
+            // before its real numbers are known. The live catalogue ranges from
+            // 32K to 1M, so this is a middle, not a claim.
+            context_window: 200_000,
+            max_output_tokens: 32_768,
+            supports_thinking: true,
+            supports_tool_stream: Some(true),
+            supports_vision: Some(true),
+            custom_models: Some(Vec::new()),
+            model_aliases: None,
+            provider_type: "kenari".to_string(),
+            default_temperature: None,
+            default_max_tokens: None,
+            requires_api_key: true,
+            // Priced in RUPIAH per million tokens, not dollars, so the USD
+            // helper here would be a lie. Left to the model rows.
+            model_pricing: None,
+        },
+        ProviderCatalogPreset {
             id: "lmstudio".to_string(),
             name: "LM Studio".to_string(),
             nickname: None,
@@ -416,6 +470,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 8192,
             supports_thinking: false,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(Vec::new()),
             model_aliases: None,
             provider_type: "lmstudio".to_string(),
@@ -434,6 +489,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             max_output_tokens: 8192,
             supports_thinking: false,
             supports_tool_stream: None,
+            supports_vision: None,
             custom_models: Some(Vec::new()),
             model_aliases: None,
             provider_type: "ollama".to_string(),
@@ -443,4 +499,56 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             model_pricing: None,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn preset(id: &str) -> ProviderCatalogPreset {
+        built_in_provider_presets()
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("{id} is not in the catalogue"))
+    }
+
+    #[test]
+    fn kenari_seeds_no_models_at_all() {
+        // Deliberate, and load-bearing. kenari's catalogue is live and moves —
+        // their own docs say not to hard-code a list — so any id shipped here
+        // is a guess with a shelf life. A stale seeded model does not fail
+        // quietly: it appears in the picker, looks selectable, and 404s on the
+        // first message.
+        //
+        // The empty `model` is what produces zero rows: the store's
+        // `modelsFromPreset` falls back to `[preset.model]` when
+        // `custom_models` is empty, then filters blank keys out. Putting any
+        // placeholder here would silently seed one model.
+        let kenari = preset("kenari");
+        assert!(kenari.model.is_empty(), "a non-empty model seeds a row");
+        assert_eq!(kenari.custom_models.as_deref(), Some(&[][..]));
+        assert!(kenari.model_aliases.is_none());
+    }
+
+    #[test]
+    fn kenari_ships_on_the_chat_wire_and_asks_for_a_key() {
+        let kenari = preset("kenari");
+        assert_eq!(kenari.provider_type, "kenari");
+        assert_eq!(kenari.base_url, "https://kenari.id/v1");
+        assert!(kenari.requires_api_key);
+        // Priced in Rupiah upstream, so the USD pricing helper would be wrong.
+        assert!(kenari.model_pricing.is_none());
+    }
+
+    #[test]
+    fn every_catalogue_id_is_unique() {
+        // Two presets sharing an id silently overwrite each other in the
+        // store's merge, and the loser's key and models disappear.
+        let presets = built_in_provider_presets();
+        let mut ids: Vec<&str> = presets.iter().map(|p| p.id.as_str()).collect();
+        ids.sort_unstable();
+        let count = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "duplicate provider id in the catalogue");
+    }
 }

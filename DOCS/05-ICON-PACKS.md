@@ -140,8 +140,8 @@ Optional flags:
 
 A runnable starter source pack lives here:
 
-- [manifest.json](E:\VOID-EDITOR\Aurora-Agent-IDE\examples\icon-packs\starter\manifest.json)
-- [icons](E:\VOID-EDITOR\Aurora-Agent-IDE\examples\icon-packs\starter\icons)
+- [manifest.json](../examples/icon-packs/starter/manifest.json)
+- [icons](../examples/icon-packs/starter/icons)
 
 Build it with:
 

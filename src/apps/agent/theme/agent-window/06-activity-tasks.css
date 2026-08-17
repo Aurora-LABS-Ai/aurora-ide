@@ -637,7 +637,31 @@
   font-size: var(--agw-fs-ui);
 }
 .agw-ctx-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   color: var(--agw-text-muted);
+}
+/* Says where a figure came from, next to the figure itself.
+ *
+ * Quiet by default because the ordinary case — the provider counted it — is
+ * reassurance, not news, and a loud badge on every hover would be noise. The
+ * `soft` tone marks the cases that are Aurora's own arithmetic, which the
+ * reader has to be able to spot without reading the small print. */
+.agw-ctx-chip {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-pill);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.02em;
+  color: var(--agw-text-subtle);
+  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+}
+.agw-ctx-chip[data-tone="soft"] {
+  color: var(--agw-warning);
+  background: color-mix(in srgb, var(--agw-warning) 14%, transparent);
 }
 .agw-ctx-val {
   font-variant-numeric: tabular-nums;

@@ -21,7 +21,7 @@ const MAX_FILE_SIZE: usize = 500 * 1024;
 /// Most lines any single call returns unless `force_full_content` is set.
 /// A request for more is CAPPED to this and told to page — never silently
 /// widened and never silently gutted.
-const MAX_SINGLE_READ_LINES: usize = 1_000;
+pub(super) const MAX_SINGLE_READ_LINES: usize = 1_000;
 
 /// Marker the runtime honours to leave a payload alone.
 ///
@@ -50,14 +50,15 @@ impl ToolExecutor for FileReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
-            description: "Read file content safely using exactly one form. For ONE file, pass a \
-                          non-empty `path` and optional start_line/end_line/max_lines; omit `paths`. \
-                          For SEVERAL files, pass a non-empty `paths` array; omit `path` and all line \
-                          range fields. Never send `paths: []`. A line range is returned EXACTLY as \
-                          asked, up to 1000 lines per call — ask for more and you get the first 1000 \
-                          plus the total, so continue with the next range. Files of 1000 lines or \
-                          fewer come back whole. To read a longer file in one call anyway, set \
-                          force_full_content: true. A missing path reports exists=false rather than failing."
+            description: "Read file content safely. For ONE file pass a non-empty `path`; for \
+                          SEVERAL pass a non-empty `paths` array. Send one or the other, never both, \
+                          and never `paths: []`. start_line/end_line/max_lines work with either form \
+                          — with `paths` the SAME range is read from every file in the batch. A line \
+                          range is returned EXACTLY as asked, up to 1000 lines per file per call — \
+                          ask for more and you get the first 1000 plus the total, so continue with \
+                          the next range. Without a range, files of 1000 lines or fewer come back \
+                          whole. To read a longer file in one call anyway, set force_full_content: \
+                          true. A missing path reports exists=false rather than failing."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -65,18 +66,18 @@ impl ToolExecutor for FileReadTool {
                     "path": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Single-file form only: one non-empty file path. Omit `paths`."
+                        "description": "One non-empty file path. Omit `paths`."
                     },
                     "paths": {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 20,
                         "items": { "type": "string", "minLength": 1 },
-                        "description": "Batch form only: 1-20 non-empty file paths. Omit `path` and line range fields; never send an empty array."
+                        "description": "1-20 non-empty file paths to read in parallel. Omit `path`; never send an empty array. A line range, if given, is applied to every file."
                     },
-                    "start_line": { "type": "number", "description": "Single-file form: 1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines." },
-                    "end_line": { "type": "number", "description": "Single-file form: 1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line." },
-                    "max_lines": { "type": "number", "description": "Single-file form: maximum lines to return from start_line (hard cap 1000)." },
+                    "start_line": { "type": "number", "description": "1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines per file. With `paths`, applies to every file." },
+                    "end_line": { "type": "number", "description": "1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line. With `paths`, applies to every file." },
+                    "max_lines": { "type": "number", "description": "Maximum lines to return from start_line (hard cap 1000 per file)." },
                     "force_full_content": { "type": "boolean", "description": "Return the whole file in one call with no line cap, however long it is. Use when you genuinely need the entire file; otherwise page with start_line/end_line." }
                 },
                 // NOTE: the "exactly one of `path` / `paths`" contract is
@@ -178,9 +179,9 @@ impl ToolExecutor for FileReadTool {
         // call fail for a reason only the prose description hinted at, which is
         // exactly the kind of unforced error that derails a turn.
         //
-        // So: normalise it to the single-file form and serve the read. Only an
-        // array of TWO OR MORE files with a line window stays an error, because
-        // there the window genuinely has no single referent.
+        // So: normalise it to the single-file form and serve the read. Two or more
+        // files with a window are served too, by the batch arm below — see the
+        // note there.
         let coerced_single: Option<String> = match paths {
             Some(arr) if wants_window && arr.len() == 1 => arr[0]
                 .as_str()
@@ -210,17 +211,15 @@ impl ToolExecutor for FileReadTool {
                     "every entry in `paths` must be a non-empty file path string".into(),
                 ));
             }
-            if wants_window {
-                // Reachable only for 2+ files now. Name the recovery that KEEPS
-                // the model's intent — telling it to drop the line range throws
-                // away what it actually asked for.
-                return Err(ToolError::InvalidInput(
-                    "a line range needs one file: re-issue with `path` set to the file you want \
-                     windowed (one call per file), or drop `start_line`/`end_line`/`max_lines` to \
-                     read all of `paths` in full"
-                        .into(),
-                ));
-            }
+            // A window across 2+ files used to be rejected as having "no single
+            // referent". It has an obvious one: the same range, read from each
+            // file. "Lines 210-520 of these four files" cannot mean anything
+            // else, and it is what a model asks for whenever it compares the
+            // same region across implementations — so the rejection cost a whole
+            // iteration and N error strings to teach a rule that only existed
+            // because nothing had implemented the batch case. `read_many` now
+            // slices per file with `slice_window`, the same function and the
+            // same 1000-line cap the single-file form uses.
 
             // Record each requested path as "seen" so a later file_edit knows
             // the agent looked at it, then delegate to the parallel reader.
@@ -502,7 +501,11 @@ fn count_lines(content: &str) -> usize {
 /// `capped` means the caller asked for a WIDER range than [`MAX_SINGLE_READ_LINES`]
 /// and got the first slice of it — the one case where the result is deliberately
 /// not what was requested, so the caller has to be told explicitly.
-fn slice_window(
+///
+/// Shared with [`super::multi_file_read`], which applies the same window to every
+/// file of a batch read — so a windowed `paths` call and a windowed `path` call
+/// slice by identical rules, including the per-file line cap.
+pub(super) fn slice_window(
     content: &str,
     total_lines: usize,
     start_line: Option<usize>,
@@ -706,24 +709,45 @@ mod tests {
         );
     }
 
-    /// A line window over TWO files has no single referent — still an error,
-    /// but the message must name the recovery that preserves the intent.
+    /// A line window over TWO OR MORE files used to be rejected as having no
+    /// single referent. It has an obvious one — the same range, read from each
+    /// file — and a model asks for it whenever it compares the same region
+    /// across implementations. Observed live: ten batch reads in one assistant
+    /// message, all ten rejected, a full iteration spent to learn a rule that
+    /// existed only because the batch case was unimplemented.
     #[tokio::test]
-    async fn rejects_line_ranges_on_multi_file_batch_reads() {
+    async fn a_line_range_over_several_files_reads_each_of_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let body: String = (1..=10).map(|n| format!("line{n}\n")).collect();
+        std::fs::write(tmp.path().join("one.md"), &body).unwrap();
+        std::fs::write(tmp.path().join("two.md"), &body).unwrap();
+
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
-        let err = tool
+        let out = tool
             .execute(
-                serde_json::json!({ "paths": ["one.md", "two.md"], "start_line": 5 }),
-                &ctx_for(None),
+                serde_json::json!({
+                    "paths": ["one.md", "two.md"],
+                    "start_line": 4,
+                    "end_line": 6,
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
             )
             .await
-            .unwrap_err();
-        let ToolError::InvalidInput(message) = err else {
-            panic!("expected InvalidInput, got {err:?}");
-        };
-        assert!(message.contains("a line range needs one file"), "{message}");
-        // Must point at the form that keeps the window, not just "omit them".
-        assert!(message.contains("`path`"), "{message}");
+            .expect("a windowed batch read is served, not rejected");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["filesRead"], 2);
+        for name in ["one.md", "two.md"] {
+            let file = parsed["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["path"] == name)
+                .unwrap_or_else(|| panic!("{name} missing from {parsed}"));
+            assert_eq!(file["content"], "line4\nline5\nline6");
+            assert_eq!(file["range"]["startLine"], 4);
+            assert_eq!(file["range"]["endLine"], 6);
+        }
     }
 
     /// The regression this fix exists for. `paths: ["x"]` + a line range is

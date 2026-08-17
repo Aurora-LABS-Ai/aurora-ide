@@ -12,6 +12,33 @@
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
   font-weight: var(--agw-fw-display);
+  overflow: hidden;
+}
+/* A full-bleed brand tile (kenari, and any other mark that ships with its own
+   background). Aurora stops painting its surface tint underneath, because the
+   two backgrounds would meet as a seam at the corners. The hairline border
+   stays: it seats the mark in the rail the same way the lettered tiles are
+   seated, and it keeps a light mark from bleeding into a dark panel. */
+.agw-prov-avatar[data-mark="image"] {
+  background: transparent;
+}
+/* A logo drawn as a glyph sits ON Aurora's surface, so the tint stays. Several
+   of these marks are pure black or pure white by brand, which would vanish
+   against one of the two themes — the surface behind them is what keeps every
+   row legible in both. */
+.agw-prov-avatar[data-mark="glyph"] svg {
+  display: block;
+  flex: none;
+}
+.agw-prov-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Matches the tile it sits in rather than re-declaring a radius, so a change
+     to the tile can never leave square corners poking out of a round frame. */
+  border-radius: inherit;
+  user-select: none;
 }
 .agw-prov-conn {
   display: grid;

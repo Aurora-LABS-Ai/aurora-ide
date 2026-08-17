@@ -21,7 +21,7 @@
 #![allow(dead_code)]
 
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -31,6 +31,46 @@ use uuid::Uuid;
 
 use super::error::RuntimeError;
 use super::types::{AttachedPromptChip, ConversationMessage, MessageRole};
+
+/// Where a session streams each message as it happens, so a turn that never
+/// finishes is not a turn that never existed.
+///
+/// The end-of-turn [`Session::save_to_path`] remains the authority — it rewrites
+/// the whole file and re-syncs this counter. The journal only closes the window
+/// between "the model said it" and "the turn returned", which on a long
+/// analysis run is twenty minutes of tool results held in nothing but RAM.
+///
+/// One journal per thread, and the registry holds one `Mutex<Session>` per
+/// thread, so appends are serialised per thread and two projects open at once
+/// write to two different files with no contention between them.
+#[derive(Debug, Default)]
+pub struct Journal {
+    inner: Option<JournalState>,
+}
+
+#[derive(Debug)]
+struct JournalState {
+    /// The thread's JSONL. Always the file `save_to_path` targets.
+    path: PathBuf,
+    /// How many messages are already on disk.
+    ///
+    /// Atomic so `save_to_path` can re-sync it through `&self`, and compared
+    /// against `messages.len()` on every append: any history edit the journal
+    /// cannot express as "one more line" (a Retry rewind, a compaction
+    /// rewrite, a `clear`) desyncs it, and it stays off until a full save
+    /// makes the file whole again.
+    written: std::sync::atomic::AtomicUsize,
+}
+
+impl Clone for Journal {
+    /// A clone is a snapshot or a fork, and it must NEVER inherit the
+    /// original's write target — two sessions appending to one file would
+    /// interleave two conversations into one thread. Forks get no journal
+    /// until something deliberately attaches one.
+    fn clone(&self) -> Self {
+        Self { inner: None }
+    }
+}
 
 /// Shared, lock-free-from-the-session-mutex slot for the mid-turn
 /// queued user message. Held both by the [`Session`] (so the
@@ -185,6 +225,10 @@ pub struct Session {
     /// Epoch millis before which compaction must not be retried. Set when
     /// [`Self::compaction_failures`] hits the ceiling.
     pub compaction_retry_after: Option<i64>,
+    /// Streams each appended message to disk. See [`Journal`]. Absent by
+    /// default: a session with no journal behaves exactly as it always did,
+    /// which is what every test and every non-persisting caller wants.
+    journal: Journal,
 }
 
 impl Session {
@@ -204,6 +248,7 @@ impl Session {
             rich_results: empty_rich_results_slot(),
             compaction_failures: 0,
             compaction_retry_after: None,
+            journal: Journal::default(),
         }
     }
 
@@ -284,11 +329,76 @@ impl Session {
         self
     }
 
+    /// Stream every appended message to this path as it happens.
+    ///
+    /// `already_written` is how many of the current messages are already in the
+    /// file — `messages.len()` for a session just loaded from it, `0` for a
+    /// fresh thread whose file does not exist yet.
+    pub fn attach_journal(&mut self, path: impl Into<PathBuf>, already_written: usize) {
+        self.journal.inner = Some(JournalState {
+            path: path.into(),
+            written: std::sync::atomic::AtomicUsize::new(already_written),
+        });
+    }
+
     /// Append a message to the session's history. Bumps `updated_at`
     /// to the current wall-clock millis.
+    ///
+    /// When a [`Journal`] is attached the message also reaches disk here, which
+    /// is the only reason this is the single append entry point: a turn appends
+    /// from `run_turn`, from the tool loop, and from three notice paths, and a
+    /// rule that has to be remembered at five call sites is a rule that will be
+    /// missed at one of them.
     pub fn append_message(&mut self, message: ConversationMessage) {
         self.messages.push(message);
+        self.journal_last();
         self.touch();
+    }
+
+    /// Write the message just pushed, if a journal is attached and still in
+    /// sync. Never fails the caller: the end-of-turn full save is the authority,
+    /// so a journal that cannot write costs crash-recovery, not the turn.
+    fn journal_last(&self) {
+        use std::sync::atomic::Ordering;
+
+        let Some(journal) = self.journal.inner.as_ref() else {
+            return;
+        };
+        let Some(message) = self.messages.last() else {
+            return;
+        };
+
+        // The journal can only ever say "one more line". Anything that rewrote
+        // history behind its back — a Retry rewind, a compaction replacing the
+        // head, `clear` — leaves the file describing a conversation that no
+        // longer exists, and appending to it would produce a transcript that
+        // never happened. Go quiet instead and let the next full save re-sync.
+        let expected = self.messages.len().saturating_sub(1);
+        if journal.written.load(Ordering::Relaxed) != expected {
+            return;
+        }
+
+        match Self::append_to_path(&journal.path, message) {
+            Ok(()) => {
+                journal
+                    .written
+                    .store(self.messages.len(), Ordering::Relaxed);
+            }
+            Err(error) => {
+                // Loud, and once: `written` is left behind `messages.len()`, so
+                // the desync check above silences every later append this turn
+                // rather than logging per message on a full disk.
+                crate::logging::log_error(
+                    "agent_runtime.session",
+                    &format!(
+                        "journal append failed for thread {} ({}): {error} — this turn is not \
+                         crash-recoverable; it still persists in full when the turn ends",
+                        self.thread_id,
+                        journal.path.display(),
+                    ),
+                );
+            }
+        }
     }
 
     /// Borrow the in-order message list.
@@ -398,22 +508,59 @@ impl Session {
     /// Empty lines are tolerated; malformed lines return
     /// [`RuntimeError::Serde`] with the line number embedded.
     pub fn from_jsonl(thread_id: impl Into<String>, jsonl: &str) -> Result<Self, RuntimeError> {
+        Self::parse_jsonl(thread_id, jsonl, "session jsonl")
+    }
+
+    /// Parse a JSONL transcript, tolerating exactly one torn final record.
+    ///
+    /// A message is appended as a single write while the turn runs, so a
+    /// process that dies mid-write can leave the last record cut short. That
+    /// record is unreadable — but it is ALSO the only one that can be, and
+    /// refusing the whole file for it would mean a crash costs the entire
+    /// thread instead of its last message. The tell is a missing trailing
+    /// newline: a complete record always ends with one, so a malformed final
+    /// line in a file that does not end in `\n` was interrupted, while a
+    /// malformed line anywhere else is real corruption and still fails loud.
+    fn parse_jsonl(
+        thread_id: impl Into<String>,
+        jsonl: &str,
+        source: &str,
+    ) -> Result<Self, RuntimeError> {
         let mut session = Session::new(thread_id);
+        let torn_tail_possible = !jsonl.is_empty() && !jsonl.ends_with('\n');
+        let total = jsonl.lines().count();
+
         for (idx, line) in jsonl.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let msg: ConversationMessage = serde_json::from_str(line).map_err(|e| {
-                // Wrap with line number for diagnostics. We cannot
-                // reach into serde_json::Error to re-tag, so we use
-                // InvalidState which carries the same severity.
-                RuntimeError::InvalidState(format!(
-                    "session jsonl line {} is malformed: {}",
-                    idx + 1,
-                    e
-                ))
-            })?;
-            session.messages.push(msg);
+            let parsed: Result<ConversationMessage, _> = serde_json::from_str(line);
+            match parsed {
+                Ok(msg) => session.messages.push(msg),
+                Err(e) if torn_tail_possible && idx + 1 == total => {
+                    crate::logging::log_warn(
+                        "agent_runtime.session",
+                        &format!(
+                            "{source} line {} is a torn final record ({} bytes, no trailing \
+                             newline) — dropping it and keeping the {} message(s) before it. A \
+                             turn was interrupted mid-write: {e}",
+                            idx + 1,
+                            line.len(),
+                            session.messages.len(),
+                        ),
+                    );
+                }
+                Err(e) => {
+                    // Wrap with line number for diagnostics. We cannot
+                    // reach into serde_json::Error to re-tag, so we use
+                    // InvalidState which carries the same severity.
+                    return Err(RuntimeError::InvalidState(format!(
+                        "{source} line {} is malformed: {}",
+                        idx + 1,
+                        e
+                    )));
+                }
+            }
         }
         if !session.messages.is_empty() {
             session.touch();
@@ -430,28 +577,15 @@ impl Session {
         path: impl AsRef<Path>,
     ) -> Result<Self, RuntimeError> {
         let path = path.as_ref();
-        let file = std::fs::File::open(path)?;
-        let reader = BufReader::new(file);
-        let mut session = Session::new(thread_id);
-        for (idx, line_res) in reader.lines().enumerate() {
-            let line = line_res?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let msg: ConversationMessage = serde_json::from_str(&line).map_err(|e| {
-                RuntimeError::InvalidState(format!(
-                    "session jsonl {} line {}: {}",
-                    path.display(),
-                    idx + 1,
-                    e
-                ))
-            })?;
-            session.messages.push(msg);
-        }
-        if !session.messages.is_empty() {
-            session.touch();
-        }
-        Ok(session)
+        // Read whole rather than stream: the torn-tail rule needs to know
+        // whether the file ends with a newline, which a line iterator has
+        // already thrown away by the time the last record fails to parse.
+        let text = std::fs::read_to_string(path)?;
+        Self::parse_jsonl(
+            thread_id,
+            &text,
+            &format!("session jsonl {}", path.display()),
+        )
     }
 
     /// Append one message to a JSONL file, creating the file (and
@@ -469,9 +603,18 @@ impl Session {
             std::fs::create_dir_all(parent)?;
         }
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let line = serde_json::to_string(message)?;
+        // ONE write for the line and its terminator. Two calls can be
+        // interrupted between them, leaving a record with no newline that reads
+        // as the start of the next one; a single append-mode write is the
+        // smallest unit the OS will tear.
+        let mut line = serde_json::to_string(message)?;
+        line.push('\n');
         file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
+        // Deliberately no `sync_all` here. The failure this guards against is
+        // the process dying — a crash, a kill, a closed window — and the page
+        // cache outlives all three. An fsync per message would buy power-loss
+        // durability at the cost of a disk sync inside the tool loop, and
+        // `save_to_path` already syncs when the turn ends.
         Ok(())
     }
 
@@ -499,6 +642,18 @@ impl Session {
             file.sync_all()?;
         }
         std::fs::rename(&tmp, path)?;
+
+        // The file now holds exactly this history, so a journal that went quiet
+        // after a rewind or a compaction is correct again and resumes here.
+        // Guarded on the path: saving a copy elsewhere (fork, duplicate, export)
+        // says nothing about the thread's own file.
+        if let Some(journal) = self.journal.inner.as_ref() {
+            if journal.path == path {
+                journal
+                    .written
+                    .store(self.messages.len(), std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         Ok(())
     }
 }
@@ -715,6 +870,112 @@ mod tests {
         assert!(lines[0].contains("\"role\":\"user\""));
         assert!(lines[1].contains("\"role\":\"assistant\""));
         assert!(jsonl.ends_with('\n'), "trailing newline expected");
+    }
+
+    /// The point of the whole change: a turn killed halfway is recoverable up
+    /// to its last completed message, instead of vanishing because nothing
+    /// reached disk until the turn returned.
+    #[test]
+    fn a_journalled_session_is_on_disk_before_the_turn_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+
+        let mut session = Session::new("t");
+        session.attach_journal(&path, 0);
+        session.append_message(user_msg("analyse this repo"));
+        session.append_message(assistant_msg("reading files"));
+
+        // No save_to_path call anywhere — this is mid-turn.
+        let recovered = Session::load_from_path("t", &path).expect("load");
+        assert_eq!(recovered.len(), 2, "both messages must already be durable");
+    }
+
+    /// A record cut short by the process dying costs that record, never the
+    /// thread. Without this, per-message journaling would make a crash worse
+    /// than the whole-file write it replaced.
+    #[test]
+    fn a_torn_final_record_is_dropped_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+
+        let mut session = Session::new("t");
+        session.attach_journal(&path, 0);
+        session.append_message(user_msg("first"));
+        session.append_message(assistant_msg("second"));
+
+        // Simulate the interrupted write: a partial record, no trailing newline.
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(r#"{"role":"assistant","blocks":[{"type":"text","tex"#);
+        std::fs::write(&path, &text).unwrap();
+
+        let recovered = Session::load_from_path("t", &path).expect("a torn tail must not brick");
+        assert_eq!(recovered.len(), 2);
+    }
+
+    /// A malformed line that is NOT the tail is real corruption — silently
+    /// dropping it would hand the model a conversation with a hole in it.
+    #[test]
+    fn a_malformed_line_before_the_end_still_fails_loud() {
+        let mut session = Session::new("t");
+        session.append_message(user_msg("first"));
+        let mut jsonl = session.to_jsonl().unwrap();
+        jsonl.push_str("{not json}\n");
+        jsonl.push_str(&serde_json::to_string(&assistant_msg("third")).unwrap());
+        jsonl.push('\n');
+
+        assert!(
+            Session::from_jsonl("t", &jsonl).is_err(),
+            "corruption in the middle is not a torn tail"
+        );
+    }
+
+    /// History rewrites the journal cannot express as "one more line" must
+    /// silence it, or the file would describe a conversation that never
+    /// happened. `save_to_path` makes the file whole and resumes it.
+    #[test]
+    fn a_rewind_silences_the_journal_until_the_next_full_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+
+        let mut session = Session::new("t");
+        session.attach_journal(&path, 0);
+        session.append_message(user_msg("first"));
+        session.append_message(assistant_msg("second"));
+
+        // Retry drops history behind the journal's back.
+        session.messages.truncate(1);
+        session.append_message(assistant_msg("replacement"));
+
+        // The stale file is untouched: still the two original messages, NOT a
+        // third line spliced onto a history that no longer exists.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk.lines().count(), 2);
+        assert!(!on_disk.contains("replacement"));
+
+        // A full save re-syncs, and journaling resumes from there.
+        session.save_to_path(&path).expect("save");
+        session.append_message(assistant_msg("after save"));
+        let recovered = Session::load_from_path("t", &path).expect("load");
+        assert_eq!(recovered.len(), 3);
+    }
+
+    /// A fork must never inherit its source's write target, or two threads
+    /// would interleave into one file.
+    #[test]
+    fn a_cloned_session_does_not_inherit_the_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+
+        let mut session = Session::new("t");
+        session.attach_journal(&path, 0);
+        session.append_message(user_msg("original"));
+
+        let mut fork = session.clone();
+        fork.append_message(assistant_msg("fork only"));
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(on_disk.lines().count(), 1, "the fork must not have written");
+        assert!(!on_disk.contains("fork only"));
     }
 
     #[test]

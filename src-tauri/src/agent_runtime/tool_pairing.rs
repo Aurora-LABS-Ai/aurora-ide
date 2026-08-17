@@ -58,8 +58,7 @@ pub const TRUNCATED_CALL: &str =
 
 /// Result text used by the request-build repair, where the reason a result is
 /// missing is no longer knowable.
-const UNRECORDED: &str =
-    "No result was recorded for this tool call — the turn ended before it \
+const UNRECORDED: &str = "No result was recorded for this tool call — the turn ended before it \
      completed. Nothing was executed.";
 
 /// Outcome of [`repair_tool_pairing`].

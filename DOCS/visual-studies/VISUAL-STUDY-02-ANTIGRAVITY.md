@@ -2,7 +2,7 @@
 
 **Probed:** 2026-08-09 · **Window:** "Refining S2 Studio Backend" (Electron) · **Model shown:** Claude Opus 4.6 (Thinking)
 **Method:** `qg-probe` UIA tree + click-through of live controls + framebuffer capture + per-pixel sampling.
-**Reference frames:** `DOCS/visual-studies/antigravity/01..05*.png`
+**Reference frames:** `antigravity/01..05*.png (same folder)`
 **Surfaces exercised by clicking:** activity disclosure (`Worked for …`), per-turn `Review`, auxiliary-pane `Overview`.
 
 > **Measurement note.** Display at **150%**; captures are physical px, all values below divided by 1.5 and

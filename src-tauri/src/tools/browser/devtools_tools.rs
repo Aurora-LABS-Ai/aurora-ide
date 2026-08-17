@@ -157,7 +157,8 @@ impl ToolExecutor for BrowserSetViewportTool {
         // that looks exactly like a broken layout. The panel's own background
         // now shows around the frame instead, and a capture contains the device
         // and nothing else.
-        self.manager.request_browser_frame(Some(width), Some(height));
+        self.manager
+            .request_browser_frame(Some(width), Some(height));
 
         // Recorded so every later status read and action result can say the
         // page is being rendered narrower than the panel. Without this the

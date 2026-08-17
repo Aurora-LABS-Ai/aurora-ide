@@ -29,6 +29,7 @@ import {
   formatProviderNickname,
 } from "@/kernel/lib/llm/provider-display";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import {
@@ -500,7 +501,13 @@ export const ModelSelector: React.FC<{
       items.sort((a, b) => a.sortOrder - b.sortOrder || a.label.localeCompare(b.label));
       ordered.push({ providerId, providerName: items[0].providerName, items });
     };
-    for (const p of providers) emit(p.id);
+    // The SAME order Settings › Providers draws: the ones Aurora ships with
+    // first, then the ones you added. Iterating the raw `providers` array here
+    // instead meant the two lists disagreed — the settings rail grouped and
+    // ordered them while this menu showed the store's insertion order, so the
+    // provider you found third in one place was seventh in the other.
+    const { builtIn, custom } = groupProviders(providers);
+    for (const p of [...builtIn, ...custom]) emit(p.id);
     for (const id of [...byProvider.keys()]) emit(id); // providers not in the list (defensive)
     return ordered;
     // `selectedModel` is read above (the selected row is lifted into its own

@@ -267,6 +267,17 @@ export const ContextRing: React.FC = () => {
   const breakdown = useAgentContextStore((s) =>
     currentThreadId ? s.breakdownByThread[currentThreadId] : undefined,
   );
+  /**
+   * True while our copy of the transcript predates work that has since
+   * happened — set on every completed request and again when the turn settles.
+   *
+   * The card has to know this, not just the store: a breakdown read mid-turn
+   * describes a turn that had not finished, and treating it as current is what
+   * made the cost sections vanish the moment streaming stopped.
+   */
+  const breakdownStale = useAgentContextStore((s) =>
+    currentThreadId ? !!s.staleBreakdowns[currentThreadId] : false,
+  );
   const loadBreakdown = useAgentContextStore((s) => s.loadBreakdown);
   const isStreaming = useAgentChatStore((s) =>
     currentThreadId ? !!s.liveTurns[currentThreadId] : false,
@@ -308,10 +319,29 @@ export const ContextRing: React.FC = () => {
    * about it — the transcript gains those requests only when the turn ends.
    * Once settled, the transcript wins: it is what survives a reload, and it
    * includes anything the event stream missed.
+   *
+   * The `breakdownStale` arm is what closes the hand-off between the two. The
+   * moment a turn settles, `isStreaming` flips to false while our transcript
+   * copy still predates that turn — so this used to swap from the live figures
+   * to a `lastTurn` describing the PREVIOUS turn, or, on a chat's first turn,
+   * to an empty array. An empty array prices to nothing, `CostSection` renders
+   * nothing for it, and both cost sections silently disappeared from an open
+   * card, reappearing seconds later when the fresh read landed. Keeping the
+   * live accumulator until the transcript catches up removes the gap: the
+   * numbers stay exactly as they were and are simply confirmed.
+   *
+   * Memoized because it feeds two other hooks: unmemoized, the `?? []` branch
+   * handed both a fresh array on every render, which re-priced the turn each
+   * time and — now that the refresh effect below keys off it — would have
+   * re-read the transcript on every render of a streaming turn.
    */
-  const turnGroups = isStreaming
-    ? liveTurnGroups ?? []
-    : breakdown?.lastTurn ?? liveTurnGroups ?? [];
+  const turnGroups = useMemo(
+    () =>
+      isStreaming || breakdownStale
+        ? liveTurnGroups ?? breakdown?.lastTurn ?? []
+        : breakdown?.lastTurn ?? liveTurnGroups ?? [],
+    [isStreaming, breakdownStale, liveTurnGroups, breakdown],
+  );
 
   const triggerRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
@@ -364,6 +394,32 @@ export const ContextRing: React.FC = () => {
       window.removeEventListener("resize", onMove);
     };
   }, [open, place]);
+
+  /**
+   * Keep "This chat" current while a turn runs.
+   *
+   * The conversation total comes from the transcript, which the store only
+   * re-reads when it has been marked stale — so with the card held open during
+   * a long turn it froze at whatever it read on hover, and the headline sat
+   * below the real spend by the whole running turn plus any compaction inside
+   * it. Re-reading on each completed request closes that gap: `onUsage` marks
+   * the copy stale, the request count below changes, and this pulls the fresh
+   * one.
+   *
+   * Keyed on STALENESS rather than on streaming. The old gate stopped firing
+   * the instant a turn settled — which is the one moment the stored copy is
+   * guaranteed to be out of date, since the turn's requests were only just
+   * written. An open card then sat on pre-turn numbers until something else
+   * happened to re-trigger a load, which is why the totals appeared to jump a
+   * few seconds after the turn finished rather than at the end of it.
+   *
+   * Deliberately still gated on `open` — parsing a long transcript for a card
+   * nobody is looking at is the waste `loadBreakdown` exists to avoid.
+   */
+  useEffect(() => {
+    if (!open) return;
+    loadCost();
+  }, [open, breakdownStale, loadCost]);
 
   // Prefer live usage; fall back to the thread's persisted snapshot.
   const usage: TokenUsage | null =
@@ -482,8 +538,21 @@ export const ContextRing: React.FC = () => {
               <span>Context window</span>
             </div>
 
+            {/* Where this number came from, said on the row itself.
+              *
+              * It used to be inferable only from a `~` prefix and a line of
+              * italic small print, and only when the news was bad — so the
+              * common question "is this the provider's count or Aurora's
+              * arithmetic?" had no answer on the card at all when the answer
+              * was the good one. A figure whose source you cannot see is a
+              * figure you end up double-checking. */}
             <div className="agw-ctx-row">
-              <span className="agw-ctx-label">Used</span>
+              <span className="agw-ctx-label">
+                Used
+                <span className="agw-ctx-chip" data-tone={isProjected || isEstimated ? "soft" : undefined}>
+                  {isProjected ? "projected" : isEstimated ? "our estimate" : "from provider"}
+                </span>
+              </span>
               <span className="agw-ctx-val" style={{ color }}>
                 {approx}{pct}%
               </span>

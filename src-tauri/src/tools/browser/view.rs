@@ -168,7 +168,6 @@ fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
     )
 }
 
-
 /// Read the visible elements, for a caller that already has a `BrowserManager`.
 ///
 /// Shared with the acting tools so `see: "view"` returns byte-identical shape to
@@ -184,7 +183,10 @@ pub async fn read(manager: &BrowserManager, scope: Option<&str>, viewport_only: 
         None => "null".to_string(),
     };
     match manager
-        .eval_with_result(AGENT_BROWSER_LABEL, &reader_expr(&scope_arg, viewport_only, true))
+        .eval_with_result(
+            AGENT_BROWSER_LABEL,
+            &reader_expr(&scope_arg, viewport_only, true),
+        )
         .await
     {
         Ok(result) if result.ok => result.value.unwrap_or(Value::Null),
@@ -258,7 +260,10 @@ Text and structure only. For how it LOOKS — spacing, alignment, colour, overfl
 
         let value = read(
             &self.manager,
-            input.get("scope").and_then(Value::as_str).filter(|s| !s.trim().is_empty()),
+            input
+                .get("scope")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty()),
             viewport_only,
         )
         .await;
@@ -308,7 +313,11 @@ mod tests {
     fn a_scope_is_json_encoded_not_string_pasted() {
         // A selector carrying a quote would otherwise terminate the literal and
         // execute as script — the page controls neither, but the agent does.
-        let js = reader_expr(&serde_json::json!("a[title=\"x\"]").to_string(), false, true);
+        let js = reader_expr(
+            &serde_json::json!("a[title=\"x\"]").to_string(),
+            false,
+            true,
+        );
         assert!(js.contains(r#"const SCOPE = "a[title=\"x\"]""#));
     }
 

@@ -71,10 +71,10 @@ mod devtools_tools;
 mod guide;
 /// Telling the user when the agent is driving the panel.
 mod halo;
-/// The visible cursor that makes a click look like a click.
-mod pointer;
 /// Real pointer and keyboard input.
 mod input_tools;
+/// The visible cursor that makes a click look like a click.
+mod pointer;
 /// Where the panel is, and what an action changed.
 ///
 /// `pub(crate)` for one reason: `BrowserManager::navigate` drops the browser's
@@ -471,10 +471,7 @@ where
 
     let mut out = serde_json::Map::new();
     out.insert("result".into(), result);
-    out.insert(
-        "changed".into(),
-        state::change_between(&before, &after),
-    );
+    out.insert("changed".into(), state::change_between(&before, &after));
     out.insert(
         "url".into(),
         after.get("url").cloned().unwrap_or(Value::Null),
@@ -905,7 +902,7 @@ when you have changed the source and genuinely need a fresh load."
                 "already_there": true,
                 "reloaded": false,
                 "note": "The panel was already on this page, so it was left as it is. Pass `reload: true` to force a fresh load.",
-                "state": before,
+                "state": state::presentable(before),
             })
             .to_string());
         }
@@ -923,7 +920,7 @@ when you have changed the source and genuinely need a fresh load."
             "panel_was_already_open": was_open,
             "already_there": already_there,
             "reloaded": already_there && force_reload,
-            "state": after,
+            "state": state::presentable(after),
         })
         .to_string())
     }

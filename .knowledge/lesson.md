@@ -2,6 +2,48 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-17 — A barrier that correctness needs is not a barrier the UI needs
+
+`join_all` over a tool batch is right for the model's copy: result blocks, spill and rich sidecars
+must follow call order. The UI events were emitted from the same fold, so they inherited a
+constraint that was never theirs — a 4 ms `grep` reported itself finished 24.79s late because a
+`read_tsc` ran beside it. Nothing was wrong with the ordering; it was applied to one consumer too many.
+- Ask per consumer: does THIS reader need the ordering, or did it just inherit the loop? A card is
+  read by one person about one call. History is read by the model as a sequence.
+- The user's report was "`file_read` is slower than before". It was 1–4 ms. What changed is how long
+  its card *looked* busy. **When someone reports a slowdown, measure the operation before believing
+  the operation slowed** — the session JSONL timestamps (epoch ms, not ISO) settle it in one pass:
+  assistant→tool delta is real tool time, tool→assistant delta is the model.
+- A deadlock-as-assertion test needs `Notify::notify_one` (parks a permit), never `notify_waiters`
+  (lost if the waiter has not registered) — otherwise the test hangs for the wrong reason.
+
+## 2026-08-16 — A "repair" pass ran on input that was never broken, and ate a valid `file_write`
+
+`parse_tool_input` ran `normalize_absolute_windows_paths` on EVERY tool call before parsing. That
+helper repairs unescaped Windows paths, matching `"` + drive letter + `:` + `\` — which is also how
+a **document whose first line is an absolute path** begins. It walked the whole 500-line `content`
+as a path, doubling every `\n` and ending the string at the first `\"`. A correct `file_write` came
+back "arguments did not parse", never executed, and failed identically on every retry because the
+corruption was deterministic. Repro: `a_text_value_beginning_with_a_drive_path_is_not_mangled`.
+- **A recovery pass must never touch input that already parses.** `parse_tool_input` now tries
+  `serde_json::from_str` first and returns on success; normalization is reached only by payloads
+  that genuinely failed. That ordering kills the whole class.
+- `is_drive_path_value` guards the recovery path too: reject a candidate with a real line break,
+  over 1,024 bytes, or containing an EVEN backslash run — an even run means the value is already
+  correct JSON, so its `\n` and `\"` mean what they say. A raw unescaped path has only odd runs.
+- **Do not scan for real newlines in raw tool JSON**: a newline arrives as the two characters
+  `\` `n`. The first guard checked for byte 0x0A, found none, and passed the payload through.
+- It looks exactly like a model problem — the model narrates "the payload was malformed" and
+  retries — and is not one.
+
+## 2026-08-15 — `cargo clippy` is not a quick gate on this crate
+
+`cargo check --lib` reuses its cache and returns in ~1s warm. `cargo clippy` uses a different
+fingerprint, so it re-analyses every dependency (candle, onnxruntime, tauri) — it ran 8 minutes
+before the owner killed it, for a refactor that moved code between files and changed no logic.
+For a move/split, the gate is `cargo check --lib --tests` plus `cargo test --lib`. Reach for
+clippy only when the change is about code quality and someone is willing to wait for it.
+
 ## 2026-08-15 — An HTTP status can lie; the body is what happened
 - A relay answered **HTTP 400** with `"type":"upstream_unavailable"` / `上游服务暂时不可用…请稍后重试`
   — its own dead upstream, reported as a client error. `map_status_error` sent every non-401/429/5xx
@@ -1858,3 +1900,43 @@ Also live in that file, and worth knowing before you count anything:
 - **Cancelling a turn is logged as an ERROR.** Rust gets this right (`conversation.rs` skips
   `ApiError::Cancelled`), but `agent-runtime-client.ts` `console.error`s every rejection including
   "request was cancelled", and the console mirror forwards it. Pressing Stop looks like a crash.
+
+## 2026-08-15 — Keep tree-sitter query nodes in their language grammar
+- A Python query patch accidentally used TypeScript's `export_statement`; `LangSet::new()` failed before any index could build.
+- Run the all-query compilation test after editing any `.scm`, and do not copy a node kind across language grammars without checking the parser's accepted query.
+- In import pairing, `([], [])` must precede the generic `(imported, [])` arm; an empty slice satisfies both and otherwise silently drops module-only imports.
+
+## 2026-08-17 — `changed` on browser actions only watched the page chrome, so real clicks read as dead
+- `state::change_between` compared URL, title, console counts, scroll and page height. A click that
+  swapped a label, mounted an out-of-flow overlay, flipped `aria-pressed` and appended a status line
+  moves none of them, so it answered `nothing_observable_changed: true` — and `guide.rs` tells the
+  model that result means a dead handler. Aurora contradicted the `see: "view"` payload in the same
+  result.
+- The snapshot now carries a `content` block (rendered-text length + stride-bounded hash, element
+  count, focus, and a MutationObserver count from the init script). Strip it with
+  `state::presentable` on every snapshot that goes back as an answer — it is a comparison basis, not
+  something the model should read.
+- A DOM mutation alone is deliberately NOT a change: React re-renders and CSS ticks would retire the
+  "nothing happened" signal entirely. It rides along as `dom_mutations` + a note instead.
+- Same file, same shape of bug: the snapshot read `entry.text` while the init script writes
+  `{ ts, level, message }`, so every `last_error` was null next to a non-zero error count.
+
+## 2026-08-17 — `@lobehub/icons`: import the LEAF component, never the barrel or the icon index
+
+Provider brand marks come from `@lobehub/icons` (MIT). Three import depths cost wildly different
+amounts, and only the third is safe:
+
+- `import { OpenAI } from "@lobehub/icons"` — the barrel re-exports `features`, which imports **all
+  332 icons** to build its lookup tables.
+- `from "@lobehub/icons/es/OpenAI"` — that index wires an `.Avatar` variant that pulls
+  `features/IconAvatar` → **`@lobehub/ui`** → a full component library plus `@emoji-mart/data`.
+- `from "@lobehub/icons/es/OpenAI/components/Mono"` (or `/Color`) — imports `../style` and
+  `react/jsx-runtime`, nothing else. **Use this one.**
+
+The middle form fails vitest outright (`@emoji-mart/data ... needs an import attribute of
+"type: json"`), which is the cheap way to notice you got it wrong — a production build would just
+tree-shake and hide the cost.
+
+Related: `useSettingsStore`'s preset↔DB merge used to hard-overwrite `providerType` from the
+catalogue on every load. That silently reset kenari's wire choice each launch; `resolveProviderType`
+now keeps a stored type that is a variant of the preset's (`kenari-messages` vs `kenari`).

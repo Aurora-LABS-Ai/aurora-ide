@@ -1613,7 +1613,8 @@ mod stream_error_tests {
     /// OpenAI's documented shape: `message` at the top level of the event.
     #[test]
     fn reads_top_level_message() {
-        let ev = json!({"type": "error", "code": "server_error", "message": "The model is overloaded"});
+        let ev =
+            json!({"type": "error", "code": "server_error", "message": "The model is overloaded"});
         assert_eq!(stream_error_message(&ev), "The model is overloaded");
     }
 
@@ -1807,7 +1808,10 @@ mod rejection_tests {
         let parts = trailing["content"].as_array().expect("content parts");
         assert!(
             parts.iter().any(|p| p["type"] == "input_text"
-                && p["text"].as_str().unwrap_or("").contains("match this mockup")),
+                && p["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("match this mockup")),
             "typed text survives as input_text"
         );
         assert!(

@@ -65,7 +65,10 @@ pub fn issues_path() -> std::path::PathBuf {
 /// as a real one.
 fn append_entry(path: &std::path::Path, thread_id: &str, report: &str) -> Result<(), ToolError> {
     let stamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%SZ");
-    let entry = format!("\n## {stamp} · thread `{thread_id}`\n\n{}\n", report.trim_end());
+    let entry = format!(
+        "\n## {stamp} · thread `{thread_id}`\n\n{}\n",
+        report.trim_end()
+    );
 
     // Append-only, created on first write. `append(true)` is the whole
     // concurrency story: two threads reporting at once interleave entries
@@ -247,7 +250,10 @@ Expected: the file exists, workspace_tree listed it\nImpact: had to glob for it"
         append_entry(&path, "thread-2", REPORT).expect("second");
 
         let text = std::fs::read_to_string(&path).expect("file exists");
-        assert!(text.contains("thread-1") && text.contains("thread-2"), "both kept");
+        assert!(
+            text.contains("thread-1") && text.contains("thread-2"),
+            "both kept"
+        );
         assert_eq!(text.matches("## ").count(), 2, "two stamped entries");
         let _ = std::fs::remove_file(&path);
     }

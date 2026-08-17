@@ -777,6 +777,69 @@ mod tests {
     }
 
     #[test]
+    fn a_local_binding_is_not_reported_as_a_usage_of_a_global_same_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/shell")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/commands")).unwrap();
+        std::fs::write(
+            dir.path().join("src/shell/discovery.rs"),
+            "pub fn scan() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/commands/mod.rs"),
+            "pub fn ripgrep_search() { let scan = 1; take(scan); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/commands/shell_profiles.rs"),
+            "use crate::shell::discovery;\npub fn shell_profiles_scan() { discovery::scan(); }\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let v = op_usages(&idx, "scan", Some("src/shell/discovery.rs"));
+        assert_eq!(v["resolved"], true, "{v}");
+        assert_eq!(v["totalUsages"], 1, "the local binding must not leak: {v}");
+        let callers: Vec<&str> = v["usedBy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["caller"].as_str().unwrap())
+            .collect();
+        assert_eq!(callers, vec!["shell_profiles_scan"], "{v}");
+    }
+
+    #[test]
+    fn usages_include_calls_through_an_import_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/a")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src/app")).unwrap();
+        std::fs::write(
+            dir.path().join("src/a/format.ts"),
+            "export function formatTokens() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/app/use.ts"),
+            "import { formatTokens as fmt } from '../a/format';\nexport function go() { return fmt(1); }\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        let v = op_usages(&idx, "formatTokens", Some("src/a/format.ts"));
+        assert_eq!(v["resolved"], true, "{v}");
+        assert_eq!(
+            v["totalUsages"], 1,
+            "the alias call must not disappear: {v}"
+        );
+        assert_eq!(
+            v["importedByFiles"], 1,
+            "the import is reported separately: {v}"
+        );
+        assert_eq!(v["usedBy"][0]["caller"], "go", "{v}");
+    }
+
+    #[test]
     fn an_ambiguous_name_refuses_to_answer_and_offers_the_choices() {
         // Found live against a real codebase: an advisory "ambiguous" FIELD was
         // simply dropped by the model, which then presented 27 merged callers of

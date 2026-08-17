@@ -94,6 +94,17 @@ pub fn log_warn(component: &str, message: &str) {
     write_entry("WARN", component, message);
 }
 
+/// A normal-operation trace.
+///
+/// Use for the facts you would want on disk when something later goes wrong and
+/// cannot be reproduced — how much work a call did, how long it took, how big
+/// its result was. A crash leaves no explanation of its own; the lines written
+/// just before it are what turn "it died" into "it died doing this".
+#[allow(dead_code)]
+pub fn log_info(component: &str, message: &str) {
+    write_entry("INFO", component, message);
+}
+
 /// A failure reported by the web layer.
 ///
 /// The React side has no console in a packaged build, so without this route

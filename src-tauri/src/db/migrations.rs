@@ -270,7 +270,10 @@ fn migration_v22(conn: &Connection) -> DbResult<()> {
         rows.flatten().collect()
     };
     if !existing.iter().any(|c| c == "temperature") {
-        conn.execute("ALTER TABLE provider_models ADD COLUMN temperature REAL", [])?;
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN temperature REAL",
+            [],
+        )?;
     }
     Ok(())
 }

@@ -65,6 +65,11 @@ pub mod file_workspace_search;
 pub mod permissions;
 pub mod plan;
 pub mod shell_editor_todo;
+/// Deliberately NOT part of [`register_builtin_tools`]: `tool_search` is
+/// constructed per turn against that turn's deferred catalogue and its live
+/// registry, so it has no fixed executor to pre-register and does not count
+/// toward [`BUILTIN_TOOL_COUNT`]. See `commands::agent_v2::tool_policy`.
+pub mod tool_search;
 pub mod transcript;
 
 /// Number of tools pre-populated in the production

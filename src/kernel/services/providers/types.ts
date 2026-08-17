@@ -274,4 +274,11 @@ export type ProviderType =
   | 'minimax'          // MiniMax M2 family (Anthropic-compatible by default)
   | 'lmstudio'         // LM Studio (local server, uses async-openai Rust crate)
   | 'ollama'           // Ollama (local server, uses async-openai Rust crate)
+  // kenari — one gateway account reachable over three different wires. These
+  // are three types rather than one type plus a wire field so that everything
+  // downstream (URL builder, streaming client, reasoning replay) is decided by
+  // a single value that cannot contradict itself.
+  | 'kenari'           // kenari over OpenAI Chat Completions (the default)
+  | 'kenari-messages'  // kenari over the Anthropic Messages shape
+  | 'kenari-responses' // kenari over the Responses shape (Codex wire)
   | 'custom';          // Custom OpenAI-compatible

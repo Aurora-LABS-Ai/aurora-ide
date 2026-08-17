@@ -180,6 +180,20 @@ const CHAPTER_INSTRUCTIONS = `## Chapters
 - Skip chapters entirely when the answer is a single step or a direct reply — one chapter over a short turn is noise.`;
 
 /**
+ * Three lines, gated on the same flag Rust reads.
+ *
+ * Without them the model sees `tool_search` in its roster and no reason to
+ * reach for it: the tools it fronts are absent, so nothing in the conversation
+ * suggests they exist. The tool's own description carries the name list and the
+ * query syntax — this is only the part the model has to know BEFORE it goes
+ * looking, which is that a missing tool is missing on purpose and reachable.
+ */
+const DEFERRED_TOOL_INSTRUCTIONS = `## Tools loaded on demand
+- Some tools are not loaded yet. You can see their names in \`tool_search\`'s description but not their parameters, and calling one before loading it will fail.
+- When a step needs one, call \`tool_search\` first — \`select:exact_name\` when you know the name, keywords when you do not — then call the tool itself on your next message. It stays loaded for the rest of the conversation.
+- Load only what the step actually needs; each loaded tool is paid for on every later request of this conversation.`;
+
+/**
  * The canvas pointer — two lines, on purpose.
  *
  * A live canvas has a real contract (one file, two legal imports, a required
@@ -343,6 +357,15 @@ export async function composeAgentSystemPrompt(options: {
    * asked for chapters the model had no tool to mark.
    */
   transcriptChapters?: boolean;
+  /**
+   * Include the on-demand tool instruction. Same rule as `transcriptChapters`:
+   * this must be the SAME value the caller sends as `deferTools` on the chat
+   * request, because that flag is what makes Rust withhold the buckets and
+   * advertise `tool_search`. Read the store here instead and a surface that
+   * never forwards the flag would tell the model to load tools that are all
+   * already loaded.
+   */
+  deferTools?: boolean;
 }): Promise<ComposedAgentPrompt> {
   const {
     basePrompt,
@@ -350,6 +373,7 @@ export async function composeAgentSystemPrompt(options: {
     mcpSummary,
     promptContext,
     transcriptChapters = false,
+    deferTools = false,
   } = options;
   const settings = useSettingsStore.getState();
   const hasActivePlan = await projectHasActivePlan(promptContext.workspacePath);
@@ -379,6 +403,12 @@ export async function composeAgentSystemPrompt(options: {
   // the model is never told to announce chapters it has no way to mark.
   if (transcriptChapters) {
     sections.push(CHAPTER_INSTRUCTIONS);
+  }
+
+  // Same contract as chapters above: the caller passes the value it sends on
+  // the chat request, so the instruction and the roster can never disagree.
+  if (deferTools) {
+    sections.push(DEFERRED_TOOL_INSTRUCTIONS);
   }
 
   // Global user instructions: a single, workspace-agnostic rule set the user

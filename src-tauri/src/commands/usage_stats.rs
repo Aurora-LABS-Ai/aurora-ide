@@ -374,7 +374,12 @@ fn compute_usage_stats(
             total_messages += 1;
 
             if message.role == MessageRole::User {
-                record_turn(open_turn.take(), &summary.id, &summary.title, &mut longest_task);
+                record_turn(
+                    open_turn.take(),
+                    &summary.id,
+                    &summary.title,
+                    &mut longest_task,
+                );
                 if message.timestamp > 0 {
                     open_turn = Some((message.timestamp, message.timestamp));
                 }
@@ -437,7 +442,12 @@ fn compute_usage_stats(
 
         // The thread ends with a turn still open — it is the last thing that
         // happened, and skipping it would lose the most recent long run.
-        record_turn(open_turn.take(), &summary.id, &summary.title, &mut longest_task);
+        record_turn(
+            open_turn.take(),
+            &summary.id,
+            &summary.title,
+            &mut longest_task,
+        );
     }
 
     let mut days: Vec<DayUsage> = days.into_values().collect();
@@ -512,7 +522,10 @@ mod tests {
 
     #[test]
     fn keeps_the_longest_run_not_the_last_one() {
-        assert_eq!(longest_of(&[(0, 5 * HOUR), (HOUR, HOUR + 60_000)]), Some(5 * HOUR));
+        assert_eq!(
+            longest_of(&[(0, 5 * HOUR), (HOUR, HOUR + 60_000)]),
+            Some(5 * HOUR)
+        );
     }
 
     #[test]

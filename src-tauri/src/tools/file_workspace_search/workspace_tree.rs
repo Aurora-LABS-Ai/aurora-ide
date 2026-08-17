@@ -96,6 +96,26 @@ const DEFAULT_MAX_NODES: usize = 500;
 const MIN_MAX_NODES: usize = 25;
 const MAX_MAX_NODES: usize = 20_000;
 
+/// Hard ceiling on the returned JSON, in bytes.
+///
+/// The node budget is an item count, and lesson.md (2026-08-10) records why
+/// that is not enough on its own: "a node budget is not a byte budget — the
+/// first rebuild fit 1,200 nodes and still produced 221 KB". The per-node
+/// estimate is ~98 bytes, but a tree of long nested paths blows straight
+/// through it — one measured call on a pnpm monorepo produced 80 KB against a
+/// 500-node budget.
+///
+/// 48 KiB sits under the tool's 64 KiB history cap with room for the envelope,
+/// so a result never reaches the generic compactor that once shredded a tree to
+/// 47 of 3,066 entries.
+const MAX_TREE_BYTES: usize = 48 * 1024;
+
+/// Attempts allowed at getting under [`MAX_TREE_BYTES`]. Each retry halves the
+/// per-directory quota, so this covers a 256× overshoot before giving up; a
+/// single path long enough to exceed the cap on its own is the only way out,
+/// and that ships oversized with a loud log rather than looping forever.
+const MAX_BUDGET_PASSES: usize = 8;
+
 /// Files above this size report `size` + `largeFile` but no `lineCount`.
 /// Counting newlines in an 11 MB generated JSON blob tells the model nothing
 /// it will act on, and it was most of the old implementation's I/O.
@@ -237,14 +257,114 @@ impl ToolExecutor for WorkspaceTreeTool {
             )));
         }
 
-        let mut arena = walk(&target, depth, include_hidden)
-            .await
-            .map_err(ToolError::Execution)?;
+        // Every stage is timed and logged. A crash leaves no note of its own,
+        // so the last line written before one is what says which call, over
+        // which directory, at which stage the process was in when it died.
+        let started = std::time::Instant::now();
+        let label = target.to_string_lossy().to_string();
+        crate::logging::log_info(
+            "tool.workspace_tree",
+            &format!(
+                "start path={label} depth={depth} hidden={include_hidden} \
+                 stats={include_file_stats} max_nodes={max_nodes}"
+            ),
+        );
+
+        let mut arena = walk(&target, depth, include_hidden).await.map_err(|e| {
+            crate::logging::log_error(
+                "tool.workspace_tree",
+                &format!("walk failed path={label}: {e}"),
+            );
+            ToolError::Execution(e)
+        })?;
         let discovered = arena.nodes.len();
+        let walk_ms = started.elapsed().as_millis();
+        crate::logging::log_info(
+            "tool.workspace_tree",
+            &format!("walked path={label} nodes={discovered} in {walk_ms}ms"),
+        );
 
         ctx.bail_if_cancelled()?;
+        // Snapshot the untrimmed shape. Trimming is destructive — it takes
+        // children out of their parents — so a second, tighter pass applied on
+        // top of the first would compute each "+N more" from an already-short
+        // list and under-report what was left out. Every retry restores this
+        // first, so the counts always describe the real directory.
+        let pristine_roots = arena.roots.clone();
+        let pristine_children: Vec<Vec<usize>> =
+            arena.nodes.iter().map(|n| n.children.clone()).collect();
+
         let quota = fit_quota(&arena, max_nodes);
         apply_quota(&mut arena, quota);
+
+        let stats_started = std::time::Instant::now();
+        let (files_read, files_skipped) = if include_file_stats {
+            ctx.bail_if_cancelled()?;
+            attach_stats(&mut arena).await?
+        } else {
+            (0, 0)
+        };
+        let stats_ms = stats_started.elapsed().as_millis();
+        if include_file_stats {
+            crate::logging::log_info(
+                "tool.workspace_tree",
+                &format!(
+                    "stats path={label} counted={files_read} too_big={files_skipped} in {stats_ms}ms"
+                ),
+            );
+        }
+
+        // Paths are emitted relative to the WORKSPACE root (not to `target`),
+        // so a path from a drilled-in call is still directly usable by
+        // `file_read` and matches what `glob` and `grep` return.
+        let path_base = ctx.workspace_root.clone().unwrap_or_else(|| target.clone());
+
+        // Render, measure the REAL bytes, and tighten if the estimate was wrong.
+        // See `MAX_TREE_BYTES`: the node budget alone has already shipped a
+        // 221 KB "1,200 node" result once.
+        let mut tree = render_roots(&arena, &path_base);
+        let mut quota_now = if quota == usize::MAX {
+            // Nothing was trimmed, so there is no quota to halve yet. Start from
+            // the widest directory — the first halving then actually bites.
+            arena
+                .nodes
+                .iter()
+                .map(|n| n.children.len())
+                .fold(arena.roots.len(), usize::max)
+        } else {
+            quota
+        };
+
+        for pass in 1..=MAX_BUDGET_PASSES {
+            let bytes = measured_bytes(&tree);
+            if bytes <= MAX_TREE_BYTES {
+                break;
+            }
+            if quota_now <= 1 {
+                crate::logging::log_error(
+                    "tool.workspace_tree",
+                    &format!(
+                        "path={label} is {bytes} bytes at the tightest possible listing \
+                         (one entry per directory) — a single path is long enough to exceed \
+                         the {MAX_TREE_BYTES} cap on its own. Returning it oversized."
+                    ),
+                );
+                break;
+            }
+            let tightened = (quota_now / 2).max(1);
+            crate::logging::log_warn(
+                "tool.workspace_tree",
+                &format!(
+                    "path={label} rendered {bytes} bytes over the {MAX_TREE_BYTES} cap; \
+                     per-directory quota {quota_now} -> {tightened} (pass {pass})"
+                ),
+            );
+            reset_selection(&mut arena, &pristine_roots, &pristine_children);
+            apply_quota(&mut arena, tightened);
+            quota_now = tightened;
+            tree = render_roots(&arena, &path_base);
+        }
+
         let returned = arena.nodes.iter().filter(|node| node.kept).count();
         let elided_total: usize = arena
             .nodes
@@ -252,24 +372,6 @@ impl ToolExecutor for WorkspaceTreeTool {
             .filter(|n| n.kept)
             .map(|n| n.elided)
             .sum();
-
-        let (files_read, files_skipped) = if include_file_stats {
-            ctx.bail_if_cancelled()?;
-            attach_stats(&mut arena).await?
-        } else {
-            (0, 0)
-        };
-
-        // Paths are emitted relative to the WORKSPACE root (not to `target`),
-        // so a path from a drilled-in call is still directly usable by
-        // `file_read` and matches what `glob` and `grep` return.
-        let path_base = ctx.workspace_root.clone().unwrap_or_else(|| target.clone());
-        let tree: Vec<Value> = arena
-            .roots
-            .iter()
-            .filter(|&&idx| arena.nodes[idx].kept)
-            .map(|&idx| render(&arena, idx, &path_base))
-            .collect();
 
         let mut payload = json!({
             "success": true,
@@ -298,8 +400,49 @@ impl ToolExecutor for WorkspaceTreeTool {
             ));
         }
 
-        Ok(serde_json::to_string(&payload).unwrap())
+        let body = serde_json::to_string(&payload).unwrap();
+        crate::logging::log_info(
+            "tool.workspace_tree",
+            &format!(
+                "done path={label} nodes={returned}/{discovered} elided={elided_total} \
+                 bytes={} total={}ms",
+                body.len(),
+                started.elapsed().as_millis()
+            ),
+        );
+        Ok(body)
     }
+}
+
+/// Put the arena back to its untrimmed shape so a tighter quota can be applied
+/// from scratch. Without this, each retry would trim an already-trimmed tree and
+/// report "+N more" counts smaller than the truth.
+fn reset_selection(arena: &mut Arena, roots: &[usize], children: &[Vec<usize>]) {
+    arena.roots = roots.to_vec();
+    for (idx, node) in arena.nodes.iter_mut().enumerate() {
+        node.kept = true;
+        node.elided = 0;
+        node.children = children[idx].clone();
+    }
+}
+
+/// Render every kept root. Split out so the byte-budget loop can re-render
+/// after tightening without duplicating the filter.
+fn render_roots(arena: &Arena, base: &Path) -> Vec<Value> {
+    arena
+        .roots
+        .iter()
+        .filter(|&&idx| arena.nodes[idx].kept)
+        .map(|&idx| render_iterative(arena, idx, base))
+        .collect()
+}
+
+/// Serialized size of the tree as it will actually be sent.
+///
+/// Measured, not estimated. The whole point of the byte cap is that the
+/// per-node estimate has been wrong by 4× in production.
+fn measured_bytes(tree: &[Value]) -> usize {
+    serde_json::to_string(tree).map(|s| s.len()).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -625,24 +768,24 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
             break;
         }
         saw_any_byte = true;
-        for &byte in &buffer[..read] {
-            match byte {
-                b'\r' => {
-                    separators += 1;
-                    previous_was_cr = true;
-                }
-                // Only counts on its own — the CR of a CRLF pair already did.
-                // The flag survives across buffer boundaries, so a pair split
-                // between two reads is still counted once.
-                b'\n' => {
-                    if !previous_was_cr {
-                        separators += 1;
-                    }
-                    previous_was_cr = false;
-                }
-                _ => previous_was_cr = false,
-            }
+        let chunk = &buffer[..read];
+
+        // Scan with `memchr` rather than a byte-at-a-time match: it is the
+        // vectorised search ripgrep and tokei use, and line counting is the
+        // only per-file work this tool does. Same arithmetic as before, done in
+        // three passes over the chunk instead of one branch per byte —
+        // CR and LF each end a line, and a CRLF pair ends only one.
+        let lf = memchr::memchr_iter(b'\n', chunk).count();
+        let cr = memchr::memchr_iter(b'\r', chunk).count();
+        let crlf = memchr::memmem::find_iter(chunk, b"\r\n").count();
+        separators += lf + cr - crlf;
+
+        // A CRLF split across two reads: the CR closed the previous chunk and
+        // the LF opens this one. Both were counted, and the pair is one line.
+        if previous_was_cr && chunk.first() == Some(&b'\n') {
+            separators -= 1;
         }
+        previous_was_cr = chunk.last() == Some(&b'\r');
     }
 
     Ok(if saw_any_byte { separators + 1 } else { 0 })
@@ -665,7 +808,67 @@ fn relative_path(path: &str, base: &Path) -> String {
         .map_or(normalized.clone(), str::to_string)
 }
 
-fn render(arena: &Arena, idx: usize, base: &Path) -> Value {
+/// Build the nested JSON without recursion.
+///
+/// The shape is identical to what the tool has always emitted — the agent
+/// window's tree card reads `children` / `elided` / `depthLimited` / `lineCount`
+/// and must keep getting exactly those. Only the traversal changed.
+///
+/// It was the last recursive walk in this file: everything else (the directory
+/// walk, the budget passes) already uses an explicit stack precisely so a
+/// pathological tree cannot exhaust the call stack, and this one was the
+/// exception. Depth is capped by the `depth` argument so it was unlikely to
+/// overflow in practice, but "unlikely" is what a crash report is made of, and
+/// the iterative version costs nothing.
+///
+/// Two passes over an explicit stack: descend marking each node, then assemble
+/// children into parents bottom-up.
+fn render_iterative(arena: &Arena, root: usize, base: &Path) -> Value {
+    enum Step {
+        Enter(usize),
+        Assemble(usize),
+    }
+
+    let mut stack = vec![Step::Enter(root)];
+    // Finished JSON per node index, taken by its parent when it assembles.
+    let mut done: std::collections::HashMap<usize, Value> = std::collections::HashMap::new();
+
+    while let Some(step) = stack.pop() {
+        match step {
+            Step::Enter(idx) => {
+                stack.push(Step::Assemble(idx));
+                for &child in &arena.nodes[idx].children {
+                    if arena.nodes[child].kept {
+                        stack.push(Step::Enter(child));
+                    }
+                }
+            }
+            Step::Assemble(idx) => {
+                let mut payload = render_node(arena, idx, base);
+                if arena.nodes[idx].is_dir {
+                    let children: Vec<Value> = arena.nodes[idx]
+                        .children
+                        .iter()
+                        .filter(|&&c| arena.nodes[c].kept)
+                        .filter_map(|c| done.remove(c))
+                        .collect();
+                    if !children.is_empty() {
+                        payload
+                            .as_object_mut()
+                            .expect("object literal")
+                            .insert("children".into(), Value::Array(children));
+                    }
+                }
+                done.insert(idx, payload);
+            }
+        }
+    }
+
+    done.remove(&root).unwrap_or_else(|| json!({}))
+}
+
+/// One node's own fields, without its children.
+fn render_node(arena: &Arena, idx: usize, base: &Path) -> Value {
     let node = &arena.nodes[idx];
     let mut payload = json!({
         "name": node.name,
@@ -707,21 +910,150 @@ fn render(arena: &Arena, idx: usize, base: &Path) -> Value {
         if node.elided > 0 {
             map.insert("elided".into(), json!(node.elided));
         }
-        let children: Vec<Value> = node
-            .children
-            .iter()
-            .filter(|&&c| arena.nodes[c].kept)
-            .map(|&c| render(arena, c, base))
-            .collect();
-        // An empty array is omitted rather than emitted: at ~15 bytes on every
-        // leaf directory it was one of the larger costs in the payload, and it
-        // said nothing — the markers above already explain any directory that
-        // was not walked, and a directory with neither is genuinely empty.
-        if !children.is_empty() {
-            map.insert("children".into(), json!(children));
-        }
+        // `children` is attached by `render_iterative`, and an empty array is
+        // omitted rather than emitted: at ~15 bytes on every leaf directory it
+        // was one of the larger costs in the payload, and it said nothing — the
+        // markers above already explain any directory that was not walked, and
+        // a directory with neither is genuinely empty.
     }
     payload
+}
+
+#[cfg(test)]
+mod byte_budget {
+    use super::*;
+    use crate::agent_runtime::tool_executor::{ToolContext, ToolExecutor};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    fn ctx_for(workspace: std::path::PathBuf) -> ToolContext {
+        ToolContext {
+            allow_outside_workspace: false,
+            turn_id: "t".into(),
+            tool_call_id: "c".into(),
+            thread_id: "s".into(),
+            workspace_root: Some(workspace),
+            cancel_token: CancellationToken::new(),
+            spill_dir: None,
+        }
+    }
+
+    /// The lesson this encodes (lesson.md, 2026-08-10): a node budget is not a
+    /// byte budget. Long nested paths blow through the ~98-bytes-per-node
+    /// estimate, and a call that fit its node count still shipped 221 KB once.
+    /// Now the real size is measured and the quota tightened until it fits.
+    #[tokio::test]
+    async fn a_wide_tree_of_long_names_is_capped_by_bytes_not_node_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Names long enough that a few hundred nodes exceed the cap on their own.
+        let long = "a_very_long_directory_name_that_eats_the_byte_budget".repeat(3);
+        for d in 0..40 {
+            let dir = tmp.path().join(format!("{long}_{d}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for f in 0..40 {
+                std::fs::write(dir.join(format!("{long}_{f}.ts")), "x\n").unwrap();
+            }
+        }
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(WorkspaceTreeTool);
+        let out = tool
+            .execute(
+                serde_json::json!({ "depth": 3, "max_nodes": 20_000 }),
+                &ctx_for(tmp.path().to_path_buf()),
+            )
+            .await
+            .expect("ok");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let tree_bytes = serde_json::to_string(&parsed["tree"]).unwrap().len();
+        assert!(
+            tree_bytes <= MAX_TREE_BYTES,
+            "tree was {tree_bytes} bytes, over the {MAX_TREE_BYTES} cap"
+        );
+        assert_eq!(
+            parsed["success"], true,
+            "it must still return a usable tree"
+        );
+        assert!(
+            !parsed["tree"].as_array().unwrap().is_empty(),
+            "capping must trim, never empty the result"
+        );
+    }
+}
+
+#[cfg(test)]
+mod repro {
+    use super::*;
+    use crate::agent_runtime::tool_executor::{ToolContext, ToolExecutor};
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    /// Reproduction for the 2026-08-17 stack overflow: seven concurrent
+    /// `workspace_tree` calls with `include_file_stats: true` over a pnpm
+    /// monorepo, which is the exact batch the agent issued when the process
+    /// died with `0xC00000FD`.
+    ///
+    /// Ignored because it needs a checkout that is not part of this repo. Run
+    /// with the path in `AURORA_REPRO_ROOT`:
+    /// `cargo test --lib repro -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "needs AURORA_REPRO_ROOT pointing at a large pnpm monorepo"]
+    async fn seven_concurrent_trees_with_file_stats() {
+        let Ok(root) = std::env::var("AURORA_REPRO_ROOT") else {
+            panic!("set AURORA_REPRO_ROOT to the monorepo checkout");
+        };
+        let root = std::path::PathBuf::from(root);
+        assert!(root.is_dir(), "{} is not a directory", root.display());
+
+        let calls = [
+            ("apps", 4, 500),
+            ("packages/boot", 4, 500),
+            ("packages/api", 4, 500),
+            ("packages/host", 4, 500),
+            ("packages/client", 3, 700),
+            ("python", 4, 300),
+            ("packages/sdk", 4, 300),
+        ];
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(WorkspaceTreeTool);
+        let outcomes = futures_util::future::join_all(calls.iter().map(|(path, depth, max)| {
+            let tool = tool.clone();
+            let ctx = ToolContext {
+                allow_outside_workspace: false,
+                turn_id: "repro".into(),
+                tool_call_id: (*path).into(),
+                thread_id: "repro".into(),
+                workspace_root: Some(root.clone()),
+                cancel_token: CancellationToken::new(),
+                spill_dir: None,
+            };
+            async move {
+                tool.execute(
+                    serde_json::json!({
+                        "path": path,
+                        "depth": depth,
+                        "include_hidden": false,
+                        "include_file_stats": true,
+                        "max_nodes": max,
+                    }),
+                    &ctx,
+                )
+                .await
+            }
+        }))
+        .await;
+
+        for (call, outcome) in calls.iter().zip(&outcomes) {
+            println!(
+                "{}: {}",
+                call.0,
+                match outcome {
+                    Ok(body) => format!("ok, {} bytes", body.len()),
+                    Err(e) => format!("ERR {e}"),
+                }
+            );
+        }
+    }
 }
 
 #[cfg(test)]

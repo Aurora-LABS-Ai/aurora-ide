@@ -1,53 +1,80 @@
 # Logs
 logs
 *.log
+/logs.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-src-tauri/target/
-src-tauri/crispasr-runtime/
-graphify-out
 
-.codex
+# Dependencies
 node_modules
-fireworks-docs
-local-llm-docs/
-ollama-rs.md
-raw-output.md
+
 # Build outputs
 dist
 dist-ssr
+build
+target
 *.local
 void-main
+
 # Tauri build artifacts
 src-tauri/target/
 src-tauri/crispasr-runtime/
+# Tauri generated files (keep schemas, ignore other generated files)
+src-tauri/gen/
+!src-tauri/gen/schemas/
+
 # Vendored native runtime DLLs (ONNX Runtime / DirectML).
 # Each developer populates these locally; see src-tauri/runtime/onnxruntime/.
 src-tauri/runtime/onnxruntime/*.dll
 src-tauri/runtime/onnxruntime/*.lib
 src-tauri/runtime/onnxruntime/*.pdb
-# Note: Cargo.lock should be committed for applications
-AGENTS.md
-docs-lm-studio
-# Tauri generated files (keep schemas, ignore other generated files)
-src-tauri/gen/
-!src-tauri/gen/schemas/
-PROJECT_ANALYSIS.md
+
 # Database files
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
-build
-CLAUDE.md
+
 # App data directories
 .aurora/
 *.aurora
-target
+
+# Local reference dumps / one-off analysis (not app source)
+fireworks-docs
+local-llm-docs/
+docs-lm-studio
+ollama-rs.md
+raw-output.md
+PROJECT_ANALYSIS.md
+/deepseek-harness.txt
+/global-AGENTS.md
+/tsco.json
+example.txt
+
+# Graphify / code-index agent graphs — generated, huge, per-machine.
+graphify-out/
+.graphifyignore
+.codegraph/
+
+# Local agent working memory (lessons / scratch progress). Not source.
+.knowledge/
+
+# Machine-specific MCP configs (absolute local paths). Never source.
+.mcp.json
+
+# Local smoke harnesses / pasted snippets
+/scratch/
+/tasks/
+
+# Cloned third-party repos kept locally for reference/comparison (other
+# agent harnesses, SDKs). Read-only study material — never our source, and
+# vendoring someone else's git history into ours is not the intent.
+/thirdparty/
+
 # AI/ML tool directories — agent state, skill packs, IDE extensions,
 # never part of source. These are all per-developer; checking them in
 # means our git history catches every keystroke another tool makes.
@@ -68,22 +95,10 @@ CLAUDE.md
 GEMINI.md
 CODEX.md
 
-# Local scratch / pasted snippets (not app source)
-example.txt
-
 # Junk dirs created by misconfigured tools writing to `undefined/...`
 # (literal "undefined" string from `path.join(process.env.MISSING, ...)`).
 # We've shipped at least one HuggingFace cache into here by accident.
 /undefined/
-
-# Agent task notes (lessons learned, todo lists) that live next to
-# the code but aren't project source.
-/tasks/
-
-# Cloned third-party repos kept locally for reference/comparison (other
-# agent harnesses, SDKs). Read-only study material — never our source, and
-# vendoring someone else's git history into ours is not the intent.
-/thirdparty/
 
 # OS files
 .DS_Store
@@ -114,15 +129,15 @@ desktop.ini
 .openclaude/settings.local.json
 .openclaude-profile.json
 
+# Python bytecode from local scratch scripts
+__pycache__/
+*.pyc
+*.pyo
+
 # Temporary files
 *.tmp
 *.temp
 nul
-.gitnexus
-
-# Third-party IDE / agentic tooling state (Refact.ai buddy, etc.) that
-# lives inside the workspace but isn't part of the project source.
-.refact/
 
 # Loose screenshots dropped at the repo root while debugging — not source.
 /image.png

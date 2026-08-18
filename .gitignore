@@ -55,10 +55,14 @@ PROJECT_ANALYSIS.md
 /tsco.json
 example.txt
 
-# Graphify / code-index agent graphs — generated, huge, per-machine.
-graphify-out/
-.graphifyignore
+# Local code-graph DBs (per-machine, not source)
 .codegraph/
+
+# Internal plan / architecture dumps. Public docs are GETTING-STARTED + theme-dev.
+/DOCS/*.md
+!/DOCS/GETTING-STARTED.md
+!/DOCS/theme-dev.md
+/DOCS/visual-studies/
 
 # Local agent working memory (lessons / scratch progress). Not source.
 .knowledge/

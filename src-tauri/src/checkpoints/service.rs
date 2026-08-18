@@ -268,7 +268,6 @@ __pycache__/
 # Aurora / code-intel caches (can be large)
 .aurora/
 .gitnexus/
-graphify-out/
 
 # Model weights & ML artifacts (huge — never version these)
 *.onnx

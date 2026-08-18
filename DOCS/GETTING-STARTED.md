@@ -28,8 +28,8 @@ pnpm build          # frontend production build
 pnpm tauri:build    # desktop installers
 ```
 
-GPU speech builds: `pnpm tauri:dev:cuda` / `pnpm tauri:build:cuda` / `pnpm cuda:check`
-(see [06-SPEECH-INPUT.md](./06-SPEECH-INPUT.md)).
+GPU speech builds: `pnpm tauri:dev:cuda` / `pnpm tauri:build:cuda` / `pnpm cuda:check`.
+Speech models download on first use.
 
 ## 3. First Launch
 
@@ -101,8 +101,5 @@ cargo test --lib             # logic tests
 
 ## 8. Where To Read Next
 
-- [01-ARCHITECTURE.md](./01-ARCHITECTURE.md) — system overview and module map
-- [02-CODE-STYLE-PATTERNS.md](./02-CODE-STYLE-PATTERNS.md) — boundaries and conventions
-- [03-EXPANSION-GUIDE.md](./03-EXPANSION-GUIDE.md) — adding tools/commands/providers/settings
-- [04-PROVIDER-KERNEL.md](./04-PROVIDER-KERNEL.md) — provider adapters and catalog
-- `CLAUDE.md` — agent-oriented quick reference
+- [theme-dev.md](./theme-dev.md) — IDE theme token contract (`--aurora-*`)
+- Root `README.md` — stack, tools, license

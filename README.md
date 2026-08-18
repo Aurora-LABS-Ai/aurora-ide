@@ -127,7 +127,7 @@ pnpm tauri:build:cuda
 pnpm cuda:check     # Verify VS + CUDA toolchain on Windows
 ```
 
-See [DOCS/06-SPEECH-INPUT.md](DOCS/06-SPEECH-INPUT.md) for model setup and runtime flow.
+Speech models download on first use; CUDA builds need the NVIDIA toolkit plus `pnpm cuda:check`.
 
 ### First launch checklist
 
@@ -157,7 +157,7 @@ Frontend (React/TS)          Tauri IPC          Rust backend
 
 **Persistence:** Chat sessions are JSONL under `%LOCALAPPDATA%\AuroraIDE\sessions\`; providers, themes, workspace state, artifacts metadata, and settings in SQLite (`%LOCALAPPDATA%\AuroraIDE\data\aurora.db`).
 
-For module-level detail, start with **`CLAUDE.md`**, **`AGENTS.md`**, and **`DOCS/01-ARCHITECTURE.md`**.
+For first launch and local models, see [DOCS/GETTING-STARTED.md](DOCS/GETTING-STARTED.md). IDE theme tokens live in [DOCS/theme-dev.md](DOCS/theme-dev.md).
 
 ---
 
@@ -193,17 +193,7 @@ Optional `tool_search` defers the `mcp_*` / `browser_*` / `team_*` schemas behin
 | Doc | Purpose |
 |-----|---------|
 | [DOCS/GETTING-STARTED.md](DOCS/GETTING-STARTED.md) | Install, run, first provider, local models |
-| [DOCS/01-ARCHITECTURE.md](DOCS/01-ARCHITECTURE.md) | System overview, module map, runtime flows |
-| [DOCS/02-CODE-STYLE-PATTERNS.md](DOCS/02-CODE-STYLE-PATTERNS.md) | Patterns for boundaries, stores, IPC, and CSS |
-| [DOCS/03-EXPANSION-GUIDE.md](DOCS/03-EXPANSION-GUIDE.md) | Adding tools, commands, providers, and settings |
-| [DOCS/04-PROVIDER-KERNEL.md](DOCS/04-PROVIDER-KERNEL.md) | Provider adapters, catalog, and streaming design |
-| [DOCS/05-ICON-PACKS.md](DOCS/05-ICON-PACKS.md) | Explorer icon packs |
-| [DOCS/06-SPEECH-INPUT.md](DOCS/06-SPEECH-INPUT.md) | Local speech recognition setup |
 | [DOCS/theme-dev.md](DOCS/theme-dev.md) | IDE theme tokens (`--aurora-*`) |
-| [DOCS/code-index-handoff.md](DOCS/code-index-handoff.md) | Tree-sitter code index design + verification recipe |
-| [DOCS/desktop-control-plan.md](DOCS/desktop-control-plan.md) | Desktop control design (agreed, not built) |
-| [CLAUDE.md](CLAUDE.md) | Agent-oriented architecture reference |
-| [DOCS/README.md](DOCS/README.md) | Documentation index |
 
 ---
 
@@ -231,6 +221,6 @@ Aurora is developed by **[Aurora Labs](https://github.com/Aurora-LABS-Ai)** with
 
 **Aurora**
 
-[Documentation](DOCS/)
+[Getting started](DOCS/GETTING-STARTED.md)
 
 </div>

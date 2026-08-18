@@ -19,44 +19,49 @@ export const fileReadTool: ToolDefinition = {
   nativeRustOwned: true,
   function: {
     name: 'file_read',
-    description: `Read file content safely using exactly one form. For ONE file, pass a non-empty "path" with optional start_line/end_line/max_lines and omit "paths". For SEVERAL files, pass a non-empty "paths" array and omit "path" plus all line-range fields. Never send "paths": []. Small files return in full; large files (>1500 lines or >500KB) return a bounded line window with largeFile=true. A missing path reports exists=false instead of failing.
+    description: `Read one or more files. "path" takes a single path, or an array to read several in parallel (max 20). Start with NO range: files small enough come back whole, and anything larger comes back with its exact total line count and where to continue from — so you never have to guess how long a file is. Then window only the large ones. A missing path reports exists=false instead of failing.
 
 Examples:
 - file_read(path="src/App.tsx")
 - file_read(path="src/big.ts", start_line=120, end_line=220)
-- file_read(paths=["src/App.tsx", "src/main.tsx", "package.json"])`,
+- file_read(path=["src/App.tsx", "src/main.tsx", "package.json"])`,
     parameters: {
       type: 'object',
       properties: {
+        // ONE slot names what to read. This mirrors the Rust schema in
+        // `tools/file_workspace_search/file_read.rs`, which is the source of
+        // truth — this definition is display/approval metadata and is filtered
+        // out of the model's roster by `nativeRustOwned`.
+        //
+        // It previously declared `path` AND `paths` under a `oneOf`. Both
+        // halves of that were wrong: `oneOf` in function parameters makes
+        // strict validators (xAI/grok) answer HTTP 400, and two slots let a
+        // strictly-decoding model fill both and then be told its own
+        // schema-obedient call was malformed.
         path: {
-          type: 'string',
+          type: ['string', 'array'],
           minLength: 1,
-          description: 'Single-file form only: one non-empty file path. Omit "paths".',
-        },
-        paths: {
-          type: 'array',
-          minItems: 1,
           maxItems: 20,
           items: { type: 'string', minLength: 1 },
-          description: 'Batch form only: 1-20 non-empty paths. Omit "path" and line ranges; never send an empty array.',
+          description: 'One file path as a string, or 1-20 file paths as an array of strings to read in parallel. A line range, if given, applies to every path.',
         },
         start_line: {
           type: 'number',
-          description: 'Single-file form: optional 1-based first line to return.',
+          description: 'Optional 1-based first line to return. With several paths, applies to every file.',
         },
         end_line: {
           type: 'number',
-          description: 'Single-file form: optional 1-based inclusive last line to return.',
+          description: 'Optional 1-based inclusive last line to return. With several paths, applies to every file.',
         },
         max_lines: {
           type: 'number',
-          description: 'Single-file form: optional maximum lines to return from start_line.',
+          description: 'Optional maximum lines to return from start_line (hard cap 1000 per file).',
+        },
+        force_full_content: {
+          type: 'boolean',
+          description: 'Return a whole file in one call with no line cap, however long it is.',
         },
       },
-      oneOf: [
-        { required: ['path'] },
-        { required: ['paths'] },
-      ],
       required: [],
     },
   },

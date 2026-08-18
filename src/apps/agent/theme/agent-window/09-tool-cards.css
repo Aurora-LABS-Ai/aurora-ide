@@ -47,14 +47,8 @@
   touch-action: pan-y;
   cursor: inherit;
 }
-.agw-tool-targets[data-multi="true"] {
-  cursor: grab;
-}
 .agw-tool-targets::-webkit-scrollbar {
   display: none;
-}
-.agw-tool-targets[data-dragging="true"] {
-  cursor: grabbing;
 }
 .agw-tool-chip {
   display: inline-flex;
@@ -198,48 +192,45 @@
 .agw-chip-stat-add {
   color: var(--agw-added);
 }
-/* "+N" chip closing an overflowing file strip. */
-.agw-tool-chip-more {
+
+/* A call that touched several things states the COUNT on the row and keeps the
+ * names in the dropdown. It wears the file chip's own shape deliberately: the
+ * row still reads as files rather than as a bare number, and the strip it
+ * replaces is recognisable in it. */
+.agw-tool-chip-count {
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
+  cursor: inherit;
+}
+/* One mark per DISTINCT file type, overlapped. A signal of kind, never of
+ * quantity — the count beside it is the number, and repeating a mark would
+ * state a second, wrong one (the stack caps at three; the count does not). */
+.agw-chip-stack {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
 }
-/* Portaled list of every file in an overflowing result. */
-.agw-chip-overflow {
-  padding: 4px;
+.agw-chip-stack > * {
+  margin-right: -4px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1.5px var(--agw-chip-surface);
 }
-.agw-chip-overflow-item {
+.agw-chip-stack > *:last-child {
+  margin-right: 0;
+}
+
+/* The file list, in the body. It WRAPS — the whole set is visible at once
+ * instead of hidden behind a horizontal drag, which is the entire reason it
+ * moved off the row. `align-items` matters: as a plain flex row the chips
+ * stretch to the tallest line box and their borders clip against it. */
+.agw-tool-files {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 5px 8px;
-  border: none;
-  border-radius: var(--agw-radius-sm);
-  background: none;
-  color: var(--agw-text);
-  font-size: var(--agw-fs-label);
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s ease;
+  gap: 5px;
+  padding: 1px 0;
 }
-.agw-chip-overflow-item:hover {
-  background: var(--agw-surface);
-}
-.agw-chip-overflow-item[data-active] {
-  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
-}
-.agw-chip-overflow-item:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
-}
-.agw-chip-overflow-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+
 /* Quiet elapsed-time label on a settled tool row.
  * UI face + tabular numerals (not mono) — mono metadata on every row is
  * terminal energy; tabular figures keep counts steady without it. */

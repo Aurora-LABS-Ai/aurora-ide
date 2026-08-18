@@ -123,7 +123,7 @@ describe("live tool marks", () => {
   it("drops the spinner from the tool row and mounts the scan only while running", () => {
     const head = cardSource.slice(
       cardSource.indexOf('className="agw-tool-head"'),
-      cardSource.indexOf("{chipTargets.length > 0 &&"),
+      cardSource.indexOf("{isMultiTarget ? ("),
     );
     expect(head).not.toContain("agw-spinner");
     expect(head).toContain('data-live={status === "running" ? "" : undefined}');

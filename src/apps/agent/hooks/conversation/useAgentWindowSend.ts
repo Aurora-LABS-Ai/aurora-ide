@@ -85,6 +85,7 @@ import {
   buildSelectionPills,
   useAgentSelectionStore,
 } from "@/apps/agent/store/composer/useAgentSelectionStore";
+import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import {
   appendCompaction,
   appendContent,
@@ -355,6 +356,40 @@ async function buildAutoRulesContext(
     parts.push(`<rule file="${rule.filename}">\n${body}\n</rule>`);
   }
   return `<project_rules description="Project-specific rules from .aurora/*.md files that must be followed">\n${parts.join("\n\n")}\n</project_rules>`;
+}
+
+/**
+ * What the user currently has open in the right-hand Files panel.
+ *
+ * NAMES ONLY, never content. A path costs a few tokens and tells the agent
+ * where the user's attention is; the file body costs thousands and it already
+ * has `file_read` for the moment it actually needs one. Injecting content here
+ * would re-send it on every request of the conversation for as long as the file
+ * stayed open.
+ *
+ * This replaces the IDE-derived open-tab list, which is gone: the agent window
+ * is the product and the separate editor window is no longer where the user's
+ * files are. The rail viewer shows one file at a time today, so the block is
+ * built from a LIST rather than a single path — if the panel grows tabs, every
+ * tab's filename lands here with no redesign and no change to the contract.
+ */
+export function buildOpenFilesContext(
+  paths: string[],
+  activePath: string | null,
+): string | null {
+  const open = paths.map((path) => path.trim()).filter(Boolean);
+  if (open.length === 0) return null;
+  // Marked, not positional: the dock's active tab may be the file tree, the
+  // browser or a terminal, in which case none of these files is the one being
+  // looked at and claiming the first one is would be a small lie every turn.
+  const rows = open.map(
+    (path) => `- ${path}${path === activePath ? "  (showing)" : ""}`,
+  );
+  return `<open_files count="${open.length}">
+Open in the user's Files panel right now. Filenames only — read one with file_read if you need what is in it.
+
+${rows.join("\n")}
+</open_files>`;
 }
 
 /** Soft nudge toward the `/`-selected MCP servers (their tools are already available). */
@@ -1145,7 +1180,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const baseContext = projectRoot
       ? `<workspace_root>${projectRoot}</workspace_root>\nYou are working inside this project directory. Use your tools (workspace_tree, file_read, grep, …) to explore and edit files here.${
           settings.allowOutsideWorkspace
-            ? "\nThe user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass a `paths` array to read several at once) instead of refusing. Edits and new files still stay inside the workspace."
+            ? "\nThe user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Edits and new files still stay inside the workspace."
             : ""
         }`
       : null;
@@ -1224,9 +1259,31 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           } in parallel — this is the user's current "Maximum workers" setting. You (the Lead) are separate and always present, never counted in that number. If a task needs more workers than that, tell the user to raise it in Settings → Team; do not exceed it. Define each worker's role, task, and scope in the dispatch call.\n</team_policy>`
         : null;
 
+    // What the user actually has open in the right dock. Rides on every turn
+    // (it changes as they browse) and costs one line per file, because it
+    // carries names and never content.
+    //
+    // Source is the DOCK TAB list, not the file tree's selection. Opening a
+    // file from the tree creates its own tab (`openFileTab`), several files can
+    // be open at once, and the tree's `selectedPath` is a different thing that
+    // does not survive switching tabs — wiring to it produced a block that was
+    // simply never there, which the agent reported verbatim: "this turn didn't
+    // include the <open_files> block".
+    const dock = useAgentWorkspaceStore.getState();
+    const fileTabs = dock.tabs.filter(
+      (tab) => tab.kind === "file" && typeof tab.path === "string" && tab.path,
+    );
+    const activeFilePath =
+      fileTabs.find((tab) => tab.id === dock.activeTabId)?.path ?? null;
+    const openFilesBlock = buildOpenFilesContext(
+      fileTabs.map((tab) => tab.path as string),
+      activeFilePath,
+    );
+
     const ideContext =
       [
         baseContext,
+        openFilesBlock,
         autoRulesBlock,
         selectionBlock,
         ruleBlock,

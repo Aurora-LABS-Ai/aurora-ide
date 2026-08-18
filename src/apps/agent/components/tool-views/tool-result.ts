@@ -52,6 +52,12 @@ export interface WorkspaceTreeData {
   note?: string;
 }
 
+/** The line range a windowed read actually returned, when one was asked for. */
+export interface ReadWindow {
+  start: number;
+  end: number;
+}
+
 export interface MultiFileEntry {
   path: string;
   success: boolean;
@@ -60,6 +66,8 @@ export interface MultiFileEntry {
   content?: string;
   fullPath?: string;
   truncated?: boolean;
+  /** Set when the caller asked for a line range rather than the whole file. */
+  window?: ReadWindow;
 }
 
 /**
@@ -374,9 +382,14 @@ function recoverTruncatedRead(
   const contents = values.content ?? [];
   if (contents.length === 0) return false;
 
-  const argPaths = Array.isArray(args.paths)
-    ? args.paths.filter((path): path is string => typeof path === "string")
-    : [];
+  // `file_read`'s `path` is one slot taking a string OR an array; `paths` is
+  // what threads already on disk were recorded under. Both spell the same
+  // request, so a batch card renders the same either way.
+  const argPaths = [args.path, args.paths].flatMap((value) =>
+    Array.isArray(value)
+      ? value.filter((path): path is string => typeof path === "string")
+      : [],
+  );
   const paths = (values.path ?? []).map((value) => value.value);
   const fullPaths = (values.fullPath ?? []).map((value) => value.value);
   const errors = (values.error ?? []).map((value) => value.value);
@@ -692,6 +705,7 @@ export function parseToolResult(
       if (!o) continue;
       const content =
         typeof o.content === "string" ? splitHistoryTruncation(o.content) : null;
+      const range = rec(o.range);
       entries.push({
         path: asStr(o.path) ?? "",
         success: o.success !== false,
@@ -699,10 +713,16 @@ export function parseToolResult(
         error: asStr(o.error),
         content: content?.text,
         fullPath: asStr(o.fullPath),
-        truncated:
-          o.truncated === true ||
-          parsed.historyTruncated === true ||
-          content?.truncated === true,
+        // A read the caller WINDOWED is not a read that was cut for size, and
+        // the card says a different thing for each. `outsideWindow` means "there
+        // are lines either side of what you asked for" — normal, and stated as
+        // the range. `truncated` means "this was too big to keep", which is the
+        // only case worth an apology.
+        truncated: o.truncated === true || parsed.historyTruncated === true || content?.truncated === true,
+        window:
+          o.windowed === true && range
+            ? { start: asNum(range.startLine) ?? 0, end: asNum(range.endLine) ?? 0 }
+            : undefined,
       });
     }
     out.multiFile = entries;

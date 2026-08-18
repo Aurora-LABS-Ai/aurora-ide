@@ -26,7 +26,16 @@ export interface PropertyDefinition {
   items?: PropertyDefinition | { type: string; properties?: Record<string, PropertyDefinition>; required?: string[] };
  properties?: Record<string, PropertyDefinition>;
   required?: string[];
-  type: string;
+  /**
+   * A JSON-Schema type, or a UNION of them (`["string", "array"]`).
+   *
+   * A union is how a property accepts two shapes without `oneOf`/`anyOf`,
+   * which strict tool-schema validators (xAI/grok in particular) reject with
+   * HTTP 400. `file_read`'s `path` is the case that needs it: one slot taking
+   * either a single path or a list, so a strictly-decoding model has nothing
+   * to contradict itself with.
+   */
+  type: string | string[];
   /** JSON-Schema numeric bounds (e.g. an integer member count ≥ 1). */
   minimum?: number;
   maximum?: number;

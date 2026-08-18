@@ -17,7 +17,7 @@
 //!
 //! | name               | role                                                                         |
 //! |--------------------|------------------------------------------------------------------------------|
-//! | `file_read`        | read one (`path`) or many (`paths`) files; missing → exists:false             |
+//! | `file_read`        | read one file or many — `path` takes a string or an array; missing → exists:false |
 //! | `file_write`       | create or overwrite a whole file; `content` required; `must_not_exist` guard  |
 //! | `file_edit`        | exact-text edit, single or `edits[]` batch (atomic); read-before-edit guard    |
 //! | `move_path`        | move/rename a file OR folder (`std::fs::rename`)                              |
@@ -70,7 +70,7 @@ pub mod folder_create;
 pub mod glob;
 pub mod grep;
 pub mod move_path;
-/// Internal: the parallel batch reader, reused by `file_read`'s `paths`
+/// Internal: the parallel batch reader, reused by `file_read`'s array
 /// form. Not registered as a standalone tool.
 pub mod multi_file_read;
 /// Internal: per-session read-before-edit guard state.

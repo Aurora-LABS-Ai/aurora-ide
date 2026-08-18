@@ -1,5 +1,120 @@
 # Aurora IDE — Working Memory
 
+## 2026-08-18 (3rd) — Compaction cuts where the WIRE allows, and carries tool shapes across
+
+Two changes to `conversation/compaction.rs`, from measuring all 17 compactions that have actually
+run on this machine (571 threads; extractor + viewer in `Documents\aurora-compaction-anatomy.html`).
+
+**The cut is no longer restricted to user messages.** A cut is legal at any index whose TAIL is
+self-contained — no `tool_result` in it answering a `tool_use` the summary is about to replace. That
+is the only constraint the wire imposes, and it admits every complete tool round. The old rule was
+the binding limit on the entire feature: Aurora's turns are long and autonomous, so a thread has very
+few user boundaries and all the growth sits after the last one. Replayed against real sessions
+(chars/4 estimate, same basis both rules): `8afa5a3d` tail **190,184 → 28,315**, `468ce4b7`
+**61,564 → 21,014** — both were multiples OVER the 40k budget. Where the old rule already fit it now
+keeps MORE verbatim history rather than a sliver: `97c250ae` was resuming from **92 tokens** of real
+transcript, now 33,304. The rule is "use the budget deliberately", not "smallest tail".
+- New guard: a conversation already inside the tail budget returns `None`. One measured compaction
+  came back **28% LARGER** than what it replaced (88,979 → 114,228) — it spent a full-history
+  request to grow the context.
+- `repair_tool_pairing` is still the net, but being correct at the cut beats being repaired after:
+  a dropped orphan is a hole in the tail the model can see.
+
+**`tool_usage_recap` rides with every summary.** The last SUCCESSFUL call of each tool (12 tools,
+args clipped at 240 chars), replayed verbatim. Measured: the word `file_read` appears in **zero of
+17** summaries while the replaced heads held up to 258 tool calls. In `9db4f0f0` the marker lands at
+line 131 after 130 well-formed calls and the first malformed `file_read` of the thread arrives at
+line 135. Examples, not prose — its own last call is what it was already copying, and it covers MCP
+tools no hand-written instruction will ever reach. Failed calls are excluded: replaying a rejection
+teaches the shape that failed.
+- Confirmed live via qg-probe: asked the built exe "tell me what we did so far, from start to end" —
+  it recounted the whole thread accurately in 1m34s with file-by-file detail and volunteered what it
+  had NOT verified, **and said nothing about how it had called its tools.** Full context, Opus 5,
+  high reasoning. Nobody had asked for conventions, so they were not there.
+- Also learned: `compactionSummaryBudget` (the "20k" dial) caps the SUMMARY's output only. Measured
+  summaries run 750–6,200 tokens, so the dial is not binding and never was. Post-compaction size is
+  dominated by the TAIL.
+- VERIFIED: 1,327 Rust tests (+9), rustfmt clean. Both new suites **falsified** — restoring the
+  user-only rule fails 2 of the 4 cut tests. **NOT runtime-verified — needs a rebuild.**
+
+## 2026-08-18 (2nd) — The system prompt stopped contradicting the tools
+
+Audited the whole composed prompt against the live roster. It was wrong in four places, all of them
+the same failure: **prose restating something a tool already owns, then drifting away from it.**
+- **The browser section was 1,126 tokens on EVERY request** — including turns with browser tools
+  switched off, so it described tools the model did not have. It also claimed "exactly eight browser
+  tools" against a roster of **sixteen**. `browser_guidelines` (registered FIRST in the bucket, 9.2 KB,
+  current) already carried the whole doctrine. Section deleted; a 2-line pointer replaces it, gated on
+  `browserTools` — the same value the caller sends on the chat request, same contract as chapters and
+  `deferTools`. Note the default differs: `browserTools` absent means ON, `deferTools` absent means OFF.
+  The compaction path passes `false` explicitly because it runs with `tools: []`.
+- **Core Identity promised a second window.** "Aurora has two brains… you can reach into the separate
+  Aurora IDE window" — the agent window is the product. Rewritten around this window and its dock.
+- **New `## Context Aurora Injects`.** Nothing told the model what `<repo_map>` / `<aurora_task_reminder>`
+  / `<agent_skills>` are or how fresh they are. The map is a SNAPSHOT from the head of the conversation;
+  the reminder is LIVE, re-read every request. Also states that compaction happens, so missing earlier
+  work was summarized away rather than never done.
+- **New: Aurora itself can be the broken thing.** Twice a correct call was rejected and the model
+  concluded it had erred — once retracting a correct bug report (2026-08-16), once retrying a batch read
+  three times (today). The prompt now says to try one different form, then say plainly the tool is at
+  fault and call `report_aurora_issue`, which existed and was never mentioned.
+- **`<open_files>` replaces the dead IDE tab list.** Built from the right-rail Files panel's
+  `selectedPath`, as a LIST so tabs extend it later with no redesign. **Names only, never content** —
+  it re-sends every turn, so a file body here would become the most expensive thing in the chat.
+  `getIDEContext`/`getIDEContextLight` in `context-builder.ts` are DEAD (nothing calls them).
+- Base prompt **3,926 → 3,253 tokens** while gaining two sections; the browser doctrine is now paid
+  only by turns that open the panel. New `agent-prompt.test.ts` (9 tests) pins every contract above,
+  including "no `paths` anywhere" and "no tool COUNT in prose".
+- VERIFIED: 610 frontend tests / 69 files, 1,318 Rust, tsc 0, eslint clean, rustfmt clean.
+  **NOT runtime-verified.**
+
+## 2026-08-18 — `file_read` names what to read through ONE slot
+
+`path` now takes a string OR an array; `paths` is gone from the schema. The pair could never state
+its own "exactly one of" rule — a top-level `oneOf` makes strict validators (xAI/grok) answer HTTP
+400 — so the rule lived in prose and was enforced by REJECTION. GPT-5.6 Sol decodes strictly and
+fills every declared property, so it sent both and was told its schema-obedient call was malformed:
+**6 of 60 `file_read` calls in thread `9db4f0f0`, every one a batch read, every one dead**, the model
+shedding a file per retry because the error named nothing it could act on. In all six, `path` WAS
+`paths[0]` — a redundant restatement, not a contradiction.
+- **All interpretation lives in `read_targets`** (one function, both arms read it): string, array,
+  or a JSON-encoded array string; trimmed, blanks dropped, de-duplicated, capped at 20. `paths` is
+  still ACCEPTED though no longer advertised — models emit it from habit and old threads are full of
+  it, and refusing it would rebuild the exact failure. A union `"type": [...]` is safe where `oneOf`
+  is not; `shell_kill`'s `pid` already ships one on every provider.
+- **Routing is deliberately unchanged**: bare string → single read, array → batch, one-element array
+  + line window → single. Kept because the two readers answer an oversized file differently (batch
+  returns a per-file stub with the file's length; single returns its first page), so collapsing them
+  would silently change what an existing call gets back. An EMPTY array must not set the batch flag.
+- Frontend reads either spelling (`pathListOf` in `activity.ts`, `argPaths` in `tool-result.ts`,
+  `pathOf` in `ToolCallCard.tsx`) so a historic `paths` transcript renders exactly like a new call.
+  `PropertyDefinition.type` widened to `string | string[]`; the TS `file-tools.ts` mirror lost its
+  own `oneOf` (dead, but a landmine if `nativeRustOwned` filtering ever changes).
+- VERIFIED: 1,318 Rust tests, 601 frontend tests / 68 files, tsc 0, eslint clean, rustfmt clean.
+  Both new suites **falsified** — restoring the old rejection fails 3 Rust tests, reverting the
+  array-form branch fails 2 frontend tests. **NOT runtime-verified — needs a `tauri:dev` restart.**
+
+## 2026-08-17 (3rd) — A multi-target tool card states a COUNT; the title is the act
+
+Row was spending up to 65% of its width on a horizontally-scrolling chip strip, so every card put its
+totals at a different x and the last chip clipped mid-word. Now: **one target keeps its filename,
+more than one collapses to a count chip** — tool-agnostic, so a 3-file read compacts like a 4-file
+edit. Chosen from a probe (`Documents\aurora-tool-card-display-designs.html`, 5 row forms × 3 body
+forms × 4 naming schemes). Shipped as the default, NO preference — owner's call, revisit if wanted.
+- **The title is the ACT** (`Edit`, `Read`, `Search`), card-only via `ACT_TITLE`. "Edit File" vs
+  "Edit Files" put the entire one-file/many-file distinction on one letter, which is unreadable while
+  scanning; and once a count chip exists the title was repeating it. `getProfessionalToolName` keeps
+  the full noun where a tool is named WITHOUT a target beside it (Settings → Tools, activity lines).
+  Bonus: the running state no longer renames itself to "Editing Multiple Files" mid-turn.
+- **The stack shows one mark per DISTINCT type**, capped at 3. Four `.tsx` files drew four identical
+  squares, which reads as a quantity — and the wrong one, since the stack caps and the count does not.
+- **Chips live in exactly ONE place**: on the row when single, in the dropdown when several. Never
+  both. The body strip WRAPS, which is what killed the drag-scroll, the wheel-pan and the "+N"
+  overflow menu — all three existed only to make an unbounded strip usable inside a fixed row.
+  `ChipOverflowMenu` (146 lines) and its CSS family (189 lines) deleted; recoverable from git.
+- 596 frontend tests green, tsc + eslint clean, CSS parses. **NOT runtime-verified beyond one
+  hot-reload screenshot from the owner.**
+
 ## 2026-08-17 (2nd) — A tool card resolves on its own clock, not its batch's
 
 `execute_tool_calls` awaited the whole concurrent group under `join_all` and only then emitted

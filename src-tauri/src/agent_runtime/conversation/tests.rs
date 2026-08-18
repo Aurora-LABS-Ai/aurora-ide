@@ -3584,6 +3584,123 @@ fn recording_api(reply: &str) -> Arc<ModelRecordingApi> {
     })
 }
 
+/// A tool result answering `id`, successful unless `is_error` says otherwise.
+fn tool_result_for(id: &str, is_error: Option<bool>) -> ConversationMessage {
+    ConversationMessage {
+        role: MessageRole::Tool,
+        blocks: vec![ContentBlock::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error,
+        }],
+        usage: None,
+        timestamp: 1_700_000_000_000,
+        attached_selected_elements: None,
+        attached_prompt_chips: None,
+        model: None,
+    }
+}
+
+/// A summary describes the WORK; nothing in it records how the tools were being
+/// called. Measured across every compaction on this machine — 17 of them — the
+/// word `file_read` appears in none, while the replaced head held up to 258 tool
+/// calls. Thread `9db4f0f0` compacted at line 131 after 130 well-formed calls
+/// and produced its first malformed `file_read` at line 135.
+///
+/// The recap carries the model's OWN last working call of each tool across the
+/// cut, so the evidence it was already copying survives the summary.
+mod tool_usage_recap_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_most_recent_working_call_of_each_tool() {
+        let messages = vec![
+            assistant_tool_use("a1", "file_read", serde_json::json!({ "path": "old.rs" })),
+            tool_result_for("a1", None),
+            assistant_tool_use(
+                "a2",
+                "file_read",
+                serde_json::json!({ "path": ["new.rs", "other.rs"], "start_line": 1 }),
+            ),
+            tool_result_for("a2", None),
+            assistant_tool_use("a3", "grep", serde_json::json!({ "pattern": "todo" })),
+            tool_result_for("a3", None),
+        ];
+
+        let recap = tool_usage_recap(&messages).expect("three successful calls");
+
+        assert!(recap.contains("new.rs"), "keeps the LATEST shape: {recap}");
+        assert!(
+            !recap.contains("old.rs"),
+            "one line per tool, not a history: {recap}"
+        );
+        assert!(recap.contains("grep("), "covers every tool used: {recap}");
+        assert!(
+            recap.contains("<tool_usage_recap>"),
+            "wrapped for the model: {recap}"
+        );
+    }
+
+    #[test]
+    fn a_call_that_failed_is_never_replayed() {
+        // Replaying a rejected call teaches exactly the shape that did not work
+        // — which is the failure this whole mechanism exists to prevent.
+        let messages = vec![
+            assistant_tool_use(
+                "b1",
+                "file_read",
+                serde_json::json!({ "path": "a.rs", "paths": ["a.rs"] }),
+            ),
+            tool_result_for("b1", Some(true)),
+        ];
+        assert!(
+            tool_usage_recap(&messages).is_none(),
+            "the only call failed, so there is nothing worth carrying"
+        );
+    }
+
+    #[test]
+    fn an_earlier_success_survives_a_later_failure_of_the_same_tool() {
+        let messages = vec![
+            assistant_tool_use("c1", "file_read", serde_json::json!({ "path": "good.rs" })),
+            tool_result_for("c1", None),
+            assistant_tool_use("c2", "file_read", serde_json::json!({ "path": 42 })),
+            tool_result_for("c2", Some(true)),
+        ];
+        let recap = tool_usage_recap(&messages).expect("one call worked");
+        assert!(recap.contains("good.rs"), "{recap}");
+        assert!(
+            !recap.contains("42"),
+            "the failed shape is excluded: {recap}"
+        );
+    }
+
+    #[test]
+    fn a_transcript_with_no_tool_calls_adds_nothing() {
+        let messages = vec![user_msg("hello"), assistant_text("hi")];
+        assert!(tool_usage_recap(&messages).is_none());
+    }
+
+    #[test]
+    fn long_arguments_are_clipped_so_the_recap_stays_cheap() {
+        let huge = "x".repeat(5_000);
+        let messages = vec![
+            assistant_tool_use("d1", "file_write", serde_json::json!({ "content": huge })),
+            tool_result_for("d1", None),
+        ];
+        let recap = tool_usage_recap(&messages).expect("one working call");
+        assert!(
+            recap.len() < 1_000,
+            "a recap must never become the thing it is protecting against: {} chars",
+            recap.len()
+        );
+        assert!(
+            recap.contains('…'),
+            "clipping is stated, not silent: {recap}"
+        );
+    }
+}
+
 /// A transcript long enough for `compaction_cut` to find a safe boundary:
 /// it needs at least two user messages with a non-empty head.
 fn compactable_session() -> Session {
@@ -3594,6 +3711,150 @@ fn compactable_session() -> Session {
         session.append_message(assistant_with_text(&big, turn * 2 + 1));
     }
     session
+}
+
+/// The shape Aurora actually produces: ONE instruction, then a long autonomous
+/// run of tool rounds. Threads like this have a single user boundary, which is
+/// precisely why cutting only at user messages could not help them.
+fn autonomous_turn(rounds: usize) -> Vec<ConversationMessage> {
+    let big = FILLER_60.repeat(40);
+    let mut messages = vec![user_with_text(&big, 0)];
+    for round in 0..rounds {
+        let id = format!("call-{round}");
+        messages.push(assistant_tool_use(
+            &id,
+            "file_read",
+            serde_json::json!({ "path": format!("src/file{round}.rs"), "note": big }),
+        ));
+        messages.push(tool_result_for(&id, None));
+    }
+    messages
+}
+
+/// Every `tool_result` in the tail must be answered by a call that is ALSO in
+/// the tail. A cut that breaks this hands the provider a result for a call it
+/// cannot see.
+fn tail_is_self_contained(messages: &[ConversationMessage], cut: usize) -> bool {
+    let calls: std::collections::HashSet<&str> = messages[cut..]
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    messages[cut..]
+        .iter()
+        .flat_map(|m| m.blocks.iter())
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+            _ => None,
+        })
+        .all(|id| calls.contains(id))
+}
+
+/// THE regression. A thread with one user message and sixty tool rounds was
+/// uncuttable, because the only boundary the old rule accepted was a user
+/// message and there was exactly one — at index 0, which is not a cut.
+///
+/// Measured consequence on this machine before the change: `b3f19c05` went
+/// 501,776 → 195,974 against a 40,000-token tail budget, and two other
+/// compactions reclaimed nothing whatsoever.
+#[test]
+fn a_single_instruction_turn_can_still_be_compacted() {
+    let messages = autonomous_turn(60);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .count(),
+        1,
+        "the fixture is the one-user-message shape",
+    );
+
+    let cut = compaction_cut(&messages, 400_000, ReasoningReplay::Dropped)
+        .expect("a 60-round turn must be cuttable");
+
+    assert!(cut > 0, "the head has to hold something to summarize");
+    assert!(
+        !matches!(messages[cut].role, MessageRole::User),
+        "the point of the change: the cut lands INSIDE the turn, at index {cut}",
+    );
+    assert!(
+        tail_is_self_contained(&messages, cut),
+        "the tail must not open with a result whose call was summarized away",
+    );
+
+    let tail: u32 = messages[cut..]
+        .iter()
+        .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+        .fold(0, u32::saturating_add);
+    assert!(
+        tail <= compact_tail_budget(400_000),
+        "the budget is now reachable: {tail} tokens kept",
+    );
+}
+
+/// The cut is taken as early as the budget allows, because the whole value of
+/// compaction is how much it reclaims.
+#[test]
+fn the_cut_is_the_oldest_one_that_fits() {
+    let messages = autonomous_turn(60);
+    let cut = compaction_cut(&messages, 400_000, ReasoningReplay::Dropped).unwrap();
+    let budget = compact_tail_budget(400_000);
+
+    // Not "cut - 1 must overflow" — that index may simply be ILLEGAL, landing
+    // between a call and its answer, in which case skipping it was correct.
+    // The real claim is that no LEGAL earlier cut also fits.
+    for earlier in 1..cut {
+        if !tail_is_self_contained(&messages, earlier) {
+            continue;
+        }
+        let tail: u32 = messages[earlier..]
+            .iter()
+            .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+            .fold(0, u32::saturating_add);
+        assert!(
+            tail > budget,
+            "index {earlier} was a legal cut that also fit ({tail} <= {budget}), so {cut} was not the oldest",
+        );
+    }
+}
+
+/// Never split a call from its answer. With the result one message later than
+/// the call, index `cut` may not land between them.
+#[test]
+fn a_cut_never_separates_a_call_from_its_result() {
+    let messages = autonomous_turn(40);
+    for window in [50_000_u32, 120_000, 400_000, 1_100_000] {
+        let Some(cut) = compaction_cut(&messages, window, ReasoningReplay::Dropped) else {
+            continue;
+        };
+        assert!(
+            tail_is_self_contained(&messages, cut),
+            "window {window} produced an orphaning cut at {cut}",
+        );
+    }
+}
+
+/// A conversation already inside the tail budget has nothing to reclaim, and
+/// compacting it would spend a full-history request to make it BIGGER — which
+/// is exactly what one measured compaction did (88,979 → 114,228 tokens).
+#[test]
+fn a_conversation_already_inside_the_budget_is_left_alone() {
+    let messages = autonomous_turn(2);
+    let total: u32 = messages
+        .iter()
+        .map(|m| estimate_message_tokens(m, ReasoningReplay::Dropped))
+        .fold(0, u32::saturating_add);
+    assert!(
+        total <= compact_tail_budget(1_100_000),
+        "fixture must fit the budget for this to test anything (got {total})",
+    );
+    assert!(
+        compaction_cut(&messages, 1_100_000, ReasoningReplay::Dropped).is_none(),
+        "nothing to reclaim, so no summarization request should be spent",
+    );
 }
 
 /// The verbatim tail is bounded by an absolute token budget, never by a

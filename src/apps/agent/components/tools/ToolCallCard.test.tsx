@@ -75,7 +75,7 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).toContain("Running");
   });
 
-  it("shows every streamed file in a multi-file edit", () => {
+  it("states the count on the row when a call touched several files", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard
         isActivelyStreaming
@@ -88,41 +88,70 @@ describe("ToolCallCard streamed file targets", () => {
       />,
     );
 
-    expect(html.match(/class="agw-tool-chip"/g)).toHaveLength(4);
-    expect(html).toContain(">Editing Multiple Files</span>");
+    // ONE chip, carrying the count. The names live in the dropdown.
+    expect(html.match(/class="agw-tool-chip agw-tool-chip-count"/g)).toHaveLength(1);
+    expect(html.match(/class="agw-tool-chip"/g)).toBeNull();
+    expect(html).toContain("4 files");
+    // The title is the ACT, and it does not change with the count or with the
+    // status — no "Edit File" / "Edit Files" one-letter distinction, and no
+    // rename to "Editing Multiple Files" halfway through the turn.
+    expect(html).toContain(">Edit</span>");
+    expect(html).not.toContain("Editing Multiple Files");
     expect(html).not.toContain(">Edit Files</span>");
-    expect(html).not.toContain(">Edit File</span>");
-    expect(html).toContain("a.test.ts");
-    expect(html).toContain("b.test.ts");
-    expect(html).toContain("c.test.ts");
-    expect(html).toContain("d.test.ts");
   });
 
-  it("shows every file-read target as an individual horizontal chip", () => {
+  it("keeps its filename on the row when a call touched exactly one file", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard
         call={{
-          id: "read-many",
+          id: "read-one",
           name: "file_read",
-          arguments: JSON.stringify({ paths: ["src/a.ts", "docs/README.md", "AGENTS.md"] }),
-          result: JSON.stringify({
-            success: true,
-            filesRead: 3,
-            files: [
-              { path: "src/a.ts", success: true, content: "const a = 1;", lines: 1 },
-              { path: "docs/README.md", success: true, content: "# Readme", lines: 1 },
-              { path: "AGENTS.md", success: true, content: "# Rules", lines: 1 },
-            ],
-          }),
+          arguments: JSON.stringify({ path: "src/a.ts" }),
+          result: JSON.stringify({ success: true, content: "const a = 1;", lines: 1 }),
         }}
       />,
     );
 
-    expect(html.match(/role="tab"/g)).toHaveLength(3);
+    // One target has nothing to compact, and its name is the most useful thing
+    // on the row — so it is never replaced by "1 file".
     expect(html).toContain("a.ts");
-    expect(html).toContain("README.md");
-    expect(html).toContain("AGENTS.md");
-    expect(html).not.toContain("+2");
+    expect(html).not.toContain("agw-tool-chip-count");
+    expect(html).not.toContain("1 file");
+  });
+
+  it("stacks one mark per distinct file type, never the same mark twice", () => {
+    const sameType = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "edit-same",
+          name: "file_edit",
+          arguments: JSON.stringify({
+            target_paths: [".knowledge/knowledge.md", ".knowledge/lesson.md"],
+          }),
+        }}
+      />,
+    );
+    const mixed = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "edit-mixed",
+          name: "file_edit",
+          arguments: JSON.stringify({ target_paths: ["a.md", "b.ts", "c.py"] }),
+        }}
+      />,
+    );
+
+    const marks = (html: string) => {
+      const stack = html.match(/class="agw-chip-stack"[^>]*>(.*?)<\/span>/s)?.[1] ?? "";
+      return stack.match(/<svg|<img/g)?.length ?? 0;
+    };
+
+    // Two markdown files are ONE kind. Drawing the mark twice reads as a
+    // quantity, and it is the wrong quantity — the stack caps at 3 while the
+    // count beside it does not.
+    expect(marks(sameType)).toBe(1);
+    expect(sameType).toContain("2 files");
+    expect(marks(mixed)).toBe(3);
   });
 
   it("counts streamed lines while a write's path has not arrived yet", () => {
@@ -275,19 +304,26 @@ describe("ToolCallCard streamed file targets", () => {
     });
 
     const header = mountedContainer.querySelector<HTMLButtonElement>(".agw-tool-head")!;
-    const tabs = mountedContainer.querySelectorAll<HTMLElement>('[role="tab"]');
-    expect(mountedContainer.textContent).toContain("Edit Files");
+    expect(mountedContainer.textContent).toContain("2 files");
     expect(mountedContainer.textContent).not.toContain("Editing Multiple Files");
-    expect(tabs).toHaveLength(2);
+    // Collapsed, the file names are NOT on the row — that is the whole point.
+    expect(mountedContainer.querySelectorAll('[role="tab"]')).toHaveLength(0);
     expect(header.getAttribute("aria-expanded")).toBe("false");
-    await act(async () => tabs[1].click());
 
-    expect(header.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => header.click());
+
+    const tabs = mountedContainer.querySelectorAll<HTMLElement>('[role="tab"]');
+    expect(tabs).toHaveLength(2);
+    expect(mountedContainer.textContent).toContain("FIRST_NEW");
+    expect(mountedContainer.textContent).not.toContain("SECOND_NEW");
+
+    // Selecting a file still drives which diff shows, exactly as it did when
+    // the strip lived on the row.
+    await act(async () => tabs[1].click());
     expect(mountedContainer.textContent).toContain("SECOND_NEW");
     expect(mountedContainer.textContent).not.toContain("FIRST_NEW");
 
     await act(async () => tabs[0].click());
-
     expect(mountedContainer.textContent).toContain("FIRST_NEW");
     expect(mountedContainer.textContent).not.toContain("SECOND_NEW");
   });
@@ -329,148 +365,6 @@ describe("ToolCallCard streamed file targets", () => {
     expect(mountedContainer.textContent).not.toContain("NEW_HERO");
   });
 
-  it("drag-scrolls an overflowing file chip strip without opening the card", async () => {
-    mountedContainer = document.createElement("div");
-    document.body.appendChild(mountedContainer);
-    mountedRoot = createRoot(mountedContainer);
-    await act(async () => {
-      mountedRoot!.render(
-        <ToolCallCard
-          call={{
-            id: "read-scroll",
-            name: "file_read",
-            arguments: JSON.stringify({ paths: ["a.ts", "b.ts", "c.ts"] }),
-            result: JSON.stringify({
-              success: true,
-              filesRead: 3,
-              files: ["a.ts", "b.ts", "c.ts"].map((path) => ({
-                path,
-                success: true,
-                content: path,
-                lines: 1,
-              })),
-            }),
-          }}
-        />,
-      );
-    });
-
-    const strip = mountedContainer.querySelector<HTMLElement>(".agw-tool-targets")!;
-    let capturedPointer = -1;
-    Object.defineProperties(strip, {
-      scrollWidth: { configurable: true, value: 600 },
-      clientWidth: { configurable: true, value: 180 },
-      scrollLeft: { configurable: true, value: 0, writable: true },
-      setPointerCapture: {
-        configurable: true,
-        value: (pointerId: number) => { capturedPointer = pointerId; },
-      },
-      hasPointerCapture: {
-        configurable: true,
-        value: (pointerId: number) => capturedPointer === pointerId,
-      },
-      releasePointerCapture: {
-        configurable: true,
-        value: (pointerId: number) => {
-          if (capturedPointer === pointerId) capturedPointer = -1;
-        },
-      },
-    });
-
-    act(() => {
-      strip.dispatchEvent(new PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        clientX: 140,
-        pointerId: 7,
-      }));
-      strip.dispatchEvent(new PointerEvent("pointermove", {
-        bubbles: true,
-        buttons: 1,
-        clientX: 80,
-        pointerId: 7,
-      }));
-      strip.dispatchEvent(new PointerEvent("pointerup", {
-        bubbles: true,
-        clientX: 80,
-        pointerId: 7,
-      }));
-      strip.click();
-    });
-
-    expect(strip.scrollLeft).toBe(60);
-    expect(capturedPointer).toBe(-1);
-    expect(mountedContainer.querySelector(".agw-tool-head")?.getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("keeps chip clicks native on an overflowing strip — no capture on a plain press", async () => {
-    mountedContainer = document.createElement("div");
-    document.body.appendChild(mountedContainer);
-    mountedRoot = createRoot(mountedContainer);
-    await act(async () => {
-      mountedRoot!.render(
-        <ToolCallCard
-          call={{
-            id: "read-plain-press",
-            name: "file_read",
-            arguments: JSON.stringify({ paths: ["a.ts", "b.ts", "c.ts"] }),
-            result: JSON.stringify({
-              success: true,
-              filesRead: 3,
-              files: ["a.ts", "b.ts", "c.ts"].map((path) => ({
-                path,
-                success: true,
-                content: `CONTENT_${path}`,
-                lines: 1,
-              })),
-            }),
-          }}
-        />,
-      );
-    });
-
-    const strip = mountedContainer.querySelector<HTMLElement>(".agw-tool-targets")!;
-    let captureCalls = 0;
-    Object.defineProperties(strip, {
-      scrollWidth: { configurable: true, value: 600 },
-      clientWidth: { configurable: true, value: 180 },
-      setPointerCapture: {
-        configurable: true,
-        value: () => { captureCalls += 1; },
-      },
-      hasPointerCapture: { configurable: true, value: () => false },
-      releasePointerCapture: { configurable: true, value: () => undefined },
-    });
-
-    // A press with sub-threshold jitter (real clicks always wobble a pixel)
-    // must never capture the pointer: pointer capture retargets the click to
-    // the strip and makes every chip dead — the original bug.
-    const tabs = mountedContainer.querySelectorAll<HTMLElement>('[role="tab"]');
-    await act(async () => {
-      tabs[1].dispatchEvent(new PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        clientX: 140,
-        pointerId: 5,
-      }));
-      tabs[1].dispatchEvent(new PointerEvent("pointermove", {
-        bubbles: true,
-        buttons: 1,
-        clientX: 139,
-        pointerId: 5,
-      }));
-      tabs[1].dispatchEvent(new PointerEvent("pointerup", {
-        bubbles: true,
-        clientX: 139,
-        pointerId: 5,
-      }));
-      tabs[1].click();
-    });
-
-    expect(captureCalls).toBe(0);
-    expect(mountedContainer.textContent).toContain("CONTENT_b.ts");
-    expect(mountedContainer.textContent).not.toContain("CONTENT_a.ts");
-  });
 
   it("disarms double-click selection and collapses a live selection on header press", async () => {
     mountedContainer = document.createElement("div");
@@ -553,53 +447,6 @@ describe("ToolCallCard streamed file targets", () => {
     );
     // Sub-500ms is row noise, not signal.
     expect(fast).not.toContain("agw-tool-time");
-  });
-
-  it("collapses a long file strip into visible chips plus a +N overflow menu", async () => {
-    mountedContainer = document.createElement("div");
-    document.body.appendChild(mountedContainer);
-    mountedRoot = createRoot(mountedContainer);
-    const paths = Array.from({ length: 9 }, (_, i) => `src/file-${i}.ts`);
-    await act(async () => {
-      mountedRoot!.render(
-        <ToolCallCard
-          call={{
-            id: "read-overflow",
-            name: "file_read",
-            arguments: JSON.stringify({ paths }),
-            result: JSON.stringify({
-              success: true,
-              filesRead: paths.length,
-              files: paths.map((path) => ({
-                path,
-                success: true,
-                content: `CONTENT_${path}`,
-                lines: 1,
-              })),
-            }),
-          }}
-        />,
-      );
-    });
-
-    // 6 inline tabs + the "+3" trigger; the menu lists ONLY the hidden files
-    // (the inline chips already name the rest).
-    expect(mountedContainer.querySelectorAll('[role="tab"]')).toHaveLength(6);
-    const trigger = mountedContainer.querySelector<HTMLElement>(".agw-tool-chip-more")!;
-    expect(trigger.textContent).toBe("+3");
-
-    await act(async () => trigger.click());
-    const options = document.querySelectorAll<HTMLElement>(".agw-chip-overflow-item");
-    expect(options).toHaveLength(3);
-    expect(options[0].textContent).toContain("file-6.ts");
-
-    // Selecting a hidden file swaps it into the inline strip and shows it.
-    await act(async () => options[2].click());
-    expect(mountedContainer.textContent).toContain("CONTENT_src/file-8.ts");
-    expect(
-      mountedContainer.querySelector('[role="tab"][data-index="8"]'),
-    ).not.toBeNull();
-    expect(document.querySelectorAll(".agw-chip-overflow-item")).toHaveLength(0);
   });
 
   it("never exposes a full target path in a failed toolbar summary", () => {

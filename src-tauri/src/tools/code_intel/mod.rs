@@ -568,10 +568,16 @@ Keep using `grep` for text: string literals, comments, config keys, error messag
 
 Usages are resolved through each file's own import statements, so callers of a same-named function \
 in another module are not counted. When one name still has several possible definitions the result \
-lists them with a caller count each — re-ask with `in_file` to pick one.
+lists them with a caller count each — re-ask with `in_file` to pick one. Do NOT choose from that \
+list by eye: those entries are different symbols that merely share a name, so picking the \
+biggest-looking one and carrying on produces a confident answer about the wrong code.
+
+The index keeps itself current on its own. Call `refresh` only after creating, deleting or renaming \
+several files, when the next answer has to be certain to include them.
 
 Limits worth knowing: the index reads syntax, not types, so it cannot tell you what something \
-RETURNS and will not catch type errors — use `read_lints` for that."
+RETURNS and will not catch type errors — use `read_lints` for that. It finds the files a change \
+affects; `read_lints` is what confirms which of them actually broke."
                 .into(),
             input_schema: json!({
                 "type": "object",

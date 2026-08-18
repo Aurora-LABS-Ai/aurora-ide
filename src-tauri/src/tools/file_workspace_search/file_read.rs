@@ -34,6 +34,145 @@ pub(super) const MAX_SINGLE_READ_LINES: usize = 1_000;
 /// from it fails.
 pub const EXACT_READ_MARKER: &str = "\"exactRead\":true";
 
+/// Most files one call may name. Matches the schema's `maxItems`.
+const MAX_BATCH_PATHS: usize = 20;
+
+/// What a `file_read` call names, and how it named it.
+pub(super) struct ReadRequest {
+    /// Every path to read: trimmed, de-duplicated, in the order given.
+    pub targets: Vec<String>,
+    /// The caller used the ARRAY form. Routing needs this: a one-element array
+    /// without a line window still means "read this batch", and the batch
+    /// reader answers an oversized file differently from the single reader.
+    pub array_form: bool,
+}
+
+/// Describe what actually arrived, for an error the caller can act on.
+fn describe_value(value: &Value) -> &'static str {
+    match value {
+        Value::Number(_) => "a number",
+        Value::Bool(_) => "a boolean",
+        Value::Object(_) => "an object",
+        Value::Array(_) => "an array",
+        Value::String(_) => "a string",
+        Value::Null => "null",
+    }
+}
+
+/// Append one path, trimmed, skipping blanks and duplicates.
+///
+/// A blank entry is DROPPED rather than rejected: it names no file, so nothing
+/// is lost by ignoring it, and models emit `""` as a slot-filler. If every
+/// entry is blank the call still fails on the empty-list check, which is the
+/// honest error — "you named no file", not "entry 3 was empty".
+fn push_path(raw: &str, targets: &mut Vec<String>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !targets.iter().any(|existing| existing == trimmed) {
+        targets.push(trimmed.to_string());
+    }
+}
+
+/// Append every entry of an array, rejecting only values that name no file.
+fn push_entries(entries: &[Value], targets: &mut Vec<String>, key: &str) -> Result<(), ToolError> {
+    for entry in entries {
+        match entry {
+            Value::String(text) => push_path(text, targets),
+            other => {
+                return Err(ToolError::InvalidInput(format!(
+                    "`{key}` contains {} where a file path string was expected. Send paths as \
+                     strings — `\"path\": [\"src/a.ts\", \"src/b.ts\"]`.",
+                    describe_value(other)
+                )))
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve any accepted spelling of "what to read" into one list of paths.
+///
+/// This is the ONLY place a `file_read` call's targets are interpreted, so the
+/// single-file and batch arms cannot drift apart about what was asked for.
+///
+/// The governing rule — already applied in this file to two narrower cases (an
+/// array arriving JSON-ENCODED as a string, and a one-element array beside a
+/// line window), and now the whole contract: **when the input has exactly one
+/// sensible reading, resolve it and serve the call.** Only genuinely unusable
+/// input is an error.
+///
+/// `paths` is still READ here although the schema no longer advertises it.
+/// Models emit it from habit and from the history of older threads, and a call
+/// naming files under a familiar name is not ambiguous — it is the same
+/// request. Rejecting it would rebuild the precise failure this replaced: a
+/// schema-obedient model told its correct call was malformed, with no way to
+/// discover why. Accepting it costs one map lookup and can mislead no one,
+/// because both spellings resolve into the same list.
+pub(super) fn read_targets(input: &Value) -> Result<ReadRequest, ToolError> {
+    let mut targets: Vec<String> = Vec::new();
+    let mut array_form = false;
+
+    for key in ["path", "paths"] {
+        match input.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(raw)) => {
+                // A JSON-ENCODED array — `"[\"a.ts\", \"b.ts\"]"` instead of
+                // `["a.ts", "b.ts"]`. Measured at 8 of 542 batch reads on this
+                // machine across 5 conversations: a serialization artifact, not
+                // a model having a bad day. It names an unambiguous list of
+                // files; it just arrived one encoding layer deep.
+                match serde_json::from_str::<Vec<Value>>(raw) {
+                    Ok(decoded) if !decoded.is_empty() => {
+                        array_form = true;
+                        push_entries(&decoded, &mut targets, key)?;
+                    }
+                    _ => push_path(raw, &mut targets),
+                }
+            }
+            Some(Value::Array(entries)) => {
+                // An EMPTY array is a slot-filler, not a batch. `path: "a.md"`
+                // beside `paths: []` is a single read, and letting the empty
+                // array set the batch flag would route it to the parallel
+                // reader — a different result shape for a call that named one
+                // file.
+                if !entries.is_empty() {
+                    array_form = true;
+                }
+                push_entries(entries, &mut targets, key)?;
+            }
+            Some(other) => {
+                return Err(ToolError::InvalidInput(format!(
+                    "`{key}` received {}. Send one path as a string — `\"path\": \"src/a.ts\"` — \
+                     or several as an array of strings — \
+                     `\"path\": [\"src/a.ts\", \"src/b.ts\"]`.",
+                    describe_value(other)
+                )))
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        return Err(ToolError::InvalidInput(
+            "`path` is required: one file path as a string, or 1-20 paths as an array of strings"
+                .into(),
+        ));
+    }
+    if targets.len() > MAX_BATCH_PATHS {
+        return Err(ToolError::InvalidInput(format!(
+            "`path` names {} files; at most {MAX_BATCH_PATHS} can be read per call. Split the \
+             rest into another call.",
+            targets.len()
+        )));
+    }
+
+    Ok(ReadRequest {
+        targets,
+        array_form,
+    })
+}
+
 pub struct FileReadTool;
 
 #[async_trait]
@@ -50,43 +189,38 @@ impl ToolExecutor for FileReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
-            description: "Read file content safely. For ONE file pass a non-empty `path`; for \
-                          SEVERAL pass a non-empty `paths` array. Send one or the other, never both, \
-                          and never `paths: []`. start_line/end_line/max_lines work with either form \
-                          — with `paths` the SAME range is read from every file in the batch. A line \
-                          range is returned EXACTLY as asked, up to 1000 lines per file per call — \
-                          ask for more and you get the first 1000 plus the total, so continue with \
-                          the next range. Without a range, files of 1000 lines or fewer come back \
-                          whole. To read a longer file in one call anyway, set force_full_content: \
-                          true. A missing path reports exists=false rather than failing."
+            description: "Read one or more files. `path` takes a single path (`\"path\": \"src/a.ts\"`) or an array to read several in parallel (`\"path\": [\"src/a.ts\", \"src/b.ts\"]`, max 20). START WITH NO RANGE — you never need to guess how long a file is: files small enough come back whole, and anything larger comes back with its exact total line count and where to continue from, so one call tells you what still needs paging. Then window only the large ones. start_line/end_line/max_lines return EXACTLY the range asked for, up to 1000 lines per file per call — ask for more and you get the first 1000 plus the total, so continue from the next line. With several paths the SAME range is read from every file; to take DIFFERENT ranges from different files, issue one call per file in the same message — they run in parallel. Set force_full_content: true to take a whole file in one call with no line cap. A missing path reports exists=false rather than failing."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
-                        "type": "string",
+                        "type": ["string", "array"],
                         "minLength": 1,
-                        "description": "One non-empty file path. Omit `paths`."
-                    },
-                    "paths": {
-                        "type": "array",
-                        "minItems": 1,
                         "maxItems": 20,
                         "items": { "type": "string", "minLength": 1 },
-                        "description": "1-20 non-empty file paths to read in parallel. Omit `path`; never send an empty array. A line range, if given, is applied to every file."
+                        "description": "One file path as a string, or 1-20 file paths as an array of strings to read in parallel. A line range, if given, applies to every path."
                     },
-                    "start_line": { "type": "number", "description": "1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines per file. With `paths`, applies to every file." },
-                    "end_line": { "type": "number", "description": "1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line. With `paths`, applies to every file." },
+                    "start_line": { "type": "number", "description": "1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines per file. With several paths, applies to every file." },
+                    "end_line": { "type": "number", "description": "1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line. With several paths, applies to every file." },
                     "max_lines": { "type": "number", "description": "Maximum lines to return from start_line (hard cap 1000 per file)." },
                     "force_full_content": { "type": "boolean", "description": "Return the whole file in one call with no line cap, however long it is. Use when you genuinely need the entire file; otherwise page with start_line/end_line." }
                 },
-                // NOTE: the "exactly one of `path` / `paths`" contract is
-                // carried by the descriptions above and ENFORCED at runtime in
-                // `execute` (both-present and empty-array cases are rejected).
-                // We deliberately do NOT express it with a top-level `oneOf`:
-                // strict tool-schema validators (xAI/grok in particular) reject
-                // `oneOf`/`anyOf`/`allOf` in function parameters with HTTP 400,
-                // which would break every agent turn on those providers.
+                // ONE slot names what to read, so there is no second field
+                // that can contradict it and no exclusivity rule to enforce.
+                //
+                // This replaced a `path` + `paths` pair whose "exactly one of"
+                // contract could not be expressed in the schema at all — a
+                // top-level `oneOf` makes strict validators (xAI/grok) reject
+                // the request with HTTP 400 — so it lived in prose and was
+                // enforced by REJECTION. A model decoding strictly fills every
+                // declared property, sent both, and was told its schema-obedient
+                // call was malformed. Measured: 6 of 60 `file_read` calls in one
+                // thread, every one of them a batch read, every one dead.
+                //
+                // A union `"type": [...]` is safe where `oneOf` is not — the
+                // same pattern `shell_kill`'s `pid` already ships on every
+                // provider Aurora supports.
                 "additionalProperties": false,
             }),
         }
@@ -95,176 +229,56 @@ impl ToolExecutor for FileReadTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let path = match input.get("path") {
-            Some(Value::String(path)) if !path.trim().is_empty() => Some(path.as_str()),
-            Some(Value::String(_)) | Some(Value::Null) | None => None,
-            Some(_) => {
-                return Err(ToolError::InvalidInput(
-                    "`path` must be a non-empty string when provided".into(),
-                ))
-            }
-        };
-        // `paths` sent as a JSON-ENCODED STRING — `"[\"a.ts\", \"b.ts\"]"`
-        // instead of `["a.ts", "b.ts"]`. The value it names is an unambiguous
-        // array of file paths; it just arrived one encoding layer deep.
-        //
-        // This is a serialization artifact, not a model having a bad day:
-        // measured across this machine's transcripts it was 8 of 542 batch
-        // reads, spread over 5 different conversations and projects. Rejecting
-        // it burned a whole iteration each time, and the agent's own reaction
-        // was to abandon the batch form entirely ("the paths array approach
-        // isn't working with the tool") and fall back to one read per file —
-        // so a harness quirk was costing N-1 extra round trips per batch.
-        //
-        // Same rule as the one-element-plus-line-window coercion below: when
-        // the input has exactly one sensible reading, resolve it and serve the
-        // call. Only genuinely ambiguous or unusable input is an error.
-        let unwrapped_paths: Option<Vec<Value>> = match input.get("paths") {
-            Some(Value::String(raw)) => serde_json::from_str::<Vec<Value>>(raw)
-                .ok()
-                .filter(|arr| !arr.is_empty())
-                .filter(|arr| {
-                    arr.iter()
-                        .all(|entry| entry.as_str().is_some_and(|s| !s.trim().is_empty()))
-                }),
-            _ => None,
-        };
-        let paths: Option<&[Value]> = if let Some(arr) = unwrapped_paths.as_deref() {
-            Some(arr)
-        } else {
-            match input.get("paths") {
-                Some(Value::Array(paths)) if !paths.is_empty() => Some(paths.as_slice()),
-                Some(Value::Array(_)) | Some(Value::Null) | None => None,
-                // Name what actually arrived and the exact form that works.
-                // The old message restated the schema, which the model had
-                // already read — it gave nothing to correct toward.
-                Some(other) => {
-                    let got = match other {
-                        Value::String(_) => "a string that is not a JSON array of file paths",
-                        Value::Number(_) => "a number",
-                        Value::Bool(_) => "a boolean",
-                        Value::Object(_) => "an object",
-                        _ => "an unsupported value",
-                    };
-                    return Err(ToolError::InvalidInput(format!(
-                        "`paths` received {got}. Send it as a real JSON array of non-empty file \
-                         path strings — `\"paths\": [\"src/a.ts\", \"src/b.ts\"]` — or use \
-                         `path` for a single file."
-                    )));
-                }
-            }
-        };
-
-        if path.is_some() && paths.is_some() {
-            return Err(ToolError::InvalidInput(
-                "use exactly one file_read form: `path` for one file or `paths` for several files; do not send both"
-                    .into(),
-            ));
-        }
+        // One slot, one reading. Every accepted spelling of "what to read"
+        // resolves in `read_targets`, so the single and batch arms below can
+        // never disagree about what was asked for.
+        let request = read_targets(&input)?;
+        let targets = request.targets;
 
         let wants_window = input.get("start_line").is_some()
             || input.get("end_line").is_some()
             || input.get("max_lines").is_some();
 
-        // `paths: ["one/file.rs"], start_line: 1, end_line: 80` used to be a hard
-        // error. It should not be: a one-element array names exactly one file, so
-        // the line window has precisely one meaning and the request is not
-        // ambiguous at all.
+        // Routing is deliberately UNCHANGED by the merge of the two fields: a
+        // bare string reads as one file, an array reads as a batch, and a
+        // one-element array beside a line window reads as one file (one named
+        // file with one range has exactly one meaning).
         //
-        // It is also SCHEMA-VALID input. The `path` xor `paths` contract can't be
-        // expressed in the schema (a top-level `oneOf` makes strict validators
-        // return HTTP 400 — see `schema()`), so every one of these fields is
-        // declared as an independent optional sibling. A model that emits this is
-        // obeying the schema it was given; rejecting it made a correct-looking
-        // call fail for a reason only the prose description hinted at, which is
-        // exactly the kind of unforced error that derails a turn.
-        //
-        // So: normalise it to the single-file form and serve the read. Two or more
-        // files with a window are served too, by the batch arm below — see the
-        // note there.
-        let coerced_single: Option<String> = match paths {
-            Some(arr) if wants_window && arr.len() == 1 => arr[0]
-                .as_str()
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(str::to_string),
-            _ => None,
-        };
-        let paths = if coerced_single.is_some() {
-            None
-        } else {
-            paths
-        };
-        let path = path.or(coerced_single.as_deref());
+        // The distinction is kept because the two readers answer an oversized
+        // file DIFFERENTLY — the batch returns a per-file stub carrying that
+        // file's length, the single reader returns its first page — so
+        // collapsing them would quietly change what an existing call gets back.
+        let single = targets.len() == 1 && (!request.array_form || wants_window);
 
-        // An empty `paths` array is treated as an omitted optional placeholder
-        // only when a valid single-file `path` is present. This keeps a model's
-        // redundant default from overriding the unambiguous requested read.
-        if let Some(arr) = paths {
-            if arr.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .map(|value| value.trim().is_empty())
-                    .unwrap_or(true)
-            }) {
-                return Err(ToolError::InvalidInput(
-                    "every entry in `paths` must be a non-empty file path string".into(),
-                ));
-            }
-            // A window across 2+ files used to be rejected as having "no single
-            // referent". It has an obvious one: the same range, read from each
-            // file. "Lines 210-520 of these four files" cannot mean anything
-            // else, and it is what a model asks for whenever it compares the
-            // same region across implementations — so the rejection cost a whole
-            // iteration and N error strings to teach a rule that only existed
-            // because nothing had implemented the batch case. `read_many` now
-            // slices per file with `slice_window`, the same function and the
-            // same 1000-line cap the single-file form uses.
-
+        if !single {
             // Record each requested path as "seen" so a later file_edit knows
             // the agent looked at it, then delegate to the parallel reader.
-            for entry in arr {
-                if let Some(p) = entry.as_str() {
-                    if let Ok(resolved) = resolve_path_for_read_with_spill(
-                        p,
-                        ctx.workspace_root.as_deref(),
-                        ctx.allow_outside_workspace,
-                        ctx.spill_dir.as_deref(),
-                    ) {
-                        super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
-                    }
+            for entry in &targets {
+                if let Ok(resolved) = resolve_path_for_read_with_spill(
+                    entry,
+                    ctx.workspace_root.as_deref(),
+                    ctx.allow_outside_workspace,
+                    ctx.spill_dir.as_deref(),
+                ) {
+                    super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
                 }
             }
-            // Hand the parallel reader the NORMALIZED shape. It re-reads
-            // `paths` off the input it is given, so passing the original would
-            // put a coerced call straight back into the validation this arm
-            // just resolved — the fix would look applied and change nothing.
-            let delegated = match unwrapped_paths.as_ref() {
-                Some(unwrapped) => {
-                    let mut normalized = input.clone();
-                    if let Some(object) = normalized.as_object_mut() {
-                        object.insert("paths".into(), Value::Array(unwrapped.clone()));
-                    }
-                    normalized
-                }
-                None => input.clone(),
-            };
+            // Hand the parallel reader the RESOLVED list under the key it
+            // reads. Passing the caller's raw input instead would put an
+            // already-resolved call back through interpretation a second time —
+            // the fix would look applied and change nothing.
+            let mut delegated = input.clone();
+            if let Some(object) = delegated.as_object_mut() {
+                object.remove("path");
+                object.insert(
+                    "paths".into(),
+                    Value::Array(targets.iter().cloned().map(Value::String).collect()),
+                );
+            }
             return super::multi_file_read::read_many(delegated, ctx).await;
         }
 
-        let path = path.ok_or_else(|| {
-            if input.get("paths").and_then(Value::as_array).is_some() {
-                ToolError::InvalidInput(
-                    "`paths` must contain at least one file; use `path` for a single file and omit `paths`"
-                        .into(),
-                )
-            } else {
-                ToolError::InvalidInput(
-                    "provide exactly one file_read form: non-empty `path` or non-empty `paths`"
-                        .into(),
-                )
-            }
-        })?;
+        let path = targets[0].as_str();
 
         let resolved = match resolve_path_for_read_with_spill(
             path,
@@ -421,8 +435,34 @@ fn read_with_policy(
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
-    let (sliced, range_start, range_end, omit_before, omit_after, truncated, capped) =
-        slice_window(&content, total_lines, start_line, end_line, max_lines);
+    let slice = slice_window(&content, total_lines, start_line, end_line, max_lines);
+
+    // The range starts after the last line. Nothing to return, and the useful
+    // answer is the file's real size so the next call can be right.
+    if slice.past_end {
+        let payload = json!({
+            "success": false,
+            "path": rel_path,
+            "fullPath": full_path,
+            "totalLines": total_lines,
+            "error": format!(
+                "start_line {} is past the end of this file, which has {total_lines} lines. \
+                 Nothing was read. Re-read with a range inside 1-{total_lines}.",
+                slice.start
+            ),
+        });
+        return Ok(serde_json::to_string(&payload).unwrap());
+    }
+
+    let (sliced, range_start, range_end, omit_before, omit_after, truncated, capped) = (
+        slice.text,
+        slice.start,
+        slice.end,
+        slice.omitted_before,
+        slice.omitted_after,
+        slice.outside,
+        slice.capped,
+    );
 
     // Three different situations used to share one vague sentence. Say which
     // one happened, because the right next move differs for each.
@@ -492,6 +532,13 @@ fn count_lines(content: &str) -> usize {
             _ => i += 1,
         }
     }
+    // A trailing separator TERMINATES the last line; it does not begin another.
+    // Counting it reported one line too many for every file that ends in a
+    // newline — which is most of them — and made the file's last "line" the
+    // empty string after it. A window clamped to that line returned nothing.
+    if content.ends_with('\n') || content.ends_with('\r') {
+        return separators;
+    }
     separators + 1
 }
 
@@ -505,21 +552,61 @@ fn count_lines(content: &str) -> usize {
 /// Shared with [`super::multi_file_read`], which applies the same window to every
 /// file of a batch read — so a windowed `paths` call and a windowed `path` call
 /// slice by identical rules, including the per-file line cap.
+/// One window of a file, and whether the request could be served at all.
+pub(super) struct Slice {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+    pub omitted_before: usize,
+    pub omitted_after: usize,
+    /// Lines exist outside what was returned. A property of the WINDOW — not a
+    /// cut made because the content was too big, which is a different claim and
+    /// gets a different sentence.
+    pub outside: bool,
+    pub capped: bool,
+    /// The requested range begins past the last line, so there is nothing to
+    /// return. Reported rather than clamped: clamping handed back an empty
+    /// string under `success: true`, which the caller cannot tell apart from an
+    /// empty file, and which taught it nothing about the range it got wrong.
+    pub past_end: bool,
+}
+
 pub(super) fn slice_window(
     content: &str,
     total_lines: usize,
     start_line: Option<usize>,
     end_line: Option<usize>,
     max_lines: Option<usize>,
-) -> (String, usize, usize, usize, usize, bool, bool) {
-    let lines: Vec<&str> = if content.is_empty() {
+) -> Slice {
+    let mut lines: Vec<&str> = if content.is_empty() {
         Vec::new()
     } else {
         content.split('\n').map(trim_trailing_cr).collect()
     };
-    let total = lines.len().max(1);
+    // A file that ends in a newline splits into a trailing empty element, and
+    // that element is not a line. Left in, the last "line" of every such file is
+    // the empty string — which is exactly what a window clamped to the end of
+    // the file returned.
+    if lines.len() > 1 && lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let total = lines.len();
+    let requested_start = start_line.unwrap_or(1).max(1);
 
-    let start = start_line.unwrap_or(1).max(1).min(total);
+    if total == 0 || requested_start > total {
+        return Slice {
+            text: String::new(),
+            start: requested_start,
+            end: requested_start,
+            omitted_before: total,
+            omitted_after: 0,
+            outside: false,
+            capped: false,
+            past_end: total > 0,
+        };
+    }
+
+    let start = requested_start;
     // `max_lines` is a request like any other: honoured up to the hard cap.
     let window = max_lines.unwrap_or(MAX_SINGLE_READ_LINES).max(1);
     let allowed = window.min(MAX_SINGLE_READ_LINES);
@@ -533,23 +620,18 @@ pub(super) fn slice_window(
     let end = requested_end.min(cap_end);
     let capped = requested_end > cap_end;
 
-    let selected = if lines.is_empty() {
-        String::new()
-    } else {
-        lines[start - 1..end].join("\n")
-    };
-    let omit_before = start.saturating_sub(1);
-    let omit_after = total_lines.saturating_sub(end);
-    let truncated = omit_before > 0 || omit_after > 0;
-    (
-        selected,
+    let omitted_before = start.saturating_sub(1);
+    let omitted_after = total_lines.saturating_sub(end);
+    Slice {
+        text: lines[start - 1..end].join("\n"),
         start,
         end,
-        omit_before,
-        omit_after,
-        truncated,
+        omitted_before,
+        omitted_after,
+        outside: omitted_before > 0 || omitted_after > 0,
         capped,
-    )
+        past_end: false,
+    }
 }
 
 fn trim_trailing_cr(line: &str) -> &str {
@@ -575,14 +657,34 @@ mod tests {
         }
     }
 
+    /// ONE slot names what to read, and it accepts either spelling.
+    ///
+    /// The pair this replaced could not state its own "exactly one of" rule in
+    /// the schema — a top-level `oneOf` makes strict validators (xAI/grok)
+    /// answer HTTP 400 — so the rule lived in prose and was enforced by
+    /// rejection, and a strictly-decoding model that filled both fields was
+    /// told its schema-obedient call was malformed.
+    ///
+    /// A second declared field cannot come back without failing this.
     #[test]
-    fn schema_requires_one_non_empty_read_form() {
+    fn schema_offers_exactly_one_way_to_name_what_to_read() {
         let schema = FileReadTool.schema();
-        // The single-vs-batch contract is enforced in `execute`, not with a
-        // top-level `oneOf` — strict providers (xAI/grok) 400 on `oneOf`.
         assert!(schema.input_schema.get("oneOf").is_none());
-        assert_eq!(schema.input_schema["properties"]["paths"]["minItems"], 1);
-        assert_eq!(schema.input_schema["properties"]["path"]["minLength"], 1);
+
+        let properties = schema.input_schema["properties"].as_object().unwrap();
+        assert!(
+            properties.get("paths").is_none(),
+            "a second path field is what made the two contradict each other"
+        );
+
+        let path = &properties["path"];
+        assert_eq!(
+            path["type"],
+            serde_json::json!(["string", "array"]),
+            "one slot takes a single path or a list of them"
+        );
+        assert_eq!(path["items"]["type"], "string");
+        assert_eq!(path["maxItems"], MAX_BATCH_PATHS);
     }
 
     /// Measured on real transcripts: 8 of 542 batch reads arrived with `paths`
@@ -608,47 +710,95 @@ mod tests {
         assert!(result.contains("b.ts"), "second file read: {result}");
     }
 
-    /// A string that is NOT an encoded array still fails — but the message
-    /// names what arrived and the form that works, instead of restating the
-    /// schema the model had already read.
+    /// A bare string that is NOT an encoded array names exactly one file, so
+    /// it is SERVED rather than rejected. This used to be an error, on the
+    /// reasoning that the caller meant a batch and got the encoding wrong —
+    /// but "read this one file" is the only thing the value can mean, and
+    /// refusing it spends an iteration teaching a rule with no purpose.
     #[tokio::test]
-    async fn a_non_array_paths_string_fails_with_an_actionable_message() {
+    async fn a_bare_string_names_one_file_and_is_served() {
         let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("just-one-file.ts"), "let a = 1;").unwrap();
+
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
-        let err = tool
+        let result = tool
             .execute(
                 serde_json::json!({ "paths": "just-one-file.ts" }),
                 &ctx_for(Some(tmp.path().to_path_buf())),
             )
             .await
-            .expect_err("a bare string is not a batch");
-        let message = err.to_string();
-        assert!(
-            message.contains("not a JSON array"),
-            "names what arrived: {message}"
-        );
-        assert!(
-            message.contains("\"paths\""),
-            "shows the working form: {message}"
-        );
+            .expect("one named file has exactly one reading");
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["success"], true);
+        assert_eq!(body["content"], "let a = 1;");
     }
 
-    /// An encoded array with a blank entry is not unambiguous, so it is NOT
-    /// half-accepted — it falls through to the normal validation.
+    /// A blank entry names no file, so dropping it loses nothing and the rest
+    /// of the batch is served. Rejecting the whole call over a slot-filler
+    /// meant the files the caller DID name went unread.
     #[tokio::test]
-    async fn an_encoded_paths_array_with_a_blank_entry_is_rejected() {
+    async fn a_blank_entry_is_dropped_and_the_named_files_are_still_read() {
         let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ts"), "let a = 1;\n").unwrap();
+        std::fs::write(tmp.path().join("b.ts"), "let b = 2;\n").unwrap();
+
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
         let result = tool
             .execute(
-                serde_json::json!({ "paths": "[\"a.ts\", \"  \"]" }),
+                serde_json::json!({ "path": ["a.ts", "  ", "b.ts"] }),
                 &ctx_for(Some(tmp.path().to_path_buf())),
             )
-            .await;
+            .await
+            .expect("the named files are still unambiguous");
+        assert!(result.contains("let a = 1;"), "first file read: {result}");
+        assert!(result.contains("let b = 2;"), "second file read: {result}");
+    }
+
+    /// Naming NOTHING is still an error — there is no sensible reading of a
+    /// call that asks for no file, and inventing one would hide the mistake.
+    #[tokio::test]
+    async fn naming_no_file_at_all_is_an_error() {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(serde_json::json!({ "path": ["  ", ""] }), &ctx_for(None))
+            .await
+            .expect_err("no file was named");
+        let message = err.to_string();
+        assert!(message.contains("`path` is required"), "{message}");
+    }
+
+    /// A value that names no file at all still fails, and the message shows
+    /// the working forms rather than restating the schema.
+    #[tokio::test]
+    async fn an_unreadable_path_value_fails_with_an_actionable_message() {
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(serde_json::json!({ "path": 42 }), &ctx_for(None))
+            .await
+            .expect_err("a number names no file");
+        let message = err.to_string();
         assert!(
-            result.is_err(),
-            "a blank entry must not be silently dropped"
+            message.contains("a number"),
+            "names what arrived: {message}"
         );
+        assert!(message.contains("\"path\""), "shows the form: {message}");
+    }
+
+    /// More files than one call serves is refused with the real limit and the
+    /// next move, not a silent truncation that would report files as read
+    /// when they never were.
+    #[tokio::test]
+    async fn more_paths_than_the_batch_cap_is_refused_with_the_limit() {
+        let many: Vec<String> = (0..MAX_BATCH_PATHS + 1)
+            .map(|n| format!("file{n}.ts"))
+            .collect();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let err = tool
+            .execute(serde_json::json!({ "path": many }), &ctx_for(None))
+            .await
+            .expect_err("over the cap");
+        let message = err.to_string();
+        assert!(message.contains(&MAX_BATCH_PATHS.to_string()), "{message}");
     }
 
     #[tokio::test]
@@ -694,19 +844,129 @@ mod tests {
         assert_eq!(body["content"], "project memory");
     }
 
+    /// THE regression. This is the verbatim payload GPT-5.6 Sol sent in thread
+    /// `9db4f0f0` on 2026-08-18, and Aurora answered "use exactly one
+    /// file_read form … do not send both". Six of sixty `file_read` calls in
+    /// that thread had this shape; every one of them was a batch read and
+    /// every one died. The model retried three times, shedding a file each
+    /// time, because the error named nothing it could act on.
+    ///
+    /// Note `path` IS `paths[0]` — not a contradiction, a redundant
+    /// restatement. Note too that every optional property is filled
+    /// (`max_lines` duplicating `end_line`, `force_full_content` stated rather
+    /// than omitted): the signature of a model decoding the schema strictly,
+    /// which is to say obeying it.
     #[tokio::test]
-    async fn rejects_ambiguous_non_empty_path_forms() {
+    async fn the_payload_that_broke_a_live_thread_now_reads_every_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let names = [
+            "proxy-check.js",
+            "proxies.js",
+            "engine.js",
+            "main.js",
+            "preload.js",
+            "package.json",
+        ];
+        for (n, name) in names.iter().enumerate() {
+            std::fs::write(tmp.path().join(name), format!("// file {n}\nbody\n")).unwrap();
+        }
+
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
-        let err = tool
+        let result = tool
             .execute(
-                serde_json::json!({ "path": "one.md", "paths": ["two.md"] }),
-                &ctx_for(None),
+                serde_json::json!({
+                    "end_line": 380,
+                    "force_full_content": false,
+                    "max_lines": 380,
+                    "path": "proxy-check.js",
+                    "paths": names,
+                    "start_line": 1
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
             )
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, ToolError::InvalidInput(message) if message.contains("do not send both"))
+            .expect("a redundant restatement is not a contradiction");
+
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["filesError"], 0, "no file failed: {body}");
+        assert_eq!(
+            body["filesRead"], 6,
+            "every named file was read exactly once: {body}"
         );
+        // Content, not just a success flag — a card that says "6 files" over an
+        // empty body is the failure this replaced wearing a check mark.
+        for n in 0..names.len() {
+            assert!(
+                result.contains(&format!("// file {n}")),
+                "file {n} came back with its content: {result}"
+            );
+        }
+    }
+
+    /// A `path` that is NOT already in the list is one more file to read. Still
+    /// exactly one reading, so still served — the union, in the order given.
+    #[tokio::test]
+    async fn a_path_outside_the_list_is_read_alongside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("one.md"), "first").unwrap();
+        std::fs::write(tmp.path().join("two.md"), "second").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": "one.md", "paths": ["two.md"] }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("two named files are two files to read");
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["filesRead"], 2, "{body}");
+        assert!(result.contains("first"), "{result}");
+        assert!(result.contains("second"), "{result}");
+    }
+
+    /// The array form, under the name the schema now advertises.
+    #[tokio::test]
+    async fn path_as_an_array_reads_the_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ts"), "alpha").unwrap();
+        std::fs::write(tmp.path().join("b.ts"), "beta").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": ["a.ts", "b.ts"] }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("an array names a batch");
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["filesRead"], 2, "{body}");
+        assert!(
+            result.contains("alpha") && result.contains("beta"),
+            "{result}"
+        );
+    }
+
+    /// The same file named twice is read once. Without this a model that
+    /// restates `path` inside `paths` would be billed for the file twice and
+    /// the card would count it twice.
+    #[tokio::test]
+    async fn a_file_named_twice_is_read_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ts"), "alpha").unwrap();
+        std::fs::write(tmp.path().join("b.ts"), "beta").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": ["a.ts", "b.ts", "a.ts"] }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("a duplicate is not an error");
+        let body: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(body["filesRead"], 2, "read once each: {body}");
     }
 
     /// A line window over TWO OR MORE files used to be rejected as having no
@@ -806,19 +1066,20 @@ mod tests {
         );
     }
 
-    /// An empty entry reports the entry problem, not the line-range rule.
+    /// A call whose ONLY entry is blank named no file. The error says that,
+    /// rather than blaming the line range, which was never the problem.
     #[tokio::test]
-    async fn blank_single_entry_with_a_window_reports_the_entry_problem() {
+    async fn a_blank_only_call_with_a_window_says_no_file_was_named() {
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
         let err = tool
             .execute(
-                serde_json::json!({ "paths": ["  "], "start_line": 2 }),
+                serde_json::json!({ "path": ["  "], "start_line": 2 }),
                 &ctx_for(None),
             )
             .await
             .unwrap_err();
         assert!(
-            matches!(err, ToolError::InvalidInput(message) if message.contains("non-empty file path string"))
+            matches!(err, ToolError::InvalidInput(message) if message.contains("`path` is required"))
         );
     }
 

@@ -245,6 +245,11 @@ export class AgentService {
       executionMode,
       mcpSummary: getMcpToolsSummary(),
       promptContext: { userMessage: "" },
+      // A compaction runs with `tools: []` (see the call below), so every
+      // tool-gated section is switched OFF here. The default for browser is
+      // ON, so it has to be said out loud — otherwise the summarizer is told
+      // to call a tool this request does not carry.
+      browserTools: false,
     });
     const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
     const workspacePath =
@@ -311,6 +316,10 @@ export class AgentService {
         // gets neither, instead of an instruction with no tool behind it.
         transcriptChapters: this.config.transcriptChapters,
         deferTools: this.config.deferTools,
+        // Same field the runtime client forwards as the request's
+        // `browserTools`. `undefined` means "on" on both sides, matching the
+        // wire contract — so the pointer and the bucket are switched together.
+        browserTools: this.config.browserTools,
       });
 
       if (composedPrompt.explicitSkills.length > 0) {

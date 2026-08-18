@@ -87,13 +87,17 @@ impl ToolExecutor for MultiFileReadTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
+        // `paths` is this helper's INTERNAL key — `file_read::read_targets` is the
+        // only caller and always writes a resolved array here. These messages name
+        // `path`, the argument the model actually has, so a leaked error can never
+        // send it looking for a field its schema does not declare.
         let arr = input
             .get("paths")
             .and_then(Value::as_array)
-            .ok_or_else(|| ToolError::InvalidInput("`paths` must be an array of strings".into()))?;
+            .ok_or_else(|| ToolError::InvalidInput("`path` must name at least one file".into()))?;
         if arr.is_empty() {
             return Err(ToolError::InvalidInput(
-                "`paths` must be a non-empty array".into(),
+                "`path` must name at least one file".into(),
             ));
         }
         if arr.len() > MAX_FILES {
@@ -117,7 +121,7 @@ impl ToolExecutor for MultiFileReadTool {
         let mut error_count = 0usize;
         for entry in arr {
             let path = entry.as_str().ok_or_else(|| {
-                ToolError::InvalidInput("each entry of `paths` must be a string".into())
+                ToolError::InvalidInput("every entry of `path` must be a file path string".into())
             })?;
             let abs = match super::resolve_path_for_read_with_spill(
                 path,
@@ -169,14 +173,40 @@ impl ToolExecutor for MultiFileReadTool {
                     // rules and share the 1000-line-per-file cap.
                     let (body, extras) = match window {
                         Some(window) => {
-                            let (text, start, end, before, after, truncated, capped) =
-                                super::file_read::slice_window(
-                                    content,
-                                    lines,
-                                    window.start_line,
-                                    window.end_line,
-                                    window.max_lines,
-                                );
+                            let slice = super::file_read::slice_window(
+                                content,
+                                lines,
+                                window.start_line,
+                                window.end_line,
+                                window.max_lines,
+                            );
+                            // One range across a batch will overshoot the SHORTER
+                            // files — that is normal, and it is per-file news, not
+                            // a failure of the call. Say it against the file it
+                            // happened to; the others still return their slice.
+                            if slice.past_end {
+                                files.push(json!({
+                                    "path": entry.input_path,
+                                    "success": false,
+                                    "error": format!(
+                                        "start_line {} is past the end of this file, which has \
+                                         {lines} lines. Nothing was read from it. Re-read this \
+                                         file with a range inside 1-{lines}.",
+                                        slice.start
+                                    ),
+                                    "lines": lines,
+                                }));
+                                continue;
+                            }
+                            let (text, start, end, before, after, truncated, capped) = (
+                                slice.text,
+                                slice.start,
+                                slice.end,
+                                slice.omitted_before,
+                                slice.omitted_after,
+                                slice.outside,
+                                slice.capped,
+                            );
                             let mut extras = serde_json::Map::new();
                             extras.insert(
                                 "range".into(),
@@ -186,7 +216,11 @@ impl ToolExecutor for MultiFileReadTool {
                             extras.insert("cappedAtMaxLines".into(), json!(capped));
                             extras.insert("omittedLinesBefore".into(), json!(before));
                             extras.insert("omittedLinesAfter".into(), json!(after));
-                            extras.insert("truncated".into(), json!(truncated));
+                            // Deliberately NOT `truncated`: a window omitting
+                            // lines is the window working. `truncated` is read by
+                            // the card as "this was cut because it was too big",
+                            // which is a different sentence for the reader.
+                            extras.insert("outsideWindow".into(), json!(truncated));
                             if capped {
                                 extras.insert(
                                     "warning".into(),
@@ -212,7 +246,7 @@ impl ToolExecutor for MultiFileReadTool {
                                     "largeFile": true,
                                     "requiresLineRange": true,
                                     "warning": format!(
-                                        "File is too large to return whole ({lines} lines, {size} bytes). Re-read it with start_line/end_line — a range works with `paths` too, and is applied to every file.",
+                                        "File is too large to return whole ({lines} lines, {size} bytes). Re-read it with start_line/end_line — a range works with several paths too, and is applied to every file.",
                                     ),
                                     "suggestedRange": {
                                         "startLine": 1,
@@ -377,6 +411,13 @@ fn count_lines(content: &str) -> usize {
             _ => i += 1,
         }
     }
+    // A trailing separator TERMINATES the last line; it does not begin another.
+    // Counting it reported one line too many for every file that ends in a
+    // newline — which is most of them — and made the file's last "line" the
+    // empty string after it. A window clamped to that line returned nothing.
+    if content.ends_with('\n') || content.ends_with('\r') {
+        return separators;
+    }
     separators + 1
 }
 
@@ -473,6 +514,69 @@ mod tests {
             assert_eq!(file["range"]["endLine"], 5);
             assert_eq!(file["omittedLinesBefore"], 2);
         }
+    }
+
+    /// One range across a batch overshoots the SHORTER files. Observed live:
+    /// `[.knowledge/knowledge.md, .knowledge/lesson.md] + 255-275` — correct for
+    /// the 261-line file, past the end of the 152-line one. The short file came
+    /// back `success: true` with empty content, which the model cannot tell
+    /// apart from an empty file, and the card rendered a blank pane under a
+    /// note claiming the file had been too large to keep.
+    #[tokio::test]
+    async fn a_window_past_the_end_of_one_file_says_so_and_still_serves_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let long: String = (1..=20).map(|n| format!("line{n}\n")).collect();
+        let short: String = (1..=5).map(|n| format!("line{n}\n")).collect();
+        std::fs::write(tmp.path().join("long.txt"), &long).unwrap();
+        std::fs::write(tmp.path().join("short.txt"), &short).unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(MultiFileReadTool);
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "paths": ["long.txt", "short.txt"],
+                    "start_line": 12,
+                    "end_line": 14,
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let files = parsed["files"].as_array().unwrap();
+        let long_file = files.iter().find(|f| f["path"] == "long.txt").unwrap();
+        let short_file = files.iter().find(|f| f["path"] == "short.txt").unwrap();
+
+        // The file that CAN answer still answers.
+        assert_eq!(long_file["content"], "line12\nline13\nline14");
+        // The one that cannot says why, with the number needed to get it right.
+        assert_eq!(short_file["success"], false);
+        let error = short_file["error"].as_str().unwrap();
+        assert!(
+            error.contains("past the end") && error.contains('5'),
+            "the error must state the file's real length: {error}"
+        );
+        assert!(
+            short_file["content"].is_null(),
+            "no empty string masquerading as content: {short_file}"
+        );
+    }
+
+    /// A file ending in a newline splits into a trailing empty element that is
+    /// not a line. Counted as one, the last "line" of every such file is the
+    /// empty string — which is what a window clamped to the file's end returned.
+    #[test]
+    fn the_last_line_of_a_file_ending_in_a_newline_is_not_empty() {
+        let slice = super::super::file_read::slice_window("a\nb\nc\n", 3, Some(3), Some(3), None);
+        assert_eq!(slice.text, "c");
+        assert_eq!(slice.start, 3);
+        assert_eq!(slice.end, 3);
+        assert!(!slice.past_end);
+
+        let past = super::super::file_read::slice_window("a\nb\nc\n", 3, Some(4), Some(9), None);
+        assert!(past.past_end);
+        assert!(past.text.is_empty());
     }
 
     /// A window is how you read part of a big file, so the `largeFile` bail-out

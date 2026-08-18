@@ -223,4 +223,50 @@ describe("spilled tool output never surfaces as a filename", () => {
     );
     expect(activity.label).toBe("Reading index.tsx");
   });
+
+  it("applies to an array-form `path` as well", () => {
+    expect(
+      describeToolActivity("file_read", JSON.stringify({ path: [SPILL] })).label,
+    ).toBe("Reading tool output");
+  });
+});
+
+/**
+ * `file_read` names what to read through ONE slot that takes a string or an
+ * array. The card has to read a batch out of either spelling: the array form is
+ * what the model sends now, and `paths` is what every thread already on disk
+ * was recorded under.
+ */
+describe("a batch read names its files whichever way it was spelled", () => {
+  const FILES = ["core/proxy-check.js", "core/proxies.js", "gui/main.js"];
+  const names = (activity: AgentActivity) =>
+    (activity.targets ?? []).map((target) => target.name);
+
+  it("reads a batch from the array form", () => {
+    const activity = describeToolActivity("file_read", JSON.stringify({ path: FILES }));
+    expect(names(activity)).toEqual(["proxy-check.js", "proxies.js", "main.js"]);
+  });
+
+  it("still reads a batch from a historic `paths` transcript", () => {
+    const activity = describeToolActivity("file_read", JSON.stringify({ paths: FILES }));
+    expect(names(activity)).toEqual(["proxy-check.js", "proxies.js", "main.js"]);
+  });
+
+  it("names each file once when `path` restates the head of the list", () => {
+    // The exact shape that failed live: `path` IS `paths[0]`. The card must
+    // count three files, not four with one drawn twice.
+    const activity = describeToolActivity(
+      "file_read",
+      JSON.stringify({ path: FILES[0], paths: FILES, start_line: 1, end_line: 380 }),
+    );
+    expect(names(activity)).toEqual(["proxy-check.js", "proxies.js", "main.js"]);
+  });
+
+  it("keeps the single-file row for one named file", () => {
+    const activity = describeToolActivity(
+      "file_read",
+      JSON.stringify({ path: ["core/proxies.js"] }),
+    );
+    expect(names(activity)).toEqual(["proxies.js"]);
+  });
 });

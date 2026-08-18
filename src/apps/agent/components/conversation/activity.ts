@@ -109,11 +109,7 @@ function spilledOutputPath(
   args: Record<string, unknown>,
   streamedPaths: string[],
 ): boolean {
-  const candidates = [
-    asStr(args.path),
-    ...(Array.isArray(args.paths) ? args.paths.map((p) => asStr(p)) : []),
-    ...streamedPaths,
-  ];
+  const candidates = [...pathListOf(args), ...streamedPaths];
   return candidates.some(
     (p) => !!p && p.replace(/\\/g, "/").includes(".tool-results/"),
   );
@@ -139,6 +135,29 @@ function clip(s: string, max: number): string {
 
 const asStr = (v: unknown) =>
   typeof v === "string" && v.trim() ? v.trim() : null;
+
+/**
+ * Every path a call names, in order, de-duplicated.
+ *
+ * `file_read`'s `path` takes EITHER a string or an array — one slot, so a
+ * strictly-decoding model cannot contradict itself (see `read_targets` in
+ * `file_read.rs`). `paths` is still read because threads already on disk were
+ * recorded under it, and a card has to render an old transcript as faithfully
+ * as a new one.
+ */
+function pathListOf(args: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const add = (value: unknown) => {
+    const text = asStr(value);
+    if (text && !out.includes(text)) out.push(text);
+  };
+  for (const key of ["path", "paths"] as const) {
+    const value = args[key];
+    if (Array.isArray(value)) value.forEach(add);
+    else add(value);
+  }
+  return out;
+}
 
 /** The single path a path tool is acting on (full, unclipped), or null. */
 function pathOf(args: Record<string, unknown>): string | null {
@@ -189,9 +208,9 @@ function targetsOf(
   let paths: string[];
   if (
     (name === "file_read" || name === "multi_file_read" || name === "read_lints") &&
-    Array.isArray(args.paths)
+    (Array.isArray(args.path) || Array.isArray(args.paths))
   ) {
-    paths = args.paths.filter((path): path is string => typeof path === "string");
+    paths = pathListOf(args);
   } else if (
     name === "file_edit" ||
     name === "file_patch" ||
@@ -345,6 +364,10 @@ function activityArgs(
     }
     const paths = completedToolStringArrayArgument(argsJson, "paths");
     if (paths.length > 0) args.paths = paths;
+    // `path` may itself be the array form. Only when the string scanner found
+    // nothing, so a plain single path is never overwritten by a stray match.
+    const pathArray = completedToolStringArrayArgument(argsJson, "path");
+    if (pathArray.length > 0 && typeof args.path !== "string") args.path = pathArray;
     const targetPaths = completedToolStringArrayArgument(argsJson, "target_paths");
     if (targetPaths.length > 0) args.target_paths = targetPaths;
     return { args, streamedPaths };

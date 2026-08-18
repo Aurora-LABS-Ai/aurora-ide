@@ -25,14 +25,26 @@ export const MultiFileResultsView: React.FC<{
         <FileIcon name={baseName(file.path)} path={file.path} className="agw-file-ico" />
         <span className="agw-rv-title-file">{baseName(file.path)}</span>
         <span className="agw-rv-stats">
-          {typeof file.lines === "number" && <span>{file.lines.toLocaleString()} L</span>}
+          {/* A windowed read states the range it returned. "152 L" alone next to
+              20 visible lines reads as a contradiction — the file's length is
+              not what you are looking at. */}
+          {file.window ? (
+            <span>
+              L{file.window.start}–{file.window.end}
+              {typeof file.lines === "number" && ` of ${file.lines.toLocaleString()}`}
+            </span>
+          ) : (
+            typeof file.lines === "number" && <span>{file.lines.toLocaleString()} L</span>
+          )}
           <span>{selectedIndex + 1} / {files.length}</span>
         </span>
       </div>
       {file.content !== undefined ? (
         <div className="agw-multi-read">
           <ToolCode code={file.content} path={file.fullPath ?? file.path} />
-          {file.truncated && (
+          {/* Only ever about SIZE. A window omitting lines is the window doing
+              its job, and the range in the header already says so. */}
+          {file.truncated && !file.window && (
             <div className="agw-rv-trunc-note" role="note">
               Showing the beginning — the full file was too large to keep in
               this conversation.

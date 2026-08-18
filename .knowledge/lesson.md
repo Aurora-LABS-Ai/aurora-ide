@@ -2,6 +2,92 @@
 
 Append 2-4 lines per mistake / broken assumption / project-specific warning.
 
+## 2026-08-18 — Prose that restates what a tool owns will drift, and it drifts silently
+
+Every wrong thing found in the system prompt was a copy of something a tool already carried. The
+browser section claimed "exactly eight browser tools" against a roster of sixteen and duplicated
+`browser_guidelines` for 1,126 tokens per request. The `file_read` line taught `paths` and said line
+ranges "belong with `path`" — false since 2026-08-16, when windowed batch reads shipped and nobody
+came back here. Core Identity offered a second window that no longer exists.
+- Rule: the prompt carries the **decision** (when to reach for a thing), the tool carries the
+  **mechanics**. Aurora's own `CHAPTER_INSTRUCTIONS` doc comment already said this; the browser
+  section broke it at 1,126 tokens a request. If a sentence in the prompt could be checked against a
+  tool schema, it will eventually disagree with it.
+- **Never put a COUNT in the prompt.** A number in prose has no mechanism to stay true. The roster
+  the model receives is the only honest source.
+- Whenever a tool gains a capability, grep the prompt for the old rule in the SAME change. A tool
+  and a prompt that disagree do not fail loudly — the model just believes the prompt.
+- Anything gated must be gated on the value the CALLER sends on the request, never read from the
+  store inside the composer: a surface that does not forward the flag would otherwise be told about
+  tools it never received. Watch the polarity — absent `browserTools` means ON, absent `deferTools`
+  means OFF.
+
+## 2026-08-18 — A rule the schema cannot state must never be enforced by rejection
+
+`file_read` declared `path` and `paths` as independent optional siblings, because the "exactly one
+of" contract cannot be expressed without `oneOf` (HTTP 400 on strict validators). So the rule lived
+in prose and `execute` rejected callers who broke it. A strictly-decoding model fills EVERY declared
+property — it cannot obey prose it was never shown as a constraint — so it sent both and got told
+its correct call was malformed. Owner's confidence: 30 → **10 out of 100**.
+- The test to apply: **can a model satisfy this rule using only the schema it was handed?** If not,
+  the rule is unenforceable and the design is wrong — delete the second slot, don't police the pair.
+  A union `"type": ["string","array"]` is accepted where `oneOf` is not (`shell_kill.pid` proves it).
+- Signature of strict decoding in a payload: every optional filled, `max_lines` duplicating
+  `end_line`, `force_full_content: false` stated rather than omitted. Read that as obedience, not
+  confusion, and look at your schema rather than the model.
+- The same file already resolved two narrower ambiguities under its own written rule ("exactly one
+  sensible reading → serve it") and never applied it to the both-present case. **When a file states
+  a principle in its comments, grep for every branch that should be following it.**
+
+## 2026-08-18 — A boundary rule chosen for tidiness became the feature's ceiling
+
+`compaction_cut` cut only at user messages. Nothing on the wire requires that — the real constraint
+is just that the tail must not contain a `tool_result` whose `tool_use` was summarized away. The
+tidier rule quietly capped the whole feature: Aurora's turns are long and autonomous, so threads have
+very few user boundaries and all the growth sits after the last one. Measured tails against a 40k
+budget: **190,184** and **61,564**. And on threads where it did fit, it kept as little as **92 tokens**
+of real transcript — the opposite failure, invisible because the number looked small and healthy.
+- Ask what the PROTOCOL requires, then allow everything else. A constraint invented for neatness will
+  eventually be the reason a feature cannot do its job, and it will not announce itself.
+- Watch both directions of a budget. "Tail too big" was the obvious bug; "tail absurdly small" was
+  the same rule failing the other way and nobody had looked.
+- Add the do-nothing guard: one measured compaction returned **28% larger** than what it replaced,
+  spending a full-history request to grow the context. If a pass cannot improve things, it must not run.
+- When replaying a fix over real data, compare on ONE estimator for both rules. The absolute numbers
+  are approximate; the comparison is what you are entitled to claim.
+
+## 2026-08-18 — Compaction erases HOW to call tools, and nothing puts it back
+
+Thread `9db4f0f0`: compaction marker at line 131, first malformed `file_read` at line 135. 130+
+clean calls before it, 6 broken after. Control: thread `a551beac`, 68 tool calls, 0 compactions,
+0 malformed. The summary carries the task, not the conventions — and the model's own prior calls
+were the working examples keeping it on the correct form.
+- Aurora re-injects the repo map (head, cached prefix) and the todo checklist (tail, live). It
+  re-injects NOTHING about its own tools. A summary is narrative; conventions are evidence.
+- Corollary for schema design: a tool that can only be called ONE way survives amnesia. Ambiguity
+  the model resolves from few-shot history is a bug that fires the moment history is summarized.
+- Separately, and still open: `compaction_cut` may only cut at a USER message. A thread with 2 user
+  messages and 65 requests has one legal cut point with all the growth after it, so compaction ran,
+  reclaimed ~nothing, and context sat at 616K against a 400K window.
+
+## 2026-08-17 (2nd) — A trailing newline is not a line, and clamping is not answering
+
+`file_read` with `paths: [knowledge.md, lesson.md] + start_line 255, end_line 275`. Correct for the
+261-line file; past the end of the 152-line one. The short file came back **`success: true` with
+`content: ""`** — because `slice_window` clamped `start` to the last line, and the last "line" of any
+file ending in a newline is the empty string after it. The card then drew an empty pane under
+"the full file was too large to keep in this conversation", which was false twice over.
+- **`count_lines` counted a trailing separator as starting another line**, so every file ending in a
+  newline reported one line too many — everywhere, not just here. `"a\nb\n"` is 2 lines, not 3.
+- **A range past EOF is now an error naming the file's real length**, not a clamp. Clamping produced
+  an empty string the caller cannot distinguish from an empty file — the same shape as the 2026-07-25
+  `parse_tool_input` → `{}` bug. In a batch it is per-file: the files that CAN answer still answer.
+- **`truncated` was carrying two different claims.** For a windowed read it meant "there are lines
+  outside your range" (normal); the card reads it as "this was cut because it was too big" (an
+  apology). Now `outsideWindow` for the first, and the header states `L255–261 of 261`.
+- The model never gave the short file its own range — the schema has ONE range for all `paths`, by
+  design. It wanted the tail of each file, which a shared absolute range cannot express.
+
 ## 2026-08-17 — A barrier that correctness needs is not a barrier the UI needs
 
 `join_all` over a tool batch is right for the model's copy: result blocks, spill and rich sidecars

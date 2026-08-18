@@ -305,6 +305,17 @@ impl ConversationRuntime {
             }
         };
 
+        // Carry the conventions across the cut, not just the narrative. The
+        // summarizer is told to describe the WORK; nothing asks it to record how
+        // the tools were being called, and measured across every compaction on
+        // this machine nothing ever did. Appended to the summary rather than
+        // added as a new block so it rides the compacted view, the JSONL and the
+        // UI through paths that already exist.
+        let summary = match tool_usage_recap(&session.messages()[..cut]) {
+            Some(recap) => format!("{summary}\n\n{recap}"),
+            None => summary,
+        };
+
         let now = chrono::Utc::now().timestamp_millis();
         let marker = ConversationMessage {
             role: MessageRole::System,
@@ -880,6 +891,115 @@ pub(super) fn apply_compaction(
 ///
 /// The budget is an absolute token count — see [`COMPACT_TAIL_MAX_TOKENS`]
 /// for why it must not scale with the window.
+/// How many distinct tools the recap may carry.
+const RECAP_MAX_TOOLS: usize = 12;
+/// How much of one call's arguments to keep. Enough to show the SHAPE.
+const RECAP_MAX_ARG_CHARS: usize = 240;
+
+/// The last call of each tool that actually WORKED, taken from the messages a
+/// compaction is about to delete.
+///
+/// Why this exists: a summary describes the task, not the conventions. Measured
+/// across every compaction on this machine (17 of them, 571 threads), the word
+/// `file_read` appears in **zero** summaries — while the head being replaced
+/// held up to 258 tool calls. So the model resumes knowing what it was doing
+/// and nothing about how it had been calling its tools.
+///
+/// That is not hypothetical. In thread `9db4f0f0` the marker lands at line 131
+/// after 130 well-formed calls, and the first malformed `file_read` of the whole
+/// thread arrives at line 135 — four messages later. Its own prior calls were
+/// the working examples; the summary kept none of them.
+///
+/// Deliberately EXAMPLES, not prose. A rule the model reads is advice; its own
+/// last successful call is evidence, and evidence is what it was already
+/// copying. It also covers every tool automatically — MCP tools included, which
+/// no hand-written instruction will ever reach.
+///
+/// Only successful calls qualify: replaying a rejected call would teach exactly
+/// the shape that failed.
+pub(super) fn tool_usage_recap(messages: &[ConversationMessage]) -> Option<String> {
+    // tool_use_id → whether its result came back an error.
+    let mut failed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for message in messages {
+        for block in &message.blocks {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } = block
+            {
+                if is_error.unwrap_or(false) {
+                    failed.insert(tool_use_id.as_str());
+                }
+            }
+        }
+    }
+
+    // Walk forward and keep overwriting, so what survives is the LAST good call
+    // of each tool — the one closest to where work resumes.
+    let mut latest: Vec<(String, String)> = Vec::new();
+    for message in messages {
+        for block in &message.blocks {
+            let ContentBlock::ToolUse { id, name, input } = block else {
+                continue;
+            };
+            if failed.contains(id.as_str()) {
+                continue;
+            }
+            let mut args = input.to_string();
+            if args.chars().count() > RECAP_MAX_ARG_CHARS {
+                let cut: String = args.chars().take(RECAP_MAX_ARG_CHARS).collect();
+                args = format!("{cut}…");
+            }
+            let line = format!("{name}({args})");
+            match latest.iter_mut().find(|(tool, _)| tool == name) {
+                Some(slot) => slot.1 = line,
+                None => latest.push((name.clone(), line)),
+            }
+        }
+    }
+
+    if latest.is_empty() {
+        return None;
+    }
+    // Most recently used tools first, then cap: the tail of a long turn is what
+    // the next request continues from.
+    latest.reverse();
+    latest.truncate(RECAP_MAX_TOOLS);
+
+    let body = latest
+        .iter()
+        .map(|(_, line)| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(format!(
+        "<tool_usage_recap>\nThe last call of each tool that succeeded before this point. These are \
+         YOUR OWN calls, replayed verbatim as a reminder of the argument shapes this conversation \
+         was already using — copy them rather than re-deriving a form from the schema.\n\n{body}\n\
+         </tool_usage_recap>"
+    ))
+}
+
+/// Where to cut so the tail fits [`compact_tail_budget`].
+///
+/// A cut is legal at any index whose TAIL is self-contained: no `tool_result`
+/// in it may answer a `tool_use` that the summary is about to replace. That is
+/// the only real constraint the wire imposes, and it admits every complete
+/// tool round, not just user messages.
+///
+/// This used to cut ONLY at a user message, and that was the binding limit on
+/// the whole feature. Aurora's turns are long and autonomous: one instruction
+/// routinely produces sixty-plus tool calls, so a thread has very few user
+/// boundaries and all the growth sits after the last one. Measured on this
+/// machine, thread `b3f19c05` compacted 501,776 → 195,974 tokens against a
+/// 40,000-token tail budget, because the only boundary available left a tail of
+/// ~190k. Two others reclaimed nothing at all; one came back 28% LARGER than
+/// what it replaced.
+///
+/// `repair_tool_pairing` runs last on the API view and would drop an orphaned
+/// result anyway, but being correct here is better than being repaired later:
+/// a dropped result is a hole in the tail the model can see.
 pub(super) fn compaction_cut(
     messages: &[ConversationMessage],
     window: u32,
@@ -894,22 +1014,53 @@ pub(super) fn compaction_cut(
     for i in (0..messages.len()).rev() {
         suffix[i] = suffix[i + 1].saturating_add(per[i]);
     }
-    let user_indices: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter_map(|(i, m)| matches!(m.role, MessageRole::User).then_some(i))
-        .collect();
-    if user_indices.len() < 2 {
+
+    // Already inside the budget: there is nothing to reclaim, and summarizing
+    // would spend a full-history request to make the conversation bigger.
+    if suffix[0] <= target {
         return None;
     }
-    // Oldest boundary (with a non-empty head) whose tail fits the cap.
-    for &idx in &user_indices {
-        if idx > 0 && suffix[idx] <= target {
-            return Some(idx);
+
+    // Earliest message each tool call was made in.
+    let mut first_use: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        for block in &message.blocks {
+            if let ContentBlock::ToolUse { id, .. } = block {
+                first_use.entry(id.as_str()).or_insert(index);
+            }
         }
     }
-    // Even the last turn exceeds the cap — keep the smallest possible tail.
-    user_indices.iter().rev().copied().find(|&idx| idx > 0)
+
+    // `answers_from[i]` = the oldest call answered by any result at or after i.
+    // A cut at `i` is legal exactly when that is not older than `i` — otherwise
+    // the tail opens with a result whose call no longer exists.
+    //
+    // A result whose call is nowhere in the transcript is already broken and is
+    // `repair_tool_pairing`'s business, so it must not veto an otherwise good
+    // cut: `usize::MAX` lets it pass.
+    let mut answers_from = vec![usize::MAX; messages.len() + 1];
+    for i in (0..messages.len()).rev() {
+        let mut oldest = answers_from[i + 1];
+        for block in &messages[i].blocks {
+            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                let used_at = first_use
+                    .get(tool_use_id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                oldest = oldest.min(used_at);
+            }
+        }
+        answers_from[i] = oldest;
+    }
+    let legal = |i: usize| i > 0 && i < messages.len() && answers_from[i] >= i;
+
+    // Oldest legal boundary whose tail fits — the one that reclaims the most.
+    if let Some(idx) = (1..messages.len()).find(|&i| legal(i) && suffix[i] <= target) {
+        return Some(idx);
+    }
+    // Nothing fits: keep the smallest legal tail rather than giving up, which is
+    // what leaves a thread pinned over its window with no way down.
+    (1..messages.len()).rev().find(|&i| legal(i))
 }
 
 /// Concatenate the visible text blocks of an assistant message (used to pull

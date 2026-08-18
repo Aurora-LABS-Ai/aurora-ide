@@ -15,8 +15,7 @@
  * `[error]`/`[rejected]` sentinel = failed; anything else = done.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
@@ -43,8 +42,81 @@ import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope
 /** A header chip: an activity target plus optional per-file diff counts. */
 type ChipTarget = AgentActivityTarget & { added?: number; removed?: number };
 
-/** Max file chips shown inline before the strip collapses into a "+N" menu. */
-const CHIP_OVERFLOW_VISIBLE = 6;
+/** Marks stacked inside the count chip before it stops adding them. */
+const COUNT_CHIP_MARKS = 3;
+
+/**
+ * The title is the ACT; the chip beside it is the target.
+ *
+ * These tools always carry a target chip, so a noun in the title only repeats
+ * what the chip says better — and worse, it has to be pluralised, which left
+ * "Edit File" and "Edit Files" one letter apart as the only thing telling a
+ * one-file call from a four-file one. That is not a difference you can see
+ * while scanning a column; you have to stop and read for it.
+ *
+ * Card-only. `getProfessionalToolName` keeps the full noun everywhere the tool
+ * is named WITHOUT a target beside it — Settings → Tools, activity lines —
+ * where "Edit" alone would be a fragment.
+ */
+const ACT_TITLE: Record<string, string> = {
+  file_read: "Read",
+  multi_file_read: "Read",
+  file_write: "Write",
+  file_edit: "Edit",
+  move_path: "Move",
+  delete_path: "Delete",
+  grep: "Search",
+  glob: "Find",
+  // Legacy names — historic threads render in the same voice.
+  file_create: "Create",
+  file_delete: "Delete",
+  file_patch: "Edit",
+  search_replace: "Edit",
+  multi_search_replace: "Edit",
+  folder_move: "Move",
+  folder_delete: "Delete",
+};
+
+/**
+ * The marks to stack inside the count chip: one per DISTINCT kind, in the order
+ * they were touched, capped at three.
+ *
+ * Repeating a mark says nothing. Four edited `.tsx` files drew four identical
+ * squares, which reads as a quantity — and it is the wrong quantity, because the
+ * stack stops at three while the count beside it does not. Deduplicated, the
+ * stack answers a different question from the number: the number is how many,
+ * the marks are what kind. All-markdown shows one mark, and that is the honest
+ * answer.
+ */
+function stackTargets(targets: ChipTarget[]): ChipTarget[] {
+  const seen = new Set<string>();
+  const marks: ChipTarget[] = [];
+  for (const target of targets) {
+    const name = basename(target.path) || target.name;
+    const dot = name.lastIndexOf(".");
+    // Extension where there is one; otherwise the whole name, because
+    // `Dockerfile` and `Makefile` get their own marks by name, not by suffix.
+    const kind =
+      target.kind === "folder"
+        ? " folder"
+        : dot > 0
+          ? name.slice(dot).toLowerCase()
+          : name.toLowerCase();
+    if (seen.has(kind)) continue;
+    seen.add(kind);
+    marks.push(target);
+    if (marks.length >= COUNT_CHIP_MARKS) break;
+  }
+  return marks;
+}
+
+/** "4 files" / "2 folders" / "5 items" — the noun follows what was touched. */
+function countLabel(targets: ChipTarget[]): string {
+  const folders = targets.filter((target) => target.kind === "folder").length;
+  const noun =
+    folders === targets.length ? "folders" : folders > 0 ? "items" : "files";
+  return `${targets.length} ${noun}`;
+}
 
 const FILE_MODIFY_TOOLS = new Set([
   // Current.
@@ -83,7 +155,18 @@ const HIDDEN_ARG_KEYS = new Set([
   "edits",
   "replacements",
   "target_paths",
+  // The file chips name these, one per file, with their own diff counts.
+  // "paths: [2 items]" is the same fact counted instead of named.
+  "paths",
 ]);
+
+/**
+ * The line range the caller ASKED for. Hidden once the result states the range
+ * it actually RETURNED, which is the more useful of the two and can differ:
+ * asking 255-275 of a 261-line file returns 255-261, and showing both invites
+ * the reader to work out which one happened.
+ */
+const RANGE_ARG_KEYS = new Set(["start_line", "end_line", "max_lines"]);
 
 const SHELL_ARG_KEYS = new Set([
   "command",
@@ -237,6 +320,13 @@ function toolIcon(name: string): AgentIconName {
 }
 
 function pathOf(args: Record<string, unknown>): string {
+  // `path` may be the ARRAY form (one slot, string or array). A batch names its
+  // files through the chip targets, so the single-name slot takes the first
+  // entry rather than stringifying the whole array into the row.
+  if (Array.isArray(args.path)) {
+    const first = args.path.find((entry) => typeof entry === "string" && entry.trim());
+    return typeof first === "string" ? first : "";
+  }
   return (
     (args.path as string) ||
     (args.file_path as string) ||
@@ -343,152 +433,6 @@ const CanvasLaunchCard: React.FC<{
   );
 };
 
-/**
- * "+N" chip at the end of an overflowing file strip. Opens a portaled list of
- * the files that did NOT fit inline (the visible chips already name the rest —
- * repeating them here would just be noise). Picking one swaps it into the
- * inline strip. Lives inside the card header <button>, so it's a role="button"
- * span — the menu itself portals to the window root where real <button> rows
- * are legal.
- */
-const ChipOverflowMenu: React.FC<{
-  items: Array<{ target: ChipTarget; index: number }>;
-  onSelect: (event: React.SyntheticEvent, index: number) => void;
-}> = ({ items, onSelect }) => {
-  const [open, setOpen] = useState(false);
-  const [rect, setRect] = useState<{ left: number; top: number } | null>(null);
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  const triggerRef = useRef<HTMLSpanElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    // The card lives inside the transcript scroller — a fixed-position menu
-    // can't follow it, so any outside scroll just closes the menu.
-    const onScroll = (event: Event) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    };
-    const onResize = () => setOpen(false);
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onResize);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onResize);
-    };
-  }, [open]);
-
-  const toggle = (event: React.SyntheticEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (open) {
-      setOpen(false);
-      return;
-    }
-    const anchor = triggerRef.current?.getBoundingClientRect();
-    if (!anchor) return;
-    const width = 280;
-    const margin = 12;
-    setPortalTarget(
-      (triggerRef.current?.closest(".agw-root") as HTMLElement) ?? document.body,
-    );
-    setRect({
-      left: Math.min(
-        Math.max(margin, anchor.left),
-        Math.max(margin, window.innerWidth - width - margin),
-      ),
-      top: anchor.bottom + 6,
-    });
-    setOpen(true);
-  };
-
-  return (
-    <>
-      <span
-        ref={triggerRef}
-        role="button"
-        tabIndex={0}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        className="agw-tool-chip agw-tool-chip-btn agw-tool-chip-more"
-        title={`Show ${items.length} more ${items.length === 1 ? "file" : "files"}`}
-        onClick={toggle}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") toggle(event);
-        }}
-      >
-        +{items.length}
-      </span>
-      {open &&
-        rect &&
-        portalTarget &&
-        createPortal(
-          <div
-            ref={menuRef}
-            role="listbox"
-            aria-label="More files in this tool result"
-            className="agw-menu agw-chip-overflow agw-scroll"
-            style={{
-              position: "fixed",
-              left: rect.left,
-              top: rect.top,
-              width: 280,
-              maxHeight: 300,
-              overflowY: "auto",
-              zIndex: 1000,
-            }}
-          >
-            {items.map(({ target, index }) => (
-              <button
-                key={`${target.path}:${index}`}
-                type="button"
-                role="option"
-                aria-selected={false}
-                className="agw-chip-overflow-item"
-                title={target.path}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onSelect(event, index);
-                  setOpen(false);
-                }}
-              >
-                {target.kind === "folder" ? (
-                  <FolderIcon name={target.name} className="agw-file-ico" />
-                ) : (
-                  <FileIcon name={target.name} path={target.path} className="agw-file-ico" />
-                )}
-                <span className="agw-chip-overflow-name">{target.name}</span>
-                {(target.added || target.removed) && (
-                  <span className="agw-chip-stat">
-                    {target.removed ? (
-                      <span className="agw-chip-stat-del">−{target.removed}</span>
-                    ) : null}
-                    {target.added ? (
-                      <span className="agw-chip-stat-add">+{target.added}</span>
-                    ) : null}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>,
-          portalTarget,
-        )}
-    </>
-  );
-};
-
 const StandardToolCallCard: React.FC<{
   call: ToolCall;
   isActivelyStreaming?: boolean;
@@ -497,13 +441,7 @@ const StandardToolCallCard: React.FC<{
   // reason is visible; a user toggle overrides that default for this card.
   const [override, setOverride] = useState<boolean | null>(null);
   const [activeFileIndex, setActiveFileIndex] = useState(0);
-  const targetStripRef = useRef<HTMLSpanElement>(null);
-  const targetDragRef = useRef({
-    pointerId: -1,
-    startX: 0,
-    startScrollLeft: 0,
-    moved: false,
-  });
+  const targetStripRef = useRef<HTMLDivElement>(null);
 
   const parsedArgs = useMemo<Record<string, unknown>>(() => {
     try {
@@ -560,70 +498,23 @@ const StandardToolCallCard: React.FC<{
           };
         })
       : [];
-  const activityTargets = resultFileTargets.length > 0 ? resultFileTargets : narratedTargets;
-  const isMultiFileEdit = call.name === "file_edit" && activityTargets.length > 1;
-  const title = isMultiFileEdit
-    ? status === "running"
-      ? "Editing Multiple Files"
-      : "Edit Files"
-    : defaultTitle;
+  const activityTargets: ChipTarget[] =
+    resultFileTargets.length > 0 ? resultFileTargets : narratedTargets;
+  // ONE target keeps its name on the row; more than one collapses to a count.
+  // The rule is the tool-agnostic part: a 3-file read compacts exactly like a
+  // 4-file edit, so the row's shape stops depending on which tool ran.
+  const isMultiTarget = activityTargets.length > 1;
+  const title = ACT_TITLE[call.name] ?? defaultTitle;
   const isSelectableMultiFileResult = resultFileTargets.length > 1;
   const selectedFileIndex = isSelectableMultiFileResult
     ? Math.min(activeFileIndex, activityTargets.length - 1)
     : 0;
-  const showEveryTarget =
-    isSelectableMultiFileResult ||
-    (activityTargets.length > 1 &&
-      (call.name === "file_edit" ||
-        call.name === "file_patch" ||
-        call.name === "search_replace" ||
-        call.name === "multi_search_replace" ||
-        call.name === "file_read" ||
-        call.name === "multi_file_read"));
-  const chipTargets: ChipTarget[] = showEveryTarget
-    ? activityTargets
-    : activityTargets.slice(0, 1).map((target) => ({
-        ...target,
-        name: activity.name || target.name,
-      }));
-  // Long batches collapse to the first chips + a "+N" menu instead of an
-  // endless drag strip. The selected file always stays visible (it swaps into
-  // the last inline slot when it lives past the cutoff).
-  const chipOverflow =
-    isSelectableMultiFileResult && chipTargets.length > CHIP_OVERFLOW_VISIBLE;
-  const visibleChips: Array<{ target: ChipTarget; index: number }> = chipOverflow
-    ? chipTargets.slice(0, CHIP_OVERFLOW_VISIBLE).map((target, index) => ({ target, index }))
-    : chipTargets.map((target, index) => ({ target, index }));
-  if (chipOverflow && !visibleChips.some((chip) => chip.index === selectedFileIndex)) {
-    visibleChips[CHIP_OVERFLOW_VISIBLE - 1] = {
-      target: chipTargets[selectedFileIndex],
-      index: selectedFileIndex,
-    };
-  }
-  const hiddenChips: Array<{ target: ChipTarget; index: number }> = chipOverflow
-    ? chipTargets
-        .map((target, index) => ({ target, index }))
-        .filter(({ index }) => !visibleChips.some((chip) => chip.index === index))
-    : [];
-
-  /**
-   * Vertical wheel scrolls the chip strip sideways — bound natively because
-   * React delegates `wheel` at the root with `{ passive: true }`, which
-   * discards `preventDefault()` (and warns). Without it the transcript scrolls
-   * at the same time as the strip, so the card walks away mid-gesture.
-   */
-  useEffect(() => {
-    const strip = targetStripRef.current;
-    if (!strip) return;
-    const onWheel = (event: WheelEvent) => {
-      if (strip.scrollWidth <= strip.clientWidth) return;
-      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-      event.preventDefault();
-      strip.scrollLeft += event.deltaY;
-    };
-    strip.addEventListener("wheel", onWheel, { passive: false });
-    return () => strip.removeEventListener("wheel", onWheel);
-  }, [chipTargets.length]);
+  const singleChip: ChipTarget | null = isMultiTarget
+    ? null
+    : (activityTargets[0] ?? null) && {
+        ...activityTargets[0],
+        name: activity.name || activityTargets[0].name,
+      };
 
   // Live content preview: the file being written, pulled from the partial args.
   const streamingPreview = useMemo(() => {
@@ -672,12 +563,18 @@ const StandardToolCallCard: React.FC<{
       )
     : null;
 
+  // Every file view already carrying its own range makes the requested range a
+  // second, weaker copy of the same fact.
+  const resultStatesRange = parsed.multiFile?.some((file) => file.window) ?? false;
   const argChips = useMemo(
     () =>
       Object.entries(parsedArgs).filter(
-        ([k]) => !HIDDEN_ARG_KEYS.has(k) && !(isShellTool(call.name) && SHELL_ARG_KEYS.has(k)),
+        ([k]) =>
+          !HIDDEN_ARG_KEYS.has(k) &&
+          !(resultStatesRange && RANGE_ARG_KEYS.has(k)) &&
+          !(isShellTool(call.name) && SHELL_ARG_KEYS.has(k)),
       ),
-    [parsedArgs, call.name],
+    [parsedArgs, call.name, resultStatesRange],
   );
 
   const summary = useMemo(() => {
@@ -713,7 +610,11 @@ const StandardToolCallCard: React.FC<{
       parsed.screenshot?.path ||
       parsed.screenshot?.base64,
   );
-  const hasDetail = hasResult || argChips.length > 0 || !!streamingPreview || showLiveShell;
+  // `isMultiTarget` counts: the file list now lives in the body, so a call that
+  // touched several things always has something to open even when its result
+  // parsed to nothing.
+  const hasDetail =
+    hasResult || isMultiTarget || argChips.length > 0 || !!streamingPreview || showLiveShell;
   // Collapsed by DEFAULT in every state — running, done, and failed alike. A
   // tool card is a quiet one-line row until the reader asks for more; they click
   // it open to inspect args, the live write stream, or the result.
@@ -729,51 +630,13 @@ const StandardToolCallCard: React.FC<{
   const defaultOpen = false;
   const open = (override ?? defaultOpen) && hasDetail;
   const toggle = () => setOverride(!(override ?? defaultOpen));
+  // The file list is in the body now, which lays out as a wrapping strip — so
+  // there is no drag-scroll, no wheel-to-pan, and no "+N" overflow menu to
+  // maintain. All three existed to make an unbounded horizontal strip usable
+  // inside a fixed-width row; nothing lives in that row any more.
   const selectFileTarget = (event: React.SyntheticEvent, index: number) => {
-    if (targetDragRef.current.moved) {
-      event.preventDefault();
-      event.stopPropagation();
-      targetDragRef.current.moved = false;
-      return;
-    }
     event.stopPropagation();
     setActiveFileIndex(index);
-    if (!open && hasDetail) setOverride(true);
-  };
-  const onTargetPointerDown = (event: React.PointerEvent<HTMLSpanElement>) => {
-    if (event.button !== 0 || event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) {
-      return;
-    }
-    targetDragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startScrollLeft: event.currentTarget.scrollLeft,
-      moved: false,
-    };
-    // Capture is deferred until real movement: pointer capture retargets the
-    // eventual `click` to the strip, which made every chip unclickable
-    // whenever the strip overflowed.
-  };
-  const onTargetPointerMove = (event: React.PointerEvent<HTMLSpanElement>) => {
-    const drag = targetDragRef.current;
-    if (drag.pointerId !== event.pointerId) return;
-    const delta = event.clientX - drag.startX;
-    if (!drag.moved && Math.abs(delta) > 3) {
-      drag.moved = true;
-      event.currentTarget.setPointerCapture(event.pointerId);
-      event.currentTarget.dataset.dragging = "true";
-    }
-    if (!drag.moved) return;
-    event.preventDefault();
-    event.currentTarget.scrollLeft = drag.startScrollLeft - delta;
-  };
-  const finishTargetDrag = (event: React.PointerEvent<HTMLSpanElement>) => {
-    if (targetDragRef.current.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    event.currentTarget.removeAttribute("data-dragging");
-    targetDragRef.current.pointerId = -1;
   };
   // WebView2 150.x renderer CHECK (STATUS_BREAKPOINT sad page): a mouse-up
   // while a text selection exists during style/layout churn kills the page —
@@ -843,110 +706,70 @@ const StandardToolCallCard: React.FC<{
           </span>
         )}
 
-        {chipTargets.length > 0 && (
+        {/* One target: its name, which is the most useful thing on the row.
+            Several: one chip carrying the count, wearing the same shape as the
+            strip it replaces so the row still reads as files and not only as a
+            number. The names are in the dropdown. */}
+        {isMultiTarget ? (
           <span
-            ref={targetStripRef}
-            className="agw-tool-targets"
-            role={isSelectableMultiFileResult ? "tablist" : undefined}
-            aria-label={isSelectableMultiFileResult ? "Files in this tool result" : undefined}
-            data-multi={chipTargets.length > 1 ? "true" : undefined}
-            onPointerDown={onTargetPointerDown}
-            onPointerMove={onTargetPointerMove}
-            onPointerUp={finishTargetDrag}
-            onPointerCancel={finishTargetDrag}
-            onClick={(event) => {
-              if (!targetDragRef.current.moved) return;
-              event.preventDefault();
-              event.stopPropagation();
-              targetDragRef.current.moved = false;
-            }}
+            className="agw-tool-chip agw-tool-chip-count"
+            title={activityTargets.map((target) => target.path).join("\n")}
           >
-            {visibleChips.map(({ target, index }) => {
-              const chipContent = (
-                <>
-                  {target.kind === "folder" ? (
-                    <FolderIcon name={target.name} className="agw-file-ico" />
-                  ) : (
-                    <FileIcon
-                      name={basename(target.path) || target.name}
-                      path={target.path}
-                      className="agw-file-ico"
-                    />
-                  )}
-                  <span
-                    style={{
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {target.name}
-                  </span>
-                  {(target.added || target.removed) && (
-                    <span className="agw-chip-stat">
-                      {target.removed ? (
-                        <span className="agw-chip-stat-del">−{target.removed}</span>
-                      ) : null}
-                      {target.added ? (
-                        <span className="agw-chip-stat-add">+{target.added}</span>
-                      ) : null}
-                    </span>
-                  )}
-                </>
-              );
-
-              return isSelectableMultiFileResult ? (
+            <span className="agw-chip-stack" aria-hidden>
+              {stackTargets(activityTargets).map((target, index) =>
+                target.kind === "folder" ? (
+                  <FolderIcon
+                    key={`${target.path}:${index}`}
+                    name={target.name}
+                    className="agw-file-ico"
+                  />
+                ) : (
+                  <FileIcon
+                    key={`${target.path}:${index}`}
+                    name={basename(target.path) || target.name}
+                    path={target.path}
+                    className="agw-file-ico"
+                  />
+                ),
+              )}
+            </span>
+            {countLabel(activityTargets)}
+          </span>
+        ) : (
+          singleChip && (
+            <span className="agw-tool-targets">
+              <span className="agw-tool-chip">
+                {singleChip.kind === "folder" ? (
+                  <FolderIcon name={singleChip.name} className="agw-file-ico" />
+                ) : (
+                  <FileIcon
+                    name={basename(singleChip.path) || singleChip.name}
+                    path={singleChip.path}
+                    className="agw-file-ico"
+                  />
+                )}
                 <span
-                  key={`${target.path}:${index}`}
-                  role="tab"
-                  tabIndex={selectedFileIndex === index ? 0 : -1}
-                  aria-selected={selectedFileIndex === index}
-                  className="agw-tool-chip agw-tool-chip-btn"
-                  title={target.path}
-                  data-index={index}
-                  data-selected={selectedFileIndex === index ? "true" : undefined}
-                  onClick={(event) => selectFileTarget(event, index)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      selectFileTarget(event, index);
-                      return;
-                    }
-                    const last = activityTargets.length - 1;
-                    const next =
-                      event.key === "ArrowRight"
-                        ? Math.min(index + 1, last)
-                        : event.key === "ArrowLeft"
-                          ? Math.max(index - 1, 0)
-                          : event.key === "Home"
-                            ? 0
-                            : event.key === "End"
-                              ? last
-                              : null;
-                    if (next === null) return;
-                    event.preventDefault();
-                    selectFileTarget(event, next);
-                    // The target chip may only become visible AFTER the swap-in
-                    // render (overflowed strips), so focus by index next frame.
-                    requestAnimationFrame(() => {
-                      targetStripRef.current
-                        ?.querySelector<HTMLElement>(`[role="tab"][data-index="${next}"]`)
-                        ?.focus();
-                    });
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {chipContent}
+                  {singleChip.name}
                 </span>
-              ) : (
-                <span key={`${target.path}:${index}`} className="agw-tool-chip">
-                  {chipContent}
-                </span>
-              );
-            })}
-            {hiddenChips.length > 0 && (
-              <ChipOverflowMenu items={hiddenChips} onSelect={selectFileTarget} />
-            )}
-          </span>
+                {(singleChip.added || singleChip.removed) && (
+                  <span className="agw-chip-stat">
+                    {singleChip.removed ? (
+                      <span className="agw-chip-stat-del">−{singleChip.removed}</span>
+                    ) : null}
+                    {singleChip.added ? (
+                      <span className="agw-chip-stat-add">+{singleChip.added}</span>
+                    ) : null}
+                  </span>
+                )}
+              </span>
+            </span>
+          )
         )}
 
         {status === "running" ? (
@@ -1019,6 +842,96 @@ const StandardToolCallCard: React.FC<{
             style={{ overflow: "hidden" }}
           >
             <div className="agw-tool-body">
+              {/* The file list, in the one place it now lives. It WRAPS rather
+                  than scrolling — the whole set is visible at once instead of
+                  hidden behind a drag. Selecting one still drives which file's
+                  content shows below, exactly as it did from the header. */}
+              {isMultiTarget && (
+                <div
+                  ref={targetStripRef}
+                  className="agw-tool-files"
+                  role={isSelectableMultiFileResult ? "tablist" : undefined}
+                  aria-label={isSelectableMultiFileResult ? "Files in this tool result" : undefined}
+                >
+                  {activityTargets.map((target, index) => {
+                    const chipContent = (
+                      <>
+                        {target.kind === "folder" ? (
+                          <FolderIcon name={target.name} className="agw-file-ico" />
+                        ) : (
+                          <FileIcon
+                            name={basename(target.path) || target.name}
+                            path={target.path}
+                            className="agw-file-ico"
+                          />
+                        )}
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {target.name}
+                        </span>
+                        {(target.added || target.removed) && (
+                          <span className="agw-chip-stat">
+                            {target.removed ? (
+                              <span className="agw-chip-stat-del">−{target.removed}</span>
+                            ) : null}
+                            {target.added ? (
+                              <span className="agw-chip-stat-add">+{target.added}</span>
+                            ) : null}
+                          </span>
+                        )}
+                      </>
+                    );
+
+                    return isSelectableMultiFileResult ? (
+                      <button
+                        key={`${target.path}:${index}`}
+                        type="button"
+                        role="tab"
+                        tabIndex={selectedFileIndex === index ? 0 : -1}
+                        aria-selected={selectedFileIndex === index}
+                        className="agw-tool-chip agw-tool-chip-btn"
+                        title={target.path}
+                        data-index={index}
+                        data-selected={selectedFileIndex === index ? "true" : undefined}
+                        onClick={(event) => selectFileTarget(event, index)}
+                        onKeyDown={(event) => {
+                          const last = activityTargets.length - 1;
+                          const next =
+                            event.key === "ArrowRight"
+                              ? Math.min(index + 1, last)
+                              : event.key === "ArrowLeft"
+                                ? Math.max(index - 1, 0)
+                                : event.key === "Home"
+                                  ? 0
+                                  : event.key === "End"
+                                    ? last
+                                    : null;
+                          if (next === null) return;
+                          event.preventDefault();
+                          selectFileTarget(event, next);
+                          requestAnimationFrame(() => {
+                            targetStripRef.current
+                              ?.querySelector<HTMLElement>(`[role="tab"][data-index="${next}"]`)
+                              ?.focus();
+                          });
+                        }}
+                      >
+                        {chipContent}
+                      </button>
+                    ) : (
+                      <span key={`${target.path}:${index}`} className="agw-tool-chip">
+                        {chipContent}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
               {argChips.length > 0 && (
                 <div className="agw-tool-args">
                   {argChips.map(([k, v]) => {

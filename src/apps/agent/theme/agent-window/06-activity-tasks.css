@@ -728,3 +728,39 @@
   color: var(--agw-warning);
 }
 
+/* Provenance footer — who counted the figures above.
+ *
+ * Deliberately NOT a data row: it carries no measurement, so it does not take
+ * the label/value columns the rest of the card uses, and it sits below a
+ * heavier rule that closes the card rather than dividing it. It used to be a
+ * pill beside the headline percentage, where it competed for the first glance
+ * with the one number people open this card to read. */
+.agw-ctx-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-ctx-source strong {
+  margin-left: 5px;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+/* A measured figure gets a quiet confirming dot; a locally estimated one gets
+ * the same amber the rest of the card uses for "approximate". Colour alone
+ * never carries the meaning — the word beside it always says which. */
+.agw-ctx-source-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--agw-added) 70%, transparent);
+}
+.agw-ctx-source-dot[data-tone="soft"] {
+  background: color-mix(in srgb, var(--agw-warning) 80%, transparent);
+}
+

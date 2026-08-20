@@ -11,7 +11,7 @@
  * none of the IDE's terminal UI. Themed with `--agw-*` (+ a tuned ANSI palette).
  */
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -19,7 +19,8 @@ import { spawn, type IPty } from "tauri-pty";
 import "@xterm/xterm/css/xterm.css";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
+import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
+import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 // No `platform()` import: which executable to run is the registry's answer, and
 // it already accounts for the platform. Branching on it here is what led to a
 // hardcoded Windows Git path in the first place.
@@ -31,6 +32,7 @@ import {
 import {
   disposeTerminalSession,
   terminalRuntime as runtime,
+  type RunningChild,
 } from "@/apps/agent/services/terminal/terminal-sessions";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore, type TermSession } from "@/apps/agent/store/ui/useAgentTerminalStore";
@@ -424,10 +426,59 @@ export const TerminalPanel: React.FC = () => {
 
   const active = sessions.find((s) => s.id === activeId) ?? sessions[0] ?? null;
   const stripRef = useRef<HTMLDivElement>(null);
-  const closeOne = (id: string) => {
-    disposeTerminalSession(id);
-    removeSession(id);
-  };
+
+  /**
+   * Closing a tab ends its shell AND everything that shell started.
+   *
+   * Both halves of that were missing. The kill stopped at the shell, so a dev
+   * server or an Electron app launched from the tab kept running with no
+   * window left to stop it from; and nothing asked first, so the work was gone
+   * before the user knew it was at risk.
+   *
+   * The check runs before anything is destroyed. A confirmation that appears
+   * after the fact is not a confirmation, and one that appears on every close
+   * — including the ordinary idle shell — is one people learn to click
+   * through, which costs it the only job it has.
+   */
+  const [pendingClose, setPendingClose] = useState<{
+    id: string;
+    title: string;
+    children: RunningChild[];
+  } | null>(null);
+
+  const closeNow = useCallback(
+    (id: string) => {
+      disposeTerminalSession(id);
+      removeSession(id);
+    },
+    [removeSession],
+  );
+
+  const closeOne = useCallback(
+    (id: string) => {
+      const session = useAgentTerminalStore.getState().sessions.find((s) => s.id === id);
+      const pid = runtime.get(id)?.pty?.pid;
+      if (!session || typeof pid !== "number" || pid <= 0) {
+        closeNow(id);
+        return;
+      }
+      void auroraInvoke<RunningChild[]>("terminal_running_children", { pid })
+        .then((children) => {
+          if (!children || children.length === 0) {
+            closeNow(id);
+            return;
+          }
+          setPendingClose({ id, title: session.title, children });
+        })
+        .catch((error) => {
+          // Never block the close on a failed scan — the button must work
+          // even when we cannot say what it will stop. Logged, not swallowed.
+          console.error("[agent-terminal] could not check for running processes:", error);
+          closeNow(id);
+        });
+    },
+    [closeNow],
+  );
 
   /**
    * A vertical wheel over the tab strip scrolls it sideways.
@@ -519,6 +570,44 @@ export const TerminalPanel: React.FC = () => {
           </button>
         </div>
       )}
+
+      {/* Names what will be stopped, because "processes are running" tells the
+        * reader nothing they can decide on — whether to close depends entirely
+        * on WHICH process it is. Listed by executable name, longest-running
+        * branch first, capped so a shell with fifty children does not push the
+        * buttons off screen. */}
+      <AgentConfirm
+        open={pendingClose !== null}
+        title="Stop what this terminal is running?"
+        message={
+          pendingClose
+            ? `Closing ${pendingClose.title} will also stop ${describeChildren(pendingClose.children)}.`
+            : ""
+        }
+        confirmLabel="Close and stop"
+        cancelLabel="Keep open"
+        destructive
+        onConfirm={() => {
+          if (pendingClose) closeNow(pendingClose.id);
+          setPendingClose(null);
+        }}
+        onCancel={() => setPendingClose(null)}
+      />
     </div>
   );
 };
+
+/** How many processes, and which — the two facts the decision needs. */
+const MAX_NAMED_CHILDREN = 4;
+
+function describeChildren(children: RunningChild[]): string {
+  // Deduplicated: `node.exe` five times over reads as noise, and the count
+  // above it already carries "there are several".
+  const names = Array.from(new Set(children.map((c) => c.name))).filter(Boolean);
+  if (names.length === 0) {
+    return `${children.length} running ${children.length === 1 ? "process" : "processes"}`;
+  }
+  const shown = names.slice(0, MAX_NAMED_CHILDREN).join(", ");
+  const rest = names.length - MAX_NAMED_CHILDREN;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}

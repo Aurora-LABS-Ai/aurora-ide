@@ -12,6 +12,8 @@ import React, { useMemo } from "react";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { hasAnsi, parseAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
+import { ShellMark } from "@/apps/agent/components/tool-views/ShellMark";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import type { ShellOutputData } from "@/apps/agent/components/tool-views/tool-result";
 
 const MAX_CHARS = 60_000;
@@ -61,14 +63,40 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
   // Resolved shell → its own prompt glyph and header name, so a PowerShell run
   // doesn't wear a POSIX "$" costume. Absent (historic threads) → "$" as before.
   const shell = shellMeta(data.shell);
+  const explorerIconPack = useSettingsStore((s) => s.explorerIconPack);
 
   return (
     <div className="agw-rv">
       <div className="agw-rv-head">
-        <AgentIcon name="terminal" size={11} style={{ color: "var(--agw-accent)" }} />
+        {/* The shell's OWN mark, the same one the row badge shows. A generic
+            terminal glyph here meant a bash run wore two different pictures of
+            itself eight pixels apart. Colour is set here, not by the mark: a
+            brand asset brings its own and the drawn fallback inherits this. */}
+        <span className="agw-rv-mark" style={{ color: "var(--agw-accent)" }}>
+          {shell ? (
+            <ShellMark shell={shell} packId={explorerIconPack} size={12} />
+          ) : (
+            <AgentIcon name="terminal" size={11} />
+          )}
+        </span>
         <span className="agw-rv-title">{shell ? shell.name : "Command"}</span>
-        <span className={data.success ? "agw-rv-badge agw-rv-badge-ok" : "agw-rv-badge agw-rv-badge-bad"}>
-          {data.success ? "Success" : "Failed"}
+        {/* A mark, not a pill. `SUCCESS` was bordered, tinted and uppercase —
+            the brightest object in the quietest row, announcing the ordinary
+            case loudest. This is the same treatment the tool-group header
+            already uses for its failure count (see the 2026-08-13 entry in
+            .knowledge/knowledge.md): the glyph carries the state, and the exit
+            code beside it carries the detail. The label stays for screen
+            readers, since a colour and a shape cannot be the only carriers. */}
+        <span
+          className={data.success ? "agw-rv-mark-ok" : "agw-rv-mark-bad"}
+          title={data.success ? "Succeeded" : "Failed"}
+        >
+          <AgentIcon
+            name={data.success ? "check" : "close"}
+            size={12}
+            strokeWidth={2.6}
+          />
+          <span className="agw-sr-only">{data.success ? "Succeeded" : "Failed"}</span>
         </span>
         {typeof data.exitCode === "number" && (
           <span className="agw-rv-exit">exit {data.exitCode}</span>

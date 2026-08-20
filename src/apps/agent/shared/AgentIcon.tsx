@@ -67,6 +67,9 @@ export type AgentIconName =
   | "file-delete"
   | "workspace-tree"
   | "code-index"
+  | "shell-posix"
+  | "shell-pwsh"
+  | "shell-cmd"
   | "process-stop"
   | "process-list"
   | "terminal-watch"
@@ -362,6 +365,43 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M6.6 5.9L13.6 10.6" data-part="flow" />
       <path d="M6.6 12h6.9" data-part="flow" />
       <path d="M6.6 18.1l7-4.7" data-part="flow" />
+    </>
+  ),
+
+  // ── Shell family marks ──────────────────────────────────────────────
+  // The fallback for the shell badge, used whenever the active icon pack has
+  // no mark for a family (Material ships no cmd icon) or its asset fails to
+  // load. They are the real silhouettes, monochrome: a shell is recognised by
+  // its shape, and drawing them here means they inherit the chip's colour and
+  // survive a light appearance without a second set of assets.
+  //
+  // POSIX: a terminal window with a prompt caret and a command line. Shared by
+  // bash, sh and zsh — the shapes are not distinguishable and the badge already
+  // carries the name, which is the thing that separates them.
+  "shell-posix": (
+    <>
+      <rect x="2.5" y="3.5" width="19" height="17" rx="2.5" />
+      <path d="M7 9.5l3 2.5-3 2.5" />
+      <path d="M13 15h4" />
+    </>
+  ),
+  // PowerShell: its own outline is the giveaway — a leaning parallelogram
+  // holding a chevron and an underscore. Kept at half opacity so the chevron
+  // reads first at 12px, where the frame would otherwise swallow it.
+  "shell-pwsh": (
+    <>
+      <path d="M4.5 4.5h16l-3.5 15h-16z" opacity="0.5" />
+      <path d="M7.5 8l6 4.2-6 4.2" />
+      <path d="M13.5 16.5h4.5" />
+    </>
+  ),
+  // cmd: the Windows console window, distinguished from the POSIX terminal by
+  // its title bar — which is the one thing that actually differs on screen.
+  "shell-cmd": (
+    <>
+      <rect x="2.5" y="4.5" width="19" height="15" rx="1.5" />
+      <path d="M2.5 8.5h19" />
+      <path d="M7 12.5l2.5 2-2.5 2" />
     </>
   ),
 

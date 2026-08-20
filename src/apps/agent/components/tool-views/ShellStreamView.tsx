@@ -16,6 +16,8 @@ import React, { useEffect, useMemo, useRef } from "react";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { hasAnsi, parseAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
+import { ShellMark } from "@/apps/agent/components/tool-views/ShellMark";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 
 /** Rendered tail. Beyond this a `<pre>` becomes a renderer-stability risk. */
 const MAX_RENDERED_CHARS = 60_000;
@@ -77,11 +79,20 @@ export const ShellStreamView: React.FC<{
   };
 
   const shell = shellMeta(shellId);
+  const explorerIconPack = useSettingsStore((s) => s.explorerIconPack);
 
   return (
     <div className="agw-rv">
       <div className="agw-rv-head">
-        <AgentIcon name="terminal" size={11} style={{ color: "var(--agw-accent)" }} />
+        {/* Same mark as the row badge and the finished result — one shell, one
+            picture, whichever of the three surfaces you are looking at. */}
+        <span className="agw-rv-mark" style={{ color: "var(--agw-accent)" }}>
+          {shell ? (
+            <ShellMark shell={shell} packId={explorerIconPack} size={12} />
+          ) : (
+            <AgentIcon name="terminal" size={11} />
+          )}
+        </span>
         <span className="agw-rv-title">{shell ? shell.name : "Command"}</span>
         <span className="agw-rv-badge agw-shell-live" aria-live="off">
           Running

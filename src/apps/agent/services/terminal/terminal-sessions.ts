@@ -25,6 +25,7 @@ import type { IPty } from "tauri-pty";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 
+import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import { useAgentTerminalStore } from "@/apps/agent/store/ui/useAgentTerminalStore";
 
 export interface PtyRuntime {
@@ -45,10 +46,44 @@ export interface PtyRuntime {
 /** Live PTY + xterm per session id — persists across tab/session switches. */
 export const terminalRuntime = new Map<string, PtyRuntime>();
 
-/** Kill a session's shell + xterm and drop it from the registry. */
+/**
+ * A process a shell has left running, as reported by
+ * `terminal_running_children`. Mirrors the Rust `RunningChild`.
+ */
+export interface RunningChild {
+  pid: number;
+  /** Executable name only (`electron.exe`) — never a command line, which can
+   *  carry tokens and paths a dialog has no business showing. */
+  name: string;
+}
+
+/**
+ * Kill a session's shell + everything it started, dispose the xterm, and drop
+ * it from the registry.
+ *
+ * The process TREE, not just the shell. `IPty.kill()` ends the process the
+ * plugin spawned; on Windows its children are re-parented and keep running, so
+ * closing a tab that was running a dev server or an Electron app left that app
+ * alive with no terminal left to stop it from.
+ *
+ * Order matters: the tree kill goes first, because `taskkill /T` finds the
+ * children by walking down from the pid it is given. Kill the shell first and
+ * they are already orphaned and unreachable that way.
+ *
+ * Fire-and-forget on purpose — this is called from `beforeunload` as well as
+ * from the close button, and neither can await. A failure is logged, never
+ * swallowed: a shell that would not die is something the user needs told,
+ * since the alternative is a stray process they cannot see.
+ */
 export function disposeTerminalSession(id: string): void {
   const rt = terminalRuntime.get(id);
   if (!rt) return;
+  const pid = rt.pty?.pid;
+  if (typeof pid === "number" && pid > 0) {
+    void auroraInvoke("terminal_kill_process_tree", { pid }).catch((error) => {
+      console.error(`[agent-terminal] could not stop pid ${pid}:`, error);
+    });
+  }
   try { rt.pty?.kill(); } catch { /* already dead */ }
   try { rt.term.dispose(); } catch { /* already disposed */ }
   terminalRuntime.delete(id);

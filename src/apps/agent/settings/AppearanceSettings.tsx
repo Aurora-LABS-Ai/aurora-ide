@@ -27,6 +27,9 @@ import {
 } from "../theme/themes";
 import { toColorInputValue } from "../theme/color";
 import { AGENT_UI_FONT_STACK, CODE_FONT_STACK } from "@/kernel/lib/fonts/stacks";
+import { listExplorerIconPacks } from "@/kernel/lib/icons/icon-packs";
+import { useIconPackStore } from "@/kernel/store/useIconPackStore";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { FontStackPicker } from "./FontStackPicker";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import type { AgentThemeTokens } from "../types";
@@ -37,6 +40,8 @@ import {
   AgwSwitch,
   AgwButton,
   AgwSegmented,
+  AgwSelect,
+  type SelectOption,
 } from "./primitives";
 
 // ── Region / token groupings (full coverage of the editable token set) ───────
@@ -246,6 +251,33 @@ export const AppearanceSettings: React.FC = () => {
   const syntaxHighlighting = useAgentThemeStore((s) => s.syntaxHighlighting);
   const railGlide = useAgentThemeStore((s) => s.railGlide);
   const railGlideMs = useAgentThemeStore((s) => s.railGlideMs);
+
+  // File icons live in the SHARED settings store rather than the agent theme
+  // store: the editor window owns the same choice, and a second copy would let
+  // the two windows show different icons for the same file.
+  const explorerIconPack = useSettingsStore((s) => s.explorerIconPack);
+  const setExplorerIconPack = useSettingsStore((s) => s.setExplorerIconPack);
+  // Custom packs are imported at runtime, so the list has to be LIVE. The
+  // registry behind `listExplorerIconPacks` is a plain module-level map with
+  // nothing to subscribe to — reading it once at mount would show a pack
+  // imported afterwards only on the next visit to this page. Recomputing when
+  // `customPacks` changes is what makes an import appear immediately, and it is
+  // the whole reason this depends on the store rather than on nothing.
+  const customPacks = useIconPackStore((s) => s.customPacks);
+  const iconPackOptions: SelectOption[] = useMemo(() => {
+    // `customPacks` is READ here, not just depended on: it is what marks a row
+    // as imported, and reading it is also what makes the dependency honest.
+    // (Depending on it purely as a change signal is what `exhaustive-deps`
+    // correctly objects to.)
+    const imported = new Set(customPacks.map((bundle) => bundle.manifest.id));
+    return listExplorerIconPacks().map((pack) => ({
+      value: pack.manifest.id as string,
+      label: pack.manifest.name,
+      // Built-in and imported packs are indistinguishable by name alone once
+      // there are several, and only one kind can be removed again.
+      meta: imported.has(pack.manifest.id) ? "Imported" : undefined,
+    }));
+  }, [customPacks]);
 
   const setActiveTheme = useAgentThemeStore((s) => s.setActiveTheme);
   const setToken = useAgentThemeStore((s) => s.setToken);
@@ -563,6 +595,26 @@ export const AppearanceSettings: React.FC = () => {
               { value: "v2", label: "V2" },
             ]}
             onChange={setUiVersion}
+          />
+        </SettingsRow>
+        {/* File icons. The setting is shared with the editor window on purpose:
+            it is one answer to "what does a TypeScript file look like", and two
+            controls would let the Files panel and the file tree disagree three
+            feet apart. It reaches further than the name suggests — the shell
+            badge on a tool row takes its mark from the same pack. */}
+        <SettingsRow
+          label="File icons"
+          hint="Icon set for the Files panel, file chips and the shell badge on tool rows. Shared with the editor window, and imported packs appear here too."
+        >
+          {/* A dropdown, not a segmented control: packs can be imported, so the
+              option count is unbounded and a pill row would overflow the row
+              the moment someone adds a third. */}
+          <AgwSelect
+            value={explorerIconPack}
+            ariaLabel="File icons"
+            options={iconPackOptions}
+            onChange={(id) => setExplorerIconPack(id as typeof explorerIconPack)}
+            width={180}
           />
         </SettingsRow>
         <SettingsRow label="Translucent sidebar" hint="Frosted, semi-transparent rail and dock.">

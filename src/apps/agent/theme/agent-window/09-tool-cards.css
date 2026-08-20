@@ -68,6 +68,22 @@
   flex-shrink: 0;
   color: var(--agw-text-subtle);
 }
+/* What a `grep`/`glob` searched FOR, beside the chip saying where it searched.
+ *
+ * Code voice, because it is a pattern and not prose — `**\/*.tsx` and
+ * `extra.?headers|headers:` are unreadable in the UI face, and setting them in
+ * the same type as the folder name beside them invites reading the two chips as
+ * one list of places. Full text lives in the title attribute; the row clips. */
+.agw-tool-chip-pattern {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  max-width: 190px;
+}
 /* Material file/folder icon (shared IDE icon set) — must be size-clamped or the
  * raw SVG renders at its natural (huge) size. */
 .agw-file-ico {
@@ -147,21 +163,30 @@
   font-size: var(--agw-fs-micro, 10px);
   line-height: 1.6;
 }
-.agw-shell-badge-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--agw-text-subtle);
+/* The shell's own mark, from the active explorer icon pack (see ShellBadge.tsx
+ * and shell-icon.ts). It replaced a 5px family-tinted dot, which could only
+ * ever encode the FAMILY — bash and zsh wore the same green, so the picture
+ * said less than the word beside it.
+ *
+ * Fixed 12px box whichever branch renders: a brand SVG and the drawn fallback
+ * must occupy the same space, or a pack without a mark for one family would
+ * shift that row's text against its neighbours. */
+.agw-shell-badge-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
+  /* The drawn fallback inherits the chip's own colour rather than a family
+     tint. Brand assets bring their own; that is the point of using them. */
+  color: var(--agw-chip-text);
 }
-.agw-shell-badge[data-shell-family="posix"] .agw-shell-badge-dot {
-  background: var(--agw-added);
-}
-.agw-shell-badge[data-shell-family="powershell"] .agw-shell-badge-dot {
-  background: var(--agw-info);
-}
-.agw-shell-badge[data-shell-family="cmd"] .agw-shell-badge-dot {
-  background: var(--agw-warning);
+.agw-shell-badge-mark img,
+.agw-shell-badge-mark svg {
+  display: block;
+  width: 12px;
+  height: 12px;
 }
 
 /* Selectable chip variant — switches the active file in the expanded result. */
@@ -205,18 +230,30 @@
 /* One mark per DISTINCT file type, overlapped. A signal of kind, never of
  * quantity — the count beside it is the number, and repeating a mark would
  * state a second, wrong one (the stack caps at three; the count does not). */
+/* SPACED, NOT SHINGLED — owner's pick, and do not "restore" the overlap.
+ *
+ * The shingle came from `Documents/aurora-tool-card-display-designs.html`,
+ * where the stack was drawn as flat 10px colour squares. A solid square is
+ * opaque, so overlapping it reads as depth the way an avatar stack does. The
+ * implementation put real file-type SVGs in the same rule and the effect
+ * inverted: `box-shadow` paints its ring OUTSIDE the element box and cannot
+ * occlude anything, so with transparent art the mark behind showed straight
+ * through the mark in front. Three passes of tuning the overlap changed
+ * nothing, because the overlap was never the defect — measured in the browser,
+ * the geometry was correct every time.
+ *
+ * An opaque background on each mark does fix it (verified on screen). The
+ * owner chose the gap anyway, and it is the better fit: this stack means
+ * "these KINDS", with the count beside it already answering how many, while a
+ * shingle borrows the avatar metaphor for "more than shown". */
 .agw-chip-stack {
   display: inline-flex;
   align-items: center;
+  gap: 3px;
   flex: 0 0 auto;
 }
 .agw-chip-stack > * {
-  margin-right: -4px;
   border-radius: 2px;
-  box-shadow: 0 0 0 1.5px var(--agw-chip-surface);
-}
-.agw-chip-stack > *:last-child {
-  margin-right: 0;
 }
 
 /* The file list, in the body. It WRAPS — the whole set is visible at once
@@ -435,6 +472,41 @@
   border-bottom: 1px solid var(--agw-border);
   min-width: 0;
 }
+/* The shell's own mark in a result header, shared with the row badge and the
+ * live stream (ShellMark.tsx). Fixed box so a brand asset and the drawn
+ * fallback occupy the same space and the title never shifts between packs. */
+.agw-rv-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+.agw-rv-mark img,
+.agw-rv-mark svg {
+  display: block;
+}
+
+/* Outcome as a MARK, not a pill — same reasoning as the tool-group header's
+ * failure count. A bordered, tinted, uppercase `SUCCESS` made the ordinary
+ * case the loudest thing in the row; the check states it and stops. */
+.agw-rv-mark-ok,
+.agw-rv-mark-bad {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.agw-rv-mark-ok {
+  /* Softened toward muted, exactly like the settled row check: a
+   * full-saturation tick on every finished command reads as a status board. */
+  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+}
+.agw-rv-mark-bad {
+  /* Failure keeps full strength — it is the one someone has to act on. */
+  color: var(--agw-removed);
+}
+
 .agw-rv-title {
   font-size: var(--agw-fs-micro);
   text-transform: uppercase;

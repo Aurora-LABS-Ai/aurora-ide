@@ -244,6 +244,63 @@ export function formatCost(value: number): string {
 }
 
 /**
+ * How many decimals {@link formatCost} would use for a figure of this size.
+ *
+ * Exposed so a total and its component lines can be shown at ONE precision.
+ * Formatted independently they drift into different bands — a $0.0002 line
+ * under a $1.20 total — and a column at mixed precision can never be made to
+ * add up.
+ */
+export function costPrecision(total: number): number {
+  if (!Number.isFinite(total) || total < 1) return 4;
+  if (total < 100) return 3;
+  return 2;
+}
+
+/** Format at an explicit precision, for a column that must tally. */
+export function formatCostAt(value: number, decimals: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0";
+  return `$${value.toFixed(decimals)}`;
+}
+
+/**
+ * Round line values so that, at display precision, they SUM TO THE TOTAL.
+ *
+ * Rounding each line on its own is what made a card read
+ * `$0.0665 + $0.0028 + $0.0006` under a headline of `$0.0700` — arithmetic
+ * that is correct to the last unrounded cent and visibly wrong to a person
+ * adding up three numbers. Whoever is checking a cost card is, by definition,
+ * checking; a column that does not tally is read as a bug in the figure, not
+ * as a rounding artifact.
+ *
+ * The residual goes on the largest line: it is the one where a unit in the
+ * last place is proportionally smallest, and it is never zero when there is a
+ * residual to place. The TOTAL is never adjusted — it is the number that
+ * matters and it stays exactly what was computed.
+ */
+export function alignLinesToTotal(values: number[], total: number): number[] {
+  const scale = 10 ** costPrecision(total);
+  const round = (n: number) =>
+    Math.round((Number.isFinite(n) && n > 0 ? n : 0) * scale);
+
+  const rounded = values.map(round);
+  if (rounded.length === 0) return rounded;
+
+  const residual = round(total) - rounded.reduce((sum, n) => sum + n, 0);
+  if (residual !== 0) {
+    let largest = 0;
+    for (let i = 1; i < rounded.length; i++) {
+      if (rounded[i] > rounded[largest]) largest = i;
+    }
+    // Never push a line negative. A residual big enough to do that means the
+    // total and the lines disagree about more than rounding — leave both
+    // alone and let the discrepancy be visible rather than hide it in a line.
+    if (rounded[largest] + residual >= 0) rounded[largest] += residual;
+  }
+  return rounded.map((n) => n / scale);
+}
+
+/**
  * The human-readable half of a `"{providerId}:{modelKey}"` selection.
  *
  * A built-in provider's id is a readable slug, but a user-added one is a

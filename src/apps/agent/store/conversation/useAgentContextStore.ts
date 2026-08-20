@@ -19,6 +19,10 @@
  *    the authority: it survives a reload, a second window and a crash
  *    mid-turn, none of which a frontend running total would.
  *
+ * 4. `cacheByThread` — the last request that actually SAID something about
+ *    cache, kept separately from 1 precisely because it must not be
+ *    overwritten by a request that said nothing. See the field's own note.
+ *
  * Conflating 1 with 2 is the bug this replaces: "Turn cost" was rendered from
  * the last request alone, so a thirty-minute turn with twenty tool iterations
  * reported the price of iteration twenty.
@@ -69,6 +73,124 @@ function accumulate(
   return next;
 }
 
+/**
+ * What the last cache-reporting request said, per thread.
+ *
+ * Kept apart from the raw usage record on purpose. The context ring sizes the
+ * window from `byThread`, and that arithmetic must only ever add up fields the
+ * SAME request reported — folding a carried-over cache read into it would
+ * count 70k tokens twice and make the bar jump. This record answers a
+ * different question ("is prompt caching working on this chat?"), and that
+ * answer does not stop being true the instant one response omits the field.
+ */
+export interface CacheReading {
+  /** Prompt tokens served from cache. `0` is a real answer: the cache missed. */
+  readTokens: number;
+  /** Prompt tokens written INTO the cache by this request. */
+  writeTokens: number;
+  /** Fresh (uncached) prompt tokens, so the row can show a denominator. */
+  promptTokens: number;
+  /**
+   * False once a later response has come back carrying no cache telemetry at
+   * all. The numbers stay — they were true when measured — but the card stops
+   * presenting them as a description of the newest request.
+   */
+  fresh: boolean;
+}
+
+/**
+ * Did this response say anything about cache?
+ *
+ * The distinction the whole fix rests on. `cacheReadTokens: 0` is the provider
+ * telling us the cache missed; `cacheReadTokens: undefined` is the provider
+ * telling us nothing. The adapters preserve that difference on the wire
+ * (`Option<u32>` → `number | undefined`); collapsing it with `?? 0` at the
+ * point of use is what made a miss and a silence render identically.
+ */
+const reportsCache = (usage: TokenUsage): boolean =>
+  typeof usage.cacheReadTokens === "number" ||
+  typeof usage.cacheWriteTokens === "number";
+
+/**
+ * Fold one response into the thread's cache reading.
+ *
+ * Reported → replace, marked fresh. Silent → keep what we had and mark it
+ * carried. Never deletes: a row that vanishes mid-turn and returns a few
+ * seconds later reads as a bug in the card, not as news about the provider.
+ */
+export function foldCacheReading(
+  record: Record<string, CacheReading>,
+  threadId: string,
+  usage: TokenUsage,
+): Record<string, CacheReading> {
+  if (reportsCache(usage)) {
+    return {
+      ...record,
+      [threadId]: {
+        readTokens: usage.cacheReadTokens ?? 0,
+        writeTokens: usage.cacheWriteTokens ?? 0,
+        promptTokens: usage.promptTokens ?? 0,
+        fresh: true,
+      },
+    };
+  }
+  const prev = record[threadId];
+  // Nothing to carry, or already carried — return the same object so the
+  // store does not publish a new reference and re-render the card for nothing.
+  if (!prev || !prev.fresh) return record;
+  return { ...record, [threadId]: { ...prev, fresh: false } };
+}
+
+/**
+ * How full the window was on one request — every slice of it.
+ *
+ * The three input fields are disjoint: Anthropic reports fresh, cache-write
+ * and cache-read separately, and Aurora's OpenAI adapters subtract the cache
+ * hit out of `prompt_tokens` so the same sum holds there. Output counts too,
+ * because the reply is re-sent as input on the very next request.
+ */
+export function measuredContextTokens(usage: TokenUsage): number {
+  return (
+    (usage.promptTokens ?? 0) +
+    (usage.cacheWriteTokens ?? 0) +
+    (usage.cacheReadTokens ?? 0) +
+    (usage.completionTokens ?? 0)
+  );
+}
+
+/**
+ * Raise a thread's high-water context reading, never lower it.
+ *
+ * Between compactions the request only ever grows — every turn appends — so a
+ * measurement that comes back SMALLER than the one before it did not observe
+ * the context shrinking. It observed a provider counting differently.
+ * Gateways that fan one model out across several upstream accounts do this
+ * routinely: the same bytes measured 12,802 tokens on one backend and 14,161
+ * on another, byte-for-byte identical request, split cleanly by which one
+ * served it. Rendering whichever arrived last made the ring jump between
+ * those two bands every few requests — the card "never settling" — and on the
+ * low band it under-stated how full the window was, which is the direction
+ * that ends in the provider rejecting the next request.
+ *
+ * Reset by a compaction (which genuinely does shrink the context) and by a
+ * rewind. An ESTIMATED usage never raises the floor, for the same reason Rust
+ * refuses to anchor on one: it is Aurora's own guess, and laundering it into a
+ * floor would make every later real measurement look small.
+ *
+ * Returns the same record when nothing moved, so the store does not publish a
+ * new reference and re-render the card for nothing.
+ */
+export function raiseContextFloor(
+  record: Record<string, number>,
+  threadId: string,
+  usage: TokenUsage,
+): Record<string, number> {
+  if (usage.estimated === true) return record;
+  const measured = measuredContextTokens(usage);
+  if (measured <= (record[threadId] ?? 0)) return record;
+  return { ...record, [threadId]: measured };
+}
+
 interface AgentContextState {
   /** Latest API response's usage per thread — the context ring's input. */
   byThread: Record<string, TokenUsage>;
@@ -76,6 +198,11 @@ interface AgentContextState {
   liveTurnByThread: Record<string, ModelUsageGroup[]>;
   /** Whole-conversation cost basis, read from the transcript. */
   breakdownByThread: Record<string, ThreadUsageBreakdown>;
+  /**
+   * Last cache telemetry each thread received, surviving responses that carry
+   * none. See {@link CacheReading} and {@link foldCacheReading}.
+   */
+  cacheByThread: Record<string, CacheReading>;
   /**
    * Aurora's own projection of the next request's size, set when a compaction
    * has just rewritten the context and no measured request covers the new
@@ -90,6 +217,11 @@ interface AgentContextState {
    */
   projectedByThread: Record<string, number>;
   /**
+   * Largest context reading a thread has had since its last compaction.
+   * See {@link raiseContextFloor} for why the newest reading is not enough.
+   */
+  contextFloorByThread: Record<string, number>;
+  /**
    * Threads whose stored breakdown no longer matches the transcript (a turn
    * finished since it was read). Re-fetched lazily when the card next opens,
    * so a background turn on another chat costs nothing until you look.
@@ -100,6 +232,11 @@ interface AgentContextState {
   setUsage: (threadId: string, usage: TokenUsage) => void;
   /** Record the post-compaction projection (see {@link projectedByThread}). */
   setProjectedUsage: (threadId: string, tokens: number) => void;
+  /**
+   * Forget the high-water context reading — the transcript genuinely shrank.
+   * Called on rewind; compaction goes through {@link setProjectedUsage}.
+   */
+  resetContextFloor: (threadId: string) => void;
   /** Start a fresh turn accumulator. */
   beginTurn: (threadId: string) => void;
   /** Add one API response to the in-flight turn's running cost. */
@@ -125,10 +262,14 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
   breakdownByThread: {},
   staleBreakdowns: {},
   projectedByThread: {},
+  cacheByThread: {},
+  contextFloorByThread: {},
 
   setUsage: (threadId, usage) =>
     set((s) => ({
       byThread: { ...s.byThread, [threadId]: usage },
+      cacheByThread: foldCacheReading(s.cacheByThread, threadId, usage),
+      contextFloorByThread: raiseContextFloor(s.contextFloorByThread, threadId, usage),
       // A measurement supersedes a projection — the request the projection
       // was anticipating has now actually happened and been counted.
       projectedByThread: dropKey(s.projectedByThread, threadId),
@@ -137,7 +278,14 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
   setProjectedUsage: (threadId, tokens) =>
     set((s) => ({
       projectedByThread: { ...s.projectedByThread, [threadId]: tokens },
+      // A compaction is the one thing that genuinely makes the next request
+      // smaller, so the high-water reading from before it describes a context
+      // that no longer exists.
+      contextFloorByThread: dropKey(s.contextFloorByThread, threadId),
     })),
+
+  resetContextFloor: (threadId) =>
+    set((s) => ({ contextFloorByThread: dropKey(s.contextFloorByThread, threadId) })),
 
   beginTurn: (threadId) =>
     set((s) => ({ liveTurnByThread: { ...s.liveTurnByThread, [threadId]: [] } })),
@@ -183,5 +331,7 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
       breakdownByThread: dropKey(s.breakdownByThread, threadId),
       staleBreakdowns: dropKey(s.staleBreakdowns, threadId),
       projectedByThread: dropKey(s.projectedByThread, threadId),
+      cacheByThread: dropKey(s.cacheByThread, threadId),
+      contextFloorByThread: dropKey(s.contextFloorByThread, threadId),
     })),
 }));

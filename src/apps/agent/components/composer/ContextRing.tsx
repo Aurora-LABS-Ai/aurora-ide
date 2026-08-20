@@ -35,7 +35,9 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
 import {
-  formatCost,
+  alignLinesToTotal,
+  costPrecision,
+  formatCostAt,
   formatRequestCount,
   hasCost,
   modelLabel,
@@ -52,6 +54,11 @@ import {
   type CodexUsageSnapshot,
   type CodexUsageWindow,
 } from "@/apps/agent/services/providers/codex";
+import {
+  useReservedCostLines,
+  useSticky,
+  useThrottled,
+} from "@/apps/agent/components/composer/context-card-stability";
 import type { TokenUsage } from "@/apps/agent/services";
 
 function formatTokens(n: number): string {
@@ -110,19 +117,33 @@ const CostSection: React.FC<{
   // user-added provider is a UUID — meaningless to a person and long enough to
   // stretch the card it sits in.
   const unpricedModelLabel = modelLabel(cost.unpricedModels[0]);
-  if (!hasCost(cost)) return null;
-  const approx = cost.estimated ? "~" : "";
   // Every request priced by the provider itself → the total IS the bill, and
   // the per-line token breakdown does not apply to it.
   const allReported = cost.reportedRequests > 0 && cost.reportedRequests === cost.pricedRequests;
-  const lines: Array<[string, number]> = allReported
-    ? []
-    : [
-        ["fresh input", cost.lines.freshInput],
-        ["cache write", cost.lines.cacheWrite],
-        ["cached input", cost.lines.cachedInput],
-        ["output", cost.lines.output],
-      ];
+  // Every conditional row in this section reserves its slot once it has earned
+  // one. Hooks first — a section that returns early cannot call them, so the
+  // "does this section exist at all" test is itself sticky and lives below.
+  const lines = useReservedCostLines({
+    "fresh input": allReported ? 0 : cost.lines.freshInput,
+    "cache write": allReported ? 0 : cost.lines.cacheWrite,
+    "cached input": allReported ? 0 : cost.lines.cachedInput,
+    output: allReported ? 0 : cost.lines.output,
+  });
+  const showUnpricedNote = useSticky(cost.unpricedRequests > 0);
+  // A turn's section does not exist before its first response lands. Without
+  // this, every turn began by inserting a whole block into the middle of an
+  // open card and pushing the conversation total down the screen.
+  const exists = useSticky(hasCost(cost));
+  if (!exists) return null;
+  const approx = cost.estimated ? "~" : "";
+  // One precision for the whole section, and the rounding residual placed on
+  // the largest line, so the column visibly adds up to the headline. Rounded
+  // independently they did not: $0.0665 + $0.0028 + $0.0006 under $0.0700.
+  const decimals = costPrecision(cost.total);
+  const shown = alignLinesToTotal(
+    lines.map(([, value]) => value),
+    cost.total,
+  );
   return (
     <>
       <div className="agw-ctx-divider" />
@@ -136,53 +157,42 @@ const CostSection: React.FC<{
           {cost.pricedRequests === 0 ? (
             <span style={{ color: "var(--agw-text-subtle)" }}>—</span>
           ) : (
-            `${approx}${formatCost(cost.total)}`
+            `${approx}${formatCostAt(cost.total, decimals)}`
           )}
         </span>
       </div>
       {subline && <div className="agw-ctx-sub">{subline}</div>}
-      {/* A zero line is dropped rather than shown as $0 — an unused rate is
-        * not a charge, and four rows of $0 bury the two that matter. */}
-      {lines
-        .filter(([, value]) => value > 0)
-        .map(([name, value]) => (
-          <div key={name} className="agw-ctx-line">
-            <span>{name}</span>
-            <span>
-              {approx}
-              {formatCost(value)}
-            </span>
-          </div>
-        ))}
-      {/* Where the number came from. A provider-reported figure is the
-        * account's actual charge; a computed one is a published list price
-        * the gateway may not charge. Users checking cost repeatedly deserve
-        * to know which they are looking at. */}
-      {allReported ? (
-        <div className="agw-ctx-line">
-          <span>billed by provider</span>
+      {/* A line that has never been worth anything is not rendered at all — an
+        * unused rate is not a charge, and four rows of $0 bury the two that
+        * matter. One that HAS been keeps its slot and shows a dash when it
+        * falls back to zero, because a row reclaiming its space mid-hover
+        * shifts every row beneath it. Absence is designed here, not implied by
+        * a gap: the dash says "measured, nothing to charge". */}
+      {lines.map(([name, raw], i) => (
+        <div key={name} className="agw-ctx-line">
+          <span>{name}</span>
+          <span style={raw > 0 ? undefined : { opacity: 0.45 }}>
+            {raw <= 0
+              ? "—"
+              : shown[i] > 0
+                ? `${approx}${formatCostAt(shown[i], decimals)}`
+                : /* Real spend, too small to show at this precision. Says so
+                   * rather than printing $0.0000 over a genuine charge. */
+                  `<${formatCostAt(1 / 10 ** decimals, decimals)}`}
+          </span>
         </div>
-      ) : (
-        cost.reportedRequests > 0 && (
-          <div className="agw-ctx-line">
-            <span>{formatCost(cost.reportedTotal)} billed by provider</span>
-            <span>
-              {cost.reportedRequests} of {cost.pricedRequests}
-            </span>
-          </div>
-        )
-      )}
-      {cost.estimated && (
-        <div className="agw-ctx-line" style={{ fontStyle: "italic" }}>
-          <span>approximate — provider reported no usage</span>
-        </div>
-      )}
+      ))}
+      {/* Where these figures came from is stated ONCE, in the card's footer.
+        * It used to be repeated inside every section as "$0 billed by
+        * provider — 13 of 73", which sat directly beneath the total and read
+        * as a denial of it, and again as a chip beside Used. One provenance
+        * line for one card. */}
       {/* A sentence, not a label/value pair. It was rendered as two columns of
         * a `space-between` row, so the count and the model name touched with
         * no gap and the raw provider UUID stretched the whole card. It also
         * names the fix — a cost we cannot compute is only actionable if the
         * card says where the missing price goes. */}
-      {cost.unpricedRequests > 0 && (
+      {showUnpricedNote && cost.unpricedRequests > 0 && (
         <div className="agw-ctx-note">
           <strong>
             {cost.unpricedRequests}{" "}
@@ -228,15 +238,40 @@ const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> 
 export const ContextRing: React.FC = () => {
   const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
   const currentThread = useAgentChatStore((s) => s.currentThread);
-  const liveUsage = useAgentContextStore((s) =>
-    currentThreadId ? s.byThread[currentThreadId] : undefined,
+  /*
+   * Every store slice below is republished on EVERY API response, and a turn
+   * makes one per tool iteration — fifty-odd on a long one. Read raw, the card
+   * repaints seventeen numbers fifty times in ninety seconds, which is not a
+   * readable card, it is a strobe. `useThrottled` publishes at most once a
+   * second and always publishes last, so the settled figure is the true one
+   * and nothing in between is a number you were meant to read.
+   *
+   * The ring itself is throttled too. It is a gauge, not an alarm — a second
+   * of latency on "how full is the window" costs nothing, and the ring's own
+   * 0.6s stroke transition was already slower than the updates driving it.
+   */
+  const liveUsage = useThrottled(
+    useAgentContextStore((s) =>
+      currentThreadId ? s.byThread[currentThreadId] : undefined,
+    ),
   );
   // Set only in the gap between a compaction rewriting the context and the
   // first request measured against the new shape. Aurora's own arithmetic, and
   // labelled as such — it is a different claim from "the provider reported
   // nothing", which is what conflating the two used to make the card say.
-  const projectedTokens = useAgentContextStore((s) =>
-    currentThreadId ? s.projectedByThread[currentThreadId] : undefined,
+  const projectedTokens = useThrottled(
+    useAgentContextStore((s) =>
+      currentThreadId ? s.projectedByThread[currentThreadId] : undefined,
+    ),
+  );
+  // Cache telemetry is read from its OWN record, not from `liveUsage`. A turn
+  // overwrites `liveUsage` once per tool iteration, and any response that
+  // omits the cache fields used to blank the row — so on a long turn the row
+  // flickered in and out with no relation to whether caching was working.
+  const cacheReading = useThrottled(
+    useAgentContextStore((s) =>
+      currentThreadId ? s.cacheByThread[currentThreadId] : undefined,
+    ),
   );
 
   // Primitive selectors only — returning the object from `getLLMConfig()` /
@@ -252,6 +287,10 @@ export const ContextRing: React.FC = () => {
   // Primitive (string) selector — safe to derive from on every render.
   const defaultModel = useSettingsStore((s) => s.selectedModel);
   const selectedModel = pinnedModel ?? defaultModel;
+  const contextFloor = useAgentContextStore((s) =>
+    currentThreadId ? (s.contextFloorByThread[currentThreadId] ?? 0) : 0,
+  );
+
   const contextWindow = useSettingsStore(
     (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
   );
@@ -261,11 +300,15 @@ export const ContextRing: React.FC = () => {
   // The running turn's requests (summed live) and the conversation's total
   // (read back from the transcript). Deliberately separate from `liveUsage`
   // above, which is one request and answers a different question.
-  const liveTurnGroups = useAgentContextStore((s) =>
-    currentThreadId ? s.liveTurnByThread[currentThreadId] : undefined,
+  const liveTurnGroups = useThrottled(
+    useAgentContextStore((s) =>
+      currentThreadId ? s.liveTurnByThread[currentThreadId] : undefined,
+    ),
   );
-  const breakdown = useAgentContextStore((s) =>
-    currentThreadId ? s.breakdownByThread[currentThreadId] : undefined,
+  const breakdown = useThrottled(
+    useAgentContextStore((s) =>
+      currentThreadId ? s.breakdownByThread[currentThreadId] : undefined,
+    ),
   );
   /**
    * True while our copy of the transcript predates work that has since
@@ -441,8 +484,14 @@ export const ContextRing: React.FC = () => {
   const cacheReadTokens = usage?.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage?.cacheWriteTokens ?? 0;
   const completionTokens = usage?.completionTokens ?? 0;
-  const measuredTokens =
+  const rawMeasuredTokens =
     promptTokens + cacheWriteTokens + cacheReadTokens + completionTokens;
+  // Never let the reading fall while the conversation is only growing. A
+  // provider that fans one model out across several upstream accounts returns
+  // different counts for the same bytes depending on which one served the
+  // request, and showing whichever landed last made this number jump between
+  // two bands all turn. See `raiseContextFloor`.
+  const measuredTokens = Math.max(rawMeasuredTokens, contextFloor);
   // A fresh compaction outranks the last measurement: that request described a
   // context that no longer exists. Holds only until the next real response.
   const isProjected = typeof projectedTokens === "number";
@@ -467,18 +516,28 @@ export const ContextRing: React.FC = () => {
   const circ = radius * 2 * Math.PI;
   const offset = circ - (pct / 100) * circ;
 
-  // Cache telemetry (only shown when there were hits).
-  // Hit rate is a property of the INPUT only — the completion was generated,
+  // Cache telemetry — shown from the moment a provider first reports it, and
+  // not withdrawn afterwards.
+  //
+  // Hit rate is a property of the INPUT only: the completion was generated,
   // not read from or written to cache, so including it would quietly deflate
-  // every percentage. Cache writes belong in the denominator: they are prompt
+  // every percentage. Cache writes belong in the denominator — they are prompt
   // the provider had to read in full this time.
-  const totalInput = promptTokens + cacheWriteTokens + cacheReadTokens;
+  //
+  // A reported 0% is DISPLAYED, not hidden. It is the single most useful thing
+  // this row can say ("your cache just broke") and it used to be rendered as
+  // an empty gap, identical to a provider that reports no cache at all.
+  const cacheInput = cacheReading
+    ? cacheReading.promptTokens + cacheReading.writeTokens + cacheReading.readTokens
+    : 0;
   const cacheHitPct =
-    totalInput > 0 ? Math.round((cacheReadTokens / totalInput) * 100) : 0;
-  // Suppressed while projecting: those hits belong to a request built from a
-  // context that compaction has since replaced, so reporting them beside the
-  // new size would describe two different conversations as one.
-  const hasCacheHits = cacheReadTokens > 0 && !isProjected;
+    cacheReading && cacheInput > 0
+      ? Math.round((cacheReading.readTokens / cacheInput) * 100)
+      : 0;
+  // Suppressed while projecting: that reading belongs to a request built from
+  // a context compaction has since replaced, so showing it beside the new size
+  // would describe two different conversations as one.
+  const showCache = !!cacheReading && cacheInput > 0 && !isProjected;
 
   return (
     <div
@@ -538,21 +597,14 @@ export const ContextRing: React.FC = () => {
               <span>Context window</span>
             </div>
 
-            {/* Where this number came from, said on the row itself.
-              *
-              * It used to be inferable only from a `~` prefix and a line of
-              * italic small print, and only when the news was bad — so the
-              * common question "is this the provider's count or Aurora's
-              * arithmetic?" had no answer on the card at all when the answer
-              * was the good one. A figure whose source you cannot see is a
-              * figure you end up double-checking. */}
+            {/* Provenance is a property of the whole card, not of this one
+              * row, so it lives in the footer. As a chip here it competed with
+              * the headline percentage for the first glance and repeated
+              * itself against the per-section "billed by provider" lines —
+              * three statements of the same fact, none of them the thing you
+              * opened the card to read. */}
             <div className="agw-ctx-row">
-              <span className="agw-ctx-label">
-                Used
-                <span className="agw-ctx-chip" data-tone={isProjected || isEstimated ? "soft" : undefined}>
-                  {isProjected ? "projected" : isEstimated ? "our estimate" : "from provider"}
-                </span>
-              </span>
+              <span className="agw-ctx-label">Used</span>
               <span className="agw-ctx-val" style={{ color }}>
                 {approx}{pct}%
               </span>
@@ -563,35 +615,52 @@ export const ContextRing: React.FC = () => {
             <div className="agw-ctx-sub">
               {approx}{formatTokens(usedTokens)} / {formatTokens(total)} tokens
             </div>
-            {isProjected ? (
+            {/* Kept here, not in the footer: this is not provenance, it is a
+              * temporary caveat about THIS number that clears on the next
+              * message. The footer answers "who counted"; this answers "is
+              * this figure final yet". */}
+            {isProjected && (
               <div
                 className="agw-ctx-sub"
                 style={{ color: "var(--agw-text-subtle)", marginTop: 4, fontStyle: "italic" }}
               >
                 Projected after compacting — exact from the next message
               </div>
-            ) : (
-              isEstimated && (
-                <div
-                  className="agw-ctx-sub"
-                  style={{ color: "var(--agw-text-subtle)", marginTop: 4, fontStyle: "italic" }}
-                >
-                  Estimated — this provider didn't report token usage
-                </div>
-              )
             )}
 
-            {hasCacheHits && (
+            {showCache && cacheReading && (
               <>
                 <div className="agw-ctx-divider" />
                 <div className="agw-ctx-row">
-                  <span className="agw-ctx-label">Cache hit</span>
-                  <span className="agw-ctx-val" style={{ color: "var(--agw-added)" }}>
+                  <span className="agw-ctx-label">
+                    Cache hit
+                    {/* Said on the row rather than by disappearing. The
+                      * numbers were measured, just not on the newest request —
+                      * a distinction worth one word and not worth a blank.
+                      *
+                      * Neutral chip, not the amber `soft` one the Used row
+                      * uses: "projected" and "our estimate" are caveats about
+                      * whether a number is trustworthy, this is only about
+                      * which request it describes. Nothing here is doubtful. */}
+                    {!cacheReading.fresh && (
+                      <span className="agw-ctx-chip">last reported</span>
+                    )}
+                  </span>
+                  <span
+                    className="agw-ctx-val"
+                    style={{
+                      color:
+                        cacheReading.readTokens > 0
+                          ? "var(--agw-added)"
+                          : "var(--agw-text-subtle)",
+                    }}
+                  >
                     {cacheHitPct}%
                   </span>
                 </div>
                 <div className="agw-ctx-sub">
-                  {formatTokens(cacheReadTokens)} cached / {formatTokens(totalInput)} input
+                  {formatTokens(cacheReading.readTokens)} cached /{" "}
+                  {formatTokens(cacheInput)} input
                 </div>
               </>
             )}
@@ -632,6 +701,18 @@ export const ContextRing: React.FC = () => {
                 )}
               </>
             )}
+
+            {/* Who counted these numbers. One statement, at the end, where a
+              * provenance note belongs — you read the figures first and check
+              * where they came from second, which is the order the card now
+              * presents them in. */}
+            <div className="agw-ctx-source">
+              <span className="agw-ctx-source-dot" data-tone={isEstimated ? "soft" : undefined} />
+              <span>
+                Source
+                <strong>{isEstimated ? "local estimate" : "provider"}</strong>
+              </span>
+            </div>
           </div>,
           portalTarget,
         )}

@@ -209,15 +209,72 @@ mod windows_impl {
     ///
     /// An empty payload means "no result", which is normal for the `Input.*`
     /// and `Emulation.*` setters — it is a success, not a failure.
+    ///
+    /// A protocol-level failure is NOT signalled through `errorCode`:
+    /// `CallDevToolsProtocolMethod` completes successfully whenever the
+    /// message reached the browser, and the browser's own rejection comes back
+    /// inside the payload as `{"error": {"code": …, "message": …}}`. Returning
+    /// that as `Ok` is how `browser_set_viewport {reset:true}` came to report
+    /// "Viewport override cleared" while the override was still in force — the
+    /// exact false-pass this module's own header says must never happen. So
+    /// the error object is unwrapped here, once, for every caller.
     fn parse_result(method: &str, returned: &str) -> Result<Value, DevToolsError> {
         if returned.trim().is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_str::<Value>(returned).map_err(|err| {
+        let value = serde_json::from_str::<Value>(returned).map_err(|err| {
             DevToolsError::Failed(format!(
                 "{method} returned a result that is not valid JSON: {err}"
             ))
-        })
+        })?;
+        if let Some(error) = value.get("error").filter(|e| e.is_object()) {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("no message");
+            return Err(DevToolsError::Failed(match error.get("code") {
+                Some(code) => format!("{method} was rejected by the browser: {message} ({code})"),
+                None => format!("{method} was rejected by the browser: {message}"),
+            }));
+        }
+        Ok(value)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn an_empty_payload_is_success() {
+            assert!(matches!(
+                parse_result("Emulation.x", "   "),
+                Ok(Value::Null)
+            ));
+        }
+
+        #[test]
+        fn a_protocol_error_payload_is_a_failure_not_a_result() {
+            let err = parse_result(
+                "Emulation.clearDeviceMetricsOverride",
+                r#"{"error":{"code":-32000,"message":"Not supported"}}"#,
+            )
+            .expect_err("a rejected CDP call must not read as success");
+            let text = err.to_string();
+            assert!(text.contains("Not supported"), "{text}");
+            assert!(text.contains("-32000"), "{text}");
+        }
+
+        #[test]
+        fn a_result_that_merely_contains_the_word_error_still_succeeds() {
+            // `error` has to be an OBJECT to count — a page-supplied string
+            // field of that name is data, not a protocol rejection.
+            let value = parse_result("Runtime.evaluate", r#"{"error":"not an object"}"#)
+                .expect("a string field named error is not a protocol failure");
+            assert_eq!(
+                value.get("error").and_then(Value::as_str),
+                Some("not an object")
+            );
+        }
     }
 
     fn send_once(cell: &Arc<Mutex<Option<oneshot::Sender<Reply>>>>, payload: Reply) {

@@ -542,7 +542,10 @@ pub struct OpenAiStreamingFunction {
     pub arguments: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+// `Default` is for constructing partial usage in tests. It does NOT relax the
+// wire contract: `#[serde(default)]` is per-field here, not on the struct, so
+// `prompt_tokens` and `completion_tokens` are still required on the wire.
+#[derive(Debug, Default, Deserialize)]
 pub struct OpenAiUsageData {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -598,16 +601,23 @@ impl OpenAiUsageData {
     /// the standard OpenAI `prompt_tokens_details.cached_tokens`. In both
     /// wire shapes the value is a subset of `prompt_tokens`, so callers must
     /// subtract it from `input_tokens` to keep Aurora's additive context math
-    /// correct. Returns `None` (not `Some(0)`) when there is no cache hit.
+    /// correct.
+    ///
+    /// `Some(0)` and `None` mean different things and both are returned.
+    /// `Some(0)` is the provider stating this request missed cache; `None` is
+    /// the provider saying nothing about cache at all. This used to be
+    /// filtered down to `None` in both cases, which cost the UI the ability to
+    /// tell "your cache just broke" apart from "this provider doesn't report
+    /// caching" — it rendered the first as the second, i.e. as nothing.
+    /// Subtracting `Some(0)` from `input_tokens` is a no-op, so the context
+    /// math is unaffected.
     #[must_use]
     pub fn cache_read_tokens(&self) -> Option<u32> {
-        self.prompt_cache_hit_tokens
-            .or_else(|| {
-                self.prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-            })
-            .filter(|&n| n > 0)
+        self.prompt_cache_hit_tokens.or_else(|| {
+            self.prompt_tokens_details
+                .as_ref()
+                .and_then(|d| d.cached_tokens)
+        })
     }
 }
 
@@ -2192,6 +2202,50 @@ pub fn __unused_hashmap_marker() -> HashMap<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Some(0)` and `None` are different claims and the UI acts on both.
+    ///
+    /// A provider that reports `cached_tokens: 0` is saying the cache missed
+    /// on this request — worth showing. A provider that omits the field is
+    /// saying nothing, and the card must keep displaying the last real
+    /// reading instead of blanking. Filtering zeros away made those two
+    /// indistinguishable, so a broken cache rendered as an empty gap.
+    #[test]
+    fn a_reported_zero_is_not_the_same_as_no_report() {
+        let reported_zero = OpenAiUsageData {
+            prompt_tokens_details: Some(OpenAiPromptTokensDetails {
+                cached_tokens: Some(0),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(reported_zero.cache_read_tokens(), Some(0));
+
+        let silent = OpenAiUsageData::default();
+        assert_eq!(silent.cache_read_tokens(), None);
+
+        // A details object present but with a null member is still silence.
+        let null_member = OpenAiUsageData {
+            prompt_tokens_details: Some(OpenAiPromptTokensDetails {
+                cached_tokens: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(null_member.cache_read_tokens(), None);
+    }
+
+    /// DeepSeek's own field wins over the OpenAI one when both are present,
+    /// and a real hit still comes through unchanged.
+    #[test]
+    fn deepseek_cache_field_outranks_the_openai_one() {
+        let both = OpenAiUsageData {
+            prompt_cache_hit_tokens: Some(1_024),
+            prompt_tokens_details: Some(OpenAiPromptTokensDetails {
+                cached_tokens: Some(7),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(both.cache_read_tokens(), Some(1_024));
+    }
 
     /// A tool result carrying a screenshot must move the image off the
     /// `role: "tool"` entry, because whether that entry delivers an image is

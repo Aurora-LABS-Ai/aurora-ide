@@ -322,7 +322,8 @@ pub fn change_between(before: &Value, after: &Value) -> Value {
 
         // Length is exact; the hash catches same-length edits the length
         // cannot see ("Light detected" -> "Dark detected!" is 14 either way).
-        let (length_before, length_after) = (number(before, "text_length"), number(after, "text_length"));
+        let (length_before, length_after) =
+            (number(before, "text_length"), number(after, "text_length"));
         if length_before != length_after || at(before, "text_hash") != at(after, "text_hash") {
             change.insert("text_changed".into(), json!(true));
             if length_before != length_after {
@@ -335,7 +336,8 @@ pub fn change_between(before: &Value, after: &Value) -> Value {
 
         // An overlay, a menu or a toast that mounted — the halo case, which no
         // amount of height-watching catches because it is out of flow.
-        let (elements_before, elements_after) = (number(before, "elements"), number(after, "elements"));
+        let (elements_before, elements_after) =
+            (number(before, "elements"), number(after, "elements"));
         match elements_after.cmp(&elements_before) {
             std::cmp::Ordering::Greater => {
                 change.insert(
@@ -614,7 +616,12 @@ mod tests {
         // that it was not.
         let change = change_between(
             &showing("Light detected", 120, Value::Null, 0),
-            &showing("Dark detected  Theme applied", 122, json!("button#on-btn"), 9),
+            &showing(
+                "Dark detected  Theme applied",
+                122,
+                json!("button#on-btn"),
+                9,
+            ),
         );
         assert_eq!(change.get("text_changed"), Some(&json!(true)));
         assert_eq!(change.get("elements_added"), Some(&json!(2)));
@@ -679,8 +686,12 @@ mod tests {
 
         for (before, after) in [(&unreadable, &readable), (&readable, &unreadable)] {
             let change = change_between(before, after);
-            for invented in ["text_changed", "elements_added", "elements_removed", "focus_moved_to"]
-            {
+            for invented in [
+                "text_changed",
+                "elements_added",
+                "elements_removed",
+                "focus_moved_to",
+            ] {
                 assert!(
                     change.get(invented).is_none(),
                     "{invented} reported from a page that was never read: {change}"

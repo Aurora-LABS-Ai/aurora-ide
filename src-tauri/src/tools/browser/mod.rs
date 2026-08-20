@@ -783,7 +783,12 @@ impl ToolExecutor for BrowserScreenshotTool {
                 )
             })
             .unwrap_or_default();
-        let url = self.manager.current_url(label).unwrap_or_default();
+        // Read the URL from the PAGE, not from Aurora's record of where it sent
+        // the page. A click that followed a link is a navigation Aurora never
+        // performed, so the recorded URL still names the previous route and the
+        // caption would attribute this picture to it — the one failure a visual
+        // regression audit cannot survive.
+        let url = self.manager.live_url(label).await.unwrap_or_default();
         // The `<aurora_image …>` marker is the contract with
         // `crate::api::provider_kernel_adapter` — when the tool result
         // is serialised for an Anthropic call, the adapter rewrites

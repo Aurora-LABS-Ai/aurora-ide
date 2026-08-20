@@ -23,6 +23,7 @@ import { create } from "zustand";
 
 import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
@@ -805,6 +806,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         userMessageOrdinal: ordinal,
       });
     }
+
+    // The transcript really did shrink, so the high-water context reading from
+    // before the rewind describes a request that no longer exists.
+    useAgentContextStore.getState().resetContextFloor(thread.id);
 
     const kept = thread.messages.slice(0, userIndex);
     const trimmed: DbThread = { ...thread, messages: kept };

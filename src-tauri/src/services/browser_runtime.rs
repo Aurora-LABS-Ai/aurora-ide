@@ -410,6 +410,10 @@ impl BrowserManager {
             for (method, params) in [
                 ("Emulation.clearDeviceMetricsOverride", Value::Null),
                 (
+                    "Emulation.setTouchEmulationEnabled",
+                    serde_json::json!({ "enabled": false }),
+                ),
+                (
                     "Emulation.setEmulatedMedia",
                     serde_json::json!({ "media": "", "features": [] }),
                 ),
@@ -461,11 +465,54 @@ impl BrowserManager {
         Ok(())
     }
 
+    /// The URL Aurora last RECORDED for this panel.
+    ///
+    /// Written when the window opens and by [`Self::navigate`], and by nothing
+    /// else — so it is stale after any navigation the page performed itself: a
+    /// link click, a form post, a JS redirect, history back/forward. Prefer
+    /// [`Self::live_url`] anywhere the answer is shown to the agent.
     pub fn current_url(&self, label: &str) -> Result<String, String> {
         self.windows
             .get(label)
             .map(|entry| entry.current_url.clone())
             .ok_or_else(|| self.unknown_window_error(label))
+    }
+
+    /// The URL the page is ACTUALLY on, read from `location.href`.
+    ///
+    /// Aurora only learns about navigations it performed itself, so the
+    /// recorded URL silently lags whenever the page moved on its own — which
+    /// is most of the time during an audit, because `browser_click` on a link
+    /// is a navigation Aurora never routed through [`Self::navigate`]. A
+    /// screenshot captioned with the recorded URL then attributes the picture
+    /// of one route to another, which is precisely the evidence a regression
+    /// audit relies on.
+    ///
+    /// Reads through to the page and writes the answer back, so the recorded
+    /// value self-heals for every later reader. Falls back to the recorded URL
+    /// when the page cannot be read (mid-navigation, no injected helper): a
+    /// slightly stale answer beats none, and the caller still gets a string.
+    pub async fn live_url(&self, label: &str) -> Option<String> {
+        let recorded = self.current_url(label).ok();
+        let seen = self
+            .eval_with_result(label, "location.href")
+            .await
+            .ok()
+            .filter(|result| result.ok)
+            .and_then(|result| result.value)
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .filter(|url| !url.is_empty() && url != "about:blank");
+        match seen {
+            Some(url) => {
+                if recorded.as_deref() != Some(url.as_str()) {
+                    if let Some(mut entry) = self.windows.get_mut(label) {
+                        entry.current_url = url.clone();
+                    }
+                }
+                Some(url)
+            }
+            None => recorded,
+        }
     }
 
     /// Format an "unknown window" error that lists the labels that

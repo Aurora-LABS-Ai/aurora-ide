@@ -87,29 +87,62 @@ impl ConversationRuntime {
         // issued after it has seen the compacted shape.
         let compacted_at = last_compaction_timestamp(session.messages());
 
-        for (idx, message) in view.iter().enumerate().rev() {
-            let Some(usage) = message.usage.as_ref() else {
-                continue;
-            };
-            // Our own synthetic usage is an estimate wearing a measurement's
-            // clothes — anchoring on it would launder a guess into "measured".
-            if usage.estimated == Some(true) {
-                continue;
+        // Take the LARGEST projection the recent measurements support, not
+        // simply the newest one.
+        //
+        // Within one compaction epoch the request only ever grows — every turn
+        // appends. So a measurement that comes back SMALLER than the one
+        // before it is not the context shrinking, it is the provider counting
+        // differently, and gateways that fan out across upstream accounts do
+        // exactly that: the same bytes measured 12,802 tokens on one backend
+        // and 14,161 on another, byte-for-byte identical request, split
+        // cleanly by which one served it. Anchoring on whichever landed last
+        // made the reading jump between those bands every few requests, which
+        // is the card "never settling" — and on the low reading it also
+        // under-reports how full the window is, which is the direction that
+        // ends in a context-overflow rejection.
+        //
+        // The look-back is capped because the bands alternate over a handful
+        // of requests, and an unbounded scan would re-estimate the whole
+        // transcript on every turn.
+        const MAX_ANCHOR_LOOKBACK: usize = 8;
+
+        let mut tail_tokens: u32 = 0;
+        let mut best: Option<u32> = None;
+        let mut seen = 0usize;
+
+        for message in view.iter().rev() {
+            let eligible = message.usage.as_ref().filter(|usage| {
+                // Our own synthetic usage is an estimate wearing a
+                // measurement's clothes — anchoring on it would launder a
+                // guess into "measured".
+                usage.estimated != Some(true)
+                    // Measurements older than the newest compaction describe a
+                    // request that no longer exists. `apply_compaction` keeps
+                    // the verbatim TAIL, and those tail messages carry the
+                    // usage of the requests that measured them — taken while
+                    // the whole dropped head was still being sent.
+                    && !compacted_at.is_some_and(|at| message.timestamp <= at)
+            });
+
+            if let Some(usage) = eligible {
+                let anchor = measured_context_tokens(usage);
+                if anchor != 0 {
+                    let projected = anchor.saturating_add(tail_tokens);
+                    best = Some(best.map_or(projected, |b| b.max(projected)));
+                    seen += 1;
+                    if seen >= MAX_ANCHOR_LOOKBACK {
+                        break;
+                    }
+                }
             }
-            if compacted_at.is_some_and(|at| message.timestamp <= at) {
-                continue;
-            }
-            let anchor = measured_context_tokens(usage);
-            if anchor == 0 {
-                continue;
-            }
-            return view[idx + 1..]
-                .iter()
-                .map(|m| estimate_message_tokens(m, replay))
-                .fold(anchor, u32::saturating_add);
+
+            // `tail_tokens` is the estimated size of everything AFTER the
+            // message the next iteration will look at.
+            tail_tokens = tail_tokens.saturating_add(estimate_message_tokens(message, replay));
         }
 
-        self.estimate_view_tokens(&view)
+        best.unwrap_or_else(|| self.estimate_view_tokens(&view))
     }
 
     /// Aurora's own from-scratch size for a view, overhead included.

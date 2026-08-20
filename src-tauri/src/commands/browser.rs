@@ -76,7 +76,13 @@ pub async fn browser_get_url(
     state: State<'_, BrowserManager>,
     label: String,
 ) -> Result<String, String> {
-    state.current_url(&label)
+    // The panel polls this for its address bar, so it has to follow the page
+    // rather than Aurora's record of where it last sent the page — otherwise
+    // clicking a link inside the panel leaves the bar showing the old route.
+    state
+        .live_url(&label)
+        .await
+        .ok_or_else(|| format!("no browser window '{label}'"))
 }
 
 #[tauri::command]

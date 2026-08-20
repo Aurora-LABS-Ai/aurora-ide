@@ -113,6 +113,12 @@ pub struct BuildStats {
     pub skipped_generated: usize,
     /// Excluded dependency/build directory names actually present here.
     pub skipped_dirs: Vec<String>,
+    /// Source extensions this workspace holds that no grammar here reads, and
+    /// how many files carry each — largest first. See
+    /// [`walk::WalkStats::unindexed_extensions`](super::walk::WalkStats) for
+    /// why an unreadable file is counted rather than silently passed over.
+    #[serde(default)]
+    pub unindexed_extensions: Vec<(String, usize)>,
     pub bytes: u64,
     pub symbols: usize,
     pub refs: usize,
@@ -239,6 +245,7 @@ impl CodeIndex {
             stats: BuildStats {
                 skipped_too_large: walk_stats.skipped_too_large,
                 skipped_dirs: walk_stats.skipped_dirs,
+                unindexed_extensions: walk_stats.unindexed_extensions,
                 ..Default::default()
             },
             by_name: HashMap::new(),
@@ -440,8 +447,23 @@ impl CodeIndex {
             join_rel(&dir, &rest)
         } else if spec.contains("::") {
             rust_tail(spec)
+        } else if matches!(
+            super::lang::Lang::from_path(std::path::Path::new(from_path)),
+            Some(super::lang::Lang::C) | Some(super::lang::Lang::Cpp)
+        ) {
+            // A C/C++ `#include` is already a path, extension and all. It must
+            // NOT go through the dotted-name branch below: the dot in
+            // `config.h` separates an extension, not a package, and splitting
+            // on it yields `config/h`. `<stdio.h>` lands here too and simply
+            // fails to resolve, which is the right answer for a system header.
+            spec.to_string()
+        } else if spec.contains('\\') {
+            // PHP namespaces separate with a backslash: `App\Models\User`.
+            spec.replace('\\', "/")
         } else if spec.contains('.') && !spec.contains('/') {
-            // Python absolute `a.b.c`.
+            // Python absolute `a.b.c` — and the same shape carries Java,
+            // Kotlin and C# imports (`com.acme.Widget`, `System.Text`), which
+            // map onto directories the same way.
             spec.replace('.', "/")
         } else if let Some(inside) = self.workspace_package_path(spec) {
             // A bare specifier that names a package IN this workspace. In a
@@ -462,8 +484,12 @@ impl CodeIndex {
         if let Some(&id) = self.file_ids.get(joined) {
             return Some(id);
         }
+        // Every extension a specifier may have left off. Kept in step with
+        // `Lang::from_path` by `every_indexed_extension_can_close_a_specifier`.
         const EXTS: &[&str] = &[
             ".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".rs", ".py",
+            ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".go", ".java", ".cs", ".rb", ".php",
+            ".kt", ".swift",
         ];
         const INDEXES: &[&str] = &[
             "/index.ts",
@@ -483,8 +509,13 @@ impl CodeIndex {
         // relative to a crate/source root this index may not start at, so fall
         // back to a unique path SUFFIX match — unique being the whole point: two
         // candidates mean the specifier did not identify a file.
+        // The empty suffix leads: a specifier that already carries its own
+        // extension — every C/C++ `#include` — must be matched as written. With
+        // only the extension-appending forms, `#include "net/socket.h"` looks
+        // for `net/socket.h.c` and finds nothing, which is the silent-miss
+        // shape this whole cascade exists to avoid.
         let mut hit = None;
-        for suffix in EXTS.iter().chain(INDEXES) {
+        for suffix in std::iter::once(&"").chain(EXTS.iter()).chain(INDEXES) {
             let tail = format!("/{joined}{suffix}");
             for (path, &id) in &self.file_ids {
                 if path.ends_with(&tail) {
@@ -680,6 +711,41 @@ impl CodeIndex {
             .unwrap_or_default();
         out.sort_by_key(|r| (r.file, r.line));
         out
+    }
+
+    /// One sentence naming what this workspace holds that the index cannot
+    /// read, or `None` when it reads everything.
+    ///
+    /// Exists so a miss can state a REASON instead of guessing one. "No
+    /// definition of `X` in this workspace, it may come from a dependency" is
+    /// confident, plausible, and wrong whenever `X` lives in a language nothing
+    /// here parses — and an agent that believes it concludes there are no
+    /// callers and ships the break. Naming the gap turns that into a correct
+    /// answer with a next step.
+    ///
+    /// Capped at the two largest extensions: this rides inside a tool result
+    /// the model reads, and a list of nine is a paragraph nobody acts on.
+    pub fn coverage_gap(&self) -> Option<String> {
+        let gaps = &self.stats.unindexed_extensions;
+        if gaps.is_empty() {
+            return None;
+        }
+        let named: Vec<String> = gaps
+            .iter()
+            .take(2)
+            .map(|(ext, n)| format!("{n} .{ext}"))
+            .collect();
+        let more = gaps.len().saturating_sub(2);
+        let tail = if more > 0 {
+            format!(" (and {more} other unreadable file type(s))")
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "This workspace also holds {} file(s){tail} that this index cannot read — {}",
+            named.join(" and "),
+            super::lang::Lang::UNINDEXED_HINT
+        ))
     }
 
     pub fn outline(&self, file_substring: &str) -> Vec<(&str, &Symbol)> {
@@ -1016,6 +1082,65 @@ mod tests {
     }
 
     #[test]
+    fn a_c_include_is_a_path_and_a_python_module_is_still_dotted() {
+        // These two collide and the collision is silent. A C `#include
+        // "config.h"` contains a dot, so the dotted-name branch would split it
+        // into `config/h` and resolve nothing; a Python `from a.b.c import x`
+        // ends in `.c`, so an extension test would read it as a C file. The
+        // branch keys on the IMPORTING file's language, which is the one fact
+        // that separates them.
+        let (_d, idx) = index_of(&[
+            ("src/net/socket.h", "int open_socket(void);\n"),
+            ("src/net/socket.c", "#include \"net/socket.h\"\n"),
+            ("pkg/a/b/c.py", "value = 1\n"),
+            ("pkg/app.py", "from a.b.c import value\n"),
+        ]);
+
+        let socket_c = file_id(&idx, "src/net/socket.c");
+        assert_eq!(
+            idx.resolve_module(socket_c, "net/socket.h"),
+            Some(file_id(&idx, "src/net/socket.h")),
+            "a C include names a path, extension and all"
+        );
+        assert_eq!(
+            idx.resolve_module(socket_c, "stdio.h"),
+            None,
+            "a system header is not in this workspace, and None is the right answer"
+        );
+
+        let app = file_id(&idx, "pkg/app.py");
+        assert_eq!(
+            idx.resolve_module(app, "a.b.c"),
+            Some(file_id(&idx, "pkg/a/b/c.py")),
+            "a Python module ending in `.c` is still a module, not a C file"
+        );
+    }
+
+    #[test]
+    fn every_indexed_extension_can_close_a_specifier() {
+        // `EXTS` in `resolve_module` is a second roster of file types, written
+        // by hand. When a language is added to `Lang::from_path` and not here,
+        // every import of it silently resolves to nothing — no error, just a
+        // dependency graph missing one language.
+        const EXTS_IN_RESOLVER: &[&str] = &[
+            "ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs", "rs", "py", "c", "h", "cpp",
+            "cc", "cxx", "hpp", "hh", "go", "java", "cs", "rb", "php", "kt", "swift",
+        ];
+        for ext in [
+            "rs", "ts", "tsx", "py", "c", "cpp", "go", "java", "cs", "rb", "php", "kt", "swift",
+        ] {
+            assert!(
+                super::super::lang::Lang::from_extension(ext).is_some(),
+                ".{ext} must still be an indexed language"
+            );
+            assert!(
+                EXTS_IN_RESOLVER.contains(&ext),
+                ".{ext} is indexed but `resolve_module` cannot close a specifier with it"
+            );
+        }
+    }
+
+    #[test]
     fn a_workspace_library_imported_by_package_name_resolves_to_its_source() {
         // In a monorepo, apps import sibling libraries by PACKAGE NAME rather
         // than by relative path. Treating every bare specifier as external
@@ -1185,6 +1310,115 @@ mod tests {
                     d.line,
                     d.kind,
                     hits.len() - uses,
+                );
+            }
+        }
+    }
+
+    /// C++ health check over a real workspace, for the three defects reported
+    /// against the first C/C++ release: destructors indexed under the
+    /// constructor's name, forward declarations indexed as definitions, and
+    /// classes with more candidates than they have real definitions.
+    ///
+    /// Ignored and env-driven for the same reason as the harness above — it
+    /// needs a real C++ tree, and no repository name belongs in this source.
+    ///
+    /// `AURORA_INDEX_ROOT=<repo> cargo test --lib cpp_health_over_a_real_workspace
+    ///   -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs AURORA_INDEX_ROOT pointing at a real C++ workspace"]
+    fn cpp_health_over_a_real_workspace() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let idx = CodeIndex::build(Path::new(&root)).unwrap();
+
+        let cpp_files = idx
+            .files
+            .iter()
+            .filter(|f| f.lang == "cpp" || f.lang == "c")
+            .count();
+        println!(
+            "{} files ({cpp_files} C/C++), {} symbols, {} ms",
+            idx.stats.files, idx.stats.symbols, idx.stats.build_ms
+        );
+
+        // 1. Destructors keep their tilde. Without it `~Foo` is byte-identical
+        //    to the constructor `Foo`, and every caller of one is attributed to
+        //    both.
+        let destructors = idx
+            .symbols
+            .iter()
+            .filter(|s| s.name.starts_with('~'))
+            .count();
+        println!("destructors indexed with `~`: {destructors}");
+
+        // 2. A class is defined once. Forward declarations (`class Foo;`) used
+        //    to land here too, so this counts names with more class/struct
+        //    definitions than any codebase plausibly has.
+        let mut by_name: HashMap<&str, usize> = HashMap::new();
+        for s in &idx.symbols {
+            if matches!(s.kind.as_str(), "class" | "struct") {
+                *by_name.entry(s.name.as_str()).or_default() += 1;
+            }
+        }
+        let mut worst: Vec<(&str, usize)> = by_name.into_iter().filter(|(_, n)| *n > 1).collect();
+        worst.sort_by(|a, b| b.1.cmp(&a.1));
+        println!(
+            "class/struct names with >1 definition: {} (worst: {:?})",
+            worst.len(),
+            &worst[..worst.len().min(8)]
+        );
+
+        // 3. How much of the remaining ambiguity is a header declaration and
+        //    its .cpp definition counted as two rival definitions of one
+        //    function? Measured rather than argued: for every C/C++ name that
+        //    returns more than one candidate, ask whether the candidates
+        //    collapse to a single entity once identical qualified names are
+        //    merged.
+        let mut ambiguous = 0usize;
+        let mut collapses = 0usize;
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for s in &idx.symbols {
+            if !seen.insert(s.name.as_str()) {
+                continue;
+            }
+            let defs = idx.definitions(&s.name);
+            let cpp_only = defs.iter().all(|d| {
+                let lang = &idx.files[d.file as usize].lang;
+                lang == "cpp" || lang == "c"
+            });
+            if defs.len() < 2 || !cpp_only {
+                continue;
+            }
+            ambiguous += 1;
+            let mut quals: Vec<String> = defs.iter().map(|d| d.qualified()).collect();
+            quals.sort_unstable();
+            quals.dedup();
+            if quals.len() == 1 {
+                collapses += 1;
+            }
+        }
+        println!(
+            "C/C++ ambiguous names: {ambiguous}; would collapse to one entity if a header \
+             declaration and its definition were merged: {collapses} ({:.0}%)",
+            if ambiguous == 0 {
+                0.0
+            } else {
+                collapses as f64 * 100.0 / ambiguous as f64
+            }
+        );
+
+        // 4. Whatever symbol is under suspicion, end to end.
+        if let Ok(symbol) = std::env::var("AURORA_INDEX_SYMBOL") {
+            let defs = idx.definitions(&symbol);
+            println!("\n`{symbol}`: {} definition(s)", defs.len());
+            for d in defs.iter().take(12) {
+                let (hits, _) = idx.references_to(d);
+                let uses = hits.iter().filter(|r| r.kind != "import").count();
+                println!(
+                    "  {}:{} {} — {uses} use(s)",
+                    idx.file_path(d.file),
+                    d.line,
+                    d.kind
                 );
             }
         }

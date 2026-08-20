@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// Bump when the packed layout or extraction semantics change. A cache written
 /// by an older Aurora is discarded and rebuilt rather than reused with stale
 /// facts — the rebuild is sub-second, so there is never a reason to migrate it.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.

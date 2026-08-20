@@ -49,6 +49,7 @@ pub mod shell_profiles;
 pub mod speech;
 pub mod state;
 pub mod team;
+pub mod terminal;
 pub mod themes;
 pub mod threads;
 pub mod title_maker;
@@ -360,7 +361,9 @@ fn cleanup_command_stream(request_id: &str) {
     streams.remove(request_id);
 }
 
-fn try_kill_pid(pid: u32) -> Result<(), String> {
+/// Kill a pid and its whole tree. Shared with `commands::terminal`, which
+/// needs the same reap when a terminal tab is closed.
+pub(crate) fn try_kill_pid(pid: u32) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let mut cmd = Command::new("taskkill");

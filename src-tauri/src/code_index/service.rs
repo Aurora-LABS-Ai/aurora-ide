@@ -39,6 +39,28 @@ pub struct IndexStatus {
     pub cache_bytes: u64,
 }
 
+/// The answer to "can this workspace be searched right now, and if not, what
+/// would it cost to make it so".
+///
+/// Separate from [`IndexStatus`] because they answer different questions at
+/// different prices. `status` describes what is already in memory and is free;
+/// this walks the tree and adopts a still-valid cache, so it can distinguish
+/// "never indexed" from "indexed last week and one file changed". A window that
+/// offered to index an already-cached project would be nagging about nothing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexProbe {
+    /// An index is in memory and matches the tree on disk. Nothing to do.
+    pub ready: bool,
+    /// How many files a build would parse. Zero means this workspace holds
+    /// nothing in a language the index reads, so offering to build one would
+    /// promise an empty result.
+    pub indexable_files: usize,
+    /// Past [`AUTO_INDEX_MAX_FILES`], so no turn will ever build this on its
+    /// own and an explicit build is the only way it gets one.
+    pub over_auto_cap: bool,
+}
+
 #[derive(Default)]
 pub struct CodeIndexService {
     indexes: DashMap<PathBuf, Arc<CodeIndex>>,
@@ -159,12 +181,52 @@ impl CodeIndexService {
     /// as the previous newest file is invisible here. That residual gap is why
     /// the `code` tool also exposes an explicit `refresh`.
     fn is_stale(idx: &CodeIndex, workspace: &Path) -> bool {
+        Self::is_stale_against(idx, super::walk::signature(workspace))
+    }
+
+    /// The comparison on its own, for callers that already paid for a walk.
+    fn is_stale_against(idx: &CodeIndex, signature: (usize, u64)) -> bool {
         // A zero fingerprint means the index predates this field; treat it as
         // stale once so it is rebuilt with one.
         if idx.stats.signature == (0, 0) {
             return true;
         }
-        super::walk::signature(workspace) != idx.stats.signature
+        signature != idx.stats.signature
+    }
+
+    /// Is this workspace ready to answer, and if not, how big is the job?
+    ///
+    /// Walks the tree once and adopts a still-valid cache; it never parses a
+    /// source file, so it is safe to call every time a project is opened.
+    /// Adopting the cache is the point as much as the reporting is — a project
+    /// indexed in an earlier session becomes answerable here, before the first
+    /// message rather than during it.
+    pub fn probe(&self, workspace: &Path) -> IndexProbe {
+        let signature = super::walk::signature(workspace);
+        let (indexable_files, _) = signature;
+        IndexProbe {
+            ready: self.adopt_current_cache(workspace, signature),
+            indexable_files,
+            over_auto_cap: indexable_files > AUTO_INDEX_MAX_FILES,
+        }
+    }
+
+    /// True when an index for `workspace` is in memory and current, loading a
+    /// matching cache to get there. Never builds.
+    fn adopt_current_cache(&self, workspace: &Path, signature: (usize, u64)) -> bool {
+        let key = workspace.to_path_buf();
+        if let Some(existing) = self.indexes.get(&key) {
+            let idx = existing.clone();
+            drop(existing);
+            return !Self::is_stale_against(&idx, signature);
+        }
+        match persist::load(&self.cache_path(workspace)) {
+            Ok(idx) if !Self::is_stale_against(&idx, signature) => {
+                self.indexes.insert(key, Arc::new(idx));
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Build from source and replace whatever was cached.
@@ -317,6 +379,72 @@ mod tests {
         // The user's explicit rebuild ignores the cap entirely.
         let idx = svc.rebuild(dir.path()).unwrap();
         assert_eq!(idx.definitions("one").len(), 1);
+    }
+
+    #[test]
+    fn probe_reports_an_unbuilt_workspace_without_building_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.go"), "package main\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(dir.path().join(".cache"));
+
+        let p = svc.probe(dir.path());
+        assert!(!p.ready, "nothing has been built yet");
+        assert_eq!(p.indexable_files, 2);
+        assert!(!p.over_auto_cap);
+        assert!(
+            !svc.status(dir.path()).built,
+            "probing must never build — that is the whole point of asking first"
+        );
+    }
+
+    #[test]
+    fn probe_adopts_a_cache_from_an_earlier_session() {
+        // The case that decides whether the window nags: a project indexed
+        // yesterday is ready today, and must not be offered an index it
+        // already has.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").unwrap();
+        let cache = dir.path().join(".cache");
+
+        let first = CodeIndexService::with_cache_root(cache.clone());
+        first.rebuild(dir.path()).unwrap();
+
+        // A fresh service is a fresh process: memory is empty, only the cache
+        // file survives.
+        let next = CodeIndexService::with_cache_root(cache);
+        assert!(!next.status(dir.path()).built, "memory starts empty");
+        assert!(next.probe(dir.path()).ready, "the cache should be adopted");
+        assert!(
+            next.status(dir.path()).built,
+            "adopting means the index is usable now, not merely present on disk"
+        );
+    }
+
+    #[test]
+    fn probe_reports_not_ready_once_the_tree_moves_on() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").unwrap();
+        let cache = dir.path().join(".cache");
+        CodeIndexService::with_cache_root(cache.clone())
+            .rebuild(dir.path())
+            .unwrap();
+
+        std::fs::write(dir.path().join("b.rs"), "pub fn two() {}\n").unwrap();
+        let next = CodeIndexService::with_cache_root(cache);
+        assert!(
+            !next.probe(dir.path()).ready,
+            "a stale cache is not readiness"
+        );
+    }
+
+    #[test]
+    fn a_workspace_with_no_readable_source_is_not_offered_an_index() {
+        // Offering to index a folder of images would promise an empty result.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(dir.path().join(".cache"));
+        assert_eq!(svc.probe(dir.path()).indexable_files, 0);
     }
 
     #[test]

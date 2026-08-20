@@ -12,7 +12,7 @@
 
 use std::path::PathBuf;
 
-use crate::code_index::{service, IndexStatus};
+use crate::code_index::{service, IndexProbe, IndexStatus};
 
 fn workspace(path: String) -> Result<PathBuf, String> {
     let trimmed = path.trim();
@@ -27,6 +27,19 @@ fn workspace(path: String) -> Result<PathBuf, String> {
 pub async fn code_index_status(workspace_path: String) -> Result<IndexStatus, String> {
     let root = workspace(workspace_path)?;
     Ok(service().status(&root))
+}
+
+/// Is this workspace ready to answer, and if not, how big is the job?
+///
+/// Called when a project is opened, which is why it must never parse: it walks
+/// the tree and adopts a matching cache, nothing more. The window uses the
+/// answer to decide whether to offer an index — and a project that already has
+/// a valid one is simply made usable here, one message earlier than it would
+/// otherwise have been.
+#[tauri::command]
+pub async fn code_index_probe(workspace_path: String) -> Result<IndexProbe, String> {
+    let root = workspace(workspace_path)?;
+    Ok(service().probe(&root))
 }
 
 /// Parse the workspace from scratch and replace whatever was cached.

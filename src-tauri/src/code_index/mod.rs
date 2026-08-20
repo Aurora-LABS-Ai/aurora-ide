@@ -47,4 +47,5 @@ pub mod walk;
 // `CodeIndexService` are addressed through their own modules
 // (`code_index::store::CodeIndex`), so re-exporting them here would be a second
 // name for one type and the compiler correctly calls it unused.
-pub use service::{service, IndexStatus};
+pub use lang::Lang;
+pub use service::{service, IndexProbe, IndexStatus};

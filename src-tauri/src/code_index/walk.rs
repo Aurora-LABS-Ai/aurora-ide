@@ -373,6 +373,22 @@ pub struct WalkStats {
     /// a directory called `build` that happens to hold real source would
     /// otherwise look like a complete index.
     pub skipped_dirs: Vec<String>,
+    /// Extensions this workspace contains that no grammar here reads, and how
+    /// many files carry each — largest first.
+    ///
+    /// This is the difference between a tool with a known limit and a tool that
+    /// lies. A file whose extension is unmapped is not skipped-and-counted like
+    /// an oversized one; it is never opened, so `outline` on it answers "no
+    /// indexed file matches" and `usages` of a symbol it defines answers "not
+    /// defined in this workspace". Both are confident, plausible, and false.
+    /// Recording the tally here — the walker already visits every file, so it
+    /// costs one map insert — lets those three answers name the real reason
+    /// instead of guessing at a dependency.
+    ///
+    /// Collected at walk time rather than by stat-ing a path when a question
+    /// arrives, because `definition` and `usages` are given a symbol and have
+    /// no path to stat.
+    pub unindexed_extensions: Vec<(String, usize)>,
 }
 
 /// Returns every indexable file under `root`, plus what was passed over.
@@ -409,12 +425,25 @@ pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
         })
         .build();
 
+    let mut unindexed: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let path = entry.path();
         let Some(lang) = Lang::from_path(path) else {
+            // Not a language this build reads. Counted rather than dropped —
+            // see `WalkStats::unindexed_extensions` for why the difference
+            // matters. Extension-less files (LICENSE, Makefile) are ignored
+            // here: nothing would be gained by telling a caller the index does
+            // not parse them.
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                let ext = ext.to_ascii_lowercase();
+                if looks_like_source(&ext) {
+                    *unindexed.entry(ext).or_insert(0) += 1;
+                }
+            }
             continue;
         };
         if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
@@ -431,11 +460,99 @@ pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
     // ids — otherwise every rebuild churns the serialized index.
     out.sort_by(|a, b| a.path.cmp(&b.path));
     let skipped_dirs = hit.lock().unwrap().iter().cloned().collect();
+
+    // Largest first, then alphabetically so two runs agree. A caller reads at
+    // most the first line or two of this, and the biggest gap is the one worth
+    // naming.
+    let mut unindexed_extensions: Vec<(String, usize)> = unindexed.into_iter().collect();
+    unindexed_extensions.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
     (
         out,
         WalkStats {
             skipped_too_large,
             skipped_dirs,
+            unindexed_extensions,
         },
+    )
+}
+
+/// Is this extension plausibly source code, as opposed to an asset, a document
+/// or a lockfile?
+///
+/// Deliberately an allow-list of KNOWN languages rather than a deny-list of
+/// known non-code. The tally this gates is shown to whoever asked why a symbol
+/// could not be found, and "your workspace also contains 412 .md and 88 .json
+/// files" is noise that would make the real answer unreadable. A language
+/// missing from this list simply goes unmentioned, which is exactly today's
+/// behaviour — so being incomplete here costs nothing, while being over-broad
+/// costs the message its meaning.
+fn looks_like_source(ext: &str) -> bool {
+    matches!(
+        ext,
+        "dart"
+            | "lua"
+            | "scala"
+            | "sc"
+            | "zig"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "psm1"
+            | "bat"
+            | "cmd"
+            | "pl"
+            | "pm"
+            | "r"
+            | "jl"
+            | "hs"
+            | "ml"
+            | "mli"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hrl"
+            | "clj"
+            | "cljs"
+            | "cljc"
+            | "groovy"
+            | "gradle"
+            | "vb"
+            | "f"
+            | "f90"
+            | "f95"
+            | "sql"
+            | "vue"
+            | "svelte"
+            | "astro"
+            | "sol"
+            | "nim"
+            | "cr"
+            | "d"
+            | "pas"
+            | "asm"
+            | "s"
+            | "m"
+            | "mm"
+            | "tf"
+            | "tfvars"
+            | "proto"
+            | "thrift"
+            | "graphql"
+            | "gql"
+            | "elm"
+            | "rkt"
+            | "lisp"
+            | "el"
+            | "tcl"
+            | "awk"
+            | "coffee"
+            | "hx"
+            | "vhd"
+            | "sv"
+            | "svh"
+            | "vim"
     )
 }

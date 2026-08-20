@@ -561,6 +561,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::read_files_batch,
             commands::invalidate_file_cache,
             commands::get_cache_stats,
+            commands::terminal::terminal_kill_process_tree,
+            commands::terminal::terminal_running_children,
             // Native editor operations (no JS string ops on hot paths)
             commands::editor_ops::apply_search_replace,
             commands::editor_ops::apply_multi_search_replace,
@@ -630,6 +632,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_cancel_current_turn,
             commands::project_stats::project_stats_get,
             commands::code_index::code_index_status,
+            commands::code_index::code_index_probe,
             commands::code_index::code_index_rebuild,
             commands::plans::plan_get_active,
             commands::plans::plan_get,

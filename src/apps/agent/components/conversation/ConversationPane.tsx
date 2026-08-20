@@ -22,6 +22,7 @@ import { EmptyState } from "@/apps/agent/components/conversation/EmptyState";
 import { MessageBubble } from "@/apps/agent/components/conversation/MessageBubble";
 import { JumpRail } from "@/apps/agent/components/shell/JumpRail";
 import { JumpToLatest } from "@/apps/agent/components/conversation/JumpToLatest";
+import { CodeIndexStatus } from "@/apps/agent/components/conversation/CodeIndexStatus";
 import { CompactionCard } from "@/apps/agent/components/conversation/CompactionCard";
 import { QuestionPrompt } from "@/apps/agent/components/tools/QuestionPrompt";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
@@ -462,6 +463,13 @@ export const ConversationPane: React.FC = () => {
             <AgentIcon name="inspect" size={16} />
           </button>
         )}
+        {/* Unindexed-project status. Mounted here, immediately before Settings,
+            rather than with the turn readouts above: those describe a turn and
+            are absent on the empty screen, while this describes the PROJECT and
+            must appear either way. Placing it after the conditional New-chat
+            button keeps its distance from the right edge identical in both
+            states, so the glyph never moves under the cursor. */}
+        <CodeIndexStatus />
         <button
           type="button"
           className="agw-icon-btn"

@@ -98,11 +98,22 @@ fn op_definition(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
                  Drop `in_file` to see all {} definition(s).",
                 all.len()
             ),
-            _ => format!(
-                "No definition of `{name}` in this workspace. It may come from a dependency, be \
-                 built by a macro or string name, or simply not exist. `grep` will find it if it \
-                 is only mentioned in text."
-            ),
+            // The coverage gap OUTRANKS the dependency guess. Both are
+            // plausible, only one is checkable, and guessing "dependency" at a
+            // symbol that is actually defined in an unread language is the
+            // answer that gets acted on and is wrong.
+            _ => match idx.coverage_gap() {
+                Some(gap) => format!(
+                    "No definition of `{name}` among the files this index reads. {gap}. It may \
+                     also come from a dependency or be built by a macro or string name. `grep` \
+                     searches every file regardless of language."
+                ),
+                None => format!(
+                    "No definition of `{name}` in this workspace. It may come from a dependency, \
+                     be built by a macro or string name, or simply not exist. `grep` will find it \
+                     if it is only mentioned in text."
+                ),
+            },
         };
         return json!({
             "success": true,
@@ -188,6 +199,25 @@ fn is_callable_kind(kind: &str) -> bool {
     CALLABLE_KINDS.contains(&kind)
 }
 
+/// Would re-asking with a qualified name NARROW this candidate set?
+///
+/// Only if the candidates do not all share one qualified name. A C++ class
+/// declared in several headers, or a set of module-level functions with no
+/// container, all answer to the same string — and a suggestion that reproduces
+/// the same ambiguous query is worse than no suggestion, because it reads as a
+/// way out and costs an iteration. Reported live: nine candidates for one
+/// class, every one carrying an identical `ask`.
+///
+/// **This is the single source for that judgement.** The refusal message and
+/// the per-candidate `ask` both read it, so the prose can never point at a
+/// field that is not there — which is the shape of the bug being fixed.
+fn qualified_narrows(defs: &[&crate::code_index::store::Symbol]) -> bool {
+    let mut quals: Vec<String> = defs.iter().map(|s| s.qualified()).collect();
+    quals.sort_unstable();
+    quals.dedup();
+    quals.len() > 1
+}
+
 /// The choices, each carrying how many callers it actually has.
 ///
 /// The count is what makes this list actionable rather than a shrug: given
@@ -195,22 +225,36 @@ fn is_callable_kind(kind: &str) -> bool {
 /// identifies the one the caller meant, and it is now cheap to compute because
 /// each reference resolves to a specific definition.
 fn candidate_list(idx: &CodeIndex, defs: &[&crate::code_index::store::Symbol]) -> Value {
-    json!(defs
+    let shown: Vec<&crate::code_index::store::Symbol> =
+        defs.iter().take(MAX_ROWS).copied().collect();
+
+    let qualified_narrows = qualified_narrows(&shown);
+
+    json!(shown
         .iter()
-        .take(MAX_ROWS)
         .map(|s| {
             let (hits, _) = idx.references_to(s);
             // Imports excluded for the same reason as in `op_usages`: they are
             // wiring, and counting them would make every candidate in a
             // TypeScript codebase look one busier than it is.
             let used = hits.iter().filter(|r| r.kind != "import").count();
+            let file = idx.file_path(s.file);
             json!({
                 "symbol": s.qualified(),
                 "kind": s.kind,
-                "file": idx.file_path(s.file),
+                "file": file,
                 "line": s.line,
                 "callers": used,
-                "ask": s.container.as_ref().map(|c| format!("{c}::{}", s.name)),
+                // Only offered when it genuinely narrows the set.
+                "ask": if qualified_narrows {
+                    s.container.as_ref().map(|c| format!("{c}::{}", s.name))
+                } else {
+                    None
+                },
+                // Always present, and always distinct, because a file path is
+                // the one thing every candidate has that the others do not.
+                // This is the value to pass as `in_file`.
+                "in_file": file,
             })
         })
         .collect::<Vec<_>>())
@@ -266,9 +310,21 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
             "name": name,
             "resolved": false,
             "reason": "not_defined_here",
-            "message": format!(
-                "`{name}` is not defined in this workspace, so its usages cannot be attributed.                  It may come from a dependency. `grep` will find the text if you need it."
-            ),
+            // Read carefully before editing: this is the answer that ends
+            // "so there are no callers, the refactor is safe". It must never
+            // sound more certain than it is.
+            "message": match idx.coverage_gap() {
+                Some(gap) => format!(
+                    "`{name}` is not defined among the files this index reads, so its usages \
+                     cannot be attributed. {gap}. Do not read this as \"nothing calls it\" — \
+                     `grep` searches every file regardless of language."
+                ),
+                None => format!(
+                    "`{name}` is not defined in this workspace, so its usages cannot be \
+                     attributed. It may come from a dependency. `grep` will find the text if you \
+                     need it."
+                ),
+            },
         });
     }
 
@@ -281,7 +337,8 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
             "resolved": false,
             "reason": "not_callable",
             "message": format!(
-                "`{name}` names {} field(s)/variable(s) in this workspace, not a function or type.                  Nothing calls it. If you meant a property, `grep` is the right tool.",
+                "`{name}` names {} field(s)/variable(s) in this workspace, not a function or \
+                 type. Nothing calls it. If you meant a property, `grep` is the right tool.",
                 defs.len()
             ),
             "definitions": candidate_list(idx, &defs),
@@ -293,12 +350,12 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
     // individually answerable, so the list carries a caller count per
     // candidate instead of being a bare shrug.
     if !qualified && callable.len() > 1 {
-        // Only a definition WITH a container has a name that can disambiguate
-        // it. Seven module-level `handle` functions across seven files (a real
-        // case) have none — which is exactly what `in_file` exists for, and
-        // why the message must never send them after a qualified name that
-        // does not exist.
-        let qualifiable = callable.iter().any(|s| s.container.is_some());
+        // Having a container is NOT enough — the qualified names must actually
+        // differ. Seven module-level `handle` functions have no container at
+        // all (a real case), and nine C++ candidates for one class have the
+        // same container as each other (another). Both end up pointed at
+        // `in_file`, which is the route that exists in every case.
+        let qualifiable = qualified_narrows(&callable.iter().copied().collect::<Vec<_>>());
         let how = if qualifiable {
             "one of the qualified names in `candidates[].ask`, or `in_file` set to a candidate's \
              `file`"
@@ -486,12 +543,31 @@ fn op_modules(idx: &CodeIndex, granularity: Option<&str>) -> Value {
 fn op_outline(idx: &CodeIndex, path: &str) -> Value {
     let rows = idx.outline(path);
     if rows.is_empty() {
+        // Outline is the one operation handed a PATH, so it can name the exact
+        // reason instead of describing the index's state. "No indexed file
+        // matches" is true and useless when the file is sitting right there and
+        // only its language is unsupported.
+        let unreadable = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|ext| crate::code_index::Lang::from_extension(ext).is_none());
+        let message = match unreadable {
+            Some(ext) => format!(
+                "`{path}` is not a language this index reads (`.{ext}`) — {}. Use `grep` or \
+                 `file_read` for this file.",
+                crate::code_index::Lang::UNINDEXED_HINT
+            ),
+            None => format!(
+                "No indexed file matches `{path}`. Check the path, or `code {{ op: \"refresh\" }}` \
+                 if it was just created."
+            ),
+        };
         return json!({
             "success": true,
             "op": "outline",
             "path": path,
             "symbols": 0,
-            "message": format!("No indexed file matches `{path}`."),
+            "message": message,
         });
     }
     let shown = rows.len().min(MAX_OUTLINE_ROWS);
@@ -565,6 +641,11 @@ line to read instead of loading a 3000-line file.
 and which directories import each other in a circle. Use it to orient before a refactor.
 
 Keep using `grep` for text: string literals, comments, config keys, error messages, TODOs.
+
+It reads Rust, TypeScript/JavaScript, Python, C, C++, Go, Java, C#, Ruby, PHP, Kotlin and Swift. A \
+file in any other language is not in the index at all, so a miss can mean \"not written in a \
+language I read\" rather than \"does not exist\" — the answers say which. `grep` searches every \
+file whatever it is written in.
 
 Usages are resolved through each file's own import statements, so callers of a same-named function \
 in another module are not counted. When one name still has several possible definitions the result \
@@ -1113,5 +1194,161 @@ mod tests {
             kinds.contains(&"struct") && kinds.contains(&"function"),
             "{kinds:?}"
         );
+    }
+
+    /// A workspace whose real work is in a language this index cannot read.
+    fn unreadable_fixture() -> (tempfile::TempDir, CodeIndex) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("grid.dart"),
+            "class PianoRollGrid {\n  void paint() {}\n}\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        (dir, idx)
+    }
+
+    #[test]
+    fn an_ambiguity_refusal_never_suggests_a_query_that_returns_the_same_set() {
+        // Reported live: nine candidates for one C++ class, every one carrying
+        // the SAME `ask` string, so following the advice re-ran the identical
+        // ambiguous call. A suggested next step that cannot narrow anything is
+        // worse than none — it reads as a way out and costs an iteration.
+        let dir = tempfile::tempdir().unwrap();
+        // Three same-named top-level functions: no containers, so no qualified
+        // name can separate them.
+        for (name, body) in [
+            ("a.rs", "pub fn render() {}\n"),
+            ("b.rs", "pub fn render() {}\n"),
+            ("c.rs", "pub fn render() {}\nfn go() { render(); }\n"),
+        ] {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let v = op_usages(&idx, "render", None);
+        let candidates = v["candidates"].as_array().expect("candidates listed");
+        assert!(candidates.len() >= 3, "{v}");
+
+        for c in candidates {
+            assert!(
+                c["ask"].is_null(),
+                "a qualified name that cannot narrow the set must not be offered: {c}"
+            );
+            // The escape that DOES work is always present and always distinct.
+            assert!(
+                c["in_file"].as_str().is_some_and(|f| !f.is_empty()),
+                "every candidate needs a usable `in_file`: {c}"
+            );
+        }
+
+        let files: Vec<&str> = candidates
+            .iter()
+            .filter_map(|c| c["in_file"].as_str())
+            .collect();
+        let mut unique = files.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            files.len(),
+            "`in_file` only helps if it differs per candidate: {files:?}"
+        );
+    }
+
+    #[test]
+    fn a_qualified_name_is_still_offered_when_it_does_narrow_the_set() {
+        // The counterpart: withholding `ask` everywhere would throw away the
+        // cheaper escape in the case it actually resolves.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "struct A;\nimpl A { pub fn run(&self) {} }\nstruct B;\nimpl B { pub fn run(&self) {} }\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let v = op_usages(&idx, "run", None);
+        let candidates = v["candidates"].as_array().expect("candidates listed");
+        let asks: Vec<&str> = candidates
+            .iter()
+            .filter_map(|c| c["ask"].as_str())
+            .collect();
+        assert!(
+            asks.contains(&"A::run") && asks.contains(&"B::run"),
+            "distinct containers make the qualified name the right suggestion: {v}"
+        );
+    }
+
+    #[test]
+    fn outline_of_an_unreadable_file_names_the_language_not_the_index() {
+        // The file is sitting right there. "No indexed file matches" is true
+        // and useless; the caller needs to know it must reach for `grep`.
+        let (_d, idx) = unreadable_fixture();
+        let v = op_outline(&idx, "grid.dart");
+        assert_eq!(v["symbols"], 0);
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains(".dart"), "{msg}");
+        assert!(msg.contains("grep"), "the way forward must be named: {msg}");
+        assert!(
+            !msg.contains("No indexed file matches"),
+            "the generic answer hides the real reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_missing_definition_states_the_coverage_gap_instead_of_guessing() {
+        // The dangerous shape: `success: true` plus a confident "it may come
+        // from a dependency" about a symbol that is defined in this very
+        // workspace, in a language nothing here parses.
+        let (_d, idx) = unreadable_fixture();
+        let v = op_definition(&idx, "PianoRollGrid", None);
+        assert_eq!(v["found"], 0);
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains(".dart"), "{msg}");
+        assert!(
+            !msg.starts_with("No definition of `PianoRollGrid` in this workspace."),
+            "it IS in this workspace — only unreadable: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_usages_refuse_to_be_read_as_nothing_calls_it() {
+        // This is the answer that ends "so there are no callers, the refactor
+        // is safe". It has to say otherwise in words.
+        let (_d, idx) = unreadable_fixture();
+        let v = op_usages(&idx, "PianoRollGrid", None);
+        assert_eq!(v["resolved"], false);
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("nothing calls it"), "{msg}");
+        assert!(msg.contains(".dart"), "{msg}");
+    }
+
+    #[test]
+    fn a_fully_readable_workspace_keeps_the_plain_answers() {
+        // The coverage sentence must appear only when there is a gap; adding
+        // it everywhere would be noise on the common path.
+        let (_d, idx) = fixture();
+        let v = op_definition(&idx, "nowhere", None);
+        let msg = v["message"].as_str().unwrap();
+        assert!(msg.contains("in this workspace"), "{msg}");
+        assert!(!msg.contains("cannot read"), "no gap to report: {msg}");
+    }
+
+    #[test]
+    fn tool_messages_carry_no_collapsed_line_continuations() {
+        // Two of these strings shipped with eighteen literal spaces mid-
+        // sentence, from a lost `\` continuation. The model reads them
+        // verbatim, so the damage is silent.
+        let (_d, idx) = fixture();
+        for v in [
+            op_definition(&idx, "nowhere", None),
+            op_usages(&idx, "nowhere", None),
+            op_outline(&idx, "nowhere.rs"),
+        ] {
+            let msg = v["message"].as_str().unwrap().to_string();
+            assert!(!msg.contains("   "), "collapsed continuation in: {msg}");
+        }
     }
 }

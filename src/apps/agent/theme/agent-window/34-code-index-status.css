@@ -1,0 +1,152 @@
+/* ── Unindexed-project status ─────────────────────────────────────────
+ * The amber glyph in the conversation header and the panel it opens. See
+ * CodeIndexStatus.tsx for why this is a persistent status rather than a
+ * dismissible notice.
+ *
+ * Colour is the whole signal at rest, so it is chosen deliberately:
+ * `--agw-warning` against a header of `--agw-text-muted` glyphs is the loudest
+ * thing in that row without being a badge, a chip or a pill — and amber says
+ * "worth doing" where red would say "broken", which this is not. The agent
+ * still answers every question; it just reads more files to do it.
+ *
+ * Deliberately NOT animated at rest. A condition that stays true for an hour
+ * must not pulse for an hour — 08-transcript-flow.css and 33-tool-glyph-motion
+ * both record the same rule: motion has to explain something. */
+
+.agw-idxstat {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Matches `.agw-icon-btn`'s geometry so the control sits on the header's own
+   rhythm; only the colour differs. */
+.agw-idxstat-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--agw-warning);
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+.agw-idxstat-btn:hover {
+  background: rgb(255 255 255 / 5%);
+}
+.agw-idxstat-btn:focus-visible {
+  outline: 2px solid var(--agw-warning);
+  outline-offset: 1px;
+}
+
+/* Working keeps the amber. Done is the one state that turns green and it is on
+   screen for two seconds. Failure is the only red here — a condition someone
+   has to act on again. */
+.agw-idxstat[data-phase="done"] .agw-idxstat-btn {
+  color: var(--agw-added);
+}
+.agw-idxstat[data-phase="error"] .agw-idxstat-btn {
+  color: var(--agw-removed);
+}
+
+/* The shared rail ring, re-tinted. It occupies the same 26px box the glyph
+   does, so starting a build shifts nothing in the header. */
+.agw-idxstat-spin {
+  border-color: color-mix(in srgb, var(--agw-warning) 28%, transparent);
+  border-top-color: var(--agw-warning);
+}
+
+/* ── the panel ── */
+.agw-idxstat-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 270px;
+  padding: 11px 13px;
+  border: 1px solid var(--agw-border);
+  border-radius: 10px;
+  /* Solid, never translucent: the transcript scrolls directly beneath this. */
+  background: var(--agw-surface-elevated);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 42%);
+}
+
+/* Bridges the 6px gap between trigger and panel. That strip belongs to neither
+   element, so a pointer crossing it fires mouseleave and kills the panel
+   mid-reach — the trap this window already hit with hover popovers. */
+.agw-idxstat-pop::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 8px;
+}
+
+.agw-idxstat-title {
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.35;
+}
+
+.agw-idxstat-body {
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  /* An error string from Rust can be long; it must wrap rather than widen the
+     panel — the failure this window has hit repeatedly with value-bearing rows. */
+  overflow-wrap: anywhere;
+}
+
+.agw-idxstat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.agw-idxstat-meta {
+  flex: 1;
+  min-width: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+
+.agw-idxstat-go {
+  flex: none;
+  padding: 6px 13px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  /* Colour only — movement on hover is the template fingerprint this window
+     avoids everywhere else. */
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+.agw-idxstat-go:hover,
+.agw-idxstat-go:focus-visible {
+  outline: none;
+  border-color: var(--agw-warning);
+  color: var(--agw-warning);
+}
+.agw-idxstat[data-phase="error"] .agw-idxstat-go:hover,
+.agw-idxstat[data-phase="error"] .agw-idxstat-go:focus-visible {
+  border-color: var(--agw-removed);
+  color: var(--agw-removed);
+}

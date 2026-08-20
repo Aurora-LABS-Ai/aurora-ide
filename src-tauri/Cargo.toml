@@ -92,6 +92,19 @@ tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.25"
+# The rest of the roster. Each grammar is one dep, one `.scm`, and one arm in
+# `Lang::from_path` — see `code_index/lang.rs`. Grammar crates pin their own
+# tree-sitter-language ABI, which is why 0.23-era grammars link against
+# tree-sitter 0.26 unchanged.
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-kotlin-ng = "1.1"
+tree-sitter-swift = "0.7"
 streaming-iterator = "0.1"   # tree-sitter 0.25+ returns QueryMatches as a StreamingIterator
 ignore = "0.4"
 
@@ -137,6 +150,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_Debug",
+    # `CreateToolhelp32Snapshot` + `Process32FirstW/NextW`, used by
+    # `commands::terminal` to find what a shell has left running before its tab
+    # is closed. Chosen over shelling out to wmic/PowerShell: it needs no child
+    # process, and wmic is gone on current Windows 11.
+    "Win32_System_Diagnostics_ToolHelp",
     # `EXCEPTION_POINTERS`, `PVECTORED_EXCEPTION_HANDLER` and
     # `AddVectoredExceptionHandler` are all gated on this one, not on
     # `Diagnostics_Debug` as their documentation placement suggests.

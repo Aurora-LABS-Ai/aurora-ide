@@ -76,10 +76,31 @@ pub(super) fn rich_persisted_tool(name: &str) -> bool {
 /// before it enters MODEL history. Both strings are content the model itself
 /// just sent (or read moments ago); echoing them back burned most of the 8 KiB
 /// cap per edit on pure duplication — the loudest silent context cost in the
-/// toolset. The counts and message that remain are the actual signal, and the
-/// model can always `file_read` to verify. The UI is unaffected: the live tool
-/// card gets its own untouched copy, and reload-time diffs come from the
-/// `.rich.jsonl` sidecar.
+/// toolset. The counts and message that remain are the actual signal. The UI is
+/// unaffected: the live tool card gets its own untouched copy, and reload-time
+/// diffs come from the `.rich.jsonl` sidecar.
+///
+/// ## The strip is SILENT, and that is deliberate
+///
+/// This used to leave a `contentEcho` note behind explaining the elision. It is
+/// gone, because every justification for it was wrong:
+///
+/// - It explained an absence nobody could see. The model is given a schema for
+///   tool INPUTS, never for tool RESULTS, so a missing `newContent` contradicts
+///   no expectation it ever held.
+/// - The confirmation it offered is already here in structured form.
+///   `"Replaced 1 occurrence(s)"`, `replacements`, `linesAdded`, `linesRemoved`
+///   say the edit landed, how often, and how large. Prose after that restates
+///   data.
+/// - The one genuinely new thing it carried — that re-reading to confirm the
+///   write is wasted — is a rule that holds for a whole conversation, and it was
+///   being repeated on every single result. At ~70 tokens a copy, resident in
+///   history and re-uploaded each turn, a 40-edit thread paid 2,800 tokens per
+///   turn to restate one sentence. Inside the function whose entire job is
+///   deleting duplication from history.
+///
+/// If that rule is ever worth stating, it belongs in the system prompt's tool
+/// guidelines, said once. It does not belong here, said N times.
 ///
 /// Returns `None` when the result carries no echo (failures, non-JSON), in
 /// which case the caller leaves the content as it was.
@@ -103,17 +124,6 @@ pub(super) fn strip_edit_content_echo(raw: &str) -> Option<String> {
                     strip(file);
                 }
             }
-        }
-        if stripped_any {
-            // Name the elision and its recovery, so absence reads as policy
-            // rather than as a tool that forgot to report what it wrote.
-            map.insert(
-                "contentEcho".into(),
-                serde_json::Value::String(
-                    "elided from history — the edit applied as sent; file_read the path to verify"
-                        .into(),
-                ),
-            );
         }
     }
 

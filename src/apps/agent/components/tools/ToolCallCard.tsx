@@ -24,7 +24,11 @@ import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import { describeToolActivity, type AgentActivityTarget } from "@/apps/agent/components/conversation/activity";
+import {
+  describeToolActivity,
+  looksLikeFile,
+  type AgentActivityTarget,
+} from "@/apps/agent/components/conversation/activity";
 import {
   formatToolDuration,
   streamedToolStringArguments,
@@ -34,6 +38,8 @@ import {
 } from "@/apps/agent/components/tools/tool-call";
 import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
+import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { useShellStream } from "@/apps/agent/hooks/useShellStream";
@@ -139,6 +145,19 @@ const FOLDER_TOOLS = new Set([
   "folder_delete",
 ]);
 
+/**
+ * Tools taking TWO facts: a `path` that says WHERE to look and a `pattern` that
+ * says WHAT to look for.
+ *
+ * Their `path` is a search root, usually a directory (`src`, `src/services`) —
+ * so it is neither a file tool nor a folder tool, and the extension decides,
+ * exactly as it does for `move_path`/`delete_path`. Before this it fell through
+ * to "file" and a directory was drawn with the blank page glyph, which is both
+ * the wrong picture and — sitting one word after "Search" — reads as the term
+ * that was searched for rather than the folder it was searched in.
+ */
+const SCOPE_PATH_TOOLS = new Set(["grep", "glob"]);
+
 /** Args we render specially / that are too noisy for the chip row. */
 const HIDDEN_ARG_KEYS = new Set([
   "content",
@@ -154,6 +173,9 @@ const HIDDEN_ARG_KEYS = new Set([
   "todos",
   "edits",
   "replacements",
+  // Streaming UI metadata, not an instruction the reader gave. The file chips
+  // already name these. Both spellings — threads on disk carry the old one.
+  "affected_paths",
   "target_paths",
   // The file chips name these, one per file, with their own diff counts.
   // "paths: [2 items]" is the same fact counted instead of named.
@@ -467,7 +489,10 @@ const StandardToolCallCard: React.FC<{
   const path = activity.path || pathOf(parsedArgs);
   const fileName = activity.name || (path ? basename(path) : "");
   const isFolder =
-    activity.kind === "folder" || (!activity.kind && FOLDER_TOOLS.has(call.name));
+    activity.kind === "folder" ||
+    (!activity.kind &&
+      (FOLDER_TOOLS.has(call.name) ||
+        (SCOPE_PATH_TOOLS.has(call.name) && !!path && !looksLikeFile(basename(path)))));
   const narratedTargets: AgentActivityTarget[] =
     activity.targets?.length
       ? activity.targets
@@ -515,6 +540,18 @@ const StandardToolCallCard: React.FC<{
         ...activityTargets[0],
         name: activity.name || activityTargets[0].name,
       };
+  // What a search LOOKED FOR, beside where it looked.
+  //
+  // The scope chip alone left two different searches of the same folder drawing
+  // the identical row — "Search  src  3 matches · 1 file" twice over, from two
+  // calls that shared nothing but their directory. The result view has always
+  // shown the pattern in its own header; the collapsed row, which is what most
+  // of a transcript IS, never did.
+  const searchPattern = SCOPE_PATH_TOOLS.has(call.name)
+    ? typeof parsedArgs.pattern === "string"
+      ? parsedArgs.pattern.trim()
+      : ""
+    : "";
 
   // Live content preview: the file being written, pulled from the partial args.
   const streamingPreview = useMemo(() => {
@@ -562,6 +599,9 @@ const StandardToolCallCard: React.FC<{
           streamedShellArg(call.arguments),
       )
     : null;
+  // The badge's mark comes from the explorer icon pack, so the transcript and
+  // the Files panel never show two different pictures of the same thing.
+  const explorerIconPack = useSettingsStore((s) => s.explorerIconPack);
 
   // Every file view already carrying its own range makes the requested range a
   // second, weaker copy of the same fact.
@@ -572,9 +612,13 @@ const StandardToolCallCard: React.FC<{
         ([k]) =>
           !HIDDEN_ARG_KEYS.has(k) &&
           !(resultStatesRange && RANGE_ARG_KEYS.has(k)) &&
-          !(isShellTool(call.name) && SHELL_ARG_KEYS.has(k)),
+          !(isShellTool(call.name) && SHELL_ARG_KEYS.has(k)) &&
+          // The pattern now rides on the row AND heads the result view. A third
+          // copy as `pattern: …` in the arg list is the same string stated
+          // three times inside one card.
+          !(k === "pattern" && searchPattern !== ""),
       ),
-    [parsedArgs, call.name, resultStatesRange],
+    [parsedArgs, call.name, resultStatesRange, searchPattern],
   );
 
   const summary = useMemo(() => {
@@ -696,14 +740,11 @@ const StandardToolCallCard: React.FC<{
         </span>
 
         {shell && (
-          <span
-            className="agw-shell-badge"
-            data-shell-family={shell.family}
-            title={parsed.shell?.shellNote ?? shell.name}
-          >
-            <span className="agw-shell-badge-dot" aria-hidden />
-            {shell.id}
-          </span>
+          <ShellBadge
+            shell={shell}
+            packId={explorerIconPack}
+            note={parsed.shell?.shellNote}
+          />
         )}
 
         {/* One target: its name, which is the most useful thing on the row.
@@ -736,38 +777,48 @@ const StandardToolCallCard: React.FC<{
             {countLabel(activityTargets)}
           </span>
         ) : (
-          singleChip && (
+          (singleChip || searchPattern) && (
             <span className="agw-tool-targets">
-              <span className="agw-tool-chip">
-                {singleChip.kind === "folder" ? (
-                  <FolderIcon name={singleChip.name} className="agw-file-ico" />
-                ) : (
-                  <FileIcon
-                    name={basename(singleChip.path) || singleChip.name}
-                    path={singleChip.path}
-                    className="agw-file-ico"
-                  />
-                )}
-                <span
-                  style={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {singleChip.name}
-                </span>
-                {(singleChip.added || singleChip.removed) && (
-                  <span className="agw-chip-stat">
-                    {singleChip.removed ? (
-                      <span className="agw-chip-stat-del">−{singleChip.removed}</span>
-                    ) : null}
-                    {singleChip.added ? (
-                      <span className="agw-chip-stat-add">+{singleChip.added}</span>
-                    ) : null}
+              {singleChip && (
+                <span className="agw-tool-chip">
+                  {singleChip.kind === "folder" ? (
+                    <FolderIcon name={singleChip.name} className="agw-file-ico" />
+                  ) : (
+                    <FileIcon
+                      name={basename(singleChip.path) || singleChip.name}
+                      path={singleChip.path}
+                      className="agw-file-ico"
+                    />
+                  )}
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {singleChip.name}
                   </span>
-                )}
-              </span>
+                  {(singleChip.added || singleChip.removed) && (
+                    <span className="agw-chip-stat">
+                      {singleChip.removed ? (
+                        <span className="agw-chip-stat-del">−{singleChip.removed}</span>
+                      ) : null}
+                      {singleChip.added ? (
+                        <span className="agw-chip-stat-add">+{singleChip.added}</span>
+                      ) : null}
+                    </span>
+                  )}
+                </span>
+              )}
+              {searchPattern && (
+                <span
+                  className="agw-tool-chip agw-tool-chip-pattern"
+                  title={searchPattern}
+                >
+                  {searchPattern}
+                </span>
+              )}
             </span>
           )
         )}

@@ -19,6 +19,7 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
 use super::search_replace::diff_side;
+use super::streaming_targets;
 use super::{apply_write_conventions, detect_write_conventions, resolve_path_for_create};
 
 pub struct FileWriteTool {
@@ -41,16 +42,21 @@ impl ToolExecutor for FileWriteTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_write".into(),
-            description: "Create a new file or completely overwrite an existing one with the full \
-                          content you supply. Emit `path` first, before `content`, so the interface \
-                          can show the target while the file body streams. Creates parent \
+            description: format!(
+                          "Create a new file or completely overwrite an existing one with the full \
+                          content you supply. {rule} Creates parent \
                           directories automatically. `content` is REQUIRED — provide the entire \
                           file body. Use file_edit for targeted changes; set must_not_exist=true to \
-                          fail instead of overwriting if the file already exists."
-                .into(),
+                          fail instead of overwriting if the file already exists.",
+                          rule = streaming_targets::RULE,
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    // FIRST, always — and it matters more here than anywhere
+                    // else, because `content` is a whole file. Without this the
+                    // row is unlabelled for the entire write.
+                    streaming_targets::FIELD: streaming_targets::property(),
                     "path": { "type": "string", "description": "The full path of the file to write." },
                     "content": { "type": "string", "description": "The COMPLETE new content for the file (required)." },
                     "must_not_exist": { "type": "boolean", "default": false, "description": "When true, fail if the file already exists (create-only)." }
@@ -285,6 +291,24 @@ mod tests {
         FileWriteTool::new(Arc::new(NoopIdeEventSink))
     }
 
+    /// `file_write` is the tool this matters most for: `content` is an entire
+    /// file, so a late filename leaves the row unlabelled for the whole write.
+    /// It carried no announce field at all until 2026-08-20 — only prose.
+    #[test]
+    fn announces_its_target_before_the_body() {
+        let schema = noop_tool().schema();
+        let properties = schema.input_schema["properties"]
+            .as_object()
+            .expect("properties object");
+        assert_eq!(
+            properties.keys().next().map(String::as_str),
+            Some(streaming_targets::FIELD),
+        );
+        // Both tools state the ordering rule in the same words, from the same
+        // constant. Two tools wording it differently is what this replaced.
+        assert!(schema.description.contains(streaming_targets::RULE));
+    }
+
     #[test]
     fn schema_serializes_path_before_content() {
         let schema = noop_tool().schema();
@@ -294,8 +318,11 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        assert_eq!(keys.first(), Some(&"path"));
-        assert_eq!(keys.get(1), Some(&"content"));
+        // Two things name the file, and both precede the body: the announce
+        // field (which survives a model sorting its keys) and `path` itself.
+        assert_eq!(keys.first(), Some(&streaming_targets::FIELD));
+        assert_eq!(keys.get(1), Some(&"path"));
+        assert_eq!(keys.get(2), Some(&"content"));
     }
 
     #[tokio::test]

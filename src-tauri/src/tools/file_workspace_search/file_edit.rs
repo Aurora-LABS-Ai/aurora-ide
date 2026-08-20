@@ -36,6 +36,7 @@ use crate::tools::shell_editor_todo::IdeEventSink;
 
 use super::resolve_path;
 use super::search_replace::{diff_side, emit_post_write, render_response};
+use super::streaming_targets;
 
 pub struct FileEditTool {
     sink: Arc<dyn IdeEventSink>,
@@ -57,11 +58,9 @@ impl ToolExecutor for FileEditTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_edit".into(),
-            description: "Edit files by exact-text find-and-replace. \
-                          ALWAYS emit the file path(s) BEFORE any edit text, so the interface can \
-                          show which files are being edited while the arguments stream: in the \
-                          single-edit form emit `path` first, before old_string/new_string; in the \
-                          batch form emit `target_paths` first with every file path. \
+            description: format!(
+                          "Edit files by exact-text find-and-replace. \
+                          {rule} \
                           Single edit: pass path + old_string + new_string. \
                           Many edits to ONE file: pass `edits` (an array) plus the top-level `path`. \
                           Edits across MULTIPLE files in ONE call: give each item in `edits` its own \
@@ -71,17 +70,16 @@ impl ToolExecutor for FileEditTool {
                           exactly and be unique unless replace_all=true. Copy old_string from text \
                           you have actually seen (file_read, or a search result that returned the \
                           line). replace_all=true additionally REQUIRES that the file was read this \
-                          session, because it rewrites occurrences you have not seen."
-                .into(),
+                          session, because it rewrites occurrences you have not seen.",
+                          rule = streaming_targets::RULE,
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "target_paths": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Streaming UI metadata. Emit this FIRST — before path/old_string/edits — listing every file this call will edit (also for a single file). It does not change which files are edited."
-                    },
-                    "path": { "type": "string", "description": "The file to edit. Emit it before old_string/new_string. Required for the single-edit form; in the batch form it is the DEFAULT path for edits that don't set their own." },
+                    // FIRST, always. See `streaming_targets` for why the name
+                    // has to start with a letter this early in the alphabet.
+                    streaming_targets::FIELD: streaming_targets::property(),
+                    "path": { "type": "string", "description": "The file to edit. Required for the single-edit form; in the batch form it is the DEFAULT path for edits that don't set their own." },
                     "old_string": { "type": "string", "description": "Single-edit form: exact text to find." },
                     "new_string": { "type": "string", "description": "Single-edit form: replacement text (may be empty to delete)." },
                     "replace_all": { "type": "boolean", "default": false, "description": "Single-edit form: replace every occurrence." },
@@ -719,15 +717,41 @@ mod tests {
         let tool = FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
         let schema = tool.schema();
         assert_eq!(
-            schema.input_schema["properties"]["target_paths"]["items"]["type"],
+            schema.input_schema["properties"][streaming_targets::FIELD]["items"]["type"],
             "string"
         );
         let first_property = schema.input_schema["properties"]
             .as_object()
             .and_then(|properties| properties.keys().next())
             .map(String::as_str);
-        assert_eq!(first_property, Some("target_paths"));
-        assert!(schema.description.contains("emit `target_paths` first"));
+        assert_eq!(first_property, Some(streaming_targets::FIELD));
+        assert!(schema.description.contains(streaming_targets::RULE));
+    }
+
+    /// The property order Aurora authors is only worth anything if it is still
+    /// the order on the wire. `provider_kernel_adapter` copies `input_schema`
+    /// into the request body verbatim, so this reads the order back OUT OF THE
+    /// SERIALIZED STRING rather than out of the in-memory map — which is what
+    /// would break first if `serde_json`'s `preserve_order` feature were ever
+    /// dropped, silently and everywhere at once.
+    #[test]
+    fn authored_property_order_survives_serialization() {
+        let tool = FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
+        let body = serde_json::to_string(&serde_json::json!({
+            "input_schema": tool.schema().input_schema,
+        }))
+        .expect("serialize");
+        let announce = body
+            .find(&format!("\"{}\"", streaming_targets::FIELD))
+            .expect("announce field present");
+        for later in ["\"path\"", "\"old_string\"", "\"new_string\"", "\"edits\""] {
+            let at = body.find(later).expect("property present");
+            assert!(
+                announce < at,
+                "{} must reach the wire before {later}",
+                streaming_targets::FIELD,
+            );
+        }
     }
 
     #[tokio::test]

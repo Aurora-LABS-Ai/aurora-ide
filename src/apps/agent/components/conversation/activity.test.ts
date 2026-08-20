@@ -102,6 +102,8 @@ const cases: Array<{
     },
   },
   {
+    // The old spelling. Threads already on disk carry it, and a replayed
+    // transcript has to render as faithfully as a live one.
     tool: "file_edit",
     args:
       '{"target_paths":["tests/a.test.ts","tests/b.test.ts","tests/c.test.ts","tests/d.test.ts"],"edits":[',
@@ -120,14 +122,47 @@ const cases: Array<{
     },
   },
   {
+    tool: "file_edit",
+    args: '{"affected_paths":["tests/a.test.ts","tests/b.test.ts"],"edits":[',
+    activity: {
+      label: "Editing a.test.ts +1",
+      verb: "Editing",
+      name: "a.test.ts +1",
+      path: "tests/a.test.ts",
+      kind: "file",
+      targets: [
+        { name: "a.test.ts", path: "tests/a.test.ts", kind: "file" },
+        { name: "b.test.ts", path: "tests/b.test.ts", kind: "file" },
+      ],
+    },
+  },
+  {
+    // The case the rename exists for. `content` sorts before `path`, so a model
+    // emitting keys alphabetically used to leave this row unlabelled for the
+    // whole write. `affected_paths` sorts ahead of both.
+    tool: "file_write",
+    args: '{"affected_paths":["src/lib/add.tsx"],"content":"export const a = 1;\\nexport',
+    activity: {
+      label: "Writing add.tsx",
+      verb: "Writing",
+      name: "add.tsx",
+      path: "src/lib/add.tsx",
+      kind: "file",
+      targets: [{ name: "add.tsx", path: "src/lib/add.tsx", kind: "file" }],
+    },
+  },
+  // Targetless tools still name their act. The header prints `verb` only ahead
+  // of a named target, so it stays invisible there — the tool card is what
+  // needs it, to narrate a live call whose path has not arrived yet.
+  {
     tool: "shell_execute",
     args: '{"command":"pnpm test","cwd":"E:/work',
-    activity: { label: "Running `pnpm test`" },
+    activity: { label: "Running `pnpm test`", verb: "Running" },
   },
   {
     tool: "grep",
     args: '{"pattern":"ToolCall","path":"src',
-    activity: { label: 'Searching "ToolCall"' },
+    activity: { label: 'Searching "ToolCall"', verb: "Searching" },
   },
   {
     tool: "auroro_websearch",
@@ -137,42 +172,45 @@ const cases: Array<{
   {
     tool: "shell_kill",
     args: '{"processId":"bg-42","pid":',
-    activity: { label: "Stopping a process `bg-42`" },
+    activity: { label: "Stopping a process `bg-42`", verb: "Stopping a process" },
   },
   {
     tool: "browser_navigate",
     args: '{"url":"http://localhost:1420","wait":',
-    activity: { label: "Browsing to http://localhost:1420" },
+    activity: { label: "Browsing to http://localhost:1420", verb: "Browsing to" },
   },
   {
     tool: "browser_click",
     args: '{"selector":"button.save","timeout":',
-    activity: { label: 'Clicking element "button.save"' },
+    activity: { label: 'Clicking element "button.save"', verb: "Clicking" },
   },
   {
     tool: "browser_fill",
     args: '{"selector":"#email","value":"person@example.com',
-    activity: { label: 'Typing into "#email"' },
+    activity: { label: 'Typing into "#email"', verb: "Typing into" },
   },
   {
     tool: "browser_scroll",
     args: '{"selector":"#pricing","amountPx":',
-    activity: { label: 'Scrolling to "#pricing"' },
+    activity: { label: 'Scrolling to "#pricing"', verb: "Scrolling" },
   },
   {
     tool: "browser_screenshot",
     args: '{"selector":"#app","format":',
-    activity: { label: 'Capturing "#app"' },
+    activity: { label: 'Capturing "#app"', verb: "Capturing" },
   },
   {
     tool: "browser_get_console_logs",
     args: '{"level":"error","sinceMs":',
-    activity: { label: "Reading console logs (error)" },
+    activity: {
+      label: "Reading console logs (error)",
+      verb: "Reading console logs",
+    },
   },
   {
     tool: "browser_inspect_element",
     args: '{"selector":"#status","include":',
-    activity: { label: 'Inspecting element "#status"' },
+    activity: { label: 'Inspecting element "#status"', verb: "Inspecting" },
   },
 ];
 

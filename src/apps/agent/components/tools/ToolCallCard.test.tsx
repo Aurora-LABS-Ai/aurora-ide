@@ -173,6 +173,122 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).toContain("Writing… 3 lines");
   });
 
+  it("narrates a pathless streaming call with its OWN verb, not a generic one", () => {
+    // Same situation as above for a tool whose verb is not "Writing". The card
+    // reads `activity.verb`, which used to be dropped on the no-target path —
+    // so an Edit row narrated itself as "Writing…" while its title said "Edit".
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        isActivelyStreaming
+        call={{
+          id: "edit-streaming",
+          name: "file_edit",
+          arguments: '{"new_string":"line one\\nline two',
+        }}
+      />,
+    );
+
+    expect(html).toContain("Editing… 2 lines");
+    expect(html).not.toContain("Writing…");
+  });
+
+  it("draws a search scope as the folder it is, using the reader's icon pack", () => {
+    // `grep`'s `path` says WHERE to look. It is a directory far more often than
+    // a file, and asking the icon set for a file handed back the blank page —
+    // the wrong picture, and one word after "Search" it read as the term.
+    const folderScope = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "grep-folder",
+          name: "grep",
+          arguments: JSON.stringify({
+            path: "src/integrations",
+            pattern: "providerProfiles",
+          }),
+          result: JSON.stringify({ matches: [], pattern: "providerProfiles" }),
+        }}
+      />,
+    );
+    // The extension still decides: a path naming a file keeps its file icon.
+    const fileScope = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "grep-file",
+          name: "grep",
+          arguments: JSON.stringify({
+            path: "src/api/client.rs",
+            pattern: "ReasoningReplay",
+          }),
+          result: JSON.stringify({ matches: [], pattern: "ReasoningReplay" }),
+        }}
+      />,
+    );
+
+    expect(folderScope).toContain("/material-icons/folder-connection.svg");
+    expect(folderScope).not.toContain("/material-icons/file.svg");
+    expect(fileScope).toContain("/material-icons/rust.svg");
+  });
+
+  it("says what a search looked FOR beside where it looked", () => {
+    // Two searches of one folder used to draw the identical row. The pattern is
+    // the only thing telling them apart, and the collapsed row is most of a
+    // transcript.
+    const render = (pattern: string) =>
+      renderToStaticMarkup(
+        <ToolCallCard
+          call={{
+            id: `grep-${pattern}`,
+            name: "grep",
+            arguments: JSON.stringify({ path: "src/integrations", pattern }),
+            result: JSON.stringify({ matches: [], pattern }),
+          }}
+        />,
+      );
+
+    const first = render("providerProfiles");
+    const second = render("extraHeaders");
+
+    expect(first).toContain("agw-tool-chip-pattern");
+    expect(first).toContain("providerProfiles");
+    expect(second).toContain("extraHeaders");
+    expect(first).not.toEqual(second);
+  });
+
+  it("states a search pattern once per card, never three times", () => {
+    // It heads the result view and now rides the row; a third copy in the raw
+    // arg list is the same string stated three times inside one card.
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "grep-dupes",
+          name: "grep",
+          arguments: JSON.stringify({ path: "src", pattern: "UNIQUE_TOKEN" }),
+          result: JSON.stringify({ matches: [], pattern: "UNIQUE_TOKEN" }),
+        }}
+      />,
+    );
+
+    expect(html).not.toContain("pattern:</span>");
+  });
+
+  it("shows the pattern even when a search names no path at all", () => {
+    // No `path` means the whole workspace — there is no scope chip to hang the
+    // pattern off, and the row would otherwise say only "Search".
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "grep-rootless",
+          name: "grep",
+          arguments: JSON.stringify({ pattern: "BUILTIN_TOOL_COUNT" }),
+          result: JSON.stringify({ matches: [], pattern: "BUILTIN_TOOL_COUNT" }),
+        }}
+      />,
+    );
+
+    expect(html).toContain("agw-tool-chip-pattern");
+    expect(html).toContain("BUILTIN_TOOL_COUNT");
+  });
+
   it("badges a settled command with the shell that actually ran", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard

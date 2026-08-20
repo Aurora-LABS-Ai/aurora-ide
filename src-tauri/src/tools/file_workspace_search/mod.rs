@@ -80,6 +80,10 @@ pub mod read_tracker;
 /// registered (its job is now `file_edit`); the module survives for its
 /// `render_response` / `emit_post_write` / `diff_side` helpers.
 pub mod search_replace;
+/// Internal: the single definition of how a write tool announces which files
+/// it is about to touch, so the agent window can label the row while the
+/// arguments are still streaming. Shared by `file_edit` and `file_write`.
+pub mod streaming_targets;
 pub mod workspace_tree;
 
 /// Register every tool in this bucket against `reg`. Idempotent: a

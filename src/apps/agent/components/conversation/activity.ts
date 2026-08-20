@@ -28,7 +28,14 @@ export interface AgentActivityTarget {
 export interface AgentActivity {
   /** Full fallback line, e.g. "Reading db-client.ts", "Thinking…". */
   label: string;
-  /** Leading verb when there's a named target, e.g. "Reading". */
+  /**
+   * The act, in the present continuous — "Reading", "Editing", "Searching".
+   *
+   * Set whenever the tool has one, target or not. The header only prints it
+   * ahead of a named target, but the tool card uses it to narrate a call whose
+   * path has not streamed in yet, and that call is precisely the one with no
+   * target to hang it on.
+   */
   verb?: string;
   /** The target's display name (basename), e.g. "db-client.ts" / "src". */
   name?: string;
@@ -174,7 +181,7 @@ function pathOf(args: Record<string, unknown>): string | null {
 }
 
 /** `.ext` present (and not a leading-dot-only name like ".env"). */
-function looksLikeFile(base: string): boolean {
+export function looksLikeFile(base: string): boolean {
   const i = base.lastIndexOf(".");
   return i > 0 && i < base.length - 1;
 }
@@ -200,6 +207,28 @@ function editPaths(args: Record<string, unknown>): string[] {
   });
 }
 
+/**
+ * The field a write tool announces its files through, current name first.
+ *
+ * Rust owns this contract — `tools/file_workspace_search/streaming_targets.rs`,
+ * which also explains why the name has to start with an `a`. The old name is
+ * still read because threads already on disk carry it inside their tool calls,
+ * and a replayed transcript has to render as faithfully as a live one.
+ */
+const ANNOUNCE_KEYS = ["affected_paths", "target_paths"] as const;
+
+function announcedPaths(args: Record<string, unknown>): string[] {
+  for (const key of ANNOUNCE_KEYS) {
+    const value = args[key];
+    if (!Array.isArray(value)) continue;
+    const paths = value.filter(
+      (path): path is string => typeof path === "string" && path.trim() !== "",
+    );
+    if (paths.length > 0) return paths;
+  }
+  return [];
+}
+
 function targetsOf(
   name: string,
   args: Record<string, unknown>,
@@ -218,16 +247,16 @@ function targetsOf(
     name === "multi_search_replace"
   ) {
     const editTargets = editPaths(args);
-    const announcedTargets = Array.isArray(args.target_paths)
-      ? args.target_paths.filter((path): path is string => typeof path === "string")
-      : [];
     paths =
       editTargets.length > 0
         ? [...editTargets, ...streamedPaths]
-        : [...announcedTargets, ...streamedPaths];
+        : [...announcedPaths(args), ...streamedPaths];
   } else {
+    // `file_write` lands here, and it is the tool that needs the announcement
+    // most: `content` is a whole file, so a `path` emitted after it leaves the
+    // row unlabelled for the entire write.
     const path = pathOf(args);
-    paths = path ? [path] : streamedPaths;
+    paths = path ? [path] : [...announcedPaths(args), ...streamedPaths];
   }
 
   const seen = new Set<string>();
@@ -368,8 +397,13 @@ function activityArgs(
     // nothing, so a plain single path is never overwritten by a stray match.
     const pathArray = completedToolStringArrayArgument(argsJson, "path");
     if (pathArray.length > 0 && typeof args.path !== "string") args.path = pathArray;
-    const targetPaths = completedToolStringArrayArgument(argsJson, "target_paths");
-    if (targetPaths.length > 0) args.target_paths = targetPaths;
+    for (const key of ANNOUNCE_KEYS) {
+      const announced = completedToolStringArrayArgument(argsJson, key);
+      if (announced.length > 0) {
+        args[key] = announced;
+        break;
+      }
+    }
     return { args, streamedPaths };
   }
 }
@@ -446,8 +480,14 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
   }
 
   // Everything else (grep, shell, web, still-partial args) → text only.
+  //
+  // `verb` rides along even with no target. A write whose `content` streams
+  // BEFORE its `path` (models do this constantly) lands here, and the tool card
+  // reads `activity.verb` for its live summary — dropping it made an `Edit` row
+  // narrate itself as "Writing… 15 lines", two different verbs for one action
+  // eight pixels apart.
   const arg = labelArg(name, args);
-  if (verb) return { label: arg ? `${verb} ${arg}` : `${verb}…` };
+  if (verb) return { label: arg ? `${verb} ${arg}` : `${verb}…`, verb };
   const display = getProfessionalToolName(name);
   return { label: arg ? `${display}: ${arg}` : `${display}…` };
 }

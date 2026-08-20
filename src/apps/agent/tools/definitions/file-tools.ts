@@ -113,7 +113,6 @@ export const fileEditTool: ToolDefinition = {
 Single edit: pass path + old_string + new_string.
 Many edits to ONE file: pass an "edits" array plus the top-level "path".
 Edits across MULTIPLE files in ONE call: give each item in "edits" its own "path" (the top-level "path" is the default for items that omit it).
-For a multi-file batch, emit "target_paths" first with every file path so the interface can show all targets before the edit bodies stream.
 
 The whole batch is ATOMIC: every edit matches against its file's ORIGINAL snapshot, and if any edit fails NO file is changed.
 
@@ -129,11 +128,10 @@ Examples:
     parameters: {
       type: 'object',
       properties: {
-        target_paths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Streaming UI metadata for a multi-file batch. Emit this field first with every file that edits[] will target. It does not change which files are edited.',
-        },
+        // No streaming-announce field here on purpose. `nativeRustOwned` keeps
+        // this whole definition out of the model's roster, so a copy of it
+        // would be text nothing reads and everything drifts from. Rust owns it:
+        // `tools/file_workspace_search/streaming_targets.rs`.
         path: {
           type: 'string',
           description: 'The file to edit. Required for the single-edit form. In the batch form it is the DEFAULT path for edits that do not set their own "path".',

@@ -34,12 +34,19 @@ fn edit_results_drop_their_content_echo_from_model_history() {
     assert!(parsed.get("oldContent").is_none(), "echo dropped");
     assert!(parsed.get("newContent").is_none(), "echo dropped");
     assert_eq!(parsed["linesAdded"], 4, "signal kept");
+    assert_eq!(
+        parsed["message"], "Edited 1 file (2 replacements)",
+        "signal kept"
+    );
+    // The strip leaves NO note behind. A note would explain an absence the
+    // model cannot perceive — it is given a schema for tool inputs, never for
+    // tool results — while the counts above already prove the edit landed. The
+    // one rule a note could usefully carry holds for the whole conversation,
+    // so paying ~70 tokens per result to restate it is the exact duplication
+    // this function exists to delete.
     assert!(
-        parsed["contentEcho"]
-            .as_str()
-            .unwrap()
-            .contains("file_read"),
-        "elision names its recovery"
+        parsed.get("contentEcho").is_none(),
+        "the elision is silent, got: {parsed}"
     );
 }
 
@@ -63,6 +70,42 @@ fn multi_file_edit_results_drop_per_file_echo() {
         assert!(file.get("newContent").is_none());
         assert!(file.get("path").is_some(), "identity kept");
     }
+    // Silent for the batch shape too — neither at the top level nor per entry.
+    assert!(parsed.get("contentEcho").is_none(), "got: {parsed}");
+    assert!(
+        parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|file| file.get("contentEcho").is_none()),
+        "got: {parsed}"
+    );
+}
+
+/// `file_write` goes through the same strip, and keeps the measured facts that
+/// are the actual reason a result is worth sending back at all.
+#[test]
+fn writes_keep_their_measurements_and_lose_only_the_echo() {
+    let raw = serde_json::json!({
+        "success": true,
+        "message": "File written: notes.md",
+        "path": "notes.md",
+        "bytes": 34,
+        "linesAdded": 3,
+        "linesRemoved": 0,
+        "oldContent": "old",
+        "newContent": "new",
+    })
+    .to_string();
+
+    let out = truncate_tool_content("file_write", raw);
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("oldContent").is_none());
+    assert!(parsed.get("newContent").is_none());
+    assert!(parsed.get("contentEcho").is_none(), "got: {parsed}");
+    assert_eq!(parsed["bytes"], 34, "measurement kept");
+    assert_eq!(parsed["linesAdded"], 3, "measurement kept");
+    assert_eq!(parsed["success"], true, "outcome kept");
 }
 
 /// A failure result has no echo to strip and must pass through untouched —
@@ -3323,6 +3366,45 @@ async fn context_size_anchors_on_the_last_measured_request() {
     let delta = estimate_message_tokens(&follow_up, ReasoningReplay::Dropped);
     session.append_message(follow_up);
     assert_eq!(runtime.projected_request_tokens(&session), 150_500 + delta);
+}
+
+/// A provider that counts the same conversation two different ways.
+///
+/// Gateways that fan a model out across several upstream accounts return
+/// different token counts for a byte-identical request depending on which
+/// backend served it — measured on one live endpoint as a clean two-band
+/// split, 12,802 vs 14,161 for the same bytes. Within a compaction epoch the
+/// request only ever grows, so a reading that comes back SMALLER than the one
+/// before it is measurement noise, not the context shrinking. Anchoring on
+/// whichever arrived last made the reported size jump between the bands every
+/// few requests and, on the low band, under-report how full the window is.
+#[tokio::test]
+async fn a_smaller_later_measurement_does_not_shrink_the_reported_context() {
+    let runtime = bare_runtime();
+    let mut session = Session::new("t-anchor-bands");
+    session.append_message(user_with_text("start", 0));
+
+    let mut high = assistant_with_text("served by the counting backend", 1);
+    high.usage = Some(measured(120_000, 0, 30_000, 500));
+    session.append_message(high);
+
+    let between = user_with_text("carry on", 2);
+    let delta = estimate_message_tokens(&between, ReasoningReplay::Dropped);
+    session.append_message(between);
+
+    // The next request is necessarily LARGER — it carries everything the
+    // previous one did plus `between` — yet this backend reports 20k fewer.
+    let mut low = assistant_with_text("served by the other backend", 3);
+    low.usage = Some(measured(100_000, 0, 30_000, 500));
+    let low_delta = estimate_message_tokens(&low, ReasoningReplay::Dropped);
+    session.append_message(low);
+
+    // The high reading, carried forward across everything appended since, is
+    // the honest floor. The low reading is discarded, not averaged.
+    assert_eq!(
+        runtime.projected_request_tokens(&session),
+        150_500 + delta + low_delta
+    );
 }
 
 /// The measurement a compaction invalidates.

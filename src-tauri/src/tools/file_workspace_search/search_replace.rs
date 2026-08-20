@@ -246,10 +246,18 @@ pub(crate) fn render_response(
                 "path": raw_path,
                 "fullPath": full_path,
                 "failedAt": failed_at,
+                // ZERO matches. The recovery is to get the real text, not to
+                // send more of the text that was already wrong — "make it
+                // unique" is the answer to the OPPOSITE failure (too many
+                // matches, `NotUnique` below) and points squarely away from the
+                // problem. Padding an old_string that is absent with more
+                // context that is also absent just fails again, longer.
                 "hint": if multi {
                     "The text still needs to match the current file content exactly."
                 } else {
-                    "Add more surrounding code to old_string to make it unique in the file."
+                    "Nothing in the file matched. Copy old_string verbatim from a file_read of \
+                     this path — whitespace and indentation included — rather than adding more \
+                     context around a guess."
                 },
             }))
             .unwrap()
@@ -356,5 +364,21 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["success"], false);
         assert!(parsed["error"].as_str().unwrap().contains("Could not find"));
+
+        // A ZERO-match failure must not be handed the answer to the too-many-
+        // matches failure. Aurora's own harness run caught this: the error body
+        // correctly said "check indentation or surrounding context" while the
+        // hint beside it said to make old_string unique, which is advice for
+        // the opposite problem and points away from the fix.
+        let hint = parsed["hint"].as_str().unwrap();
+        assert!(
+            !hint.contains("unique"),
+            "zero matches is not an ambiguity problem, got: {hint}"
+        );
+        assert!(
+            hint.contains("file_read"),
+            "recovery is to fetch the real text, got: {hint}"
+        );
+        assert!(parsed["occurrences"].is_null(), "nothing matched");
     }
 }

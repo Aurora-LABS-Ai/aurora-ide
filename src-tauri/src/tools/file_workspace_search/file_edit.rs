@@ -574,10 +574,17 @@ fn render_multi_failure(
     response: SearchReplaceResponse,
 ) -> String {
     let (error, failed_at, occurrences) = match response {
+        // `failed_at` counts within THIS FILE's edits, not across the batch —
+        // it is `index + 1` over the replacements planned for one path. Read as
+        // a batch position it points at the wrong edit entirely, and a bare
+        // "(edit 1)" beside a multi-file failure invites exactly that. Naming
+        // the scope in the string is cheaper than being misread on a failure
+        // path, which is the one place the reader is already off balance.
         SearchReplaceResponse::NotFound { failed_at } => (
             format!(
-                "{raw_path} (edit {failed_at}): could not find the specified text. Line endings \
-                 are handled automatically; check indentation or surrounding context."
+                "{raw_path} (this file's edit {failed_at}): could not find the specified text. \
+                 Line endings are handled automatically; check indentation or surrounding \
+                 context."
             ),
             failed_at,
             None,
@@ -587,8 +594,8 @@ fn render_multi_failure(
             occurrences,
         } => (
             format!(
-                "{raw_path} (edit {failed_at}): found {occurrences} occurrences. Add more context \
-                 or set replace_all=true."
+                "{raw_path} (this file's edit {failed_at}): found {occurrences} occurrences. Add \
+                 more context or set replace_all=true."
             ),
             failed_at,
             Some(occurrences),
@@ -598,8 +605,8 @@ fn render_multi_failure(
             conflicting_replacement,
         } => (
             format!(
-                "{raw_path} (edit {failed_at}): overlaps edit {conflicting_replacement} in the \
-                 same file. Combine the nearby edits."
+                "{raw_path} (this file's edit {failed_at}): overlaps its edit \
+                 {conflicting_replacement} in the same file. Combine the nearby edits."
             ),
             failed_at,
             None,
@@ -710,6 +717,46 @@ mod tests {
     fn mark_read(ctx: &ToolContext, abs: &std::path::Path) {
         let canonical = dunce::canonicalize(abs).unwrap();
         super::super::read_tracker::record(&ctx.thread_id, &canonical.to_string_lossy());
+    }
+
+    /// A batch failure numbers the edit WITHIN its file (`index + 1` over that
+    /// one path's replacements), never across the whole batch. Aurora's own
+    /// harness run read a bare "(edit 1)" as a batch position and concluded the
+    /// index was zero-based; it was not, but the string gave it no way to tell.
+    /// The number was always right, so this pins the scope, not the arithmetic.
+    #[test]
+    fn a_batch_failure_says_which_edit_list_it_is_counting() {
+        for (response, expected) in [
+            (
+                SearchReplaceResponse::NotFound { failed_at: 1 },
+                "could not find",
+            ),
+            (
+                SearchReplaceResponse::NotUnique {
+                    failed_at: 1,
+                    occurrences: 2,
+                },
+                "found 2 occurrences",
+            ),
+            (
+                SearchReplaceResponse::Overlap {
+                    failed_at: 1,
+                    conflicting_replacement: 2,
+                },
+                "overlaps",
+            ),
+        ] {
+            let rendered = render_multi_failure("src/math.ts", "E:/ws/src/math.ts", response);
+            let parsed: Value = serde_json::from_str(&rendered).unwrap();
+            let error = parsed["error"].as_str().unwrap();
+            assert!(
+                error.contains("this file's edit 1"),
+                "every batch failure names what the ordinal counts, got: {error}"
+            );
+            assert!(error.contains(expected), "got: {error}");
+            assert_eq!(parsed["failedAt"], 1, "the number itself was always right");
+            assert_eq!(parsed["multiFile"], true);
+        }
     }
 
     #[test]

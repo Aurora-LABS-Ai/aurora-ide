@@ -182,9 +182,7 @@ pub fn build_turn_input(
         }
     }
 
-    let ends_on_tool_result = messages
-        .last()
-        .is_some_and(|m| m.role == MessageRole::Tool);
+    let ends_on_tool_result = messages.last().is_some_and(|m| m.role == MessageRole::Tool);
 
     let user_text = match active_index {
         Some(index) => text_of(&messages[index].blocks),
@@ -343,7 +341,9 @@ mod tests {
 
     #[test]
     fn an_empty_system_prompt_adds_no_opening_pair() {
-        assert!(build_turn_input(None, &[user("hi")]).root_messages.is_empty());
+        assert!(build_turn_input(None, &[user("hi")])
+            .root_messages
+            .is_empty());
         assert!(build_turn_input(Some("   "), &[user("hi")])
             .root_messages
             .is_empty());
@@ -381,7 +381,10 @@ mod tests {
         assert_eq!(input.root_messages[1]["content"][0]["type"], "tool-call");
         assert_eq!(input.root_messages[1]["content"][0]["toolCallId"], "call_1");
         assert_eq!(input.root_messages[2]["role"], "tool");
-        assert_eq!(input.root_messages[2]["content"][0]["result"], "fn main() {}");
+        assert_eq!(
+            input.root_messages[2]["content"][0]["result"],
+            "fn main() {}"
+        );
     }
 
     #[test]

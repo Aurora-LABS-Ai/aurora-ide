@@ -337,6 +337,10 @@ function toolIcon(name: string): AgentIconName {
   // shows the book under a lens.
   if (lower === "aurora_skill_load") return "book";
   if (lower === "aurora_skill_search") return "skill-search";
+  // Searching the deferred tool roster: the Tool-loading layer stack under a
+  // lens, the same subject-under-magnifier pairing as skill-search. Without
+  // this it fell through to the generic `diff` fallback and wore a file mark.
+  if (lower === "tool_search") return "tool-search";
   // Artifacts live in the Canvas, and `panel-right` is what opens it everywhere
   // else in the window — the dock tab, the rail, the command centre.
   if (lower === "read_artifact" || lower === "present_artifact") return "panel-right";

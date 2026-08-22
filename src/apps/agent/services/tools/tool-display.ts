@@ -38,6 +38,10 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // name wearing title case.
   terminal_list: "Open Terminals",
   terminal_read: "Read Terminal",
+  // The deferred-roster fetch (Settings → Tool loading). Named for what the
+  // reader sees happening — the agent pulling in tools it needs — not the
+  // internal id, which the fallback would title-case into "Tool Search".
+  tool_search: "Load Tools",
   todo: "Task List",
   // Only ever seen when the call was REJECTED — an accepted `chapter` renders as
   // a heading in the transcript, not a tool card. The label has to make sense in

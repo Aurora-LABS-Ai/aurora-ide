@@ -27,7 +27,11 @@ vi.mock("@/kernel/lib/ipc/tauri", () => ({
   readFileContent: readFileContentMock,
 }));
 
-import { composeAgentSystemPrompt } from "@/apps/agent/services/runtime/agent-prompt";
+import {
+  composeAgentSystemPrompt,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+} from "@/apps/agent/services/runtime/agent-prompt";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   deleteSkillFromDisk,
   extractPreviewLines,
@@ -488,6 +492,68 @@ Use 2-space indentation.`;
     // Default-off: no skill is auto-active.
     expect(composed.enabledSkills).toHaveLength(0);
     expect(composed.activeSkills).toHaveLength(0);
+  });
+
+  it("keeps the volatile sections behind the cache boundary", async () => {
+    // Both the mode section and the MCP summary change WHILE a conversation is
+    // open, and every provider Aurora talks to caches on the longest common
+    // prefix. They used to sit at positions 1 and last inside one cached
+    // block, so a /plan or an MCP server connecting re-billed the whole system
+    // prompt. Measured on kenari/minimax-m3 with a 7.2k-token prompt: 7,280
+    // tokens billed at a 1.5% hit rate before, 96 at 98.7% after.
+    const composed = await composeAgentSystemPrompt({
+      executionMode: "plan",
+      promptContext: { userMessage: "hello" },
+      mcpSummary: "## MCP\nConnected server summary",
+    });
+
+    const [staticHalf, dynamicHalf, ...extra] =
+      composed.systemPrompt.split(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(extra).toHaveLength(0);
+    expect(dynamicHalf).toBeDefined();
+
+    // The identity and the doctrine are the cacheable prefix.
+    expect(staticHalf).toContain("## Skill System");
+    // Both volatile sections landed after the marker.
+    expect(dynamicHalf).toContain("Connected server summary");
+    expect(staticHalf).not.toContain("Connected server summary");
+  });
+
+  it("omits the boundary entirely when nothing dynamic exists", async () => {
+    // A trailing marker with an empty tail would make the Anthropic adapter
+    // emit an empty text block, which is a 400.
+    const composed = await composeAgentSystemPrompt({
+      promptContext: { userMessage: "hello" },
+    });
+    const halves = composed.systemPrompt.split(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    // The mode section always exists, so there is always a dynamic half; what
+    // must never happen is a marker with nothing after it.
+    if (halves.length > 1) {
+      expect(halves[1]?.trim()).not.toBe("");
+    }
+  });
+
+  it("injects only the ACTIVE global-instruction set, and none when none is active", async () => {
+    useSettingsStore.setState({
+      globalInstructionProfiles: [
+        { id: "one", name: "Default", text: "INACTIVE-SET-RULES" },
+        { id: "two", name: "Reviewer", text: "ACTIVE-SET-RULES" },
+      ],
+      activeGlobalInstructionProfileId: "two",
+    });
+    const composed = await composeAgentSystemPrompt({
+      promptContext: { userMessage: "hello" },
+    });
+    expect(composed.systemPrompt).toContain("<user_global_instructions>");
+    expect(composed.systemPrompt).toContain("ACTIVE-SET-RULES");
+    // The other persona exists but is switched off — it must not leak.
+    expect(composed.systemPrompt).not.toContain("INACTIVE-SET-RULES");
+
+    useSettingsStore.setState({ activeGlobalInstructionProfileId: "" });
+    const none = await composeAgentSystemPrompt({
+      promptContext: { userMessage: "hello" },
+    });
+    expect(none.systemPrompt).not.toContain("<user_global_instructions>");
   });
 
   it("adds plan mode restrictions to the system prompt", async () => {

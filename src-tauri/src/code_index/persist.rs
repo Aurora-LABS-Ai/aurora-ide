@@ -20,7 +20,11 @@ use std::path::{Path, PathBuf};
 /// Bump when the packed layout or extraction semantics change. A cache written
 /// by an older Aurora is discarded and rebuilt rather than reused with stale
 /// facts — the rebuild is sub-second, so there is never a reason to migrate it.
-pub const FORMAT_VERSION: u32 = 7;
+///
+/// v9: symbols carry bounded declaration signatures and documentation. A v8
+/// cache has no metadata columns, so it must rebuild rather than answer an
+/// explicit definition lookup without the new fields.
+pub const FORMAT_VERSION: u32 = 9;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.
@@ -35,8 +39,8 @@ pub struct Packed {
     /// caller names — they overlap heavily, so one table beats four.
     pub names: Vec<String>,
     pub kinds: Vec<String>,
-    /// `[name, kind, file, line, col, container, exported]`
-    pub symbols: Vec<[u32; 7]>,
+    /// `[name, kind, file, line, col, container, exported, signature, docs]`
+    pub symbols: Vec<[u32; 9]>,
     /// `[name, kind, file, line, col, from]`
     pub refs: Vec<[u32; 6]>,
     /// `[file, local, imported, module]`. Module specifiers repeat once per
@@ -105,6 +109,8 @@ pub fn pack(idx: &CodeIndex) -> Packed {
                 s.col,
                 names.put_opt(s.container.as_ref()),
                 u32::from(s.exported),
+                names.put_opt(s.signature.as_ref()),
+                names.put_opt(s.documentation.as_ref()),
             ]
         })
         .collect();
@@ -170,6 +176,8 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
                 col: r[4],
                 container: get_opt(&p.names, r[5]),
                 exported: r[6] != 0,
+                signature: get_opt(&p.names, r[7]),
+                documentation: get_opt(&p.names, r[8]),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -241,7 +249,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("a.rs"),
-            "pub struct Session;\nimpl Session { pub fn append(&self) { flush(); } }\nfn flush() {}\n",
+            "pub struct Session;\nimpl Session {\n/// Appends one entry.\npub fn append(&self) { flush(); }\n}\nfn flush() {}\n",
         )
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
@@ -269,6 +277,8 @@ mod tests {
         let d = back.definitions("append");
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].container.as_deref(), Some("Session"));
+        assert_eq!(d[0].signature.as_deref(), Some("pub fn append(&self)"));
+        assert_eq!(d[0].documentation.as_deref(), Some("Appends one entry."));
         // The derived lookups are rebuilt on unpack, not persisted — a load
         // that skipped that step would return empty rather than fail loudly.
         assert!(!back.references("flush").is_empty());
@@ -276,7 +286,7 @@ mod tests {
 
     #[test]
     fn interning_actually_shrinks_the_payload() {
-        let (dir, idx) = fixture_index();
+        let (_dir, idx) = fixture_index();
         let packed = serde_json::to_vec(&pack(&idx)).unwrap().len();
         let naive = serde_json::to_vec(&idx).unwrap().len();
         assert!(packed < naive, "packed {packed} should beat naive {naive}");
@@ -290,5 +300,41 @@ mod tests {
         let path = dir.path().join("future.json");
         std::fs::write(&path, serde_json::to_vec(&p).unwrap()).unwrap();
         assert!(load(&path).is_err(), "must refuse an unknown layout");
+    }
+
+    /// Measurement harness for the cache cost of signatures and docs.
+    ///
+    /// `AURORA_INDEX_ROOT=<repo> cargo test --lib \
+    /// metadata_cost_over_a_real_workspace -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs AURORA_INDEX_ROOT pointing at a real workspace"]
+    fn metadata_cost_over_a_real_workspace() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let idx = CodeIndex::build(Path::new(&root)).expect("index builds");
+        let full = serde_json::to_vec(&pack(&idx)).unwrap().len();
+        let signatures = idx
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.signature.is_some())
+            .count();
+        let documented = idx
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.documentation.is_some())
+            .count();
+
+        let mut without_metadata = idx;
+        for symbol in &mut without_metadata.symbols {
+            symbol.signature = None;
+            symbol.documentation = None;
+        }
+        let base = serde_json::to_vec(&pack(&without_metadata)).unwrap().len();
+        let added = full.saturating_sub(base);
+        println!(
+            "metadata: {signatures} signatures, {documented} docs, {added} added bytes; \
+             packed {base} -> {full} bytes ({:.1}% growth); build {} ms",
+            added as f64 * 100.0 / base.max(1) as f64,
+            without_metadata.stats.build_ms,
+        );
     }
 }

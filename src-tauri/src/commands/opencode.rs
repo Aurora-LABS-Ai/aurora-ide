@@ -144,8 +144,12 @@ async fn get_json(path: &str, api_key: Option<&str>) -> Result<serde_json::Value
         });
     }
 
-    serde_json::from_str(&body)
-        .map_err(|err| format!("OpenCode sent something unreadable ({err}): {}", body.trim()))
+    serde_json::from_str(&body).map_err(|err| {
+        format!(
+            "OpenCode sent something unreadable ({err}): {}",
+            body.trim()
+        )
+    })
 }
 
 /// The models this plan can reach. Needs no key — the list is public.

@@ -70,7 +70,10 @@ impl ToolExecutor for FileEditTool {
                           exactly and be unique unless replace_all=true. Copy old_string from text \
                           you have actually seen (file_read, or a search result that returned the \
                           line). replace_all=true additionally REQUIRES that the file was read this \
-                          session, because it rewrites occurrences you have not seen.",
+                          session, because it rewrites occurrences you have not seen. A successful \
+                          edit may return an `impact` field naming symbols this file exports that \
+                          OTHER files use — if you changed one of their signatures or behavior, \
+                          check those call sites before moving on.",
                           rule = streaming_targets::RULE,
             ),
             input_schema: json!({
@@ -183,9 +186,11 @@ impl ToolExecutor for FileEditTool {
         .await
         .map_err(ToolError::Execution)?;
 
+        let mut impact = None;
         if matches!(response, SearchReplaceResponse::Ok { .. }) {
             emit_post_write(&*self.sink, &resolved_str, "file_edit", &ctx.tool_call_id).await;
             super::read_tracker::record(&ctx.thread_id, &resolved_str);
+            impact = super::index_note_after_write(ctx, &resolved_str);
         }
 
         // The text was not there AND the agent never read this file — now the
@@ -198,7 +203,13 @@ impl ToolExecutor for FileEditTool {
         }
 
         let _ = Path::new("");
-        Ok(render_response(&raw_path, &resolved_str, response, false))
+        Ok(render_response(
+            &raw_path,
+            &resolved_str,
+            response,
+            false,
+            impact.as_deref(),
+        ))
     }
 }
 
@@ -339,7 +350,7 @@ impl FileEditTool {
                 return Ok(if multi {
                     render_multi_failure(&g.raw, &g.resolved, resp)
                 } else {
-                    render_response(&g.raw, &g.resolved, resp, true)
+                    render_response(&g.raw, &g.resolved, resp, true, None)
                 });
             }
             prepared.push((g.raw.clone(), g.resolved.clone(), resp));
@@ -355,16 +366,34 @@ impl FileEditTool {
             })?
             .map_err(ToolError::Execution)?;
 
+        let mut notes: Vec<Option<String>> = Vec::with_capacity(committed.len());
         for (_, resolved, _) in &committed {
             emit_post_write(&*self.sink, resolved, "file_edit", &ctx.tool_call_id).await;
             super::read_tracker::record(&ctx.thread_id, resolved);
+            notes.push(super::index_note_after_write(ctx, resolved));
         }
 
         if committed.len() == 1 {
+            let note = notes.into_iter().next().flatten();
             let (raw, resolved, resp) = committed.into_iter().next().unwrap();
-            return Ok(render_response(&raw, &resolved, resp, true));
+            return Ok(render_response(
+                &raw,
+                &resolved,
+                resp,
+                true,
+                note.as_deref(),
+            ));
         }
-        Ok(render_multi_success(&committed))
+        // Multi-file: each note names its file, or the model cannot tell whose
+        // callers it is being warned about.
+        let joined = committed
+            .iter()
+            .zip(&notes)
+            .filter_map(|((raw, _, _), note)| note.as_ref().map(|n| format!("{raw} — {n}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let impact = (!joined.is_empty()).then_some(joined.as_str());
+        Ok(render_multi_success(&committed, impact))
     }
 }
 
@@ -630,7 +659,10 @@ fn render_multi_failure(
 /// Render a successful multi-file batch. Each entry carries its own before/after
 /// (capped per side via [`diff_side`]) so the Review panel can draw a real diff
 /// for every file the call touched.
-fn render_multi_success(committed: &[(String, String, SearchReplaceResponse)]) -> String {
+fn render_multi_success(
+    committed: &[(String, String, SearchReplaceResponse)],
+    impact: Option<&str>,
+) -> String {
     let mut files = Vec::with_capacity(committed.len());
     let mut total_replacements = 0usize;
     let mut total_added = 0usize;
@@ -663,7 +695,7 @@ fn render_multi_success(committed: &[(String, String, SearchReplaceResponse)]) -
     }
 
     let file_count = files.len();
-    serde_json::to_string(&json!({
+    let mut payload = json!({
         "success": true,
         "pending": false,
         "multiFile": true,
@@ -677,8 +709,12 @@ fn render_multi_success(committed: &[(String, String, SearchReplaceResponse)]) -
         "linesAdded": total_added,
         "linesRemoved": total_removed,
         "files": files,
-    }))
-    .unwrap()
+    });
+    // Only when there is something to say — see `render_response`.
+    if let Some(note) = impact {
+        payload["impact"] = json!(note);
+    }
+    serde_json::to_string(&payload).unwrap()
 }
 
 /// Build a corrective message for a missing `path` in the single-edit form.

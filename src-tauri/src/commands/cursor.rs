@@ -120,9 +120,7 @@ pub struct CursorModelCatalogue {
 
 /// Every model on the account — what the **provider page** lists.
 #[tauri::command(async)]
-pub fn cursor_models_list(
-    db: State<'_, Mutex<Database>>,
-) -> Result<CursorModelCatalogue, String> {
+pub fn cursor_models_list(db: State<'_, Mutex<Database>>) -> Result<CursorModelCatalogue, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
     let repo = db.cursor_models();
     let models = repo.list().map_err(|e| format!("{e:?}"))?;
@@ -153,9 +151,7 @@ pub fn cursor_models_list_enabled(
 ///
 /// The user's enable choices survive — see `CursorModelsRepository::replace_all`.
 #[tauri::command]
-pub async fn cursor_models_refresh(
-    app: tauri::AppHandle,
-) -> Result<CursorModelCatalogue, String> {
+pub async fn cursor_models_refresh(app: tauri::AppHandle) -> Result<CursorModelCatalogue, String> {
     use tauri::Manager;
 
     let token = auth::fresh_access(false).await?;

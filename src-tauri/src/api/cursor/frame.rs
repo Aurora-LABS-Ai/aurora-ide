@@ -104,14 +104,6 @@ impl FrameDecoder {
         Self::default()
     }
 
-    /// True once an end-of-stream envelope has been read. Later bytes are
-    /// ignored rather than parsed — a server that keeps talking after saying
-    /// goodbye is not something to guess about.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.finished
-    }
-
     /// Append bytes and return every envelope they completed.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Frame>, FrameError> {
         if self.finished {
@@ -207,8 +199,7 @@ mod tests {
     use std::io::Write;
 
     fn gzip(data: &[u8]) -> Vec<u8> {
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(data).expect("gzip write");
         encoder.finish().expect("gzip finish")
     }
@@ -278,7 +269,6 @@ mod tests {
                 Frame::EndOfStream(b"{}".to_vec())
             ]
         );
-        assert!(decoder.is_finished());
         assert!(decoder.push(b"more").expect("post-end").is_empty());
     }
 

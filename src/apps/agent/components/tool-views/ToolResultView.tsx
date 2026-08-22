@@ -19,6 +19,7 @@ import { GrepResultsView } from "@/apps/agent/components/tool-views/GrepResultsV
 import { MultiFileResultsView } from "@/apps/agent/components/tool-views/MultiFileResultsView";
 import { ShellOutputView } from "@/apps/agent/components/tool-views/ShellOutputView";
 import { FileListView } from "@/apps/agent/components/tool-views/FileListView";
+import { WebResultsView } from "@/apps/agent/components/tool-views/WebResultsView";
 import { WorkspaceTreeView } from "@/apps/agent/components/tool-views/WorkspaceTreeView";
 import { baseName, type ParsedToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { ToolCode } from "@/apps/agent/components/tool-views/ToolCode";
@@ -77,6 +78,9 @@ export const ToolResultView: React.FC<{
   activeMultiFileIndex?: number;
 }> = ({ parsed, activeMultiFileIndex = 0 }) => {
   if (parsed.screenshot) return <ScreenshotResult shot={parsed.screenshot} />;
+  // Not gated on a non-empty hit list: "nothing came back" is a real answer to
+  // a search, and its own panel says so. The fallback would dump raw JSON.
+  if (parsed.web) return <WebResultsView data={parsed.web} />;
   if (parsed.tree) return <WorkspaceTreeView data={parsed.tree} />;
   if (parsed.multiFile && parsed.multiFile.length > 0)
     return <MultiFileResultsView files={parsed.multiFile} activeIndex={activeMultiFileIndex} />;

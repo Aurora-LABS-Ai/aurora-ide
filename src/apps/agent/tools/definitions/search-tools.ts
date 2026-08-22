@@ -7,61 +7,78 @@
 import type { ToolDefinition } from "@/apps/agent/tools/types";
 
 // ============================================
-// AURORA WEB SEARCH TOOL (Aurora WebSearch SDK)
+// AURORA WEB SEARCH + PAGE FETCH
 // ============================================
+/**
+ * Display and approval metadata only.
+ *
+ * `nativeRustOwned` means the schema the model actually sees is the Rust
+ * registry's (`tools/file_workspace_search/auroro_websearch.rs`), and this
+ * definition is filtered out of the roster by `buildAvailableTools`. Keep the
+ * two in step anyway — this is what a reader opens first.
+ */
 export const auroroWebSearchTool: ToolDefinition = {
   type: 'function',
   nativeRustOwned: true,
   function: {
     name: 'auroro_websearch',
-    description: `**NATIVE WEB SEARCH + PAGE FETCH** powered by Aurora WebSearch SDK (DuckDuckGo backend).
+    description: `Search the web, or read one web page.
 
-Use this tool to search the web or fetch a page and extract its content.
+- search: give a query, get ranked results with titles, URLs and summaries.
+- fetch: give a url, get the page as Markdown. Headings, lists, tables, code
+  blocks and links survive; navigation, scripts and footers are removed. Plain
+  text, JSON and source files come back as they are, and a GitHub file page is
+  read as the file itself.
 
-**MODES:**
-- search: Provide a query to search the web. Returns titles, URLs, snippets.
-- fetch: Provide a url to fetch and extract clean text content from a web page.
+A long page arrives one window at a time. When a result says hasMore, call
+again with the same url and offset set to nextOffset to read on.
 
-**REQUIRED:**
-- search: query
-- fetch: url
+This reads pages, it does not operate them. For a page that needs a click, a
+sign-in, or JavaScript to render, use the browser tools.
 
-**RESPONSE FORMAT:**
-- search: { query, results: [{ title, url, snippet, position }], count, has_more }
-- fetch: { url, title, content, description, word_count, links }
-
-**EXAMPLES:**
+Examples:
 - auroro_websearch(action="search", query="rust async runtimes", numResults=5)
-- auroro_websearch(action="fetch", url="https://rust-lang.org")`,
+- auroro_websearch(action="fetch", url="https://doc.rust-lang.org/book/")
+- auroro_websearch(action="fetch", url="https://doc.rust-lang.org/book/", offset=30000)`,
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
           enum: ['search', 'fetch'],
-          description: 'Action to perform. Use "search" for web search or "fetch" to extract a web page.',
+          description: 'Defaults to "fetch" when a url is given, "search" otherwise.',
         },
         query: {
           type: 'string',
-          description: 'Search query for web search (required for search action).',
+          description: 'Search query. Required for action="search".',
         },
         url: {
           type: 'string',
-          description: 'URL to fetch content from (required for fetch action).',
+          description: 'Page to read. Required for action="fetch".',
         },
         numResults: {
           type: 'number',
-          description: 'Number of results for web search (1-50). Default: 10.',
+          description: 'Results to return, 1-25. Search only. Default: 10.',
           default: 10,
         },
         region: {
           type: 'string',
-          description: 'Search region (e.g., "us-en", "uk-en").',
+          description: 'Search region, e.g. "us-en", "uk-en", "de-de".',
         },
         safeSearch: {
           type: 'string',
           enum: ['OFF', 'MODERATE', 'STRICT'],
           description: 'Safe search mode. Default: MODERATE.',
+        },
+        maxChars: {
+          type: 'number',
+          description:
+            'Characters of page text to return. Fetch only. Default 30000, maximum 120000.',
+        },
+        offset: {
+          type: 'number',
+          description:
+            'Character to start reading at. Pass the previous result\'s nextOffset to continue a long page. Fetch only.',
         },
       },
       required: [],

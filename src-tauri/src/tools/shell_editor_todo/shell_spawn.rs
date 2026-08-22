@@ -222,11 +222,7 @@ impl ToolExecutor for ShellSpawnTool {
         // already in use, a missing binary), so that stays an error.
         if let SpawnOutcome::Exited(output) = outcome {
             if !output.success {
-                let detail = [output.stderr.trim(), output.stdout.trim()]
-                    .into_iter()
-                    .find(|text| !text.is_empty())
-                    .unwrap_or("the command produced no output");
-                let detail: String = detail.chars().take(2_000).collect();
+                let detail = startup_failure_detail(&output.stderr, &output.stdout);
                 return Err(ToolError::Execution(format!(
                     "'{command}' exited during startup with code {:?}: {detail}",
                     output.exit_code
@@ -313,6 +309,26 @@ impl ToolExecutor for ShellSpawnTool {
     }
 }
 
+/// What a startup failure shows the model. BOTH streams, labeled, each
+/// clipped — never a pick of one. The pick was the bug: package runners print
+/// their script banner (`$ next dev …`) to stderr, so "first non-empty of
+/// [stderr, stdout]" returned the banner and dropped the actual error that a
+/// `2>&1 | tee` pipeline had routed to stdout. Found live by the self-test
+/// persona (aurora-tool-findings.md, 2026-08-22): `pnpm dev` died with exit
+/// 255 and the response carried nothing that could diagnose it.
+fn startup_failure_detail(stderr: &str, stdout: &str) -> String {
+    const STREAM_CLIP: usize = 2_000;
+    let clip = |text: &str| -> String { text.chars().take(STREAM_CLIP).collect() };
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (true, true) => "the command produced no output".to_string(),
+        (false, true) => clip(stderr),
+        (true, false) => clip(stdout),
+        (false, false) => format!("stderr: {}\nstdout: {}", clip(stderr), clip(stdout)),
+    }
+}
+
 /// A readable one-line title from a command, for when the model omits one.
 fn title_from_command(command: &str) -> String {
     let flat = command.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -321,6 +337,52 @@ fn title_from_command(command: &str) -> String {
     }
     let clipped: String = flat.chars().take(39).collect();
     format!("{}…", clipped.trim_end())
+}
+
+#[cfg(test)]
+mod startup_failure_tests {
+    use super::*;
+
+    /// The self-test finding, verbatim shape: pnpm's banner on stderr, the
+    /// real error on stdout (routed there by the script's own `2>&1 | tee`).
+    /// The old first-non-empty pick returned the banner alone.
+    #[test]
+    fn both_streams_reach_the_error_when_both_spoke() {
+        let detail = startup_failure_detail(
+            "$ next dev -p 3000 2>&1 | tee dev.log",
+            "Error: listen EADDRINUSE: address already in use :::3000",
+        );
+        assert!(detail.contains("EADDRINUSE"), "the real error must survive");
+        assert!(
+            detail.contains("$ next dev"),
+            "the banner may stay, labeled"
+        );
+        assert!(detail.contains("stderr:") && detail.contains("stdout:"));
+    }
+
+    #[test]
+    fn a_single_stream_is_passed_through_unlabeled() {
+        assert_eq!(startup_failure_detail("boom", ""), "boom");
+        assert_eq!(startup_failure_detail("", "boom"), "boom");
+    }
+
+    #[test]
+    fn silence_is_named_not_blank() {
+        assert_eq!(
+            startup_failure_detail("  ", "\n"),
+            "the command produced no output"
+        );
+    }
+
+    #[test]
+    fn each_stream_is_clipped_independently() {
+        let long = "x".repeat(5_000);
+        let detail = startup_failure_detail(&long, &long);
+        // Two clipped streams plus labels — not one clip across the pair,
+        // which would let a chatty stderr push stdout out entirely.
+        assert!(detail.chars().count() < 4_100);
+        assert!(detail.rfind("stdout:").is_some());
+    }
 }
 
 #[cfg(test)]

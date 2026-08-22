@@ -441,7 +441,12 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
 
   const webUrl = asStr(args.url);
   if (name === "auroro_websearch" && webUrl && !asStr(args.query)) {
-    return { label: `Fetching ${clip(webUrl, 44)}` };
+    // A long page is read in windows, so the second call carries an offset.
+    // Saying "Fetching" again would read as the same page being fetched twice.
+    const continuing = Number(args.offset ?? 0) > 0;
+    return {
+      label: `${continuing ? "Reading more of" : "Fetching"} ${clip(webUrl, 44)}`,
+    };
   }
 
   if (name === "browser_screenshot" && !asStr(args.selector)) {

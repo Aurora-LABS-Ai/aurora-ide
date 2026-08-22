@@ -21,8 +21,8 @@ pub async fn fetch(access_token: &str) -> Result<Vec<CursorModel>, String> {
         // supplies its own credentials for, which Aurora does not do here.
         custom_model_ids: Vec::new(),
     };
-    let response = super::unary::call(GET_USABLE_MODELS, request.encode_to_vec(), access_token)
-        .await?;
+    let response =
+        super::unary::call(GET_USABLE_MODELS, request.encode_to_vec(), access_token).await?;
 
     let decoded = GetUsableModelsResponse::decode(response.as_slice())
         .map_err(|err| format!("Cursor sent a model list Aurora could not read: {err}"))?;
@@ -112,7 +112,10 @@ mod tests {
 
         assert_eq!(row.model_id, "claude-opus-5-thinking-high");
         assert_eq!(row.display_model_id.as_deref(), Some("claude-opus-5"));
-        assert_eq!(row.label(), "Claude Opus 5 (Thinking, High)");
+        assert_eq!(
+            row.display_name.as_deref(),
+            Some("Claude Opus 5 (Thinking, High)")
+        );
         assert_eq!(row.aliases, vec!["opus", "opus-5"]);
         assert_eq!(row.sort_order, 3);
     }
@@ -168,8 +171,8 @@ mod tests {
         .unwrap();
         assert_eq!(row.display_name, None);
         assert_eq!(row.aliases, vec!["real"]);
-        // With every label blank, the id is what the picker shows.
-        assert_eq!(row.label(), "m");
+        // With every label blank, the frontend falls back to this id.
+        assert_eq!(row.model_id, "m");
     }
 
     /// Hits Cursor's real API with the developer's own signed-in session.
@@ -199,7 +202,11 @@ mod tests {
                 model.model_id,
                 model.supports_thinking,
                 model.max_mode,
-                model.label()
+                model
+                    .display_name
+                    .as_deref()
+                    .or(model.display_name_short.as_deref())
+                    .unwrap_or(&model.model_id)
             );
         }
 
@@ -295,7 +302,7 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].model_id, "auto");
-        assert_eq!(rows[1].label(), "Composer 2.5");
+        assert_eq!(rows[1].display_name.as_deref(), Some("Composer 2.5"));
         assert!(rows[1].supports_thinking);
         assert_eq!(rows[1].sort_order, 1, "upstream order is preserved");
     }

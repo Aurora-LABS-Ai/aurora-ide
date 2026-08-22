@@ -30,10 +30,10 @@ pub mod chat;
 pub mod checkpoints;
 pub mod code_index;
 pub mod codex;
-pub mod cursor;
 /// Test-only: fails the build if a main-thread command waits on the database.
 #[cfg(test)]
 mod command_thread_safety;
+pub mod cursor;
 pub mod diagnostics;
 pub mod editor_ops;
 pub mod fonts;
@@ -606,17 +606,35 @@ pub struct AuroraWebSearchRequest {
     pub num_results: Option<u32>,
     pub region: Option<String>,
     pub safe_search: Option<String>,
+    /// Characters of page text to return from a fetch.
+    pub max_chars: Option<u32>,
+    /// Where in the page to start reading, for paging through a long one.
+    pub offset: Option<u32>,
 }
 
+/// The reply to a web call.
+///
+/// `results` and `content` are flattened into the top level rather than nested
+/// under a wrapper key. The nesting is what let the runtime's compactor mistake
+/// a fetch's body for something it could not shrink and throw it away whole;
+/// keeping the payload one level down keeps that path honest, and reads better
+/// besides.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuroraWebSearchResponse {
     pub success: bool,
     pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    pub results: Option<serde_json::Value>,
-    pub content: Option<serde_json::Value>,
+    /// Present on a search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<crate::websearch::SearchOutcome>,
+    /// Present on a fetch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<crate::websearch::Document>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -1322,12 +1340,23 @@ fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
     FS_WATCHER.get_or_init(|| Mutex::new(None))
 }
 
+/// Search the web, or read one page.
+///
+/// The work lives in [`crate::websearch`]; this is the IPC edge. It resolves
+/// which of the two actions was meant, validates that the argument that action
+/// needs is present, and turns a [`crate::websearch::WebError`] into the string
+/// the caller sees.
+///
+/// Both the per-request timeout and the response size ceiling are enforced
+/// inside the client itself, so there is no wall-clock guard here: a hung
+/// endpoint fails on its own rather than holding the bridge open.
 #[tauri::command]
 pub async fn aurora_websearch(
     request: AuroraWebSearchRequest,
 ) -> Result<AuroraWebSearchResponse, String> {
-    use aurora_websearch::{AuroraSearchBuilder, SafeSearch};
+    use crate::websearch::{self, FetchOptions, SafeSearch, SearchOptions};
 
+    // A caller that names a URL means "read it" even when it forgot to say so.
     let action = request.action.clone().unwrap_or_else(|| {
         if request.url.is_some() {
             "fetch".to_string()
@@ -1336,107 +1365,61 @@ pub async fn aurora_websearch(
         }
     });
 
-    // Build the search client with configuration
-    let mut builder = AuroraSearchBuilder::new();
-
-    // Set limit if provided
-    if let Some(num_results) = request.num_results {
-        builder = builder.limit(num_results as usize);
-    }
-
-    // Set region if provided
-    if let Some(ref region) = request.region {
-        builder = builder.region(region.clone());
-    }
-
-    // Set safe search if provided
-    if let Some(ref safe_search) = request.safe_search {
-        let safe = match safe_search.to_uppercase().as_str() {
-            "OFF" => SafeSearch::Off,
-            "STRICT" => SafeSearch::Strict,
-            _ => SafeSearch::Moderate,
-        };
-        builder = builder.safe_search(safe);
-    }
-
-    let aurora = builder
-        .build()
-        .map_err(|e| format!("Failed to create search client: {}", e))?;
-
-    // Hard wall-clock cap for any single web operation. Without this a
-    // hung DDG endpoint or a slow page stalls the bridge oneshot until
-    // the user manually cancels the turn, which presents as a freeze.
-    const AURORA_WEBSEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
     if action == "fetch" {
         let url = request
             .url
             .clone()
-            .ok_or_else(|| "URL is required for fetch".to_string())?;
+            .ok_or_else(|| "fetch needs a `url`.".to_string())?;
 
-        let content = match tokio::time::timeout(
-            AURORA_WEBSEARCH_TIMEOUT,
-            aurora.extract_content(&url),
-        )
-        .await
-        {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => return Err(format!("Web fetch failed: {}", e)),
-            Err(_) => {
-                return Err(format!(
-                    "Web fetch timed out after {}s",
-                    AURORA_WEBSEARCH_TIMEOUT.as_secs()
-                ))
-            }
+        let opts = FetchOptions {
+            max_chars: request
+                .max_chars
+                .map(|n| n as usize)
+                .unwrap_or(websearch::DEFAULT_MAX_CHARS),
+            offset: request.offset.unwrap_or(0) as usize,
         };
 
-        let content_value = serde_json::to_value(&content)
-            .map_err(|e| format!("Failed to serialize fetch response: {}", e))?;
+        let document = websearch::fetch(&url, &opts)
+            .await
+            .map_err(|e| e.to_string())?;
 
         return Ok(AuroraWebSearchResponse {
             success: true,
             action,
             query: None,
-            url: request.url,
-            results: None,
-            content: Some(content_value),
+            url: Some(url),
+            search: None,
+            document: Some(document),
             error: None,
         });
     }
 
-    // Search action
     let query = request
         .query
         .clone()
-        .ok_or_else(|| "Query is required for search".to_string())?;
-    let limit = request.num_results.unwrap_or(10) as usize;
+        .ok_or_else(|| "search needs a `query`.".to_string())?;
 
-    let results = match tokio::time::timeout(
-        AURORA_WEBSEARCH_TIMEOUT,
-        aurora.search_with_limit(&query, limit),
-    )
-    .await
-    {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => return Err(format!("Web search failed: {}", e)),
-        Err(_) => {
-            return Err(format!(
-                "Web search timed out after {}s",
-                AURORA_WEBSEARCH_TIMEOUT.as_secs()
-            ))
-        }
+    let opts = SearchOptions {
+        limit: request.num_results.unwrap_or(10).clamp(1, 25) as usize,
+        region: request.region.clone(),
+        safe_search: request
+            .safe_search
+            .as_deref()
+            .map(SafeSearch::parse)
+            .unwrap_or_default(),
     };
 
-    let results_value = serde_json::to_value(&results)
-        .map_err(|e| format!("Failed to serialize search response: {}", e))?;
+    let outcome = websearch::search(&query, &opts)
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(AuroraWebSearchResponse {
         success: true,
         action,
         query: Some(query),
         url: None,
-        results: Some(results_value),
-        content: None,
+        search: Some(outcome),
+        document: None,
         error: None,
     })
 }

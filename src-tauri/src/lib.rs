@@ -64,6 +64,7 @@ mod prompt_refine;
 pub mod tools;
 mod typing_assist;
 mod undo_redo;
+mod websearch;
 
 use cli::{CliArgs, CliOpenRequest};
 

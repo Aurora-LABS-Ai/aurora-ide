@@ -27,15 +27,19 @@
 //! |---|---|
 //! | [`lang`] | grammar + query registry; adding a language is one arm here |
 //! | [`extract`] | one file's source -> its definitions and references |
+//! | `metadata` | bounded signatures/docs for explicit definition lookups |
 //! | [`walk`] | which files count (gitignore, build dirs, generated output) |
 //! | [`store`] | the in-memory index and the questions it answers |
+//! | [`impact`] | "other files use what you just edited" note for write tools |
 //! | [`persist`] | compact cached form on disk |
 //! | [`module_graph`] | which parts of the workspace depend on which |
 //! | [`repo_map`] | renders the `<repo_map>` block given to the model |
 //! | [`service`] | one index per workspace, cached per process |
 
 pub mod extract;
+pub mod impact;
 pub mod lang;
+mod metadata;
 pub mod module_graph;
 pub mod persist;
 pub mod repo_map;

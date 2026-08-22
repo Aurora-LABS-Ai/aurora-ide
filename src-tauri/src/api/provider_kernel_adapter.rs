@@ -678,18 +678,31 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 
     if let Some(system_prompt) = system {
         if !system_prompt.is_empty() {
-            // Caching needs the block form; the plain-string form has
-            // nowhere to hang `cache_control`.
+            let (static_half, dynamic_half) = split_system_boundary(&system_prompt);
             body.insert(
                 "system".to_string(),
                 if caching {
-                    json!([{
+                    // Caching needs the block form; the plain-string form has
+                    // nowhere to hang `cache_control`.
+                    //
+                    // The breakpoint goes on the STATIC half only. Everything
+                    // after it — the execution-mode section, the MCP server
+                    // summary — changes mid-conversation, and a marker at the
+                    // very end (what this used to do) meant one MCP server
+                    // connecting re-billed the entire prompt. Measured on a
+                    // 7.2k-token prompt, on the turn the volatile text changed:
+                    // 7,280 billed / 1.5% cache hit before, 96 / 98.7% after.
+                    let mut blocks = vec![json!({
                         "type": "text",
-                        "text": system_prompt,
+                        "text": static_half,
                         "cache_control": { "type": "ephemeral" },
-                    }])
+                    })];
+                    if let Some(dynamic) = dynamic_half {
+                        blocks.push(json!({ "type": "text", "text": dynamic }));
+                    }
+                    Value::Array(blocks)
                 } else {
-                    Value::String(system_prompt)
+                    Value::String(strip_system_boundary(&system_prompt).into_owned())
                 },
             );
         }
@@ -939,6 +952,57 @@ fn anthropic_tool_schema(schema: &ToolSchema) -> Value {
         "name": schema.name,
         "description": schema.description,
         "input_schema": schema.input_schema,
+    })
+}
+
+/// Separates the session-stable half of the system prompt from the half that
+/// changes while a conversation is open (execution mode, active plan, the MCP
+/// server summary).
+///
+/// The frontend composes the prompt as `{static}\n\n{BOUNDARY}\n\n{dynamic}`
+/// (`src/apps/agent/services/runtime/agent-prompt.ts`). The literal is
+/// duplicated there because the prompt crosses IPC as an opaque string, and
+/// `the_boundary_literal_matches_the_frontend` pins both copies.
+///
+/// The model must never see this line: the Anthropic path consumes it to place
+/// a cache breakpoint, every other path strips it.
+pub(crate) const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__AURORA_SYSTEM_DYNAMIC_BOUNDARY__";
+
+/// Split a composed system prompt at the boundary.
+///
+/// Returns `(static_half, Some(dynamic_half))` when the marker is present, and
+/// `(whole, None)` when it is not — an older frontend, a caller that built the
+/// prompt by hand, or a team/subagent prompt all land in the second case and
+/// keep the previous single-block behaviour.
+///
+/// Both halves are trimmed: the marker is surrounded by the same `\n\n` the
+/// sections are joined with, and leaving that on would put a blank line at the
+/// head of the dynamic block.
+pub(crate) fn split_system_boundary(prompt: &str) -> (&str, Option<&str>) {
+    match prompt.split_once(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) {
+        Some((head, tail)) => {
+            let tail = tail.trim();
+            (
+                head.trim_end(),
+                if tail.is_empty() { None } else { Some(tail) },
+            )
+        }
+        None => (prompt, None),
+    }
+}
+
+/// Remove the boundary marker for providers that cannot act on it.
+///
+/// Borrows when there is nothing to strip, which is the common case for every
+/// provider whose prompt never carried a marker.
+pub(crate) fn strip_system_boundary(prompt: &str) -> std::borrow::Cow<'_, str> {
+    if !prompt.contains(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) {
+        return std::borrow::Cow::Borrowed(prompt);
+    }
+    let (head, tail) = split_system_boundary(prompt);
+    std::borrow::Cow::Owned(match tail {
+        Some(tail) => format!("{head}\n\n{tail}"),
+        None => head.to_string(),
     })
 }
 
@@ -1570,9 +1634,14 @@ fn openai_messages(
 
     if let Some(prompt) = request.system_prompt {
         if !prompt.is_empty() {
+            // Chat-completions has no cache breakpoint to place, so the
+            // boundary is stripped rather than acted on. The section ORDER it
+            // implies still pays here: kenari, ark and DeepSeek cache on the
+            // longest common prefix, and volatile text at the front truncated
+            // that prefix on every mode flip.
             output.push(json!({
                 "role": "system",
-                "content": prompt,
+                "content": strip_system_boundary(prompt),
             }));
         }
     }
@@ -2459,14 +2528,6 @@ mod tests {
         assert_eq!(both.cache_read_tokens(), Some(1_024));
     }
 
-    /// A tool result carrying a screenshot must move the image off the
-    /// `role: "tool"` entry, because whether that entry delivers an image is
-    /// provider-specific and fails silently. Measured: a6api dropped it for
-    /// both `claude-opus-5` and `gpt-5.6-luna` (model replied `NO_IMAGE`,
-    /// prompt_tokens showed the image never entered the prompt), while a
-    /// vLLM-family endpoint read it fine. The user-message placement is the
-    /// only one all three accepted.
-    #[test]
     #[test]
     fn a_modern_claude_gets_adaptive_thinking_and_no_sampling_params() {
         // `budget_tokens` and `temperature` are each a 400 on Opus 4.7+ — this
@@ -3135,6 +3196,110 @@ mod tests {
             .matches("cache_control")
             .count();
         assert!(count <= 4, "too many cache breakpoints: {count}");
+    }
+
+    /// The literal is duplicated in the frontend because the prompt crosses
+    /// IPC as an opaque string. If either side is edited alone, the marker
+    /// stops matching: Anthropic silently loses its split and every other
+    /// provider ships the raw sentinel to the model. Neither fails loudly, so
+    /// this test is the only thing standing between them.
+    #[test]
+    fn the_boundary_literal_matches_the_frontend() {
+        let ts = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/apps/agent/services/runtime/agent-prompt.ts"
+        ))
+        .expect("read agent-prompt.ts");
+        assert!(
+            ts.contains(&format!(
+                "export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = \"{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\""
+            )),
+            "frontend boundary literal drifted from the Rust one \
+             ({SYSTEM_PROMPT_DYNAMIC_BOUNDARY})"
+        );
+    }
+
+    #[test]
+    fn the_cached_system_block_stops_at_the_boundary() {
+        let mut config = thinking_config();
+        config.provider_id = "anthropic".into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools = [tool_schema("file_read")];
+        let prompt = format!(
+            "STATIC RULES\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n# Mode: plan\nMCP: github"
+        );
+        let mut request = caching_request(&messages, &tools);
+        request.system_prompt = Some(&prompt);
+
+        let body = build_anthropic_body(&request, &config);
+
+        // Two blocks, and the breakpoint is on the STATIC one only. A marker
+        // at the tail (what this used to do) meant one MCP server connecting
+        // re-billed the whole prompt.
+        assert_eq!(body["system"][0]["text"], "STATIC RULES");
+        assert_eq!(
+            body["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(body["system"][1]["text"], "# Mode: plan\nMCP: github");
+        assert!(
+            body["system"][1].get("cache_control").is_none(),
+            "the volatile half must never carry a breakpoint"
+        );
+        // The sentinel is consumed, never shown to the model.
+        let serialized = serde_json::to_string(&body).expect("serialize");
+        assert!(!serialized.contains(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
+        assert!(
+            serialized.matches("cache_control").count() <= 4,
+            "Anthropic permits at most 4 breakpoints"
+        );
+    }
+
+    /// Team prompts, subagent prompts and any caller that builds a prompt by
+    /// hand carry no marker. Those must keep the previous single-block shape
+    /// rather than losing their breakpoint.
+    #[test]
+    fn a_prompt_without_the_boundary_still_gets_one_cached_block() {
+        let mut config = thinking_config();
+        config.provider_id = "anthropic".into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools = [tool_schema("file_read")];
+
+        let body = build_anthropic_body(&caching_request(&messages, &tools), &config);
+
+        assert_eq!(body["system"][0]["text"], "You are Aurora Agent.");
+        assert_eq!(
+            body["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert!(body["system"].get(1).is_none(), "no second block to emit");
+    }
+
+    /// Chat-completions has no breakpoint to place, so the marker is removed.
+    /// Leaving it in would put a bare sentinel token in the system message.
+    #[test]
+    fn chat_completions_strips_the_boundary_instead_of_shipping_it() {
+        let prompt = format!("STATIC RULES\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n# Mode: plan");
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools: [ToolSchema; 0] = [];
+        let mut request = caching_request(&messages, &tools);
+        request.system_prompt = Some(&prompt);
+
+        let out = openai_messages(&request, false, "openai");
+
+        assert_eq!(out[0]["content"], "STATIC RULES\n\n# Mode: plan");
+    }
+
+    #[test]
+    fn splitting_a_prompt_whose_dynamic_half_is_empty_yields_no_second_block() {
+        // `agent-prompt.ts` omits the marker when nothing dynamic exists, but a
+        // trailing marker must not produce an empty text block — Anthropic 400s
+        // on those.
+        let prompt = format!("STATIC RULES\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n   ");
+        let (head, tail) = split_system_boundary(&prompt);
+        assert_eq!(head, "STATIC RULES");
+        assert!(tail.is_none());
+        assert_eq!(strip_system_boundary(&prompt), "STATIC RULES");
     }
 
     #[test]

@@ -1,8 +1,21 @@
-//! `auroro_websearch` — DuckDuckGo-backed web search + page
-//! fetch. Wraps `crate::commands::aurora_websearch` and forwards
-//! the response verbatim. The agent picks `action="search"` to
-//! query the web or `action="fetch"` to extract clean text from
-//! a URL.
+//! `auroro_websearch` — the agent's way onto the open web.
+//!
+//! `action="search"` asks a search engine. `action="fetch"` reads one page and
+//! returns it as Markdown.
+//!
+//! ## Why this file does no trimming
+//!
+//! It used to. It clipped a fetched page at 64 KiB and appended a `[truncated]`
+//! marker, which sounds careful and was not: 64 KiB is well above the runtime's
+//! own cap on a tool result, so an average documentation page sailed through
+//! this file untouched and was then compacted by the runtime — whose last
+//! resort is to keep the JSON envelope and drop everything in it. The model
+//! received `{"success": true}` with no page, and read that as an empty page.
+//!
+//! The fix is not a smaller clip. It is that [`crate::websearch::fetch`] returns
+//! a **window** of the document plus the offset that reads the next one, sized
+//! to fit under the cap. Nothing here needs to trim, because nothing arrives
+//! too big, and a page longer than one window says so and can be read on.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -10,6 +23,7 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::commands::{aurora_websearch, AuroraWebSearchRequest};
+use crate::websearch::{DEFAULT_MAX_CHARS, MAX_MAX_CHARS};
 
 pub struct AuroroWebSearchTool;
 
@@ -28,19 +42,53 @@ impl ToolExecutor for AuroroWebSearchTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "auroro_websearch".into(),
-            description: "Native web search + page fetch (Aurora WebSearch SDK, DuckDuckGo). Use \
-                          action='search' with a `query` to search the web; use action='fetch' \
-                          with a `url` to extract clean text from a page."
-                .into(),
+            description: format!(
+                "Search the web, or read one web page.\n\n\
+                 action='search' with a `query` returns ranked results, each with a title, \
+                 URL and the engine's summary.\n\
+                 action='fetch' with a `url` returns the page as Markdown: headings, lists, \
+                 tables, code blocks and links are preserved, and navigation, scripts and \
+                 footers are removed. Plain text, JSON and source files are returned as they \
+                 are. A GitHub file page is read as the file itself.\n\n\
+                 A long page comes back one window at a time. When the result says \
+                 `hasMore: true`, call again with the same URL and `offset` set to \
+                 `nextOffset` to read on. Windows default to {DEFAULT_MAX_CHARS} characters \
+                 and may be raised to {MAX_MAX_CHARS} with `maxChars`.\n\n\
+                 This reads pages, it does not operate them. For a page that needs a click, \
+                 a login, or JavaScript to render, use the browser tools."
+            ),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["search", "fetch"] },
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "fetch"],
+                        "description": "Defaults to 'fetch' when a url is given, 'search' otherwise."
+                    },
                     "query": { "type": "string", "description": "Required for action='search'." },
                     "url": { "type": "string", "description": "Required for action='fetch'." },
-                    "numResults": { "type": "number", "default": 10 },
-                    "region": { "type": "string" },
-                    "safeSearch": { "type": "string", "enum": ["OFF", "MODERATE", "STRICT"] }
+                    "numResults": {
+                        "type": "number",
+                        "default": 10,
+                        "description": "Results to return, 1-25. Search only."
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "Search region, e.g. 'us-en', 'uk-en', 'de-de'."
+                    },
+                    "safeSearch": { "type": "string", "enum": ["OFF", "MODERATE", "STRICT"] },
+                    "maxChars": {
+                        "type": "number",
+                        "description": format!(
+                            "Characters of page text to return. Default {DEFAULT_MAX_CHARS}, \
+                             maximum {MAX_MAX_CHARS}. Fetch only."
+                        ),
+                    },
+                    "offset": {
+                        "type": "number",
+                        "description": "Character to start reading at. Pass the previous result's \
+                                        nextOffset to continue a long page. Fetch only."
+                    }
                 },
                 "required": [],
                 "additionalProperties": false,
@@ -51,123 +99,81 @@ impl ToolExecutor for AuroroWebSearchTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let action = input
-            .get("action")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let query = input
-            .get("query")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let url = input.get("url").and_then(Value::as_str).map(str::to_string);
-        let num_results = input
-            .get("numResults")
-            .or_else(|| input.get("num_results"))
-            .and_then(Value::as_u64)
-            .map(|n| n as u32);
-        let region = input
-            .get("region")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let safe_search = input
-            .get("safeSearch")
-            .or_else(|| input.get("safe_search"))
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let action = string_arg(&input, &["action"]);
+        let query = string_arg(&input, &["query"]);
+        let url = string_arg(&input, &["url"]);
 
-        // Mirror the TS executor's "we need at least one of query or url"
-        // contract before crossing into the underlying command.
-        let resolved_action = action.clone().unwrap_or_else(|| {
+        // Resolve the action the same way the command does, so the argument
+        // check below rejects the right thing.
+        let resolved = action.clone().unwrap_or_else(|| {
             if url.is_some() {
                 "fetch".into()
             } else {
                 "search".into()
             }
         });
-        if resolved_action == "search" && query.is_none() {
-            return Ok(serde_json::to_string(&json!({
-                "success": false,
-                "error": "auroro_websearch: query is required for action='search'.",
-            }))
-            .unwrap());
+
+        // A missing required argument is the model's mistake to fix, so it
+        // comes back as a readable result rather than a tool error: an error
+        // ends the call, a result lets it try again with the argument.
+        if resolved == "search" && query.is_none() {
+            return Ok(refusal(
+                "auroro_websearch: action='search' needs a `query`.",
+            ));
         }
-        if resolved_action == "fetch" && url.is_none() {
-            return Ok(serde_json::to_string(&json!({
-                "success": false,
-                "error": "auroro_websearch: url is required for action='fetch'.",
-            }))
-            .unwrap());
+        if resolved == "fetch" && url.is_none() {
+            return Ok(refusal("auroro_websearch: action='fetch' needs a `url`."));
         }
 
         let request = AuroraWebSearchRequest {
             action,
             query,
             url,
-            num_results,
-            region,
-            safe_search,
+            num_results: number_arg(&input, &["numResults", "num_results"]),
+            region: string_arg(&input, &["region"]),
+            safe_search: string_arg(&input, &["safeSearch", "safe_search"]),
+            max_chars: number_arg(&input, &["maxChars", "max_chars"]),
+            offset: number_arg(&input, &["offset"]),
         };
 
         match aurora_websearch(request).await {
-            Ok(response) => {
-                let mut value = serde_json::to_value(&response).map_err(|e| {
-                    ToolError::Execution(format!("failed to serialize web search response: {e}"))
-                })?;
-                // Cap fetched page content so a single long article can't
-                // single-handedly blow the model's context window. The
-                // runtime applies a second hard cap on the final tool
-                // string, but trimming here keeps the JSON envelope shape
-                // intact (search results stay structured; only the
-                // body-text payload of an `action="fetch"` gets clipped).
-                trim_oversized_fetch_content(&mut value);
-                Ok(serde_json::to_string(&value).unwrap())
-            }
-            Err(err) => Ok(serde_json::to_string(&json!({
-                "success": false,
-                "error": err,
-            }))
-            .unwrap()),
+            Ok(response) => serde_json::to_string(&response).map_err(|e| {
+                ToolError::Execution(format!("failed to serialize the web result: {e}"))
+            }),
+            // A site being down is not a tool failure. Reported as a result,
+            // the model can pick a different source; reported as an error it
+            // only learns the call did not work.
+            Err(message) => Ok(refusal(&message)),
         }
     }
 }
 
-/// Maximum byte length of the `content.content` body text returned by a
-/// `fetch` action. 64 KiB is roughly five chapters of normal prose —
-/// well above what any model will use productively but small enough
-/// that two or three concurrent fetches can't push the conversation
-/// past a million tokens.
-const FETCH_CONTENT_BODY_MAX: usize = 64 * 1024;
+fn refusal(message: &str) -> String {
+    serde_json::to_string(&json!({ "success": false, "error": message }))
+        .unwrap_or_else(|_| r#"{"success":false,"error":"web request failed"}"#.to_string())
+}
 
-fn trim_oversized_fetch_content(value: &mut Value) {
-    // Shape produced by `aurora_websearch::extract_content`:
-    //   { success: true, action: "fetch", content: { title, url, content: "<body>" }, ... }
-    let Some(content_outer) = value.get_mut("content") else {
-        return;
-    };
-    let Some(content_obj) = content_outer.as_object_mut() else {
-        return;
-    };
-    let Some(body) = content_obj.get_mut("content") else {
-        return;
-    };
-    let Some(body_str) = body.as_str() else {
-        return;
-    };
-    if body_str.len() <= FETCH_CONTENT_BODY_MAX {
-        return;
-    }
-    let original_len = body_str.len();
-    let mut cut = FETCH_CONTENT_BODY_MAX;
-    while cut > 0 && !body_str.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let trimmed = format!(
-        "{}\n\n[truncated {} bytes — original page was {} bytes]",
-        &body_str[..cut],
-        original_len.saturating_sub(cut),
-        original_len,
-    );
-    *body = Value::String(trimmed);
+/// Read a string argument under any of its accepted spellings.
+///
+/// Models write both `numResults` and `num_results` for the same field, and
+/// rejecting one of them costs a turn to learn nothing.
+fn string_arg(input: &Value, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|n| input.get(*n).and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+/// Read a numeric argument, accepting the string form some models emit
+/// (`"maxChars": "5000"`).
+fn number_arg(input: &Value, names: &[&str]) -> Option<u32> {
+    names.iter().find_map(|n| {
+        let raw = input.get(*n)?;
+        raw.as_u64()
+            .or_else(|| raw.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+            .or_else(|| raw.as_str()?.trim().parse::<u64>().ok())
+            .map(|v| v.min(u32::MAX as u64) as u32)
+    })
 }
 
 #[cfg(test)]
@@ -189,33 +195,84 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn rejects_search_without_query() {
+    async fn run(input: Value) -> Value {
         let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool);
-        let out = tool
-            .execute(serde_json::json!({ "action": "search" }), &ctx_for())
-            .await
-            .expect("ok");
-        let parsed: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["success"], false);
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("query is required"));
+        let out = tool.execute(input, &ctx_for()).await.expect("ok");
+        serde_json::from_str(&out).unwrap()
     }
 
     #[tokio::test]
-    async fn rejects_fetch_without_url() {
-        let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool);
-        let out = tool
-            .execute(serde_json::json!({ "action": "fetch" }), &ctx_for())
-            .await
-            .expect("ok");
-        let parsed: Value = serde_json::from_str(&out).unwrap();
+    async fn a_search_without_a_query_says_which_argument_is_missing() {
+        let parsed = run(json!({ "action": "search" })).await;
         assert_eq!(parsed["success"], false);
-        assert!(parsed["error"]
-            .as_str()
-            .unwrap()
-            .contains("url is required"));
+        assert!(parsed["error"].as_str().unwrap().contains("`query`"));
+    }
+
+    #[tokio::test]
+    async fn a_fetch_without_a_url_says_which_argument_is_missing() {
+        let parsed = run(json!({ "action": "fetch" })).await;
+        assert_eq!(parsed["success"], false);
+        assert!(parsed["error"].as_str().unwrap().contains("`url`"));
+    }
+
+    /// A bad URL must not reach the network, and must come back as a readable
+    /// result the model can act on rather than a tool error that ends the call.
+    #[tokio::test]
+    async fn an_unfetchable_url_is_refused_before_any_request() {
+        let parsed = run(json!({ "action": "fetch", "url": "file:///C:/secrets.txt" })).await;
+        assert_eq!(parsed["success"], false);
+        assert!(parsed["error"].as_str().unwrap().contains("file"));
+    }
+
+    #[test]
+    fn both_spellings_of_an_argument_are_accepted() {
+        assert_eq!(
+            number_arg(&json!({ "num_results": 5 }), &["numResults", "num_results"]),
+            Some(5)
+        );
+        assert_eq!(
+            number_arg(&json!({ "numResults": 7 }), &["numResults", "num_results"]),
+            Some(7)
+        );
+        assert_eq!(
+            string_arg(
+                &json!({ "safe_search": "OFF" }),
+                &["safeSearch", "safe_search"]
+            ),
+            Some("OFF".into())
+        );
+    }
+
+    /// Models quote numbers often enough that rejecting the string form costs
+    /// a turn for nothing.
+    #[test]
+    fn a_quoted_number_is_read_as_a_number() {
+        assert_eq!(
+            number_arg(&json!({ "maxChars": "5000" }), &["maxChars"]),
+            Some(5000)
+        );
+        assert_eq!(
+            number_arg(&json!({ "offset": 12.0 }), &["offset"]),
+            Some(12)
+        );
+        assert_eq!(number_arg(&json!({ "offset": "abc" }), &["offset"]), None);
+        assert_eq!(number_arg(&json!({ "offset": -5 }), &["offset"]), None);
+    }
+
+    /// The paging contract is the tool's whole answer to the truncation bug,
+    /// so the description has to teach it.
+    #[test]
+    fn the_description_explains_how_to_read_a_long_page() {
+        let schema = AuroroWebSearchTool.schema();
+        assert!(
+            schema.description.contains("nextOffset"),
+            "{}",
+            schema.description
+        );
+        assert!(
+            schema.description.contains("hasMore"),
+            "{}",
+            schema.description
+        );
     }
 }

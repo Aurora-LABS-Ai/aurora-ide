@@ -141,6 +141,40 @@ pub const TOOL_NAMES: &[&str] = &[
 ];
 
 // ---------------------------------------------------------------------------
+// Code-index integration — the ONE seam for "a write tool changed the tree".
+// ---------------------------------------------------------------------------
+
+/// A file-mutating tool succeeded: flag the workspace's code index stale and,
+/// when an index is already warm, return the edit-impact note for the written
+/// file ("other files use what this file defines…").
+///
+/// The stale flag closes the walk fingerprint's blind spots (same-second
+/// mtime, renames) — this is the seam the code-index handoff doc's §5.2a
+/// called the actual work. The note reads the warm PRE-edit index via
+/// [`peek`](crate::code_index::service::CodeIndexService::peek), which is both
+/// free and the right data: impact is about the callers that existed when the
+/// edit landed. No index in memory ⇒ no note, never a build.
+pub(crate) fn index_note_after_write(
+    ctx: &crate::agent_runtime::tool_executor::ToolContext,
+    resolved: &str,
+) -> Option<String> {
+    let root = ctx.workspace_root.as_deref()?;
+    let note = crate::code_index::impact::edit_impact_note(root, resolved);
+    crate::code_index::service().invalidate(root);
+    note
+}
+
+/// The stale flag alone, for tools that reshape the tree without a written
+/// file to report on (`move_path`, `delete_path`). A rename changes neither
+/// the file count nor the newest mtime, so without this the index never
+/// notices one.
+pub(crate) fn mark_index_stale(ctx: &crate::agent_runtime::tool_executor::ToolContext) {
+    if let Some(root) = ctx.workspace_root.as_deref() {
+        crate::code_index::service().invalidate(root);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Path-safety helpers shared across the bucket.
 // ---------------------------------------------------------------------------
 

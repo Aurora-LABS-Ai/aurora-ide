@@ -115,12 +115,26 @@ const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
 ///
 /// Framework-generated class names (`css-`, `sc-`, `ng-`) are skipped — they
 /// change on every build, so a selector built from one is stale immediately.
+///
+/// Coverage is two passes: the semantic candidate list, then a styled-
+/// clickable sweep (`cursor: pointer` roots) for controls built from bare
+/// divs/spans. What the scan still cannot see — a listener added by
+/// `addEventListener` on an unstyled element — is admitted in the empty-result
+/// note rather than silently returned as "no controls".
+///
+/// Executed under jsdom by `page-outline.test.ts` (frontend), which extracts
+/// this constant from the Rust source — keep the `r#"(() => {` framing.
 const PAGE_OUTLINE_JS: &str = r#"(() => {
   const LIMIT = __LIMIT__, SCOPE = __SCOPE__, QUERY = __QUERY__;
   const root = SCOPE ? document.querySelector(SCOPE) : document.body;
   if (!root) return null;
 
-  const CAND = 'a[href],button,input,select,textarea,summary,label,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="menuitem"],[role="option"],[contenteditable="true"],[data-testid],[onclick]';
+  // `a` deliberately without `[href]`: SPAs and mockups routinely style
+  // href-less anchors as their nav — requiring href made a whole sidebar
+  // invisible to this scan while browser_view showed it (self-test finding,
+  // 2026-08-22). `[tabindex]` catches script-driven widgets; -1 is excluded
+  // because it means "focusable only by script", not "operable by the user".
+  const CAND = 'a,button,input,select,textarea,summary,label,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="menuitem"],[role="option"],[contenteditable="true"],[data-testid],[onclick],[tabindex]:not([tabindex="-1"])';
   const esc = (s) => (window.CSS && CSS.escape) ? CSS.escape(String(s)) : String(s).replace(/[^\w-]/g, '\\$&');
   const attr = (v) => '"' + String(v).replace(/["\\]/g, '\\$&') + '"';
   const unique = (s) => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
@@ -176,8 +190,10 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
   };
 
   const labelOf = (el) => {
+    // textContent is the fallback for the odd node innerText cannot read
+    // (display:contents; and jsdom in the test rig, which has no innerText).
     const t = (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
-               el.getAttribute('title') || el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+               el.getAttribute('title') || el.innerText || el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
     return t.length > 60 ? t.slice(0, 60) + '\u2026' : t;
   };
 
@@ -195,10 +211,30 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
     return bits.join(' ');
   };
 
+  // Semantic candidates plus the styled-clickable sweep: an element a
+  // stylesheet marks `cursor: pointer` is a control the page built out of divs
+  // and spans, invisible to any tag/role query. cursor INHERITS, so only the
+  // pointer ROOT is taken — the outermost pointer element whose parent is not
+  // also pointer — or every child of a clickable card would be listed. A
+  // pointer root that already contains a semantic candidate is a wrapper, not
+  // a second control.
+  const semantic = new Set(root.querySelectorAll(CAND));
+  const isPointer = (el) => { try { return getComputedStyle(el).cursor === 'pointer'; } catch (e) { return false; } };
+  const candidates = [];
+  for (const el of root.querySelectorAll('*')) {
+    if (semantic.has(el)) { candidates.push(el); continue; }
+    const tag = el.tagName;
+    if (tag === 'HTML' || tag === 'BODY') continue;
+    if (!isPointer(el)) continue;
+    if (el.parentElement && isPointer(el.parentElement)) continue;
+    if (el.querySelector(CAND)) continue;
+    candidates.push(el);
+  }
+
   const q = QUERY ? QUERY.toLowerCase() : null;
   const out = [];
   let more = 0;
-  for (const el of root.querySelectorAll(CAND)) {
+  for (const el of candidates) {
     if (!visible(el)) continue;
     const text = labelOf(el);
     if (q && !(text.toLowerCase().includes(q) || (el.id || '').toLowerCase().includes(q))) continue;
@@ -209,7 +245,16 @@ const PAGE_OUTLINE_JS: &str = r#"(() => {
     if (st) row.state = st;
     out.push(row);
   }
-  return { url: location.href, title: document.title, shown: out.length, more, elements: out };
+  const result = { url: location.href, title: document.title, shown: out.length, more, elements: out };
+  if (!out.length) {
+    // An empty list with no reason reads as "this page has no controls" and
+    // sends the caller off to guess selectors from a screenshot. Say what the
+    // scan can see and where to go next instead.
+    result.note = q
+      ? 'Nothing matched the query filter. Drop `query` to list every control the scan can see.'
+      : 'No interactive elements found. The scan sees semantic controls (links, buttons, inputs, ARIA roles, tabindex, onclick) and elements styled clickable (cursor: pointer). If this page builds controls some other way, read it with browser_view and use browser_inspect_element to probe a selector built from its markup.';
+  }
+  return result;
 })()"#;
 
 /// Names of every tool this bucket registers, in roster order. Pinned
@@ -726,10 +771,11 @@ impl ToolExecutor for BrowserPageOutlineTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_page_outline".into(),
-            description: "List the interactive elements on the current page — links, buttons, \
-                inputs, selects, tabs, and anything with a role or data-testid — each with a \
-                READY-TO-USE CSS selector verified to match exactly one element, plus its visible \
-                text and form state. This is where selectors come from: call it before \
+            description: "List the interactive elements on the current page — links (with or \
+                without href), buttons, inputs, selects, tabs, anything with a role, tabindex, or \
+                data-testid, plus elements a stylesheet marks clickable (cursor: pointer) — each \
+                with a READY-TO-USE CSS selector verified to match exactly one element, plus its \
+                visible text and form state. This is where selectors come from: call it before \
                 browser_click / browser_fill / browser_inspect_element instead of guessing a \
                 selector from a screenshot. Read-only and bounded (no raw DOM dump)."
                 .into(),

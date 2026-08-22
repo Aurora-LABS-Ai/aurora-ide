@@ -47,7 +47,10 @@ impl ToolExecutor for FileWriteTool {
                           content you supply. {rule} Creates parent \
                           directories automatically. `content` is REQUIRED — provide the entire \
                           file body. Use file_edit for targeted changes; set must_not_exist=true to \
-                          fail instead of overwriting if the file already exists.",
+                          fail instead of overwriting if the file already exists. An overwrite may \
+                          return an `impact` field naming symbols this file exports that OTHER \
+                          files use — if their signatures or behavior changed, check those call \
+                          sites before moving on.",
                           rule = streaming_targets::RULE,
             ),
             input_schema: json!({
@@ -190,7 +193,12 @@ impl ToolExecutor for FileWriteTool {
                 // read-before-edit guard without a redundant read.
                 super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
 
-                Ok(serde_json::to_string(&json!({
+                // An overwrite is the highest-impact write there is — every
+                // symbol the file defined may have changed shape. A brand-new
+                // file naturally yields no note (the index has never seen it).
+                let impact = super::index_note_after_write(ctx, &resolved.to_string_lossy());
+
+                let mut payload = json!({
                     "success": true,
                     "pending": false,
                     "message": format!("File written: {raw_path}"),
@@ -207,8 +215,11 @@ impl ToolExecutor for FileWriteTool {
                     // as an all-lines-changed diff.
                     "oldContent": diff_side(&old_normalized),
                     "newContent": diff_side(&new_normalized),
-                }))
-                .unwrap())
+                });
+                if let Some(note) = impact {
+                    payload["impact"] = json!(note);
+                }
+                Ok(serde_json::to_string(&payload).unwrap())
             }
             Err(err) => Ok(serde_json::to_string(&json!({
                 "success": false,

@@ -571,12 +571,59 @@ export const uninstallAuroraContextMenu = async (): Promise<string> => {
 };
 
 export interface AuroraWebSearchRequest {
-  action?: string;
+  action?: 'search' | 'fetch';
   query?: string;
   url?: string;
+  /** Results to return, 1-25. Search only. */
   numResults?: number;
   region?: string;
-  safeSearch?: string;
+  safeSearch?: 'OFF' | 'MODERATE' | 'STRICT';
+  /** Characters of page text to return. Fetch only. Default 30000, max 120000. */
+  maxChars?: number;
+  /** Character to start reading at, for paging a long page. Fetch only. */
+  offset?: number;
+}
+
+export interface AuroraWebSearchHit {
+  rank: number;
+  title: string;
+  url: string;
+  displayUrl?: string;
+  snippet?: string;
+}
+
+export interface AuroraWebSearchOutcome {
+  query: string;
+  /** Which back end answered. */
+  engine: string;
+  results: AuroraWebSearchHit[];
+  count: number;
+  /** Back ends that were tried and returned nothing, with the reason. */
+  fallbacks?: Array<{ engine: string; reason: string }>;
+}
+
+export interface AuroraWebDocument {
+  url: string;
+  /** Where the request landed, when a redirect moved it. */
+  finalUrl?: string;
+  kind: 'article' | 'page' | 'text' | 'data' | 'unsupported';
+  title?: string;
+  byline?: string;
+  siteName?: string;
+  excerpt?: string;
+  published?: string;
+  language?: string;
+  contentType?: string;
+  /** The page as Markdown, or the payload verbatim for non-HTML. */
+  content: string;
+  totalChars: number;
+  returnedChars: number;
+  offset: number;
+  hasMore: boolean;
+  /** Pass back as `offset` to read the next window. */
+  nextOffset?: number;
+  /** A rewritten URL, an unreadable format, a partial download. */
+  note?: string;
 }
 
 export interface AuroraWebSearchResponse {
@@ -584,13 +631,18 @@ export interface AuroraWebSearchResponse {
   action?: string;
   query?: string;
   url?: string;
-  results?: unknown;
-  content?: unknown;
+  /** Present on a search. */
+  search?: AuroraWebSearchOutcome;
+  /** Present on a fetch. */
+  document?: AuroraWebDocument;
   error?: string;
 }
 
 /**
- * Run native web search / fetch via Aurora WebSearch SDK
+ * Search the web, or read one page as Markdown.
+ *
+ * Backed by `src-tauri/src/websearch`. A long page comes back one window at a
+ * time — when `hasMore` is set, call again with `offset: nextOffset`.
  */
 export const auroraWebSearch = async (
   request: AuroraWebSearchRequest,

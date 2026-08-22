@@ -48,10 +48,23 @@ pub(super) const MAX_TREE_RESULT_LENGTH: usize = 64 * 1024;
 /// content); the workspace map gets [`MAX_TREE_RESULT_LENGTH`] for the same
 /// reason; everything else keeps the tight [`MAX_TOOL_RESULT_LENGTH`] that
 /// stops grep / websearch megabytes from flooding the context window.
+/// Model-history cap for a fetched web page.
+///
+/// `auroro_websearch` is a content-delivery read like `file_read`: what it
+/// returns is the page the model asked to read, and clipping it defeats the
+/// call. It bounds its own output instead — a fetch returns a window plus the
+/// offset of the next one — so this cap is a backstop, not the working limit.
+/// It sits comfortably above the largest window the tool will hand over
+/// (120,000 characters) plus the JSON around it, which is the point: the tool
+/// must never reach [`compact_json_tool_content`], whose last resort throws the
+/// page away.
+pub(super) const MAX_WEB_RESULT_LENGTH: usize = 512 * 1024;
+
 pub(super) fn result_cap_for(tool: &str) -> usize {
     match tool {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
         "workspace_tree" => MAX_TREE_RESULT_LENGTH,
+        "auroro_websearch" => MAX_WEB_RESULT_LENGTH,
         _ => MAX_TOOL_RESULT_LENGTH,
     }
 }
@@ -242,13 +255,28 @@ pub(super) fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String>
         return Some(compacted);
     }
 
+    // Last resort: keep the envelope, drop the payload.
+    //
+    // This branch is lossy in a way the others are not — it does not shorten
+    // the result, it removes it — so it SAYS SO. Without the note it emits
+    // `{"success": true, "historyTruncated": true, "originalBytes": 9454}`,
+    // and a reader has no way to tell that from a tool that genuinely found
+    // nothing. That is not hypothetical: a web fetch landed here and was read
+    // as an empty page, which is what prompted `websearch` to be built around
+    // fitting under the cap rather than trusting this to shrink it.
+    //
+    // A tool reaching this branch has a bug worth fixing at the tool: it is
+    // returning more than the runtime will keep, and no compaction strategy
+    // can make that lossless.
     let mut fallback = serde_json::Map::new();
+    let mut dropped: Vec<&str> = Vec::new();
     if let serde_json::Value::Object(map) = &original {
-        for key in ["success", "message", "error", "path"] {
-            if let Some(value) = map.get(key) {
-                if !value.is_array() && !value.is_object() {
-                    fallback.insert(key.to_string(), value.clone());
-                }
+        for (key, value) in map {
+            let keepable = matches!(key.as_str(), "success" | "message" | "error" | "path");
+            if keepable && !value.is_array() && !value.is_object() {
+                fallback.insert(key.clone(), value.clone());
+            } else if !value.is_null() {
+                dropped.push(key.as_str());
             }
         }
     }
@@ -257,6 +285,19 @@ pub(super) fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String>
         "originalBytes".into(),
         serde_json::Value::from(raw.len() as u64),
     );
+    if !dropped.is_empty() {
+        fallback.insert(
+            "truncationNote".into(),
+            serde_json::Value::from(format!(
+                "This result was too large to keep ({} bytes, limit {cap}). \
+                 These fields were dropped entirely and hold no data here: {}. \
+                 Do not read their absence as an empty answer — ask for a smaller \
+                 slice of the same call instead.",
+                raw.len(),
+                dropped.join(", "),
+            )),
+        );
+    }
     let compacted = serde_json::to_string(&serde_json::Value::Object(fallback)).ok()?;
     (compacted.len() <= cap).then_some(compacted)
 }
@@ -328,11 +369,26 @@ pub(super) fn shrink_history_payload_strings(value: &mut serde_json::Value, limi
         }
         serde_json::Value::Object(map) => {
             for (key, child) in map {
-                if matches!(
+                // A payload KEY holding a STRING is the thing to shrink. A
+                // payload key holding an object or an array is a container
+                // whose own payload is one level further down, so it must be
+                // recursed into like any other key.
+                //
+                // Treating the key match as reason enough to stop was a real
+                // bug with a loud symptom. `auroro_websearch` returned
+                // `{"content": {"title": …, "content": "<the whole page>"}}`;
+                // the outer `content` matched, the `if let` failed because it
+                // is an object, the `else` never ran, and the page body was
+                // never shrunk. The binary search above could therefore never
+                // get the result under its cap, so it fell through to the
+                // envelope-only fallback and the model was handed a success
+                // with no page in it.
+                let is_payload_key = matches!(
                     key.as_str(),
                     "content" | "oldContent" | "newContent" | "stdout" | "stderr" | "output"
-                ) {
-                    if let serde_json::Value::String(text) = child {
+                );
+                match child {
+                    serde_json::Value::String(text) if is_payload_key => {
                         if text.len() > limit {
                             let original_len = text.len();
                             let mut cut = limit;
@@ -347,8 +403,7 @@ pub(super) fn shrink_history_payload_strings(value: &mut serde_json::Value, limi
                             changed = true;
                         }
                     }
-                } else {
-                    changed |= shrink_history_payload_strings(child, limit);
+                    other => changed |= shrink_history_payload_strings(other, limit),
                 }
             }
         }

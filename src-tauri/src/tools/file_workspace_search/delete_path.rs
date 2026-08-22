@@ -118,6 +118,11 @@ impl ToolExecutor for DeletePathTool {
                     eprintln!("[delete_path] emit_file_changed failed for {raw_path}: {emit_err}");
                 }
 
+                // The walk fingerprint sees a deletion (file count drops), but
+                // only on its next comparison — flag it so the very next code
+                // question rebuilds rather than answering from ghosts.
+                super::mark_index_stale(ctx);
+
                 Ok(serde_json::to_string(&json!({
                     "success": true,
                     "message": format!("Deleted: {raw_path}"),

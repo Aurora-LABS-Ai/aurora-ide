@@ -38,7 +38,7 @@ use cursor_proto::Message as _;
 
 use super::frame::{self, Frame, FrameDecoder};
 use super::history::TurnInput;
-use super::{CURSOR_API_BASE, CURSOR_CLIENT_TYPE, CURSOR_CLIENT_VERSION};
+use super::CURSOR_API_BASE;
 
 /// Full RPC path for the streaming turn.
 const RUN_PATH: &str = "/agent.v1.AgentService/Run";
@@ -65,7 +65,9 @@ pub enum TurnEvent {
     /// Cursor reports a single counter for the turn with no prompt/completion
     /// split, so this is output only. Prompt tokens are genuinely unavailable
     /// — inventing a number would corrupt Aurora's context accounting.
-    Usage { tokens: Option<i32> },
+    Usage {
+        tokens: Option<i32>,
+    },
     Done(DoneReason),
 }
 
@@ -109,10 +111,7 @@ impl BlobStore {
 }
 
 /// Build the opening `run_request`.
-fn build_run_request(
-    turn: &RunTurn<'_>,
-    blobs: &mut BlobStore,
-) -> pb::AgentClientMessage {
+fn build_run_request(turn: &RunTurn<'_>, blobs: &mut BlobStore) -> pb::AgentClientMessage {
     let root_prompt_messages_json = turn
         .input
         .root_messages
@@ -365,7 +364,9 @@ pub async fn run_turn(
             "Cursor returned HTTP {} over {version}: {detail}",
             status.as_u16()
         );
-        let _ = events.send(TurnEvent::Done(DoneReason::Error(message.clone()))).await;
+        let _ = events
+            .send(TurnEvent::Done(DoneReason::Error(message.clone())))
+            .await;
         return Err(message);
     }
 
@@ -663,7 +664,10 @@ mod tests {
         assert_eq!(state.root_prompt_messages_json.len(), entries);
         for id in &state.root_prompt_messages_json {
             assert_eq!(id.len(), 32, "a sha256 id, not an inlined body");
-            assert!(blobs.get(id).is_some(), "the server must be able to pull it");
+            assert!(
+                blobs.get(id).is_some(),
+                "the server must be able to pull it"
+            );
         }
     }
 
@@ -673,11 +677,17 @@ mod tests {
             root_messages: vec![],
             user_text: "hi".into(),
         };
-        let message = build_run_request(&turn_for("cursor-grok-4.6-high", input), &mut BlobStore::new());
+        let message = build_run_request(
+            &turn_for("cursor-grok-4.6-high", input),
+            &mut BlobStore::new(),
+        );
         let Some(pb::agent_client_message::Message::RunRequest(request)) = message.message else {
             panic!("expected a run request");
         };
-        assert_eq!(request.model_details.unwrap().model_id, "cursor-grok-4.6-high");
+        assert_eq!(
+            request.model_details.unwrap().model_id,
+            "cursor-grok-4.6-high"
+        );
         assert_eq!(
             request.requested_model.unwrap().model_id,
             "cursor-grok-4.6-high"
@@ -819,9 +829,7 @@ mod tests {
     #[cfg(test)]
     const LIVE_MODEL: &str = "cursor-grok-4.6-high";
 
-    async fn drain(
-        turn: RunTurn<'_>,
-    ) -> (Vec<TurnEvent>, DoneReason) {
+    async fn drain(turn: RunTurn<'_>) -> (Vec<TurnEvent>, DoneReason) {
         let (tx, mut rx) = mpsc::channel(64);
         let cancel = CancellationToken::new();
         let runner = tokio::spawn(async move {
@@ -900,7 +908,10 @@ mod tests {
         println!("events:   {}", events.len());
 
         assert_eq!(done, DoneReason::Stop, "the turn must end cleanly");
-        assert!(!text.trim().is_empty(), "the model must have said something");
+        assert!(
+            !text.trim().is_empty(),
+            "the model must have said something"
+        );
     }
 
     /// The one that decides everything: does the model call **Aurora's** tools,

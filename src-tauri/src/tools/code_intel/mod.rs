@@ -67,6 +67,32 @@ fn required_name(input: &Value, op: &str) -> Result<String, ToolError> {
         })
 }
 
+/// One explicit definition answer. Signature and documentation stay here,
+/// behind a requested code-index lookup. They never ride on file-edit results
+/// or broad outlines, where repeating source context would bloat every turn.
+fn definition_row(
+    idx: &CodeIndex,
+    symbol: &crate::code_index::store::Symbol,
+    include_metadata: bool,
+) -> Value {
+    let mut row = json!({
+        "symbol": symbol.qualified(),
+        "kind": symbol.kind,
+        "file": idx.file_path(symbol.file),
+        "line": symbol.line,
+        "exported": symbol.exported,
+    });
+    if include_metadata {
+        if let Some(signature) = &symbol.signature {
+            row["signature"] = json!(signature);
+        }
+        if let Some(documentation) = &symbol.documentation {
+            row["documentation"] = json!(documentation);
+        }
+    }
+    row
+}
+
 /// `in_file` narrows here too, and must.
 ///
 /// Observed live: the model sent `in_file` to `definition` three times in one
@@ -129,13 +155,11 @@ fn op_definition(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
         "op": "definition",
         "name": name,
         "found": defs.len(),
-        "definitions": defs.iter().take(MAX_ROWS).map(|s| json!({
-            "symbol": s.qualified(),
-            "kind": s.kind,
-            "file": idx.file_path(s.file),
-            "line": s.line,
-            "exported": s.exported,
-        })).collect::<Vec<_>>(),
+        // Metadata is useful only after the lookup identifies one definition.
+        // Repeating up to 720 bounded characters across 40 homonyms would turn
+        // an ambiguity answer into a large payload before the caller had even
+        // chosen the symbol it meant.
+        "definitions": defs.iter().take(MAX_ROWS).map(|s| definition_row(idx, s, defs.len() == 1)).collect::<Vec<_>>(),
     });
     // Say that a filter ran and what it hid, so the count cannot be read as
     // "this is every definition of the name".
@@ -595,11 +619,13 @@ fn op_outline(idx: &CodeIndex, path: &str) -> Value {
 
 /// Force a rebuild and report what changed.
 ///
-/// The index already re-checks the tree before every answer, so this is a
-/// belt-and-braces control rather than the primary mechanism: the automatic
-/// check compares modification times, which have one-second resolution, so an
-/// edit landing in the same second as the previous newest file can slip past
-/// it. Calling this after a batch of edits closes that window.
+/// The index already re-checks the tree before every answer, and Aurora's own
+/// write tools flag their workspace stale on every successful write (see
+/// `CodeIndexService::invalidate`), which covers the fingerprint's blind spots
+/// for edits Aurora itself made. What remains for `refresh` is changes made
+/// OUTSIDE those tools — a shell command that generated code, a `git checkout`
+/// — landing inside the fingerprint's one-second mtime resolution, where the
+/// automatic check cannot see them.
 fn op_refresh(ctx: &ToolContext) -> Result<Value, ToolError> {
     let workspace = workspace_of(ctx)?;
     let idx = crate::code_index::service()
@@ -631,8 +657,8 @@ impl ToolExecutor for CodeTool {
 answered from an index of the whole workspace, not by searching text.
 
 Use it instead of `grep` whenever you are looking for a FUNCTION, CLASS, TYPE or METHOD:
-  • `definition` — where is `X` defined? One answer with the exact file and line, instead of every \
-line that mentions the word.
+  • `definition` — where is `X` defined? Returns its exact file, line, declaration signature and \
+documentation summary when present, instead of every line that mentions the word.
   • `usages` — who calls `X`? The list of functions that use it, so you know what a change breaks \
 before you make it.
   • `outline` — what does this file define? Names and line numbers only, so you can pick the one \
@@ -653,8 +679,11 @@ lists them with a caller count each — re-ask with `in_file` to pick one. Do NO
 list by eye: those entries are different symbols that merely share a name, so picking the \
 biggest-looking one and carrying on produces a confident answer about the wrong code.
 
-The index keeps itself current on its own. Call `refresh` only after creating, deleting or renaming \
-several files, when the next answer has to be certain to include them.
+The index keeps itself current on its own, and Aurora's own file tools (file_edit, file_write, \
+move_path, delete_path) report their writes to it — after those, the next answer already reflects \
+the change with no action from you. Call `refresh` only when files changed OUTSIDE those tools — a \
+shell command that generated or rewrote code, a git checkout — and the next answer has to be \
+certain to include them.
 
 Limits worth knowing: the index reads syntax, not types, so it cannot tell you what something \
 RETURNS and will not catch type errors — use `read_lints` for that. It finds the files a change \
@@ -784,6 +813,37 @@ mod tests {
     }
 
     #[test]
+    fn signature_and_documentation_require_an_explicit_definition_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("documented.rs"),
+            "/// Sends one queued message.\npub fn send(message: &str) -> bool { !message.is_empty() }\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let definition = op_definition(&idx, "send", None);
+        assert_eq!(
+            definition["definitions"][0]["signature"],
+            "pub fn send(message: &str) -> bool"
+        );
+        assert_eq!(
+            definition["definitions"][0]["documentation"],
+            "Sends one queued message."
+        );
+
+        let outline = op_outline(&idx, "documented.rs");
+        assert!(
+            outline["outline"][0].get("signature").is_none(),
+            "{outline}"
+        );
+        assert!(
+            outline["outline"][0].get("documentation").is_none(),
+            "{outline}"
+        );
+    }
+
+    #[test]
     fn definition_honours_in_file_and_says_what_it_hid() {
         // Reproduces a live failure exactly: the model sent `in_file` to
         // `definition`, the runtime ignored it, three homonyms came back, and
@@ -805,15 +865,23 @@ mod tests {
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
 
+        let ambiguous = op_definition(&idx, "hasCapability", None);
         assert_eq!(
-            op_definition(&idx, "hasCapability", None)["found"],
-            2,
+            ambiguous["found"], 2,
             "fixture must be ambiguous without the filter"
+        );
+        assert!(
+            ambiguous["definitions"][0].get("signature").is_none(),
+            "metadata must wait until one definition is selected: {ambiguous}"
         );
 
         let v = op_definition(&idx, "hasCapability", Some("core/orch.ts"));
         assert_eq!(v["found"], 1, "the filter must actually run: {v}");
         assert_eq!(v["definitions"][0]["file"], "core/orch.ts");
+        assert!(
+            v["definitions"][0]["signature"].is_string(),
+            "the narrowed definition should carry its signature: {v}"
+        );
         assert_eq!(
             v["alsoDefinedElsewhere"], 1,
             "a narrowed count must not read as the whole truth: {v}"

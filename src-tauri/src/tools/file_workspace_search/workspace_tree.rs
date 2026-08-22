@@ -747,12 +747,20 @@ fn stat_file(path: &Path) -> Result<FileStat, String> {
     })
 }
 
-/// Count line separators by streaming bytes.
+/// Count lines by streaming bytes.
 ///
 /// Never materialises the file as a `String`, and never touches the shared
 /// content cache — a one-off line count would otherwise evict the file bodies
 /// that `file_read` actually needs. CRLF counts once; a lone CR counts (classic
 /// Mac); an empty file is zero lines.
+///
+/// **The convention is `file_read`'s, deliberately**: a trailing separator ends
+/// the last line, it does not start another — `"a\nb\n"` is 2 lines. This
+/// counter used to say 3 (`separators + 1` unconditionally), which made this
+/// tool disagree with `file_read` and `wc -l` by exactly one on every file
+/// ending in a newline — observed live: an agent burned turns investigating
+/// whether 436-vs-435 meant its edit had corrupted the file. Two tools, one
+/// number.
 fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
     use std::io::Read;
 
@@ -760,6 +768,7 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
     let mut buffer = [0u8; 64 * 1024];
     let mut separators = 0usize;
     let mut previous_was_cr = false;
+    let mut last_byte: u8 = 0;
     let mut saw_any_byte = false;
 
     loop {
@@ -786,9 +795,20 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
             separators -= 1;
         }
         previous_was_cr = chunk.last() == Some(&b'\r');
+        last_byte = *chunk.last().expect("chunk is non-empty");
     }
 
-    Ok(if saw_any_byte { separators + 1 } else { 0 })
+    if !saw_any_byte {
+        return Ok(0);
+    }
+    // A final line without its separator still counts; a trailing separator
+    // adds nothing.
+    let ends_terminated = last_byte == b'\n' || last_byte == b'\r';
+    Ok(if ends_terminated {
+        separators
+    } else {
+        separators + 1
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,7 +1364,9 @@ mod tests {
             .unwrap()
             .clone();
 
-        assert_eq!(node["lineCount"], 2);
+        // One line — the trailing newline terminates it, same convention as
+        // `file_read` and `wc -l`.
+        assert_eq!(node["lineCount"], 1);
         assert!(node.get("size").is_none(), "lineCount already covers it");
         assert!(node.get("extension").is_none(), "the name ends in .rs");
         assert!(
@@ -1467,15 +1489,21 @@ mod tests {
     }
 
     #[test]
-    fn line_counter_matches_the_old_string_semantics() {
+    fn line_counter_matches_file_read_and_wc() {
+        // ONE convention across `workspace_tree`, `file_read`, and `wc -l`: a
+        // trailing separator ends the last line rather than starting a phantom
+        // one. The old `+1` semantics made this tool report 436 for a file
+        // every other counter called 435, and an agent spent turns
+        // investigating whether its own edit had corrupted the file.
         let tmp = tempfile::tempdir().unwrap();
         for (content, expected) in [
             ("", 0usize),
             ("one line", 1),
-            ("a\nb\n", 3),
-            ("a\r\nb\r\n", 3),
-            ("a\rb\r", 3),
+            ("a\nb\n", 2),
+            ("a\r\nb\r\n", 2),
+            ("a\rb\r", 2),
             ("a\nb", 2),
+            ("\n", 1),
         ] {
             let path = tmp.path().join("probe.txt");
             std::fs::write(&path, content).unwrap();

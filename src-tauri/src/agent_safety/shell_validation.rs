@@ -437,6 +437,17 @@ mod tests {
         assert!(matches!(err, BashValidationError::Warning(_)));
     }
 
+    #[test]
+    fn posix_package_install_with_rm_like_package_names_is_allowed() {
+        validate_for_shell(
+            "bun add clsx tailwind-merge lucide-react react-hook-form zod",
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Bash,
+            Some(workspace()),
+        )
+        .expect("package-name substrings must not be classified as rm -rf");
+    }
+
     /// The verbatim command from session `41841342`: bash expanded `$_` to
     /// `/usr/bin/bash` and PowerShell answered with pages of
     /// CommandNotFoundException. The guard must name the escape routes.

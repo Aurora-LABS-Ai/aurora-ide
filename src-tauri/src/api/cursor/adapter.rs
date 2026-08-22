@@ -158,9 +158,8 @@ impl StreamingApiClient for CursorAdapter {
                         TurnEvent::Usage { tokens } => {
                             // A per-delta counter, so accumulate rather than
                             // overwrite — the last update is not the total.
-                            acc.tokens = acc
-                                .tokens
-                                .saturating_add(tokens.unwrap_or(0).max(0) as u32);
+                            acc.tokens =
+                                acc.tokens.saturating_add(tokens.unwrap_or(0).max(0) as u32);
                         }
                         TurnEvent::Done(reason) => done = reason,
                     }
@@ -170,9 +169,9 @@ impl StreamingApiClient for CursorAdapter {
             });
 
             let outcome = session::run_turn(turn, tx, cancel_token.clone()).await;
-            let (acc, done) = pump.await.map_err(|err| {
-                ApiError::Provider(format!("Cursor event pump failed: {err}"))
-            })?;
+            let (acc, done) = pump
+                .await
+                .map_err(|err| ApiError::Provider(format!("Cursor event pump failed: {err}")))?;
 
             if let Err(err) = outcome {
                 if !refreshed_once && looks_like_auth_failure(&err) {
@@ -355,20 +354,29 @@ mod tests {
         // inventing one here would 400 a later turn on a different provider.
         assert!(matches!(
             &acc.into_blocks()[0],
-            ContentBlock::Thinking { signature: None, .. }
+            ContentBlock::Thinking {
+                signature: None,
+                ..
+            }
         ));
     }
 
     #[test]
     fn only_auth_failures_earn_a_forced_refresh() {
-        assert!(looks_like_auth_failure("Cursor returned HTTP 401 over HTTP/2: "));
+        assert!(looks_like_auth_failure(
+            "Cursor returned HTTP 401 over HTTP/2: "
+        ));
         assert!(looks_like_auth_failure("unauthenticated: token expired"));
         assert!(looks_like_auth_failure("HTTP 403"));
 
         // Retrying these with a fresh token only doubles the wait.
         assert!(!looks_like_auth_failure("Cursor returned HTTP 500"));
-        assert!(!looks_like_auth_failure("internal: parse binary: premature EOF"));
-        assert!(!looks_like_auth_failure("Cursor stream failed: connection reset"));
+        assert!(!looks_like_auth_failure(
+            "internal: parse binary: premature EOF"
+        ));
+        assert!(!looks_like_auth_failure(
+            "Cursor stream failed: connection reset"
+        ));
     }
 
     #[test]

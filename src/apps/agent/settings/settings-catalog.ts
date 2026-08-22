@@ -122,6 +122,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
       "Global instructions, execution mode, context compaction, and chat titling — how the agent behaves everywhere.",
     searchTerms: [
       "global instructions",
+      "persona",
+      "instruction set",
       "execution mode",
       "plan mode",
       "read outside workspace",

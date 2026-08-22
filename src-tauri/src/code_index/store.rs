@@ -39,6 +39,11 @@ pub struct Symbol {
     pub col: u32,
     pub container: Option<String>,
     pub exported: bool,
+    /// Bounded declaration header. Kept out of broad index answers and write
+    /// results; `code` returns it only for an explicit definition lookup.
+    pub signature: Option<String>,
+    /// Bounded first paragraph of an attributable doc comment or docstring.
+    pub documentation: Option<String>,
 }
 
 impl Symbol {
@@ -281,6 +286,8 @@ impl CodeIndex {
                      col,
                      container,
                      exported,
+                     signature,
+                     documentation,
                  }| Symbol {
                     name,
                     kind,
@@ -289,6 +296,8 @@ impl CodeIndex {
                     col,
                     container,
                     exported,
+                    signature,
+                    documentation,
                 },
             ));
             idx.refs.extend(facts.refs.into_iter().map(
@@ -844,6 +853,48 @@ mod tests {
         std::fs::write(root.join(".gitignore"), "generated.ts\n").unwrap();
         std::fs::write(root.join("generated.ts"), "export function ghost() {}\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn late_export_forms_mark_top_level_symbols_exported() {
+        // `export default App` / `export { helper }` at the BOTTOM of the file
+        // — the standard React shape — leave the declarations outside any
+        // export_statement, so the ancestor walk alone reported them private.
+        // Measured live: an app's root component read exported=false, and the
+        // edit-impact note said nothing about the one file everything renders.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.tsx"),
+            "function App() { return null }\n\
+             function helper() {}\n\
+             function local_only() {}\n\
+             class Store { run() {} }\n\
+             export default App\n\
+             export { helper }\n",
+        )
+        .unwrap();
+        // A re-export must NOT brand a local symbol: `run` here is someone
+        // else's export, and this file's `Store.run` method stays private.
+        std::fs::write(
+            dir.path().join("barrel.ts"),
+            "export { run } from \"./elsewhere\";\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let exported = |name: &str| {
+            idx.definitions(name)
+                .first()
+                .unwrap_or_else(|| panic!("{name} must be indexed"))
+                .exported
+        };
+        assert!(exported("App"), "export default App marks the function");
+        assert!(exported("helper"), "export {{ helper }} marks the function");
+        assert!(!exported("local_only"), "unexported stays private");
+        assert!(
+            !exported("run"),
+            "a re-export names another module's symbol, not the class method here"
+        );
     }
 
     #[test]

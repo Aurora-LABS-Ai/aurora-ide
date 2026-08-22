@@ -223,21 +223,6 @@ impl CursorModel {
         }
         (!id.is_empty()).then_some(id)
     }
-
-    /// The label to show, falling back through the names Cursor supplies
-    /// before finally using the raw id.
-    #[must_use]
-    pub fn label(&self) -> &str {
-        self.display_name
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .or_else(|| {
-                self.display_name_short
-                    .as_deref()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .unwrap_or(&self.model_id)
-    }
 }
 
 pub struct CursorModelsRepository<'a> {
@@ -584,7 +569,11 @@ mod tests {
         repo.set_enabled_bulk(&["m7".to_string(), "m42".to_string()], true)
             .unwrap();
 
-        assert_eq!(repo.list().unwrap().len(), 204, "provider page: all of them");
+        assert_eq!(
+            repo.list().unwrap().len(),
+            204,
+            "provider page: all of them"
+        );
         let selectable: Vec<_> = repo
             .list_enabled()
             .unwrap()
@@ -601,7 +590,10 @@ mod tests {
         let repo = CursorModelsRepository::new(&conn);
         let models = vec![model("composer-2.5"), model("gpt-5.2"), model("auto")];
 
-        assert_eq!(repo.replace_all(&models, "2026-08-22T00:00:00Z").unwrap(), 3);
+        assert_eq!(
+            repo.replace_all(&models, "2026-08-22T00:00:00Z").unwrap(),
+            3
+        );
 
         let listed = repo.list().unwrap();
         let ids: Vec<_> = listed.iter().map(|m| m.model_id.as_str()).collect();
@@ -671,23 +663,6 @@ mod tests {
         let listed = repo.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0], rich);
-        assert_eq!(listed[0].label(), "Claude Opus 5 (Thinking, High)");
-    }
-
-    #[test]
-    fn label_falls_back_through_the_names_cursor_supplies() {
-        let mut m = model("raw-id");
-        assert_eq!(m.label(), "raw-id", "no names: show the id");
-
-        m.display_name_short = Some("Short".into());
-        assert_eq!(m.label(), "Short");
-
-        m.display_name = Some("Full Name".into());
-        assert_eq!(m.label(), "Full Name");
-
-        // A blank name is not a name.
-        m.display_name = Some("   ".into());
-        assert_eq!(m.label(), "Short");
     }
 
     #[test]

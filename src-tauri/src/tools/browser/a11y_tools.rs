@@ -204,6 +204,22 @@ impl ToolExecutor for BrowserAccessibilityTreeTool {
         ctx.bail_if_cancelled()?;
         ensure_agent_browser(&self.manager, None).await?;
 
+        // The Accessibility domain is LAZY: with it disabled, the engine
+        // serves whatever partial AX tree it happens to have materialized, and
+        // two reads of one static page can disagree — measured live as 2 named
+        // interactive elements where an earlier read of the same page returned
+        // 11 (aurora-tool-findings.md, 2026-08-22). Enabling forces a full
+        // tree build before the read. Idempotent, so it rides every call.
+        self.manager
+            .call_devtools(AGENT_BROWSER_LABEL, "Accessibility.enable", Value::Null)
+            .await
+            .map_err(|e| {
+                ToolError::Execution(format!(
+                    "could not enable the accessibility domain, so the tree would be \
+                     unreliable: {e}"
+                ))
+            })?;
+
         let response = self
             .manager
             .call_devtools(

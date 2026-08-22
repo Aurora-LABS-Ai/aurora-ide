@@ -30,7 +30,18 @@ tauri-plugin-process = "2"
 tauri-plugin-os = "2"
 tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# `gzip`/`brotli`/`deflate` let the web tools accept compressed pages, which is
+# what every site serves a browser — without them a page arrives as compressed
+# bytes and parses as garbage. `cookies` is needed because search endpoints set
+# a session cookie on the first request and serve a challenge page without it.
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+    "cookies",
+] }
 eventsource-stream = "0.2"
 futures = "0.3"
 futures-util = "0.3"
@@ -56,8 +67,28 @@ chrono = { version = "0.4", features = ["serde"] }
 # Diff library for comparing file changes
 similar = "2"
 
-# https://crates.io/crates/aurora_websearch
-aurora_websearch = "0.1.0"
+# Web search + page fetch (src/websearch). Aurora reads the open web itself
+# rather than through a wrapper crate: the engine's result markup and a page's
+# article body are two different parsing problems, and both need to fail out
+# loud when a site changes shape.
+#
+# `dom_query` is the one HTML engine — it parses the search engine's result
+# page AND backs `dom_smoothie`, so there is a single selector implementation
+# in the build instead of two. `dom_smoothie` is a Rust port of the Readability
+# algorithm Firefox Reader View uses; it finds the article body and drops nav,
+# scripts and boilerplate. `htmd` then turns that body into Markdown, so
+# headings, lists, tables and code blocks survive into the model's context
+# instead of collapsing into one run-on line of text.
+dom_query = "0.28"
+dom_smoothie = "0.18"
+htmd = "0.5"
+# Pages still ship Shift_JIS, windows-1251 and friends. `encoding_rs` decodes
+# by the label the server (or the page's own <meta charset>) declares; assuming
+# UTF-8 turns every such page into replacement characters.
+encoding_rs = "0.8"
+# Parses the `Content-Type` header so a PDF, a zip or an image is named as
+# unreadable rather than fed through an HTML parser as if it were a page.
+mime = "0.3"
 
 # Native Qwen3-ASR speech recognition. Default build is CPU-only; CUDA builds opt in via Aurora's `cuda` feature.
 qwen3-asr = { version = "0.2.2", default-features = false }
@@ -209,7 +240,8 @@ tokio = { version = "1", features = ["test-util"] }
 [patch.crates-io]
 # tokenizers enables esaxx-rs/cpp by default. The upstream esaxx-rs build uses
 # the static MSVC CRT, which conflicts with cxx's dynamic CRT when Aurora links
-# its Tauri cdylib. Keep the crate source identical except for dynamic CRT.
+# its Tauri cdylib. The vendored build also gives MSVC its native `/std` flag;
+# upstream passes GCC's `-std=c++11`, which cl.exe ignores with warning D9002.
 esaxx-rs = { path = "../vendor/esaxx-rs" }
 # candle-kernels builds its CUDA MOE archive with the static MSVC CRT by default.
 # Aurora links a Tauri cdylib with dynamic CRT dependencies, so keep the crate

@@ -15,7 +15,7 @@
  * next to Prompt refine (they can share the same local model).
  */
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   useSettingsStore,
@@ -23,7 +23,10 @@ import {
   COMPACTION_THRESHOLD_MAX,
   COMPACTION_SUMMARY_BUDGET_MIN,
   COMPACTION_SUMMARY_BUDGET_MAX,
+  GLOBAL_INSTRUCTION_PROFILE_LIMIT,
+  GLOBAL_INSTRUCTION_NAME_MAX,
 } from "@/kernel/store/useSettingsStore";
+import { AgentIcon } from "../shared/AgentIcon";
 import { CodeIndexCard } from "./CodeIndexCard";
 import {
   AgwPill,
@@ -54,8 +57,74 @@ export const AgentSettings: React.FC = () => {
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
 
-  const globalInstructions = useSettingsStore((s) => s.globalInstructions);
-  const setGlobalInstructions = useSettingsStore((s) => s.setGlobalInstructions);
+  const giProfiles = useSettingsStore((s) => s.globalInstructionProfiles);
+  const giActiveId = useSettingsStore((s) => s.activeGlobalInstructionProfileId);
+  const addGiProfile = useSettingsStore((s) => s.addGlobalInstructionProfile);
+  const renameGiProfile = useSettingsStore((s) => s.renameGlobalInstructionProfile);
+  const setGiText = useSettingsStore((s) => s.setGlobalInstructionProfileText);
+  const setGiActive = useSettingsStore((s) => s.setActiveGlobalInstructionProfile);
+  const removeGiProfile = useSettingsStore((s) => s.removeGlobalInstructionProfile);
+
+  // Which set the editor is SHOWING — a view choice, not the persisted "which
+  // set is sent" choice. Starts on the live set so opening the page shows what
+  // the agent is actually using.
+  const [giSelectedId, setGiSelectedId] = useState<string>(
+    () => giActiveId || giProfiles[0]?.id || "",
+  );
+  const [giRenamingId, setGiRenamingId] = useState<string | null>(null);
+  const [giNameDraft, setGiNameDraft] = useState("");
+  const [giConfirmDelete, setGiConfirmDelete] = useState(false);
+  const giRenameRef = useRef<HTMLInputElement>(null);
+
+  const giSelected =
+    giProfiles.find((p) => p.id === giSelectedId) ?? giProfiles[0];
+
+  useEffect(() => {
+    if (giRenamingId) giRenameRef.current?.select();
+  }, [giRenamingId]);
+
+  const startGiRename = (id: string, currentName: string) => {
+    setGiRenamingId(id);
+    setGiNameDraft(currentName);
+  };
+  const commitGiRename = () => {
+    if (giRenamingId) renameGiProfile(giRenamingId, giNameDraft);
+    setGiRenamingId(null);
+  };
+  const handleGiAdd = () => {
+    const id = addGiProfile();
+    if (!id) return;
+    setGiSelectedId(id);
+    // A fresh set is named "Persona N" — put the caret straight on it so the
+    // user's first act is naming their persona, not hunting for Rename.
+    const created = useSettingsStore
+      .getState()
+      .globalInstructionProfiles.find((p) => p.id === id);
+    startGiRename(id, created?.name ?? "");
+  };
+  const handleGiDelete = () => {
+    if (!giSelected) return;
+    if (!giConfirmDelete) {
+      setGiConfirmDelete(true);
+      return;
+    }
+    const fallback = giProfiles.find((p) => p.id !== giSelected.id);
+    removeGiProfile(giSelected.id);
+    setGiConfirmDelete(false);
+    if (fallback) setGiSelectedId(fallback.id);
+  };
+  const handleGiTabKeys = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const index = giProfiles.findIndex((p) => p.id === giSelected?.id);
+    if (index < 0) return;
+    const next =
+      giProfiles[
+        (index + (e.key === "ArrowRight" ? 1 : giProfiles.length - 1)) %
+          giProfiles.length
+      ];
+    setGiSelectedId(next.id);
+    e.preventDefault();
+  };
 
   const allowOutsideWorkspace = useSettingsStore((s) => s.allowOutsideWorkspace);
   const setAllowOutsideWorkspace = useSettingsStore((s) => s.setAllowOutsideWorkspace);
@@ -89,7 +158,9 @@ export const AgentSettings: React.FC = () => {
   }, [providers, modelSlice, getAvailableModels]);
 
   const mode: Mode = executionMode === "plan" ? "plan" : "agent";
-  const remaining = GLOBAL_INSTRUCTIONS_MAX - globalInstructions.length;
+  const giText = giSelected?.text ?? "";
+  const giRemaining = GLOBAL_INSTRUCTIONS_MAX - giText.length;
+  const giIsActive = !!giSelected && giSelected.id === giActiveId;
 
   return (
     <div className="agw-set-wide">
@@ -97,26 +168,131 @@ export const AgentSettings: React.FC = () => {
       <SettingsSection
         icon="message"
         title="Global instructions"
-        description="Standing rules for the agent, applied to every workspace before any work — like one global rule you set once. Used by both this window and the IDE agent."
+        description="Standing rules for the agent, applied to every workspace before any work. Keep up to three named sets — one persona each — and switch on the one you want; only that set is sent. Used by both this window and the IDE agent."
       >
-        <SettingsBlock last>
-          <textarea
-            className="agw-set-textarea"
-            value={globalInstructions}
-            maxLength={GLOBAL_INSTRUCTIONS_MAX}
-            onChange={(e) => setGlobalInstructions(e.target.value)}
-            placeholder={
-              "e.g. Always respond in concise, senior-engineer tone.\nPrefer TypeScript. Never add comments that just restate the code.\nAsk before large refactors."
-            }
-            spellCheck={false}
-            rows={6}
-          />
-          <div className="agw-agent-ginfo">
-            <span>Applies across all workspaces — high priority, but your message each turn still wins.</span>
-            <span className="agw-agent-gcount" data-low={remaining < 200 || undefined}>
-              {globalInstructions.length} / {GLOBAL_INSTRUCTIONS_MAX}
-            </span>
+        <SettingsBlock last searchTerms="global instructions persona instruction set active rules">
+          <div className="agw-gi-head">
+            <div
+              className="agw-gi-tabs"
+              role="tablist"
+              aria-label="Instruction sets"
+              onKeyDown={handleGiTabKeys}
+            >
+              {giProfiles.map((profile) =>
+                giRenamingId === profile.id ? (
+                  <input
+                    key={profile.id}
+                    ref={giRenameRef}
+                    className="agw-gi-tab-input"
+                    value={giNameDraft}
+                    maxLength={GLOBAL_INSTRUCTION_NAME_MAX}
+                    onChange={(e) => setGiNameDraft(e.target.value)}
+                    onBlur={commitGiRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitGiRename();
+                      if (e.key === "Escape") setGiRenamingId(null);
+                    }}
+                    aria-label="Set name"
+                    spellCheck={false}
+                  />
+                ) : (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={profile.id === giSelected?.id}
+                    className="agw-gi-tab"
+                    data-selected={profile.id === giSelected?.id || undefined}
+                    onClick={() => {
+                      setGiSelectedId(profile.id);
+                      setGiConfirmDelete(false);
+                    }}
+                    onDoubleClick={() => startGiRename(profile.id, profile.name)}
+                    title={
+                      profile.id === giActiveId
+                        ? `${profile.name} — sent with every chat`
+                        : profile.name
+                    }
+                  >
+                    {profile.id === giActiveId && (
+                      <span className="agw-gi-tab-dot" aria-hidden />
+                    )}
+                    <span className="agw-gi-tab-name">{profile.name}</span>
+                  </button>
+                ),
+              )}
+            </div>
+            {giProfiles.length < GLOBAL_INSTRUCTION_PROFILE_LIMIT && (
+              <button
+                type="button"
+                className="agw-gi-add"
+                onClick={handleGiAdd}
+                aria-label="New instruction set"
+                title={`New instruction set (up to ${GLOBAL_INSTRUCTION_PROFILE_LIMIT})`}
+              >
+                <AgentIcon name="plus" size={13} />
+              </button>
+            )}
           </div>
+
+          {giSelected && (
+            <>
+              <textarea
+                className="agw-set-textarea"
+                value={giText}
+                maxLength={GLOBAL_INSTRUCTIONS_MAX}
+                onChange={(e) => setGiText(giSelected.id, e.target.value)}
+                placeholder={
+                  "e.g. Always respond in concise, senior-engineer tone.\nPrefer TypeScript. Never add comments that just restate the code.\nAsk before large refactors."
+                }
+                spellCheck={false}
+                rows={6}
+                aria-label={`Instructions for ${giSelected.name}`}
+              />
+              <div className="agw-gi-foot">
+                <div className="agw-gi-activate">
+                  <AgwSwitch
+                    checked={giIsActive}
+                    onChange={(on) => setGiActive(on ? giSelected.id : null)}
+                    tone="success"
+                    ariaLabel={`Use "${giSelected.name}" in every chat`}
+                  />
+                  <span className="agw-gi-state" data-on={giIsActive || undefined}>
+                    {giIsActive
+                      ? "Sent with every chat"
+                      : "Not sent — switch on to use this set"}
+                  </span>
+                </div>
+                <div className="agw-gi-actions">
+                  <button
+                    type="button"
+                    className="agw-gi-actbtn"
+                    onClick={() => startGiRename(giSelected.id, giSelected.name)}
+                  >
+                    Rename
+                  </button>
+                  {giProfiles.length > 1 && (
+                    <button
+                      type="button"
+                      className="agw-gi-actbtn"
+                      data-danger
+                      data-confirm={giConfirmDelete || undefined}
+                      onClick={handleGiDelete}
+                      onMouseLeave={() => setGiConfirmDelete(false)}
+                    >
+                      {giConfirmDelete ? "Click again to delete" : "Delete"}
+                    </button>
+                  )}
+                  <span
+                    className="agw-agent-gcount"
+                    data-low={giRemaining < 200 || undefined}
+                  >
+                    {giText.length} / {GLOBAL_INSTRUCTIONS_MAX}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
         </SettingsBlock>
       </SettingsSection>
 

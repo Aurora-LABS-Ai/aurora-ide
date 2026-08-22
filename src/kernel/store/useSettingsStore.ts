@@ -30,6 +30,7 @@ import type {
   AppSettings as DbAppSettings,
   DbLLMProvider,
   DbProviderModel,
+  GlobalInstructionProfile,
   ModelReasoning,
 } from "@/kernel/types/database";
 import { useIconPackStore } from "./useIconPackStore";
@@ -114,6 +115,77 @@ export const DEFAULT_COMPACTION_SUMMARY_BUDGET = 16000;
 export const COMPACTION_SUMMARY_BUDGET_MIN = 4000;
 export const COMPACTION_SUMMARY_BUDGET_MAX = 24000;
 
+// Global instructions (Settings → Agent). The user keeps up to three named
+// sets ("personas") and activates at most one; only the active set's text is
+// injected into the agent's system prompt.
+export const GLOBAL_INSTRUCTION_PROFILE_LIMIT = 3;
+export const GLOBAL_INSTRUCTION_NAME_MAX = 30;
+/** Id the pre-profile single string migrates onto, kept stable for tests. */
+export const LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID = "default";
+export type { GlobalInstructionProfile };
+
+const clampProfileName = (name: string): string =>
+  name.trim().slice(0, GLOBAL_INSTRUCTION_NAME_MAX);
+
+/**
+ * The text the system prompt should carry: the active set's, or '' when no
+ * set is active. The one read path — `agent-prompt.ts` and the DB's legacy
+ * `globalInstructions` mirror both go through here.
+ */
+export const selectActiveGlobalInstructions = (state: {
+  globalInstructionProfiles: GlobalInstructionProfile[];
+  activeGlobalInstructionProfileId: string;
+}): string =>
+  state.globalInstructionProfiles.find(
+    (p) => p.id === state.activeGlobalInstructionProfileId,
+  )?.text ?? "";
+
+/**
+ * Turn whatever the DB holds into well-formed profile state: 1–3 entries with
+ * string fields and unique ids, plus an active id that names one of them.
+ * A row saved before profiles existed migrates its single string onto one
+ * "Default" set — active when it had text, because that text WAS in effect.
+ *
+ * Exported for tests; the store's `initialize` is the only production caller.
+ */
+export const resolveGlobalInstructionState = (
+  savedProfiles: unknown,
+  savedActiveId: string,
+  legacyText: string,
+): { profiles: GlobalInstructionProfile[]; activeId: string } => {
+  const seen = new Set<string>();
+  const profiles: GlobalInstructionProfile[] = [];
+  if (Array.isArray(savedProfiles)) {
+    for (const entry of savedProfiles) {
+      if (!entry || typeof entry !== "object") continue;
+      const { id, name, text } = entry as Partial<GlobalInstructionProfile>;
+      if (typeof id !== "string" || id.length === 0 || seen.has(id)) continue;
+      seen.add(id);
+      profiles.push({
+        id,
+        name:
+          typeof name === "string" && name.trim()
+            ? clampProfileName(name)
+            : `Persona ${profiles.length + 1}`,
+        text: typeof text === "string" ? text : "",
+      });
+      if (profiles.length === GLOBAL_INSTRUCTION_PROFILE_LIMIT) break;
+    }
+  }
+  if (profiles.length > 0) {
+    return {
+      profiles,
+      activeId: profiles.some((p) => p.id === savedActiveId) ? savedActiveId : "",
+    };
+  }
+  return {
+    profiles: [
+      { id: LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID, name: "Default", text: legacyText },
+    ],
+    activeId: legacyText.trim() ? LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID : "",
+  };
+};
+
 /** Chat-title source: derived first message, local llama.cpp, or a cloud endpoint. */
 export type TitleMakerMode = 'off' | 'local' | 'cloud';
 const clampCompactionThreshold = (value: number): number =>
@@ -176,11 +248,23 @@ interface SettingsState {
    */
   teamMemberModel: string;
   /**
-   * Global, workspace-agnostic user instructions injected into the agent's
-   * system prompt for EVERY workspace (like a global rule). Empty = none.
+   * Named global-instruction sets (Settings → Agent), up to
+   * {@link GLOBAL_INSTRUCTION_PROFILE_LIMIT}. At most one is active; only the
+   * active one's text reaches the agent's system prompt
+   * (`selectActiveGlobalInstructions`). Always holds at least one entry so
+   * the editor has a tab to show.
    */
-  globalInstructions: string;
-  setGlobalInstructions: (value: string) => void;
+  globalInstructionProfiles: GlobalInstructionProfile[];
+  /** Id of the active set. Empty string = none is sent. */
+  activeGlobalInstructionProfileId: string;
+  /** Create a new set. Returns its id, or null when the cap is reached. */
+  addGlobalInstructionProfile: () => string | null;
+  renameGlobalInstructionProfile: (id: string, name: string) => void;
+  setGlobalInstructionProfileText: (id: string, text: string) => void;
+  /** Activate one set (exclusive), or pass null to deactivate all. */
+  setActiveGlobalInstructionProfile: (id: string | null) => void;
+  /** Delete a set. The last remaining set cannot be deleted. */
+  removeGlobalInstructionProfile: (id: string) => void;
 
   // Context Compaction (see DOCS/compaction-design.md)
   /** Trigger as a % of the context window (50–95). The runtime summarizes
@@ -1138,10 +1222,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // IC team to specific configured providers from the Agent Window's Settings → Team.
   teamLeadModel: '',
   teamMemberModel: '',
-  // Default integration-gate commands (Settings → Team). Empty = skip that gate.
-  // Global, workspace-agnostic user instructions (one global rule applied
-  // everywhere). Empty by default.
-  globalInstructions: '',
+  // Global instructions: one empty "Default" set, none active. Replaced by
+  // what the DB holds (or the legacy single string) in initialize.
+  globalInstructionProfiles: [
+    { id: LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID, name: 'Default', text: '' },
+  ],
+  activeGlobalInstructionProfileId: '',
 
   // Context Compaction: auto-summarize older history at 80% of the window,
   // with a generous 8k-token summary. Both user-configurable (Settings → Agent).
@@ -1458,6 +1544,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           get().models,
           persistedThinkingEnabled
         );
+        const globalInstructionState = resolveGlobalInstructionState(
+          appSettings.globalInstructionProfiles,
+          appSettings.activeGlobalInstructionProfileId ?? '',
+          appSettings.globalInstructions ?? '',
+        );
 
         set({
           selectedModel,
@@ -1467,7 +1558,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
           teamLeadModel: appSettings.teamLeadModel ?? '',
           teamMemberModel: appSettings.teamMemberModel ?? '',
-          globalInstructions: appSettings.globalInstructions ?? '',
+          globalInstructionProfiles: globalInstructionState.profiles,
+          activeGlobalInstructionProfileId: globalInstructionState.activeId,
           compactionThresholdPct: clampCompactionThreshold(
             appSettings.compactionThresholdPct ?? DEFAULT_COMPACTION_THRESHOLD_PCT,
           ),
@@ -1579,7 +1671,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         maxTeamSize: state.maxTeamSize,
         teamLeadModel: state.teamLeadModel,
         teamMemberModel: state.teamMemberModel,
-        globalInstructions: state.globalInstructions,
+        // Legacy mirror: older builds read the single string, so it carries
+        // the active set's text (empty when none is active).
+        globalInstructions: selectActiveGlobalInstructions(state),
+        globalInstructionProfiles: state.globalInstructionProfiles,
+        activeGlobalInstructionProfileId: state.activeGlobalInstructionProfileId,
         compactionThresholdPct: state.compactionThresholdPct,
         compactionSummaryBudget: state.compactionSummaryBudget,
         compactionModel: state.compactionModel,
@@ -2176,8 +2272,62 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
-  setGlobalInstructions: (value: string) => {
-    set({ globalInstructions: value });
+  addGlobalInstructionProfile: () => {
+    const profiles = get().globalInstructionProfiles;
+    if (profiles.length >= GLOBAL_INSTRUCTION_PROFILE_LIMIT) return null;
+    const id = uuidv4();
+    set({
+      globalInstructionProfiles: [
+        ...profiles,
+        { id, name: `Persona ${profiles.length + 1}`, text: '' },
+      ],
+    });
+    get().saveToDatabase();
+    return id;
+  },
+
+  renameGlobalInstructionProfile: (id: string, name: string) => {
+    const trimmed = clampProfileName(name);
+    if (!trimmed) return; // an empty commit keeps the old name
+    set({
+      globalInstructionProfiles: get().globalInstructionProfiles.map((p) =>
+        p.id === id ? { ...p, name: trimmed } : p,
+      ),
+    });
+    get().saveToDatabase();
+  },
+
+  setGlobalInstructionProfileText: (id: string, text: string) => {
+    set({
+      globalInstructionProfiles: get().globalInstructionProfiles.map((p) =>
+        p.id === id ? { ...p, text } : p,
+      ),
+    });
+    get().saveToDatabase();
+  },
+
+  setActiveGlobalInstructionProfile: (id: string | null) => {
+    // Activation is exclusive by construction — one id field, not per-set
+    // flags — so switching a set on switches every other set off.
+    const next =
+      id && get().globalInstructionProfiles.some((p) => p.id === id) ? id : '';
+    set({ activeGlobalInstructionProfileId: next });
+    get().saveToDatabase();
+  },
+
+  removeGlobalInstructionProfile: (id: string) => {
+    const profiles = get().globalInstructionProfiles;
+    if (profiles.length <= 1) return; // the editor always keeps one set
+    const remaining = profiles.filter((p) => p.id !== id);
+    if (remaining.length === profiles.length) return;
+    set({
+      globalInstructionProfiles: remaining,
+      // Deleting the live set deactivates rather than silently promoting
+      // another persona into every future chat.
+      ...(get().activeGlobalInstructionProfileId === id
+        ? { activeGlobalInstructionProfileId: '' }
+        : null),
+    });
     get().saveToDatabase();
   },
 

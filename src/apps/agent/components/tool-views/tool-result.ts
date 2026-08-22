@@ -191,6 +191,46 @@ export interface ParsedToolResult {
     url?: string;
     base64?: string;
   } | null;
+  /** `auroro_websearch` — either a results page or one fetched document. */
+  web: WebData | null;
+}
+
+/** One entry on a results page. */
+export interface WebHit {
+  rank: number;
+  title: string;
+  url: string;
+  displayUrl?: string;
+  snippet?: string;
+}
+
+/**
+ * A web result, in whichever of its two shapes came back.
+ *
+ * One type rather than two because the card routes on it once, and the two
+ * shapes share their head: a source, a count, and a note when something was
+ * left out.
+ */
+export interface WebData {
+  kind: "search" | "document";
+  /** Search: the query. Document: the page title. */
+  heading: string;
+  /** Search: the back end that answered. Document: the URL. */
+  source?: string;
+  hits?: WebHit[];
+  /** The fetched page as Markdown. */
+  content?: string;
+  /** `article` when the page's body was isolated, `page` when it was not,
+   *  `text`/`data` for a non-HTML payload. Drives the label on the card. */
+  documentKind?: string;
+  /** Characters in the whole document, when more than this window holds. */
+  totalChars?: number;
+  offset?: number;
+  hasMore?: boolean;
+  /** Anything the reader has to know: a rewritten URL, an unreadable format,
+   *  a partial download. Shown verbatim — it is the same sentence the model
+   *  was given. */
+  note?: string;
 }
 
 const FILE_MODIFY_TOOLS = new Set([
@@ -505,7 +545,68 @@ const EMPTY: ParsedToolResult = {
   code: null,
   codePath: null,
   screenshot: null,
+  web: null,
 };
+
+/**
+ * `auroro_websearch` — a results page or one fetched document.
+ *
+ * Returns `null` for a failed call so the card falls through to its normal
+ * error path: the tool's own message ("… returned 404 Not Found — the page is
+ * gone") is more use than an empty results panel.
+ */
+function parseWebResult(parsed: Record<string, unknown>): WebData | null {
+  if (parsed.success === false) return null;
+
+  const search = rec(parsed.search);
+  if (search) {
+    const hits = (asArr(search.results) ?? []).flatMap((raw): WebHit[] => {
+      const hit = rec(raw);
+      const url = asStr(hit?.url);
+      if (!hit || !url) return [];
+      return [
+        {
+          rank: asNum(hit.rank) ?? 0,
+          title: asStr(hit.title) || url,
+          url,
+          displayUrl: asStr(hit.displayUrl),
+          snippet: asStr(hit.snippet),
+        },
+      ];
+    });
+    // A back end that answered only after another failed is worth showing —
+    // it explains a thinner set of results than usual.
+    const fallbacks = asArr(search.fallbacks) ?? [];
+    return {
+      kind: "search",
+      heading: asStr(search.query) ?? "",
+      source: asStr(search.engine),
+      hits,
+      note:
+        fallbacks.length > 0
+          ? `${fallbacks.length === 1 ? "One other source" : `${fallbacks.length} other sources`} returned nothing first.`
+          : undefined,
+    };
+  }
+
+  const document = rec(parsed.document);
+  if (document) {
+    const url = asStr(document.finalUrl) ?? asStr(document.url) ?? "";
+    return {
+      kind: "document",
+      heading: asStr(document.title) || hostOf(url) || url,
+      source: url,
+      content: asStr(document.content) ?? "",
+      documentKind: asStr(document.kind),
+      totalChars: asNum(document.totalChars),
+      offset: asNum(document.offset),
+      hasMore: document.hasMore === true,
+      note: asStr(document.note),
+    };
+  }
+
+  return null;
+}
 
 // ── Parser ───────────────────────────────────────────────────────────
 
@@ -550,6 +651,21 @@ export function parseToolResult(
       out.screenshot = shot;
       const host = hostOf(shot.url);
       out.summary = host ? `Captured ${host}` : "Captured screenshot";
+      return out;
+    }
+  }
+
+  // Web search / page fetch. Placed before the generic branches because both
+  // shapes carry a `content` key that the code fallback would otherwise dump
+  // as raw JSON.
+  if (parsed && name === "auroro_websearch") {
+    const web = parseWebResult(parsed);
+    if (web) {
+      out.web = web;
+      out.summary =
+        web.kind === "search"
+          ? `${web.hits?.length ?? 0} ${web.hits?.length === 1 ? "result" : "results"}`
+          : (hostOf(web.source) ?? "Fetched page");
       return out;
     }
   }

@@ -78,6 +78,8 @@ export type AgentIconName =
   | "task-list"
   | "checklist"
   | "skill-search"
+  | "tool-search"
+  | "web-page"
   | "browser-click"
   | "browser-fill"
   | "browser-scroll"
@@ -515,6 +517,38 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M7.25 8.5h4.5" pathLength={1} data-part="line" />
       <circle cx="16.6" cy="15.1" r="3.7" data-part="lens" />
       <path d="M19.3 17.8l2.2 2.2" data-part="lens" />
+    </>
+  ),
+
+  /**
+   * Searching the deferred tool roster (`tool_search`).
+   *
+   * The layer stack is the deferred-roster mark — Settings → Tool loading
+   * wears it — so finding a tool in that roster is the same stack under the
+   * magnifier, the exact relationship `book` → `skill-search` carries. Two
+   * sheets instead of three, nudged up-left, so the lens has room; the lens
+   * geometry is copied from `skill-search` so the pair reads as siblings.
+   */
+  "tool-search": (
+    <>
+      <path d="M10 3.75 16.4 7 10 10.25 3.6 7z" />
+      <path d="M4 10.7 10 13.7l3.1-1.55" pathLength={1} data-part="line" />
+      <circle cx="16.6" cy="15.1" r="3.7" data-part="lens" />
+      <path d="M19.3 17.8l2.2 2.2" data-part="lens" />
+    </>
+  ),
+
+  // A page fetched off the web — the document sheet carrying `browser`'s
+  // meridian. Paired with the globe the way `file-read` is paired with the
+  // plain sheet: same subject, one mark added to say where it came from. A bare
+  // globe here would read as the browser tool, which drives a live window; this
+  // is a page that was read and is now sitting still.
+  "web-page": (
+    <>
+      <path d="M5.5 4.5h13v15h-13z" />
+      <path d="M5.5 9.2h13" />
+      <path d="M12 9.2c-2.1 2.4-2.1 8 0 10.3" data-part="turn" />
+      <path d="M12 9.2c2.1 2.4 2.1 8 0 10.3" data-part="turn-b" />
     </>
   ),
 

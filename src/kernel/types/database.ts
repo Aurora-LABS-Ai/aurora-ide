@@ -4,6 +4,17 @@
 // ============================================================
 // APP SETTINGS
 // ============================================================
+
+/**
+ * One named global-instruction set (Settings → Agent). The user keeps up to
+ * three and activates at most one.
+ */
+export interface GlobalInstructionProfile {
+  id: string;
+  name: string;
+  text: string;
+}
+
 export interface AppSettings {
   agentExecutionMode?: 'agent' | 'plan' | 'team';
   // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
@@ -26,10 +37,18 @@ export interface AppSettings {
    * `team_dispatch` call inherits these when the model doesn't pass its own.
    */
   /**
-   * Global, workspace-agnostic user instructions injected into the agent's
-   * system prompt for every workspace. Empty/undefined means none.
+   * Legacy single global-instruction text. Kept in lockstep with the ACTIVE
+   * profile below so older builds sharing this database still read the right
+   * rules. Empty/undefined means none.
    */
   globalInstructions?: string;
+  /**
+   * Named global-instruction sets (Settings → Agent), up to three. At most
+   * one is active; its text is what the system prompt carries.
+   */
+  globalInstructionProfiles?: GlobalInstructionProfile[];
+  /** Id of the active profile. Empty/undefined means none is sent. */
+  activeGlobalInstructionProfileId?: string;
   /** Context-compaction trigger as a % of the context window (50–95). */
   compactionThresholdPct?: number;
   /** `max_output_tokens` budget for the compaction summary call (2,000–16,000). */

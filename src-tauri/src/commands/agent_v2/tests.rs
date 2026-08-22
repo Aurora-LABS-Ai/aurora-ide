@@ -367,6 +367,76 @@ fn native_test_registry() -> Arc<ToolRegistry> {
     Arc::new(registry)
 }
 
+/// The serialized tool array rides in every request's cacheable prefix, and
+/// every provider Aurora talks to caches on the longest common prefix. So the
+/// head of the array has to be a function of WHICH tools exist, never of the
+/// order they were discovered in.
+///
+/// Bridged tools used to register first, and because `ToolRegistry::register`
+/// keeps an existing name's slot, a native tool inherited whichever position
+/// its bridge placeholder landed in. One MCP server connecting reshuffled the
+/// head and cost the whole tool block its cache.
+#[test]
+fn natives_lead_the_roster_and_mcp_connection_order_cannot_move_them() {
+    let bridged = |name: &str| AllowedTool {
+        name: name.to_string(),
+        description: String::new(),
+        parameters: serde_json::json!({"type": "object"}),
+    };
+    let build = |tools: &[AllowedTool]| {
+        build_per_turn_tool_registry(
+            native_test_registry(),
+            tools,
+            "turn-order".into(),
+            Arc::new(BridgeRouter::new()),
+            Arc::new(MockEmitter::default()),
+            CancellationToken::new(),
+            true,
+            AgentExecutionMode::Agent,
+            None,
+            false,
+            true,
+            false,
+        )
+        .names()
+    };
+
+    // Same servers, opposite connection order.
+    let forward = build(&[
+        bridged("mcp_alpha_read"),
+        bridged("mcp_zeta_write"),
+        bridged("ask_question"),
+    ]);
+    let reversed = build(&[
+        bridged("ask_question"),
+        bridged("mcp_zeta_write"),
+        bridged("mcp_alpha_read"),
+    ]);
+    assert_eq!(
+        forward, reversed,
+        "roster must not depend on MCP connection order"
+    );
+
+    // Natives are a contiguous prefix: nothing bridged appears before the
+    // last native, so MCP churn can only ever move the tail.
+    let natives = native_test_registry().names();
+    let last_native = forward
+        .iter()
+        .rposition(|n| natives.contains(n))
+        .expect("natives present");
+    assert!(
+        forward[..=last_native].iter().all(|n| natives.contains(n)),
+        "a bridged tool is interleaved into the native prefix: {forward:?}"
+    );
+
+    // And the bridged partition is sorted, so adding a server shifts only
+    // what follows it rather than everything.
+    let tail: Vec<&String> = forward[last_native + 1..].iter().collect();
+    let mut sorted = tail.clone();
+    sorted.sort();
+    assert_eq!(tail, sorted, "bridged partition is not name-sorted");
+}
+
 #[test]
 fn plan_registry_excludes_native_mutators_but_keeps_read_tools() {
     let emitter = Arc::new(MockEmitter::default());

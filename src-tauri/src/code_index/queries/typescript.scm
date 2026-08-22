@@ -83,3 +83,16 @@
 ; identifier and is otherwise missed entirely.
 (identifier) @ref.ident
 (shorthand_property_identifier) @ref.ident
+
+; A file's export list can arrive at the BOTTOM, detached from the
+; declarations: `export default App` and `export { a, b }` — the standard
+; React shape. The declaration then sits under no export_statement, so the
+; ancestor walk in `is_exported` cannot see it; these carry the late-exported
+; NAMES and extract.rs marks the matching top-level symbols. `!source` keeps
+; re-exports (`export { x } from "./y"`) out — those export another module's
+; symbol, not one defined here. Measured live: an app's root component read
+; as exported=false, so the edit-impact note said nothing about the one file
+; every other file renders.
+(export_statement !source value: (identifier) @export.name)
+(export_statement !source
+  (export_clause (export_specifier name: (identifier) @export.name)))

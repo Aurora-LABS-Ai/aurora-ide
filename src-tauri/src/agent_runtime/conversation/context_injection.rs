@@ -30,23 +30,49 @@ impl ConversationRuntime {
     /// The `<repo_map>` block for this conversation, or `None` when there is
     /// nothing worth sending.
     ///
-    /// Every failure path returns `None` on purpose. An index that cannot be
-    /// built (no workspace, unreadable tree, a language nobody here parses) is
-    /// a missing convenience, not a broken turn — the agent still has `code`,
-    /// `grep` and `workspace_tree`.
+    /// A missing map is a missing convenience, not a broken turn — the agent
+    /// still has `code`, `grep` and `workspace_tree`. But HOW it goes missing
+    /// matters, and the first version got it wrong twice at once: a build
+    /// failure was swallowed with `.ok()?` (nothing logged, undiagnosable in
+    /// the field) and then memoized, so one bad moment at the first request
+    /// disabled the map — and the warm index every edit-impact note reads —
+    /// for the entire conversation. Measured live: a whole eval session ran
+    /// with no index and no note, and the log could not say why.
+    ///
+    /// Now only a definitive answer is memoized (a rendered map, or a valid
+    /// index with nothing worth rendering). An ERROR is logged and retried on
+    /// the next request instead — get_or_build re-serves the warm index for
+    /// well under a millisecond once one exists, so the retry costs nothing
+    /// after it first succeeds.
     pub(super) fn repo_map_block(&self, workspace_root: Option<&str>) -> Option<String> {
-        self.repo_map
-            .get_or_init(|| {
-                let root = std::path::PathBuf::from(workspace_root?);
-                let idx = crate::code_index::service().get_or_build(&root).ok()?;
-                crate::code_index::repo_map::render(
+        if let Some(memoized) = self.repo_map.get() {
+            return memoized.clone();
+        }
+        // No workspace attached YET — not memoized either, so a workspace
+        // arriving on a later request still gets its map.
+        let root = std::path::PathBuf::from(workspace_root?);
+        match crate::code_index::service().get_or_build(&root) {
+            Ok(idx) => {
+                let rendered = crate::code_index::repo_map::render(
                     &idx,
                     crate::code_index::repo_map::budget_chars(
                         crate::code_index::repo_map::DEFAULT_BUDGET_TOKENS,
                     ),
-                )
-            })
-            .clone()
+                );
+                let _ = self.repo_map.set(rendered.clone());
+                rendered
+            }
+            Err(error) => {
+                crate::logging::log_warn(
+                    "code_index",
+                    &format!(
+                        "repo map skipped — could not index {}: {error:#}",
+                        root.display()
+                    ),
+                );
+                None
+            }
+        }
     }
 }
 

@@ -305,7 +305,11 @@ fn responses_instructions_and_input(
     let mut system_chunks: Vec<String> = Vec::new();
     if let Some(prompt) = request.system_prompt {
         if !prompt.is_empty() {
-            system_chunks.push(prompt.to_string());
+            // `instructions` is one opaque string with no breakpoint to place,
+            // so the boundary marker is removed before it can reach the model.
+            system_chunks.push(
+                crate::api::provider_kernel_adapter::strip_system_boundary(prompt).into_owned(),
+            );
         }
     }
 

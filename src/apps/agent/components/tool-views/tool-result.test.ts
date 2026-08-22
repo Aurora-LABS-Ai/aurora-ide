@@ -488,3 +488,148 @@ describe("structured failures", () => {
     ).toBe("done");
   });
 });
+
+describe("web search and page fetch", () => {
+  it("parses a results page into a ranked list rather than dumping raw JSON", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "search", query: "rust async trait" },
+      JSON.stringify({
+        success: true,
+        action: "search",
+        query: "rust async trait",
+        search: {
+          query: "rust async trait",
+          engine: "duckduckgo-lite",
+          count: 2,
+          results: [
+            {
+              rank: 1,
+              title: "async_trait - Rust - Docs.rs",
+              url: "https://docs.rs/async-trait/latest/async_trait/",
+              displayUrl: "docs.rs/async-trait/latest/async_trait/",
+              snippet: "Type erasure for async trait methods.",
+            },
+            {
+              rank: 2,
+              title: "Traits - The Rust Reference",
+              url: "https://doc.rust-lang.org/reference/items/traits.html",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(parsed.web?.kind).toBe("search");
+    expect(parsed.web?.heading).toBe("rust async trait");
+    expect(parsed.web?.source).toBe("duckduckgo-lite");
+    expect(parsed.web?.hits).toHaveLength(2);
+    expect(parsed.web?.hits?.[0].displayUrl).toBe("docs.rs/async-trait/latest/async_trait/");
+    // A result with no summary is still a result.
+    expect(parsed.web?.hits?.[1].snippet).toBeUndefined();
+    expect(parsed.summary).toBe("2 results");
+    // The generic text fallback must not also fire — that is the raw dump.
+    expect(parsed.code).toBeNull();
+  });
+
+  it("drops a result with no url instead of rendering a dead row", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "search", query: "x" },
+      JSON.stringify({
+        success: true,
+        search: { query: "x", engine: "duckduckgo-lite", results: [{ rank: 1, title: "No link" }] },
+      }),
+    );
+    expect(parsed.web?.hits).toHaveLength(0);
+  });
+
+  it("says when another source had to be tried first", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "search", query: "x" },
+      JSON.stringify({
+        success: true,
+        search: {
+          query: "x",
+          engine: "duckduckgo-html",
+          results: [{ rank: 1, title: "A", url: "https://a.dev" }],
+          fallbacks: [{ engine: "duckduckgo-lite", reason: "timed out" }],
+        },
+      }),
+    );
+    expect(parsed.web?.note).toBe("One other source returned nothing first.");
+  });
+
+  it("parses a fetched page as a document, keeping its markdown", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "fetch", url: "https://example.com/docs" },
+      JSON.stringify({
+        success: true,
+        action: "fetch",
+        url: "https://example.com/docs",
+        document: {
+          url: "https://example.com/docs",
+          kind: "article",
+          title: "Quick start",
+          content: "# Quick start\n\nInstall it, then sign in.",
+          totalChars: 40,
+          returnedChars: 40,
+          offset: 0,
+          hasMore: false,
+        },
+      }),
+    );
+
+    expect(parsed.web?.kind).toBe("document");
+    expect(parsed.web?.heading).toBe("Quick start");
+    expect(parsed.web?.documentKind).toBe("article");
+    expect(parsed.web?.content).toContain("# Quick start");
+    expect(parsed.web?.hasMore).toBe(false);
+    expect(parsed.summary).toBe("example.com");
+    expect(parsed.code).toBeNull();
+  });
+
+  // The card tells the reader the page continues; without this it reads as a
+  // document that ended mid-sentence.
+  it("carries the paging state and the note through", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "fetch", url: "https://example.com/long" },
+      JSON.stringify({
+        success: true,
+        document: {
+          url: "https://example.com/long",
+          finalUrl: "https://docs.example.com/long",
+          kind: "page",
+          content: "part one",
+          totalChars: 90000,
+          offset: 0,
+          hasMore: true,
+          nextOffset: 30000,
+          note: "no article body was found on this page",
+        },
+      }),
+    );
+    expect(parsed.web?.hasMore).toBe(true);
+    expect(parsed.web?.totalChars).toBe(90000);
+    expect(parsed.web?.note).toContain("no article body");
+    // The URL shown is where the request actually landed.
+    expect(parsed.web?.source).toBe("https://docs.example.com/long");
+  });
+
+  // The tool's own message ("… returned 404 Not Found — the page is gone")
+  // is more use than an empty results panel.
+  it("leaves a failed call to the card's error path", () => {
+    const parsed = parseToolResult(
+      "auroro_websearch",
+      { action: "fetch", url: "https://example.com/gone" },
+      JSON.stringify({
+        success: false,
+        error: "https://example.com/gone returned 404 Not Found — the page is gone",
+      }),
+    );
+    expect(parsed.web).toBeNull();
+  });
+});

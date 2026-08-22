@@ -13,7 +13,7 @@
 use super::persist;
 use super::store::CodeIndex;
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -64,6 +64,13 @@ pub struct IndexProbe {
 #[derive(Default)]
 pub struct CodeIndexService {
     indexes: DashMap<PathBuf, Arc<CodeIndex>>,
+    /// Workspaces a file-mutating tool has written to since their index was
+    /// built. The walk fingerprint (file count + newest mtime) has two blind
+    /// spots — an edit landing in the same second as the previously-newest
+    /// file, and a rename, which changes neither number — so a write the
+    /// tools TELL us about outranks the fingerprint. See
+    /// [`invalidate`](Self::invalidate).
+    dirty: DashSet<PathBuf>,
     /// Where cache files are written. `None` means the app's real
     /// `code-index/` directory.
     ///
@@ -100,6 +107,26 @@ fn hex_16(bytes: &[u8]) -> String {
     bytes.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
+/// One canonical in-memory key per workspace, however a caller spells the path.
+///
+/// The same normalization [`cache_key`] applies to the FILENAME — lowercase,
+/// forward slashes — because the same divergence bites both places. The map
+/// used the raw `PathBuf`, and one workspace reaches this service under at
+/// least two spellings: the frontend's `projectRoot` (Settings → Rebuild, the
+/// header offer) and the runtime session's `workspace_root` (repo map, the
+/// `code` tool, the edit tools). Measured live: an index built from Settings
+/// was invisible to `peek` from `file_edit`, so the edit-impact note never
+/// fired in that workspace while working perfectly in one whose index was
+/// built through the `code` tool.
+fn map_key(workspace: &Path) -> PathBuf {
+    PathBuf::from(
+        workspace
+            .to_string_lossy()
+            .to_lowercase()
+            .replace('\\', "/"),
+    )
+}
+
 impl CodeIndexService {
     /// A service whose caches live under `root` instead of the app data
     /// directory.
@@ -113,6 +140,7 @@ impl CodeIndexService {
     pub fn with_cache_root(root: PathBuf) -> Self {
         Self {
             indexes: DashMap::new(),
+            dirty: DashSet::new(),
             cache_root: Some(root),
         }
     }
@@ -132,7 +160,20 @@ impl CodeIndexService {
     /// [`rebuild`](Self::rebuild), and a corrupt or outdated one is silently
     /// replaced because losing it costs a sub-second rebuild.
     pub fn get_or_build(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
-        let key = workspace.to_path_buf();
+        let key = map_key(workspace);
+
+        // A write the tools told us about outranks every freshness check —
+        // including the cache adoption below, which would otherwise re-adopt a
+        // stale index whose fingerprint happens to still match (the
+        // same-second and rename blind spots). Cleared only after the rebuild
+        // succeeds, so a failed build retries next time instead of silently
+        // serving the stale answer.
+        if self.dirty.contains(&key) {
+            let idx = self.auto_rebuild(workspace, AUTO_INDEX_MAX_FILES)?;
+            self.dirty.remove(&key);
+            return Ok(idx);
+        }
+
         if let Some(existing) = self.indexes.get(&key) {
             let idx = existing.clone();
             drop(existing);
@@ -214,7 +255,7 @@ impl CodeIndexService {
     /// True when an index for `workspace` is in memory and current, loading a
     /// matching cache to get there. Never builds.
     fn adopt_current_cache(&self, workspace: &Path, signature: (usize, u64)) -> bool {
-        let key = workspace.to_path_buf();
+        let key = map_key(workspace);
         if let Some(existing) = self.indexes.get(&key) {
             let idx = existing.clone();
             drop(existing);
@@ -231,6 +272,19 @@ impl CodeIndexService {
 
     /// Build from source and replace whatever was cached.
     pub fn rebuild(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
+        // A path that is not a directory cannot be a workspace, and building
+        // "successfully" from one produces an empty index whose cache file
+        // outlives the mistake. Found as real pollution: the turn-driver
+        // tests run turns with fixture roots like `C:/project-a`, and every
+        // `cargo test` wrote an empty cache for it into the user's real
+        // AppData. Refusing here protects the product the same way (a
+        // deleted project must error, not answer from an empty index).
+        if !workspace.is_dir() {
+            anyhow::bail!(
+                "workspace is not a directory: {} — nothing to index",
+                workspace.display()
+            );
+        }
         let idx = Arc::new(CodeIndex::build(workspace)?);
         // A failed cache write must not fail the build — the index is already
         // usable in memory, and the only cost is rebuilding next launch.
@@ -240,7 +294,10 @@ impl CodeIndexService {
                 &format!("could not cache {}: {e:#}", workspace.display()),
             );
         }
-        self.indexes.insert(workspace.to_path_buf(), idx.clone());
+        self.indexes.insert(map_key(workspace), idx.clone());
+        // A fresh build read the tree as it is now; whatever write flagged the
+        // workspace dirty is included in it.
+        self.dirty.remove(&map_key(workspace));
         Ok(idx)
     }
 
@@ -250,7 +307,7 @@ impl CodeIndexService {
     pub fn status(&self, workspace: &Path) -> IndexStatus {
         let cache = self.cache_path(workspace);
         let cache_bytes = std::fs::metadata(&cache).map(|m| m.len()).unwrap_or(0);
-        match self.indexes.get(&workspace.to_path_buf()) {
+        match self.indexes.get(&map_key(workspace)) {
             Some(idx) => IndexStatus {
                 workspace: workspace.display().to_string(),
                 built: true,
@@ -278,22 +335,33 @@ impl CodeIndexService {
         }
     }
 
-    /// Drop a workspace's in-memory index so the next question re-parses.
+    /// A file-mutating tool just succeeded in `workspace`: the next question
+    /// must rebuild rather than trust any freshness check.
     ///
-    /// **Unfinished, not unused — do not delete it as dead code.** The intended
-    /// caller is the turn loop, right after a file-mutating tool succeeds.
-    /// Staleness is normally caught by [`is_stale`](Self::is_stale) comparing a
-    /// fresh walk fingerprint, but mtime has one-second resolution, so an edit
-    /// landing in the same second as the previously-newest file is invisible to
-    /// it — which is the only reason `code { op: "refresh" }` has to exist.
-    /// Calling this on every successful write would close that window and let
-    /// the model stop thinking about refresh at all.
+    /// Wired from the write tools (`file_edit` / `file_write` /
+    /// `search_replace` / `move_path` / `delete_path`) — the seam §5.2a of the
+    /// handoff doc said was the actual work. It closes the walk fingerprint's
+    /// two blind spots: an edit landing in the same second as the
+    /// previously-newest mtime, and a rename, which changes neither the file
+    /// count nor the newest mtime.
     ///
-    /// Not wired yet because there is no single "a file changed" seam in
-    /// `conversation.rs` to hang it on; adding one is the actual work.
-    #[allow(dead_code)]
+    /// Deliberately a FLAG, not an eviction. The in-memory index stays — it is
+    /// what [`peek`](Self::peek) serves the edit-impact note from, and its
+    /// pre-edit state is exactly what an impact answer wants. The flag is read
+    /// by [`get_or_build`](Self::get_or_build) ahead of both the memory and
+    /// cache freshness checks, because a fingerprint that still matches is the
+    /// precise failure this exists to override.
     pub fn invalidate(&self, workspace: &Path) {
-        self.indexes.remove(&workspace.to_path_buf());
+        self.dirty.insert(map_key(workspace));
+    }
+
+    /// The index already in memory for `workspace`, if any. Never loads a
+    /// cache, never walks, never builds — for callers (the edit-impact note)
+    /// that must cost nothing when the index is not warm.
+    pub fn peek(&self, workspace: &Path) -> Option<Arc<CodeIndex>> {
+        self.indexes
+            .get(&map_key(workspace))
+            .map(|entry| entry.clone())
     }
 }
 
@@ -463,13 +531,137 @@ mod tests {
 
         std::fs::write(&f, "pub fn after() {}\n").unwrap();
         svc.invalidate(dir.path());
-        // `get_or_build` would happily reload the *cache* it just wrote, which
-        // is exactly the staleness this test exists to catch.
-        let idx = svc.rebuild(dir.path()).unwrap();
+        // The flag must be enough on its own — no explicit rebuild call.
+        let idx = svc.get_or_build(dir.path()).unwrap();
         assert_eq!(idx.definitions("after").len(), 1);
         assert!(
             idx.definitions("before").is_empty(),
             "stale symbol survived"
         );
+    }
+
+    #[test]
+    fn invalidate_overrides_a_fingerprint_that_still_matches() {
+        // The blind window the flag exists for: an edit whose mtime the walk
+        // cannot distinguish from the state the index was built against.
+        // Simulated by writing new content and setting the mtime BACK — the
+        // permanent version of "landed in the same second".
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.rs");
+        std::fs::write(&f, "pub fn before() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(dir.path().join(".cache"));
+        svc.get_or_build(dir.path()).unwrap();
+        let original_mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
+
+        std::fs::write(&f, "pub fn after() {}\n").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(original_mtime)
+            .unwrap();
+
+        // Precondition: the fingerprint alone genuinely cannot see this write.
+        assert!(
+            svc.get_or_build(dir.path())
+                .unwrap()
+                .definitions("after")
+                .is_empty(),
+            "fixture broken — the fingerprint noticed the write, so this test proves nothing"
+        );
+
+        svc.invalidate(dir.path());
+        assert_eq!(
+            svc.get_or_build(dir.path())
+                .unwrap()
+                .definitions("after")
+                .len(),
+            1,
+            "a write the tools reported must beat a matching fingerprint"
+        );
+    }
+
+    #[test]
+    fn a_nonexistent_workspace_is_refused_and_leaves_no_cache_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_root = dir.path().join(".cache");
+        let svc = CodeIndexService::with_cache_root(cache_root.clone());
+        let ghost = dir.path().join("no-such-project");
+
+        assert!(svc.rebuild(&ghost).is_err(), "rebuild must refuse");
+        assert!(
+            svc.get_or_build(&ghost).is_err(),
+            "get_or_build must refuse"
+        );
+        let leftovers = std::fs::read_dir(&cache_root)
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(
+            leftovers, 0,
+            "a refused workspace must not write a cache file"
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_a_workspace_reaches_one_index() {
+        // The live failure: Settings → Rebuild stored the index under the
+        // frontend's spelling of the root, and file_edit peeked with the
+        // session's spelling — same directory, two keys, so the edit-impact
+        // note never fired there. Windows treats these paths as one place;
+        // the map must too.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(dir.path().join(".cache"));
+
+        svc.rebuild(dir.path()).unwrap();
+
+        let respelled = PathBuf::from(
+            dir.path()
+                .to_string_lossy()
+                .to_uppercase()
+                .replace('/', "\\"),
+        );
+        assert!(
+            svc.peek(&respelled).is_some(),
+            "a different case/separator spelling must find the same index"
+        );
+        assert!(
+            svc.status(&respelled).built,
+            "status must agree whichever spelling asks"
+        );
+
+        // And the dirty flag crosses spellings the same way.
+        svc.invalidate(&respelled);
+        std::fs::write(dir.path().join("a.rs"), "pub fn two() {}\n").unwrap();
+        assert_eq!(
+            svc.get_or_build(dir.path())
+                .unwrap()
+                .definitions("two")
+                .len(),
+            1,
+            "a flag set under one spelling must be honoured under another"
+        );
+    }
+
+    #[test]
+    fn peek_serves_only_what_is_warm_and_never_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn one() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(dir.path().join(".cache"));
+
+        assert!(svc.peek(dir.path()).is_none(), "nothing is warm yet");
+        assert!(
+            !svc.status(dir.path()).built,
+            "peeking must never have built anything"
+        );
+
+        svc.get_or_build(dir.path()).unwrap();
+        let peeked = svc.peek(dir.path()).expect("warm after a build");
+        assert_eq!(peeked.definitions("one").len(), 1);
+
+        // The pre-edit index stays peekable after a write is flagged — it is
+        // exactly what the edit-impact note reads.
+        svc.invalidate(dir.path());
+        assert!(svc.peek(dir.path()).is_some(), "the flag must not evict");
     }
 }

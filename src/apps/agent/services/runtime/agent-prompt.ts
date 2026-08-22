@@ -3,7 +3,10 @@ import {
   resolveSkillsForPrompt,
   type SkillDefinition,
 } from "@/apps/agent/services/skills/skills";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import {
+  selectActiveGlobalInstructions,
+  useSettingsStore,
+} from "@/kernel/store/useSettingsStore";
 import {
   getAgentModePromptSection,
   type AgentExecutionMode,
@@ -14,6 +17,22 @@ import type {
   AttachedPromptChip,
   AttachedSelectedElement,
 } from "@/apps/agent/services/threads/thread-service";
+
+/**
+ * Separates the session-stable half of the system prompt from the half that
+ * changes while a conversation is open.
+ *
+ * The Rust Anthropic adapter splits on this line and emits two `system`
+ * blocks: the static one carries `cache_control`, the dynamic one does not,
+ * so an MCP server connecting no longer invalidates the cached prefix. Every
+ * other adapter strips the line before sending — the model must never see it.
+ *
+ * The literal is duplicated in `src-tauri/src/api/provider_kernel_adapter.rs`
+ * (`SYSTEM_PROMPT_DYNAMIC_BOUNDARY`) and pinned by a test on both sides; it
+ * crosses the IPC boundary as part of an opaque string, so there is no shared
+ * type to hang it on.
+ */
+export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__AURORA_SYSTEM_DYNAMIC_BOUNDARY__";
 
 export interface AgentPromptContext {
   explicitSkillKeys?: string[];
@@ -413,9 +432,12 @@ export async function composeAgentSystemPrompt(options: {
     workspacePath: promptContext.workspacePath,
   });
 
+  // ── Static half ────────────────────────────────────────────────────────
+  //
+  // Everything here is the same bytes for the whole session. It sits BEFORE
+  // `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` so a provider's prompt cache can keep it.
   const sections = [
     basePrompt?.trim() || BASE_AGENT_SYSTEM_PROMPT,
-    getAgentModePromptSection(executionMode, { hasActivePlan }),
     // Aurora's one built-in doctrine. Always present, never a skill — the
     // depth is pulled on demand via the `design_guidelines` tool.
     SURFACE_DOCTRINE_CORE,
@@ -443,21 +465,43 @@ export async function composeAgentSystemPrompt(options: {
     sections.push(DEFERRED_TOOL_INSTRUCTIONS);
   }
 
-  // Global user instructions: a single, workspace-agnostic rule set the user
-  // configured in Settings → Agent. Applies to every workspace and turn, so it
-  // rides high in the prompt (right after the base identity + mode), framed as
-  // standing rules that yield only to the user's explicit message this turn.
-  const globalInstructions = settings.globalInstructions?.trim();
+  // Global user instructions: the ACTIVE one of the user's named instruction
+  // sets (Settings → Agent — up to three, at most one active). Applies to
+  // every workspace and turn, so it rides high in the prompt (right after the
+  // base identity), framed as standing rules that yield only to the user's
+  // explicit message this turn. Stable for the session, so it stays static.
+  const globalInstructions = selectActiveGlobalInstructions(settings).trim();
   if (globalInstructions) {
     sections.splice(1, 0, formatGlobalInstructions(globalInstructions));
   }
 
+  // ── Dynamic half ───────────────────────────────────────────────────────
+  //
+  // These two change WHILE a conversation is open: the mode section flips on
+  // /plan and when a plan document appears, and the MCP summary changes every
+  // time a server connects or drops. Anything before them in the prompt is a
+  // cache prefix, so keeping them at the front cost the whole system prompt on
+  // every flip. Measured on two providers with a 7.2k-token prompt, on the
+  // turn where the volatile text changed:
+  //
+  //   kenari/minimax-m3  front: 7,280 billed / 1.5% hit   back: 96 / 98.7%
+  //   ark/glm-5.2        front: 7,251 billed / 0.0% hit   back: 1,106 / 84.7%
+  //
+  // Providers that cache automatically (kenari, ark, DeepSeek) key on the
+  // longest common PREFIX and need no markers; Anthropic needs the explicit
+  // breakpoint the boundary gives it. Both want the same section order.
+  const dynamicSections = [getAgentModePromptSection(executionMode, { hasActivePlan })];
   if (mcpSummary?.trim()) {
-    sections.push(mcpSummary.trim());
+    dynamicSections.push(mcpSummary.trim());
   }
 
+  const staticText = sections.filter(Boolean).join("\n\n");
+  const dynamicText = dynamicSections.filter(Boolean).join("\n\n");
+
   return {
-    systemPrompt: sections.join("\n\n"),
+    systemPrompt: dynamicText
+      ? `${staticText}\n\n${SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n${dynamicText}`
+      : staticText,
     allSkills,
     activeSkills,
     enabledSkills,

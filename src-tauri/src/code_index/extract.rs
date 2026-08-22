@@ -19,6 +19,12 @@ pub struct RawSymbol {
     /// The type/class/module the definition sits inside, when there is one.
     pub container: Option<String>,
     pub exported: bool,
+    /// Declaration header without its body, bounded for cache and tool-result
+    /// size. Returned only by an explicit `code` definition lookup.
+    pub signature: Option<String>,
+    /// First paragraph of the declaration's documentation, when the language
+    /// has an attributable doc comment or docstring.
+    pub documentation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +507,11 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
     // definitions owned by this file.
     let mut import_locals: std::collections::HashSet<std::ops::Range<usize>> =
         std::collections::HashSet::new();
+    // Names exported AWAY from their declaration — `export default App` /
+    // `export { a, b }` at the bottom of the file. `is_exported` walks a
+    // declaration's ancestors and can never see these, so they are applied to
+    // the finished symbols below.
+    let mut late_exports: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     let capture_names = spec.query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -588,6 +599,9 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
                         }
                     }
                 }
+                "export" => {
+                    late_exports.insert(text(cap.node, src));
+                }
                 _ => {}
             }
         }
@@ -595,13 +609,22 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
 
     for (node, kind) in defs.values() {
         let pos = node.start_position();
+        let name = text(*node, src).to_string();
+        let container = enclosing_container(*node, src, lang);
+        let metadata = super::metadata::extract(*node, lang, kind, src);
+        // Top-level only: `export { run }` exports the module-level `run`, and
+        // must not brand a same-named method inside some class as public API.
+        let exported = is_exported(*node, src, lang)
+            || (container.is_none() && late_exports.contains(name.as_str()));
         facts.symbols.push(RawSymbol {
-            name: text(*node, src).to_string(),
+            name,
             kind: (*kind).to_string(),
             line: pos.row as u32 + 1,
             col: pos.column as u32 + 1,
-            container: enclosing_container(*node, src, lang),
-            exported: is_exported(*node, src, lang),
+            container,
+            exported,
+            signature: metadata.signature,
+            documentation: metadata.documentation,
         });
     }
 
@@ -645,6 +668,165 @@ mod tests {
             .iter()
             .find(|s| s.name == name)
             .unwrap_or_else(|| panic!("no symbol {name} in {:?}", f.symbols))
+    }
+
+    #[test]
+    fn signatures_cover_every_language_without_copying_function_bodies() {
+        let cases = [
+            (
+                Lang::Rust,
+                "pub fn run(x: u32) -> u32 { expensive(x) }",
+                "run",
+                "pub fn run(x: u32) -> u32",
+                "expensive",
+            ),
+            (
+                Lang::TypeScript,
+                "export function run(x: number): number { return expensive(x); }",
+                "run",
+                "function run(x: number): number",
+                "expensive",
+            ),
+            (
+                Lang::Tsx,
+                "export const App = (p: Props) => { return <Panel />; };",
+                "App",
+                "App = (p: Props) =>",
+                "Panel",
+            ),
+            (
+                Lang::Python,
+                "def run(x: int) -> int:\n    return expensive(x)\n",
+                "run",
+                "def run(x: int) -> int:",
+                "expensive",
+            ),
+            (
+                Lang::C,
+                "int run(int x) { return expensive(x); }",
+                "run",
+                "int run(int x)",
+                "expensive",
+            ),
+            (
+                Lang::Cpp,
+                "int Box::run(int x) { return expensive(x); }",
+                "run",
+                "int Box::run(int x)",
+                "expensive",
+            ),
+            (
+                Lang::Go,
+                "package p\nfunc run(x int) int { return expensive(x) }",
+                "run",
+                "func run(x int) int",
+                "expensive",
+            ),
+            (
+                Lang::Java,
+                "class A { int run(int x) { return expensive(x); } }",
+                "run",
+                "int run(int x)",
+                "expensive",
+            ),
+            (
+                Lang::CSharp,
+                "class A { int Run(int x) { return Expensive(x); } }",
+                "Run",
+                "int Run(int x)",
+                "Expensive",
+            ),
+            (
+                Lang::Ruby,
+                "def run(x)\n  expensive(x)\nend\n",
+                "run",
+                "def run(x)",
+                "expensive",
+            ),
+            (
+                Lang::Php,
+                "<?php function run(int $x): int { return expensive($x); }",
+                "run",
+                "function run(int $x): int",
+                "expensive",
+            ),
+            (
+                Lang::Kotlin,
+                "fun run(x: Int): Int { return expensive(x) }",
+                "run",
+                "fun run(x: Int): Int",
+                "expensive",
+            ),
+            (
+                Lang::Swift,
+                "func run(_ x: Int) -> Int { expensive(x) }",
+                "run",
+                "func run(_ x: Int) -> Int",
+                "expensive",
+            ),
+        ];
+
+        for (lang, source, name, expected, body_text) in cases {
+            let f = facts(lang, source);
+            let signature = sym(&f, name)
+                .signature
+                .as_deref()
+                .unwrap_or_else(|| panic!("{lang:?} produced no signature"));
+            assert!(
+                signature.contains(expected),
+                "{lang:?} signature `{signature}` did not contain `{expected}`"
+            );
+            assert!(
+                !signature.contains(body_text),
+                "{lang:?} copied its body into `{signature}`"
+            );
+        }
+    }
+
+    #[test]
+    fn documentation_is_attributed_only_from_language_doc_forms() {
+        let rust = facts(
+            Lang::Rust,
+            "/// Opens one session.\n///\n/// More detail is intentionally omitted.\npub fn open() {}\n",
+        );
+        assert_eq!(
+            sym(&rust, "open").documentation.as_deref(),
+            Some("Opens one session.")
+        );
+
+        let ts = facts(
+            Lang::TypeScript,
+            "/** Formats the visible token count.\n * @param n token count\n */\nexport function format(n: number) { return n; }\n",
+        );
+        assert_eq!(
+            sym(&ts, "format").documentation.as_deref(),
+            Some("Formats the visible token count.")
+        );
+
+        let python = facts(
+            Lang::Python,
+            "def render():\n    \"\"\"Render the active panel.\n\n    Internal detail.\n    \"\"\"\n    return panel\n",
+        );
+        assert_eq!(
+            sym(&python, "render").documentation.as_deref(),
+            Some("Render the active panel.")
+        );
+
+        let go = facts(
+            Lang::Go,
+            "package p\n// Run starts one job.\nfunc Run() {}\n// implementation note, not API documentation\nfunc stop() {}\n",
+        );
+        assert_eq!(
+            sym(&go, "Run").documentation.as_deref(),
+            Some("Run starts one job.")
+        );
+        assert_eq!(sym(&go, "stop").documentation, None);
+
+        let ordinary_ts = facts(
+            Lang::TypeScript,
+            "// implementation note\nexport function internal() {}\n",
+        );
+        assert_eq!(sym(&ordinary_ts, "internal").documentation, None);
     }
 
     #[test]

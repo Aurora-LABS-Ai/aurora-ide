@@ -45,10 +45,7 @@ pub fn base_headers(access_token: &str) -> Result<HeaderMap, String> {
         "x-cursor-client-type",
         HeaderValue::from_static(CURSOR_CLIENT_TYPE),
     );
-    headers.insert(
-        "connect-protocol-version",
-        HeaderValue::from_static("1"),
-    );
+    headers.insert("connect-protocol-version", HeaderValue::from_static("1"));
     let request_id = uuid::Uuid::new_v4().to_string();
     headers.insert(
         HeaderName::from_static("x-request-id"),

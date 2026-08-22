@@ -966,3 +966,138 @@
   background: var(--agw-code-surface);
 }
 
+/* ── Web search + page fetch ──────────────────────────────────────────
+ * Two panels on the shared `.agw-rv` chrome: a list of results, and one
+ * fetched page. Only the row is new — everything around it is the same
+ * header, body and footnote every other result view uses. */
+
+/* A result row is a real button: these open in the reader's browser, and a
+ * div with a click handler would be unreachable from the keyboard. Reset the
+ * button chrome rather than restyling it. */
+.agw-web-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* Colour-only feedback, per the restraint rule — no lift, no shadow. */
+.agw-web-hit:hover {
+  background: var(--agw-hover-paint);
+}
+/* Focus stays inside the row's own surface instead of drawing a ring around
+ * it, matching every other focusable row in this window. */
+.agw-web-hit:focus-visible {
+  outline: none;
+  background: var(--agw-hover-paint);
+}
+.agw-web-hit:hover .agw-web-hit-title,
+.agw-web-hit:focus-visible .agw-web-hit-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Tabular so the ranks form a column rather than a ragged edge. */
+.agw-web-rank {
+  width: 14px;
+  flex: none;
+  text-align: right;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-web-hit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.agw-web-hit-title {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The domain, in the code font: it is an identifier, and a reader judges a
+ * source by it. Kept on its own line so it is never truncated away by a long
+ * title. */
+.agw-web-hit-host {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Two lines of summary. Enough to judge a result, short enough that ten of
+ * them still scan as a list. */
+.agw-web-hit-snippet {
+  margin-top: 2px;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The fetched page's domain, in the header beside the title. */
+.agw-web-source {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.agw-web-source:hover,
+.agw-web-source:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* The page itself, rendered as Markdown. Taller than the default result body
+ * because this is prose someone may actually read, not a list to scan. The
+ * markdown block sets its own vertical rhythm, so the padding here is only
+ * the gutter. */
+.agw-web-doc {
+  max-height: 420px;
+  padding: 8px 12px;
+}
+/* The transcript's markdown runs at reading size; inside a tool card it is a
+ * quotation of a source, so it steps down to the card's own scale. */
+.agw-web-doc .agw-md {
+  font-size: var(--agw-fs-label);
+}
+.agw-web-doc .agw-md > :first-child {
+  margin-top: 0;
+}
+.agw-web-doc .agw-md > :last-child {
+  margin-bottom: 0;
+}
+
+/* An empty result is an outcome, stated. Not a blank panel, which reads as a
+ * component that failed to render. */
+.agw-web-empty {
+  padding: 8px 10px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+

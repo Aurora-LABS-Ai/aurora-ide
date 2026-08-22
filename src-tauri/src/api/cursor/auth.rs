@@ -383,9 +383,8 @@ pub fn status() -> Result<CursorAuthStatus, String> {
 /// visible moment of consent rather than silently adopting a token the first
 /// time a turn runs.
 pub fn adopt_from_cursor_app() -> Result<CursorAuthStatus, String> {
-    let creds = read_cursor_install()?.ok_or(
-        "No Cursor session found. Sign in to the Cursor app first, then try again.",
-    )?;
+    let creds = read_cursor_install()?
+        .ok_or("No Cursor session found. Sign in to the Cursor app first, then try again.")?;
     write_store(&creds)?;
     status()
 }
@@ -423,11 +422,7 @@ pub async fn fresh_access(force: bool) -> Result<String, String> {
         return Ok(creds.access_token);
     }
 
-    let Some(refresh_token) = creds
-        .refresh_token
-        .clone()
-        .filter(|t| !t.trim().is_empty())
-    else {
+    let Some(refresh_token) = creds.refresh_token.clone().filter(|t| !t.trim().is_empty()) else {
         // No refresh token: the stored access token is all we have. Hand it
         // back and let the real upstream error speak, rather than inventing
         // a sign-in prompt for a token that may still work.
@@ -498,8 +493,12 @@ async fn request_refresh(refresh_token: &str) -> Result<TokenResponse, String> {
     if !status.is_success() {
         return Err(format!("HTTP {} {}", status.as_u16(), truncate(&body, 200)));
     }
-    let parsed: TokenResponse = serde_json::from_str(&body)
-        .map_err(|err| format!("unexpected refresh response ({err}): {}", truncate(&body, 200)))?;
+    let parsed: TokenResponse = serde_json::from_str(&body).map_err(|err| {
+        format!(
+            "unexpected refresh response ({err}): {}",
+            truncate(&body, 200)
+        )
+    })?;
     if parsed.access_token.trim().is_empty() {
         return Err("refresh response carried no access token".to_string());
     }

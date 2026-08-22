@@ -392,6 +392,18 @@ pub struct ToolSetting {
 // SETTINGS STATE (Complete app settings)
 // ============================================================
 
+/// One named global-instruction set (Settings → Agent). The user keeps up to
+/// three and activates at most one; the active one's text is what reaches the
+/// system prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalInstructionProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub text: String,
+}
+
 /// Complete application settings state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -412,18 +424,28 @@ pub struct AppSettings {
     /// pin the Lead to one provider and the team to another.
     #[serde(default)]
     pub team_member_model: String,
-    /// Global, workspace-agnostic user instructions injected into the agent's
-    /// system prompt for EVERY workspace (the "global rule" surface). Empty
-    /// string means none. Default added via `serde(default)` so existing rows
-    /// without the key deserialize cleanly.
+    /// Legacy single global-instruction text. Kept as a mirror of the ACTIVE
+    /// profile in `global_instruction_profiles` so builds that predate the
+    /// profile list still read the right rules. Empty string means none.
     #[serde(default)]
     pub global_instructions: String,
+    /// Named global-instruction sets (Settings → Agent), up to three. The
+    /// frontend owns the cap and the editing UI; this is storage only.
+    #[serde(default)]
+    pub global_instruction_profiles: Vec<GlobalInstructionProfile>,
+    /// Id of the profile injected into the system prompt. Empty = none active.
+    #[serde(default)]
+    pub active_global_instruction_profile_id: String,
     /// Context-compaction trigger as a % of the context window (50–95).
     #[serde(default)]
     pub compaction_threshold_pct: f64,
     /// `max_output_tokens` budget for the compaction summary call (2k–16k).
     #[serde(default)]
     pub compaction_summary_budget: i32,
+    /// Provider/model the compaction summary runs on (`"providerId:modelKey"`).
+    /// Empty string summarizes on the conversation's own model.
+    #[serde(default)]
+    pub compaction_model: String,
     /// AI title maker — when enabled, the first message of a NEW chat is sent to
     /// an OpenAI-compatible endpoint to generate a short title (fallback to the
     /// derived title on any error). All `serde(default)` so legacy rows load.
@@ -449,6 +471,19 @@ pub struct AppSettings {
     /// the tool roster, so it must survive a restart.
     #[serde(default)]
     pub transcript_chapters: bool,
+    /// Header flash + rail dot when a chat's turn finishes. Default on.
+    #[serde(default = "default_true")]
+    pub notify_on_turn_complete: bool,
+    /// Replace the header title with a live activity line while streaming.
+    #[serde(default = "default_true")]
+    pub show_activity_in_title: bool,
+    /// Whether the browser toolset is advertised to the model. Default on.
+    #[serde(default = "default_true")]
+    pub browser_tools: bool,
+    /// Hold optional tool buckets out of the roster behind `tool_search`.
+    /// Default off — it changes how the model reaches a tool.
+    #[serde(default)]
+    pub defer_tools: bool,
     pub auto_approve_tools: bool,
     pub auto_accept_changes: bool,
     pub explorer_icon_pack: String,
@@ -510,8 +545,11 @@ impl Default for AppSettings {
             team_lead_model: String::new(),
             team_member_model: String::new(),
             global_instructions: String::new(),
+            global_instruction_profiles: Vec::new(),
+            active_global_instruction_profile_id: String::new(),
             compaction_threshold_pct: 80.0,
             compaction_summary_budget: 8192,
+            compaction_model: String::new(),
             title_maker_enabled: false,
             title_maker_mode: String::new(),
             title_maker_base_url: String::new(),
@@ -519,6 +557,10 @@ impl Default for AppSettings {
             title_maker_model: String::new(),
             allow_outside_workspace: false,
             transcript_chapters: false,
+            notify_on_turn_complete: true,
+            show_activity_in_title: true,
+            browser_tools: true,
+            defer_tools: false,
             auto_approve_tools: false,
             auto_accept_changes: false,
             explorer_icon_pack: "material".to_string(),

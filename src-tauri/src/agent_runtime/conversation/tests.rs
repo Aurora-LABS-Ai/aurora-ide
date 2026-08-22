@@ -303,6 +303,155 @@ fn a_default_sized_tree_is_never_compacted() {
     assert_eq!(parsed["tree"].as_array().unwrap().len(), 500);
 }
 
+/// The bug that ate a whole web page.
+///
+/// `auroro_websearch` used to answer with `{"content": {"title": …, "content":
+/// "<the page>"}}`. The shrinker matched the OUTER `content` key, found an
+/// object rather than a string, and stopped — so the page body one level down
+/// was never shortened, the search for a fitting size could never succeed, and
+/// the result fell through to the envelope-only fallback. What reached the
+/// model was `{"success": true, "historyTruncated": true}`: a success with no
+/// page in it, which it reported as a page that returned no content.
+#[test]
+fn a_payload_nested_under_a_payload_key_is_still_shrunk() {
+    let mut value = serde_json::json!({
+        "success": true,
+        "content": {
+            "title": "A very long article",
+            "content": "x".repeat(50_000),
+        },
+    });
+
+    let changed = shrink_history_payload_strings(&mut value, 1_000);
+
+    assert!(changed, "the nested body was not shrunk at all");
+    let body = value["content"]["content"].as_str().unwrap();
+    assert!(body.len() < 2_000, "still {} bytes", body.len());
+    assert!(body.contains("truncated"));
+    // The container itself survives — this shrinks payloads, it does not
+    // delete structure.
+    assert_eq!(value["content"]["title"], "A very long article");
+}
+
+/// The last-resort fallback removes the payload rather than shortening it, so
+/// it has to say so. Without the note it is indistinguishable from a tool that
+/// genuinely found nothing.
+#[test]
+fn the_envelope_only_fallback_admits_what_it_dropped() {
+    // One enormous scalar the shrinker cannot touch (not a payload key) and no
+    // arrays to halve, which is the only way to reach the fallback.
+    let raw = serde_json::json!({
+        "success": true,
+        "blob": "y".repeat(60_000),
+    })
+    .to_string();
+
+    let compacted = compact_json_tool_content(&raw, 512).expect("fallback");
+    let parsed: serde_json::Value = serde_json::from_str(&compacted).unwrap();
+
+    assert_eq!(parsed["historyTruncated"], true);
+    let note = parsed["truncationNote"]
+        .as_str()
+        .expect("a dropped payload must be named");
+    assert!(note.contains("blob"), "{note}");
+    assert!(note.contains("empty answer"), "{note}");
+}
+
+/// The web tool now bounds its own output, so a normal page must reach the
+/// model whole and never touch the compactor at all.
+#[test]
+fn a_normal_web_page_reaches_the_model_untouched() {
+    let raw = serde_json::json!({
+        "success": true,
+        "action": "fetch",
+        "document": {
+            "url": "https://doc.rust-lang.org/book/ch10-02-traits.html",
+            "kind": "article",
+            "title": "Traits: Defining Shared Behavior",
+            // A full window at the tool's default size.
+            "content": "The trait defines shared behaviour. ".repeat(850),
+            "totalChars": 30_000,
+            "returnedChars": 30_000,
+            "offset": 0,
+            "hasMore": false,
+        },
+    })
+    .to_string();
+
+    let out = truncate_tool_content("auroro_websearch", raw.clone());
+    assert_eq!(out, raw, "a normal page must pass through whole");
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("historyTruncated").is_none());
+    assert!(parsed["document"]["content"]
+        .as_str()
+        .is_some_and(|c| c.len() > 25_000));
+}
+
+/// The reported bug, reproduced end to end against the real page and the real
+/// runtime clamp.
+///
+/// What was filed:
+///
+/// ```text
+/// call:  {"action":"fetch","url":"https://aurorahelix.com/docs"}
+/// reply: {"success":true,"error":null,"historyTruncated":true,"originalBytes":9454}
+/// ```
+///
+/// A success with no page in it. This runs the same call through the real tool
+/// and then through `truncate_tool_content` — the step the old result died at,
+/// and the reason no amount of better extraction alone would have fixed it.
+/// Both halves have to hold: real content out of the tool, and that content
+/// still there after the clamp.
+///
+/// Ignored by default because it talks to the internet:
+/// `cargo test --lib the_reported_fetch -- --ignored --nocapture`
+#[tokio::test]
+#[ignore = "hits the network"]
+async fn the_reported_fetch_reaches_the_model_with_the_page_in_it() {
+    use crate::agent_runtime::tool_executor::{ToolContext, ToolExecutor};
+    use crate::tools::file_workspace_search::auroro_websearch::AuroroWebSearchTool;
+    use std::sync::Arc;
+
+    let ctx = ToolContext {
+        allow_outside_workspace: false,
+        turn_id: "t".into(),
+        tool_call_id: "c".into(),
+        thread_id: "s".into(),
+        workspace_root: None,
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        spill_dir: None,
+    };
+
+    let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool);
+    let raw = tool
+        .execute(
+            serde_json::json!({ "action": "fetch", "url": "https://aurorahelix.com/docs" }),
+            &ctx,
+        )
+        .await
+        .expect("the tool ran");
+
+    let clamped = truncate_tool_content("auroro_websearch", raw.clone());
+    println!("tool {} bytes -> model {} bytes", raw.len(), clamped.len());
+
+    let parsed: serde_json::Value = serde_json::from_str(&clamped).expect("valid JSON");
+    assert_eq!(parsed["success"], true);
+    // The two markers of the old failure.
+    assert!(
+        parsed.get("historyTruncated").is_none(),
+        "the compactor engaged: {clamped}"
+    );
+    assert!(
+        parsed.get("truncationNote").is_none(),
+        "the payload was dropped: {clamped}"
+    );
+    let content = parsed["document"]["content"]
+        .as_str()
+        .expect("a fetch must carry its page");
+    assert!(content.len() > 500, "only {} bytes of page", content.len());
+    assert!(content.contains("Aurora"), "{content}");
+}
+
 // ── Test doubles ────────────────────────────────────────────────
 
 /// Mock API client that emits a scripted sequence of events and

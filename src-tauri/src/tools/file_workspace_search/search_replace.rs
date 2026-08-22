@@ -115,7 +115,7 @@ impl ToolExecutor for SearchReplaceTool {
         // shipping the buffer twice (the response struct already
         // carries lines_added/lines_removed/total_replacements for the
         // UI summary).
-        if matches!(response, SearchReplaceResponse::Ok { .. }) {
+        let impact = if matches!(response, SearchReplaceResponse::Ok { .. }) {
             emit_post_write(
                 &*self.sink,
                 &resolved_str,
@@ -123,9 +123,18 @@ impl ToolExecutor for SearchReplaceTool {
                 &ctx.tool_call_id,
             )
             .await;
-        }
+            super::index_note_after_write(ctx, &resolved_str)
+        } else {
+            None
+        };
 
-        Ok(render_response(&raw_path, &resolved_str, response, false))
+        Ok(render_response(
+            &raw_path,
+            &resolved_str,
+            response,
+            false,
+            impact.as_deref(),
+        ))
     }
 }
 
@@ -183,12 +192,15 @@ pub(crate) fn diff_side(content: &str) -> Value {
 
 /// Render a [`SearchReplaceResponse`] in the same JSON shape the TS
 /// executor produces. `multi` selects between the single- and
-/// batch-failure phrasings.
+/// batch-failure phrasings. `impact` is the code index's edit-impact note
+/// ("other files use what this file defines…"), attached to successful
+/// writes only — a failed edit changed nothing, so it has no impact.
 pub(crate) fn render_response(
     raw_path: &str,
     full_path: &str,
     response: SearchReplaceResponse,
     multi: bool,
+    impact: Option<&str>,
 ) -> String {
     match response {
         SearchReplaceResponse::Ok {
@@ -227,6 +239,12 @@ pub(crate) fn render_response(
                         "replaced": d.replaced,
                     }))
                     .collect::<Vec<_>>());
+            }
+            // Present only when there is something to say — a permanent
+            // `"impact": null` on every edit would teach the model to stop
+            // reading the field.
+            if let Some(note) = impact {
+                payload["impact"] = json!(note);
             }
             serde_json::to_string(&payload).unwrap()
         }

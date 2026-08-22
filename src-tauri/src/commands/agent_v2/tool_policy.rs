@@ -100,8 +100,48 @@ pub(super) fn build_per_turn_tool_registry(
             browser_enabled,
         )
     };
-    // 1. Bridge fallback for every AllowedTool the model can see.
-    for tool in tools {
+    // 1. Native Rust executors first, in the base registry's own stable
+    //    registration order.
+    //
+    //    Order is a CACHE decision, not a cosmetic one. The serialized tool
+    //    array rides in every request's cacheable prefix, and providers cache
+    //    on the longest common prefix, so whatever sits at the head has to be
+    //    byte-identical between turns. Bridged tools used to register first,
+    //    and because `ToolRegistry::register` keeps an existing name's slot,
+    //    a native tool inherited whichever position its bridge placeholder
+    //    happened to land in. One MCP server connecting reshuffled the head
+    //    and cost the entire tool block. Natives are now a contiguous prefix
+    //    and MCP churn can only move the tail.
+    for name in base.names() {
+        if vision_blocked(&name) || is_withdrawn_tool(&name) || mode_blocked(&name) {
+            continue;
+        }
+        if let Some(existing) = base.get(&name) {
+            let executor: Arc<dyn ToolExecutor> =
+                if execution_mode == AgentExecutionMode::Plan && name == "shell_execute" {
+                    Arc::new(PlanShellExecutor { inner: existing })
+                } else {
+                    existing
+                };
+            if defer_tools && is_deferrable(&name) {
+                defer(&mut deferred, executor);
+            } else {
+                registry.register(executor);
+            }
+        }
+    }
+    // 2. Bridge fallback for every AllowedTool the Rust registry does NOT
+    //    know — primarily `mcp_*`, plus team/skill/question tools.
+    //
+    //    Sorted by name so the partition is a function of WHICH servers are
+    //    connected and never of the order they happened to connect in. Two
+    //    turns with the same server set now serialize identically.
+    let mut bridged: Vec<&AllowedTool> = tools
+        .iter()
+        .filter(|tool| base.get(&tool.name).is_none())
+        .collect();
+    bridged.sort_by(|a, b| a.name.cmp(&b.name));
+    for tool in bridged {
         if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
             continue;
         }
@@ -123,26 +163,6 @@ pub(super) fn build_per_turn_tool_registry(
             defer(&mut deferred, executor);
         } else {
             registry.register(executor);
-        }
-    }
-    // 2. Native Rust executors from the base registry overwrite any
-    //    bridge entry registered above with the same name.
-    for name in base.names() {
-        if vision_blocked(&name) || is_withdrawn_tool(&name) || mode_blocked(&name) {
-            continue;
-        }
-        if let Some(existing) = base.get(&name) {
-            let executor: Arc<dyn ToolExecutor> =
-                if execution_mode == AgentExecutionMode::Plan && name == "shell_execute" {
-                    Arc::new(PlanShellExecutor { inner: existing })
-                } else {
-                    existing
-                };
-            if defer_tools && is_deferrable(&name) {
-                defer(&mut deferred, executor);
-            } else {
-                registry.register(executor);
-            }
         }
     }
     // 3. One entry standing in for the whole deferred catalogue. Registered

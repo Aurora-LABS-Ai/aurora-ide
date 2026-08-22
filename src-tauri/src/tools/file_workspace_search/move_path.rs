@@ -145,6 +145,11 @@ impl ToolExecutor for MovePathTool {
                     );
                 }
 
+                // A rename changes neither the file count nor the newest
+                // mtime, so the index's walk fingerprint can NEVER see one —
+                // this flag is its only way to find out.
+                super::mark_index_stale(ctx);
+
                 Ok(serde_json::to_string(&json!({
                     "success": true,
                     "message": format!("Moved: {raw_old} -> {raw_new}"),

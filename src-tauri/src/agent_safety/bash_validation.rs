@@ -425,8 +425,10 @@ fn check_destructive(command: &str) -> ValidationResult {
         }
     }
 
-    // Check for "rm -rf" with broad targets.
-    if command.contains("rm ") && command.contains("-r") && command.contains("-f") {
+    // Check for an actual `rm` invocation with recursive and force flags. Matching
+    // shell words prevents unrelated argument substrings from combining into a
+    // phantom command (for example, `lucide-react react-hook-form`).
+    if contains_recursive_forced_rm(command) {
         // Already handled the most dangerous patterns above.
         // Flag any remaining "rm -rf" as a warning.
         return ValidationResult::Warn {
@@ -820,6 +822,95 @@ fn extract_first_command(command: &str) -> String {
         .to_string()
 }
 
+/// Return whether any shell command segment invokes `rm` with both recursive
+/// and force flags. This is intentionally a small shell lexer rather than a
+/// substring search: package names and other arguments may contain `rm`, `-r`,
+/// and `-f` without executing a removal command.
+fn contains_recursive_forced_rm(command: &str) -> bool {
+    fn segment_matches(words: &[String]) -> bool {
+        for (rm_index, word) in words.iter().enumerate() {
+            if word.rsplit('/').next() != Some("rm") {
+                continue;
+            }
+
+            let mut recursive = false;
+            let mut force = false;
+
+            for argument in &words[rm_index + 1..] {
+                if argument == "--" {
+                    break;
+                }
+
+                match argument.as_str() {
+                    "--recursive" => recursive = true,
+                    "--force" => force = true,
+                    _ => {
+                        if let Some(flags) = argument.strip_prefix('-') {
+                            recursive |= flags.contains('r') || flags.contains('R');
+                            force |= flags.contains('f');
+                        }
+                    }
+                }
+            }
+
+            if recursive && force {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn finish_word(word: &mut String, segment: &mut Vec<String>) {
+        if !word.is_empty() {
+            segment.push(std::mem::take(word));
+        }
+    }
+
+    let mut segment = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in command.chars() {
+        if escaped {
+            word.push(character);
+            escaped = false;
+            continue;
+        }
+
+        match quote {
+            Some(active_quote) => {
+                if character == active_quote {
+                    quote = None;
+                } else if character == '\\' && active_quote == '"' {
+                    escaped = true;
+                } else {
+                    word.push(character);
+                }
+            }
+            None => match character {
+                '\\' => escaped = true,
+                '\'' | '"' => quote = Some(character),
+                ';' | '|' | '&' | '\n' | '\r' | '(' | ')' | '`' => {
+                    finish_word(&mut word, &mut segment);
+                    if segment_matches(&segment) {
+                        return true;
+                    }
+                    segment.clear();
+                }
+                character if character.is_whitespace() => {
+                    finish_word(&mut word, &mut segment);
+                }
+                _ => word.push(character),
+            },
+        }
+    }
+
+    finish_word(&mut word, &mut segment);
+    segment_matches(&segment)
+}
+
 /// Extract the command following "sudo" (skip sudo flags).
 fn extract_sudo_inner(command: &str) -> &str {
     let parts: Vec<&str> = command.split_whitespace().collect();
@@ -991,6 +1082,35 @@ mod tests {
     fn allows_safe_commands() {
         assert_eq!(check_destructive("ls -la"), ValidationResult::Allow);
         assert_eq!(check_destructive("echo hello"), ValidationResult::Allow);
+    }
+
+    #[test]
+    fn package_names_cannot_combine_into_a_phantom_rm_rf_command() {
+        for package_command in ["bun add", "npm install", "pnpm add", "yarn add"] {
+            let command =
+                format!("{package_command} clsx tailwind-merge lucide-react react-hook-form zod");
+            assert_eq!(
+                check_destructive(&command),
+                ValidationResult::Allow,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn actual_recursive_forced_rm_commands_still_warn() {
+        for command in [
+            "rm -rf build",
+            "rm -r -f build",
+            "/bin/rm -Rf build",
+            "rm --recursive --force build",
+            "bun add clsx && rm -rf build",
+        ] {
+            assert!(
+                matches!(check_destructive(command), ValidationResult::Warn { .. }),
+                "{command}"
+            );
+        }
     }
 
     // --- modeValidation ---

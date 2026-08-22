@@ -114,6 +114,15 @@ impl<'a> SettingsRepository<'a> {
                     settings.global_instructions = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.global_instructions.clone())
                 }
+                "globalInstructionProfiles" => {
+                    settings.global_instruction_profiles = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.global_instruction_profiles.clone())
+                }
+                "activeGlobalInstructionProfileId" => {
+                    settings.active_global_instruction_profile_id =
+                        serde_json::from_str(&setting.value)
+                            .unwrap_or(settings.active_global_instruction_profile_id.clone())
+                }
                 "compactionThresholdPct" => {
                     settings.compaction_threshold_pct = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.compaction_threshold_pct)
@@ -121,6 +130,10 @@ impl<'a> SettingsRepository<'a> {
                 "compactionSummaryBudget" => {
                     settings.compaction_summary_budget = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.compaction_summary_budget)
+                }
+                "compactionModel" => {
+                    settings.compaction_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.compaction_model.clone())
                 }
                 "titleMakerEnabled" => {
                     settings.title_maker_enabled =
@@ -149,6 +162,22 @@ impl<'a> SettingsRepository<'a> {
                 "transcriptChapters" => {
                     settings.transcript_chapters =
                         serde_json::from_str(&setting.value).unwrap_or(settings.transcript_chapters)
+                }
+                "notifyOnTurnComplete" => {
+                    settings.notify_on_turn_complete = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.notify_on_turn_complete)
+                }
+                "showActivityInTitle" => {
+                    settings.show_activity_in_title = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.show_activity_in_title)
+                }
+                "browserTools" => {
+                    settings.browser_tools =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.browser_tools)
+                }
+                "deferTools" => {
+                    settings.defer_tools =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.defer_tools)
                 }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =
@@ -307,12 +336,25 @@ impl<'a> SettingsRepository<'a> {
             &serde_json::to_string(&settings.global_instructions).unwrap_or_default(),
         )?;
         self.set_setting(
+            "globalInstructionProfiles",
+            &serde_json::to_string(&settings.global_instruction_profiles).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "activeGlobalInstructionProfileId",
+            &serde_json::to_string(&settings.active_global_instruction_profile_id)
+                .unwrap_or_default(),
+        )?;
+        self.set_setting(
             "compactionThresholdPct",
             &serde_json::to_string(&settings.compaction_threshold_pct).unwrap_or_default(),
         )?;
         self.set_setting(
             "compactionSummaryBudget",
             &serde_json::to_string(&settings.compaction_summary_budget).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "compactionModel",
+            &serde_json::to_string(&settings.compaction_model).unwrap_or_default(),
         )?;
         self.set_setting(
             "titleMakerEnabled",
@@ -341,6 +383,22 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "transcriptChapters",
             &serde_json::to_string(&settings.transcript_chapters).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "notifyOnTurnComplete",
+            &serde_json::to_string(&settings.notify_on_turn_complete).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "showActivityInTitle",
+            &serde_json::to_string(&settings.show_activity_in_title).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "browserTools",
+            &serde_json::to_string(&settings.browser_tools).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "deferTools",
+            &serde_json::to_string(&settings.defer_tools).unwrap_or_default(),
         )?;
         self.set_setting(
             "autoApproveTools",
@@ -716,5 +774,77 @@ impl<'a> SettingsRepository<'a> {
             self.set_tool_setting(tool_name, approval_mode)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::models::GlobalInstructionProfile;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        crate::db::schema::initialize_schema(&conn).expect("schema");
+        conn
+    }
+
+    /// The regression this pins: a field the frontend saved but the struct did
+    /// not carry was silently dropped by serde on the way in and absent on the
+    /// way out — `deferTools` reset to off on every launch, and browser tools,
+    /// the turn-complete cues, and the compaction model lost their values
+    /// invisibly (their frontend defaults masked it). Flip every once-dropped
+    /// field away from its default, round-trip through the repository, and
+    /// require the WHOLE value back unchanged.
+    #[test]
+    fn app_settings_survive_a_save_load_round_trip() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+
+        let mut settings = AppSettings::default();
+        settings.defer_tools = true;
+        settings.browser_tools = false;
+        settings.notify_on_turn_complete = false;
+        settings.show_activity_in_title = false;
+        settings.compaction_model = "openai:gpt-5.2".into();
+        settings.global_instructions = "active mirror".into();
+        settings.global_instruction_profiles = vec![
+            GlobalInstructionProfile {
+                id: "one".into(),
+                name: "Default".into(),
+                text: "quiet rules".into(),
+            },
+            GlobalInstructionProfile {
+                id: "two".into(),
+                name: "Reviewer".into(),
+                text: "active mirror".into(),
+            },
+        ];
+        settings.active_global_instruction_profile_id = "two".into();
+
+        repo.save_app_settings(&settings).expect("save");
+        let loaded = repo.get_app_settings().expect("load");
+
+        assert_eq!(
+            serde_json::to_value(&settings).expect("serialize saved"),
+            serde_json::to_value(&loaded).expect("serialize loaded"),
+        );
+    }
+
+    /// A database from before the profile fields existed must still load, and
+    /// the defaults must match what the frontend assumes: browser/notify/
+    /// activity ON, defer OFF, no profiles, nothing active.
+    #[test]
+    fn a_row_without_the_new_keys_loads_the_agreed_defaults() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+
+        let loaded = repo.get_app_settings().expect("load empty table");
+        assert!(loaded.browser_tools);
+        assert!(loaded.notify_on_turn_complete);
+        assert!(loaded.show_activity_in_title);
+        assert!(!loaded.defer_tools);
+        assert!(loaded.compaction_model.is_empty());
+        assert!(loaded.global_instruction_profiles.is_empty());
+        assert!(loaded.active_global_instruction_profile_id.is_empty());
     }
 }

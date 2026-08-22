@@ -25,6 +25,7 @@ use crate::agent_runtime::events::AssistantEvent;
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage};
 use crate::api::client::{ProviderConfigSnapshot, ProviderKind};
 use crate::api::codex::CODEX_RESPONSES_URL;
+use crate::api::cursor::CURSOR_API_BASE;
 use crate::api::provider_kernel_adapter::{build_anthropic_url, build_openai_url};
 use crate::api::responses::build_responses_url;
 
@@ -197,6 +198,13 @@ fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'sta
         ProviderKind::Anthropic => ("Anthropic Messages", build_anthropic_url(&config.base_url)),
         ProviderKind::OpenAIResponses => ("Responses", build_responses_url(&config.base_url)),
         ProviderKind::Codex => ("Codex", CODEX_RESPONSES_URL.to_string()),
+        // Not a URL the user configured: the endpoint is fixed and the wire
+        // is an agent protocol, not a chat API. Reporting the configured base
+        // URL here would describe a route this provider never takes.
+        ProviderKind::Cursor => (
+            "Cursor Agent",
+            format!("{CURSOR_API_BASE}/agent.v1.AgentService/Run"),
+        ),
         ProviderKind::DeepSeek | ProviderKind::OpenAICompat => {
             ("Chat Completions", build_openai_url(&config.base_url))
         }

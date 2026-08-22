@@ -8,6 +8,11 @@
 //! tool_calls, reasoning_content, …}` deltas, terminated by `data:
 //! [DONE]`.
 //!
+//! "Terminated" is looser in practice than that sentence suggests. Three
+//! things count as the provider saying goodbye, and some providers send only
+//! one of them: a `finish_reason`, the `[DONE]` sentinel, or a choice-less
+//! usage frame. Anything else at EOF is a dropped connection.
+//!
 //! Tool calls accumulate by `index` across deltas — `function.arguments`
 //! is a string built up chunk by chunk. We emit one
 //! [`AssistantEvent::ToolUse`] per accumulated tool call at end of
@@ -173,8 +178,9 @@ where
     let mut usage = TokenUsage::default();
     let mut finish_reason: Option<String> = None;
     // Did the provider actually close the stream, or did the connection just
-    // die? A `finish_reason` or the `[DONE]` sentinel means goodbye was said.
-    // Without one, EOF is a TRUNCATED stream — see the check after the loop.
+    // die? A `finish_reason`, the `[DONE]` sentinel, or a final usage frame
+    // means goodbye was said. Without one, EOF is a TRUNCATED stream — see the
+    // check after the loop.
     let mut saw_terminator = false;
 
     loop {
@@ -219,6 +225,30 @@ where
                 }
 
                 if let Some(u) = parsed.usage {
+                    // A usage frame carrying no choices is the standard
+                    // end-of-stream accounting — the shape every OpenAI-compat
+                    // provider sends last, and the one `include_usage` asks
+                    // for. It is also a goodbye: a server only reports what a
+                    // turn cost once it has finished generating it, so a
+                    // connection that genuinely dropped mid-reply cannot have
+                    // delivered this.
+                    //
+                    // Measured need, not a hypothetical: OpenCode Go's
+                    // `muse-spark-1.2-contributor` streams `finish_reason:
+                    // null` on every chunk (in its non-streaming replies too)
+                    // and never sends `[DONE]` — it closes after this frame.
+                    // Without this the model was unusable: three retries, three
+                    // billed requests, and "the connection dropped" on a
+                    // stream that had already delivered the whole reply.
+                    //
+                    // Deliberately narrowed to choice-less frames. A provider
+                    // that attaches running usage to content chunks is still
+                    // mid-reply, and treating that as a farewell would hand
+                    // back a truncated answer as a finished turn — the exact
+                    // failure the terminator check exists to prevent.
+                    if parsed.choices.is_empty() {
+                        saw_terminator = true;
+                    }
                     usage.input_tokens = u.prompt_tokens;
                     usage.output_tokens = u.completion_tokens;
                     // Context caching: the cached-read count is a SUBSET of
@@ -622,6 +652,44 @@ mod tests {
             .await
             .expect("finish_reason should complete the turn");
         assert_eq!(turn.stop_reason, "stop");
+    }
+
+    /// OpenCode Go's `muse-spark-1.2-contributor`, byte for byte off the wire:
+    /// `finish_reason` is `null` on every chunk, there is no `[DONE]`, and the
+    /// stream closes after a choice-less usage frame and a cost footer. The
+    /// whole reply had already arrived; Aurora called it a dropped connection
+    /// and burned three billed retries on it.
+    #[tokio::test]
+    async fn a_final_usage_frame_closes_a_stream_that_never_says_done() {
+        let body = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello there friend\"},\
+             \"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":15,\"completion_tokens\":806,\
+             \"total_tokens\":821}}\n\n",
+            "data: {\"choices\":[],\"cost\":\"0\"}\n\n",
+        );
+        let turn = drive(body)
+            .await
+            .expect("a reported usage total means the turn finished");
+        // No `finish_reason` anywhere on this wire, so the default stands.
+        assert_eq!(turn.stop_reason, "stop");
+        assert_eq!(turn.usage.output_tokens, 806);
+    }
+
+    /// The narrowing that keeps the fix above from swallowing the bug the
+    /// terminator check exists for. Usage attached to a content chunk is a
+    /// running total, not a farewell — a provider that streams it and then
+    /// dies is still a truncated reply.
+    #[tokio::test]
+    async fn usage_on_a_content_chunk_is_not_a_goodbye() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"half a sen\"}}],\
+                    \"usage\":{\"prompt_tokens\":15,\"completion_tokens\":3}}\n\n";
+        match drive(body).await {
+            Err(ApiError::Network(msg)) => {
+                assert!(msg.contains("ended before"), "unexpected message: {msg}");
+            }
+            other => panic!("expected a Network error for a truncated stream, got {other:?}"),
+        }
     }
 
     /// The exact shape of the reported bug: the model spent its whole output

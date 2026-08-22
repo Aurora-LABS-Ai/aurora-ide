@@ -1,8 +1,18 @@
 //! The canvas authoring guide, returned verbatim by `canvas_guidelines`.
 //!
 //! One home for this text. The system prompt points at the tool; the tool
-//! returns this. Nothing here is duplicated into the prompt, so there is no
-//! second copy to drift.
+//! returns this.
+//!
+//! ONE deliberate exception: the "pick the cheapest kind that works" rule below
+//! is also stated in `agent-prompt.ts`'s `CANVAS_INSTRUCTIONS`. It has to be,
+//! because it is the only line here that decides something BEFORE this tool is
+//! called — a model that has already chosen `react` and called the guide can no
+//! longer be told to have chosen `markdown`. Left only here, the encouraging
+//! half of the choice ("prefer react for datasets", in the `present_artifact`
+//! description) was visible at decision time and the sobering half was not.
+//!
+//! Both copies are pinned: `the_kind_choice_rule_is_stated_up_front` below, and
+//! `agent-prompt.test.ts`. Change the wording in one and a test fails.
 
 pub const CANVAS_GUIDE: &str = r##"# Authoring a live canvas
 

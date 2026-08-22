@@ -21,6 +21,8 @@ import {
 import { providerCatalogService, type ProviderCatalogPreset } from "@/apps/agent/services/providers/provider-catalog";
 import { ATLAS_CLOUD_PRESET } from "@/apps/agent/services/providers/atlascloud";
 import { CODEX_PRESET } from "@/apps/agent/services/providers/codex";
+import { CURSOR_PRESET } from "@/apps/agent/services/providers/cursor";
+import { OPENCODE_PRESET } from "@/apps/agent/services/providers/opencode";
 import { AGENT_ROUTER_PRESET } from "@/apps/agent/services/providers/agentrouter";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
 import { MAX_ENABLED_SKILLS } from "@/apps/agent/services/skills/skills";
@@ -523,7 +525,7 @@ export interface LLMProvider {
   // shape. The choice rides here rather than in a separate field so everything
   // downstream (URL builder, streaming client, reasoning replay) follows from
   // one value that cannot disagree with itself.
-  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "custom"; // Explicit provider type
+  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "opencode-go" | "opencode-go-chat" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -1248,6 +1250,26 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // auth + routing (`api::codex`); this just seeds the provider row.
       if (!presetProviders.some((p) => p.id === CODEX_PRESET.id)) {
         presetProviders.push(CODEX_PRESET);
+      }
+
+      // Cursor (subscription) — same shape again: no API key, the Rust side
+      // reads the Cursor app's own session (`api::cursor`) and owns the wire.
+      // Its model list is NOT seeded here: the account decides what exists and
+      // the catalogue is pulled on connect, so a guess would put models in the
+      // picker that the first refresh contradicts.
+      if (!presetProviders.some((p) => p.id === CURSOR_PRESET.id)) {
+        presetProviders.push(CURSOR_PRESET);
+      }
+
+      // OpenCode Go (subscription). An ordinary OpenAI-compatible endpoint
+      // with an ordinary key, so it needs no adapter of its own — only the
+      // right base URL. `/zen/v1`, the credit-billed API, is deliberately NOT
+      // offered: it gives a subscriber nothing a custom provider row would
+      // not, and bills separately from the plan they already pay for.
+      // Its models are pulled from the account, not seeded, for the same
+      // reason as Cursor's.
+      if (!presetProviders.some((p) => p.id === OPENCODE_PRESET.id)) {
+        presetProviders.push(OPENCODE_PRESET);
       }
 
       // AgentRouter (OpenAI-compatible proxy). Frontend preset — seeds the

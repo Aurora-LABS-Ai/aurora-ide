@@ -125,6 +125,16 @@ mod tests {
         }
     }
 
+    /// The kind-choice rule is the one line here that also lives in the system
+    /// prompt, because it decides something before this tool is ever called.
+    /// `agent-prompt.test.ts` pins the other copy; if the wording drifts, one
+    /// of the two fails rather than both silently disagreeing.
+    #[test]
+    fn the_kind_choice_rule_is_stated_up_front() {
+        assert!(guide::CANVAS_GUIDE.contains("Pick the cheapest kind that works"));
+        assert!(guide::CANVAS_GUIDE.contains("only when it needs to be interactive"));
+    }
+
     #[test]
     fn the_guide_refuses_the_shape_that_produced_the_wall_of_cards() {
         assert!(

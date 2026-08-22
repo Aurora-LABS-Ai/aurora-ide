@@ -275,7 +275,12 @@ mod tests {
         // with Anthropic's auth scheme, and the key would be rejected — a
         // failure that would read as "the key is wrong" rather than "we routed
         // it to the wrong company".
-        for model in ["claude-opus-5", "gpt-5-6-terra", "deepseek-v4-pro", "glm-5-2"] {
+        for model in [
+            "claude-opus-5",
+            "gpt-5-6-terra",
+            "deepseek-v4-pro",
+            "glm-5-2",
+        ] {
             assert_eq!(
                 normalize_provider_type("", "https://kenari.id/v1", model),
                 "kenari",

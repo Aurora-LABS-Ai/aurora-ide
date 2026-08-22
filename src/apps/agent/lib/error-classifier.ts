@@ -13,6 +13,33 @@ export function classifyError(error: Error | string): ClassifiedError {
   const msg = typeof error === 'string' ? error : error.message;
   const lower = msg.toLowerCase();
 
+  // A gateway that fans out to several upstreams reports its own failures, not
+  // the model's. Both of these are catch-alls, and naming them for what they are
+  // is the only honest answer — the alternative is picking one cause off a list
+  // and asserting it, which is exactly how a 3%-full conversation came to be
+  // called "too long".
+  if (lower.includes('all_providers_failed') || lower.includes('upstream unavailable')) {
+    return {
+      title: 'Provider Unavailable',
+      message: 'The gateway could not reach any upstream for this model.',
+      suggestion: 'Nothing is wrong with your conversation. Retry, or switch model — the gateway routes each one to a different upstream.',
+      action: 'retry',
+      actionLabel: 'Try Again',
+      severity: 'warning',
+    };
+  }
+
+  if (lower.includes('upstream_rejected')) {
+    return {
+      title: 'Provider Rejected the Request',
+      message: 'The gateway passed the request upstream and it came back refused, without saying why.',
+      suggestion: 'The gateway names three possible causes and picks none: the model id, a request field, or the context length. Retry first — this often follows a dropped upstream. If it repeats, try another model.',
+      action: 'retry',
+      actionLabel: 'Try Again',
+      severity: 'error',
+    };
+  }
+
   if (lower.includes('401') || lower.includes('unauthorized') || lower.includes('invalid api key') || lower.includes('incorrect api key')) {
     return {
       title: 'Invalid API Key',
@@ -123,7 +150,27 @@ export function classifyError(error: Error | string): ClassifiedError {
     };
   }
 
-  if (lower.includes('context length') || lower.includes('too many tokens') || lower.includes('maximum context')) {
+  // OVERFLOW PATTERNS — deliberately specific, and kept in step with the curated
+  // Rust list in `agent_runtime/api_client.rs::is_context_overflow`.
+  //
+  // The bare substring `context length` used to be in here, and it matched the
+  // phrase "check the model id, request fields, and context length" — a
+  // gateway's list of things it had NOT checked. Aurora then told the reader
+  // their conversation was too long while its own ring read 3% of 1M tokens. A
+  // needle has to match a claim of overflow, never a mention of the subject.
+  const OVERFLOW_PATTERNS = [
+    'context_too_large',
+    'context_length_exceeded',
+    'context length exceeded',
+    'exceeds the context window',
+    'maximum context length',
+    'prompt is too long',
+    'input is too long',
+    'too many total text bytes',
+    'reduce the length of the messages',
+    'too many tokens',
+  ];
+  if (OVERFLOW_PATTERNS.some((needle) => lower.includes(needle))) {
     return {
       title: 'Context Too Large',
       message: 'The conversation is too long for the model\'s context window.',

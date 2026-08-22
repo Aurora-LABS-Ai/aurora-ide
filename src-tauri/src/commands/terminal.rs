@@ -101,8 +101,13 @@ fn collect_descendants(table: &[(u32, u32, String)], root: u32) -> Vec<RunningCh
     found
 }
 
+/// `pub(crate)` because the shell lifecycle (`commands::run_command_lifecycle`)
+/// uses the same walk at command exit: a survivor that inherited no pipe
+/// (`Start-Process` goes through ShellExecute, which shares no handles) is
+/// invisible to the pipe-drain check, but its parent-pid link still points at
+/// the dead shell — Windows never rewrites it — so the table walk finds it.
 #[cfg(target_os = "windows")]
-fn descendants_of(root: u32) -> Result<Vec<RunningChild>, String> {
+pub(crate) fn descendants_of(root: u32) -> Result<Vec<RunningChild>, String> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -143,7 +148,7 @@ fn descendants_of(root: u32) -> Result<Vec<RunningChild>, String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn descendants_of(root: u32) -> Result<Vec<RunningChild>, String> {
+pub(crate) fn descendants_of(root: u32) -> Result<Vec<RunningChild>, String> {
     use std::process::Command;
 
     let output = Command::new("ps")

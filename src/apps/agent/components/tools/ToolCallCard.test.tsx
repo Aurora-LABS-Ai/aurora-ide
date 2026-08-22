@@ -565,6 +565,42 @@ describe("ToolCallCard streamed file targets", () => {
     expect(fast).not.toContain("agw-tool-time");
   });
 
+  it("counts up on a running card once the wait is worth noticing", () => {
+    const running = (startedAt: number | undefined, now: number) => {
+      vi.setSystemTime(now);
+      return renderToStaticMarkup(
+        <ToolCallCard
+          // A call with no result only counts as running while the turn is
+          // live — see `toolStatus`.
+          isActivelyStreaming
+          call={{
+            id: "running-1",
+            name: "shell_execute",
+            arguments: JSON.stringify({ command: "pnpm lint && pnpm build" }),
+            result: null,
+            startedAt,
+          }}
+        />,
+      );
+    };
+
+    vi.useFakeTimers();
+    try {
+      const started = 1_000_000;
+      // Under two seconds: most calls land here, and a digit that appears and
+      // vanishes on every one of six batched reads is worse than none.
+      expect(running(started, started + 1_500)).not.toContain("agw-tool-time");
+      // Past it, the number is the answer to "is this working or stuck".
+      expect(running(started, started + 47_000)).toContain("47s");
+      expect(running(started, started + 300_000)).toContain("5m");
+      // Rebuilt from history: Rust never persisted a start time, so there is
+      // nothing honest to show and the row shows nothing.
+      expect(running(undefined, started + 300_000)).not.toContain("agw-tool-time");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never exposes a full target path in a failed toolbar summary", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard

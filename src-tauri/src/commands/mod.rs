@@ -30,6 +30,7 @@ pub mod chat;
 pub mod checkpoints;
 pub mod code_index;
 pub mod codex;
+pub mod cursor;
 /// Test-only: fails the build if a main-thread command waits on the database.
 #[cfg(test)]
 mod command_thread_safety;
@@ -38,7 +39,9 @@ pub mod editor_ops;
 pub mod fonts;
 pub mod git;
 pub mod local_providers;
+pub mod opencode;
 pub mod plans;
+pub mod process_tracking;
 pub mod project_stats;
 pub mod prompt_refine;
 pub mod provider_catalog;
@@ -83,6 +86,23 @@ pub struct CommandOutput {
     /// `Deserialize` so payloads written before this field existed still load.
     #[serde(default)]
     pub timed_out: bool,
+    /// The command exited, but a process it started is still alive and holding
+    /// the output pipe open.
+    ///
+    /// Children inherit the shell's stdout/stderr handles, so a command like
+    /// `Start-Process server.exe` or `server &` leaves the pipe open after the
+    /// shell itself is gone. Waiting for that pipe to close is waiting for the
+    /// survivor to die — which for a server is never, and is exactly how a
+    /// finished command used to hold its tool call (and the model) forever.
+    /// Defaulted for `Deserialize`, same reasoning as `timed_out`.
+    #[serde(default)]
+    pub left_running: bool,
+    /// The survivors by name, `"notepad.exe (pid 1234)"`, when the process
+    /// table could identify them. A held pipe proves a survivor exists without
+    /// naming it, so `left_running` can be true while this is empty — but
+    /// never the other way around.
+    #[serde(default)]
+    pub survivors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1585,87 +1605,27 @@ pub async fn execute_command(
     shell: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<CommandOutput, String> {
-    use std::process::Stdio;
-    use std::time::Duration;
-
-    // `None` means "the shell the user configured", not a hardcoded default.
-    let shell_profile = shell.as_deref();
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
-
-    let (shell_exe, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            #[cfg(target_os = "windows")]
-            if shell_profile != Some("bash") {
-                let mut fallback = TokioCommand::new("powershell");
-                fallback
-                    .arg("-NoProfile")
-                    .arg("-NonInteractive")
-                    .arg("-Command")
-                    .arg(&command);
-                if let Some(ref working_dir) = cwd {
-                    fallback.current_dir(working_dir);
-                }
-                fallback.stdout(Stdio::piped());
-                fallback.stderr(Stdio::piped());
-                fallback.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-
-                match fallback.spawn() {
-                    Ok(c) => c,
-                    Err(fallback_e) => {
-                        return Err(format!(
-                            "Failed to execute with pwsh and powershell: {}, {}",
-                            e, fallback_e
-                        ));
-                    }
-                }
-            } else {
-                return Err(format!(
-                    "Failed to execute command with {}: {}",
-                    shell_exe, e
-                ));
-            }
-
-            #[cfg(not(target_os = "windows"))]
-            {
-                return Err(format!(
-                    "Failed to execute command with {}: {}",
-                    shell_exe, e
-                ));
-            }
-        }
-    };
-
-    let pid = child.id();
-
-    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(res) => res.map_err(|e| format!("Command execution failed: {}", e))?,
-        Err(_) => {
-            if let Some(pid) = pid {
-                let _ = try_kill_pid(pid);
-            }
-            return Err(format!(
-                "Command timed out after {}ms and was killed. Re-run with a larger `timeout` if it \
-                 just needs longer, or start it with shell_spawn if it has no natural end.",
-                timeout.as_millis()
-            ));
-        }
-    };
-
-    Ok(CommandOutput {
-        // PowerShell and cmd write the OEM console code page, not UTF-8; a
-        // lossy UTF-8 decode would replace every accented character with
-        // U+FFFD in what the model reads back.
-        stdout: crate::shell::text::decode(&output.stdout),
-        stderr: crate::shell::text::decode(&output.stderr),
-        exit_code: output.status.code(),
-        success: output.status.success(),
-        timed_out: false,
-    })
+    // The same lifecycle the streamed path runs — spawn, read, classify the
+    // ending — minus the app handle, so nothing is emitted or tracked. This
+    // used to be a second hand-rolled runner built on `wait_with_output`,
+    // which waits for pipe EOF: a command that finished but left a child
+    // holding the pipe was reported as "timed out and was killed", false on
+    // both counts. One runner, one classification.
+    let request_id = format!("fg-{}", uuid::Uuid::new_v4().simple());
+    let effective_timeout_ms = timeout_ms.unwrap_or(30_000);
+    let output = run_command_lifecycle(
+        None, request_id, command, cwd, shell, timeout_ms, None, false,
+    )
+    .await?;
+    if output.timed_out {
+        // This caller's contract predates `timed_out`: a timeout is an `Err`.
+        return Err(format!(
+            "Command timed out after {effective_timeout_ms}ms and was killed. Re-run with a \
+             larger `timeout` if it just needs longer, or start it with shell_spawn if it has no \
+             natural end."
+        ));
+    }
+    Ok(output)
 }
 
 /// Stop a running stream.
@@ -1698,6 +1658,117 @@ pub fn cancel_command_stream(request_id: String, reason: Option<String>) -> Resu
 const SHELL_STREAM_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 const SHELL_STREAM_FLUSH_BYTES: usize = 32 * 1024;
 const SHELL_STREAM_READ_BUF: usize = 16 * 1024;
+
+/// How long to wait for a pipe to close after its shell has already exited.
+///
+/// A shell that exited alone closes its pipes in the same instant, so the
+/// ordinary case pays nothing. The window exists for the other case: a child
+/// the command started inherited the pipe's write end and is still alive.
+/// Nothing Aurora can await ends that — only the survivor's own death does —
+/// so past this point the pipe being open IS the answer: the command finished
+/// and left something running.
+const EXIT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Read what remains of a pipe once the process that owned it has exited.
+///
+/// Returns the bytes that arrived and whether the pipe is still held open by a
+/// surviving child (`true` = the grace window closed before EOF did). Callers
+/// fold the flag into `CommandOutput::left_running`. `already_eof` short-cuts
+/// the wait when the streaming loop saw this pipe close before the exit.
+async fn drain_exited_pipe<R: tokio::io::AsyncRead + Unpin>(
+    pipe: &mut R,
+    already_eof: bool,
+) -> (Vec<u8>, bool) {
+    use tokio::io::AsyncReadExt;
+
+    if already_eof {
+        return (Vec::new(), false);
+    }
+    let mut collected = Vec::new();
+    let mut chunk = vec![0u8; SHELL_STREAM_READ_BUF];
+    let deadline = tokio::time::Instant::now() + EXIT_DRAIN_GRACE;
+    loop {
+        match tokio::time::timeout_at(deadline, pipe.read(&mut chunk)).await {
+            // EOF: the pipe closed properly — everything is collected.
+            Ok(Ok(0)) => return (collected, false),
+            Ok(Ok(n)) => collected.extend_from_slice(&chunk[..n]),
+            // A read error after exit is a closed pipe, not a held one.
+            Ok(Err(_)) => return (collected, false),
+            // Grace elapsed with the pipe still open: a survivor holds it.
+            Err(_) => return (collected, true),
+        }
+    }
+}
+
+/// The processes a finished command left alive, by name, for the model to
+/// read: `"notepad.exe (pid 1234)"`.
+///
+/// `conhost.exe` is excluded — it is Windows console plumbing that rides along
+/// with any console child, not something the command "left running", and
+/// reporting it would make every ordinary command look like a launcher.
+fn surviving_descendants(shell_pid: u32) -> Vec<String> {
+    crate::commands::terminal::descendants_of(shell_pid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|child| !child.name.eq_ignore_ascii_case("conhost.exe"))
+        .map(|child| format!("{} (pid {})", child.name, child.pid))
+        .collect()
+}
+
+/// Runs when `run_command_lifecycle`'s future is dropped mid-flight — the one
+/// path where the code after the drop point never executes. That happens when
+/// the awaiting turn is cancelled while a foreground command is still running.
+///
+/// Without this, the child process kept running unwatched, its log never got a
+/// footer, and its ledger row leaked — `shell_list_processes` then listed a
+/// long-dead foreground command as a running "background process" for the rest
+/// of the session (observed live in session `41841342`, message 63).
+///
+/// Every ordinary ending calls `disarm()` first, so this fires only for the
+/// dropped-future case.
+struct LifecycleGuard {
+    armed: bool,
+    app: Option<tauri::AppHandle>,
+    request_id: String,
+    pid: Option<u32>,
+    log_path: Option<String>,
+    started: std::time::Instant,
+}
+
+impl LifecycleGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LifecycleGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Some(pid) = self.pid {
+            let _ = try_kill_pid(pid);
+        }
+        // The loop's own `ProcessLog` died with the future; append the footer
+        // through a fresh handle so the log still states how the run ended.
+        let mut log = ProcessLog::open(self.log_path.as_ref());
+        log.footer("Stopped with the conversation turn", self.started);
+        if let Some(app) = &self.app {
+            let _ = app.emit(
+                &format!("shell-stream-{}", self.request_id),
+                CommandStreamChunk {
+                    stream: "meta".to_string(),
+                    data: String::new(),
+                    done: true,
+                    exit_code: None,
+                    success: Some(false),
+                },
+            );
+            emit_process_ended(app, &self.request_id, None, "stopped");
+        }
+        cleanup_command_stream(&self.request_id);
+    }
+}
 
 /// The log file a background process's output is mirrored into.
 ///
@@ -1820,11 +1891,19 @@ fn emit_process_ended(
 }
 
 fn flush_shell_pending(
-    app: &tauri::AppHandle,
+    app: Option<&tauri::AppHandle>,
     request_id: &str,
     stdout_pending: &mut String,
     stderr_pending: &mut String,
 ) {
+    // An untracked run has no listener; drop the pending text rather than
+    // letting it grow for a stream nobody is on. The full output still
+    // accumulates in the buffers the caller returns.
+    let Some(app) = app else {
+        stdout_pending.clear();
+        stderr_pending.clear();
+        return;
+    };
     if !stdout_pending.is_empty() {
         let _ = app.emit(
             &format!("shell-stream-{}", request_id),
@@ -1856,6 +1935,12 @@ fn flush_shell_pending(
 /// `log_path` optionally mirrors the combined output into a file as it
 /// decodes, so a long-running process can be read back later with `file_read`
 /// — the live stream reaches the UI only, never the model.
+///
+/// `keep_stdin_open` is for background spawns: the child gets a stdin pipe
+/// Aurora holds open for its whole life, so a server that treats stdin EOF as
+/// "shut down" is not killed by the dead handle a GUI process would otherwise
+/// pass it. Foreground commands get an explicitly closed stdin instead — a
+/// deterministic, immediate EOF for anything that reads it.
 #[tauri::command]
 pub async fn execute_command_stream(
     app: tauri::AppHandle,
@@ -1865,18 +1950,58 @@ pub async fn execute_command_stream(
     shell: Option<String>,
     timeout_ms: Option<u64>,
     log_path: Option<String>,
+    keep_stdin_open: Option<bool>,
+) -> Result<CommandOutput, String> {
+    run_command_lifecycle(
+        Some(app),
+        request_id,
+        command,
+        cwd,
+        shell,
+        timeout_ms,
+        log_path,
+        keep_stdin_open.unwrap_or(false),
+    )
+    .await
+}
+
+/// Everything that runs between "spawn the shell" and "state how it ended" —
+/// the ONE place that decides what a command's outcome was.
+///
+/// `execute_command_stream` (streams to the UI, tracked in the ledger) and
+/// `execute_command` (silent, untracked — lint checkers, unit tests) are both
+/// this function; `app: None` is what "silent" means. There used to be two
+/// runners that classified completion differently, and the differences were
+/// all bugs: one hung forever on a pipe a finished command's child still held,
+/// the other reported that same situation as a timeout-and-kill.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_command_lifecycle(
+    app: Option<tauri::AppHandle>,
+    request_id: String,
+    command: String,
+    cwd: Option<String>,
+    shell: Option<String>,
+    timeout_ms: Option<u64>,
+    log_path: Option<String>,
+    keep_stdin_open: bool,
 ) -> Result<CommandOutput, String> {
     use std::process::Stdio;
     use std::time::Duration;
 
-    register_command_stream(
-        request_id.clone(),
-        request_id.clone(),
-        None,
-        command.clone(),
-        cwd.clone(),
-        log_path.clone(),
-    );
+    // Untracked runs skip the ledger entirely: there is no UI to list them,
+    // no stop button to honour, and a row nothing will clean up is how
+    // phantom "background processes" appear in shell_list_processes.
+    let tracked = app.is_some();
+    if tracked {
+        register_command_stream(
+            request_id.clone(),
+            request_id.clone(),
+            None,
+            command.clone(),
+            cwd.clone(),
+            log_path.clone(),
+        );
+    }
 
     // Opened once and appended to as chunks decode. Failure to open is not
     // fatal: the command still runs and still streams to the UI, the model
@@ -1889,23 +2014,100 @@ pub async fn execute_command_stream(
     let (shell_exe, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Never inherit Aurora's own stdin: a GUI process's stdin is a dead
+    // handle, and children inherit it transitively — a grandchild server that
+    // reads stdin got an instant EOF and, if it treats EOF as "shut down",
+    // died seconds after a clean start with nothing in its log to say why.
+    cmd.stdin(if keep_stdin_open {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            log.footer(&format!("Never started ({shell_exe}: {e})"), started);
-            cleanup_command_stream(&request_id);
-            return Err(format!("Failed to spawn command with {}: {}", shell_exe, e));
+            // Windows fallback, ported from the old duplicate runner: `pwsh`
+            // is an install, `powershell` is the OS. A machine without pwsh
+            // still gets its command run rather than a spawn error.
+            #[cfg(target_os = "windows")]
+            let fallback_child = if shell_profile != Some("bash")
+                && !shell_exe.to_ascii_lowercase().contains("powershell")
+            {
+                let mut fallback = TokioCommand::new("powershell");
+                fallback
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-Command")
+                    .arg(&command);
+                if let Some(ref working_dir) = cwd {
+                    fallback.current_dir(working_dir);
+                }
+                fallback.stdout(Stdio::piped());
+                fallback.stderr(Stdio::piped());
+                fallback.stdin(if keep_stdin_open {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                });
+                fallback.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+                fallback.spawn().ok()
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "windows"))]
+            let fallback_child: Option<tokio::process::Child> = None;
+
+            match fallback_child {
+                Some(c) => c,
+                None => {
+                    log.footer(&format!("Never started ({shell_exe}: {e})"), started);
+                    if tracked {
+                        cleanup_command_stream(&request_id);
+                    }
+                    return Err(format!("Failed to spawn command with {}: {}", shell_exe, e));
+                }
+            }
         }
     };
 
+    // Held for the child's whole life when `keep_stdin_open`: dropping it is
+    // what closes the pipe, so the binding existing IS the feature.
+    let _held_stdin = child.stdin.take();
+
+    // Job membership is the exit-time answer to "what did this command leave
+    // running" — see `process_tracking`. Adopted immediately after spawn so
+    // everything the shell starts lands in the job with it. `None` (job
+    // creation refused, non-Windows) falls back to the parent-pid walk below.
+    #[cfg(target_os = "windows")]
+    let shell_job = match (child.id(), child.raw_handle()) {
+        (Some(shell_pid), Some(handle)) => process_tracking::ShellJob::adopt(shell_pid, handle),
+        _ => None,
+    };
+    #[cfg(not(target_os = "windows"))]
+    let shell_job: Option<process_tracking::ShellJob> = None;
+
     let pid = child.id();
-    {
+    if tracked {
         let mut streams = ACTIVE_COMMAND_STREAMS.write();
         if let Some(stream) = streams.get_mut(&request_id) {
             stream.pid = pid;
         }
     }
+
+    // If this future is dropped mid-run — the turn was cancelled while the
+    // command was still going — nothing after this line runs. Without the
+    // guard the child kept running unwatched and its ledger row leaked,
+    // showing up in shell_list_processes as a phantom "background process"
+    // for the rest of the session.
+    let mut guard = LifecycleGuard {
+        armed: true,
+        app: app.clone(),
+        request_id: request_id.clone(),
+        pid,
+        log_path: log_path.clone(),
+        started,
+    };
 
     let mut stdout_buf = String::new();
     let mut stderr_buf = String::new();
@@ -1915,6 +2117,7 @@ pub async fn execute_command_stream(
     let mut stdout = match child.stdout.take() {
         Some(stdout) => stdout,
         None => {
+            guard.disarm();
             if let Some(pid) = pid {
                 let _ = try_kill_pid(pid);
             }
@@ -1926,6 +2129,7 @@ pub async fn execute_command_stream(
     let mut stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
+            guard.disarm();
             if let Some(pid) = pid {
                 let _ = try_kill_pid(pid);
             }
@@ -1977,17 +2181,19 @@ pub async fn execute_command_stream(
                 if let Some(pid) = pid {
                     let _ = try_kill_pid(pid);
                 }
-                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
-                let _ = app.emit(
-                    &format!("shell-stream-error-{}", request_id),
-                    format!("Command timed out after {}ms", timeout.as_millis()),
-                );
+                flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
+                if let Some(app) = &app {
+                    let _ = app.emit(
+                        &format!("shell-stream-error-{}", request_id),
+                        format!("Command timed out after {}ms", timeout.as_millis()),
+                    );
+                }
                 ending = format!("Timed out after {}ms", timeout.as_millis());
                 timed_out = true;
                 break;
             }
             _ = &mut flush_fut => {
-                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
                 flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
             }
             read = stdout.read(&mut stdout_bytes), if !stdout_done => {
@@ -1999,17 +2205,19 @@ pub async fn execute_command_stream(
                         stdout_buf.push_str(&data);
                         stdout_pending.push_str(&data);
                         if stdout_pending.len() + stderr_pending.len() >= SHELL_STREAM_FLUSH_BYTES {
-                            flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                            flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
                             flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
                         }
                     }
                     Err(e) => {
                         stdout_done = true;
-                        flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
-                        let _ = app.emit(
-                            &format!("shell-stream-error-{}", request_id),
-                            format!("stdout read error: {}", e),
-                        );
+                        flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
+                        if let Some(app) = &app {
+                            let _ = app.emit(
+                                &format!("shell-stream-error-{}", request_id),
+                                format!("stdout read error: {}", e),
+                            );
+                        }
                     }
                 }
             }
@@ -2022,17 +2230,19 @@ pub async fn execute_command_stream(
                         stderr_buf.push_str(&data);
                         stderr_pending.push_str(&data);
                         if stdout_pending.len() + stderr_pending.len() >= SHELL_STREAM_FLUSH_BYTES {
-                            flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+                            flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
                             flush_fut = Box::pin(tokio::time::sleep(SHELL_STREAM_FLUSH_INTERVAL));
                         }
                     }
                     Err(e) => {
                         stderr_done = true;
-                        flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
-                        let _ = app.emit(
-                            &format!("shell-stream-error-{}", request_id),
-                            format!("stderr read error: {}", e),
-                        );
+                        flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
+                        if let Some(app) = &app {
+                            let _ = app.emit(
+                                &format!("shell-stream-error-{}", request_id),
+                                format!("stderr read error: {}", e),
+                            );
+                        }
                     }
                 }
             }
@@ -2042,21 +2252,54 @@ pub async fn execute_command_stream(
                     Err(_) => (None, None),
                 };
 
-                let mut tail = Vec::new();
-                if stdout.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
+                // The shell is gone; drain what remains of its pipes inside a
+                // grace window instead of waiting for EOF. A pipe that will
+                // not close is held by a process the command started and left
+                // behind — for a server that EOF never comes, and waiting for
+                // it held a FINISHED command's tool call (and the model) for
+                // as long as the server lived. This branch is also past the
+                // timeout race, so nothing else could end the wait.
+                let (tail, stdout_held) = drain_exited_pipe(&mut stdout, stdout_done).await;
+                if !tail.is_empty() {
                     let data = stdout_decode.push(&tail);
                     log.write(&data);
                     stdout_buf.push_str(&data);
                     stdout_pending.push_str(&data);
                 }
 
-                tail.clear();
-                if stderr.read_to_end(&mut tail).await.is_ok() && !tail.is_empty() {
+                let (tail, stderr_held) = drain_exited_pipe(&mut stderr, stderr_done).await;
+                if !tail.is_empty() {
                     let data = stderr_decode.push(&tail);
                     log.write(&data);
                     stderr_buf.push_str(&data);
                     stderr_pending.push_str(&data);
                 }
+
+                // Second witness: job membership. A held pipe only catches
+                // survivors that inherited handles — `Start-Process` goes
+                // through ShellExecute, which shares none, so its survivor
+                // closes no pipe and was invisible here (observed live: a
+                // launcher was told "nothing is left running" over a process
+                // the very next tool call could see). Membership also survives
+                // dead intermediates, which the parent-pid fallback does not:
+                // git-bash wraps the real shell, so a plain ppid walk loses
+                // the chain the moment the wrapper dies.
+                let survivors: Vec<String> = match &shell_job {
+                    Some(job) => job
+                        .survivors()
+                        .iter()
+                        .map(process_tracking::Survivor::describe)
+                        .collect(),
+                    None => match pid {
+                        Some(shell_pid) => {
+                            tokio::task::spawn_blocking(move || surviving_descendants(shell_pid))
+                                .await
+                                .unwrap_or_default()
+                        }
+                        None => Vec::new(),
+                    },
+                };
+                let left_running = stdout_held || stderr_held || !survivors.is_empty();
 
                 // Anything still held back was never valid UTF-8 — emit it
                 // rather than silently dropping the last characters.
@@ -2074,30 +2317,43 @@ pub async fn execute_command_stream(
 
                 // Final flush of any remaining pending output, then emit a
                 // single done marker so listeners can detect completion.
-                flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
-                let _ = app.emit(
-                    &format!("shell-stream-{}", request_id),
-                    CommandStreamChunk {
-                        stream: "meta".to_string(),
-                        data: String::new(),
-                        done: true,
-                        exit_code,
-                        success,
-                    },
-                );
+                flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
+                if let Some(app) = &app {
+                    let _ = app.emit(
+                        &format!("shell-stream-{}", request_id),
+                        CommandStreamChunk {
+                            stream: "meta".to_string(),
+                            data: String::new(),
+                            done: true,
+                            exit_code,
+                            success,
+                        },
+                    );
+                }
 
+                let exit_summary = match exit_code {
+                    Some(0) => "Exited normally (code 0)".to_string(),
+                    Some(code) => format!("Exited with code {code}"),
+                    // No code on Windows means the process was terminated
+                    // by something outside this run — say so rather than
+                    // reporting a success it never reported.
+                    None => "Ended without reporting an exit code".to_string(),
+                };
                 log.footer(
-                    &match exit_code {
-                        Some(0) => "Exited normally (code 0)".to_string(),
-                        Some(code) => format!("Exited with code {code}"),
-                        // No code on Windows means the process was terminated
-                        // by something outside this run — say so rather than
-                        // reporting a success it never reported.
-                        None => "Ended without reporting an exit code".to_string(),
+                    &if left_running {
+                        format!(
+                            "{exit_summary} — a process it started is still running and holding \
+                             the output stream, untracked"
+                        )
+                    } else {
+                        exit_summary
                     },
                     started,
                 );
-                emit_process_ended(&app, &request_id, exit_code, "exited");
+                if let Some(app) = &app {
+                    emit_process_ended(app, &request_id, exit_code, "exited");
+                }
+                guard.disarm();
                 cleanup_command_stream(&request_id);
                 return Ok(CommandOutput {
                     stdout: stdout_buf,
@@ -2105,6 +2361,8 @@ pub async fn execute_command_stream(
                     exit_code,
                     success: success.unwrap_or(false),
                     timed_out: false,
+                    left_running,
+                    survivors,
                 });
             }
         }
@@ -2117,26 +2375,36 @@ pub async fn execute_command_stream(
         }
     }
 
-    flush_shell_pending(&app, &request_id, &mut stdout_pending, &mut stderr_pending);
+    flush_shell_pending(
+        app.as_ref(),
+        &request_id,
+        &mut stdout_pending,
+        &mut stderr_pending,
+    );
 
     // Every path out of the loop is a termination, so the listener needs the
     // same done marker the natural-exit branch sends. Without it a cancelled
     // stream's view stays spinning on a process that is already dead.
-    let _ = app.emit(
-        &format!("shell-stream-{}", request_id),
-        CommandStreamChunk {
-            stream: "meta".to_string(),
-            data: String::new(),
-            done: true,
-            exit_code: None,
-            success: Some(false),
-        },
-    );
+    if let Some(app) = &app {
+        let _ = app.emit(
+            &format!("shell-stream-{}", request_id),
+            CommandStreamChunk {
+                stream: "meta".to_string(),
+                data: String::new(),
+                done: true,
+                exit_code: None,
+                success: Some(false),
+            },
+        );
+    }
 
     log.footer(&ending, started);
     // Every path down here ended the process rather than watching it finish,
     // so the row settles as stopped — matching what the log now says.
-    emit_process_ended(&app, &request_id, None, "stopped");
+    if let Some(app) = &app {
+        emit_process_ended(app, &request_id, None, "stopped");
+    }
+    guard.disarm();
     cleanup_command_stream(&request_id);
     Ok(CommandOutput {
         stdout: stdout_buf,
@@ -2147,6 +2415,9 @@ pub async fn execute_command_stream(
         exit_code: None,
         success: false,
         timed_out,
+        // Killed as a tree — nothing survives a stop or a timeout.
+        left_running: false,
+        survivors: Vec::new(),
     })
 }
 
@@ -3237,5 +3508,177 @@ mod tests {
         assert_eq!(human_duration(Duration::from_secs(47)), "47s");
         assert_eq!(human_duration(Duration::from_secs(192)), "3m 12s");
         assert_eq!(human_duration(Duration::from_secs(3_840)), "1h 04m");
+    }
+}
+
+/// How a command's ending is classified — the defects here were found in one
+/// real session (`41841342`, 2026-08-21): a finished command whose child still
+/// held the output pipe hung its tool call for as long as the child lived,
+/// and the model, waiting on a card that said RUNNING, invented "Aurora's
+/// background wrapper terminated it".
+#[cfg(test)]
+mod command_lifecycle_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn bash_available() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            find_git_bash().is_some()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            true
+        }
+    }
+
+    /// The screenshot bug. `sleep 8 & echo done`: the shell exits at once,
+    /// the `sleep` inherits stdout and holds the pipe. Waiting for pipe EOF
+    /// means waiting the full 8 seconds a survivor happens to live — with a
+    /// server, forever. The run must end when the SHELL ends.
+    #[tokio::test]
+    async fn a_finished_command_with_a_survivor_returns_instead_of_hanging() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let started = Instant::now();
+        let output = execute_command(
+            "sleep 8 & echo done".to_string(),
+            None,
+            Some("bash".to_string()),
+            Some(30_000),
+        )
+        .await
+        .expect("the command itself succeeded");
+        assert!(
+            started.elapsed() < Duration::from_secs(6),
+            "hung waiting for the survivor's pipe: {:?}",
+            started.elapsed()
+        );
+        assert!(output.success, "exit 0 is a success: {output:?}");
+        assert!(
+            output.left_running,
+            "the surviving child must be reported: {output:?}"
+        );
+        assert!(!output.timed_out, "this is not a timeout: {output:?}");
+        assert!(output.stdout.contains("done"), "{output:?}");
+    }
+
+    #[tokio::test]
+    async fn a_plain_command_leaves_nothing_running() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let output = execute_command(
+            "echo hi".to_string(),
+            None,
+            Some("bash".to_string()),
+            Some(30_000),
+        )
+        .await
+        .expect("echo runs");
+        assert!(output.success);
+        assert!(!output.left_running, "{output:?}");
+        assert!(output.stdout.contains("hi"));
+    }
+
+    /// A timeout still means what it says: the SHELL was still running at the
+    /// deadline. (Before the unification this path also fired for a finished
+    /// shell whose child held the pipe, reporting "timed out and was killed"
+    /// about a command that had already exited.)
+    #[tokio::test]
+    async fn a_true_timeout_is_still_an_error_for_this_caller() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let err = execute_command(
+            "sleep 30".to_string(),
+            None,
+            Some("bash".to_string()),
+            Some(1_500),
+        )
+        .await
+        .expect_err("must time out");
+        assert!(err.contains("timed out"), "{err}");
+    }
+
+    /// The drain itself, on a raw pipe: EOF ends it cleanly, a held-open
+    /// write end ends it with `held = true` — and quickly.
+    #[tokio::test]
+    async fn drain_reports_a_held_pipe_without_waiting_for_it() {
+        use tokio::io::AsyncWriteExt;
+
+        // Closed writer → clean EOF.
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer.write_all(b"tail").await.unwrap();
+        drop(writer);
+        let (bytes, held) = drain_exited_pipe(&mut reader, false).await;
+        assert_eq!(bytes, b"tail");
+        assert!(!held);
+
+        // Held writer → the grace window closes, the data still arrives.
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer.write_all(b"tail").await.unwrap();
+        let started = std::time::Instant::now();
+        let (bytes, held) = drain_exited_pipe(&mut reader, false).await;
+        assert_eq!(bytes, b"tail");
+        assert!(held, "an open write end is a survivor");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the grace window is short by design"
+        );
+        drop(writer);
+    }
+
+    /// `already_eof` short-circuits: the streaming loop saw this pipe close,
+    /// so there is nothing to wait for and no survivor to report.
+    #[tokio::test]
+    async fn drain_skips_a_pipe_the_loop_already_finished() {
+        let (writer, mut reader) = tokio::io::duplex(64);
+        let started = std::time::Instant::now();
+        let (bytes, held) = drain_exited_pipe(&mut reader, true).await;
+        assert!(bytes.is_empty());
+        assert!(!held);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        drop(writer);
+    }
+
+    /// The second witness. `>/dev/null 2>&1` hands the survivor no pipe at
+    /// all — the same shape as `Start-Process`, whose ShellExecute launch
+    /// shares no handles — so the pipe drain sees a clean close and, alone,
+    /// would report "nothing is left running" over a live process (observed
+    /// in the 2026-08-21 harness run, defect report filed by Aurora itself).
+    /// Only the process-table walk can catch this one, and it must also NAME
+    /// the survivor so the note is actionable.
+    #[tokio::test]
+    async fn a_survivor_holding_no_pipe_is_still_found_and_named() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let output = execute_command(
+            "sleep 15 >/dev/null 2>&1 & echo launched".to_string(),
+            None,
+            Some("bash".to_string()),
+            Some(30_000),
+        )
+        .await
+        .expect("the launcher itself succeeded");
+        assert!(output.success, "{output:?}");
+        assert!(
+            output.left_running,
+            "a pipe-less survivor must still be reported: {output:?}"
+        );
+        assert!(
+            output
+                .survivors
+                .iter()
+                .any(|name| name.to_ascii_lowercase().contains("sleep")),
+            "the survivor is named: {:?}",
+            output.survivors
+        );
     }
 }

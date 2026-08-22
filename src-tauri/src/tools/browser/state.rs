@@ -213,7 +213,17 @@ fn fallback(manager: &BrowserManager, why: &str) -> Value {
         "open": true,
         "url": manager.current_url(AGENT_BROWSER_LABEL).ok(),
         "ready_state": "unknown",
-        "note": format!("Panel is open but the page could not be read ({why}). It may still be loading."),
+        // Says what is known and stops. The old wording ended "It may still be
+        // loading", which named one cause out of several and named the least
+        // likely one: the commonest reason the page-side namespace does not
+        // answer is that the WebView is showing its own error page because
+        // nothing served the URL. Presenting a guess as the explanation is how
+        // the agent came to believe a stopped dev server was running.
+        "note": format!(
+            "Panel is open but the page did not answer ({why}). That is what a browser error \
+             page looks like from here, so do not assume the app is loaded — \
+             `browser_navigate` reports whether the address actually serves anything."
+        ),
     })
 }
 

@@ -109,14 +109,17 @@
   border-top: 1px solid var(--agw-border);
 }
 .agw-prov-models {
-  /* One bordered list with divided rows (no gaps, no per-row cards). THIS is the
-     scroll region: it takes the remaining height under the connection block and
-     scrolls internally, so expanding a row's config scrolls here — never the
-     pane or the page. Content-sized (basis auto) so a short list keeps its
-     natural height (no dead space); shrinks + scrolls only once the pane hits
-     its cap. */
-  flex: 1 1 auto;
-  min-height: 0;
+  /* One bordered list with divided rows (no gaps, no per-row cards). THIS is
+     the scroll region, and the ONLY one on the page.
+
+     The cap is what makes the rest of the page hold still. A provider can have
+     forty models and each row can be expanded into a full override form, so
+     this is the one block that grows without bound — bound it and everything
+     above it stays where the eye left it. Uncapped, reading the last model
+     meant scrolling the provider's own name off the top of the window.
+
+     Same measure as the skills catalog, so the two pages scroll alike. */
+  max-height: clamp(300px, 52vh, 620px);
   overflow-y: auto;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-set-r-inner);
@@ -233,7 +236,6 @@
  * .agw-prov-icon-btn, so it shares the sliders/close geometry exactly.
  * Only the verdict colour is added on top. */
 .agw-prov-test {
-  position: relative;
   display: inline-flex;
 }
 .agw-prov-test-btn[data-state="running"] {
@@ -258,14 +260,16 @@
   50% { opacity: 0.45; }
 }
 
-/* Result panel. Right-aligned so it never runs off the settings sheet,
- * and pointer-events:none so it cannot swallow a click meant for the
- * row underneath — it is a readout, not a surface to interact with. */
+/* Result panel. Portalled to .agw-root and fixed against the button's rect
+ * (ModelTestButton computes the coordinates), because the model list is a
+ * scroll container — positioned inside it, the panel was clipped at the
+ * list's edges and slid under its scrollbar. Right-aligned to the button so
+ * it never runs off the settings sheet, and pointer-events:none so it
+ * cannot swallow a click meant for the row underneath — it is a readout,
+ * not a surface to interact with. */
 .agw-prov-test-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 40;
+  position: fixed;
+  z-index: 1000;
   display: flex;
   flex-direction: column;
   gap: 6px;

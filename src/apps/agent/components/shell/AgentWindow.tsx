@@ -14,6 +14,8 @@ import { AgentThemeProvider } from "@/apps/agent/components/theme/AgentThemeProv
 import { AgentTitlebar } from "@/apps/agent/components/shell/AgentTitlebar";
 import { AgentShell } from "@/apps/agent/components/shell/AgentShell";
 import { SettingsPage } from "@/apps/agent/settings/SettingsPage";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { syncCursorModelsQuietly } from "@/apps/agent/services/providers/cursor-sync";
 import { registerQuestionHandler } from "@/apps/agent/services/tools/question-bridge";
 import { registerTeamViewOpener } from "@/apps/agent/services/team/team-view-bridge";
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
@@ -66,6 +68,21 @@ export const AgentWindow: React.FC = () => {
       restoreThreadAfterReload();
     })();
   }, [init]);
+
+  // Cursor's catalogue lives in its own table, so the models someone switched
+  // on there have to be copied into the shared model list before the picker
+  // can offer them. Done once per window rather than on demand: the picker is
+  // synchronous, and a plan that changed while Aurora was closed would
+  // otherwise show yesterday's models until Settings happened to be opened.
+  //
+  // Gated on the settings store having loaded. The mirror REPLACES this
+  // provider's rows, so running it against a store that is still empty would
+  // be overwritten moments later by the database read finishing.
+  const settingsReady = useSettingsStore((s) => s.isInitialized);
+  useEffect(() => {
+    if (!settingsReady) return;
+    syncCursorModelsQuietly();
+  }, [settingsReady]);
 
   // The team lives in the RIGHT DOCK (a "Team" tab beside Canvas/Files), so
   // it sits side-by-side with the conversation — the ask-lead loop needs both

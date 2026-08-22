@@ -938,7 +938,53 @@ fn malformed_input_error_quotes_what_arrived_and_names_the_cause() {
         !message.contains("output-token limit"),
         "complete-but-invalid JSON is not a truncation: {message}"
     );
-    assert!(message.contains("unescaped backslash"));
+    assert!(message.contains("must be in double quotes"));
+    assert!(
+        message.contains("`\\\\`"),
+        "must still name the escape: {message}"
+    );
+}
+
+/// The caret is the part a model can act on without counting characters.
+///
+/// "column 10" is a number it has to tally against its own payload by hand,
+/// and a miscount edits the wrong thing — which is how one missing pair of
+/// quotes became five identical retries from GLM-5.2 on 2026-08-21.
+#[test]
+fn malformed_input_error_points_at_the_offending_character() {
+    let broken = r#"{"path":"C:\Users\x"}"#;
+    let message = malformed_input_error("file_read", broken).to_string();
+
+    let caret = message
+        .lines()
+        .find(|line| line.trim_start().starts_with('^'))
+        .expect("a caret line");
+    let payload = message
+        .lines()
+        .find(|line| line.starts_with(r#"{"path""#))
+        .expect("the quoted payload");
+
+    // The caret's column must land on a real character of the payload.
+    let column = caret.len() - caret.trim_start().len();
+    assert!(column < payload.len(), "caret past the end: {message}");
+    assert!(caret.contains("column"), "{message}");
+}
+
+/// A payload spanning several lines gets no caret rather than a misplaced one.
+/// A caret under the wrong line is worse than none: it sends the reader to a
+/// character that is fine.
+#[test]
+fn malformed_input_error_omits_the_caret_when_it_cannot_be_aligned() {
+    let multiline = "{\n  \"path\": oops\n}";
+    let message = malformed_input_error("file_read", multiline).to_string();
+
+    assert!(message.contains("was NOT executed"));
+    assert!(
+        !message
+            .lines()
+            .any(|line| line.trim_start().starts_with('^')),
+        "a caret cannot be aligned across lines: {message}"
+    );
 }
 
 /// The diagnosis must describe what ARRIVED, never assume why we are here.

@@ -55,6 +55,12 @@ import {
   type CodexUsageWindow,
 } from "@/apps/agent/services/providers/codex";
 import {
+  fetchOpenCodeUsage,
+  openCodeResetLabel,
+  OPENCODE_PROVIDER_ID,
+  type OpenCodeUsage,
+} from "@/apps/agent/services/providers/opencode";
+import {
   useReservedCostLines,
   useSticky,
   useThrottled,
@@ -76,15 +82,20 @@ function bandColor(pct: number): string {
 }
 
 /**
- * Codex quota, cached module-level so hover-open doesn't refetch on every
- * mouse pass — the ChatGPT usage endpoint is an authenticated round-trip.
- * One snapshot serves every ring instance for a minute.
+ * How long a fetched plan quota stays good for.
+ *
+ * A minute, because these are authenticated round-trips and the ring opens on
+ * hover — without a cache, sweeping the mouse across the composer would bill a
+ * request per pass. A limit window that moves inside sixty seconds is one you
+ * are already watching the provider's own page for.
  */
+const PLAN_USAGE_TTL_MS = 60_000;
+
+/** Codex quota. One snapshot serves every ring instance. */
 let codexUsageCache: { at: number; snap: CodexUsageSnapshot } | null = null;
-const CODEX_USAGE_TTL_MS = 60_000;
 
 async function getCodexUsageCached(): Promise<CodexUsageSnapshot | null> {
-  if (codexUsageCache && Date.now() - codexUsageCache.at < CODEX_USAGE_TTL_MS) {
+  if (codexUsageCache && Date.now() - codexUsageCache.at < PLAN_USAGE_TTL_MS) {
     return codexUsageCache.snap;
   }
   try {
@@ -96,6 +107,40 @@ async function getCodexUsageCached(): Promise<CodexUsageSnapshot | null> {
     return null;
   }
 }
+
+/**
+ * OpenCode Go plan headroom, cached the same way and for the same reason.
+ *
+ * Keyed by the API key so pasting a different one is read as a different
+ * account rather than served a minute of the previous account's numbers.
+ */
+let openCodeUsageCache: { at: number; key: string; usage: OpenCodeUsage } | null = null;
+
+async function getOpenCodeUsageCached(apiKey: string): Promise<OpenCodeUsage | null> {
+  if (
+    openCodeUsageCache &&
+    openCodeUsageCache.key === apiKey &&
+    Date.now() - openCodeUsageCache.at < PLAN_USAGE_TTL_MS
+  ) {
+    return openCodeUsageCache.usage;
+  }
+  try {
+    const usage = await fetchOpenCodeUsage(apiKey);
+    openCodeUsageCache = { at: Date.now(), key: apiKey, usage };
+    return usage;
+  } catch {
+    // No key yet, revoked, or offline — the section is omitted rather than
+    // shown empty. The provider page is where a broken key gets explained.
+    return null;
+  }
+}
+
+/** The plan's windows, in the order pressure actually arrives. */
+const OPENCODE_WINDOWS: Array<{ key: keyof OpenCodeUsage; label: string }> = [
+  { key: "rolling", label: "Right now" },
+  { key: "weekly", label: "This week" },
+  { key: "monthly", label: "This month" },
+];
 
 /**
  * One priced section of the card — a headline total plus its component lines.
@@ -207,17 +252,29 @@ const CostSection: React.FC<{
   );
 };
 
-/** One quota row inside the tooltip: "5-hour limit — 63% left · resets in 2h". */
-const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> = ({
-  win,
-  fallbackLabel,
+/**
+ * One limit window inside the tooltip: "5-hour limit — 63% left · resets in 2h".
+ *
+ * Provider-agnostic on purpose. Every subscription Aurora can see reports the
+ * same three facts — which window, how much of it is gone, when it refills —
+ * and the reading is only comparable if they are drawn the same way. What each
+ * provider keeps to itself is how it *names* its windows and how it words a
+ * countdown; both arrive here already said.
+ *
+ * `usedPercent` is what is spent, and the row shows what is LEFT: the two carry
+ * the same fact, but only one answers "can I keep going".
+ */
+const QuotaRow: React.FC<{ label: string; usedPercent: number; caption?: string | null }> = ({
+  label,
+  usedPercent,
+  caption,
 }) => {
-  const used = Math.min(100, Math.max(0, win.usedPercent));
+  const used = Math.min(100, Math.max(0, usedPercent));
   const left = Math.max(0, Math.round(100 - used));
   return (
     <>
       <div className="agw-ctx-row">
-        <span className="agw-ctx-label">{codexWindowLabel(win, fallbackLabel)}</span>
+        <span className="agw-ctx-label">{label}</span>
         <span className="agw-ctx-val" style={{ color: bandColor(used) }}>
           {left}% left
         </span>
@@ -228,12 +285,24 @@ const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> 
           style={{ width: `${used}%`, background: bandColor(used) }}
         />
       </div>
-      {win.resetsInSeconds != null && (
-        <div className="agw-ctx-sub">resets in {codexFmtDuration(win.resetsInSeconds)}</div>
-      )}
+      {caption && <div className="agw-ctx-sub">{caption}</div>}
     </>
   );
 };
+
+/** A Codex window, named and counted down the way Codex reports it. */
+const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> = ({
+  win,
+  fallbackLabel,
+}) => (
+  <QuotaRow
+    label={codexWindowLabel(win, fallbackLabel)}
+    usedPercent={win.usedPercent}
+    caption={
+      win.resetsInSeconds != null ? `resets in ${codexFmtDuration(win.resetsInSeconds)}` : null
+    }
+  />
+);
 
 export const ContextRing: React.FC = () => {
   const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
@@ -295,6 +364,16 @@ export const ContextRing: React.FC = () => {
     (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
   );
   const isCodex = selectedModel.startsWith(`${CODEX_PROVIDER_ID}:`);
+  // Same question for the other subscription Aurora can read: a plan bills by
+  // headroom, not by the token, so the ring's cost figures say nothing useful
+  // and the limit windows say everything.
+  const isOpenCode = selectedModel.startsWith(`${OPENCODE_PROVIDER_ID}:`);
+  // The plan's own key — the model list needs no auth, but the usage endpoint
+  // is about the account. Read from the provider row rather than held here:
+  // pasting a new key in Settings must change what the ring reports.
+  const openCodeKey = useSettingsStore(
+    (s) => s.providers.find((p) => p.id === OPENCODE_PROVIDER_ID)?.apiKey ?? "",
+  );
 
   // ── Cost inputs ───────────────────────────────────────────────────
   // The running turn's requests (summed live) and the conversation's total
@@ -390,16 +469,27 @@ export const ContextRing: React.FC = () => {
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const [open, setOpen] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
+  const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
 
   // Loaded from the hover/focus handlers (not an effect): the quota is only
   // wanted while the card is visible, and the module cache absorbs repeat
   // opens. A stale-guard isn't needed — the cache makes late sets idempotent.
-  const loadCodexUsage = useCallback(() => {
-    if (!isCodex) return;
-    void getCodexUsageCached().then((snap) => {
-      if (snap) setCodexUsage(snap);
-    });
-  }, [isCodex]);
+  //
+  // One call for whichever plan the selected model belongs to. At most one can
+  // match, so this never fans out into "ask every provider on hover".
+  const loadPlanUsage = useCallback(() => {
+    if (isCodex) {
+      void getCodexUsageCached().then((snap) => {
+        if (snap) setCodexUsage(snap);
+      });
+      return;
+    }
+    if (isOpenCode && openCodeKey) {
+      void getOpenCodeUsageCached(openCodeKey).then((usage) => {
+        if (usage) setOpenCodeUsage(usage);
+      });
+    }
+  }, [isCodex, isOpenCode, openCodeKey]);
 
   /**
    * Read the conversation's cost basis when the card opens.
@@ -549,14 +639,14 @@ export const ContextRing: React.FC = () => {
       onMouseEnter={() => {
         place();
         setOpen(true);
-        loadCodexUsage();
+        loadPlanUsage();
         loadCost();
       }}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => {
         place();
         setOpen(true);
-        loadCodexUsage();
+        loadPlanUsage();
         loadCost();
       }}
       onBlur={() => setOpen(false)}
@@ -699,6 +789,37 @@ export const ContextRing: React.FC = () => {
                 {codexUsage.secondary && (
                   <CodexQuotaRow win={codexUsage.secondary} fallbackLabel="Weekly limit" />
                 )}
+              </>
+            )}
+
+            {/* The same section for OpenCode Go, because it answers the same
+              * question. A subscription has no per-token price, so the cost
+              * figures above read $0.00 for a plan that is genuinely being
+              * spent — headroom is the number that means anything here.
+              *
+              * All three windows, not the tightest one: running out weekly on
+              * a Tuesday and running out for the next ten minutes are
+              * different problems, and a single blended figure hides which one
+              * you are in. */}
+            {isOpenCode && openCodeUsage && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-card-head">
+                  <AgentIcon name="chat" size={11} />
+                  <span>OpenCode plan</span>
+                </div>
+                {OPENCODE_WINDOWS.map(({ key, label }) => {
+                  const win = openCodeUsage[key];
+                  if (!win) return null;
+                  return (
+                    <QuotaRow
+                      key={key}
+                      label={label}
+                      usedPercent={win.percent}
+                      caption={openCodeResetLabel(win)}
+                    />
+                  );
+                })}
               </>
             )}
 

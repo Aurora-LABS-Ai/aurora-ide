@@ -1,0 +1,96 @@
+/* ── OpenCode Go provider card ─────────────────────────────────────────────
+   The frame is `.agw-atlas` and the model list is `.agw-modelcat-*`, both
+   shared with the other subscription cards. Only the plan-headroom block is
+   specific to this one.
+
+   A subscription has no per-token price, so the figure worth showing is how
+   much of the plan is left. OpenCode publishes that per window, and all three
+   are drawn: hitting the weekly cap on a Tuesday and hitting the rolling cap
+   for ten minutes are different problems, and one blended number would hide
+   which one you are in. */
+
+.agw-opencode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Before a key exists. Offers the one already on the machine when there is
+   one, and says where it looked when there is not — "not found" with nowhere
+   to go is not a message anyone can act on. */
+.agw-opencode-connect {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.agw-opencode-connect p {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  color: var(--agw-text-dim);
+  max-width: 62ch;
+}
+.agw-opencode-hint {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-opencode-hint code {
+  padding: 1px 5px;
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface-raised);
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+  word-break: break-all;
+}
+
+.agw-opencode-error {
+  color: var(--agw-danger, #e5484d);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+}
+
+/* One action plus what it does. Sits above the standard Models section, which
+   is where everything else about a model happens. */
+.agw-opencode-import {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-opencode-import > span {
+  flex: 1;
+  min-width: 220px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+
+.agw-opencode-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agw-opencode-window {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.agw-opencode-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agw-opencode-window-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-dim);
+}
+.agw-opencode-window-meta {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}

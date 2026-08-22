@@ -623,6 +623,11 @@ pub(super) fn malformed_input_error(tool: &str, raw: &str) -> ToolError {
     let truncated = parse_error
         .as_ref()
         .is_some_and(|e| e.classify() == serde_json::error::Category::Eof);
+    // Kept before `parse_error` is consumed below.
+    let parse_error_position = parse_error
+        .as_ref()
+        .filter(|e| e.classify() == serde_json::error::Category::Syntax)
+        .map(|e| (e.line(), e.column()));
 
     // When the text parses, name the JSON type that actually arrived. The old
     // wording — "parsed but were not a JSON object" — was a guess dressed as a
@@ -652,7 +657,15 @@ pub(super) fn malformed_input_error(tool: &str, raw: &str) -> ToolError {
     );
 
     if char_count <= MALFORMED_HEAD_CHARS + MALFORMED_TAIL_CHARS {
-        message.push_str(&format!("Received verbatim:\n{raw}\n\n"));
+        message.push_str(&format!("Received verbatim:\n{raw}\n"));
+        // Point at the character serde stopped on. "column 10" is a number the
+        // model has to count out by hand against its own payload, and when it
+        // miscounts it edits the wrong thing — which is how one missing pair of
+        // quotes turned into five identical retries. A caret needs no counting.
+        if let Some(caret) = caret_line(raw, parse_error_position.as_ref()) {
+            message.push_str(&caret);
+        }
+        message.push('\n');
     } else {
         let head: String = raw.chars().take(MALFORMED_HEAD_CHARS).collect();
         let tail: String = raw
@@ -670,9 +683,40 @@ pub(super) fn malformed_input_error(tool: &str, raw: &str) -> ToolError {
          limit rather than written incorrectly. Re-issue this call with a smaller payload — \
          fewer edits per call, a narrower range, or several calls in sequence."
     } else {
-        "Re-issue the call with valid JSON. Common causes: an unescaped backslash or quote \
-         inside a string value, or a newline written literally instead of as `\\n`."
+        // The list used to open with "an unescaped backslash or quote", which
+        // was the wrong guess for the failure that actually happens most: a
+        // value written without its quotes. Aurora now repairs that one before
+        // this message is ever built, so anything reaching here is something
+        // else — and the caret above already says where. Keep the advice to
+        // what is still true and stop ranking causes.
+        "Re-issue the call with valid JSON, changing only what the caret points at. Every value \
+         that is not a number, `true`, `false` or `null` must be in double quotes, and a \
+         backslash or a line break inside one must be written as `\\\\` or `\\n`."
     });
 
     ToolError::MalformedInput(message)
+}
+
+/// A `^` under the character the parser stopped on, aligned to the quoted
+/// payload printed above it.
+///
+/// Returns `None` when the position cannot be aligned honestly: a payload
+/// spanning several lines (the caret would sit under the wrong one, which is
+/// worse than no caret), or a column outside the text.
+fn caret_line(raw: &str, position: Option<&(usize, usize)>) -> Option<String> {
+    let &(line, column) = position?;
+    if line != 1 || column == 0 || raw.contains('\n') {
+        return None;
+    }
+    let prefix: String = raw.chars().take(column - 1).collect();
+    if prefix.chars().count() != column - 1 {
+        return None;
+    }
+    // Tabs are copied through rather than counted as one column, so the caret
+    // stays under its character in a terminal that renders them wide.
+    let pad: String = prefix
+        .chars()
+        .map(|c| if c == '\t' { '\t' } else { ' ' })
+        .collect();
+    Some(format!("{pad}^ here (column {column})\n"))
 }

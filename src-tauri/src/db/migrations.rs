@@ -236,6 +236,16 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [22])?;
             Ok(())
         }
+        23 => {
+            // Migration from v22 to v23: add `cursor_models`, the Cursor
+            // account's model catalogue. Additive — a table that did not
+            // exist before, so there is nothing to back-fill and nothing an
+            // older build could have written.
+            migration_v23(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [23])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -263,6 +273,16 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
 /// `default_temperature`, then Aurora's own default — so an existing install
 /// behaves identically until the user sets a value. Idempotent, same PRAGMA
 /// sniff as its neighbours.
+/// v23: the Cursor account's model catalogue.
+///
+/// Reuses `schema::create_cursor_models_table` rather than restating the DDL,
+/// so a fresh install and an upgraded one cannot drift — the failure mode
+/// there is a column that exists for new users and not for old ones, which
+/// only shows up as a query error weeks later.
+fn migration_v23(conn: &Connection) -> DbResult<()> {
+    crate::db::schema::create_cursor_models_table(conn)
+}
+
 fn migration_v22(conn: &Connection) -> DbResult<()> {
     let existing: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;

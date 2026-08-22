@@ -71,6 +71,45 @@
   display: none;
 }
 
+/* ── Fast lane mark ──────────────────────────────────────────────────────────
+   Cursor's faster lane, shown on the pill as a storm bolt rather than the word
+   "Fast" — the pill is the one control whose label routinely ellipsizes, and
+   the picker already spells it out on the row that sets it.
+
+   It borrows the mode glyph's shimmer verbatim (same band, same mask trick,
+   same 1.9s), because it is saying the same kind of thing: this turn is
+   running, and this is how. At rest it is a still accent mark — nothing on a
+   composer that is not doing anything should be moving. */
+/* Inherits the pill's own colour — the same treatment the mode glyph gets.
+   Painting it accent made it the loudest thing on the composer and put a
+   second coloured element beside the effort tier, which is the one thing on
+   the pill that has earned the accent. */
+.agw-model-trigger-fast {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--agw-text-muted);
+}
+.agw-model-trigger-fast-shine {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(58deg, transparent 36%, #fff 50%, transparent 64%);
+  background-size: 260% 260%;
+  -webkit-mask: var(--agw-fast-mask) center / contain no-repeat;
+  mask: var(--agw-fast-mask) center / contain no-repeat;
+  --agw-fast-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13.5 2.5L7 13h4l-.5 8.5L17 11h-4z'/%3E%3Cpath d='M5 6.5h2.5'/%3E%3Cpath d='M3 10h2.5'/%3E%3C/svg%3E");
+}
+.agw-model-trigger[data-streaming] .agw-model-trigger-fast-shine {
+  opacity: 1;
+  animation: agw-model-icon-shimmer 1.9s ease-in-out infinite;
+}
+.agw-root[data-reduce-motion] .agw-model-trigger-fast-shine {
+  display: none;
+}
+
 .agw-model-trigger-name {
   min-width: 0;
   overflow: hidden;
@@ -409,8 +448,29 @@
   background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--agw-accent) 40%, transparent);
 }
+/* Focus is carried by the chip's OWN border and fill rather than by a ring
+   floating around it — a detached halo on an 18px pill inside a dense row
+   reads as a second element rather than as this one being focused. */
 .agw-model-effort:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  background: color-mix(in srgb, var(--agw-accent) 18%, transparent);
+  border-color: var(--agw-accent);
+}
+/* Toggle chips (Cursor's Fast lane) use the same pill so row heights match.
+   Unlike the effort chip — which always states a live value — this one has an
+   off position, and off must not look like an accent-coloured setting that is
+   already doing something. */
+.agw-model-effort[aria-pressed="false"] {
+  color: var(--agw-text-subtle);
+  border-color: var(--agw-border);
+}
+.agw-model-effort[aria-pressed="false"]:hover {
+  color: var(--agw-text-dim);
+  background: var(--agw-surface-raised);
+  border-color: var(--agw-border-strong, var(--agw-border));
+}
+.agw-model-effort[data-on] {
+  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
 }
 /* Budget models: the chip is the same `.agw-model-effort` pill (so budget and
    effort rows keep identical heights); this wrapper just anchors its popover. */

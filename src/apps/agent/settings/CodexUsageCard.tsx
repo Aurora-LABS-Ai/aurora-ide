@@ -28,6 +28,7 @@ import {
 } from "@/apps/agent/services/providers/codex";
 import { fmtRelative } from "@/apps/agent/services/providers/atlascloud";
 import { AgentIcon } from "../shared/AgentIcon";
+import { ProviderAvatar } from "./ProviderAvatar";
 import { AgwButton, AgwPill, AgwSwitch } from "./primitives";
 
 // ── Data hook ────────────────────────────────────────────────────────────────
@@ -197,13 +198,18 @@ export const CodexUsageCard: React.FC<{
   return (
     <section className="agw-atlas" aria-label="Codex usage">
       <div className="agw-atlas-head">
-        <span className="agw-atlas-mark">
-          <AgentIcon name="chat" size={15} />
-        </span>
+        {/* Codex's real mark, from the same brand set the provider rail uses.
+            A generic chat glyph stood in for it here while the rail beside it
+            showed the logo — one provider wearing two different faces. */}
+        <ProviderAvatar provider={{ id: "codex", name: "Codex" }} />
         <div className="agw-atlas-head-titles">
           <div className="agw-atlas-title">
             Codex
-            {phase === "ready" && plan && <AgwPill tone="success">{plan}</AgwPill>}
+            {/* The plan is a fact about the account — set in the success
+                colour and nothing more. "Limit reached" keeps its chip: that
+                one is a live status that changes and that the user has to act
+                on, which is exactly what a badge is for. */}
+            {phase === "ready" && plan && <span className="agw-sub-plan">{plan}</span>}
             {phase === "ready" && usage?.limitReached && (
               <AgwPill tone="warning">Limit reached</AgwPill>
             )}

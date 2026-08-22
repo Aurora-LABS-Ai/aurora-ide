@@ -15,9 +15,14 @@
  * `[error]`/`[rejected]` sentinel = failed; anything else = done.
  */
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
+import { CanvasCategoryMark } from "@/apps/agent/components/tools/CanvasCategoryMark";
+import {
+  artifactCategoryLabel,
+  normalizeArtifactCategory,
+} from "@/apps/agent/lib/artifacts/artifact-category";
 import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
@@ -364,6 +369,81 @@ const DOT_ICON: Record<ToolStatus, AgentIconName | null> = {
   failed: "close",
 };
 
+/**
+ * The elapsed clock on a call that is still going.
+ *
+ * A spinner is identical at second 3 and second 300, so a command that prints
+ * nothing until it finishes — `pnpm lint` is the one that started this — left
+ * the reader with no way to tell work from a hang. The number is the whole
+ * answer: seeing it climb past a minute is what tells you to go look.
+ *
+ * Held back for the first two seconds. Most tool calls finish inside that, and
+ * a digit that appears and vanishes on every one of six batched reads is worse
+ * than no digit at all.
+ *
+ * The clock is `now`, not the elapsed time: the interval only advances the
+ * timestamp and the span is computed during render, which is the same shape
+ * `AgentThinkingBlock` uses for the reasoning timer.
+ */
+const CLOCK_APPEARS_AFTER_MS = 2_000;
+
+/**
+ * Mirrors `DEFAULT_TIMEOUT_MS` in `src-tauri/.../shell_execute.rs`.
+ *
+ * Only ever used to describe the wait, never to enforce it — Rust kills the
+ * process and this number just tells the reader when that happens. If the two
+ * drift, a card says "of 2m" while the command runs to some other limit, which
+ * is a wrong caption and not a wrong timeout.
+ */
+const DEFAULT_SHELL_TIMEOUT_MS = 120_000;
+
+const RunningClock: React.FC<{ startedAt?: number }> = ({ startedAt }) => {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (startedAt === undefined) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+
+  // No anchor means this row was rebuilt from history, where the start time
+  // was never persisted. Nothing honest to show.
+  if (startedAt === undefined) return null;
+  const elapsed = Math.max(0, now - startedAt);
+  if (elapsed < CLOCK_APPEARS_AFTER_MS) return null;
+
+  return (
+    <span className="agw-tool-time" aria-label={`Running for ${Math.round(elapsed / 1000)} seconds`}>
+      {formatToolDuration(elapsed)}
+    </span>
+  );
+};
+
+/**
+ * Bytes of tool-call JSON streamed so far, as a size the reader can watch move.
+ * A spinner is identical at second 2 and second 80; "1.8 KB → 4.2 KB" is not.
+ * It measures the ARGUMENT text, which is what the model is actually sending,
+ * so it is honest about progress without pretending to know the final size.
+ */
+function formatStreamedBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/**
+ * One short clause. A stack trace in a meta line helps nobody, and the parts
+ * that carry no information for the reader — the thrown `Error:` wrapper and the
+ * tool's own name, which the card already shows — are stripped.
+ */
+function clipReason(reason: string): string {
+  const firstLine = reason.split("\n").find((line) => line.trim().length > 0) ?? reason;
+  const cleaned = firstLine
+    .replace(/^\s*Error:\s*/i, "")
+    .replace(/^\s*present_artifact:\s*/i, "")
+    .trim();
+  return cleaned.length > 72 ? `${cleaned.slice(0, 71)}…` : cleaned;
+}
+
 const CanvasLaunchCard: React.FC<{
   call: ToolCall;
   isActivelyStreaming: boolean;
@@ -382,16 +462,60 @@ const CanvasLaunchCard: React.FC<{
     result = {};
   }
 
-  const artifactId =
-    (typeof args.artifactId === "string" && args.artifactId) ||
-    partialString(call.arguments, "artifactId") ||
-    "";
-  const artifactTitle =
-    (typeof args.title === "string" && args.title) ||
-    partialString(call.arguments, "title") ||
-    "Canvas artifact";
+  // Both spellings, new first. The `artifact*` rename exists so the header
+  // sorts ahead of `content`; threads already on disk carry the old names and
+  // must keep rendering exactly the same.
+  const readArg = (...keys: string[]): string => {
+    for (const key of keys) {
+      const settled = args[key];
+      if (typeof settled === "string" && settled.length > 0) return settled;
+      const streaming = partialString(call.arguments, key);
+      if (streaming) return streaming;
+    }
+    return "";
+  };
+
+  const artifactId = readArg("artifactId");
+  // NO placeholder noun. An unnamed card draws a shimmering skeleton instead —
+  // "Canvas artifact" read as the title and was wrong for the whole write.
+  const artifactTitle = readArg("artifactTitle", "title");
+  const category = normalizeArtifactCategory(readArg("artifactCategory"));
   const versionTag = typeof result.versionTag === "string" ? result.versionTag : "";
   const canOpen = status === "done" && artifactId.length > 0;
+
+  // The failure's reason belongs on the card. It cost an expand before, and a
+  // compile error is one short clause.
+  //
+  // A thrown tool error arrives as the raw sentinel string `[error] …`, NOT as
+  // JSON — `useAgentWindowSend` formats it that way and `toolStatus` keys off
+  // the prefix. Reading `result.error` off the parsed object would have found
+  // nothing on every real failure, because the parse never succeeds.
+  const failureReason =
+    status === "failed"
+      ? (call.result || "").trimStart().startsWith("[error]")
+        ? (call.result || "").trimStart().slice("[error]".length)
+        : (typeof result.error === "string" && result.error) ||
+          (typeof result.message === "string" && result.message) ||
+          ""
+      : "";
+  const isRevision = Boolean(
+    (typeof args.baseVersionTag === "string" && args.baseVersionTag) ||
+      (Array.isArray(args.patches) && args.patches.length > 0),
+  );
+  const streamedBytes =
+    status === "running" ? (call.arguments || "").length : 0;
+
+  const metaParts: string[] = [];
+  if (status === "failed") {
+    metaParts.push("Couldn’t save");
+    if (failureReason) metaParts.push(clipReason(failureReason));
+  } else if (status === "running") {
+    metaParts.push(artifactTitle ? artifactCategoryLabel(category) : "Writing a canvas");
+  } else {
+    metaParts.push(artifactCategoryLabel(category));
+    if (isRevision) metaParts.push("revised");
+    if (versionTag) metaParts.push(versionTag);
+  }
   // Artifacts are stored per conversation, so this has to open the artifact of
   // the chat the card is IN — which is not the open chat when the card is being
   // rendered by a conversation docked in the side panel.
@@ -422,35 +546,65 @@ const CanvasLaunchCard: React.FC<{
       className="agw-canvas-launch"
       data-status={status}
       disabled={!canOpen}
-      aria-label={canOpen ? `Open ${artifactTitle}${versionTag ? ` ${versionTag}` : ""} in Canvas` : undefined}
+      aria-label={
+        canOpen
+          ? `Open ${artifactTitle || "canvas"}${versionTag ? ` ${versionTag}` : ""} in Canvas`
+          : status === "running"
+            ? `Writing ${artifactCategoryLabel(category).toLowerCase()} canvas${artifactTitle ? `, ${artifactTitle}` : ""}`
+            : undefined
+      }
       onClick={openCanvas}
     >
-      <span className="agw-canvas-launch-status">
-        {status === "running" ? (
-          <span className="agw-spinner" aria-hidden />
-        ) : (
-          <AgentIcon
-            name={status === "done" ? "check" : "close"}
-            size={13}
-            strokeWidth={2.6}
-          />
-        )}
-      </span>
-      <span className="agw-canvas-launch-glyph">
-        <AgentIcon name="panel-right" size={16} />
+      <span className="agw-canvas-launch-lead">
+        <CanvasCategoryMark
+          category={category}
+          size={34}
+          animate={status === "running"}
+        />
       </span>
       <span className="agw-canvas-launch-copy">
-        <span className="agw-canvas-launch-kicker">
-          {status === "running"
-            ? "Creating on Canvas"
-            : status === "failed"
-              ? "Canvas creation failed"
-              : "Open in Canvas"}
+        {artifactTitle ? (
+          <span
+            className={`agw-canvas-launch-title${status === "running" ? " agw-shimmer" : ""}`}
+          >
+            {artifactTitle}
+          </span>
+        ) : (
+          <span className="agw-canvas-launch-skel" aria-label="Naming the canvas" />
+        )}
+        <span className="agw-canvas-launch-meta">
+          {metaParts.map((part, index) => (
+            <React.Fragment key={`${part}-${index}`}>
+              {index > 0 && <s aria-hidden>·</s>}
+              <i className={part === versionTag ? "agw-canvas-launch-num" : undefined}>
+                {part}
+              </i>
+            </React.Fragment>
+          ))}
+          {streamedBytes > 0 && (
+            <>
+              <s aria-hidden>·</s>
+              <i className="agw-canvas-launch-num">{formatStreamedBytes(streamedBytes)}</i>
+            </>
+          )}
         </span>
-        <span className="agw-canvas-launch-title">{artifactTitle}</span>
       </span>
-      {versionTag && <span className="agw-canvas-launch-version">{versionTag}</span>}
-      {canOpen && <AgentIcon name="external" size={14} className="agw-canvas-launch-open" />}
+      {status === "failed" && (
+        <span className="agw-canvas-launch-x">
+          <AgentIcon name="close" size={13} strokeWidth={2.4} />
+        </span>
+      )}
+      {status === "running" && (
+        <span className="agw-canvas-launch-rail" aria-hidden>
+          <i />
+        </span>
+      )}
+      {canOpen && (
+        <span className="agw-canvas-launch-open">
+          <span>Open</span>
+          <AgentIcon name="external" size={13} />
+        </span>
+      )}
     </button>
   );
 };
@@ -588,6 +742,16 @@ const StandardToolCallCard: React.FC<{
   const liveShellCommand =
     typeof parsedArgs.command === "string" ? parsedArgs.command : undefined;
   const liveShellCwd = typeof parsedArgs.cwd === "string" ? parsedArgs.cwd : undefined;
+  // What the command will be killed at. Rust reads `timeout` then `timeout_ms`
+  // and defaults to two minutes (`shell_execute.rs`); mirrored here so the
+  // waiting state can say when the waiting ends instead of only that it is
+  // happening. Both spellings, because the model sends both.
+  const liveShellTimeoutMs =
+    typeof parsedArgs.timeout === "number"
+      ? parsedArgs.timeout
+      : typeof parsedArgs.timeout_ms === "number"
+        ? parsedArgs.timeout_ms
+        : DEFAULT_SHELL_TIMEOUT_MS;
   const showLiveShell = isShellTool(call.name) && status === "running";
   // Which shell the command runs in. The result's resolved id wins (a
   // substitution shows what ACTUALLY ran); the requested arg covers the
@@ -867,6 +1031,10 @@ const StandardToolCallCard: React.FC<{
             <span className="agw-tool-time">{formatToolDuration(call.durationMs)}</span>
           )}
 
+        {/* The same clock while it runs. Same slot, same face, so a row does
+            not reflow when the number stops moving. */}
+        {status === "running" && <RunningClock startedAt={call.startedAt} />}
+
         <span style={{ flex: 1 }} />
 
         {hasDetail && (
@@ -1006,6 +1174,8 @@ const StandardToolCallCard: React.FC<{
                   cwd={liveShellCwd}
                   shell={shell?.id}
                   output={liveShellOutput}
+                  startedAt={call.startedAt}
+                  timeoutMs={liveShellTimeoutMs}
                 />
               ) : streamingPreview ? (
                 <pre
@@ -1067,13 +1237,13 @@ const PlanLaunchCard: React.FC<{
   return (
     <button
       type="button"
-      className="agw-canvas-launch"
+      className="agw-plan-launch"
       data-status={status}
       disabled={!canOpen}
       aria-label={canOpen ? `Open plan ${title} in Canvas` : undefined}
       onClick={openCanvas}
     >
-      <span className="agw-canvas-launch-status">
+      <span className="agw-plan-launch-status">
         {status === "running" ? (
           <span className="agw-spinner" aria-hidden />
         ) : (
@@ -1084,11 +1254,11 @@ const PlanLaunchCard: React.FC<{
           />
         )}
       </span>
-      <span className="agw-canvas-launch-glyph">
+      <span className="agw-plan-launch-glyph">
         <AgentIcon name="task-list" size={16} />
       </span>
-      <span className="agw-canvas-launch-copy">
-        <span className="agw-canvas-launch-kicker">
+      <span className="agw-plan-launch-copy">
+        <span className="agw-plan-launch-kicker">
           {status === "running"
             ? "Writing plan"
             : status === "failed"
@@ -1097,14 +1267,14 @@ const PlanLaunchCard: React.FC<{
                 ? "Plan updated — open in Canvas"
                 : "Plan ready — open in Canvas"}
         </span>
-        <span className="agw-canvas-launch-title">{title}</span>
+        <span className="agw-plan-launch-title">{title}</span>
       </span>
       {steps > 0 && (
-        <span className="agw-canvas-launch-version">
+        <span className="agw-plan-launch-version">
           {steps} step{steps === 1 ? "" : "s"}
         </span>
       )}
-      {canOpen && <AgentIcon name="external" size={14} className="agw-canvas-launch-open" />}
+      {canOpen && <AgentIcon name="external" size={14} className="agw-plan-launch-open" />}
     </button>
   );
 };

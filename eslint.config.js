@@ -80,7 +80,11 @@ const NO_IDE_FROM_AGENT = {
 }
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // `thirdparty/` holds vendored upstream repos kept for reference (their own
+  // git, their own style, their own lint config). It is gitignored and never
+  // bundled, so linting it only buries Aurora's own findings under thousands
+  // of other projects' opinions.
+  globalIgnores(['dist', 'thirdparty']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

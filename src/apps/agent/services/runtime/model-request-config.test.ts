@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  DEFAULT_TEMPERATURE,
-  resolveTemperature,
-} from "@/apps/agent/services/runtime/model-request-config";
+import { resolveTemperature } from "@/apps/agent/services/runtime/model-request-config";
 import type { LLMModel } from "@/kernel/store/useSettingsStore";
 
 const model = (temperature?: number): LLMModel =>
@@ -28,23 +25,24 @@ describe("resolveTemperature", () => {
     expect(resolveTemperature(model(undefined), 0.9)).toBe(0.9);
   });
 
-  it("falls back to Aurora's default when neither is set", () => {
-    expect(resolveTemperature(model(undefined), undefined)).toBe(DEFAULT_TEMPERATURE);
-    expect(resolveTemperature(null, undefined)).toBe(DEFAULT_TEMPERATURE);
+  /**
+   * Aurora used to substitute 0.8 here, so every request carried a sampling
+   * setting nobody had chosen — overriding whatever the provider documents for
+   * its own models, and getting requests rejected outright by backends that
+   * are strict about the field. Untouched must mean untouched.
+   */
+  it("sends nothing when neither the model nor the provider set one", () => {
+    expect(resolveTemperature(model(undefined), undefined)).toBeUndefined();
+    expect(resolveTemperature(null, undefined)).toBeUndefined();
   });
 
   /**
    * The whole reason this is a function and not a `??` chain: 0 is a real
    * setting — "be deterministic" — and `??` on a falsy-but-valid 0 would
-   * silently promote it to the default the user was overriding.
+   * discard it and fall through to sending nothing.
    */
   it("keeps an explicit 0 at both levels", () => {
     expect(resolveTemperature(model(0), 0.9)).toBe(0);
     expect(resolveTemperature(model(undefined), 0)).toBe(0);
-  });
-
-  /** Not 1.0: this is a tool-calling loop, not chat. Not 0: that gets stuck. */
-  it("defaults to 0.8", () => {
-    expect(DEFAULT_TEMPERATURE).toBe(0.8);
   });
 });

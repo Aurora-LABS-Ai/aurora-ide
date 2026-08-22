@@ -311,7 +311,8 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
     return level ? `(${level})` : null;
   }
   if (name === "present_artifact") {
-    const title = asStr(args.title);
+    // Both spellings — old threads carry `title`.
+    const title = asStr(args.artifactTitle) || asStr(args.title);
     return title ? `“${clip(title, 40)}”` : null;
   }
   return null;

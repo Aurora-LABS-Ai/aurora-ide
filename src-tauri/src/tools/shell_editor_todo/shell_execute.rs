@@ -23,6 +23,7 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::agent_safety::bash_validation::{classify_intent, BashValidationError, ExecutionMode};
 use crate::agent_safety::shell_validation::validate_for_shell;
+use crate::tools::timeout::TimeoutPolicy;
 
 use super::ide_event_sink::{IdeEventSink, ShellStreamRequest};
 
@@ -42,6 +43,22 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 1_800_000;
 /// Minimum timeout — matches the TS `MIN_SHELL_TIMEOUT_MS`.
 const MIN_TIMEOUT_MS: u64 = 1_000;
+
+/// How the `timeout` argument is read. The numbers are this tool's; the reading
+/// of them is [`crate::tools::timeout`]'s, so every tool that takes a timeout
+/// takes it the same way.
+///
+/// The policy is used for its [`TimeoutPolicy::resolve`] only. This tool is NOT
+/// wrapped by `TimeoutGuardedExecutor` and deliberately declares no
+/// `timeout_policy()`: an outside clock abandons the call, while this one kills
+/// the process and hands back everything it printed first. Partial output from
+/// a build that ran for two minutes is worth more than a sentence saying it did.
+const TIMEOUT: TimeoutPolicy = TimeoutPolicy::new(
+    DEFAULT_TIMEOUT_MS,
+    MIN_TIMEOUT_MS,
+    MAX_TIMEOUT_MS,
+    "Re-run with a larger `timeout`, or use shell_spawn for work with no natural end.",
+);
 
 /// Validation mode for shell tools — see module-level docs in
 /// [`super`]. `WorkspaceWrite` is the closest match for the agent's
@@ -159,12 +176,7 @@ impl ToolExecutor for ShellExecuteTool {
 
         let shell = resolve_shell(requested_shell.map(str::to_string));
 
-        let timeout_ms = input
-            .get("timeout")
-            .or_else(|| input.get("timeout_ms"))
-            .and_then(Value::as_u64)
-            .map(|v| v.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS))
-            .unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout_ms = TIMEOUT.resolve(&input);
 
         // The stream id is the tool call id, so the card that renders this
         // call is exactly the surface that receives its output.
@@ -221,6 +233,11 @@ impl ToolExecutor for ShellExecuteTool {
                 // are here so it stops "fixing" commands that only ran long.
                 "timedOut": output.timed_out,
                 "timeoutMs": timeout_ms,
+                // A survivor is a fact the model must hear NOW: the next thing
+                // it usually does is probe the thing it just started, and
+                // without this line the only story it can invent is "Aurora
+                // killed my process" — observed verbatim in a real session.
+                "leftRunning": output.left_running,
                 "note": if output.timed_out {
                     Some(format!(
                         "Killed after {timeout_ms}ms — the command had not finished. The output \
@@ -228,6 +245,22 @@ impl ToolExecutor for ShellExecuteTool {
                          partial, not as the result. Re-run with a larger `timeout` if it just \
                          needs longer, or start it with shell_spawn and follow it with \
                          shell_read_output if it has no natural end."
+                    ))
+                } else if output.left_running {
+                    let who = if output.survivors.is_empty() {
+                        "a process it started is still running".to_string()
+                    } else {
+                        format!(
+                            "it left running: {}",
+                            output.survivors.join(", ")
+                        )
+                    };
+                    Some(format!(
+                        "The command finished, and {who}. Aurora is not tracking that — nothing \
+                         more from it will appear here, and there is no processId to read or \
+                         stop. If the running process is the point (a server, a watcher), start \
+                         it with shell_spawn instead so it gets a processId and a readable \
+                         output file."
                     ))
                 } else {
                     None
@@ -582,6 +615,8 @@ mod tests {
                     exit_code: None,
                     success: false,
                     timed_out: true,
+                    left_running: false,
+                    survivors: Vec::new(),
                 },
             )
         }

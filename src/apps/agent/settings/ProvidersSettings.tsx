@@ -15,12 +15,27 @@
  */
 
 import React, { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 
 import { useSettingsStore, type LLMModel, type LLMProvider } from "@/kernel/store/useSettingsStore";
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud";
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
+import { isCursorProvider } from "@/apps/agent/services/providers/cursor";
+import {
+  isOpenCodeProvider,
+  openCodeWire,
+  OPENCODE_WIRES,
+  type OpenCodeWire,
+} from "@/apps/agent/services/providers/opencode";
 import { groupProviders, isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
+import {
+  loadPinnedProviders,
+  loadProviderGroupsOpen,
+  savePinnedProviders,
+  saveProviderGroupsOpen,
+  type ProviderGroupsOpen,
+} from "./provider-pins";
 import {
   isKenariProvider,
   kenariWire,
@@ -32,8 +47,37 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
+import { CursorProviderCard } from "./CursorProviderCard";
+import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
-import { DEFAULT_TEMPERATURE } from "@/apps/agent/services/runtime/model-request-config";
+
+/**
+ * Smooth height/opacity glide for a collapsible rail group. Mounts/unmounts
+ * its children but animates the transition instead of snapping — the same
+ * helper the left rail's Projects section uses (kept local for the same
+ * reason: importing it from the rail would pull the whole rail module in).
+ */
+const Collapse: React.FC<{ open: boolean; children: React.ReactNode }> = ({
+  open,
+  children,
+}) => (
+  <AnimatePresence initial={false}>
+    {open && (
+      <motion.div
+        initial={{ height: 0, opacity: 0 }}
+        animate={{ height: "auto", opacity: 1 }}
+        exit={{ height: 0, opacity: 0 }}
+        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        // relative: rows leave via AnimatePresence popLayout, which positions
+        // the exiting row absolutely against its nearest positioned ancestor —
+        // without this it would fade out anchored to the wrong box.
+        style={{ overflow: "hidden", position: "relative" }}
+      >
+        {children}
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
 
 function hasAnyKey(p: LLMProvider): boolean {
   if (p.apiKey.trim().length > 0) return true;
@@ -605,8 +649,16 @@ const ModelRow: React.FC<{
               min="0"
               max="2"
               value={model.temperature ?? ""}
-              placeholder={`inherit · ${providerTemperature ?? DEFAULT_TEMPERATURE}`}
-              title="0 is deterministic, 1 is the API default. Ignored by models that reject sampling (Claude 5 and newer) and whenever reasoning is on."
+              // Empty means the field is not sent at all, so the provider's own
+              // default applies. Saying "inherit · 0.8" implied Aurora had a
+              // number in mind, which it no longer does — and which was
+              // overriding providers that document their own.
+              placeholder={
+                typeof providerTemperature === "number"
+                  ? `inherit · ${providerTemperature}`
+                  : "provider default"
+              }
+              title="Leave empty to let the provider choose. 0 is deterministic, 1 is the usual API default. Ignored by models that reject sampling (Claude 5 and newer) and whenever reasoning is on."
               onChange={(e) =>
                 updateModel(model.id, {
                   temperature: e.target.value === "" ? undefined : Number(e.target.value),
@@ -884,9 +936,12 @@ const ProviderDetail: React.FC<{
   const [confirmRemove, setConfirmRemove] = useState(false);
   const atlas = isAtlasCloudProvider(provider);
   const codex = isCodexProvider(provider);
+  const cursor = isCursorProvider(provider);
+  const opencode = isOpenCodeProvider(provider);
   const builtIn = isBuiltInProvider(provider);
   const kenari = isKenariProvider(provider);
   const wire = kenariWire(provider);
+  const ocWire = openCodeWire(provider);
 
   // Only a provider the user added can be deleted. The ones Aurora ships with
   // are theirs to configure, not to remove — so the destructive control simply
@@ -903,6 +958,12 @@ const ProviderDetail: React.FC<{
 
   return (
     <div className="agw-prov-detail" data-atlas={atlas || undefined}>
+      {/* ── Who this provider is, and how to reach it ──────────────────────
+          Everything above the models: identity, plan usage, endpoint, keys.
+          Its own region so it stays put while the model list below scrolls —
+          the pane as a whole never scrolls, which is what made the provider's
+          own name disappear off the top while you were reading its models. */}
+      <div className="agw-prov-detail-top agw-scroll">
       {/* Atlas and Codex own their identity + enable control inside their
           usage cards, so the generic "name / openai" head would be
           redundant — hide it. */}
@@ -916,6 +977,18 @@ const ProviderDetail: React.FC<{
         <CodexUsageCard
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
+      ) : cursor ? (
+        <CursorProviderCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
+      ) : opencode ? (
+        <OpenCodeProviderCard
+          apiKey={provider.apiKey}
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+          onKeyImported={(apiKey) => updateProvider(provider.id, { apiKey })}
         />
       ) : (
         <div className="agw-prov-detail-head">
@@ -932,9 +1005,11 @@ const ProviderDetail: React.FC<{
         </div>
       )}
 
-      {/* Connection. Codex has none to edit — endpoint and auth are managed
-          by the sign-in card above (the Rust adapter pins the URL). */}
-      {!codex && (
+      {/* Connection. Codex and Cursor have none to edit — endpoint and auth
+          are managed by the card above, and both Rust adapters pin the URL so
+          a stale field could not reroute a turn anyway. Cursor also owns its
+          own model list, which the generic model editor must not duplicate. */}
+      {!codex && !cursor && (
       <div className="agw-prov-conn">
         {/* kenari answers the same account on three different wires, and the
             choice changes real behaviour — not a preference. Offered here
@@ -952,6 +1027,24 @@ const ProviderDetail: React.FC<{
             />
             <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
               {KENARI_WIRES.find((w) => w.value === wire)?.detail}
+            </span>
+          </label>
+        )}
+        {/* Same choice, same reason, for OpenCode Go: one account, two wires,
+            and one of them silently returns no reasoning at all. Two options
+            rather than kenari's three — the Anthropic shape answers on this
+            host but returns an empty message for every model on the plan. */}
+        {opencode && (
+          <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>API format</span>
+            <AgwSegmented<OpenCodeWire>
+              ariaLabel="OpenCode API format"
+              value={ocWire}
+              options={OPENCODE_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+              onChange={(next) => updateProvider(provider.id, { providerType: next })}
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {OPENCODE_WIRES.find((w) => w.value === ocWire)?.detail}
             </span>
           </label>
         )}
@@ -1021,36 +1114,59 @@ const ProviderDetail: React.FC<{
         <CustomHeadersEditor provider={provider} updateProvider={updateProvider} />
       </div>
       )}
+      </div>
 
-      {/* Models */}
-      <div className="agw-prov-models-head">
-        Models <span className="agw-prov-models-count">{models.length}</span>
-      </div>
-      <p className="agw-prov-models-hint">
-        New models auto-fill from models.dev — context window, limits, capabilities, pricing, and
-        reasoning levels. Everything is overridable.
-      </p>
-      <div className="agw-prov-models agw-scroll">
-        {models.length === 0 ? (
-          <div className="agw-prov-empty">No models yet — add one below.</div>
-        ) : (
-          models.map((m) => (
-            <ModelRow
-              key={m.id}
-              model={m}
-              active={selectedModel === `${provider.id}:${m.modelKey}`}
-              onActivate={() => setSelectedModel(`${provider.id}:${m.modelKey}`)}
-              providerTemperature={provider.defaultTemperature}
-            />
-          ))
-        )}
-      </div>
-      <AddModelRow providerId={provider.id} providerType={provider.providerType} />
+      {/* ── Models ─────────────────────────────────────────────────────────
+          The region that scrolls. Its heading and the add-a-model row are
+          pinned to it, so the list can be long without the controls that act
+          on it sliding away.
+
+          Cursor is the exception: its list is the ACCOUNT's, pulled on connect
+          and replaced on refresh, and the card above is the only place it can
+          be curated. Rendering the generic editor here too would offer an
+          "add a model" box whose rows a refresh silently discards, under a
+          "Models 0" heading that contradicts the list already on screen. */}
+      {!cursor && (
+        <div className="agw-prov-detail-models">
+          {/* Heading outside the panel, the way the skills catalog names its
+              own — so the panel below is one object holding one list. */}
+          <div className="agw-prov-models-head">
+            Models <span className="agw-prov-models-count">{models.length}</span>
+          </div>
+          <p className="agw-prov-models-hint">
+            New models auto-fill from models.dev — context window, limits, capabilities, pricing, and
+            reasoning levels. Everything is overridable.
+          </p>
+          <div className="agw-prov-models-panel">
+            <div className="agw-prov-models agw-scroll">
+              {models.length === 0 ? (
+                <div className="agw-prov-empty">No models yet — add one below.</div>
+              ) : (
+                models.map((m) => (
+                  <ModelRow
+                    key={m.id}
+                    model={m}
+                    active={selectedModel === `${provider.id}:${m.modelKey}`}
+                    onActivate={() => setSelectedModel(`${provider.id}:${m.modelKey}`)}
+                    providerTemperature={provider.defaultTemperature}
+                  />
+                ))
+              )}
+            </div>
+            <AddModelRow providerId={provider.id} providerType={provider.providerType} />
+          </div>
+        </div>
+      )}
 
       {/* Delete, for providers the user added. Two-click confirm; the second
           click commits. A built-in gets a line saying why there is nothing to
           click here — a missing control with no explanation reads as a bug. */}
-      {builtIn ? (
+      {cursor ? (
+        <div className="agw-prov-detail-note">
+          Comes with Aurora. Your plan decides which models exist — switch on the
+          ones you want and they appear in the model picker.
+        </div>
+      ) : builtIn ? (
         <div className="agw-prov-detail-note">
           Comes with Aurora. Change its address, key and models freely — the provider
           itself stays in the list.
@@ -1076,35 +1192,74 @@ const ProviderDetail: React.FC<{
 
 // ── Sidebar row ──────────────────────────────────────────────────────────────
 
-const ProviderRow: React.FC<{
-  provider: LLMProvider;
-  modelCount: number;
-  active: boolean;
-  onSelect: () => void;
-}> = ({ provider, modelCount, active, onSelect }) => {
+// forwardRef because the groups' AnimatePresence runs mode="popLayout", which
+// measures the outgoing row through a ref before popping it out of the layout
+// — a plain function component here warns and breaks the exit measurement.
+const ProviderRow = React.forwardRef<
+  HTMLDivElement,
+  {
+    provider: LLMProvider;
+    modelCount: number;
+    active: boolean;
+    onSelect: () => void;
+    pinned: boolean;
+    onTogglePin: () => void;
+  }
+>(function ProviderRow({ provider, modelCount, active, onSelect, pinned, onTogglePin }, ref) {
   const ready = providerReady(provider);
+  const name = provider.nickname || provider.name;
   return (
-    <button
-      type="button"
+    // A container, not a button — the open control is a stretched button
+    // behind the content so the pin button can sit above it (a button cannot
+    // contain a button; same shape as the skill card).
+    //
+    // motion + `layout`: pinning removes this row from one group and mounts
+    // it in another, and without an animation that reads as a teleport. The
+    // groups' AnimatePresence (mode="popLayout") fades the old instance out
+    // while siblings glide closed, and this fades the new one in.
+    <motion.div
+      ref={ref}
+      layout
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
       className="agw-prov-item"
       data-active={active || undefined}
-      onClick={onSelect}
     >
+      <button
+        type="button"
+        className="agw-prov-item-hit"
+        aria-label={`Open ${name}`}
+        aria-current={active || undefined}
+        onClick={onSelect}
+      />
       <ProviderAvatar provider={provider} small />
       <span className="agw-prov-item-text">
-        <span className="agw-prov-item-name">{provider.nickname || provider.name}</span>
+        <span className="agw-prov-item-name">{name}</span>
         <span className="agw-prov-item-sub">
           {modelCount} {modelCount === 1 ? "model" : "models"}
         </span>
       </span>
+      <button
+        type="button"
+        className="agw-prov-pin"
+        data-on={pinned || undefined}
+        title={pinned ? "Unpin provider" : "Pin provider"}
+        aria-label={pinned ? `Unpin ${name}` : `Pin ${name}`}
+        aria-pressed={pinned}
+        onClick={onTogglePin}
+      >
+        <AgentIcon name="pin" size={12} />
+      </button>
       <span
         className="agw-prov-status-dot"
         data-tone={ready ? "ready" : "off"}
         title={ready ? "Ready" : "Needs API key"}
       />
-    </button>
+    </motion.div>
   );
-};
+});
 
 // ── Page (master–detail) ─────────────────────────────────────────────────────
 
@@ -1116,6 +1271,30 @@ export const ProvidersSettings: React.FC = () => {
   const updateModel = useSettingsStore((s) => s.updateModel);
 
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  // Each rail group is a disclosure, same pattern as the left rail's Projects
+  // header: chevron + click to collapse. Persisted, so the sidebar reopens
+  // the way it was left instead of springing everything open on every visit.
+  const [groupsOpen, setGroupsOpen] = useState<ProviderGroupsOpen>(loadProviderGroupsOpen);
+  const toggleGroup = (key: keyof ProviderGroupsOpen) => {
+    setGroupsOpen((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveProviderGroupsOpen(next);
+      return next;
+    });
+  };
+
+  // Pinned providers float into their own group at the top, from either list —
+  // the left rail's pinned-projects pattern, persisted the same way.
+  const [pinnedIds, setPinnedIds] = useState<string[]>(loadPinnedProviders);
+  const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  const toggleProviderPin = (id: string) => {
+    setPinnedIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      savePinnedProviders(next);
+      return next;
+    });
+  };
 
   // Backfill a BARREN preset/seeded model's missing metadata from models.dev,
   // exactly ONCE per model per session. Reasoning is NO LONGER a trigger and is
@@ -1173,11 +1352,31 @@ export const ProvidersSettings: React.FC = () => {
   // providers the user added stay in the order they added them.
   const { builtIn, custom } = useMemo(() => groupProviders(providers), [providers]);
 
+  // A pinned provider lives ONLY in the Pinned group (like a pinned chat in
+  // the rail) — leaving it in its home group too would draw one provider as
+  // two rows that highlight together.
+  const pinnedProviders = useMemo(
+    () => [...builtIn, ...custom].filter((p) => pinnedSet.has(p.id)),
+    [builtIn, custom, pinnedSet],
+  );
+  const builtInRest = useMemo(
+    () => builtIn.filter((p) => !pinnedSet.has(p.id)),
+    [builtIn, pinnedSet],
+  );
+  const customRest = useMemo(
+    () => custom.filter((p) => !pinnedSet.has(p.id)),
+    [custom, pinnedSet],
+  );
+
   // Keep a valid selection as the provider list changes. The fallback follows
   // the order the rail DRAWS, not the order the store happens to hold — picking
   // `providers[0]` would highlight a row further down the list on first open.
   const selected =
-    providers.find((p) => p.id === activeId) ?? builtIn[0] ?? custom[0] ?? null;
+    providers.find((p) => p.id === activeId) ??
+    pinnedProviders[0] ??
+    builtInRest[0] ??
+    customRest[0] ??
+    null;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep a valid provider selected
     if (selected && selected.id !== activeId) setActiveId(selected.id);
@@ -1224,54 +1423,162 @@ export const ProvidersSettings: React.FC = () => {
             below are the user's own. Grouping is carried by a label and a
             hairline rather than by boxing each group — the rail already has
             enough edges. */}
-        <div className="agw-prov-side-scroll agw-scroll">
-          {providers.length === 0 ? (
-            <div className="agw-prov-empty">No providers yet.</div>
-          ) : (
-            <>
-              {builtIn.length > 0 && (
-                <div className="agw-prov-group">
-                  <h3 className="agw-prov-group-label">
-                    Built-in
-                    <span className="agw-prov-group-count">{builtIn.length}</span>
-                  </h3>
-                  {builtIn.map((p) => (
-                    <ProviderRow
-                      key={p.id}
-                      provider={p}
-                      modelCount={modelsByProvider.get(p.id)?.length ?? 0}
-                      active={p.id === selected?.id}
-                      onSelect={() => setActiveId(p.id)}
-                    />
-                  ))}
-                </div>
-              )}
-              <div className="agw-prov-group" data-divided={builtIn.length > 0 || undefined}>
-                <h3 className="agw-prov-group-label">
-                  Custom
-                  {custom.length > 0 && (
-                    <span className="agw-prov-group-count">{custom.length}</span>
-                  )}
-                </h3>
-                {custom.length > 0 ? (
-                  custom.map((p) => (
-                    <ProviderRow
-                      key={p.id}
-                      provider={p}
-                      modelCount={modelsByProvider.get(p.id)?.length ?? 0}
-                      active={p.id === selected?.id}
-                      onSelect={() => setActiveId(p.id)}
-                    />
-                  ))
-                ) : (
-                  <p className="agw-prov-group-empty">
-                    Anything you add below lands here.
-                  </p>
+        {providers.length === 0 ? (
+          <div className="agw-prov-empty">No providers yet.</div>
+        ) : (
+          // One LayoutGroup across all three groups, so when a pin moves a row
+          // the siblings in BOTH lists glide instead of snapping.
+          <LayoutGroup>
+            {/* Pinned area. The user's pins and the shipped providers are the
+                short, fixed sets people return to — scrolling them away to
+                reach a long custom list is the wrong trade. Only the list that
+                grows without bound scrolls. */}
+            {(pinnedProviders.length > 0 || builtInRest.length > 0) && (
+              <div className="agw-prov-side-pinned">
+                {pinnedProviders.length > 0 && (
+                  <div className="agw-prov-group">
+                    <button
+                      type="button"
+                      className="agw-prov-group-label"
+                      aria-expanded={groupsOpen.pinned}
+                      onClick={() => toggleGroup("pinned")}
+                      title={
+                        groupsOpen.pinned
+                          ? "Collapse pinned providers"
+                          : "Expand pinned providers"
+                      }
+                    >
+                      <span className="agw-prov-group-name">
+                        <AgentIcon
+                          name="chevron-down"
+                          size={11}
+                          className="agw-prov-group-caret"
+                          style={{
+                            transform: groupsOpen.pinned ? undefined : "rotate(-90deg)",
+                          }}
+                        />
+                        Pinned
+                      </span>
+                      <span className="agw-prov-group-count">
+                        {pinnedProviders.length}
+                      </span>
+                    </button>
+                    <Collapse open={groupsOpen.pinned}>
+                      <AnimatePresence initial={false} mode="popLayout">
+                        {pinnedProviders.map((p) => (
+                          <ProviderRow
+                            key={p.id}
+                            provider={p}
+                            modelCount={modelsByProvider.get(p.id)?.length ?? 0}
+                            active={p.id === selected?.id}
+                            onSelect={() => setActiveId(p.id)}
+                            pinned
+                            onTogglePin={() => toggleProviderPin(p.id)}
+                          />
+                        ))}
+                      </AnimatePresence>
+                    </Collapse>
+                  </div>
+                )}
+                {builtInRest.length > 0 && (
+                  <div className="agw-prov-group">
+                    <button
+                      type="button"
+                      className="agw-prov-group-label"
+                      aria-expanded={groupsOpen.builtIn}
+                      onClick={() => toggleGroup("builtIn")}
+                      title={
+                        groupsOpen.builtIn
+                          ? "Collapse built-in providers"
+                          : "Expand built-in providers"
+                      }
+                    >
+                      <span className="agw-prov-group-name">
+                        <AgentIcon
+                          name="chevron-down"
+                          size={11}
+                          className="agw-prov-group-caret"
+                          style={{
+                            transform: groupsOpen.builtIn ? undefined : "rotate(-90deg)",
+                          }}
+                        />
+                        Built-in
+                      </span>
+                      <span className="agw-prov-group-count">
+                        {builtInRest.length}
+                      </span>
+                    </button>
+                    <Collapse open={groupsOpen.builtIn}>
+                      <AnimatePresence initial={false} mode="popLayout">
+                        {builtInRest.map((p) => (
+                          <ProviderRow
+                            key={p.id}
+                            provider={p}
+                            modelCount={modelsByProvider.get(p.id)?.length ?? 0}
+                            active={p.id === selected?.id}
+                            onSelect={() => setActiveId(p.id)}
+                            pinned={false}
+                            onTogglePin={() => toggleProviderPin(p.id)}
+                          />
+                        ))}
+                      </AnimatePresence>
+                    </Collapse>
+                  </div>
                 )}
               </div>
-            </>
-          )}
-        </div>
+            )}
+            <div className="agw-prov-side-scroll agw-scroll">
+              <div className="agw-prov-group" data-divided={builtIn.length > 0 || undefined}>
+                <button
+                  type="button"
+                  className="agw-prov-group-label"
+                  aria-expanded={groupsOpen.custom}
+                  onClick={() => toggleGroup("custom")}
+                  title={
+                    groupsOpen.custom
+                      ? "Collapse custom providers"
+                      : "Expand custom providers"
+                  }
+                >
+                  <span className="agw-prov-group-name">
+                    <AgentIcon
+                      name="chevron-down"
+                      size={11}
+                      className="agw-prov-group-caret"
+                      style={{
+                        transform: groupsOpen.custom ? undefined : "rotate(-90deg)",
+                      }}
+                    />
+                    Custom
+                  </span>
+                  {customRest.length > 0 && (
+                    <span className="agw-prov-group-count">{customRest.length}</span>
+                  )}
+                </button>
+                <Collapse open={groupsOpen.custom}>
+                  <AnimatePresence initial={false} mode="popLayout">
+                    {customRest.map((p) => (
+                      <ProviderRow
+                        key={p.id}
+                        provider={p}
+                        modelCount={modelsByProvider.get(p.id)?.length ?? 0}
+                        active={p.id === selected?.id}
+                        onSelect={() => setActiveId(p.id)}
+                        pinned={false}
+                        onTogglePin={() => toggleProviderPin(p.id)}
+                      />
+                    ))}
+                  </AnimatePresence>
+                  {custom.length === 0 && (
+                    <p className="agw-prov-group-empty">
+                      Anything you add below lands here.
+                    </p>
+                  )}
+                </Collapse>
+              </div>
+            </div>
+          </LayoutGroup>
+        )}
         <div className="agw-prov-list-foot">
           <AgwButton variant="primary" icon="plus" onClick={addProvider}>
             Add provider

@@ -62,7 +62,15 @@ pub fn map_status_error(status: u16, body: String) -> ApiError {
         format!("HTTP {status}: {summary}")
     };
     match status {
-        401 => ApiError::Unauthorized,
+        // The body is kept, not discarded: a 401 that explains itself is
+        // explaining something the user can act on, and it is not always the
+        // key (see `ApiError::Unauthorized`). Still `Unauthorized`, so key
+        // failover and "do not retry this" are unchanged.
+        401 => ApiError::Unauthorized(if summary.is_empty() {
+            "check API key".to_string()
+        } else {
+            summary
+        }),
         429 => ApiError::RateLimit,
         500..=599 => ApiError::Provider(message),
         // A 4xx normally means "the request is wrong", and re-sending
@@ -647,10 +655,8 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
     let (system, messages) = anthropic_split_system_and_messages(request, config.supports_vision);
 
     let max_tokens = request.max_output_tokens.max(1);
-    let temperature = request
-        .temperature
-        .or(config.default_temperature)
-        .unwrap_or(1.0);
+    // No invented default. See `insert_temperature`.
+    let temperature = request.temperature.or(config.default_temperature);
 
     let caching = supports_prompt_caching(config);
     let mut messages = messages;
@@ -668,7 +674,7 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
     body.insert("messages".to_string(), Value::Array(messages));
     body.insert("max_tokens".to_string(), Value::from(max_tokens));
     body.insert("stream".to_string(), Value::Bool(true));
-    body.insert("temperature".to_string(), Value::from(temperature));
+    insert_temperature(&mut body, temperature);
 
     if let Some(system_prompt) = system {
         if !system_prompt.is_empty() {
@@ -1385,13 +1391,36 @@ pub(crate) fn strip_aurora_images_for_text(content: &str) -> String {
 
 /// Build the JSON body for an OpenAI-compatible `/chat/completions`
 /// streaming call.
+/// Put `temperature` in the body — **only when somebody actually chose one.**
+///
+/// Aurora used to fabricate a value at two layers: the composer resolved an
+/// unset temperature to 0.8, and if that never arrived this function's
+/// predecessor substituted 1.0. So every request carried a sampling setting the
+/// user had never touched, sent to providers that document their own defaults.
+///
+/// That is wrong on preference grounds and it is wrong on correctness grounds.
+/// Some models reject the parameter outright, and some accept it only in a
+/// narrower form than a float gives you — OpenCode's Go surface answers
+/// `The temperature parameter is illegal.：限制小数点[2]位` and fails the whole
+/// request over decimal places. An invented value cannot be right for a model
+/// nobody set it for, and it turns a preference into a hard failure.
+///
+/// Absent means absent: the provider applies its own default, which is the
+/// documented behaviour of every API Aurora speaks to. Rounded to two decimals
+/// because no model distinguishes finer than that, while float arithmetic will
+/// happily produce `0.7000000000000001` and get the request refused.
+fn insert_temperature(body: &mut Map<String, Value>, temperature: Option<f32>) {
+    if let Some(value) = temperature {
+        let rounded = (f64::from(value) * 100.0).round() / 100.0;
+        body.insert("temperature".to_string(), Value::from(rounded));
+    }
+}
+
 pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapshot) -> Value {
     let model = unprefix_model(request.model, &config.provider_id);
     let max_tokens = request.max_output_tokens.max(1);
-    let temperature = request
-        .temperature
-        .or(config.default_temperature)
-        .unwrap_or(1.0);
+    // No invented default. See `insert_temperature`.
+    let temperature = request.temperature.or(config.default_temperature);
 
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(model.to_string()));
@@ -1405,7 +1434,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
     );
     body.insert("stream".to_string(), Value::Bool(true));
     body.insert("max_tokens".to_string(), Value::from(max_tokens));
-    body.insert("temperature".to_string(), Value::from(temperature));
+    insert_temperature(&mut body, temperature);
 
     if !request.tools.is_empty() {
         let tools: Vec<Value> = request
@@ -2022,13 +2051,196 @@ pub fn parse_tool_input(raw: &str) -> Value {
         }
     }
     let normalized = normalize_absolute_windows_paths(raw);
-    match serde_json::from_str::<Value>(&normalized) {
-        Ok(value) if value.is_object() => value,
-        // A parsed-but-not-object payload (a bare array, a quoted string)
-        // is just as unusable as a parse failure — carry the raw text
-        // through the same path rather than handing an executor a shape
-        // it will misreport.
-        _ => Value::String(raw.to_string()),
+    if let Ok(value) = serde_json::from_str::<Value>(&normalized) {
+        if value.is_object() {
+            return value;
+        }
+    }
+    // Second recovery pass: a value written without its quotes.
+    //
+    // `{"path": README.md}` — measured off GLM-5.2, five times in a row in one
+    // turn, and the model could not recover because nothing told it which
+    // character was wrong. Running this AFTER the path pass keeps the ordering
+    // honest: a payload the first pass can fix is fixed by the first pass, and
+    // this one only ever sees what is still broken.
+    let quoted = quote_bare_scalar_values(raw);
+    if let Ok(value) = serde_json::from_str::<Value>(&quoted) {
+        if value.is_object() {
+            return value;
+        }
+    }
+
+    // A parsed-but-not-object payload (a bare array, a quoted string)
+    // is just as unusable as a parse failure — carry the raw text
+    // through the same path rather than handing an executor a shape
+    // it will misreport.
+    Value::String(raw.to_string())
+}
+
+/// Longest bare token this pass will quote.
+///
+/// A forgotten pair of quotes happens around a short scalar — a path, an id, a
+/// mode. Past this length the thing being scanned is far more likely to be a
+/// payload that broke some other way, and guessing at it is how a recovery pass
+/// starts destroying calls instead of saving them.
+const MAX_BARE_VALUE_SCAN: usize = 512;
+
+/// Put quotes back around a value that was written without them.
+///
+/// The failure this exists for, verbatim off the wire:
+///
+/// ```text
+/// {"path": README.md}
+/// {"path": E:\sub2api\README.md}
+/// ```
+///
+/// Both are one missing pair of quotes. Aurora refused them correctly and said
+/// so, but the message listed likely causes instead of naming this one, so the
+/// model "fixed" the backslashes, re-sent the same unquoted value, and burned
+/// five calls before falling back to `cat`. A repair costs nothing when it is
+/// wrong (see the safety note below) and saves the whole round trip when it is
+/// right.
+///
+/// ## What counts as a bare value
+///
+/// Only a token sitting where JSON demands a value — after `:`, after `,`
+/// inside an array, or right after `[` — that does not begin one. The token is
+/// then handed to `serde_json` on its own: if it parses, it is a number, a
+/// boolean or `null` and is left exactly as written. Everything else is quoted.
+/// That is what keeps `{"deep": true}` and `{"n": -1.5e3}` untouched without
+/// this function needing to know what a JSON number looks like.
+///
+/// A bare token ends at the first `,`, `}`, `]`, `"`, or line break. None of
+/// those can appear inside an unquoted scalar, and stopping there rather than
+/// guessing is why `{"a": hello, world}` stays broken instead of becoming
+/// something the model never wrote.
+///
+/// ## Backslashes
+///
+/// Doubled only when the run is ODD, the same rule
+/// [`is_drive_path_value`] uses and for the same reason: an even run was
+/// already written as a JSON escape, so re-escaping it would turn `C:\\ws`
+/// into `C:\\\\ws` and hand back a path that does not exist.
+///
+/// ## Why this is safe
+///
+/// It never sees valid JSON — [`parse_tool_input`] returns before reaching it
+/// whenever the payload parses. And its output is thrown away unless it parses
+/// as an object, so the worst case is byte-for-byte the behaviour that was
+/// there before: the raw text carried through to
+/// [`crate::agent_runtime::conversation::malformed_input_error`].
+fn quote_bare_scalar_values(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut output = String::with_capacity(raw.len() + 16);
+    let mut index = 0usize;
+    // True right after `:`, `,` or `[` — the three places JSON expects a value.
+    let mut expecting_value = false;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        // Step over a well-formed string whole, so a byte inside it is never
+        // read as structure.
+        if byte == b'"' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\\' => index += 2,
+                    b'"' => {
+                        index += 1;
+                        break;
+                    }
+                    _ => index += 1,
+                }
+            }
+            output.push_str(&raw[start..index.min(bytes.len())]);
+            expecting_value = false;
+            continue;
+        }
+
+        if byte.is_ascii_whitespace() {
+            output.push(byte as char);
+            index += 1;
+            continue;
+        }
+
+        if expecting_value && !opens_json_structure(byte) {
+            let token_end = bare_token_end(bytes, index);
+            let token = &raw[index..token_end];
+            let trimmed = token.trim_end();
+            if !trimmed.is_empty() && serde_json::from_str::<Value>(trimmed).is_err() {
+                output.push('"');
+                push_escaped_bare(&mut output, trimmed);
+                output.push('"');
+                output.push_str(&token[trimmed.len()..]);
+                index = token_end;
+                expecting_value = false;
+                continue;
+            }
+        }
+
+        expecting_value = matches!(byte, b':' | b',' | b'[');
+        output.push(byte as char);
+        index += 1;
+    }
+
+    output
+}
+
+/// Whether `byte` opens a JSON string, object or array.
+///
+/// Deliberately NOT "can open a value". A number, `true`, `false` and `null`
+/// are left out so they go through the token scan and are decided by
+/// `serde_json` rather than by their first character: `truthy` starts with `t`
+/// and `12abc` starts with a digit, and both are bare words a first-byte test
+/// would wave through. The three that are listed have to shortcut, because
+/// walking a nested object or a quoted string as if it were a bare token would
+/// mangle it.
+const fn opens_json_structure(byte: u8) -> bool {
+    matches!(byte, b'"' | b'{' | b'[')
+}
+
+/// Where a bare token stops.
+///
+/// Bounded by [`MAX_BARE_VALUE_SCAN`] so a large malformed payload cannot be
+/// walked end to end looking for a delimiter that is not there.
+fn bare_token_end(bytes: &[u8], start: usize) -> usize {
+    let limit = (start + MAX_BARE_VALUE_SCAN).min(bytes.len());
+    let mut index = start;
+    while index < limit {
+        match bytes[index] {
+            b',' | b'}' | b']' | b'"' | b'\n' | b'\r' => return index,
+            _ => index += 1,
+        }
+    }
+    limit
+}
+
+/// Write `token` as the inside of a JSON string.
+///
+/// Odd backslash runs are doubled and even ones are left alone — see the note
+/// on [`quote_bare_scalar_values`]. Control characters cannot reach here: they
+/// terminate the token in [`bare_token_end`] or are not produced by any model
+/// writing a path.
+fn push_escaped_bare(output: &mut String, token: &str) {
+    let bytes = token.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            let run_start = index;
+            while index < bytes.len() && bytes[index] == b'\\' {
+                index += 1;
+            }
+            output.push_str(&token[run_start..index]);
+            if (index - run_start) % 2 == 1 {
+                output.push('\\');
+            }
+            continue;
+        }
+        let next = token[index..].chars().next().unwrap_or('\u{fffd}');
+        output.push(next);
+        index += next.len_utf8();
     }
 }
 
@@ -2577,7 +2789,7 @@ mod tests {
     fn map_status_error_classifies_known_codes() {
         assert!(matches!(
             map_status_error(401, "no key".into()),
-            ApiError::Unauthorized
+            ApiError::Unauthorized(_)
         ));
         assert!(matches!(
             map_status_error(429, "slow down".into()),
@@ -2590,6 +2802,35 @@ mod tests {
         match map_status_error(400, "bad".into()) {
             ApiError::InvalidRequest(msg) => assert!(msg.contains("400")),
             other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    /// A 401 that is not about the key at all.
+    ///
+    /// OpenCode answers an unrecognised model id with this exact shape. The
+    /// body names the real fault; Aurora used to drop it and print "check API
+    /// key", which is how a working subscription reads as a broken one.
+    #[test]
+    fn a_401_that_explains_itself_is_quoted_not_replaced() {
+        let body = r#"{"type":"error","error":{"type":"ModelError","message":"Model gpt-5-6-luna is not supported"}}"#;
+        match map_status_error(401, body.into()) {
+            ApiError::Unauthorized(msg) => {
+                assert!(
+                    msg.contains("not supported"),
+                    "the provider's own reason must survive: {msg}"
+                );
+                assert!(!msg.contains("check API key"), "guessed a cause: {msg}");
+            }
+            other => panic!("expected Unauthorized, got {other:?}"),
+        }
+    }
+
+    /// …and a 401 with nothing to say still says the useful thing.
+    #[test]
+    fn a_silent_401_still_points_at_the_key() {
+        match map_status_error(401, String::new()) {
+            ApiError::Unauthorized(msg) => assert_eq!(msg, "check API key"),
+            other => panic!("expected Unauthorized, got {other:?}"),
         }
     }
 
@@ -3018,6 +3259,91 @@ mod tests {
         // The realistic case: an output cap cutting a call mid-value.
         let cut = r#"{"path":"src/main.rs","content":"fn main() {"#;
         assert_eq!(parse_tool_input(cut), json!(cut));
+    }
+
+    /// The exact payloads GLM-5.2 put on the wire on 2026-08-21, thread
+    /// `d6899565`, copied out of the session file rather than imagined. Five
+    /// `file_read` calls in one turn, every one of them one missing pair of
+    /// quotes, and the model never recovered.
+    #[test]
+    fn parse_tool_input_repairs_the_value_a_model_forgot_to_quote() {
+        assert_eq!(
+            parse_tool_input(r#"{"path": README.md}"#),
+            json!({"path": "README.md"})
+        );
+        // Same call, with a Windows path: the quotes are missing AND the
+        // backslashes are unescaped. Both are fixed in one pass.
+        assert_eq!(
+            parse_tool_input(r#"{"path": E:\sub2api\README.md}"#),
+            json!({"path": "E:\\sub2api\\README.md"})
+        );
+        // A relative path with backslashes — no drive letter, so the older
+        // path pass never saw it.
+        assert_eq!(
+            parse_tool_input(r#"{"path": .\src\main.rs}"#),
+            json!({"path": ".\\src\\main.rs"})
+        );
+        // Already-escaped backslashes inside a bare token are left alone.
+        // Doubling them again would hand back a path that does not exist.
+        assert_eq!(
+            parse_tool_input(r#"{"path": C:\\ws\\a.rs}"#),
+            json!({"path": "C:\\ws\\a.rs"})
+        );
+        // Other positions a value can sit in.
+        assert_eq!(
+            parse_tool_input(r#"{"path": [README.md, src/a.ts]}"#),
+            json!({"path": ["README.md", "src/a.ts"]})
+        );
+        assert_eq!(
+            parse_tool_input(r#"{"op": definition, "name": run_turn}"#),
+            json!({"op": "definition", "name": "run_turn"})
+        );
+    }
+
+    /// The repair must not invent a type. A bare token is handed to serde on
+    /// its own first, so anything that is genuinely a number, a boolean or
+    /// null survives as one.
+    #[test]
+    fn the_repair_never_turns_a_real_scalar_into_a_string() {
+        // These parse on their own, so they never reach the repair at all.
+        assert_eq!(
+            parse_tool_input(r#"{"deep": true, "n": -1.5e3, "x": null}"#),
+            json!({"deep": true, "n": -1.5e3, "x": null})
+        );
+        // …and when something else in the payload forces the repair to run,
+        // the real scalars beside it still come through untouched.
+        assert_eq!(
+            parse_tool_input(r#"{"recursive": true, "limit": 20, "path": src/lib}"#),
+            json!({"recursive": true, "limit": 20, "path": "src/lib"})
+        );
+        // A token that merely STARTS like a literal is not one.
+        assert_eq!(
+            parse_tool_input(r#"{"mode": truthy}"#),
+            json!({"mode": "truthy"})
+        );
+        assert_eq!(parse_tool_input(r#"{"v": 12abc}"#), json!({"v": "12abc"}));
+    }
+
+    /// What the repair must NOT do. Each of these used to be a way for a
+    /// recovery pass to turn a broken call into a wrong one, which is worse:
+    /// a broken call is reported, a wrong call is executed.
+    #[test]
+    fn the_repair_declines_the_cases_it_cannot_be_sure_about() {
+        // Truncated by the output cap. There is no value to quote, and the
+        // error message's "cut off mid-value" advice is the right answer.
+        assert_eq!(parse_tool_input(r#"{"path": "#), json!(r#"{"path": "#));
+        // A bare token with a comma in it. Guessing where it ends would
+        // produce arguments the model never wrote.
+        let ambiguous = r#"{"a": hello, world}"#;
+        assert_eq!(parse_tool_input(ambiguous), json!(ambiguous));
+        // Valid JSON is never rewritten — the repair is not even reached.
+        let valid = r#"{"content":"a line\nwith C:\\ws in it"}"#;
+        assert_eq!(
+            parse_tool_input(valid),
+            json!({"content": "a line\nwith C:\\ws in it"})
+        );
+        // Not JSON at all in any recoverable sense.
+        assert_eq!(parse_tool_input("not json"), json!("not json"));
     }
 
     #[test]

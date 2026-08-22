@@ -306,7 +306,367 @@
   box-shadow: inset 0 0 0 2px var(--agw-ring);
 }
 
+/* ── Canvas card — the transcript's only DOOR ──────────────────────────────
+ * Every other tool row reports something that already finished inside the
+ * transcript: a diff, a match count, some output. This one's subject lives
+ * somewhere else, so its job is to say what was built and take you to it.
+ *
+ * Layout: a 34px lead holding the category miniature, the title on the loud
+ * line, and a meta line carrying state, subject, version and — while the source
+ * streams — the size ticking up. The old form spent five grid columns on a
+ * spinner, a generic panel glyph and an amber kicker, and still could not say
+ * what kind of thing was being written.
+ */
 .agw-canvas-launch {
+  position: relative;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  width: min(100%, 472px);
+  min-width: 0;
+  overflow: hidden;
+  padding: 9px 11px 10px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  outline: none;
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-control-lift);
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+/* Colour-only on hover, per the restraint rule — the card must not move under
+ * the cursor while it is being read. */
+.agw-canvas-launch:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-accent) 5%, var(--agw-card-paint));
+}
+/* Focus is the card's own border going to accent — hover's language one step
+ * stronger, never a detached ring wrapped around the control. */
+.agw-canvas-launch:focus-visible {
+  border-color: var(--agw-accent);
+  box-shadow: inset 0 0 0 1px var(--agw-accent);
+}
+.agw-canvas-launch:disabled {
+  cursor: default;
+}
+
+.agw-canvas-launch-lead {
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-conversation);
+}
+
+.agw-canvas-launch-copy {
+  display: block;
+  min-width: 0;
+}
+.agw-canvas-launch-title {
+  display: block;
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.28;
+  letter-spacing: -0.006em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The honest stand-in for a title that has not streamed yet. A placeholder noun
+ * ("Canvas artifact") reads as the title and is wrong for the whole write. */
+.agw-canvas-launch-skel {
+  display: block;
+  width: 148px;
+  max-width: 100%;
+  height: 11px;
+  margin: 3px 0;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agw-text) 7%, transparent) 0%,
+    color-mix(in srgb, var(--agw-text) 7%, transparent) 28%,
+    color-mix(in srgb, var(--agw-text) 20%, transparent) 50%,
+    color-mix(in srgb, var(--agw-text) 7%, transparent) 72%,
+    color-mix(in srgb, var(--agw-text) 7%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: agw-shimmer 2.5s linear infinite;
+}
+
+/* State is stated in WORDS here — "Writing", "revised", "Couldn't compile" —
+ * so colour repeats the message and never carries it alone. */
+.agw-canvas-launch-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 3px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.3;
+}
+.agw-canvas-launch-meta > i {
+  flex: none;
+  overflow: hidden;
+  font-style: normal;
+  white-space: nowrap;
+}
+/* Only the LAST clause truncates. Letting every item shrink equally clipped
+ * "Couldn't compile" and its reason at once, losing both. */
+.agw-canvas-launch-meta > i:last-of-type {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+.agw-canvas-launch-meta > s {
+  opacity: 0.55;
+  text-decoration: none;
+}
+.agw-canvas-launch-meta .agw-canvas-launch-num {
+  font-family: var(--agw-font-code);
+  font-size: 11px;
+  letter-spacing: -0.2px;
+}
+.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-meta {
+  color: var(--agw-removed);
+}
+
+.agw-canvas-launch-open {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  transition: color 0.15s ease;
+}
+.agw-canvas-launch:hover:not(:disabled) .agw-canvas-launch-open {
+  color: var(--agw-accent);
+}
+.agw-canvas-launch-x {
+  flex: none;
+  color: var(--agw-removed);
+}
+
+/* A 2px rail inside the card's own radius. It is the element that survives when
+ * the title has not arrived: the sweep says ALIVE, the rail says WORKING. */
+.agw-canvas-launch-rail {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+}
+.agw-canvas-launch-rail > i {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(90deg, transparent, var(--agw-accent), transparent);
+  background-repeat: no-repeat;
+  background-size: 42% 100%;
+  animation: agw-canvas-rail 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes agw-canvas-rail {
+  from {
+    background-position: -45% 0;
+  }
+  to {
+    background-position: 145% 0;
+  }
+}
+
+/* ── The category miniature ────────────────────────────────────────────────
+ * Colour is set in exactly one place — here — and every mark paints in
+ * `currentColor`, so a custom theme's accent reaches the drawing. Nothing in
+ * `CanvasCategoryMark.tsx` owns a colour.
+ */
+.agw-cm {
+  display: block;
+  color: var(--agw-accent);
+}
+.agw-canvas-launch[data-status="failed"] .agw-cm {
+  color: var(--agw-removed);
+}
+
+/* Depth rides a custom property. `fill-opacity` as a plain declaration would
+ * outrank the per-element presentation attribute and flatten every authored
+ * weight to one value — true even with no animation running. */
+.agw-cm-g {
+  fill: currentColor;
+  fill-opacity: var(--agw-cm-go, 0.13);
+}
+.agw-cm-gs {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: var(--agw-cm-go, 0.13);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.agw-cm-w {
+  fill: currentColor;
+  fill-opacity: var(--agw-cm-fo, 0.92);
+}
+.agw-cm-ws {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: var(--agw-cm-fo, 0.92);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Motion is ADDED by `.agw-cm-anim`, never removed by it, so the settled mark
+ * cannot depend on an animation having finished in order to look finished.
+ *
+ * Two rules these keyframes exist to obey:
+ *   1. Geometry only ever resets while `opacity` is already 0, so a loop
+ *      restarts behind a fade instead of snapping in view.
+ *   2. They animate `opacity`, never `fill-opacity`/`stroke-opacity` — those
+ *      carry depth, and an animation on a property silently wins it outright.
+ * The ghost layer never animates, which is what keeps the slot from ever
+ * being blank: at the cycle boundary you see structure, not an empty frame.
+ *
+ * Durations are LITERAL. A `var()` inside the `animation` shorthand makes the
+ * whole declaration invalid at computed-value time when the property is
+ * missing, and `animation-name` silently computes to `none`.
+ */
+.agw-cm-anim .agw-cm-pop {
+  animation: agw-cm-pop 3.6s ease-in-out infinite;
+}
+@keyframes agw-cm-pop {
+  0% {
+    opacity: 0;
+  }
+  18%,
+  64% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.agw-cm-anim .agw-cm-type {
+  animation: agw-cm-type 3.6s ease-in-out infinite;
+}
+@keyframes agw-cm-type {
+  0% {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0;
+  }
+  7% {
+    opacity: 1;
+  }
+  40%,
+  64% {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+    opacity: 0;
+  }
+}
+/* Clip, not scaleY: scaling a rounded rect squashes its radius on the way up,
+ * so a 1px round end goes oval mid-animation. */
+.agw-cm-anim .agw-cm-rise {
+  animation: agw-cm-rise 3.6s ease-in-out infinite;
+}
+@keyframes agw-cm-rise {
+  0% {
+    clip-path: inset(100% 0 0 0 round 1px);
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  40%,
+  64% {
+    clip-path: inset(0 0 0 0 round 1px);
+    opacity: 1;
+  }
+  100% {
+    clip-path: inset(0 0 0 0 round 1px);
+    opacity: 0;
+  }
+}
+.agw-cm-anim .agw-cm-draw {
+  stroke-dasharray: var(--agw-cm-len, 20);
+  stroke-dashoffset: var(--agw-cm-len, 20);
+  animation: agw-cm-draw 3.6s ease-in-out infinite;
+}
+@keyframes agw-cm-draw {
+  0% {
+    stroke-dashoffset: var(--agw-cm-len, 20);
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  45%,
+  64% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+/* Reduced motion keeps every pixel: the marks stay fully drawn, the rail
+ * becomes a static accent line, the skeleton stops sweeping. Nothing is
+ * removed, so the nine subjects stay distinguishable with no movement at all. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-cm-anim .agw-cm-pop,
+  .agw-cm-anim .agw-cm-type,
+  .agw-cm-anim .agw-cm-rise,
+  .agw-cm-anim .agw-cm-draw {
+    clip-path: none;
+    animation: none;
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  .agw-canvas-launch-rail > i {
+    background-image: none;
+    background-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+    animation: none;
+  }
+  .agw-canvas-launch-skel {
+    background: color-mix(in srgb, var(--agw-text) 9%, transparent);
+    animation: none;
+  }
+  .agw-canvas-launch-title.agw-shimmer {
+    -webkit-background-clip: border-box;
+    background: none;
+    background-clip: border-box;
+    color: var(--agw-text-muted);
+    animation: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .agw-canvas-launch {
+    gap: 9px;
+  }
+  .agw-canvas-launch-open span {
+    display: none;
+  }
+}
+/* ── Plan card ─────────────────────────────────────────────────────────────
+ * `plan_write`'s launcher. It wore the canvas card's class family until the
+ * canvas card was rebuilt around a category miniature; a plan has no category
+ * and no streamed source, so it keeps the older five-column form under its own
+ * names rather than inheriting a shape built for a different object.
+ */
+.agw-plan-launch {
   display: grid;
   grid-template-columns: 16px 18px minmax(0, 1fr) auto 16px;
   align-items: center;
@@ -324,27 +684,27 @@
   cursor: pointer;
   transition: border-color 0.14s ease, background 0.14s ease;
 }
-.agw-canvas-launch:hover:not(:disabled) {
+.agw-plan-launch:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));
   background: var(--agw-hover-paint);
 }
-.agw-canvas-launch:focus-visible {
+.agw-plan-launch:focus-visible {
   box-shadow: inset 0 0 0 2px var(--agw-ring);
 }
-.agw-canvas-launch:disabled {
+.agw-plan-launch:disabled {
   cursor: default;
 }
-.agw-canvas-launch-status {
+.agw-plan-launch-status {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--agw-added);
 }
-.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-status,
-.agw-canvas-launch[data-status="failed"] .agw-canvas-launch-kicker {
+.agw-plan-launch[data-status="failed"] .agw-plan-launch-status,
+.agw-plan-launch[data-status="failed"] .agw-plan-launch-kicker {
   color: var(--agw-removed);
 }
-.agw-canvas-launch-glyph {
+.agw-plan-launch-glyph {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -352,19 +712,19 @@
   height: 18px;
   color: var(--agw-accent);
 }
-.agw-canvas-launch-copy {
+.agw-plan-launch-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
-.agw-canvas-launch-kicker {
+.agw-plan-launch-kicker {
   color: var(--agw-accent);
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-strong);
   line-height: 1.1;
 }
-.agw-canvas-launch-title {
+.agw-plan-launch-title {
   overflow: hidden;
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
@@ -373,7 +733,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agw-canvas-launch-version {
+.agw-plan-launch-version {
   padding: 2px 6px;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-pill);
@@ -383,16 +743,16 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
 }
-.agw-canvas-launch-open {
+.agw-plan-launch-open {
   color: var(--agw-text-subtle);
 }
 
 @media (max-width: 520px) {
-  .agw-canvas-launch {
+  .agw-plan-launch {
     grid-template-columns: 16px 18px minmax(0, 1fr) auto;
     gap: 7px;
   }
-  .agw-canvas-launch-open {
+  .agw-plan-launch-open {
     display: none;
   }
 }

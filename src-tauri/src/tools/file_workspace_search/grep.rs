@@ -11,10 +11,23 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::commands::{ripgrep_search, RipgrepSearchRequest};
+use crate::tools::timeout::TimeoutPolicy;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const MAX_TIMEOUT_MS: u64 = 300_000;
 const MIN_TIMEOUT_MS: u64 = 1_000;
+
+/// Read the same way `shell_execute` reads its own — see
+/// [`crate::tools::timeout`]. `ripgrep_search` enforces the number it is given,
+/// so this tool declares no `timeout_policy()`: a second clock on the outside
+/// would only be able to abandon a search that is already stopping itself.
+const TIMEOUT: TimeoutPolicy = TimeoutPolicy::new(
+    DEFAULT_TIMEOUT_MS,
+    MIN_TIMEOUT_MS,
+    MAX_TIMEOUT_MS,
+    "Narrow `path` or `glob` before raising `timeout` — a search this slow is usually searching \
+     somewhere it does not need to.",
+);
 
 pub struct GrepTool;
 
@@ -138,12 +151,7 @@ impl ToolExecutor for GrepTool {
                 .map(str::to_string),
             path: search_path.clone(),
             pattern,
-            timeout_ms: input
-                .get("timeout")
-                .or_else(|| input.get("timeout_ms"))
-                .and_then(Value::as_u64)
-                .map(|n| n.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS))
-                .or(Some(DEFAULT_TIMEOUT_MS)),
+            timeout_ms: Some(TIMEOUT.resolve(&input)),
         };
 
         let response = ripgrep_search(request)

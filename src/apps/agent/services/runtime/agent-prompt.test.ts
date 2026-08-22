@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { BASE_AGENT_SYSTEM_PROMPT } from "@/apps/agent/services/runtime/agent-prompt";
+import {
+  BASE_AGENT_SYSTEM_PROMPT,
+  CANVAS_INSTRUCTIONS,
+} from "@/apps/agent/services/runtime/agent-prompt";
 
 /**
  * The base prompt ships on EVERY request of every conversation, so anything
@@ -78,5 +81,25 @@ describe("the base system prompt does not contradict the tools", () => {
     // The block is re-sent every turn. If it ever grows file bodies it becomes
     // the most expensive thing in the conversation.
     expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/filenames only, never content/i);
+  });
+});
+
+describe("the canvas section decides the KIND before the guide is reachable", () => {
+  it("carries the cheapest-kind rule in the always-present text", () => {
+    // This rule lived only in `canvas_guidelines`, which is read AFTER a model
+    // has already chosen `react` — far too late to talk it out of the choice.
+    // Meanwhile `present_artifact`'s description, which IS always visible, says
+    // "prefer react for datasets". The encouraging half was in the room at
+    // decision time and the sobering half was not, so every ambiguous case
+    // resolved the same way. Mirrors `the_kind_choice_rule_is_stated_up_front`
+    // on the Rust side; change one wording and one of the two fails.
+    expect(CANVAS_INSTRUCTIONS).toMatch(/Pick the cheapest kind that works/);
+    expect(CANVAS_INSTRUCTIONS).toMatch(/`react` only when it needs to be interactive/);
+  });
+
+  it("still points at the guide before a compiled canvas is written", () => {
+    expect(CANVAS_INSTRUCTIONS).toMatch(/canvas_guidelines/);
+    // The renamed field, not the pre-rename `kind:`.
+    expect(CANVAS_INSTRUCTIONS).toMatch(/artifactKind: "react"/);
   });
 });

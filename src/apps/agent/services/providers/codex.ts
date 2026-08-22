@@ -13,6 +13,7 @@
  */
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
+import { fmtDuration } from "@/apps/agent/lib/time/duration";
 import type { ProviderCatalogPreset } from "@/apps/agent/services/providers/provider-catalog";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -110,16 +111,15 @@ export function codexWindowLabel(win: CodexUsageWindow | null, fallback: string)
   return `${minutes}-minute limit`;
 }
 
-/** Seconds → "2h 14m" / "3d 5h" / "45m". */
-export function codexFmtDuration(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const days = Math.floor(s / 86_400);
-  const hours = Math.floor((s % 86_400) / 3_600);
-  const minutes = Math.floor((s % 3_600) / 60);
-  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  return `${Math.max(1, minutes)}m`;
-}
+/**
+ * Seconds → "2h 14m" / "3d 5h" / "45m".
+ *
+ * Kept under its Codex name because the call sites read as Codex's, but the
+ * wording is shared with every other subscription Aurora shows a limit window
+ * for — see `lib/time/duration`. Two plans that refill should not describe the
+ * same three hours differently.
+ */
+export const codexFmtDuration = fmtDuration;
 
 // ── Seeded provider preset ───────────────────────────────────────────────────
 

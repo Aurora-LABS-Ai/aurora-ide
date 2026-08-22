@@ -266,12 +266,22 @@
 }
 .agw-home-wordmark {
   /* Wordmark light — all timing in one place.
-     One full cycle is 7s: each glyph lights for ~0.8s of it (the 0→4→11%
-     keyframe head) and the remaining ~6.2s is the rest. 6 glyphs stepped
-     0.13s apart means the light crosses the word in ~0.8s, then the mark sits
-     still until the next pass. */
-  --agw-home-lit-cycle: 7s;
-  --agw-home-lit-step: 0.13s;
+     One full cycle is 9s: each glyph lights for ~1.5s of it (the 0→6→17%
+     keyframe head) and the remaining ~7.5s is the rest. 6 glyphs stepped
+     0.25s apart means the light crosses the word in ~1.25s, then the mark
+     sits still until the next pass.
+
+     Halved in speed from the original 0.13s step / 0.8s glyph: at that rate
+     the light crossed all six letters in under a second, which reads as a
+     flicker on a 248px wordmark rather than as something passing over it.
+     The two knobs are independent — `--agw-home-lit-step` is how fast the
+     light TRAVELS, the keyframe head below is how long each letter HOLDS.
+
+     The cycle grew 7s → 9s with them: slowing the sweep without lengthening
+     the cycle spends the pause instead, and the pause is the whole reason
+     this does not read as a loading skeleton. */
+  --agw-home-lit-cycle: 9s;
+  --agw-home-lit-step: 0.25s;
   --agw-home-lit-lead: 0.35s;
 
   position: relative; /* containing block for the pool + floor shadow */
@@ -332,9 +342,11 @@
      over ~1.5s after the window paints, so "I never saw it" and "it is broken"
      look identical — which is exactly how this went wrong three times. A
      cycle that repeats every few seconds can always be confirmed by waiting.
-     The rest is what keeps it from reading as a loading skeleton; drop
-     --agw-home-lit-rest to 0 for a continuous shimmer, or set the animation to
-     `1 both` for the one-shot. */
+     The rest is what keeps it from reading as a loading skeleton. To make the
+     pass continuous, stretch the keyframe head to 100%; to make it fire once,
+     set the animation to `1 both`. (There is no `--agw-home-lit-rest` token —
+     the rest is the flat tail of the keyframes, because CSS has no
+     `repeat-delay`.) */
   animation: agw-home-lit var(--agw-home-lit-cycle) linear infinite;
   animation-delay: calc(
     var(--agw-home-lit-lead) + var(--agw-lit-i, 0) * var(--agw-home-lit-step)
@@ -348,10 +360,10 @@
   0% {
     opacity: 0;
   }
-  4% {
+  6% {
     opacity: 1;
   }
-  11% {
+  17% {
     opacity: 0;
   }
   100% {

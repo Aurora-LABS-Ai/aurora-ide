@@ -33,6 +33,24 @@
 .agw-prov-side-count {
   font-weight: var(--agw-fw-medium);
 }
+/* The shipped providers stay put. They are a short fixed set and the ones
+   people come back to, so scrolling them out of reach to get at a long custom
+   list is the wrong trade — only the list that grows without bound scrolls.
+
+   `max-height` is a safety valve, not the normal path: if a build ever shipped
+   enough built-ins to fill the rail, an unbounded pinned block would crush the
+   custom list to nothing. At that point this scrolls internally instead. */
+.agw-prov-side-pinned {
+  flex: 0 0 auto;
+  max-height: 52%;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+/* No border between the pinned block and this scroll area: the group headers
+   are disclosures with their own rule-line now, so they carry the boundary —
+   a second hard divider read as clutter once the headers gained identity.
+   (The "Custom" heading is sticky, so the boundary can no longer scroll away
+   — which is what the old container border existed to prevent.) */
 .agw-prov-side-scroll {
   flex: 1;
   min-height: 0;
@@ -46,27 +64,76 @@
    the rail already has a border of its own, and a second frame inside it turns
    a list into a stack of cards. */
 .agw-prov-group-label {
+  /* Sticks to the top of its own scroll area so the rows slide underneath it.
+     A group heading that scrolls away takes the only thing naming what you are
+     looking at with it. Opaque, or the rows would show through as they pass.
+
+     It is a BUTTON — the whole row is a disclosure that collapses the group,
+     the same pattern as the left rail's Projects header. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  border: none;
+  background: var(--agw-rail-paint);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin: 0;
   padding: 10px 10px 6px;
+  font-family: inherit;
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  text-align: left;
   color: var(--agw-text-subtle);
+  cursor: pointer;
+  outline: none;
+}
+.agw-prov-group-label:hover {
+  color: var(--agw-text);
+}
+.agw-prov-group-label:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+/* The header's own identity: a hairline runs from the label to the count, so
+   the row reads as a section separator rather than loose text on the rail.
+   Flex `order` slots the pseudo-element between the two real children. */
+.agw-prov-group-label::after {
+  content: "";
+  order: 1;
+  flex: 1;
+  height: 1px;
+  margin: 0 2px;
+  background: var(--agw-border);
+  transition: background 0.12s ease;
+}
+.agw-prov-group-label:hover::after {
+  background: var(--agw-border-strong);
+}
+.agw-prov-group-name {
+  order: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.agw-prov-group-count {
+  order: 2;
+}
+.agw-prov-group-caret {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-prov-group-caret {
+    transition: none;
+  }
 }
 .agw-prov-group-count {
   letter-spacing: normal;
-}
-/* Second group only. The hairline spans the rail's inner width rather than the
-   padded row width, so it reads as a divider between sections instead of an
-   underline belonging to the label. */
-.agw-prov-group[data-divided] {
-  margin-top: 8px;
-  border-top: 1px solid var(--agw-border);
 }
 .agw-prov-group-empty {
   margin: 0;
@@ -97,14 +164,6 @@
     padding: 22px 20px 44px;
   }
 }
-/* The pane scrolls as a whole page now — lift the old viewport-derived caps
-   so the detail card and its models list take their natural height. */
-.agw-prov-page .agw-prov-detail {
-  max-height: none;
-}
-.agw-prov-page .agw-prov-models {
-  overflow-y: visible;
-}
 .agw-prov-page .agw-prov-detail-empty {
   min-height: 320px;
 }
@@ -114,36 +173,95 @@
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
+/* The row is a container, not a button — the open control is a stretched
+   button behind the content so the pin button can sit above it (a button
+   cannot contain a button; same shape as the skill card). */
 .agw-prov-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
   padding: 8px 10px;
-  border: none;
+  /* A quiet card seat — fill + hairline derived from the text color so the
+     row separates from the rail in both themes instead of floating as bare
+     text on a flat background. */
+  border: 1px solid color-mix(in srgb, var(--agw-text) 5%, transparent);
   border-radius: var(--agw-radius-md);
-  background: transparent;
+  background: color-mix(in srgb, var(--agw-text) 2.5%, transparent);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease;
-  outline: none;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 .agw-prov-item + .agw-prov-item {
-  margin-top: 2px;
+  margin-top: 4px;
 }
 .agw-prov-item:hover {
   background: var(--agw-hover-paint);
+  border-color: color-mix(in srgb, var(--agw-text) 10%, transparent);
 }
 .agw-prov-item[data-active] {
   background: var(--agw-state-selected);
+  border-color: color-mix(in srgb, var(--agw-text) 14%, transparent);
 }
 /* Pressed (after [data-active] so selecting an already-active row still
    acknowledges the click with a deeper shade). */
 .agw-prov-item:active {
   background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
 }
-.agw-prov-item:focus-visible {
+.agw-prov-item-hit {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: none;
+  border-radius: inherit;
+  background: none;
+  cursor: inherit;
+  outline: none;
+}
+.agw-prov-item-hit:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+}
+/* Per-row pin — hidden until row hover, pinned rows keep it shown. The same
+   affordance as the left rail's chat pin, lifted above the hit layer so it
+   takes its own clicks. */
+.agw-prov-pin {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  outline: none;
+}
+.agw-prov-item:hover .agw-prov-pin {
+  opacity: 1;
+}
+.agw-prov-pin:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-prov-pin:focus-visible {
+  opacity: 1;
   box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* A pinned provider shows a filled accent tack that stays visible. */
+.agw-prov-pin[data-on] {
+  opacity: 1;
+  color: var(--agw-accent);
+}
+.agw-prov-pin[data-on] svg {
+  fill: var(--agw-accent);
 }
 .agw-prov-item-text {
   display: flex;
@@ -189,18 +307,19 @@
 }
 
 /* Remove-provider control (detail footer). */
+/* Footer, below both cards. `.agw-prov-detail` supplies the gap, so these add
+   only their own rule — a margin here on top of the gap reads as a stray band
+   of empty page. */
 .agw-prov-detail-danger {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--agw-border);
 }
 /* Sits where the delete control sits on a user-added provider, so the reason
    the control is absent lands in the place the eye already went looking. */
 .agw-prov-detail-note {
-  margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--agw-border);
   font-size: var(--agw-fs-label);
@@ -241,19 +360,93 @@
   border-radius: var(--agw-radius-md);
 }
 
+/* ── Two objects, not one ──────────────────────────────────────────────────
+   The same shape the skills page uses, applied to every provider:
+
+     ┌ who this provider is, and how to reach it ─┐   its own card, natural
+     │ identity · plan usage · endpoint · keys    │   height, never scrolls
+     └────────────────────────────────────────────┘
+       MODELS 12
+       one line saying where the details come from
+     ┌ the list ──────────────────────────────────┐   capped, scrolls INSIDE
+     │ model · model · model            ↕         │
+     │ add a model                                │
+     └────────────────────────────────────────────┘
+
+   Two separate cards rather than one card split in half. Splitting one card
+   meant the top half needed its own scrollbar as soon as a provider had a
+   usage card plus a key field — and a scrollbar there cut the API key label
+   off mid-field, which reads as a broken layout rather than as a region.
+
+   Capping only the list is what keeps the page still: it is the one part that
+   grows without bound, so bounding it means the rest almost never moves. */
 .agw-prov-detail {
   display: flex;
   flex-direction: column;
+  gap: 18px;
   min-width: 0;
-  /* Bounded to the viewport, but the pane itself does NOT scroll — only the
-     model list inside it does (header + connection stay pinned). Content-driven
-     height up to the cap, so a short list keeps the pane short (no dead space). */
-  max-height: calc(100dvh - 250px);
+}
+
+/* Identity + connection. ONE card, for every provider without exception —
+   sized by its content, because a region that has to scroll to show a form
+   field is a region drawn too small. */
+.agw-prov-detail-top {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--agw-card-line);
   border-radius: var(--agw-set-r-card);
   background: var(--agw-card-paint);
   box-shadow: var(--agw-set-shadow);
   padding: 18px;
+}
+
+/* Atlas, Codex, Cursor and OpenCode draw a `.agw-atlas` card for their plan
+   usage. In here it is not a card — it is this card's header, so it gives up
+   its own frame and padding and sits on the same 18px margin as the connection
+   form below it.
+
+   Without this the frames nested, and the fix for THAT dropped the outer card
+   entirely — which left OpenCode's Base URL and API key sitting naked on the
+   page while every other provider had them boxed. The connection section has
+   to look the same everywhere; it is the same section. */
+.agw-prov-detail-top > .agw-atlas {
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+  margin: 0;
+}
+.agw-prov-detail-top > .agw-atlas > .agw-atlas-head {
+  padding: 0 0 16px;
+  margin-bottom: 16px;
+}
+.agw-prov-detail-top > .agw-atlas > .agw-atlas-body,
+.agw-prov-detail-top > .agw-atlas > .agw-atlas-hint {
+  padding: 0;
+}
+/* Only when a connection form follows: the usage block and the form are two
+   groups and need the gap between them. Last child, it would be trailing space. */
+.agw-prov-detail-top > .agw-atlas:not(:last-child) {
+  margin-bottom: 18px;
+}
+
+.agw-prov-detail-models {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* The panel holding the list and the add row — one object, like the skills
+   catalog. The list inside it is what scrolls. */
+.agw-prov-models-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
+  padding: 14px;
 }
 .agw-prov-detail-empty {
   display: flex;
@@ -264,11 +457,15 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-md);
 }
-/* Fixed regions in the detail pane — only the models list scrolls. */
+/* Fixed regions — everything except the model list holds its height, so the
+   heading and the add-a-model row stay attached to the list they act on. */
 .agw-prov-detail-head,
 .agw-prov-conn,
 .agw-prov-models-head,
-.agw-prov-addwrap {
+.agw-prov-models-hint,
+.agw-prov-addwrap,
+.agw-prov-detail-note,
+.agw-prov-detail-danger {
   flex-shrink: 0;
 }
 .agw-prov-detail-head {

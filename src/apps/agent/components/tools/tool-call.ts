@@ -16,6 +16,16 @@ export interface ToolCall {
    *  runtime's execution-start and result events (approval wait excluded).
    *  Absent on calls reloaded from history — the JSONL doesn't persist it. */
   durationMs?: number;
+  /** Epoch ms the call started executing. Set on the runtime's execution-start
+   *  event and pushed forward by any approval wait, so a live clock reading
+   *  `Date.now() - startedAt` lands on the same number `durationMs` will.
+   *
+   *  Why a card needs one at all: a spinner is identical at second 3 and second
+   *  300. A `pnpm lint` that prints nothing until it finishes gave the reader
+   *  no way to tell work from a hang, which is exactly the moment they need to
+   *  know. Live only — absent on anything reloaded from history, the same as
+   *  `durationMs`. */
+  startedAt?: number;
 }
 
 export type ToolStatus = "running" | "done" | "failed";

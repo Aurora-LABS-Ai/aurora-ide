@@ -1,0 +1,266 @@
+/* ── Discovered-model catalogue ────────────────────────────────────────────
+   A switchable list of models a subscription reaches — shared by the Cursor
+   and OpenCode Go provider cards, which have the same job: show everything the
+   plan carries, and let the user choose which of it reaches the model picker.
+
+   Named for the job rather than for either provider, because the second card
+   to want it proved it was not a Cursor detail. Anything genuinely specific to
+   one provider stays in that provider's own partial.
+
+   Everything here sits INSIDE the card body, which already carries the card's
+   padding — nothing below may add a border of its own, or the page grows a
+   card inside a card. */
+
+.agw-modelcat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-modelcat-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agw-modelcat-title {
+  margin: 0;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-modelcat-desc {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+  max-width: 62ch;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+
+.agw-modelcat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* The input keeps its OWN border (`.agw-set-input`), exactly as the skills
+   search and every other field in settings does. Boxing it in a second
+   bordered container draws an edge around an element that already has one, and
+   on focus that outer edge reads as a ring wrapped around the field. The icon
+   sits beside the input, not in a frame with it. */
+.agw-modelcat-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.agw-modelcat-search-input.agw-set-input {
+  flex: 1;
+  min-width: 0;
+}
+.agw-modelcat-fold {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  cursor: pointer;
+  transition: color 160ms var(--agw-ease-out, ease),
+    border-color 160ms var(--agw-ease-out, ease);
+}
+/* Same treatment the inputs get: focus is a border step, never a halo. */
+.agw-modelcat-fold:hover,
+.agw-modelcat-fold:focus-visible,
+.agw-modelcat-fold[aria-pressed="true"] {
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+  outline: none;
+}
+
+/* ── The list ───────────────────────────────────────────────────────────── */
+
+.agw-modelcat-list {
+  display: flex;
+  flex-direction: column;
+  /* Tall enough to show the shape of the set at a glance, short enough that
+     the footer count and the section below it stay on screen. */
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  padding: 4px;
+}
+
+/* One model. The whole row is the hit target — aiming at a checkbox on a
+   30-row list is needless precision work — so the button is an overlay and
+   the content sits above it. */
+.agw-modelcat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--agw-radius-sm);
+  transition: background-color 160ms var(--agw-ease-out, ease);
+}
+.agw-modelcat-row + .agw-modelcat-row {
+  box-shadow: inset 0 1px 0 var(--agw-border-faint, var(--agw-border));
+}
+.agw-modelcat-row:hover {
+  background: var(--agw-surface-raised);
+}
+.agw-modelcat-row[data-on] .agw-modelcat-name {
+  color: var(--agw-text);
+}
+
+.agw-modelcat-hit {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  cursor: pointer;
+}
+/* Focus is carried by the row's own surface, not by a ring drawn around it —
+   the rows sit flush against each other, and an outline between two of them
+   reads as a divider rather than as focus. */
+.agw-modelcat-hit:focus-visible {
+  outline: none;
+}
+.agw-modelcat-row:has(.agw-modelcat-hit:focus-visible) {
+  background: var(--agw-surface-raised);
+}
+.agw-modelcat-row:has(.agw-modelcat-hit:focus-visible) .agw-modelcat-check {
+  border-color: var(--agw-accent);
+}
+.agw-modelcat-row[data-busy] {
+  opacity: 0.55;
+}
+
+/* Checkbox affordance. Present at rest rather than appearing on hover, so it
+   reads as a state someone can scan down the column. */
+.agw-modelcat-check {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--agw-border-strong, var(--agw-border));
+  border-radius: 5px;
+  color: var(--agw-accent-contrast, #fff);
+  transition: background-color 160ms var(--agw-ease-out, ease),
+    border-color 160ms var(--agw-ease-out, ease);
+}
+.agw-modelcat-row[data-on] .agw-modelcat-check {
+  background: var(--agw-accent);
+  border-color: var(--agw-accent);
+}
+
+.agw-modelcat-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+  pointer-events: none;
+}
+.agw-modelcat-name {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-modelcat-id {
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-modelcat-tags {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+.agw-modelcat-tag {
+  padding: 2px 7px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  white-space: nowrap;
+}
+/* Facts rather than capabilities — context size, variant count. Same shape,
+   no accent, so the coloured chips stay meaningful. */
+.agw-modelcat-tag-quiet {
+  background: var(--agw-surface-raised);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.agw-modelcat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 20px;
+  border: 1px dashed var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  color: var(--agw-text-subtle);
+  text-align: center;
+}
+.agw-modelcat-empty p {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+  max-width: 40ch;
+}
+
+.agw-modelcat-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The plan, beside the provider name on a subscription card. Naked coloured
+   text: the plan is a fact about the account, not a status that changes or
+   that anyone acts on, and a bordered chip gives a static label the weight of
+   a live badge. */
+.agw-sub-plan {
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-added);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .agw-modelcat-toolbar {
+    flex-wrap: wrap;
+  }
+  /* The id and the badges compete for the same space at this width; the badges
+     carry more, so the id line goes. */
+  .agw-modelcat-id {
+    display: none;
+  }
+}

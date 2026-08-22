@@ -39,6 +39,13 @@ import {
   writeModelUsage,
   type ModelUsage,
 } from "@/apps/agent/lib/model/model-usage";
+import {
+  readFastPreferences,
+  setFastOn,
+  type FastPreferences,
+} from "@/apps/agent/lib/model/cursor-fast";
+import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import { cursorHasFast } from "@/apps/agent/services/providers/cursor-variants";
 
 interface RichOption {
   providerId: string;
@@ -380,6 +387,49 @@ const RowReasoning: React.FC<{ opt: RichOption }> = ({ opt }) => {
   );
 };
 
+// ── Fast lane (Cursor only) ──────────────────────────────────────────────────
+
+/**
+ * Cursor's faster lane for one model.
+ *
+ * Reuses `.agw-model-effort` so a row carrying it keeps the same height as one
+ * that doesn't — the chip is a sibling of the effort tier and reads as the
+ * same kind of choice, because it is: both change which model id gets sent.
+ *
+ * Rendered only where the account actually has a `-fast` twin. A greyed-out
+ * chip on the models that don't would be a control that can never do
+ * anything, which is worse than an absent one.
+ */
+const RowFast: React.FC<{
+  opt: RichOption;
+  on: boolean;
+  onToggle: (next: boolean) => void;
+}> = ({ opt, on, onToggle }) => {
+  if (opt.providerId !== CURSOR_PROVIDER_ID) return null;
+  if (!cursorHasFast(opt.model)) return null;
+
+  return (
+    <button
+      type="button"
+      className="agw-model-effort"
+      data-on={on || undefined}
+      aria-pressed={on}
+      aria-label={`Fast mode for ${opt.label}`}
+      title={
+        on
+          ? "Fast is on — answers sooner, on your Cursor plan's faster lane"
+          : "Fast — answers sooner, on your Cursor plan's faster lane"
+      }
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(!on);
+      }}
+    >
+      Fast
+    </button>
+  );
+};
+
 export const ModelSelector: React.FC<{
   /** Horizontal anchor for the popover. "right" (default) suits a right-edge
    *  trigger (bottom action row); "left" suits a left-edge trigger (top row). */
@@ -422,6 +472,9 @@ export const ModelSelector: React.FC<{
   const [placement, setPlacement] = useState<"up" | "down">("up");
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<Record<string, ModelUsage>>(() => readModelUsage());
+  // Cursor's Fast lane, per model. Held here rather than on the model row
+  // because it is Cursor's alone — see `lib/model/cursor-fast`.
+  const [fast, setFast] = useState<FastPreferences>(() => readFastPreferences());
 
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -601,6 +654,20 @@ export const ModelSelector: React.FC<{
   }, [current]);
 
   /**
+   * Whether the selected model is running in Cursor's fast lane. On the
+   * trigger for the same reason the effort tier is: it changes what the next
+   * turn costs in time, and having to open the picker to find out is how a
+   * setting gets left on by accident.
+   */
+  const currentFast = useMemo(
+    () =>
+      current?.providerId === CURSOR_PROVIDER_ID &&
+      fast[selectedModel] === true &&
+      cursorHasFast(current.model),
+    [current, fast, selectedModel],
+  );
+
+  /**
    * Hover text for the trigger. This used to read "Agent mode · select model" —
    * the MODE, never the model — so the one control whose label is routinely
    * ellipsized was also the one place the full name could not be recovered.
@@ -617,6 +684,7 @@ export const ModelSelector: React.FC<{
     // Only worth a line when the pretty name hides the real id.
     if (selectedModelKey && selectedModelKey !== currentLabel) lines.push(selectedModelKey);
     if (currentEffort) lines.push(`Reasoning: ${currentEffort}`);
+    if (currentFast) lines.push("Fast mode on");
     lines.push(mode);
     return lines.join("\n");
   }, [
@@ -626,6 +694,7 @@ export const ModelSelector: React.FC<{
     currentLabel,
     selectedModelKey,
     currentEffort,
+    currentFast,
   ]);
 
   const providerCount = useMemo(
@@ -760,6 +829,11 @@ export const ModelSelector: React.FC<{
               className="agw-model-cap"
             />
           )}
+          <RowFast
+            opt={opt}
+            on={fast[id] === true}
+            onToggle={(next) => setFast(setFastOn(id, next))}
+          />
           <RowReasoning opt={opt} />
           {active && (
             <AgentIcon name="check" size={15} style={{ color: "var(--agw-accent)" }} />
@@ -782,7 +856,7 @@ export const ModelSelector: React.FC<{
           selectedModel
             ? `Model: ${currentProviderName ? `${currentProviderName} ` : ""}${currentLabel}${
                 currentEffort ? `, reasoning ${currentEffort}` : ""
-              }. Change model.`
+              }${currentFast ? ", fast mode on" : ""}. Change model.`
             : "Select a model"
         }
         aria-haspopup="listbox"
@@ -805,6 +879,17 @@ export const ModelSelector: React.FC<{
         </span>
         <span className="agw-model-trigger-name">{currentLabel}</span>
         {currentEffort && <span className="agw-model-trigger-effort">{currentEffort}</span>}
+        {/* Fast is a glyph here, not the word: the pill is the one control
+            whose label routinely gets ellipsized, and the menu already spells
+            it out. The bolt shimmers only while a turn is actually streaming —
+            the same rule the mode glyph follows, so a resting pill stays
+            still. `aria-hidden`: the trigger's own accessible name says it. */}
+        {currentFast && (
+          <span className="agw-model-trigger-fast" aria-hidden="true">
+            <AgentIcon name="bolt" size={12} />
+            <span className="agw-model-trigger-fast-shine" />
+          </span>
+        )}
         <AgentIcon
           name="chevron-down"
           size={13}

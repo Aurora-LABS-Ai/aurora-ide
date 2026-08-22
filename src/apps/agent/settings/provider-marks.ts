@@ -56,6 +56,10 @@ import ZhipuColor from "@lobehub/icons/es/Zhipu/components/Color";
 // Mono marks — brands whose identity IS monochrome. Not a shortfall: OpenAI,
 // Anthropic and Ollama have no colour mark to use.
 import AtlasCloudMono from "@lobehub/icons/es/AtlasCloud/components/Mono";
+// Cursor publishes no colour mark — the wordmark's glyph is monochrome by
+// design, so Mono is the real logo here rather than a fallback.
+import CursorMono from "@lobehub/icons/es/Cursor/components/Mono";
+import OpenCodeMono from "@lobehub/icons/es/OpenCode/components/Mono";
 import AzureMono from "@lobehub/icons/es/AzureAI/components/Mono";
 import GroqMono from "@lobehub/icons/es/Groq/components/Mono";
 import KimiMono from "@lobehub/icons/es/Kimi/components/Mono";
@@ -88,6 +92,8 @@ export const PROVIDER_MARKS: Readonly<Record<BrandKey, MarkComponent>> = {
   anthropic: ClaudeColor,
   openai: OpenAIMono,
   codex: CodexColor,
+  cursor: CursorMono,
+  opencode: OpenCodeMono,
   deepseek: DeepSeekColor,
   // Drawn from `IMAGE_MARKS` instead. Present so this record stays exhaustive
   // over BrandKey — a brand cannot be added without something to draw.

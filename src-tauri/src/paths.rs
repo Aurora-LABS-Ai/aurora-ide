@@ -102,6 +102,18 @@ pub fn typing_assist_dir() -> PathBuf {
     ensure_subdir("typing-assist")
 }
 
+/// `<root>/auth/` — machine-managed provider credentials Aurora rotates
+/// itself (currently `cursor-auth.json`).
+///
+/// Deliberately not `config/` (nobody hand-authors these, and inviting an
+/// editor into a file holding bearer tokens is how they end up in a paste),
+/// and not `cache/` (losing it costs a re-sign-in, not a rebuild). Providers
+/// whose credentials live in *another* tool's file — Codex, whose source of
+/// truth is `~/.codex/auth.json` — do not use this directory at all.
+pub fn auth_dir() -> PathBuf {
+    ensure_subdir("auth")
+}
+
 /// `~/.aurora/mcp.json` — user-facing, human-editable MCP server config in the
 /// Cursor/Claude format (keyed by server name). Lives in the home `.aurora`
 /// dir (beside the team brain) so it is portable and user-inspectable rather

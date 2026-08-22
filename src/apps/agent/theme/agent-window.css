@@ -45,3 +45,6 @@
 @import "./agent-window/32-project-stats.css";
 @import "./agent-window/33-tool-glyph-motion.css";
 @import "./agent-window/34-code-index-status.css";
+@import "./agent-window/35-settings-cursor.css";
+@import "./agent-window/36-settings-model-catalogue.css";
+@import "./agent-window/37-settings-opencode.css";

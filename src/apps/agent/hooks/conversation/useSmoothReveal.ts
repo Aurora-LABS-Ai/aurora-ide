@@ -124,9 +124,24 @@ export function useSmoothReveal(target: string, active: boolean): string {
   }, [target, active, reduce]);
 
   // Cancel any in-flight frame on unmount.
+  //
+  // Clearing the ref is not tidiness — `rafRef.current != null` is the guard
+  // that says "a loop is already converging", so a cancelled frame that leaves
+  // it set blocks every future loop from ever starting. In StrictMode React
+  // runs mount → cleanup → mount again on the SAME instance, refs and all: the
+  // scheduled frame was cancelled here, the ref still pointed at it, and the
+  // re-run effect took the early return. The reveal died at whatever text had
+  // landed in the first flush — one word — and stayed there until the segment
+  // stopped being the streaming one and the not-active branch snapped it to
+  // full. Which is exactly what it looked like: a word, then the tools, then
+  // the whole paragraph at once when the model moved on.
   useEffect(
     () => () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      lastFrameRef.current = null;
     },
     [],
   );

@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 22;
+pub const SCHEMA_VERSION: i32 = 23;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -23,6 +23,54 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_tool_settings_table(conn)?;
     create_custom_themes_table(conn)?;
     create_checkpoints_table(conn)?;
+    create_cursor_models_table(conn)?;
+
+    Ok(())
+}
+
+/// Create `cursor_models` — the Cursor account's model catalogue.
+///
+/// Deliberately **not** rows in `provider_models`. That table holds models a
+/// user configured: they can be added, edited, priced, and deleted, and each
+/// row is owned by an `llm_providers` id. A Cursor model is none of those
+/// things — the account decides what exists, the list is replaced wholesale on
+/// every refresh, and there is nothing meaningful for a person to edit. Mixing
+/// the two would mean either letting the UI offer edits that the next refresh
+/// silently discards, or special-casing "is this a Cursor row?" at every call
+/// site that touches models.
+///
+/// Keyed by the upstream `model_id`, which is what goes on the wire. The whole
+/// table is cleared and rewritten per refresh, so there is no per-row lifecycle
+/// to reason about — `fetched_at` on every row records when that happened.
+pub(crate) fn create_cursor_models_table(conn: &Connection) -> DbResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS cursor_models (
+            model_id TEXT PRIMARY KEY,               -- upstream id, sent verbatim as the model
+            display_model_id TEXT,                   -- what Cursor shows instead of model_id, when it differs
+            display_name TEXT,                       -- human label, e.g. 'Claude Opus 5 (Thinking, High)'
+            display_name_short TEXT,                 -- compact label for tight UI
+            aliases TEXT,                            -- JSON array of alternate ids the account also accepts
+            supports_thinking INTEGER NOT NULL DEFAULT 0,  -- ThinkingDetails present upstream
+            max_mode INTEGER NOT NULL DEFAULT 0,     -- model exposes Cursor's 'max mode'
+            enabled INTEGER NOT NULL DEFAULT 0,      -- user opted this one into the model selector
+            sort_order INTEGER NOT NULL DEFAULT 0,   -- upstream order; the account's own ranking is meaningful
+            fetched_at TEXT NOT NULL                 -- when this catalogue was pulled
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cursor_models_order
+         ON cursor_models (sort_order ASC)",
+        [],
+    )?;
+
+    // The model selector reads only enabled rows, and does so on every open.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cursor_models_enabled
+         ON cursor_models (enabled, sort_order ASC)",
+        [],
+    )?;
 
     Ok(())
 }

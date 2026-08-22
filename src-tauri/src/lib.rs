@@ -229,6 +229,11 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
                 req.shell,
                 req.timeout_ms,
                 log_for_task,
+                // A background process gets a stdin Aurora holds open for its
+                // whole life. Inheriting a GUI app's dead stdin means instant
+                // EOF, and a server that reads stdin and treats EOF as "shut
+                // down" then dies seconds after a clean start — silently.
+                Some(true),
             )
             .await;
             let _ = completion_tx.send(result);
@@ -252,6 +257,8 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
                 exit_code: output.exit_code,
                 success: output.success,
                 timed_out: output.timed_out,
+                left_running: output.left_running,
+                survivors: output.survivors.clone(),
             })),
             Ok(Ok(Err(error))) => Err(error),
             Ok(Err(_)) => Err(format!(
@@ -278,6 +285,9 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             // No log file: a foreground command's full output already reaches
             // the model in the tool result, and oversized output spills there.
             None,
+            // Foreground commands read a deterministic, immediately closed
+            // stdin — anything that waits on input gets EOF, not a hang.
+            Some(false),
         )
         .await?;
         Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
@@ -286,6 +296,8 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             exit_code: output.exit_code,
             success: output.success,
             timed_out: output.timed_out,
+            left_running: output.left_running,
+            survivors: output.survivors,
         })
     }
 
@@ -510,6 +522,14 @@ pub fn run_with_args(cli_args: CliArgs) {
                 let _ = leftover.close();
             }
         })
+        // Local files for the browser panel. A `file://` page cannot reach
+        // Aurora's IPC (the capability grant matches http/https origins only),
+        // so every browser tool against it times out; serving the same file
+        // through this scheme lands it on `http://aurora-page.localhost/…`,
+        // which the existing grant covers. See `services::local_page`.
+        .register_uri_scheme_protocol(services::local_page::SCHEME, |_ctx, request| {
+            services::local_page::respond(&request)
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -659,6 +679,20 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::codex::codex_auth_cancel_login,
             commands::codex::codex_auth_logout,
             commands::codex::codex_usage_get,
+            // Cursor (subscription) provider
+            commands::cursor::cursor_auth_status,
+            commands::cursor::cursor_auth_connect,
+            commands::cursor::cursor_auth_sign_out,
+            commands::cursor::cursor_state_db_path,
+            commands::cursor::cursor_models_list,
+            commands::cursor::cursor_models_list_enabled,
+            commands::cursor::cursor_models_refresh,
+            commands::cursor::cursor_model_set_enabled,
+            commands::cursor::cursor_models_set_enabled_bulk,
+            commands::opencode::opencode_local_key,
+            commands::opencode::opencode_auth_path,
+            commands::opencode::opencode_models,
+            commands::opencode::opencode_usage,
             commands::local_providers::commands::local_provider_detect,
             commands::local_providers::commands::local_provider_probe_custom,
             commands::local_providers::commands::local_provider_show_ollama_model,
@@ -1069,6 +1103,12 @@ pub fn run_with_args(cli_args: CliArgs) {
                     resolver,
                     tauri_permitter,
                 ));
+            // Order is load-bearing: the timeout guard goes on FIRST so the
+            // permission gate ends up outside it. Reversed, the clock would
+            // start ticking while the approval modal is still on screen and a
+            // command approved after a minute's thought would be killed for
+            // taking a minute.
+            tools::install_timeout_guards(&agent_registry.tools());
             tools::install_permission_gate(&agent_registry.tools(), settings_aware);
 
             app.manage(agent_registry);

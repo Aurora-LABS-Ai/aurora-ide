@@ -108,6 +108,47 @@ function cmdPill(chip: CommandPromptChip, key: React.Key): React.ReactNode {
   );
 }
 
+/** The `@element:N` token an inspector pick serializes as in the sent text —
+ *  the anchor both bubble kinds re-pill in place. */
+const elementToken = (index: string | number) => `@element:${index}`;
+
+/** Inline pill for a fresh turn's pick, anchored at its `@element:N` token.
+ *  Same face as the composer's selection pill and the hoisted-row chip. */
+function selectedElementPill(el: AttachedSelectedElement, key: React.Key): React.ReactNode {
+  const elText = (el.text ?? "").trim();
+  return (
+    <span
+      key={key}
+      className="agw-pill-inline agw-pill-sel"
+      title={`selector: ${el.selector}`}
+    >
+      <span className="agw-pill-cmd-ico">
+        <AgentIcon name="inspect" size={11} />
+      </span>
+      <span className="agw-sel-tag">{`<${el.tagName}>`}</span>
+      {elText && <span className="agw-sel-text">{elText.slice(0, 24)}</span>}
+    </span>
+  );
+}
+
+/** The chip for a browser-inspector pick riding a mid-turn injection. Same
+ *  face as the composer's selection pill: inspect glyph, `<tag>`, clipped
+ *  text; the selector lives in the tooltip. */
+function elementPill(chip: AttachedPromptChip, key: React.Key): React.ReactNode {
+  return (
+    <span
+      key={key}
+      className="agw-pill-inline agw-pill-sel"
+      title={chip.value ? `selector: ${chip.value}` : chip.title}
+    >
+      <span className="agw-pill-cmd-ico">
+        <AgentIcon name="inspect" size={11} />
+      </span>
+      <span>{chip.title}</span>
+    </span>
+  );
+}
+
 /** The chip for an `@terminal` mention, anchored at its `@terminal:<id>` token. */
 function terminalPill(chip: AttachedPromptChip, key: React.Key): React.ReactNode {
   return (
@@ -143,11 +184,13 @@ function commandChipsInline<T extends AttachedPromptChip>(text: string, chips: T
 function renderUserText(
   text: string,
   promptChips: AttachedPromptChip[],
+  selectedElements?: AttachedSelectedElement[] | null,
 ): React.ReactNode {
   // Every chip that can anchor to a position in the text: file pills at
-  // their `@rel` marker, command pills at their `/title` token. Rendered in
-  // TEXT order (earliest remaining marker first), not chip-array order, so
-  // interleaved mentions land exactly where the user put them.
+  // their `@rel` marker, command pills at their `/title` token, inspector
+  // picks at their `@element:N` token. Rendered in TEXT order (earliest
+  // remaining marker first), not chip-array order, so interleaved mentions
+  // land exactly where the user put them.
   const candidates: Array<{
     marker: string;
     render: (key: React.Key) => React.ReactNode;
@@ -158,6 +201,16 @@ function renderUserText(
         marker: terminalToken(chip),
         render: (key) => terminalPill(chip, key),
       });
+    } else if (chip.kind === "element") {
+      // Mid-turn injections: the pick rides as a chip whose `path` holds the
+      // index its `@element:N` token names. Without a path (should not
+      // happen) the chip renders at the head instead — see InjectionNote.
+      if (chip.path) {
+        candidates.push({
+          marker: elementToken(chip.path),
+          render: (key) => elementPill(chip, key),
+        });
+      }
     } else if (isPathChip(chip) && chip.value) {
       candidates.push({
         marker: `@${chip.value}`,
@@ -170,6 +223,13 @@ function renderUserText(
         render: (key) => cmdPill(command, key),
       });
     }
+  }
+  // Fresh turns: picks travel as `attachedSelectedElements` beside the text.
+  for (const el of selectedElements ?? []) {
+    candidates.push({
+      marker: elementToken(el.index),
+      render: (key) => selectedElementPill(el, key),
+    });
   }
   if (candidates.length > 0) {
     const out: React.ReactNode[] = [];
@@ -358,11 +418,18 @@ const UserBubble: React.FC<{
 }> = ({ content, showActions, selectedElements, commands, promptChips }) => {
   const { text, images } = useMemo(() => parseUserContent(content), [content]);
   const [preview, setPreview] = useState<string | null>(null);
-  const chips = selectedElements ?? [];
+  // Picks whose `@element:N` token is in the text re-pill INLINE at that spot
+  // (renderUserText); the hoisted row carries only the rest — legacy messages
+  // sent before the composer serialized picks positionally.
+  const allSelected = selectedElements ?? [];
+  const chips = allSelected.filter((el) => !text.includes(elementToken(el.index)));
   const exactChips = promptChips ?? [];
   const exactCommands = exactChips.filter(
     (chip): chip is CommandPromptChip =>
-      !isPathChip(chip) && chip.kind !== "terminal",
+      // `element` excluded defensively: fresh turns carry picks as
+      // `attachedSelectedElements`, but a chip that arrived here anyway must
+      // not fall into `cmdPill`, whose icon map has no entry for it.
+      !isPathChip(chip) && chip.kind !== "terminal" && chip.kind !== "element",
   );
   const exactKeys = new Set(exactCommands.map((chip) => `${chip.kind}:${chip.title}`));
   // Command pills whose `/title` token is in the text render INLINE at that
@@ -506,7 +573,7 @@ const UserBubble: React.FC<{
                   className="agw-bubble-text"
                   style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
                 >
-                  {renderUserText(text, exactChips)}
+                  {renderUserText(text, exactChips, allSelected)}
                 </div>
               )}
             </CollapsibleBubbleBody>
@@ -549,7 +616,15 @@ const InjectionNote: React.FC<{
   const allChips = chips ?? [];
   const commandChips = allChips.filter(
     (chip): chip is CommandPromptChip =>
-      !isPathChip(chip) && chip.kind !== "terminal",
+      !isPathChip(chip) && chip.kind !== "terminal" && chip.kind !== "element",
+  );
+  // Inspector picks anchor at their `@element:N` token (renderUserText); the
+  // head carries only ones with no token in the text — a fallback that should
+  // not occur for messages sent after picks serialized positionally.
+  const elementChips = allChips.filter(
+    (chip) =>
+      chip.kind === "element" &&
+      !(chip.path && bodyText.includes(elementToken(chip.path))),
   );
   const inlineKeys = new Set(
     commandChipsInline(bodyText, commandChips).map((chip) => `${chip.kind}:${chip.title}`),
@@ -562,6 +637,7 @@ const InjectionNote: React.FC<{
     <div className="agw-injection" title="You added this mid-turn">
       <AgentIcon name="message" size={13} />
       <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+        {elementChips.map((chip, i) => elementPill(chip, `el-${chip.title}-${i}`))}
         {headChips.map((chip, i) => cmdPill(chip, `head-${chip.kind}-${chip.title}-${i}`))}
         {renderUserText(bodyText, allChips)}
         {images.length > 0 && (

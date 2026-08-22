@@ -29,6 +29,8 @@ export const BUILT_IN_PROVIDER_ORDER: readonly string[] = [
   "anthropic",
   "openai-responses",
   "codex",
+  "cursor",
+  "opencode-go",
   "deepseek",
   "kenari",
 ];

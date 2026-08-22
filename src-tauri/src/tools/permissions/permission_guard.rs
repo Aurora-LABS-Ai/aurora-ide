@@ -91,6 +91,17 @@ impl ToolExecutor for PermissionGuardedExecutor {
         false
     }
 
+    /// Forwarded, but deliberately NOT enforced here.
+    ///
+    /// The timeout guard is installed *inside* this gate
+    /// (`permission(timeout(tool))`), so by the time the inner call runs it is
+    /// already bounded and the seconds a person spends reading the approval
+    /// prompt are correctly outside the clock. Forwarding keeps the answer
+    /// truthful for anything that asks a gated tool what its bound is.
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        self.inner.timeout_policy()
+    }
+
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         // Cheap pre-check: don't wake the permitter if cancel already
         // fired. Mirrors the `FrontendBridgeExecutor` short-circuit.

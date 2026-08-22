@@ -123,8 +123,17 @@ pub enum ApiError {
     InvalidRequest(String),
     #[error("rate limited (retry recommended)")]
     RateLimit,
-    #[error("unauthorized — check API key")]
-    Unauthorized,
+    /// A 401. The payload is what the provider said, or `check API key` when
+    /// it said nothing.
+    ///
+    /// It carries a message because 401 is not always about credentials.
+    /// OpenCode answers a model id it does not recognise with `401
+    /// {"error":{"type":"ModelError","message":"Model gpt-5-6-luna is not
+    /// supported"}}` — the status is wrong, the body is exactly right, and
+    /// discarding it left Aurora telling the user to check a key that was
+    /// working. Naming a cause nobody measured is worse than quoting one.
+    #[error("unauthorized — {0}")]
+    Unauthorized(String),
     #[error("request was cancelled")]
     Cancelled,
 }
@@ -321,7 +330,7 @@ mod tests {
         assert!(ApiError::Network("conn reset".into()).is_recoverable());
         assert!(ApiError::Provider("503".into()).is_recoverable());
         assert!(ApiError::RateLimit.is_recoverable());
-        assert!(!ApiError::Unauthorized.is_recoverable());
+        assert!(!ApiError::Unauthorized("no key".into()).is_recoverable());
         assert!(!ApiError::InvalidRequest("missing field".into()).is_recoverable());
         assert!(!ApiError::Cancelled.is_recoverable());
         assert!(!ApiError::Decode("bad json".into()).is_recoverable());
@@ -370,7 +379,7 @@ mod tests {
         assert!(!ApiError::Provider("503 upstream unavailable".into()).is_context_overflow());
         assert!(!ApiError::Network("connection reset".into()).is_context_overflow());
         assert!(!ApiError::RateLimit.is_context_overflow());
-        assert!(!ApiError::Unauthorized.is_context_overflow());
+        assert!(!ApiError::Unauthorized("no key".into()).is_context_overflow());
         assert!(ApiError::Provider("503 upstream unavailable".into()).is_retryable());
     }
 

@@ -131,6 +131,7 @@ export type AgentIconName =
   | "slash"
   | "refine"
   | "facet"
+  | "bolt"
   | "book-open";
 
 interface AgentIconProps {
@@ -184,6 +185,20 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M12 3l6.5 6-6.5 12-6.5-12z" />
       <path d="M5.5 9h13" />
       <path d="M12 3v18" />
+    </>
+  ),
+
+  // Fast lane — a storm bolt with two streaks driving into it. Cut on the same
+  // angular grid as `facet` so the two sit together on the model pill and read
+  // as one family: the crystal says which mode, the bolt says how fast.
+  //
+  // The streaks are what make it a storm rather than a battery or a warning
+  // triangle at 13px, where the bolt alone loses its silhouette.
+  bolt: (
+    <>
+      <path d="M13.5 2.5L7 13h4l-.5 8.5L17 11h-4z" data-part="pulse" />
+      <path d="M5 6.5h2.5" />
+      <path d="M3 10h2.5" />
     </>
   ),
 

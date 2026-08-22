@@ -1,0 +1,24 @@
+[package]
+name = "cursor-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Generated Rust bindings for Cursor's agent.v1 protobuf schema."
+
+# Why this is its own crate rather than a module inside `aurora`:
+# the schema has 627 messages and generates ~7.6k lines. Compiled inside the
+# main crate it added ~2.7s to every warm `cargo check --lib` — Rust rebuilds
+# a crate as one unit, so untouched generated code still pays on each edit.
+# Out here it compiles once and caches until a .proto actually changes.
+
+[lib]
+name = "cursor_proto"
+
+[dependencies]
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"
+# Pure-Rust protobuf compiler: no `protoc` on PATH required, so cloning and
+# building Aurora never depends on a system toolchain install.
+protox = "0.7"

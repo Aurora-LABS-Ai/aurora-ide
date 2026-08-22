@@ -172,6 +172,32 @@ impl BridgeRouter {
 /// Drop-guard that removes a `(turn_id, tool_use_id)` entry from a
 /// [`BridgeRouter`] when it goes out of scope.
 ///
+/// Bridged tools that are allowed to wait indefinitely.
+///
+/// `ask_question` puts a question on screen and waits for the user to answer
+/// it. There is no honest ceiling on how long a person takes to read a
+/// question, and cutting them off mid-thought would be a worse failure than
+/// any hang this module prevents. Cancel already covers the case where the
+/// user walks away and then presses Stop.
+///
+/// Nothing else belongs here. `team_dispatch` looks like a candidate and is
+/// not: it starts the workers and returns immediately, by design — see the
+/// Lead's instructions in `agent-execution-mode.ts`.
+const UNBOUNDED_BRIDGE_TOOLS: &[&str] = &["ask_question"];
+
+/// How long the agent window gets to answer one tool call.
+///
+/// Two minutes is far beyond any healthy bridged call (a skill load reads a
+/// file; a canvas write compiles one component) and still well inside the
+/// point where a person watching a spinner has concluded the app is broken.
+const BRIDGE_TIMEOUT: crate::tools::timeout::TimeoutPolicy =
+    crate::tools::timeout::TimeoutPolicy::new(
+        120_000,
+        5_000,
+        600_000,
+        "The agent window never sent a result back. Nothing was retried automatically. If this          repeats for the same tool, say so rather than calling it again.",
+    );
+
 /// Guarantees the router never leaks an entry even on cancellation
 /// or panic inside `execute`.
 struct PendingGuard {
@@ -252,6 +278,27 @@ impl ToolExecutor for FrontendBridgeExecutor {
 
     fn uses_frontend_lifecycle(&self) -> bool {
         true
+    }
+
+    /// Everything the agent window runs on Aurora's behalf is bounded, except
+    /// the one tool whose whole job is waiting for a person.
+    ///
+    /// This executor parks on a oneshot with two escapes: the frontend posts a
+    /// result, or the turn is cancelled. If the frontend throws before it
+    /// answers, or an MCP server accepts the call and never replies, or a
+    /// canvas compile spins, nothing here ever resolves — the turn waits
+    /// forever and the card spins forever with no way to tell that from work
+    /// still in progress. A bound turns that into a sentence.
+    ///
+    /// It sits deliberately clear of the inner limits it can overlap with, so
+    /// the specific message wins over this generic one whenever both would
+    /// fire: MCP calls race their own 60s ceiling in `mcp::manager` and again
+    /// in `mcp-tools.ts`.
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        if UNBOUNDED_BRIDGE_TOOLS.contains(&self.tool.name.as_str()) {
+            return None;
+        }
+        Some(BRIDGE_TIMEOUT)
     }
 
     async fn execute(
@@ -411,6 +458,41 @@ mod tests {
             other => panic!("expected closed, got {other:?}"),
         }
         assert_eq!(router.pending_count(), 1);
+    }
+
+    /// The bridge is the only tool family that could wait forever, and
+    /// `ask_question` is the only member of it that should. If a second name
+    /// ever joins the exempt list it has to be for a reason as concrete as
+    /// "a person is typing the answer".
+    #[test]
+    fn only_the_tool_that_waits_for_a_person_is_unbounded() {
+        let bounded = |name: &str| {
+            FrontendBridgeExecutor::new(
+                allowed_tool(name),
+                "turn-1".into(),
+                Arc::new(BridgeRouter::new()),
+                Arc::new(RecordingEmitter::default()),
+                CancellationToken::new(),
+            )
+            .timeout_policy()
+        };
+
+        assert_eq!(
+            bounded("ask_question"),
+            None,
+            "cutting a user off mid-answer is worse than any hang"
+        );
+        for name in ["mcp_github_search", "aurora_skill_load", "present_artifact"] {
+            assert_eq!(bounded(name), Some(BRIDGE_TIMEOUT), "{name} can hang");
+        }
+    }
+
+    /// The generic bridge message must never fire before a tool's own, more
+    /// specific one. MCP calls carry a 60s ceiling in `mcp::manager` and a
+    /// matching race in `mcp-tools.ts`; both have to be able to answer first.
+    #[test]
+    fn the_bridge_bound_sits_outside_the_limits_it_overlaps() {
+        assert!(BRIDGE_TIMEOUT.default_ms > 60_000);
     }
 
     #[test]

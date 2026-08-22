@@ -191,7 +191,12 @@ describe("agent appearance token coverage", () => {
       ".agw-mcp-card",
       ".agw-appr-card",
       ".agw-skill-card",
-      ".agw-prov-detail",
+      // The Providers detail is two cards, not one: identity + connection
+      // above, the model list below. `.agw-prov-detail` is the column that
+      // holds them and paints nothing itself, so the invariant follows the
+      // surfaces that are actually drawn.
+      ".agw-prov-detail-top",
+      ".agw-prov-models-panel",
       ".agw-atlas",
       ".agw-proj-stats",
     ]) {

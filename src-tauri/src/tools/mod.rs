@@ -69,6 +69,7 @@ pub mod shell_editor_todo;
 /// constructed per turn against that turn's deferred catalogue and its live
 /// registry, so it has no fixed executor to pre-register and does not count
 /// toward [`BUILTIN_TOOL_COUNT`]. See `commands::agent_v2::tool_policy`.
+pub mod timeout;
 pub mod tool_search;
 pub mod transcript;
 
@@ -188,6 +189,8 @@ pub fn register_builtin_tools(
 ///
 /// The decorator's own `requires_permission()` returns `false`, so a
 /// second call to this helper is a no-op rather than triple-wrapping.
+pub use timeout::install_timeout_guards;
+
 pub fn install_permission_gate(
     reg: &crate::agent_runtime::tool_executor::ToolRegistry,
     permitter: std::sync::Arc<dyn crate::agent_runtime::tool_executor::Permitter>,

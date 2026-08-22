@@ -838,10 +838,20 @@
   background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
 }
 .agw-shell-waiting {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 8px 10px;
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
+}
+
+/* The elapsed-of-budget count. Tabular figures so a digit rolling over from
+   9 to 10 does not shift the text beside it once per second. */
+.agw-shell-waiting-clock {
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
 }
 
 /* ── Unified diff view (DiffView) ─────────────────────────────────────

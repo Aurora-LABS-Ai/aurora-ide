@@ -14,6 +14,7 @@ pub mod api_converter;
 pub mod browser_devtools;
 pub mod browser_native_capture;
 pub mod browser_runtime;
+pub mod local_page;
 pub mod token_service;
 pub mod webview_permissions;
 pub mod webview_recovery;

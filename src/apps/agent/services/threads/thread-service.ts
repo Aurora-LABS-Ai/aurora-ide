@@ -107,7 +107,11 @@ export interface AttachedCommandChip {
 export interface AttachedPromptChip {
   /** `folder` is a path chip like `file`, not a directive — see MessageBubble. */
   /** `terminal` carries a live terminal session id in `value`. */
-  kind: "file" | "folder" | "skill" | "rule" | "mcp" | "terminal";
+  /** `element` is a browser-inspector pick riding a MID-TURN injection; its
+   *  `value` holds the CSS selector. (A fresh turn's picks travel as
+   *  `attachedSelectedElements` instead — this kind exists because the queued
+   *  path has exactly one chip channel through the Rust runtime.) */
+  kind: "file" | "folder" | "skill" | "rule" | "mcp" | "terminal" | "element";
   title: string;
   /** Serialized file reference (`rel` for @ picker, absolute for OS picks). */
   value?: string | null;
@@ -135,6 +139,10 @@ export interface DbMessage {
     result?: string | null;
     /** Live-only wall-clock execution time; never persisted by Rust. */
     durationMs?: number;
+    /** Live-only epoch ms the call began executing, so a running card can show
+     *  a clock. Never persisted by Rust either — a reloaded call has no start
+     *  time and correctly shows none. */
+    startedAt?: number;
   }> | null;
   thinking?: string | null;
   isThinking?: boolean | null;

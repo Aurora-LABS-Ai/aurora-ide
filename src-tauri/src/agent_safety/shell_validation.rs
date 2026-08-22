@@ -39,12 +39,84 @@ pub fn validate_for_shell(
     workspace: Option<&Path>,
 ) -> Result<(), BashValidationError> {
     if kind.is_posix() {
+        if let Some(reason) = bash_would_mangle_powershell_payload(command) {
+            return Err(BashValidationError::Blocked(reason));
+        }
         return match workspace {
             Some(workspace) => validate_command_with_workspace(command, mode, workspace),
             None => validate_command(command, mode),
         };
     }
     validate_windows_shell(command, mode, kind, workspace)
+}
+
+/// PowerShell variables that only mean something to PowerShell. A bash
+/// double-quoted (or unquoted) `$_` expands to bash's own last-argument
+/// variable BEFORE PowerShell runs — measured live: `Where-Object { $_.Name }`
+/// reached PowerShell as `Where-Object { /usr/bin/bash.Name }` and every line
+/// of the result was a CommandNotFoundException.
+const POWERSHELL_ONLY_VARIABLES: &[&str] = &[
+    "$_",
+    "$env:",
+    "$psitem",
+    "$lastexitcode",
+    "$null",
+    "$true",
+    "$false",
+    "$args",
+    "$profile",
+    "$myinvocation",
+];
+
+/// A bash command that invokes PowerShell inline with a payload bash is going
+/// to rewrite. Blocked because the corruption is certain, silent, and reads as
+/// a PowerShell bug: the command "succeeds" and returns pages of
+/// CommandNotFoundException noise instead of an answer.
+///
+/// Single-quoted payloads pass — bash leaves those alone — so the guard's own
+/// message can honestly offer that as the escape.
+fn bash_would_mangle_powershell_payload(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    if !lower.contains("powershell") && !lower.contains("pwsh") {
+        return None;
+    }
+
+    // Walk bash quote state; a PowerShell-only variable is mangled wherever
+    // bash expands `$` — unquoted or inside double quotes, except when the
+    // `$` itself is backslash-escaped.
+    let bytes = lower.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    for i in 0..bytes.len() {
+        let c = bytes[i];
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            b'\\' if !in_single => escaped = true,
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'$' if !in_single => {
+                let rest = &lower[i..];
+                if let Some(hit) = POWERSHELL_ONLY_VARIABLES
+                    .iter()
+                    .find(|token| rest.starts_with(*token))
+                {
+                    return Some(format!(
+                        "this command runs PowerShell inside bash, and bash expands `{hit}` \
+                         before PowerShell ever sees it (a `$_` becomes bash's own last \
+                         argument, e.g. `/usr/bin/bash`). Run it with shell: \"pwsh\" instead — \
+                         or, if it must stay in bash, single-quote the PowerShell payload so \
+                         bash passes it through untouched."
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// PowerShell and `cmd` pipeline: read-only enforcement → destructive
@@ -363,6 +435,69 @@ mod tests {
         )
         .expect_err("must warn");
         assert!(matches!(err, BashValidationError::Warning(_)));
+    }
+
+    /// The verbatim command from session `41841342`: bash expanded `$_` to
+    /// `/usr/bin/bash` and PowerShell answered with pages of
+    /// CommandNotFoundException. The guard must name the escape routes.
+    #[test]
+    fn bash_wrapping_a_powershell_payload_with_dollar_vars_is_blocked() {
+        let err = validate_for_shell(
+            r#"powershell -NoProfile -Command "Get-Service | Where-Object { $_.Name -match 'postgres|redis|pgsql' } | Format-Table Name,Status,StartType -AutoSize" 2>&1"#,
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Bash,
+            None,
+        )
+        .expect_err("bash would mangle $_ before PowerShell runs");
+        match err {
+            BashValidationError::Blocked(message) => {
+                assert!(message.contains("$_"), "names the variable: {message}");
+                assert!(message.contains("pwsh"), "names the fix: {message}");
+                assert!(
+                    message.contains("single-quote"),
+                    "names the bash escape: {message}"
+                );
+            }
+            other => panic!("expected a block, got {other:?}"),
+        }
+    }
+
+    /// Single quotes are bash's pass-through: the payload arrives intact, so
+    /// there is nothing to protect against.
+    #[test]
+    fn a_single_quoted_powershell_payload_is_left_alone() {
+        validate_for_shell(
+            r"pwsh -NoProfile -Command 'Get-Service | Where-Object { $_.Name -match \'redis\' }'",
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Bash,
+            None,
+        )
+        .expect("bash does not expand inside single quotes");
+    }
+
+    /// No `$` in the payload — nothing bash could destroy.
+    #[test]
+    fn a_dollar_free_powershell_payload_is_left_alone() {
+        validate_for_shell(
+            r#"powershell -NoProfile -Command "Get-Date" "#,
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Bash,
+            None,
+        )
+        .expect("no PowerShell-only variables in the payload");
+    }
+
+    /// `$_` run natively under pwsh is that shell's own grammar; the guard is
+    /// about BASH rewriting it, so pwsh must be untouched.
+    #[test]
+    fn native_powershell_dollar_underscore_is_untouched() {
+        validate_for_shell(
+            "Get-Service | Where-Object { $_.Name -match 'redis' }",
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Pwsh,
+            Some(workspace()),
+        )
+        .expect("pwsh running its own syntax is the correct form");
     }
 
     #[test]

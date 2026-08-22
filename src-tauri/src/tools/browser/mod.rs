@@ -75,6 +75,9 @@ mod halo;
 mod input_tools;
 /// The visible cursor that makes a click look like a click.
 mod pointer;
+/// Whether anything answers at a URL, asked over HTTP because the WebView
+/// cannot be asked at all.
+mod reachability;
 /// Where the panel is, and what an action changed.
 ///
 /// `pub(crate)` for one reason: `BrowserManager::navigate` drops the browser's
@@ -302,6 +305,30 @@ page."
     }
 }
 
+/// How long any one call may spend driving the panel.
+///
+/// Every page-side read is already bounded at 30s by
+/// `BrowserManager::await_result`, but a single tool call can chain three of
+/// them — act, settle, observe — and a WebView showing a dead server takes the
+/// full 30s each time because the injected `window.__aurora` helper is not
+/// there to answer. Two minutes sits clear of that worst case while still
+/// ending a call that would otherwise sit forever.
+///
+/// Healthy calls land in single-digit seconds, so this is a backstop and not a
+/// budget anyone should be tuning. It is deliberately NOT advertised as a
+/// `timeout` property on fifteen schemas: a browser action that needs longer
+/// than this is broken rather than slow, and the argument would cost tokens on
+/// every request to say so. A model that passes `timeout` anyway is still
+/// honoured — [`TimeoutPolicy::resolve`] reads the argument whether or not the
+/// schema mentions it.
+pub const PANEL_TIMEOUT: crate::tools::timeout::TimeoutPolicy =
+    crate::tools::timeout::TimeoutPolicy::new(
+        120_000,
+        5_000,
+        300_000,
+        "The Browser panel stopped answering. Call `browser_status` to see where it is before          retrying the same action.",
+    );
+
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     // First, and NOT wrapped below: it returns compiled-in text and never
     // touches the panel, so raising the driving cue for it would be a lie in
@@ -432,6 +459,81 @@ async fn settled_state(manager: &BrowserManager) -> Value {
 const MAX_SETTLE_MS: u64 = 5_000;
 const DEFAULT_SETTLE_MS: u64 = 350;
 
+/// Starts watching for content that appears during an action's settle window.
+///
+/// A "before" and an "after" snapshot cannot see a toast that lives for one
+/// second between them — observed live: a login form showed "enter a valid
+/// email" for a moment, every observation tool then reported an unchanged
+/// page, and the user had to read the screen to the agent. The observer
+/// records the text of everything added (or rewritten) while the action
+/// settles; [`TRANSIENT_WATCH_STOP`] then reports what has already vanished
+/// again. Idempotent: a fresh start disconnects any previous watch.
+const TRANSIENT_WATCH_START: &str = r#"(() => {
+  try {
+    const prev = window.__auroraTransients;
+    if (prev && prev.observer) { try { prev.observer.disconnect(); } catch (e) {} }
+    const clip = (t) => (t || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    // innerText is the CSS-aware read; textContent is the fallback for DOM
+    // implementations without it (jsdom, where this logic is verified).
+    const readText = (el) => clip(el.innerText !== undefined ? el.innerText : el.textContent);
+    const state = { records: [], observer: null, readText };
+    const note = (el) => {
+      if (!el || state.records.length >= 24) return;
+      let text = '';
+      try { text = readText(el); } catch (e) {}
+      if (!text) return;
+      state.records.push({ node: el, text });
+    };
+    state.observer = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === 'childList') {
+          for (const n of m.addedNodes) { if (n.nodeType === 1) note(n); }
+        } else if (m.type === 'characterData') {
+          if (m.target) note(m.target.parentElement);
+        }
+      }
+    });
+    if (document.body) {
+      state.observer.observe(document.body, {
+        childList: true, subtree: true, characterData: true,
+      });
+      window.__auroraTransients = state;
+      return true;
+    }
+    return false;
+  } catch (e) { return false; }
+})()"#;
+
+/// Ends the watch and returns the messages that appeared and are gone again.
+///
+/// Content still on the page is NOT returned — `text_changed` and `view`
+/// already cover it. What comes back is precisely the set nothing else can
+/// see: text whose whole life happened inside the settle window.
+const TRANSIENT_WATCH_STOP: &str = r#"(() => {
+  try {
+    const state = window.__auroraTransients;
+    window.__auroraTransients = null;
+    if (!state) return [];
+    try { state.observer.disconnect(); } catch (e) {}
+    const seen = new Set();
+    const vanished = [];
+    for (const r of state.records) {
+      if (!r.text || seen.has(r.text)) continue;
+      seen.add(r.text);
+      let still = false;
+      try {
+        still = r.node && r.node.isConnected
+          && state.readText(r.node).indexOf(r.text) !== -1;
+      } catch (e) {}
+      if (!still) {
+        vanished.push(r.text);
+        if (vanished.length >= 8) break;
+      }
+    }
+    return vanished;
+  } catch (e) { return []; }
+})()"#;
+
 /// The shared tail of every acting tool: `act → settle → observe`.
 ///
 /// Without this, "scroll, then look" is two tool calls and two round trips
@@ -465,13 +567,37 @@ where
     let see = input.get("see").and_then(Value::as_str).unwrap_or("none");
 
     let before = state::snapshot(manager).await;
+    // Best-effort on purpose: a page that refuses the observer (about:blank,
+    // mid-navigation) still gets its action; it just cannot report transients.
+    let _ = manager
+        .eval_with_result(AGENT_BROWSER_LABEL, TRANSIENT_WATCH_START)
+        .await;
     let result = action().await?;
     tokio::time::sleep(Duration::from_millis(settle_ms)).await;
     let after = state::snapshot(manager).await;
+    // A navigation tears the JS context down along with the observer; the
+    // stop call then fails or answers empty, and that is correct — whatever
+    // flashed by belonged to the page that no longer exists.
+    let transients = match manager
+        .eval_with_result(AGENT_BROWSER_LABEL, TRANSIENT_WATCH_STOP)
+        .await
+    {
+        Ok(result) if result.ok => result.value.unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+
+    let mut changed = state::change_between(&before, &after);
+    if let Some(messages) = transients.as_array().filter(|list| !list.is_empty()) {
+        if let Some(map) = changed.as_object_mut() {
+            // Named for what it is: text that appeared during the action and
+            // was gone again before the page was observed. Toasts live here.
+            map.insert("transient_text".into(), json!(messages));
+        }
+    }
 
     let mut out = serde_json::Map::new();
     out.insert("result".into(), result);
-    out.insert("changed".into(), state::change_between(&before, &after));
+    out.insert("changed".into(), changed);
     out.insert(
         "url".into(),
         after.get("url").cloned().unwrap_or(Value::Null),
@@ -856,7 +982,12 @@ The panel PERSISTS across turns, and the user opens it themselves too. If it is 
 the page you want, a navigate costs a reload: state is lost, forms clear, and a SPA route resets. \
 Check `browser_status` first, or pass `reload: false` (the default) — this tool will report \
 `already_there` and leave the page alone rather than reloading it silently. Pass `reload: true` \
-when you have changed the source and genuinely need a fresh load."
+when you have changed the source and genuinely need a fresh load.
+
+The address is checked before the panel is driven. If nothing is listening the call FAILS and \
+names the address, so a stopped dev server is never mistaken for a loaded page; if the server \
+answers, its `http_status` comes back with the result and a 4xx/5xx is reported rather than \
+treated as a failure."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -897,7 +1028,25 @@ when you have changed the source and genuinely need a fresh load."
             .and_then(Value::as_str)
             .is_some_and(|current| same_page(current, url));
 
-        if already_there && !force_reload {
+        // Whether the last visit produced a page we could read. `state::fallback`
+        // sets this when the page-side namespace never answered, which is what a
+        // WebView error page looks like from here.
+        let last_visit_was_readable = before
+            .get("ready_state")
+            .and_then(Value::as_str)
+            .is_none_or(|ready| ready != "unknown");
+
+        // The shortcut, and the extra condition that makes it honest.
+        //
+        // `already_there` alone used to be Aurora citing its own previous visit
+        // as proof the page was fine, when the previous visit was the one that
+        // failed. `last_visit_was_readable` is what turns it into evidence: the
+        // snapshot above ran a moment ago and the page answered it, which no
+        // browser error page can do. That is also why this returns before the
+        // reachability probe below — a page that just spoke to us needs no
+        // second opinion, and the probe is a real request that would be pure
+        // added latency here.
+        if already_there && !force_reload && last_visit_was_readable {
             // Deliberately does NOT reload. A reload here throws away scroll
             // position, form state and SPA route — invisibly, while reporting
             // success — for a page that was already the one asked for.
@@ -912,22 +1061,59 @@ when you have changed the source and genuinely need a fresh load."
             .to_string());
         }
 
+        // Does anything answer at this address? Asked BEFORE the panel is
+        // driven, because afterwards there is nothing left to ask: the WebView
+        // loads its own error page for a dead server and that page reads as
+        // healthy from every angle Aurora can see. See `reachability`.
+        let reach = reachability::probe(url).await;
+
         // Reveal + build the right-rail panel (hinting the URL), then drive it.
         ensure_agent_browser(&self.manager, Some(url)).await?;
         self.manager
             .navigate(AGENT_BROWSER_LABEL, url)
             .map_err(ToolError::Execution)?;
 
+        if let reachability::Reach::Unreachable { reason } = &reach {
+            // The navigate above already ran, on purpose. The user is watching
+            // this panel; leaving it on the old page while reporting a failure
+            // would hide the very state being described. The error page IS the
+            // honest picture, and the model gets told not to read it.
+            return Err(ToolError::Execution(format!(
+                "{url} did not load: {reason}. The Browser panel is showing its error page, not \
+                 your app, so nothing on it is worth inspecting. Start whatever serves this \
+                 address, then navigate again."
+            )));
+        }
+
         let after = settled_state(&self.manager).await;
+        let status = http_status(&reach);
         Ok(json!({
             "ok": true,
             "url": url,
             "panel_was_already_open": was_open,
             "already_there": already_there,
             "reloaded": already_there && force_reload,
+            // The server answered — with what, is the model's call. A 404 on a
+            // route you are debugging is the answer you came for; a 500 you did
+            // not expect is worth knowing before you start reading the DOM.
+            "http_status": status,
+            "note": status
+                .filter(|code| *code >= 400)
+                .map(|code| format!(
+                    "The server answered {code}. The page below is whatever it serves for that \
+                     status, which may not be your app."
+                )),
             "state": state::presentable(after),
         })
         .to_string())
+    }
+}
+
+/// The status the probe saw, when it ran at all.
+fn http_status(reach: &reachability::Reach) -> Option<u16> {
+    match reach {
+        reachability::Reach::Answered { status } => Some(*status),
+        _ => None,
     }
 }
 

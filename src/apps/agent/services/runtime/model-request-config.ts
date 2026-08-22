@@ -16,42 +16,37 @@ import {
   type LLMModel,
 } from "@/kernel/store/useSettingsStore";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
+import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import { cursorWireModel } from "@/apps/agent/services/providers/cursor-variants";
+import { isFastOn } from "@/apps/agent/lib/model/cursor-fast";
 
 /** Fallback output cap when neither the model nor the provider sets one. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**
- * Fallback sampling temperature when neither the model nor the provider sets
- * one. Set it per model in Settings → Providers → the model's own panel.
- *
- * 0.8, not 1.0: the old hard-coded 1.0 was the API's own default for chat, and
- * this is not chat — it is a tool-calling loop over a codebase, where the
- * cheapest win is less variance in edits and arguments.
- *
- * And not 0 either, which is the tempting other end: at 0 a model that has just
- * seen a tool result it cannot use will re-issue the identical call, because
- * nothing in the sampler can break the tie. A stuck loop costs far more than a
- * little variance.
- *
- * Inert on models that reject sampling — Claude 5 and newer 400 on
- * `temperature`, so the Rust adapter strips it there whatever this says.
- */
-export const DEFAULT_TEMPERATURE = 0.8;
-
-/**
  * The temperature a turn should send: the model's own value, else the
- * provider's default, else {@link DEFAULT_TEMPERATURE}.
+ * provider's default, else **nothing at all**.
  *
- * `0` is a legitimate setting, so this checks for a number rather than
- * truthiness — `??` on a `0` temperature would silently promote it to 0.8.
+ * Aurora used to substitute 0.8 here, so every request carried a sampling
+ * setting nobody had chosen. That is not a neutral default — it overrides
+ * whatever the provider documents for its own models, and some backends reject
+ * the parameter or accept it only in a narrower form than a float gives you.
+ * OpenCode's Go surface fails the whole request over decimal places.
+ *
+ * `undefined` means the field is omitted and the provider applies its own
+ * default, which is what an untouched setting should do. Set one per model in
+ * Settings → Providers when you actually want to.
+ *
+ * `0` is a legitimate setting — "be deterministic" — so this checks for a
+ * number rather than truthiness; `??` on a `0` would discard it.
  */
 export function resolveTemperature(
   model: LLMModel | null | undefined,
   providerDefault: number | undefined,
-): number {
+): number | undefined {
   if (typeof model?.temperature === "number") return model.temperature;
   if (typeof providerDefault === "number") return providerDefault;
-  return DEFAULT_TEMPERATURE;
+  return undefined;
 }
 
 /**
@@ -160,11 +155,55 @@ export function resolveModelRequest(
     customParams: resolved.customParams ? { ...resolved.customParams } : undefined,
   };
 
-  const knobs = resolveModelRequestKnobs(
-    config,
-    store.getModelFor(selection),
-    thinkingPreference,
-  );
+  const model = store.getModelFor(selection);
+  const knobs = resolveModelRequestKnobs(config, model, thinkingPreference);
+
+  applyCursorVariant(config, model, selection);
 
   return { providerConfig: config, ...knobs };
+}
+
+/**
+ * Cursor: fold reasoning and Fast into the model **id**.
+ *
+ * Every other provider takes effort as a field in the request body. Cursor has
+ * no such field — its account carries a separate id per effort tier, per
+ * thinking mode, and per speed lane (`cursor-grok-4.6-high-fast`). There is no
+ * plain `cursor-grok-4.6` to send with knobs attached; it does not exist.
+ *
+ * So the controls the user touched in the picker are resolved here into the
+ * one id that expresses them, checked against the account's real catalogue so
+ * a model with no fast twin is never sent `-fast`. And `reasoning_effort` is
+ * dropped: Aurora set it a moment ago because the model row says "effort", but
+ * on this wire it is a field nothing reads, and leaving it in the body would
+ * be a control that looks connected and is not.
+ *
+ * A no-op for every other provider.
+ */
+export function applyCursorVariant(
+  config: ProviderConfig,
+  model: LLMModel | null | undefined,
+  selection: string,
+): void {
+  if (config.id !== CURSOR_PROVIDER_ID) return;
+
+  if (config.customParams && "reasoning_effort" in config.customParams) {
+    const rest = { ...config.customParams };
+    delete rest.reasoning_effort;
+    config.customParams = Object.keys(rest).length > 0 ? rest : undefined;
+  }
+
+  const reasoning = model?.reasoning;
+  const on = reasoning ? reasoningIsOn(reasoning) : false;
+
+  config.model = cursorWireModel(config.model, {
+    // `toggleable: false` models have thinking ids and nothing else, so the
+    // switch is absent and thinking is simply how they run.
+    thinking: reasoning ? on : undefined,
+    effort:
+      reasoning?.type === "effort" && on && typeof reasoning.default === "string"
+        ? reasoning.default
+        : undefined,
+    fast: isFastOn(selection),
+  });
 }

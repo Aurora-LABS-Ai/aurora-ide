@@ -304,7 +304,11 @@ async function runAskQuestion(rawArgs: Record<string, unknown>): Promise<string>
 }
 
 interface PresentArtifactArgs {
+  artifactCategory?: unknown;
   artifactId?: unknown;
+  artifactKind?: unknown;
+  artifactTitle?: unknown;
+  /** Pre-rename spellings. Still read: threads on disk are full of them. */
   title?: unknown;
   kind?: unknown;
   content?: unknown;
@@ -420,15 +424,19 @@ async function runPresentArtifact(
   }
   const args = rawArgs as PresentArtifactArgs;
   const artifactId = typeof args.artifactId === "string" ? args.artifactId.trim() : "";
-  const title = typeof args.title === "string" ? args.title.trim() : "";
-  const kind = args.kind;
+  // Both spellings, new one first. The rename exists so the header sorts ahead
+  // of `content`; the old names have to keep working or every thread already on
+  // disk stops replaying.
+  const titleRaw = args.artifactTitle ?? args.title;
+  const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
+  const kind = args.artifactKind ?? args.kind;
   if (
     !artifactId ||
     !title ||
     !["html", "svg", "markdown", "mermaid", "react"].includes(String(kind))
   ) {
     throw new Error(
-      "present_artifact: artifactId, title, and kind (html|svg|markdown|mermaid|react) are required",
+      "present_artifact: artifactId, artifactTitle, and artifactKind (html|svg|markdown|mermaid|react) are required",
     );
   }
 

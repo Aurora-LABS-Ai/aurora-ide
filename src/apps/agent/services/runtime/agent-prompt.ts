@@ -212,9 +212,15 @@ const DEFERRED_TOOL_INSTRUCTIONS = `## Tools loaded on demand
  * in prose. So the prompt carries only the trigger, and the tool carries
  * everything else. Same split as the surface doctrine above it.
  */
-const CANVAS_INSTRUCTIONS = `## Canvas
+/**
+ * Exported so `agent-prompt.test.ts` can pin the kind-choice rule. It is the
+ * one line shared with `canvas_guidelines`; see the note in that tool's
+ * `guide.rs` for why a second copy is correct here.
+ */
+export const CANVAS_INSTRUCTIONS = `## Canvas
 - When the answer is a standalone artifact the user will study rather than read once — analysis, findings, comparisons, any dataset you were about to render as a large markdown table — present it on the Canvas instead of in chat.
-- Call \`canvas_guidelines\` before your first \`present_artifact\` with \`kind: "react"\`; those canvases are compiled, so an unread contract is a failed write.`;
+- Pick the cheapest kind that works: \`markdown\` for a document, \`mermaid\` for a diagram, \`react\` only when it needs to be interactive or when layout carries meaning that text cannot.
+- Call \`canvas_guidelines\` before your first \`present_artifact\` with \`artifactKind: "react"\`; those canvases are compiled, so an unread contract is a failed write.`;
 
 const MAX_PREVIEW_SNIPPET_CHARS = 200;
 

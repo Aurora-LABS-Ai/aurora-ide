@@ -12,6 +12,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { testProviderModel, type ProviderTestReport } from "@/apps/agent/services/providers/provider-test";
@@ -39,6 +40,26 @@ function formatLatency(ms: number): string {
 }
 
 /**
+ * Where the result panel sits, in viewport coordinates. The panel is
+ * portalled out of the model list because that list is a scroll container
+ * (`overflow-y: auto`): a child positioned inside it gets clipped at the
+ * list's edges and slides under its scrollbar. Fixed positioning against
+ * the button's rect is immune to both.
+ */
+interface PopPlacement {
+  /** Distance from the viewport's right edge — keeps the panel right-aligned to the button. */
+  right: number;
+  top?: number;
+  bottom?: number;
+  maxWidth: number;
+}
+
+/** Rough tallest realistic panel (route + error prose + meta), for the flip decision. */
+const POP_ESTIMATED_HEIGHT = 180;
+const POP_GAP = 6;
+const POP_MARGIN = 12;
+
+/**
  * Everything about a model that changes what gets sent. A verdict is only
  * valid for the exact configuration it was produced from, so any edit to
  * these must discard it — a green check against since-changed settings
@@ -59,7 +80,49 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
   const [report, setReport] = useState<ProviderTestReport | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<PopPlacement | null>(null);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
+
+  const attachRoot = useCallback((element: HTMLSpanElement | null) => {
+    if (element) {
+      setPortalTarget((element.closest(".agw-root") as HTMLElement) ?? document.body);
+    }
+  }, []);
+
+  const place = useCallback(() => {
+    const anchor = buttonRef.current?.getBoundingClientRect();
+    if (!anchor) return;
+    const right = Math.max(POP_MARGIN, window.innerWidth - anchor.right);
+    const below = window.innerHeight - anchor.bottom - POP_GAP;
+    const up = below < POP_ESTIMATED_HEIGHT && anchor.top - POP_GAP > below;
+    setPlacement({
+      right,
+      ...(up
+        ? { bottom: window.innerHeight - anchor.top + POP_GAP }
+        : { top: anchor.bottom + POP_GAP }),
+      maxWidth: Math.min(340, window.innerWidth - right - POP_MARGIN),
+    });
+  }, []);
+
+  const show = useCallback(() => {
+    place();
+    setOpen(true);
+  }, [place]);
+
+  // The panel is fixed-positioned, so scrolling the model list moves the row
+  // out from under it. Follow the button while open, exactly as the portalled
+  // select menus do.
+  useEffect(() => {
+    if (!open) return;
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
 
   const selection = `${model.providerId}:${model.modelKey}`;
   const fingerprint = configFingerprint(model);
@@ -87,7 +150,7 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
     setState("running");
     setFailure(null);
     setReport(null);
-    setOpen(true);
+    show();
     try {
       const result = await testProviderModel(selection);
       if (!alive.current) return;
@@ -98,22 +161,24 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
       setFailure(err instanceof Error ? err.message : String(err));
       setState("fail");
     }
-  }, [selection, state]);
+  }, [selection, show, state]);
 
   const hasResult = report !== null || failure !== null;
 
   return (
     <span
+      ref={attachRoot}
       className="agw-prov-test"
-      onMouseEnter={() => hasResult && setOpen(true)}
+      onMouseEnter={() => hasResult && show()}
       onMouseLeave={() => state !== "running" && setOpen(false)}
     >
       <button
+        ref={buttonRef}
         type="button"
         className="agw-prov-icon-btn agw-prov-test-btn"
         data-state={state}
         onClick={run}
-        onFocus={() => hasResult && setOpen(true)}
+        onFocus={() => hasResult && show()}
         onBlur={() => state !== "running" && setOpen(false)}
         disabled={state === "running"}
         aria-label={LABEL_FOR_STATE[state]}
@@ -122,43 +187,58 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
         <AgentIcon name={ICON_FOR_STATE[state]} size={14} />
       </button>
 
-      {open && (state === "running" || hasResult) && (
-        <span className="agw-prov-test-pop" role="status" aria-live="polite">
-          {state === "running" ? (
-            <span className="agw-prov-test-line">Sending a test message…</span>
-          ) : failure ? (
-            <span className="agw-prov-test-line">{failure}</span>
-          ) : report ? (
-            <>
-              <span className="agw-prov-test-route">
-                <span className="agw-prov-test-shape">{report.wireShape}</span>
-                <span className="agw-prov-test-url">{report.url}</span>
-              </span>
+      {portalTarget &&
+        open &&
+        placement &&
+        (state === "running" || hasResult) &&
+        createPortal(
+          <span
+            className="agw-prov-test-pop"
+            role="status"
+            aria-live="polite"
+            style={{
+              right: placement.right,
+              top: placement.top,
+              bottom: placement.bottom,
+              maxWidth: placement.maxWidth,
+            }}
+          >
+            {state === "running" ? (
+              <span className="agw-prov-test-line">Sending a test message…</span>
+            ) : failure ? (
+              <span className="agw-prov-test-line">{failure}</span>
+            ) : report ? (
+              <>
+                <span className="agw-prov-test-route">
+                  <span className="agw-prov-test-shape">{report.wireShape}</span>
+                  <span className="agw-prov-test-url">{report.url}</span>
+                </span>
 
-              {report.ok ? (
-                <>
-                  <span className="agw-prov-test-reply">{report.snippet}</span>
-                  <span className="agw-prov-test-meta">
-                    {formatLatency(report.latencyMs)}
-                    {report.outputTokens != null && (
-                      <> · {report.inputTokens ?? 0} in / {report.outputTokens} out</>
-                    )}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="agw-prov-test-line" data-tone="bad">
-                    {report.error}
-                  </span>
-                  <span className="agw-prov-test-meta">
-                    Failed after {formatLatency(report.latencyMs)}
-                  </span>
-                </>
-              )}
-            </>
-          ) : null}
-        </span>
-      )}
+                {report.ok ? (
+                  <>
+                    <span className="agw-prov-test-reply">{report.snippet}</span>
+                    <span className="agw-prov-test-meta">
+                      {formatLatency(report.latencyMs)}
+                      {report.outputTokens != null && (
+                        <> · {report.inputTokens ?? 0} in / {report.outputTokens} out</>
+                      )}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="agw-prov-test-line" data-tone="bad">
+                      {report.error}
+                    </span>
+                    <span className="agw-prov-test-meta">
+                      Failed after {formatLatency(report.latencyMs)}
+                    </span>
+                  </>
+                )}
+              </>
+            ) : null}
+          </span>,
+          portalTarget,
+        )}
     </span>
   );
 };

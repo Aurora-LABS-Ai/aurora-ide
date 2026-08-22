@@ -114,6 +114,14 @@ tiktoken-rs = "0.6"
 # CLI argument parsing for `aurora .` command
 clap = { version = "4", features = ["derive"] }
 base64 = "0.22"
+# Cursor provider wire schema. Its own crate so 7.6k lines of generated
+# protobuf compile once and stay cached instead of being rebuilt on every
+# edit to `aurora` (see crates/cursor-proto/Cargo.toml).
+prost = "0.13"
+cursor-proto = { path = "../crates/cursor-proto" }
+# Cursor may set the Connect `compressed` flag on a stream frame; without this
+# those frames decode to garbage rather than failing loudly.
+flate2 = "1"
 anyhow = "1"
 
 # Screenshot post-processing (decode → downscale → re-encode PNG). PNG-only to
@@ -155,6 +163,12 @@ windows-sys = { version = "0.61", features = [
     # is closed. Chosen over shelling out to wmic/PowerShell: it needs no child
     # process, and wmic is gone on current Windows 11.
     "Win32_System_Diagnostics_ToolHelp",
+    # Job objects: `commands::process_tracking` assigns each agent shell to a
+    # job so that, at exit, "what did this command leave running?" is answered
+    # by job MEMBERSHIP — which survives dead intermediate processes, unlike a
+    # parent-pid walk (git-bash launches through a wrapper, so the chain to a
+    # `sleep &` survivor breaks the moment the shell dies).
+    "Win32_System_JobObjects",
     # `EXCEPTION_POINTERS`, `PVECTORED_EXCEPTION_HANDLER` and
     # `AddVectoredExceptionHandler` are all gated on this one, not on
     # `Diagnostics_Debug` as their documentation placement suggests.

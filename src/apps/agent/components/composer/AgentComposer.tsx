@@ -219,7 +219,24 @@ function serializeEditor(root: HTMLElement, forSend = false): string {
       if (forSend) out += `@terminal:${el.dataset.term}`;
       return;
     }
-    if (el.dataset.sel) return; // inline inspector pick — threaded via the selection store
+    if (el.dataset.sel) {
+      // Inline inspector pick. Same doctrine as the `/` pill above: its FULL
+      // context threads via the selection store, but its POSITION is part of
+      // the sentence — "make [pill] match the header" loses its object if the
+      // pill vanishes. It used to serialize to NOTHING: the sent text kept a
+      // hole where the pill sat, and the bubble hoisted the chip to the top.
+      // On send it serializes as `@element:N`, so the model reads a coherent
+      // sentence (the `<selected_elements>` block defines index N) and the
+      // bubble re-pills it in place. N is read from the STORE at send time —
+      // indices renumber when a pick is removed, so the DOM cannot cache one.
+      if (forSend && el.dataset.sel) {
+        const entry = useAgentSelectionStore
+          .getState()
+          .selected.find((e) => e.id === el.dataset.sel);
+        if (entry) out += `@element:${entry.index}`;
+      }
+      return;
+    }
     if (el.dataset.rel) {
       out += `@${el.dataset.rel}`;
       return;

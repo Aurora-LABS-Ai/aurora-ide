@@ -239,11 +239,16 @@ export function readFontState(): FontReading[] {
   const root = document.documentElement;
   const agentRoot = document.querySelector(".agw-root");
   const body = document.body;
+  const isAgentWindow = window.location.pathname === "/agent-window";
 
   const readings: (FontReading | null)[] = [
     readStack("Agent · UI", cssVar(agentRoot, "--agw-font-ui")),
     readStack("Agent · code", cssVar(agentRoot, "--agw-font-code")),
-    readStack("IDE · UI", cssVar(root, "--aurora-ui-font-family")),
+    // `--aurora-ui-font-family` is set on the root in BOTH windows (one
+    // bundle), but nothing in the agent window paints with it — reporting it
+    // there reads as "this window ignores my font setting", which is false.
+    // Same filter `typography-debug.ts` already applies to this row.
+    isAgentWindow ? null : readStack("IDE · UI", cssVar(root, "--aurora-ui-font-family")),
     // Not a token but the ground truth: whatever the cascade actually landed on
     // for ordinary text. If this disagrees with the rows above, a stylesheet is
     // overriding the token and the tokens are not the story.

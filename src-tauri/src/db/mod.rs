@@ -12,8 +12,8 @@ pub use models::{
     ProviderModel, ThreadState, TokenUsage, ToolCall, ToolSetting, WorkspaceState,
 };
 pub use repositories::{
-    CheckpointRepository, EditorRepository, ExplorerRepository, ModelsRepository,
-    SettingsRepository, ThemeRepository, WorkspaceRepository,
+    CheckpointRepository, CursorModel, CursorModelsRepository, EditorRepository,
+    ExplorerRepository, ModelsRepository, SettingsRepository, ThemeRepository, WorkspaceRepository,
 };
 
 use tauri::AppHandle;
@@ -57,6 +57,14 @@ impl Database {
     /// Get a provider-models repository (v15+)
     pub fn models(&self) -> ModelsRepository<'_> {
         ModelsRepository::new(self._conn.connection())
+    }
+
+    /// The Cursor account's model catalogue.
+    ///
+    /// Separate from [`Self::models`] because these rows are not the user's to
+    /// create or edit — see `repositories::cursor_models`.
+    pub fn cursor_models(&self) -> CursorModelsRepository<'_> {
+        CursorModelsRepository::new(self._conn.connection())
     }
 
     /// Get a themes repository

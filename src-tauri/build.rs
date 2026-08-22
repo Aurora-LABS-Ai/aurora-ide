@@ -16,10 +16,9 @@ fn main() {
 fn stage_sidecar_binaries() {
     use std::path::{Path, PathBuf};
 
-    let (Ok(manifest_dir), Ok(target_triple)) = (
-        std::env::var("CARGO_MANIFEST_DIR"),
-        std::env::var("TARGET"),
-    ) else {
+    let (Ok(manifest_dir), Ok(target_triple)) =
+        (std::env::var("CARGO_MANIFEST_DIR"), std::env::var("TARGET"))
+    else {
         return;
     };
     let vendor_dir = PathBuf::from(&manifest_dir).join("binaries");
@@ -39,7 +38,11 @@ fn stage_sidecar_binaries() {
     let Ok(out_dir) = std::env::var("OUT_DIR") else {
         return;
     };
-    let Some(target_dir) = PathBuf::from(out_dir).ancestors().nth(3).map(Path::to_path_buf) else {
+    let Some(target_dir) = PathBuf::from(out_dir)
+        .ancestors()
+        .nth(3)
+        .map(Path::to_path_buf)
+    else {
         return;
     };
 

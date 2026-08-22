@@ -52,7 +52,7 @@ use super::client::{build_single_api_client, ProviderConfigSnapshot};
 fn is_key_failover(err: &ApiError) -> bool {
     matches!(
         err,
-        ApiError::Unauthorized | ApiError::RateLimit | ApiError::Provider(_)
+        ApiError::Unauthorized(_) | ApiError::RateLimit | ApiError::Provider(_)
     )
 }
 
@@ -139,7 +139,7 @@ impl StreamingApiClient for PooledStreamingClient {
         }
 
         // Pool exhausted — every key failed with a failover-eligible error.
-        Err(last_err.unwrap_or(ApiError::Unauthorized))
+        Err(last_err.unwrap_or_else(|| ApiError::Unauthorized("check API key".to_string())))
     }
 }
 
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn is_key_failover_classifies_variants() {
-        assert!(is_key_failover(&ApiError::Unauthorized));
+        assert!(is_key_failover(&ApiError::Unauthorized("no key".into())));
         assert!(is_key_failover(&ApiError::RateLimit));
         assert!(is_key_failover(&ApiError::Provider("503".into())));
         // Not retried — may be mid-stream or key-agnostic.

@@ -105,13 +105,20 @@ pub(super) fn build_per_turn_tool_registry(
         if vision_blocked(&tool.name) || is_withdrawn_tool(&tool.name) || mode_blocked(&tool.name) {
             continue;
         }
-        let executor: Arc<dyn ToolExecutor> = Arc::new(FrontendBridgeExecutor::new(
-            tool.clone(),
-            turn_id.clone(),
-            router.clone(),
-            emitter.clone(),
-            cancel_token.clone(),
-        ));
+        // Bridge executors are built fresh for every turn, so they never pass
+        // through the registry-wide `install_timeout_guards` that bounds the
+        // native tools at startup. Wrap them here or they are the one family
+        // that can still wait forever.
+        let executor: Arc<dyn ToolExecutor> =
+            crate::tools::timeout::TimeoutGuardedExecutor::maybe_wrap(Arc::new(
+                FrontendBridgeExecutor::new(
+                    tool.clone(),
+                    turn_id.clone(),
+                    router.clone(),
+                    emitter.clone(),
+                    cancel_token.clone(),
+                ),
+            ));
         if defer_tools && is_deferrable(&tool.name) {
             defer(&mut deferred, executor);
         } else {
@@ -262,6 +269,10 @@ impl ToolExecutor for PlanShellExecutor {
 
     fn schema(&self) -> crate::agent_runtime::api_client::ToolSchema {
         self.inner.schema()
+    }
+
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        self.inner.timeout_policy()
     }
 
     async fn execute(

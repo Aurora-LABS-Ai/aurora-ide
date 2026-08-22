@@ -242,8 +242,29 @@ impl ToolExecutor for ShellSpawnTool {
                 "exitCode": output.exit_code,
                 "stdout": output.stdout,
                 "stderr": output.stderr,
-                "message": "Command finished immediately (exit 0). Nothing is left running, so \
-                            there is no process to list or stop.",
+                "leftRunning": output.left_running,
+                // Two truthful endings, and they need opposite advice. A
+                // launcher pattern (`Start-Process …`, `server &`) exits at
+                // once and LEAVES ITS CHILD BEHIND — claiming "nothing is left
+                // running" there sends the model hunting for a process Aurora
+                // said does not exist.
+                "message": if output.left_running {
+                    let who = if output.survivors.is_empty() {
+                        "a process it started is still running".to_string()
+                    } else {
+                        format!("it left running: {}", output.survivors.join(", "))
+                    };
+                    format!(
+                        "The command exited immediately (exit 0), but {who}. That survivor is \
+                         NOT tracked: no processId, no output file, and shell_kill cannot reach \
+                         it. Next time spawn the process directly — no Start-Process, no \
+                         trailing '&' — so shell_spawn tracks it."
+                    )
+                } else {
+                    "Command finished immediately (exit 0). Nothing is left running, so there is \
+                     no process to list or stop."
+                        .to_string()
+                },
             })
             .to_string());
         }

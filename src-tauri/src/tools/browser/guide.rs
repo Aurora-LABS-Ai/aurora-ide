@@ -125,6 +125,20 @@ collapsed, and what the page is now showing:
   or unmounted. Catches out-of-flow elements that change no height at all.
 - `focus_moved_to` — what ended up focused. On its own this proves the click
   landed on a real control.
+- `transient_text` — messages that appeared during the action and were gone
+  again before the page was observed. This is where a short-lived toast or
+  validation flash lands ("enter a valid email"); no screenshot, view or log
+  read can catch these afterwards, so when a click "did nothing", read this
+  first.
+
+## Local files
+
+`browser_navigate` takes `file://` URLs directly — Aurora serves the file
+through its own `aurora-page` scheme so the page can talk back (a raw file://
+page cannot, and every observation against one used to time out). The address
+you see afterwards is `http://aurora-page.localhost/<path>`; that is the same
+file, served live from disk, so edit-and-reload works. No local HTTP server is
+needed to preview an HTML file.
 
 `"nothing_observable_changed": true` is a real result and usually a problem. It
 means the element was found and acted on and the page did not react — a dead

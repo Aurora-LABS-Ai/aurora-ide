@@ -208,10 +208,15 @@ impl BrowserManager {
             self.windows.remove(&label);
         }
 
+        // A file:// page cannot answer through the IPC bridge (capability
+        // grants cover http/https origins only) — serve it through
+        // aurora-page instead. See `services::local_page`.
+        let load_url = crate::services::local_page::to_served_url(&opts.url)
+            .unwrap_or_else(|| opts.url.clone());
         let url = WebviewUrl::External(
-            opts.url
+            load_url
                 .parse()
-                .map_err(|e| format!("invalid url '{}': {e}", opts.url))?,
+                .map_err(|e| format!("invalid url '{load_url}': {e}"))?,
         );
 
         // Embedded ONLY. Aurora has exactly one browser — the agent window's
@@ -356,12 +361,16 @@ impl BrowserManager {
 
     pub fn navigate(&self, label: &str, url: &str) -> Result<(), String> {
         let window = self.window(label)?;
+        // Same rewrite as `open`: a file:// page is deaf to the bridge, so it
+        // is served through aurora-page instead. See `services::local_page`.
+        let load_url =
+            crate::services::local_page::to_served_url(url).unwrap_or_else(|| url.to_string());
         // `WebviewWindow::navigate` exists in Tauri 2 and tells the
         // underlying WebView to load a new URL without recreating the
         // window.
-        let parsed = url
+        let parsed = load_url
             .parse()
-            .map_err(|e| format!("invalid url '{url}': {e}"))?;
+            .map_err(|e| format!("invalid url '{load_url}': {e}"))?;
         // Pre-emptively fail any pending request bound to this label.
         // The about-to-load page wipes the page-side `window.__aurora`
         // helper, so a screenshot/get_dom/eval that's already in

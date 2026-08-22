@@ -243,6 +243,15 @@ pub struct ShellRunOutput {
     /// the work to `shell_spawn`, and would instead "fix" a command that was
     /// never broken.
     pub timed_out: bool,
+    /// The command exited, but something it started is still running and
+    /// holding the output pipe — an untracked survivor. See
+    /// `commands::CommandOutput::left_running`; the tools use this to tell the
+    /// model the truth ("finished, left something running") instead of either
+    /// hanging on the pipe or claiming nothing remains.
+    pub left_running: bool,
+    /// The survivors by name when the process table identified them —
+    /// see `commands::CommandOutput::survivors`.
+    pub survivors: Vec<String>,
 }
 
 /// What a background spawn looked like after its startup window.
@@ -412,6 +421,8 @@ impl IdeEventSink for NoopIdeEventSink {
             exit_code: output.exit_code,
             success: output.success,
             timed_out: output.timed_out,
+            left_running: output.left_running,
+            survivors: output.survivors,
         })
     }
 

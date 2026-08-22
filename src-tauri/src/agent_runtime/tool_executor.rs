@@ -164,8 +164,16 @@ pub enum ToolError {
     #[error("tool was cancelled")]
     Cancelled,
 
-    #[error("tool timed out after {0}ms")]
-    Timeout(u64),
+    /// The call was abandoned after `timeout_ms` without an answer.
+    ///
+    /// `message` carries the whole sentence the model reads, built by
+    /// [`crate::tools::timeout::TimeoutPolicy::timed_out_message`], because the
+    /// useful half of a timeout is per-tool advice ("raise `timeout`", "the
+    /// browser panel stopped answering") and a bare duration cannot carry it.
+    /// `timeout_ms` stays a field so a caller can classify the failure without
+    /// parsing prose.
+    #[error("{message}")]
+    Timeout { timeout_ms: u64, message: String },
 }
 
 /// Anything the agent can call.
@@ -238,6 +246,25 @@ pub trait ToolExecutor: Send + Sync {
     /// produce duplicate UI updates.
     fn uses_frontend_lifecycle(&self) -> bool {
         false
+    }
+
+    /// How long this tool may take, when something has to stop it from
+    /// outside.
+    ///
+    /// `None` — the default — means one of two things, and both are fine:
+    /// the tool cannot wait at all (a JSON read, a guidelines string), or it
+    /// bounds itself internally and does it better than an outside clock
+    /// could. `shell_execute` is the second kind: it kills its own process and
+    /// keeps whatever the command printed first, whereas an outside timeout
+    /// would abandon the call and throw that output away.
+    ///
+    /// `Some(policy)` opts the tool into
+    /// [`crate::tools::timeout::TimeoutGuardedExecutor`], installed over the
+    /// whole registry by
+    /// [`crate::tools::timeout::install_timeout_guards`]. A wrapper executor
+    /// must forward this from its inner tool or the bound is silently lost.
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        None
     }
 }
 
@@ -803,8 +830,12 @@ mod tests {
         );
         assert_eq!(ToolError::Cancelled.to_string(), "tool was cancelled");
         assert_eq!(
-            ToolError::Timeout(5_000).to_string(),
-            "tool timed out after 5000ms"
+            ToolError::Timeout {
+                timeout_ms: 5_000,
+                message: "`grep` was still running after 5000ms.".into(),
+            }
+            .to_string(),
+            "`grep` was still running after 5000ms."
         );
     }
 

@@ -11,21 +11,14 @@
 //! That reaches the model as well as the screen, so a file called `café.txt`
 //! becomes unreferenceable and a localized compiler error becomes unreadable.
 //!
-//! [`decode`] therefore tries UTF-8 first and falls back to the console code
-//! page only when the bytes genuinely are not UTF-8. [`StreamDecoder`] does
-//! the same across chunk boundaries, where a multi-byte character can be
-//! split between two reads — a case the previous per-chunk `from_utf8_lossy`
-//! also got wrong, replacing a perfectly valid character with `U+FFFD`
-//! whenever a 16 KB read landed mid-sequence.
-
-/// Decode one complete buffer.
-#[must_use]
-pub fn decode(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.to_string(),
-        Err(_) => decode_console(bytes),
-    }
-}
+//! [`StreamDecoder`] therefore tries UTF-8 first and falls back to the
+//! console code page only when the bytes genuinely are not UTF-8, holding a
+//! multi-byte character split between two reads until its tail arrives — a
+//! case the previous per-chunk `from_utf8_lossy` got wrong, replacing a
+//! perfectly valid character with `U+FFFD` whenever a 16 KB read landed
+//! mid-sequence. (A one-shot `decode` used to sit beside it for the
+//! unstreamed runner; that runner now shares the streamed lifecycle, so the
+//! incremental decoder is the only entrance.)
 
 /// Incremental decoder for streamed output.
 ///
@@ -132,10 +125,18 @@ fn decode_console(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// One whole buffer through the decoder: push then finish.
+    fn decode_once(bytes: &[u8]) -> String {
+        let mut decoder = StreamDecoder::new();
+        let mut text = decoder.push(bytes);
+        text.push_str(&decoder.finish());
+        text
+    }
+
     #[test]
     fn plain_utf8_passes_through() {
-        assert_eq!(decode("hello".as_bytes()), "hello");
-        assert_eq!(decode("café → ✓".as_bytes()), "café → ✓");
+        assert_eq!(decode_once("hello".as_bytes()), "hello");
+        assert_eq!(decode_once("café → ✓".as_bytes()), "café → ✓");
     }
 
     #[test]
@@ -151,7 +152,7 @@ mod tests {
     #[test]
     fn console_code_page_bytes_decode_on_windows() {
         // 0x82 is `é` in CP437 and invalid UTF-8 — exactly what pwsh emits.
-        let text = decode(&[b'c', b'a', b'f', 0x82]);
+        let text = decode_once(&[b'c', b'a', b'f', 0x82]);
         assert!(
             !text.contains('\u{fffd}'),
             "must not be lossy, got: {text:?}"

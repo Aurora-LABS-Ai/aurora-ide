@@ -137,6 +137,14 @@ impl ToolExecutor for Driven {
         self.inner.uses_frontend_lifecycle()
     }
 
+    /// The bound for every panel-touching tool lives here, for the same reason
+    /// the driving cue does: this wrapper is the one place all fifteen of them
+    /// pass through, so a sixteenth cannot be added unbounded by accident.
+    /// An inner tool that declares its own policy keeps it.
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        self.inner.timeout_policy().or(Some(super::PANEL_TIMEOUT))
+    }
+
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<String, ToolError> {
         let _driving = DrivingGuard::new(self.signal.clone(), self.name);
         self.inner.execute(input, context).await
@@ -327,5 +335,27 @@ mod tests {
         assert!(!tool.requires_permission());
         assert!(!tool.concurrency_safe());
         assert!(!tool.uses_frontend_lifecycle());
+    }
+
+    /// Every tool that reaches the panel goes through this wrapper, so the
+    /// bound belongs here. A browser tool added later cannot arrive unbounded
+    /// without also skipping the driving cue, which is loud enough to notice.
+    #[tokio::test]
+    async fn every_driven_tool_is_bounded() {
+        let recorder = Arc::new(Recorder::default());
+        let tool = Driven::wrap(Arc::new(Fake::new("browser_click")), recorder);
+
+        assert_eq!(tool.timeout_policy(), Some(super::super::PANEL_TIMEOUT));
+    }
+
+    /// A dead server makes every page-side read take its full 30s, and one call
+    /// can chain three. The bound has to sit clear of that or a browser pointed
+    /// at a stopped dev server would be cut off while it was behaving normally.
+    #[test]
+    fn the_panel_bound_clears_three_stacked_page_reads() {
+        assert!(
+            super::super::PANEL_TIMEOUT.default_ms >= 3 * 30_000,
+            "a call that chains act, settle and observe would be abandoned mid-flight"
+        );
     }
 }

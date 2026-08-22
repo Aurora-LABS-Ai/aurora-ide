@@ -1,3 +1,7 @@
+import {
+  ARTIFACT_CATEGORY_IDS,
+  artifactCategoryDescription,
+} from "@/apps/agent/lib/artifacts/artifact-category";
 import type { ToolDefinition } from "@/apps/agent/tools/types";
 
 export const presentArtifactTool: ToolDefinition = {
@@ -22,24 +26,42 @@ Behavior:
 - Use html for custom interactive compositions, svg for bespoke graphics Mermaid cannot express, and markdown for document-style artifacts. Prefer mermaid over hand-writing diagram SVG, and react over hand-writing an interactive HTML page.
 - Produce self-contained content. HTML, SVG, and react canvases render in a sandbox with no network access; embed the data instead of fetching it, and do not depend on the parent app or local files.
 
+Send artifactCategory, artifactId, artifactKind and artifactTitle FIRST, before content or patches. The transcript labels the card and starts its animation the moment those four arrive, and a canvas write is the longest call you make — a header that arrives after the body leaves the reader watching an unnamed card for the whole write.
+
 Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid source is FULLY RENDERED and react source is COMPILED before saving — layout errors (duplicate ids, a subgraph id colliding with a node id, cyclic nesting) and compile errors (invalid syntax, a missing default export, a disallowed import) reject the write with the engine's exact message. Type errors are not caught yet, so a react canvas that compiles can still throw at run time; the panel reports the crash, but write defensively against missing or empty data rather than relying on the compiler. Patch failures do not create a version: overlap errors name both conflicting patch indices, stale errors report the latest version, ambiguous matches report their count, and Mermaid errors include renderer context. Correct the identified input and retry; use read_artifact when the exact latest source is needed.`,
     parameters: {
       type: "object",
       properties: {
+        // ── Header fields ──────────────────────────────────────────────────
+        // These four are read by the transcript the instant they arrive, so
+        // they must reach the UI BEFORE the body. Tool arguments stream key by
+        // key, and a model that emits its keys alphabetically would put a bare
+        // `title`/`kind` behind `content` and `patches` — measured on disk, that
+        // was 25% of real calls, every one of them unlabelled for the whole
+        // write. The shared `artifact` prefix makes the header sort first in
+        // the alphabetical ordering as well as this authored one. Renaming is
+        // the entire fix; see `affected_paths` for the same repair on the write
+        // tools. `title`/`kind` are still accepted at runtime for threads
+        // already on disk.
+        artifactCategory: {
+          type: "string",
+          enum: [...ARTIFACT_CATEGORY_IDS],
+          description: artifactCategoryDescription(),
+        },
         artifactId: {
           type: "string",
           description:
             "Stable artifact id (letters/numbers plus dots, dashes, or underscores; max 64). Reuse it only to version the same deliverable.",
         },
-        title: {
-          type: "string",
-          description: "Short customer-facing title shown in Canvas (max 120 characters).",
-        },
-        kind: {
+        artifactKind: {
           type: "string",
           enum: ["html", "svg", "markdown", "mermaid", "react"],
           description:
             "Rendering format. Use mermaid for diagrams and provide raw Mermaid syntax without ``` fences. Use react for a live, interactive canvas — one component file with a default export, importing only from \"react\" and \"aurora/canvas\". The kind cannot change for an existing artifactId.",
+        },
+        artifactTitle: {
+          type: "string",
+          description: "Short customer-facing title shown in Canvas (max 120 characters).",
         },
         content: {
           type: "string",
@@ -76,7 +98,7 @@ Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid sou
           },
         },
       },
-      required: ["artifactId", "title", "kind"],
+      required: ["artifactCategory", "artifactId", "artifactKind", "artifactTitle"],
     },
   },
 };

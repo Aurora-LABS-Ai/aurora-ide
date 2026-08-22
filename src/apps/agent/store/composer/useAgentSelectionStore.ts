@@ -82,9 +82,11 @@ export function buildSelectionContext(entries: SelectedEntry[]): string | null {
   });
   return [
     "<selected_elements>",
-    "The user picked these elements in the in-app browser. First LOCATE the source",
-    "file(s) in this workspace that render them — search (grep) by id, class names,",
-    "or the visible text — then make the requested change in that source.",
+    "The user picked these elements in the in-app browser. A token like",
+    "`@element:2` in their message marks WHERE in the sentence they meant the",
+    "element with index=\"2\" below. First LOCATE the source file(s) in this",
+    "workspace that render them — search (grep) by id, class names, or the",
+    "visible text — then make the requested change in that source.",
     ...blocks,
     "</selected_elements>",
   ].join("\n");

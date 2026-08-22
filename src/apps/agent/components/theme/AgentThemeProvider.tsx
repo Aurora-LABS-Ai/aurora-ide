@@ -7,7 +7,7 @@
  * the IDE theme is untouched and cannot bleed in.
  */
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo } from "react";
 import { useAgentThemeStore, resolveAgentTheme } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { tokensToCssVars } from "@/apps/agent/theme/tokens";
 // Bundled typefaces (Inter Variable, JetBrains Mono, Geist, …) register once
@@ -49,6 +49,27 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
     [activeThemeId, customThemes, customizations, contrast],
   );
   const cssVars = useMemo(() => tokensToCssVars(theme.tokens), [theme.tokens]);
+
+  // The host document's `body` is styled by the shared bundle's IDE stylesheet
+  // (`index.css`), so in the agent window it computes to the IDE's font while
+  // every visible surface under `.agw-root` uses `--agw-font-ui`. Nothing the
+  // user reads paints with the body face — but any portal that ever falls back
+  // to `document.body`, and every font probe, then shows the OTHER product's
+  // face inside this window. Mirror the resolved UI font onto the body so the
+  // whole agent document speaks one face. Path-gated: this document is the
+  // agent window's own webview, but the guard keeps a hypothetical mount
+  // inside the IDE document from restyling the IDE's body.
+  useEffect(() => {
+    if (window.location.pathname !== "/agent-window") return;
+    const fontUi = theme.tokens.fontUi;
+    if (!fontUi) return;
+    const body = document.body;
+    const previous = body.style.fontFamily;
+    body.style.fontFamily = fontUi;
+    return () => {
+      body.style.fontFamily = previous;
+    };
+  }, [theme.tokens.fontUi]);
 
   return (
     <div

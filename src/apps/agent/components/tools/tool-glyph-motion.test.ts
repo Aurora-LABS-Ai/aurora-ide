@@ -128,8 +128,24 @@ describe("live tool marks", () => {
     expect(head).not.toContain("agw-spinner");
     expect(head).toContain('data-live={status === "running" ? "" : undefined}');
     expect(head).toContain("agw-tool-glyph-scan");
-    // The Canvas launcher is a different card and keeps its own spinner.
-    expect(cardSource.match(/agw-spinner/g)?.length).toBe(2);
+
+    // The Canvas launcher used to spin too. It now says "working" with a 2px
+    // rail and "alive" with the title sweep, so its own region mounts no
+    // spinner — while the plan card, which was deliberately left alone, keeps
+    // exactly one. Asserting a total here is what made this test stale the
+    // moment one card changed; assert the region that is actually claimed.
+    const canvasCard = cardSource.slice(
+      cardSource.indexOf("const CanvasLaunchCard"),
+      cardSource.indexOf("const StandardToolCallCard"),
+    );
+    expect(canvasCard).not.toContain("agw-spinner");
+    expect(canvasCard).toContain("agw-canvas-launch-rail");
+
+    const planCard = cardSource.slice(
+      cardSource.indexOf("const PlanLaunchCard"),
+      cardSource.indexOf("const PLAN_STEP_WORD"),
+    );
+    expect(planCard.match(/agw-spinner/g)?.length).toBe(1);
   });
 
   it("takes reduce-motion from Aurora's own switch, never from the OS", () => {

@@ -30,6 +30,7 @@ import {
 } from "@/apps/agent/services";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
+  applyCursorVariant,
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequestKnobs,
   resolveTemperature,
@@ -753,12 +754,15 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // message, so the model sees it inline (parity with the IDE).
     //
     // A steering message must be as accurate as a fresh turn: `@` file
-    // mentions already ride in the text (`@rel`), and staged `/` directives
-    // are consumed HERE and resolved into a `<steering_context>` block on the
+    // mentions already ride in the text (`@rel`), staged `/` directives are
+    // consumed HERE and resolved into a `<steering_context>` block on the
     // model copy — a mid-turn send used to silently drop them (they stayed
-    // staged and leaked onto the NEXT turn). Image attachments and inspector
-    // picks still deliberately wait for a fresh turn: an image can't ride a
-    // tool-result boundary, and the pills stay visible in the tray.
+    // staged and leaked onto the NEXT turn) — and inspector picks ride the
+    // same block. Picks used to wait for a fresh turn, which read as a silent
+    // drop: the pills left the composer, the injected bubble showed bare
+    // text, and nothing said whether the model ever saw the elements. It had
+    // not. An element block is plain text and rides a tool-result boundary as
+    // well as any rule does.
     if (fromComposer) {
       const chat = useAgentChatStore.getState();
       const liveThreadId = target?.threadId ?? chat.currentThreadId;
@@ -775,7 +779,24 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         if (steeringCommands.length > 0) {
           useAgentCommandStore.getState().clear(stageKey);
         }
-        const chips = [...fileChips, ...steeringCommandChips];
+
+        // Inspector picks: full context to the model (below), a compact pill
+        // per element on the queued card and the injected row. Consumed now —
+        // leaving them staged is what made them leak onto the next turn.
+        const steeringPicks = useAgentSelectionStore.getState().selected;
+        const steeringPickChips = steeringPicks.map((entry) => ({
+          kind: "element" as const,
+          title: `<${entry.element.tagName}> ${(entry.element.text ?? "").trim().slice(0, 24)}`.trim(),
+          value: entry.element.selector,
+          // The pick's index, so the injected row can anchor this pill at its
+          // `@element:N` token in the text. Carried in `path` because that is
+          // a field the Rust chip struct round-trips — a TS-only field would
+          // be dropped between enqueue and the injection event.
+          path: String(entry.index),
+        } satisfies AttachedPromptChip));
+        if (steeringPicks.length > 0) useAgentSelectionStore.getState().clear();
+
+        const chips = [...fileChips, ...steeringCommandChips, ...steeringPickChips];
 
         // Staged image attachments ride the injection as `<aurora_image>`
         // markers — the same wire path `browser_screenshot` uses, so a
@@ -797,6 +818,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         // blocks ride inside the injected message instead of ideContext.
         const steeringRoot = target?.projectRoot ?? chat.projectRoot;
         const blocks: string[] = [];
+        // Same block a fresh turn sends via ideContext — selector, tag, text
+        // and clipped HTML per element, so the model can locate the source.
+        const steeringSelectionBlock = buildSelectionContext(steeringPicks);
+        if (steeringSelectionBlock) blocks.push(steeringSelectionBlock);
         const steeringRules = await buildRuleContext(
           steeringRoot,
           steeringSelection.ruleFilenames,
@@ -1099,7 +1124,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       return Math.max(0, end - timing.start - approvalWait);
     };
 
-    const upsertToolCall = (tc: ToolCallRequest, result?: string | null) => {
+    const upsertToolCall = (
+      tc: ToolCallRequest,
+      result?: string | null,
+      startedAt?: number,
+    ) => {
       // Keep timeline order exact: buffered text lands BEFORE this tool event.
       flushStreamText();
       patchMessage(assistantId, (m) => {
@@ -1111,6 +1140,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           arguments: tc.function.arguments || "",
           result: result !== undefined ? result : idx >= 0 ? calls[idx].result : null,
           durationMs: idx >= 0 ? calls[idx].durationMs : undefined,
+          // This object is rebuilt from scratch on every argument delta, so a
+          // field that is not carried forward here is a field that is wiped
+          // dozens of times per call.
+          startedAt: startedAt ?? (idx >= 0 ? calls[idx].startedAt : undefined),
         };
         if (idx >= 0) calls[idx] = next;
         else calls.push(next);
@@ -1310,6 +1343,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       activeModel,
       settings.thinkingEnabled,
     );
+    // Cursor expresses effort, thinking and Fast in the model id rather than in
+    // the request body — so the knobs resolved above have to be folded back
+    // into `providerConfig.model`. A no-op for every other provider.
+    applyCursorVariant(providerConfig, activeModel, modelSelection);
 
     // Track whether the provider ever reported token usage this turn. If it
     // doesn't (many OpenAI-compatible backends skip `stream_options.include_usage`),
@@ -1466,7 +1503,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           onToolExecutionStart: (tc) => {
             markToolStart(tc.id);
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
-            upsertToolCall(tc);
+            // The card's clock starts here, on the same event `markToolStart`
+            // anchors the measured duration to, so the running number and the
+            // settled one describe the same span.
+            upsertToolCall(tc, undefined, Date.now());
           },
           onToolExecutionComplete: (tc, result) => {
             captureBackgroundProcess(tc, result);
@@ -1500,9 +1540,34 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             } finally {
               // Native tools are already timing (execution_start precedes their
               // gate) — log the wait so it's excluded from the tool's duration.
+              const approvalEnded = performance.now();
               toolTimings
                 .get(tc.id)
-                ?.approval.push({ from: approvalBegan, to: performance.now() });
+                ?.approval.push({ from: approvalBegan, to: approvalEnded });
+              // Push the card's clock forward by the same wait. Without this a
+              // command approved after thinking about it for a minute would
+              // read "1m 4s" while running and then settle to "4s" — the same
+              // call contradicting itself as it finishes.
+              const waited = Math.max(0, approvalEnded - approvalBegan);
+              if (waited > 0) {
+                patchMessage(assistantId, (m) => {
+                  const calls = (m.tool_calls ?? []).map((c) =>
+                    c.id === tc.id && c.startedAt !== undefined
+                      ? { ...c, startedAt: c.startedAt + waited }
+                      : c,
+                  );
+                  const updated = calls.find((c) => c.id === tc.id);
+                  // The timeline holds the copy the card renders, so patching
+                  // `tool_calls` alone would move nothing on screen.
+                  return {
+                    ...m,
+                    tool_calls: calls,
+                    timeline: updated
+                      ? upsertToolEvent(timelineOf(m), updated)
+                      : timelineOf(m),
+                  };
+                });
+              }
             }
           },
           // Something the runtime needs to say that the model did NOT say —
@@ -1660,7 +1725,23 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // PERSISTED message at end-of-stream. This mirrors that on the optimistic
       // message so the live view and the reloaded view agree.
       const settledAt = nowIso();
-      patchMessage(assistantId, (m) => ({ ...m, isThinking: false, timestamp: settledAt }));
+      patchMessage(assistantId, (m) => ({
+        ...m,
+        isThinking: false,
+        timestamp: settledAt,
+        // The turn has settled, so no further attempt is coming — and a live
+        // "Connection lost — retrying (2 of 3)" spinner is now a promise
+        // nothing will keep. It was only ever cleared by a recovered attempt
+        // streaming text or a tool event, or by a runtime notice landing in
+        // its place; a turn that ran out of attempts fails through `onError`,
+        // which cleared nothing, and a turn cancelled mid-retry returned from
+        // `onError` earlier still. Both left the spinner promising a fourth
+        // try, above a composer that had correctly gone back to Send — the
+        // transcript and the composer disagreeing about whether anything was
+        // running. Clearing here covers every way a turn can end, rather than
+        // one more path at a time.
+        timeline: clearReconnect(timelineOf(m)),
+      }));
       const s = useAgentChatStore.getState();
       const settledThread = s.liveTurns[threadId];
       runningAgents.delete(threadId);

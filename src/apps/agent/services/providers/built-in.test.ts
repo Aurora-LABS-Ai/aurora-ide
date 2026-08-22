@@ -17,13 +17,15 @@ describe("groupProviders", () => {
   });
 
   it("orders the shipped group the way the page names them, not the way the store holds them", () => {
-    const { builtIn } = groupProviders([
-      p("deepseek"),
-      p("codex"),
-      p("anthropic"),
-      p("openai-responses"),
-    ]);
-    expect(builtIn.map((x) => x.id)).toEqual(BUILT_IN_PROVIDER_ORDER.slice(0, 4));
+    const ids = ["deepseek", "codex", "anthropic", "openai-responses"];
+    const { builtIn } = groupProviders(ids.map((id) => p(id)));
+
+    // Derived from the order list rather than a fixed slice of it: the
+    // assertion is about *relative* position, so adding a provider in the
+    // middle of BUILT_IN_PROVIDER_ORDER must not fail a test about sorting.
+    const expected = BUILT_IN_PROVIDER_ORDER.filter((id) => ids.includes(id));
+    expect(builtIn.map((x) => x.id)).toEqual(expected);
+    expect(expected).toHaveLength(ids.length);
   });
 
   it("keeps a shipped provider that is not named in the order, after the ones that are", () => {

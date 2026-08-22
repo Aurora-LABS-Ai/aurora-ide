@@ -11,7 +11,7 @@
  * must not be yanked away by the next chunk.
  */
 
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { hasAnsi, parseAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
@@ -23,6 +23,21 @@ import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 const MAX_RENDERED_CHARS = 60_000;
 /** Distance from the bottom that still counts as "following". */
 const FOLLOW_THRESHOLD_PX = 40;
+
+/**
+ * Whole seconds and whole minutes, both sides of "45s of 2m".
+ *
+ * Deliberately not `formatToolDuration`: that keeps a decimal under ten
+ * seconds, and a tenths digit re-rendering next to a static budget reads as
+ * jitter rather than progress.
+ */
+function formatSeconds(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
 
 const AnsiText: React.FC<{ spans: AnsiSpan[] }> = ({ spans }) => (
   <>
@@ -53,7 +68,11 @@ export const ShellStreamView: React.FC<{
   /** Requested shell id ("bash", "pwsh", …) — picks the prompt glyph + name. */
   shell?: string;
   output: string;
-}> = ({ command, cwd, shell: shellId, output }) => {
+  /** Epoch ms the command started. Absent on a row rebuilt from history. */
+  startedAt?: number;
+  /** What Rust will kill the command at, so the wait can say when it ends. */
+  timeoutMs?: number;
+}> = ({ command, cwd, shell: shellId, output, startedAt, timeoutMs }) => {
   const bodyRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
 
@@ -80,6 +99,23 @@ export const ShellStreamView: React.FC<{
 
   const shell = shellMeta(shellId);
   const explorerIconPack = useSettingsStore((s) => s.explorerIconPack);
+
+  // Only ticks while there is nothing to read. Once output arrives the body
+  // moving IS the progress, and a second clock beside it is noise.
+  const idle = text.length === 0;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!idle || startedAt === undefined) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [idle, startedAt]);
+
+  const waitLabel =
+    startedAt === undefined
+      ? null
+      : `${formatSeconds(Math.max(0, now - startedAt))}${
+          timeoutMs ? ` of ${formatSeconds(timeoutMs)}` : ""
+        }`;
 
   return (
     <div className="agw-rv">
@@ -114,7 +150,15 @@ export const ShellStreamView: React.FC<{
           <pre className="agw-shell-out">{ansiSpans ? <AnsiText spans={ansiSpans} /> : text}</pre>
         </div>
       ) : (
-        <div className="agw-shell-waiting">Waiting for output…</div>
+        // A command that prints nothing until it finishes — `pnpm lint` is the
+        // one that started this — used to sit on the bare word "Waiting" for as
+        // long as it took, identical at second 3 and second 300. Naming the
+        // limit turns it into a wait with an end: silence is what this command
+        // does, and it stops at a stated time.
+        <div className="agw-shell-waiting">
+          Waiting for output…
+          {waitLabel && <span className="agw-shell-waiting-clock">{waitLabel}</span>}
+        </div>
       )}
     </div>
   );

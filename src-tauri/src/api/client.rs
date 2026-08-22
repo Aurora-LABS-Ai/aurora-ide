@@ -32,6 +32,7 @@ use crate::agent_runtime::api_client::StreamingApiClient;
 
 use super::anthropic::AnthropicAdapter;
 use super::codex::adapter::CodexAdapter;
+use super::cursor::adapter::CursorAdapter;
 use super::deepseek::DeepSeekAdapter;
 use super::openai_compat::OpenAICompatAdapter;
 use super::responses::OpenAIResponsesAdapter;
@@ -164,6 +165,10 @@ pub enum ProviderKind {
     /// Responses wire shape; auth + endpoint live in
     /// [`super::codex`].
     Codex,
+    /// Cursor's `agent.v1` agent protocol, authenticated with the user's
+    /// Cursor subscription (no API key). Not an OpenAI-shaped wire at all —
+    /// Connect-RPC over HTTP/2, protobuf framed. See [`super::cursor`].
+    Cursor,
     OpenAICompat,
 }
 
@@ -176,10 +181,16 @@ impl ProviderKind {
         match provider_type.trim() {
             "anthropic" | "minimax" | "kenari-messages" => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
-            "openai-responses" | "openai_responses" | "kenari-responses" => {
+            // `opencode-go` is the bare row id as well as its default type, so
+            // a row that somehow arrives without a type still lands on
+            // Responses — the only OpenCode surface that returns reasoning.
+            // `opencode-go-chat` falls through to OpenAI Chat Completions
+            // below, which is exactly what that choice means.
+            "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go" => {
                 ProviderKind::OpenAIResponses
             }
             "codex" => ProviderKind::Codex,
+            "cursor" => ProviderKind::Cursor,
             _ => ProviderKind::OpenAICompat,
         }
     }
@@ -276,6 +287,7 @@ pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn Strea
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
         ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
         ProviderKind::Codex => Arc::new(CodexAdapter::new(config.clone())),
+        ProviderKind::Cursor => Arc::new(CursorAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
     }
 }

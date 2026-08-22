@@ -124,8 +124,14 @@ impl ToolExecutor for ReadLintsTool {
 
         let specs = select_checks(workspace_root, &paths);
         if specs.is_empty() {
+            // No checker exists for this workspace — an answer about
+            // AVAILABILITY, not a failed check. `success: false` here made a
+            // plain HTML fixture in a bare folder read as a lint failure
+            // (harness run 2026-08-21); `checked: false` is the field that
+            // carries the real claim: nothing was validated.
             return Ok(json!({
-                "success": false,
+                "success": true,
+                "checked": false,
                 "paths": paths,
                 "checks": [],
                 "message": validation_guidance(workspace_root, &paths),
@@ -591,6 +597,8 @@ async fn run_checker(
                 // The timeout branch above returns `Err`, so reaching here means
                 // the checker exited on its own.
                 timed_out: false,
+                left_running: false,
+                survivors: Vec::new(),
             })
         }
     }
@@ -640,6 +648,34 @@ mod tests {
     async fn requires_permission_is_false() {
         let tool = ReadLintsTool::new(Arc::new(NoopIdeEventSink));
         assert!(!tool.requires_permission());
+    }
+
+    /// No checker configured is an availability answer, not a failed check.
+    /// It used to return `success:false`, which read as "the lint failed" for
+    /// a plain HTML file in a bare folder — a workspace state, not a defect
+    /// in anything the caller wrote.
+    #[tokio::test]
+    async fn a_workspace_with_no_checker_is_not_a_failure() {
+        let root = temp_workspace();
+        fs::write(root.join("page.html"), "<h1>hi</h1>").expect("fixture");
+
+        let tool = ReadLintsTool::new(Arc::new(NoopIdeEventSink));
+        let out = tool
+            .execute(json!({"paths": ["page.html"]}), &ctx(Some(root.clone())))
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true), "{parsed}");
+        assert_eq!(parsed["checked"], json!(false), "{parsed}");
+        assert!(
+            parsed["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("parser"),
+            "{parsed}"
+        );
+
+        fs::remove_dir_all(root).expect("remove temp workspace");
     }
 
     #[tokio::test]

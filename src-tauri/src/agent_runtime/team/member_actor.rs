@@ -221,6 +221,10 @@ impl ToolExecutor for ScopeGatedTool {
         false
     }
 
+    fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
+        self.inner.timeout_policy()
+    }
+
     async fn execute(&self, input: Value, tctx: &ToolContext) -> Result<String, ToolError> {
         let name = self.inner.name();
         let mut labels: Vec<String> = Vec::new();

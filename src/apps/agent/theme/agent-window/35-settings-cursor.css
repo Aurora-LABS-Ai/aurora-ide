@@ -1,0 +1,79 @@
+/* ── Cursor provider card ──────────────────────────────────────────────────
+   The frame is `.agw-atlas` and the model list is `.agw-modelcat-*`
+   (36-settings-model-catalogue.css), both shared with the other subscription
+   cards. Only what is genuinely Cursor's lives here: connecting to the desktop
+   app's session, and the session facts that follow from it.
+
+   Everything below sits INSIDE the card body, which already carries the card's
+   padding — nothing here may add a border of its own, or the page grows a card
+   inside a card. */
+
+.agw-cursor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.agw-cursor-error {
+  color: var(--agw-danger, #e5484d);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+}
+
+/* ── Connect ────────────────────────────────────────────────────────────── */
+
+.agw-cursor-connect {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+.agw-cursor-connect p {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  color: var(--agw-text-dim);
+  max-width: 62ch;
+}
+.agw-cursor-hint {
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-cursor-hint code {
+  padding: 1px 5px;
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface-raised);
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-micro);
+}
+
+/* Session facts. A quiet row, not a card — it is reference, not an action. */
+.agw-cursor-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-cursor-signout {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agw-text-subtle);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 160ms var(--agw-ease-out, ease);
+}
+.agw-cursor-signout:hover,
+.agw-cursor-signout:focus-visible {
+  color: var(--agw-danger, #e5484d);
+  outline: none;
+}
+.agw-cursor-signout:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

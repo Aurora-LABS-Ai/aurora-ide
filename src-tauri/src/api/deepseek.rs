@@ -79,7 +79,8 @@ use crate::agent_runtime::events::AssistantEvent;
 use super::client::ProviderConfigSnapshot;
 use super::openai_compat::drive_openai_stream;
 use super::provider_kernel_adapter::{
-    build_openai_body, build_openai_headers, build_openai_url, map_reqwest_error, map_status_error,
+    build_openai_body, build_openai_headers, build_openai_url, map_reqwest_error,
+    map_status_error_with_headers, unprefix_model, RequestOrigin,
 };
 
 /// DeepSeek-specific reasoning-effort knob. Mirrors the doc's
@@ -332,8 +333,19 @@ impl StreamingApiClient for DeepSeekAdapter {
 
         let status = response.status();
         if !status.is_success() {
+            // See the note in `anthropic.rs`: headers first, because `text()`
+            // takes the response and a 429's `Retry-After` goes with it.
+            let headers = response.headers().clone();
             let body = response.text().await.unwrap_or_default();
-            return Err(map_status_error(status.as_u16(), body));
+            return Err(map_status_error_with_headers(
+                status.as_u16(),
+                body,
+                &headers,
+                RequestOrigin {
+                    url: &url,
+                    model: unprefix_model(request.model, &self.config.provider_id),
+                },
+            ));
         }
 
         let bytes_stream = response

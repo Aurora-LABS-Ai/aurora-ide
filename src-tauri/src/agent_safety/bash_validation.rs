@@ -368,17 +368,19 @@ fn validate_git_read_only(command: &str) -> ValidationResult {
 // ---------------------------------------------------------------------------
 
 /// Patterns that indicate potentially destructive commands.
+///
+/// Substring matching, which is safe for every entry left here: each one is a
+/// distinctive command word or operator that cannot be assembled by accident
+/// out of neighbouring arguments.
+///
+/// The `rm -rf <target>` cases are deliberately NOT here. They were, and
+/// matching them as substrings mislabelled ordinary deletions: `rm -rf
+/// ./__pycache__` contains the literal text `rm -rf .`, so it was reported as
+/// "Recursive forced deletion of current directory" — a claim about the user's
+/// whole project that was simply false. `rm -rf .venv`, `rm -rf .git` and
+/// `rm -rf *.pyc` all read the same way. See [`catastrophic_rm_target`], which
+/// inspects the actual operands instead.
 const DESTRUCTIVE_PATTERNS: &[(&str, &str)] = &[
-    (
-        "rm -rf /",
-        "Recursive forced deletion at root — this will destroy the system",
-    ),
-    ("rm -rf ~", "Recursive forced deletion of home directory"),
-    (
-        "rm -rf *",
-        "Recursive forced deletion of all files in current directory",
-    ),
-    ("rm -rf .", "Recursive forced deletion of current directory"),
     (
         "mkfs",
         "Filesystem creation will destroy existing data on the device",
@@ -413,6 +415,21 @@ fn check_destructive(command: &str) -> ValidationResult {
         }
     }
 
+    // `rm -rf` aimed at something irreplaceable, judged by the OPERANDS rather
+    // than by the text around them. A target only counts when the whole word
+    // is the dangerous thing: `.` is the project, `./build` is a build folder,
+    // and calling the second one the first is how a true warning gets ignored.
+    let recursive_deletions = recursive_forced_rm_targets(command);
+    for targets in &recursive_deletions {
+        for target in targets {
+            if let Some(warning) = catastrophic_rm_target(target) {
+                return ValidationResult::Warn {
+                    message: format!("Destructive command detected: {warning}"),
+                };
+            }
+        }
+    }
+
     // Check always-destructive commands.
     let first = extract_first_command(command);
     for &cmd in ALWAYS_DESTRUCTIVE_COMMANDS {
@@ -428,9 +445,15 @@ fn check_destructive(command: &str) -> ValidationResult {
     // Check for an actual `rm` invocation with recursive and force flags. Matching
     // shell words prevents unrelated argument substrings from combining into a
     // phantom command (for example, `lucide-react react-hook-form`).
-    if contains_recursive_forced_rm(command) {
-        // Already handled the most dangerous patterns above.
-        // Flag any remaining "rm -rf" as a warning.
+    // Any remaining recursive delete is a warning, UNLESS every one of its
+    // targets is a directory the ecosystem rebuilds on demand. Clearing
+    // `node_modules` or `__pycache__` is maintenance, not a hazard, and a
+    // guard that treats it as one is a guard people learn to talk around.
+    if !recursive_deletions.is_empty()
+        && !recursive_deletions
+            .iter()
+            .all(|targets| deletes_only_regenerable_artifacts(targets))
+    {
         return ValidationResult::Warn {
             message: "Recursive forced deletion detected — verify the target path is correct"
                 .to_string(),
@@ -822,51 +845,160 @@ fn extract_first_command(command: &str) -> String {
         .to_string()
 }
 
-/// Return whether any shell command segment invokes `rm` with both recursive
-/// and force flags. This is intentionally a small shell lexer rather than a
-/// substring search: package names and other arguments may contain `rm`, `-r`,
-/// and `-f` without executing a removal command.
-fn contains_recursive_forced_rm(command: &str) -> bool {
-    fn segment_matches(words: &[String]) -> bool {
-        for (rm_index, word) in words.iter().enumerate() {
-            if word.rsplit('/').next() != Some("rm") {
-                continue;
-            }
+/// Classify one operand of an `rm -rf`.
+///
+/// Whole-word matches only. `.` is the project; `./__pycache__` is a cache
+/// folder inside it. Reporting the second as the first is what teaches a
+/// reader — human or model — to route around the warning instead of reading
+/// it, which costs the warning its value on the day it is right.
+///
+/// Anything not listed falls through to the generic "verify the target path"
+/// warning, which is honest about knowing only that a recursive delete is
+/// happening.
+fn catastrophic_rm_target(target: &str) -> Option<&'static str> {
+    match target {
+        "/" => Some("Recursive forced deletion at root — this will destroy the system"),
+        "~" | "~/" | "$HOME" | "${HOME}" => Some("Recursive forced deletion of home directory"),
+        "*" => Some("Recursive forced deletion of all files in current directory"),
+        "." | "./" => Some("Recursive forced deletion of current directory"),
+        ".." | "../" => Some("Recursive forced deletion of the parent directory"),
+        _ => None,
+    }
+}
 
-            let mut recursive = false;
-            let mut force = false;
+/// Directories and caches that every ecosystem regenerates from a manifest.
+///
+/// Deleting one of these costs a command, never work. `rm -rf node_modules`
+/// and `rm -rf __pycache__` are routine maintenance, and refusing them made
+/// Aurora look nervous rather than careful — the agent burned three attempts
+/// working around a block on a Python cache folder before giving up and
+/// deleting files one at a time.
+///
+/// Names generic enough to plausibly hold hand-written source are deliberately
+/// ABSENT, even where a build system also uses them: `bin` routinely holds
+/// committed scripts, and `out`, `lib`, `env`, `tmp` and `logs` are anybody's
+/// guess. Those keep the ordinary warning. So does `.git`, which is not
+/// regenerable at all.
+const REGENERABLE_ARTIFACT_DIRS: &[&str] = &[
+    // JavaScript / TypeScript
+    "node_modules",
+    "dist",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".svelte-kit",
+    ".astro",
+    ".docusaurus",
+    ".turbo",
+    ".parcel-cache",
+    ".rollup.cache",
+    ".vite",
+    ".swc",
+    ".angular",
+    ".pnpm-store",
+    ".nyc_output",
+    // Python
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".venv",
+    "venv",
+    ".eggs",
+    ".ipynb_checkpoints",
+    "htmlcov",
+    // Rust, Maven, sbt
+    "target",
+    // JVM
+    ".gradle",
+    // .NET — `obj` only. `bin` is excluded above for good reason.
+    "obj",
+    // Go, PHP, Ruby: restored by `go mod vendor`, `composer install`,
+    // `bundle install`.
+    "vendor",
+    ".bundle",
+    // Elixir. `deps` is NOT here: C and vendored-source projects use the same
+    // name for code they wrote, and only Elixir's is restored by a manifest.
+    "_build",
+    // Swift / Xcode
+    "DerivedData",
+    // C / C++
+    "CMakeFiles",
+    // Dart / Flutter
+    ".dart_tool",
+    // Shared output and caches. `build` is NOT here, deliberately: CMake,
+    // Gradle and Flutter all write to it, and so do people — a `build/`
+    // holding hand-written scripts is common enough that silently deleting one
+    // is unrecoverable in a way the warning never is. `cmake-build-*` below
+    // covers the CLion case, which IS tool-owned.
+    "coverage",
+    ".cache",
+    ".sass-cache",
+    ".eslintcache",
+    ".stylelintcache",
+    ".terraform",
+    ".serverless",
+];
 
-            for argument in &words[rm_index + 1..] {
-                if argument == "--" {
-                    break;
-                }
-
-                match argument.as_str() {
-                    "--recursive" => recursive = true,
-                    "--force" => force = true,
-                    _ => {
-                        if let Some(flags) = argument.strip_prefix('-') {
-                            recursive |= flags.contains('r') || flags.contains('R');
-                            force |= flags.contains('f');
-                        }
-                    }
-                }
-            }
-
-            if recursive && force {
-                return true;
-            }
-        }
-
-        false
+/// Whether one `rm -rf` operand names something an ecosystem can rebuild.
+///
+/// Judged on the FINAL path segment, so `./__pycache__`, `packages/*/node_modules`
+/// and `src/.pytest_cache` all qualify while `src` alone does not.
+///
+/// Two restrictions keep the blast radius where the caller can see it:
+/// an absolute path is declined, and so is any path stepping up through `..`.
+/// Both still get the ordinary warning rather than a refusal, so nothing is
+/// impossible — it just has to be looked at.
+fn is_regenerable_artifact_path(target: &str) -> bool {
+    let normalized = target.replace('\\', "/");
+    let trimmed = normalized.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Absolute, POSIX or Windows drive-qualified.
+    if trimmed.starts_with('/') || trimmed.chars().nth(1) == Some(':') {
+        return false;
+    }
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return false;
     }
 
+    let Some(name) = trimmed.rsplit('/').next() else {
+        return false;
+    };
+    if REGENERABLE_ARTIFACT_DIRS.contains(&name) {
+        return true;
+    }
+    // Two conventional patterns rather than a general glob: Python packaging
+    // writes `<package>.egg-info`, and CLion/CMake write `cmake-build-<profile>`.
+    name.ends_with(".egg-info") || name.starts_with("cmake-build-")
+}
+
+/// Whether one `rm -rf` invocation deletes nothing but regenerable artifacts.
+///
+/// An invocation with no operands is not one of these — `rm -rf` alone is a
+/// half-written command, and the warning is the right answer to it.
+fn deletes_only_regenerable_artifacts(targets: &[String]) -> bool {
+    !targets.is_empty() && targets.iter().all(|t| is_regenerable_artifact_path(t))
+}
+
+/// Split a command line into segments, each a list of shell words.
+///
+/// A small shell lexer rather than a substring search, because arguments may
+/// contain command text without being a command: `bun add lucide-react
+/// react-hook-form` supplies `rm`, `-r` and `-f` between two package names and
+/// used to be rejected as a recursive delete. Handles quoting and backslash
+/// escapes, and starts a new segment at any operator that begins a new command.
+fn shell_word_segments(command: &str) -> Vec<Vec<String>> {
     fn finish_word(word: &mut String, segment: &mut Vec<String>) {
         if !word.is_empty() {
             segment.push(std::mem::take(word));
         }
     }
 
+    let mut segments = Vec::new();
     let mut segment = Vec::new();
     let mut word = String::new();
     let mut quote = None;
@@ -894,10 +1026,9 @@ fn contains_recursive_forced_rm(command: &str) -> bool {
                 '\'' | '"' => quote = Some(character),
                 ';' | '|' | '&' | '\n' | '\r' | '(' | ')' | '`' => {
                     finish_word(&mut word, &mut segment);
-                    if segment_matches(&segment) {
-                        return true;
+                    if !segment.is_empty() {
+                        segments.push(std::mem::take(&mut segment));
                     }
-                    segment.clear();
                 }
                 character if character.is_whitespace() => {
                     finish_word(&mut word, &mut segment);
@@ -908,7 +1039,67 @@ fn contains_recursive_forced_rm(command: &str) -> bool {
     }
 
     finish_word(&mut word, &mut segment);
-    segment_matches(&segment)
+    if !segment.is_empty() {
+        segments.push(segment);
+    }
+    segments
+}
+
+/// Operands of every `rm` invocation carrying both a recursive and a force
+/// flag, one entry per invocation.
+///
+/// An invocation with no operands still yields an (empty) entry, so callers can
+/// tell "no recursive delete here" from "a recursive delete with nothing to
+/// classify".
+fn recursive_forced_rm_targets(command: &str) -> Vec<Vec<String>> {
+    let mut found = Vec::new();
+
+    for words in shell_word_segments(command) {
+        for (rm_index, word) in words.iter().enumerate() {
+            if word.rsplit('/').next() != Some("rm") {
+                continue;
+            }
+
+            let mut recursive = false;
+            let mut force = false;
+            let mut targets = Vec::new();
+            // Everything after `--` is an operand by definition, however much
+            // it looks like a flag.
+            let mut operands_only = false;
+
+            for argument in &words[rm_index + 1..] {
+                if !operands_only && argument == "--" {
+                    operands_only = true;
+                    continue;
+                }
+
+                if operands_only {
+                    targets.push(argument.clone());
+                    continue;
+                }
+
+                match argument.as_str() {
+                    "--recursive" => recursive = true,
+                    "--force" => force = true,
+                    _ => match argument.strip_prefix('-') {
+                        Some(flags) if !flags.is_empty() => {
+                            recursive |= flags.contains('r') || flags.contains('R');
+                            force |= flags.contains('f');
+                        }
+                        // A bare `-`, or anything not starting with one, is
+                        // a path.
+                        _ => targets.push(argument.clone()),
+                    },
+                }
+            }
+
+            if recursive && force {
+                found.push(targets);
+            }
+        }
+    }
+
+    found
 }
 
 /// Extract the command following "sudo" (skip sudo flags).
@@ -969,6 +1160,111 @@ fn find_end_of_value(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // --- destructiveCommandWarning ---
+
+    /// Reported from a real session: clearing `__pycache__` was refused with
+    /// "Recursive forced deletion of current directory". It was not deleting
+    /// the current directory. The pattern table matched raw substrings, and
+    /// `rm -rf ./__pycache__` contains the text `rm -rf .`, so an ordinary
+    /// cleanup was described as destroying the project.
+    ///
+    /// The agent believed the message and spent three attempts working around
+    /// a danger that did not exist, which is the actual cost of a warning that
+    /// names the wrong thing.
+    #[test]
+    fn clearing_a_regenerable_artifact_directory_is_allowed() {
+        for command in [
+            "rm -rf ./__pycache__",
+            "rm -rf node_modules",
+            "rm -rf .venv",
+            "rm -rf target",
+            "rm -rf packages/web/node_modules",
+            "rm -rf src/aurora.egg-info",
+            "rm -rf cmake-build-debug",
+            // Several at once, all regenerable.
+            "rm -rf node_modules dist .turbo",
+            // After a `cd`, which is how the agent actually issues these.
+            "cd /tmp/proj && rm -rf __pycache__",
+        ] {
+            assert!(
+                matches!(check_destructive(command), ValidationResult::Allow),
+                "{command} should be routine maintenance, got {:?}",
+                check_destructive(command)
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_known_artifact_still_warns_but_is_labelled_honestly() {
+        for command in [
+            "rm -rf .git/hooks",
+            "rm -rf *.pyc",
+            // Ambiguous by name: tools write here, and so do people.
+            "rm -rf build",
+            "rm -rf deps",
+            "rm -rf bin",
+            "rm -rf out",
+            // `..` leaves the directory the command can see; declined.
+            "rm -rf ../sibling/node_modules",
+            // Absolute paths are declined for the same reason.
+            "rm -rf /var/tmp/node_modules",
+            // One unknown target contaminates an otherwise routine batch.
+            "rm -rf node_modules my-source-dir",
+            // A half-written command is not maintenance.
+            "rm -rf",
+        ] {
+            match check_destructive(command) {
+                ValidationResult::Warn { message } => assert!(
+                    !message.contains("current directory")
+                        && !message.contains("parent directory")
+                        && !message.contains("home directory")
+                        && !message.contains("at root"),
+                    "{command} was mislabelled: {message}"
+                ),
+                other => panic!("{command} expected a generic warning, got {other:?}"),
+            }
+        }
+    }
+
+    /// The other half of the same fix: narrowing the match must not let a
+    /// genuinely catastrophic target through.
+    #[test]
+    fn the_targets_that_really_are_catastrophic_still_say_so() {
+        let cases = [
+            ("rm -rf /", "at root"),
+            ("rm -rf ~", "home directory"),
+            ("rm -rf $HOME", "home directory"),
+            ("rm -rf *", "all files in current directory"),
+            ("rm -rf .", "current directory"),
+            ("rm -rf ..", "parent directory"),
+            // Flags in any order, and after a `--` terminator.
+            ("rm -fr .", "current directory"),
+            ("rm --recursive --force /", "at root"),
+            ("rm -rf -- /", "at root"),
+            // Not the first command in the line.
+            ("cd /tmp && rm -rf /", "at root"),
+        ];
+        for (command, expected) in cases {
+            match check_destructive(command) {
+                ValidationResult::Warn { message } => assert!(
+                    message.contains(expected),
+                    "{command} expected {expected:?}, got {message:?}"
+                ),
+                other => panic!("{command} expected a warning, got {other:?}"),
+            }
+        }
+    }
+
+    /// The regression this lexer was written for in the first place: package
+    /// names supplying `rm`, `-r` and `-f` across unrelated arguments.
+    #[test]
+    fn an_install_that_merely_contains_the_letters_is_not_a_deletion() {
+        assert!(matches!(
+            check_destructive("bun add lucide-react react-hook-form zod"),
+            ValidationResult::Allow
+        ));
+    }
 
     // --- readOnlyValidation ---
 

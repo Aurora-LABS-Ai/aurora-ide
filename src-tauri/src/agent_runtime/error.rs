@@ -149,7 +149,9 @@ mod tests {
 
     #[test]
     fn api_error_converts_via_from() {
-        let api_err = ApiError::RateLimit;
+        let api_err = ApiError::RateLimit {
+            retry_after_secs: None,
+        };
         let runtime_err: RuntimeError = api_err.into();
         match runtime_err {
             RuntimeError::Api(_) => {}

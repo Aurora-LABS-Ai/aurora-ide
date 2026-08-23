@@ -47,13 +47,83 @@ pub use super::sse_shared::{frame_has_done_marker, frame_payloads, SseFrameBuffe
 
 /// Turn an HTTP status code + response body into the appropriate
 /// [`ApiError`] variant per the brief's mapping table.
+/// Longest `Retry-After` Aurora will honour.
+///
+/// The header is the provider's number, not ours, and an app that blocks for
+/// however long a misconfigured gateway names is an app that looks hung. Past
+/// this the wait stops being a retry and starts being an outage the user
+/// should hear about instead.
+const MAX_RETRY_AFTER_SECS: u64 = 120;
+
+/// Read `Retry-After` as a delay in seconds.
+///
+/// Only the delta-seconds form is accepted. RFC 9110 also allows an HTTP-date,
+/// but no provider Aurora talks to sends one, and a half-parsed date is worse
+/// than the backoff ladder we would fall back to anyway.
+#[must_use]
+pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = raw.trim().parse().ok()?;
+    Some(secs.min(MAX_RETRY_AFTER_SECS))
+}
+
+/// Which request an upstream rejection belongs to.
+///
+/// Carried only so the log line can name it. Borrowed rather than owned: every
+/// caller already has both strings on hand at the point of failure.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestOrigin<'a> {
+    /// The URL actually posted to, after base-URL joining.
+    pub url: &'a str,
+    /// The model as sent on the wire, provider prefix already stripped.
+    pub model: &'a str,
+}
+
+/// [`map_status_error`] with the response headers, so a 429 keeps the wait the
+/// provider asked for, and the request's identity so the log names it.
+pub fn map_status_error_with_headers(
+    status: u16,
+    body: String,
+    headers: &reqwest::header::HeaderMap,
+    origin: RequestOrigin<'_>,
+) -> ApiError {
+    map_status_error_inner(status, body, parse_retry_after(headers), origin)
+}
+
 pub fn map_status_error(status: u16, body: String) -> ApiError {
+    map_status_error_inner(
+        status,
+        body,
+        None,
+        RequestOrigin {
+            url: "unknown",
+            model: "unknown",
+        },
+    )
+}
+
+fn map_status_error_inner(
+    status: u16,
+    body: String,
+    retry_after: Option<u64>,
+    origin: RequestOrigin<'_>,
+) -> ApiError {
     // Full body to the log file: 401/429 discard it entirely below, and the
     // other arms keep only a summary slice — but a production diagnosis
     // usually lives in exactly the part that gets cut.
+    //
+    // The URL and model are logged with it because without them the line is
+    // not actionable. A user running eighteen providers who finds
+    // `upstream HTTP 403 rejected request: <html>…403 Forbidden…` has no way
+    // to tell WHICH endpoint said it, and an HTML body carries no clue of its
+    // own — that exact line cost an hour of bisecting on 2026-08-23 before the
+    // answer turned out to be a transient edge block on one provider.
     crate::logging::log_error(
         "api.http",
-        &format!("upstream HTTP {status} rejected request: {body}"),
+        &format!(
+            "upstream HTTP {status} from {} (model {}) rejected request: {body}",
+            origin.url, origin.model,
+        ),
     );
     let summary = summarize_body(&body);
     let message = if summary.is_empty() {
@@ -71,7 +141,9 @@ pub fn map_status_error(status: u16, body: String) -> ApiError {
         } else {
             summary
         }),
-        429 => ApiError::RateLimit,
+        429 => ApiError::RateLimit {
+            retry_after_secs: retry_after,
+        },
         500..=599 => ApiError::Provider(message),
         // A 4xx normally means "the request is wrong", and re-sending
         // identical bytes cannot make it right — which is exactly why
@@ -1856,13 +1928,29 @@ fn tool_input_for_wire(input: &Value) -> Value {
 // Header builders
 // ---------------------------------------------------------------------------
 
+/// What Aurora calls itself on the wire.
+///
+/// `reqwest` sends **no** `User-Agent` at all unless one is configured, and a
+/// missing UA is a request shape that plenty of edges refuse outright. Measured
+/// against `messages-beta.api.thegrid.ai` on 2026-08-23: no header returns a
+/// bare nginx `403 Forbidden` HTML page, an empty string returns the same, and
+/// literally any non-empty value returns 200. The API behind it never saw the
+/// request — every genuine auth failure there answers with JSON.
+///
+/// This is why the same call succeeded from every script and failed from the
+/// app: curl, PowerShell and Python all send a UA of their own.
+///
+/// Inserted before `custom_headers`, so a user who sets their own still wins.
+pub const AURORA_USER_AGENT: &str = concat!("Aurora/", env!("CARGO_PKG_VERSION"));
+
 pub fn build_anthropic_headers(
     config: &ProviderConfigSnapshot,
 ) -> Result<reqwest::header::HeaderMap, ApiError> {
-    use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE, USER_AGENT};
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+    headers.insert(USER_AGENT, HeaderValue::from_static(AURORA_USER_AGENT));
     insert_header(&mut headers, "anthropic-version", "2023-06-01")?;
     if !config.api_key.is_empty() {
         insert_header(&mut headers, "x-api-key", &config.api_key)?;
@@ -1879,10 +1967,15 @@ pub fn build_anthropic_headers(
 pub fn build_openai_headers(
     config: &ProviderConfigSnapshot,
 ) -> Result<reqwest::header::HeaderMap, ApiError> {
-    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+    use reqwest::header::{
+        HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT,
+    };
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+    // See [`AURORA_USER_AGENT`]: a missing UA is refused outright by some
+    // gateways, with a bare HTML 403 that never reaches their API.
+    headers.insert(USER_AGENT, HeaderValue::from_static(AURORA_USER_AGENT));
     if !config.api_key.is_empty() {
         let value = format!("Bearer {}", config.api_key);
         let header_value = HeaderValue::from_str(&value)
@@ -2854,7 +2947,7 @@ mod tests {
         ));
         assert!(matches!(
             map_status_error(429, "slow down".into()),
-            ApiError::RateLimit
+            ApiError::RateLimit { .. }
         ));
         match map_status_error(503, "boom".into()) {
             ApiError::Provider(msg) => assert!(msg.contains("503")),
@@ -3196,6 +3289,95 @@ mod tests {
             .matches("cache_control")
             .count();
         assert!(count <= 4, "too many cache breakpoints: {count}");
+    }
+
+    /// `reqwest` sends no `User-Agent` unless one is configured, and a request
+    /// with none is refused outright by some gateways before their API ever
+    /// sees it. Measured against `messages-beta.api.thegrid.ai` on 2026-08-23:
+    /// no header and an empty string both return a bare nginx `403 Forbidden`
+    /// HTML page; any non-empty value returns 200.
+    ///
+    /// That is why the same call worked from curl, PowerShell and Python and
+    /// failed only from Aurora — every one of those sends a UA of its own.
+    #[test]
+    fn every_provider_request_identifies_itself() {
+        let mut config = thinking_config();
+        config.api_key = "k".into();
+
+        for (label, headers) in [
+            (
+                "anthropic",
+                build_anthropic_headers(&config).expect("headers"),
+            ),
+            ("openai", build_openai_headers(&config).expect("headers")),
+        ] {
+            let ua = headers
+                .get(reqwest::header::USER_AGENT)
+                .unwrap_or_else(|| panic!("{label} sent no User-Agent"))
+                .to_str()
+                .expect("ascii");
+            assert!(!ua.is_empty(), "{label} sent an empty User-Agent");
+            assert!(ua.starts_with("Aurora/"), "{label} sent {ua:?}");
+        }
+    }
+
+    /// A user who sets their own `User-Agent` must keep it — custom headers are
+    /// applied after ours precisely so they win.
+    #[test]
+    fn a_custom_user_agent_overrides_auroras() {
+        let mut config = thinking_config();
+        config.api_key = "k".into();
+        config.custom_headers = Some(
+            [("User-Agent".to_string(), "my-proxy/1.0".to_string())]
+                .into_iter()
+                .collect(),
+        );
+
+        let headers = build_openai_headers(&config).expect("headers");
+        assert_eq!(
+            headers
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|v| v.to_str().ok()),
+            Some("my-proxy/1.0")
+        );
+    }
+
+    #[test]
+    fn a_429_keeps_the_wait_the_provider_asked_for() {
+        // The one failure where the other side already told us the answer.
+        // Discarding it (which is what happened before) means either hammering
+        // a provider that asked for a minute, or idling when it asked for two.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "42".parse().unwrap());
+
+        let origin = RequestOrigin {
+            url: "https://example.test/v1/messages",
+            model: "some-model",
+        };
+        match map_status_error_with_headers(429, "slow down".into(), &headers, origin) {
+            ApiError::RateLimit { retry_after_secs } => assert_eq!(retry_after_secs, Some(42)),
+            other => panic!("expected RateLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hostile_retry_after_cannot_hang_the_app() {
+        // The header is the provider's number, not ours. An app that blocks for
+        // an hour because a misconfigured gateway said so looks broken.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "86400".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(MAX_RETRY_AFTER_SECS));
+
+        // An HTTP-date (RFC 9110's other form) is declined rather than
+        // half-parsed — the backoff ladder is a better answer than a wrong one.
+        let mut dated = reqwest::header::HeaderMap::new();
+        dated.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&dated), None);
+
+        assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
     }
 
     /// The literal is duplicated in the frontend because the prompt crosses

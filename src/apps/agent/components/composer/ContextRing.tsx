@@ -61,6 +61,13 @@ import {
   type OpenCodeUsage,
 } from "@/apps/agent/services/providers/opencode";
 import {
+  fetchKenariUsage,
+  isKenariProvider,
+  kenariResetLabel,
+  KENARI_WINDOWS,
+  type KenariUsage,
+} from "@/apps/agent/services/providers/kenari";
+import {
   useReservedCostLines,
   useSticky,
   useThrottled,
@@ -133,6 +140,40 @@ async function getOpenCodeUsageCached(apiKey: string): Promise<OpenCodeUsage | n
     // shown empty. The provider page is where a broken key gets explained.
     return null;
   }
+}
+
+/**
+ * kenari plan headroom, cached the same way.
+ *
+ * Not keyed by anything, unlike OpenCode's: the `kn-` key cannot read this data
+ * at all, so there is no key to key it by. It comes from a stored sign-in, and
+ * there is exactly one of those.
+ *
+ * `"signed-out"` is a distinct outcome from `null`, because the card says
+ * different things about them. No sign-in is a state with an obvious next step;
+ * a failed read is not, and offering "sign in" over a network error sends
+ * someone to re-authenticate a session that was working fine.
+ */
+type KenariPlanState = KenariUsage | "signed-out" | null;
+
+let kenariUsageCache: { at: number; state: KenariPlanState } | null = null;
+
+async function getKenariUsageCached(): Promise<KenariPlanState> {
+  if (kenariUsageCache && Date.now() - kenariUsageCache.at < PLAN_USAGE_TTL_MS) {
+    return kenariUsageCache.state;
+  }
+  let state: KenariPlanState = null;
+  try {
+    state = await fetchKenariUsage();
+  } catch {
+    // Rust refuses with a message for both "never signed in" and "the session
+    // expired", and the honest answer to each is the same one: sign in. A read
+    // that failed for any other reason is cached as a miss and simply retried
+    // after the TTL.
+    state = "signed-out";
+  }
+  kenariUsageCache = { at: Date.now(), state };
+  return state;
 }
 
 /** The plan's windows, in the order pressure actually arrives. */
@@ -374,6 +415,19 @@ export const ContextRing: React.FC = () => {
   const openCodeKey = useSettingsStore(
     (s) => s.providers.find((p) => p.id === OPENCODE_PROVIDER_ID)?.apiKey ?? "",
   );
+  // kenari is asked the same question, but it cannot be recognised by an id
+  // prefix the way the other two are: the built-in row is `kenari`, while a row
+  // someone added themselves carries a UUID and declares itself through
+  // `providerType`. `isKenariProvider` knows both, so the row is looked up and
+  // asked. Returns a boolean — a primitive selector, safe to derive from.
+  const isKenari = useSettingsStore((s) => {
+    // First colon only — a provider id never contains one, a model key can.
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return false;
+    const providerId = selectedModel.slice(0, split);
+    const row = s.providers.find((p) => p.id === providerId);
+    return row ? isKenariProvider(row) : false;
+  });
 
   // ── Cost inputs ───────────────────────────────────────────────────
   // The running turn's requests (summed live) and the conversation's total
@@ -470,6 +524,7 @@ export const ContextRing: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
+  const [kenariPlan, setKenariPlan] = useState<KenariPlanState>(null);
 
   // Loaded from the hover/focus handlers (not an effect): the quota is only
   // wanted while the card is visible, and the module cache absorbs repeat
@@ -488,8 +543,14 @@ export const ContextRing: React.FC = () => {
       void getOpenCodeUsageCached(openCodeKey).then((usage) => {
         if (usage) setOpenCodeUsage(usage);
       });
+      return;
     }
-  }, [isCodex, isOpenCode, openCodeKey]);
+    // No key to gate on, unlike the other two: kenari's plan data comes from a
+    // stored sign-in, and whether there is one is exactly what this asks.
+    if (isKenari) {
+      void getKenariUsageCached().then(setKenariPlan);
+    }
+  }, [isCodex, isOpenCode, isKenari, openCodeKey]);
 
   /**
    * Read the conversation's cost basis when the card opens.
@@ -820,6 +881,75 @@ export const ContextRing: React.FC = () => {
                     />
                   );
                 })}
+              </>
+            )}
+
+            {/* kenari, and the reason it looks different from the two above:
+              * on a plan, exceeding a window does not fall through to the
+              * balance — the request is REFUSED with `plan_limit_reached`, and
+              * that applies to every endpoint, not only chat. So this bar is
+              * not a cost readout, it is the distance to a hard stop, and it is
+              * worth the space even when the cost sections say nothing. */}
+            {isKenari && kenariPlan && kenariPlan !== "signed-out" && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-card-head">
+                  <AgentIcon name="chat" size={11} />
+                  <span>{kenariPlan.planName ? `${kenariPlan.planName} plan` : "kenari plan"}</span>
+                  {/* kenari's own judgement, not a threshold Aurora invented. */}
+                  {kenariPlan.nearLimit && <span className="agw-ctx-chip">near limit</span>}
+                </div>
+                {/* Only the windows this plan actually sets. A plan reports no
+                  * 5-hour or monthly cap as absent rather than as zero, and
+                  * drawing an unset window would render "no limit" as a bar
+                  * that is 100% spent. */}
+                {KENARI_WINDOWS.map(({ key, label }) => {
+                  const win = kenariPlan[key];
+                  if (!win) return null;
+                  return (
+                    <QuotaRow
+                      key={key}
+                      label={label}
+                      /* A FRACTION on the wire (0.202), not a percent. Passed
+                       * through raw it draws a 0.2%-full bar over a
+                       * fifth-spent week. */
+                      usedPercent={win.usedFrac * 100}
+                      caption={kenariResetLabel(win)}
+                    />
+                  );
+                })}
+                {/* Metered separately from the quota windows and separately
+                  * reset, so having plan quota left says nothing about this.
+                  * Shown as counts as well as a bar — "37 left" is the number
+                  * someone acts on, where a percentage of 200 is arithmetic. */}
+                {kenariPlan.webSearchAllowance != null && kenariPlan.webSearchAllowance > 0 && (
+                  <QuotaRow
+                    label="Web searches"
+                    usedPercent={
+                      ((kenariPlan.webSearchUsedToday ?? 0) / kenariPlan.webSearchAllowance) * 100
+                    }
+                    caption={`${Math.max(
+                      0,
+                      kenariPlan.webSearchAllowance - (kenariPlan.webSearchUsedToday ?? 0),
+                    )} of ${kenariPlan.webSearchAllowance} left today`}
+                  />
+                )}
+              </>
+            )}
+
+            {/* Said rather than left blank. kenari's key reaches the models but
+              * not the account, so this is the one provider where Aurora can
+              * be correctly configured and still know nothing about the plan —
+              * an empty space here reads as "no limits", which is the opposite
+              * of the truth on a plan that refuses requests when it runs out. */}
+            {isKenari && kenariPlan === "signed-out" && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-note">
+                  <strong>Plan usage not connected</strong> — kenari only reports quota to a
+                  signed-in browser, not to an API key. Connect it in Settings › Providers ›
+                  kenari.
+                </div>
               </>
             )}
 

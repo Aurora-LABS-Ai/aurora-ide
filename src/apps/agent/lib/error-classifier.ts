@@ -51,6 +51,21 @@ export function classifyError(error: Error | string): ClassifiedError {
     };
   }
 
+  // A 403 that is not about permissions. The key is correct and the account is
+  // fine; the model is simply sold with a subscription. Caught before the
+  // generic branch, which sends someone to audit a key that has nothing wrong
+  // with it.
+  if (lower.includes('subscribers_only')) {
+    return {
+      title: 'Subscription Required',
+      message: 'This model is only sold with a subscription. Your API key is fine.',
+      suggestion: 'Pick a model your plan covers, or subscribe in the provider\'s dashboard.',
+      action: 'open-settings',
+      actionLabel: 'Change Model',
+      severity: 'warning',
+    };
+  }
+
   if (lower.includes('403') || lower.includes('forbidden') || lower.includes('access denied')) {
     return {
       title: 'Access Denied',
@@ -62,6 +77,37 @@ export function classifyError(error: Error | string): ClassifiedError {
     };
   }
 
+  // Both of these arrive as 429 and neither is a rate limit. They have to be
+  // caught FIRST — the generic branch below says "wait a moment and try again",
+  // which is the one thing that does not work here: a spent quota window is not
+  // congestion, and waiting it out can mean waiting until next week.
+  if (lower.includes('plan_limit_reached') || lower.includes('plan limit reached')) {
+    return {
+      title: 'Plan Quota Spent',
+      message: 'This subscription\'s quota window is used up, so the request was refused rather than charged to your balance.',
+      // Three real fixes, cheapest first. Retrying is deliberately not offered:
+      // the window rolls on its own schedule and every retry until then fails
+      // the same way. The window's own countdown is on the context ring.
+      suggestion: 'Switch to a free model or route, turn on pay-as-you-go in the provider\'s dashboard so requests fall back to your balance, or wait for the window to roll over.',
+      action: 'open-settings',
+      actionLabel: 'Change Model',
+      severity: 'warning',
+    };
+  }
+
+  // The free lane's own daily allowance, which is counted separately from any
+  // paid quota window — having plan quota left says nothing about this one.
+  if (lower.includes('free_quota_daily')) {
+    return {
+      title: 'Free Daily Quota Spent',
+      message: 'The free models\' daily allowance for this account is used up. Paid models are unaffected.',
+      suggestion: 'Switch to a paid model, or come back after the allowance resets at 00:00 UTC. Topping up raises it as well.',
+      action: 'open-settings',
+      actionLabel: 'Change Model',
+      severity: 'warning',
+    };
+  }
+
   if (lower.includes('429') || lower.includes('rate limit') || lower.includes('too many requests')) {
     return {
       title: 'Rate Limit Reached',
@@ -70,6 +116,34 @@ export function classifyError(error: Error | string): ClassifiedError {
       action: 'retry',
       actionLabel: 'Try Again',
       severity: 'warning',
+    };
+  }
+
+  // A cap the account holder set on themselves, arriving as 402 alongside the
+  // genuine billing failures. Nothing is wrong with the payment method, so the
+  // generic advice below sends someone to inspect a card that is working.
+  if (lower.includes('payg_limit_reached')) {
+    return {
+      title: 'Spending Limit Reached',
+      message: 'This account hit its own pay-as-you-go spending limit. Billing is working normally.',
+      suggestion: 'Raise the limit in the provider\'s dashboard, or wait for the limit\'s reset window.',
+      action: 'open-settings',
+      actionLabel: 'Check Settings',
+      severity: 'warning',
+    };
+  }
+
+  // A prepaid balance that ran out. Distinguished from the catch-all because
+  // "ensure your payment method is active" describes a card on file, and a
+  // prepaid account does not have one — the fix is a top-up.
+  if (lower.includes('insufficient_balance')) {
+    return {
+      title: 'Balance Empty',
+      message: 'This account\'s prepaid balance cannot cover the request.',
+      suggestion: 'Top up in the provider\'s dashboard, or switch to a free model or route.',
+      action: 'open-settings',
+      actionLabel: 'Check Settings',
+      severity: 'error',
     };
   }
 

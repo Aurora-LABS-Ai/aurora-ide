@@ -122,7 +122,16 @@ pub enum ApiError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     #[error("rate limited (retry recommended)")]
-    RateLimit,
+    RateLimit {
+        /// Seconds the provider asked us to wait, parsed from `Retry-After`.
+        ///
+        /// A 429 is the one failure where the other side has already told us
+        /// the answer. Guessing with exponential backoff instead means either
+        /// hammering a provider that asked for a minute, or idling for thirty
+        /// seconds when it asked for two. `None` when the header was absent or
+        /// unparseable, which is the only case the backoff ladder has to guess.
+        retry_after_secs: Option<u64>,
+    },
     /// A 401. The payload is what the provider said, or `check API key` when
     /// it said nothing.
     ///
@@ -145,7 +154,7 @@ impl ApiError {
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
-            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit
+            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit { .. }
         )
     }
 
@@ -186,7 +195,7 @@ impl ApiError {
         }
         matches!(
             self,
-            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit
+            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit { .. }
         )
     }
 
@@ -329,7 +338,10 @@ mod tests {
     fn api_error_recoverable_classification() {
         assert!(ApiError::Network("conn reset".into()).is_recoverable());
         assert!(ApiError::Provider("503".into()).is_recoverable());
-        assert!(ApiError::RateLimit.is_recoverable());
+        assert!(ApiError::RateLimit {
+            retry_after_secs: None
+        }
+        .is_recoverable());
         assert!(!ApiError::Unauthorized("no key".into()).is_recoverable());
         assert!(!ApiError::InvalidRequest("missing field".into()).is_recoverable());
         assert!(!ApiError::Cancelled.is_recoverable());
@@ -378,7 +390,10 @@ mod tests {
     fn ordinary_failures_are_not_mistaken_for_context_overflow() {
         assert!(!ApiError::Provider("503 upstream unavailable".into()).is_context_overflow());
         assert!(!ApiError::Network("connection reset".into()).is_context_overflow());
-        assert!(!ApiError::RateLimit.is_context_overflow());
+        assert!(!ApiError::RateLimit {
+            retry_after_secs: None
+        }
+        .is_context_overflow());
         assert!(!ApiError::Unauthorized("no key".into()).is_context_overflow());
         assert!(ApiError::Provider("503 upstream unavailable".into()).is_retryable());
     }

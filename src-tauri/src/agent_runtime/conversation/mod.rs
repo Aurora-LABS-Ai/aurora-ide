@@ -77,7 +77,18 @@ use crate::api::ReasoningReplay;
 ///
 /// Only errors [`ApiError::is_retryable`] admits are counted here — a
 /// rejected request shape or a bad key fails once and stops.
-const MAX_STREAM_ATTEMPTS: u32 = 3;
+/// Six, not three. Three attempts spanning three seconds is enough for a
+/// packet loss and nothing else: a gateway rotating a bad upstream, a provider
+/// shedding load, a laptop waking its wifi all take longer than that, and every
+/// one of them used to end the turn and wait for the user to press Retry.
+///
+/// The cost of raising it is bounded and visible. Each wait emits
+/// [`AssistantEvent::PartialReplyDiscarded`], so the user watches the attempts
+/// rather than staring at a frozen window, and the backoff is interruptible, so
+/// Stop lands immediately instead of after the sleep. Six attempts is ~31s of
+/// waiting in the worst case (see [`STREAM_RETRY_BASE_DELAY_MS`]) — past that a
+/// failure is an outage worth reporting, not a blip worth waiting out.
+const MAX_STREAM_ATTEMPTS: u32 = 6;
 
 /// Forced compactions a single turn may spend answering a provider's
 /// "your input exceeds the context window" rejection.
@@ -95,16 +106,52 @@ const MAX_STREAM_ATTEMPTS: u32 = 3;
 /// nothing new.
 const MAX_OVERFLOW_COMPACTIONS: u32 = 2;
 
-/// Base backoff before re-issuing a failed model call, doubling per
-/// attempt: 1s, then 2s, then 4s… At [`MAX_STREAM_ATTEMPTS`] = 3 only
-/// the first two are ever used, so a fully-failed call costs ~3s of
-/// waiting on top of the attempts themselves.
+/// Base backoff before re-issuing a failed model call, doubling per attempt:
+/// 1s, 2s, 4s, 8s, 16s. At [`MAX_STREAM_ATTEMPTS`] = 6 that is 31s of waiting
+/// across a fully-failed call, on top of the attempts themselves.
 ///
 /// Starting at a second rather than immediately: a gateway swapping to a
 /// healthy upstream needs a moment, and an instant retry usually just
 /// buys the same error. Doubling rather than flat: if the first wait was
 /// not enough, the second almost certainly needs to be longer.
 const STREAM_RETRY_BASE_DELAY_MS: u64 = 1_000;
+
+/// Ceiling on one backoff step.
+///
+/// The ladder is only reached when the provider gave us no `Retry-After` to
+/// obey, so it is a guess by construction. Past half a minute a longer guess
+/// stops being a retry and starts being a hang.
+const STREAM_RETRY_MAX_DELAY_MS: u64 = 32_000;
+
+/// Fraction of each backoff added as random jitter.
+///
+/// Without it every Aurora window that lost the same gateway retries on the
+/// same schedule and arrives together, which is how a provider recovering from
+/// load gets knocked over again by the clients waiting for it. A quarter is the
+/// usual spread and matches the reference implementation.
+const STREAM_RETRY_JITTER_FRACTION: f64 = 0.25;
+
+/// How long to wait before re-issuing a failed model call.
+///
+/// `retry_after` is the provider's own answer, already clamped when it was
+/// parsed. It wins outright: a 429 that says "60 seconds" means the ladder's
+/// guess of two is wrong, and obeying it is the difference between clearing the
+/// limit and extending it.
+///
+/// Everything else gets exponential backoff, capped, plus jitter.
+fn stream_retry_delay_ms(attempt: u32, retry_after: Option<u64>) -> u64 {
+    if let Some(secs) = retry_after {
+        return secs.saturating_mul(1_000);
+    }
+    let stepped = STREAM_RETRY_BASE_DELAY_MS
+        .checked_shl(attempt.saturating_sub(1))
+        .unwrap_or(STREAM_RETRY_MAX_DELAY_MS)
+        .min(STREAM_RETRY_MAX_DELAY_MS);
+    // `rand` is already in the tree; a fresh thread-local draw per call is
+    // exactly the independence the jitter is for.
+    let jitter = (stepped as f64 * STREAM_RETRY_JITTER_FRACTION * rand::random::<f64>()) as u64;
+    stepped.saturating_add(jitter)
+}
 
 /// Configuration for one [`ConversationRuntime`] instance.
 ///
@@ -325,6 +372,20 @@ impl ConversationRuntime {
         };
         let dir = super::session_store::tool_results_dir_in(root, &session.thread_id);
         super::tool_spill::spill_oversized(&dir, tool_call_id, raw)
+    }
+
+    /// [`Self::spill_tool_output`] at the budget's lower floor.
+    ///
+    /// Called only when one tool message's results together exceed
+    /// [`MAX_TOOL_RESULTS_PER_MESSAGE`]. Returns `raw` untouched without a
+    /// store dir, or when the spill declines it — the budget reads that as an
+    /// exemption rather than a failure.
+    fn spill_for_budget(&self, session: &Session, tool_call_id: &str, raw: String) -> String {
+        let Some(root) = self.store_dir.as_deref() else {
+            return raw;
+        };
+        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id);
+        super::tool_spill::spill_for_budget(&dir, tool_call_id, raw)
     }
 
     /// Builder-style override that swaps the runtime's no-op hook for
@@ -601,7 +662,13 @@ impl ConversationRuntime {
                     break Err(api_err);
                 }
 
-                let delay_ms = STREAM_RETRY_BASE_DELAY_MS << (attempt - 1);
+                // A 429 carries the provider's own answer; everything else is
+                // the capped, jittered ladder.
+                let retry_after = match &api_err {
+                    ApiError::RateLimit { retry_after_secs } => *retry_after_secs,
+                    _ => None,
+                };
+                let delay_ms = stream_retry_delay_ms(attempt, retry_after);
 
                 crate::logging::log_warn(
                     "agent_runtime.turn",
@@ -819,7 +886,24 @@ impl ConversationRuntime {
             // transcript that breaks every later turn in the thread.
             //
             // The usage is still counted above, because it was still billed.
-            let produced_nothing = assistant_message.blocks.is_empty();
+            //
+            // "No blocks" was too narrow. A stream that dies part-way through
+            // the model's reasoning leaves ONE block — a thinking block, cut
+            // mid-sentence — and that is not a reply either: it answers
+            // nothing and calls nothing, so the turn has nowhere to go. Keying
+            // the retry on emptiness meant the one case where retrying is
+            // guaranteed safe was the one case that never retried.
+            //
+            // Not persisting it matters as much as retrying. A dead-end
+            // thought in history is replayed to the provider on every later
+            // request in the thread, so the truncation is paid for again and
+            // again for reasoning that reached no conclusion.
+            let produced_nothing = !can_advance_turn(&assistant_message);
+            // Read before the message is moved below, and the distinction is
+            // worth keeping: reasoning that stopped without concluding is a
+            // cut stream, while nothing at all points at the provider or the
+            // route.
+            let stalled_after_reasoning = produced_nothing && has_thinking(&assistant_message);
             if !produced_nothing {
                 session.append_message(assistant_message.clone());
                 assistant_messages.push(assistant_message);
@@ -833,9 +917,31 @@ impl ConversationRuntime {
             if produced_nothing && !retried_empty_reply {
                 retried_empty_reply = true;
                 eprintln!(
-                    "agent_runtime: provider returned no content blocks \
-                     (output_tokens={effective_usage_output}); retrying once"
+                    "agent_runtime: reply cannot advance the turn — no text, no tool call \
+                     (output_tokens={effective_usage_output}, \
+                     thinking={stalled_after_reasoning}); retrying once"
                 );
+                // Reasoning that was cut off is already on screen, and the
+                // retry streams from the top. Without this the user watches a
+                // dead thought and its replacement stack up as two blocks, and
+                // has no way to tell which one the answer came from. A truly
+                // empty reply had nothing to discard, which is why this was
+                // never needed before.
+                if stalled_after_reasoning {
+                    seq = seq.saturating_add(1);
+                    let _ = event_sink
+                        .send(AgentEventEnvelope {
+                            turn_id: turn_id.clone(),
+                            seq,
+                            event: AssistantEvent::PartialReplyDiscarded {
+                                attempt: 1,
+                                max_attempts: 2,
+                                reason: "the model stopped mid-reasoning without answering"
+                                    .to_string(),
+                            },
+                        })
+                        .await;
+                }
                 continue;
             }
 
@@ -1079,6 +1185,7 @@ mod context_injection;
 mod tests;
 mod tokens;
 mod tool_exec;
+mod tool_result_budget;
 mod tool_results;
 mod trim;
 mod util;
@@ -1086,6 +1193,7 @@ mod util;
 use context_injection::*;
 use tokens::*;
 use tool_exec::*;
+use tool_result_budget::*;
 use tool_results::*;
 use trim::*;
 use util::*;

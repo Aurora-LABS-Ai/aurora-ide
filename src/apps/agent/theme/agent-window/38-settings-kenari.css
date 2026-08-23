@@ -1,0 +1,117 @@
+/* ── kenari plan card ──────────────────────────────────────────────────────
+   The frame is `.agw-atlas`, shared with the other four subscription cards, so
+   only what is specific to kenari lives here.
+
+   The bar means something stronger on this provider than on the others. When a
+   kenari plan window runs out the request is REFUSED — `429
+   plan_limit_reached`, on every endpoint, not just chat — rather than falling
+   through to the balance. So this is not a cost readout, it is the distance to
+   a hard stop, and it earns the same prominence Codex gives its weekly limit. */
+
+.agw-kenari-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agw-kenari-window {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agw-kenari-window-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agw-kenari-window-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-dim);
+}
+
+/* Tabular figures so a percentage ticking up does not shuffle the row it sits
+   in. The countdown rides here too, because "38% used" and "resets in 6d 8h"
+   answer the same question together and separately answer neither. */
+.agw-kenari-window-meta {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Before a session exists. One paragraph saying why a sign-in is being asked
+   for beside a working API key, then one control. */
+.agw-kenari-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.agw-kenari-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.agw-kenari-note {
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-kenari-note[data-tone="error"] {
+  color: var(--agw-danger, #e5484d);
+}
+
+.agw-kenari-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-kenari-foot-spacer {
+  flex: 1;
+}
+
+.agw-kenari-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-kenari-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.agw-kenari-link:hover {
+  color: var(--agw-text);
+}
+.agw-kenari-link[data-tone="danger"] {
+  color: var(--agw-danger, #e5484d);
+}
+.agw-kenari-link:focus-visible {
+  outline: 2px solid var(--agw-focus, var(--agw-accent));
+  outline-offset: 2px;
+  border-radius: var(--agw-radius-sm);
+}

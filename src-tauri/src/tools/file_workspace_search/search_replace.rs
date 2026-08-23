@@ -250,8 +250,21 @@ pub(crate) fn render_response(
         }
         SearchReplaceResponse::NotFound { failed_at } => {
             let error = if multi {
+                // Two things used to go wrong here. The message named an
+                // "original file snapshot" while its hint named "current file
+                // content", so a reader could not tell whether the file had
+                // moved under them (re-read) or their old_string was simply
+                // wrong (rewrite it) — and the good recovery text added for the
+                // single-replacement case was never given to this branch.
+                //
+                // The snapshot is real and worth saying plainly: every
+                // replacement in one call is matched against the file as it was
+                // BEFORE any of them were applied, so replacement 2 must not
+                // assume replacement 1 already landed.
                 format!(
-                    "Replacement {failed_at}: Could not find the specified text in the original file snapshot."
+                    "Replacement {failed_at}: nothing in {raw_path} matched. Every replacement in \
+                     one call is matched against the file as it was BEFORE any of them were \
+                     applied."
                 )
             } else {
                 format!(
@@ -271,7 +284,10 @@ pub(crate) fn render_response(
                 // problem. Padding an old_string that is absent with more
                 // context that is also absent just fails again, longer.
                 "hint": if multi {
-                    "The text still needs to match the current file content exactly."
+                    "Copy old_string verbatim from a file_read of this path — whitespace and \
+                     indentation included — rather than adding more context around a guess. If \
+                     this replacement was meant to edit text an earlier replacement in the same \
+                     call produces, split it into a second call instead."
                 } else {
                     "Nothing in the file matched. Copy old_string verbatim from a file_read of \
                      this path — whitespace and indentation included — rather than adding more \

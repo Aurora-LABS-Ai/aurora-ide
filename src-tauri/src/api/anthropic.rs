@@ -37,8 +37,9 @@ use crate::agent_runtime::types::TokenUsage;
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
     build_anthropic_body, build_anthropic_headers, build_anthropic_url, encode_redacted_thinking,
-    finalize_assistant_message, frame_payloads, map_reqwest_error, map_status_error, merge_usage,
-    AnthropicStreamEvent, BlockState, OpenAiStreamError, SseFrameBuffer,
+    finalize_assistant_message, frame_payloads, map_reqwest_error, map_status_error_with_headers,
+    merge_usage, unprefix_model, AnthropicStreamEvent, BlockState, OpenAiStreamError,
+    RequestOrigin, SseFrameBuffer,
 };
 
 /// Anthropic / MiniMax streaming adapter.
@@ -112,8 +113,20 @@ impl StreamingApiClient for AnthropicAdapter {
 
         let status = response.status();
         if !status.is_success() {
+            // Cloned before `text()` consumes the response. On a 429 the
+            // `Retry-After` header is the only wait anyone has actually
+            // measured; without it the runtime falls back to guessing.
+            let headers = response.headers().clone();
             let body = response.text().await.unwrap_or_default();
-            return Err(map_status_error(status.as_u16(), body));
+            return Err(map_status_error_with_headers(
+                status.as_u16(),
+                body,
+                &headers,
+                RequestOrigin {
+                    url: &url,
+                    model: unprefix_model(request.model, &self.config.provider_id),
+                },
+            ));
         }
 
         let bytes_stream = response

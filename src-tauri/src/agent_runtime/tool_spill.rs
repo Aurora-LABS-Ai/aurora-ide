@@ -46,12 +46,42 @@ const PREVIEW_HEAD: usize = 3 * 1024;
 /// live. This is the half a head-only clamp always lost.
 const PREVIEW_TAIL: usize = 5 * 1024;
 
+/// Floor for a spill forced by the per-message budget
+/// ([`super::conversation::MAX_TOOL_RESULTS_PER_MESSAGE`]).
+///
+/// Lower than [`SPILL_THRESHOLD`] because the budget's problem is different:
+/// results that are each individually fine can still add up to megabytes in one
+/// message.
+///
+/// Derived, not picked. [`preview`] keeps `PREVIEW_HEAD + PREVIEW_TAIL` inline
+/// plus its note, so it cannot shrink anything at or below that size at all —
+/// a lower floor would write a file, free nothing, and leave the budget
+/// reporting the result as exempt when the truth is that spilling it was
+/// pointless. Twice the preview size is the first point where a move reliably
+/// halves the result, which is what makes the round trip worth offering.
+const BUDGET_SPILL_THRESHOLD: usize = 2 * (PREVIEW_HEAD + PREVIEW_TAIL);
+
 /// Rewrite `raw` so any oversized payload lives on disk.
 ///
 /// Returns the (possibly unchanged) content to hand to the history clamp.
 #[must_use]
 pub fn spill_oversized(dir: &Path, tool_call_id: &str, raw: String) -> String {
-    if raw.len() <= SPILL_THRESHOLD {
+    spill_with_threshold(dir, tool_call_id, raw, SPILL_THRESHOLD)
+}
+
+/// [`spill_oversized`] at the budget's lower floor.
+///
+/// Used only when one tool message's results together exceed
+/// [`super::conversation::MAX_TOOL_RESULTS_PER_MESSAGE`]. Every exemption the
+/// normal path applies still applies here — an exact file read and an embedded
+/// image are no more spillable because the batch around them was large.
+#[must_use]
+pub fn spill_for_budget(dir: &Path, tool_call_id: &str, raw: String) -> String {
+    spill_with_threshold(dir, tool_call_id, raw, BUDGET_SPILL_THRESHOLD)
+}
+
+fn spill_with_threshold(dir: &Path, tool_call_id: &str, raw: String, threshold: usize) -> String {
+    if raw.len() <= threshold {
         return raw;
     }
 
@@ -80,7 +110,7 @@ pub fn spill_oversized(dir: &Path, tool_call_id: &str, raw: String) -> String {
     }
 
     match serde_json::from_str::<Value>(&raw) {
-        Ok(Value::Object(map)) => spill_json_fields(dir, tool_call_id, map)
+        Ok(Value::Object(map)) => spill_json_fields(dir, tool_call_id, map, threshold)
             .and_then(|map| serde_json::to_string(&Value::Object(map)).ok())
             .unwrap_or(raw),
         // A non-object result (plain text, or a bare array) spills whole.
@@ -97,6 +127,7 @@ fn spill_json_fields(
     dir: &Path,
     tool_call_id: &str,
     mut map: Map<String, Value>,
+    threshold: usize,
 ) -> Option<Map<String, Value>> {
     let mut spilled_any = false;
 
@@ -104,7 +135,7 @@ fn spill_json_fields(
         let Some(Value::String(text)) = map.get(*field) else {
             continue;
         };
-        if text.len() <= SPILL_THRESHOLD {
+        if text.len() <= threshold {
             continue;
         }
         // Same image-marker exemption as the top-level check — a marker inside
@@ -310,6 +341,50 @@ mod tests {
             std::fs::read_dir(dir.path()).unwrap().next().is_none(),
             "no file for a small result"
         );
+    }
+
+    /// The budget floor exists so a forced move always frees something. An
+    /// earlier draft set it at 4 KiB, below the 8 KiB `preview` keeps inline —
+    /// which wrote a file, returned the text unchanged, and left the budget
+    /// reporting a result it had "failed" to move when the move was never
+    /// capable of helping.
+    #[test]
+    fn the_budget_floor_never_writes_a_file_it_cannot_shrink() {
+        let dir = tempfile::tempdir().unwrap();
+        let at_floor = "x".repeat(BUDGET_SPILL_THRESHOLD);
+        assert_eq!(
+            spill_for_budget(dir.path(), "call_1", at_floor.clone()),
+            at_floor,
+            "a result at the floor is passed through"
+        );
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "and nothing was written for it"
+        );
+
+        // Just above the floor, a move has to actually pay for itself.
+        let over = "y".repeat(BUDGET_SPILL_THRESHOLD + 1);
+        let spilled = spill_for_budget(dir.path(), "call_2", over.clone());
+        assert!(
+            spilled.len() < over.len() / 2 + PREVIEW_HEAD + PREVIEW_TAIL,
+            "a forced move must roughly halve the result, got {} from {}",
+            spilled.len(),
+            over.len()
+        );
+        assert!(spilled.contains("full output: "), "and name where it went");
+    }
+
+    /// The normal path keeps its own, higher threshold. The budget's lower
+    /// floor must not quietly start spilling ordinary command output.
+    #[test]
+    fn the_budget_floor_does_not_change_the_normal_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let between = "z".repeat(SPILL_THRESHOLD);
+        assert_eq!(
+            spill_oversized(dir.path(), "call_1", between.clone()),
+            between
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 
     #[test]

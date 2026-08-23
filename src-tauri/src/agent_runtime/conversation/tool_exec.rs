@@ -359,6 +359,24 @@ impl ConversationRuntime {
             result_blocks.extend(pending.blocks);
         }
 
+        // ── Aggregate budget ──────────────────────────────────────────
+        //
+        // Every cap above is per CALL. Ten concurrent reads each returning a
+        // legal 50 KiB is 500 KiB in this ONE message, and nothing so far has
+        // looked at the sum. Bring it under the ceiling here, at assembly,
+        // where the verdict is written into the message that gets persisted —
+        // so it is byte-stable for the rest of the conversation and no later
+        // pass can rewrite a cached prefix by changing its mind.
+        if let Some(report) = enforce_message_budget(&mut result_blocks, |id, raw| {
+            self.spill_for_budget(session, id, raw)
+        }) {
+            eprintln!(
+                "agent_runtime: tool message over budget on turn {turn_id} \
+                 ({} -> {} bytes, {} moved to disk, {} exempt)",
+                report.before, report.after, report.spilled, report.exempt,
+            );
+        }
+
         Ok(ToolBatchOutcome {
             message: ConversationMessage {
                 role: MessageRole::Tool,
@@ -513,6 +531,31 @@ pub(super) async fn emit_truncation_notice(
 pub(super) fn has_visible_answer(message: &ConversationMessage) -> bool {
     message.blocks.iter().any(|block| match block {
         ContentBlock::Text { text } => !text.trim().is_empty(),
+        _ => false,
+    })
+}
+
+/// Can this reply move the turn forward at all?
+///
+/// Text answers the user; a tool call continues the work. A message with
+/// neither does neither, and re-issuing the request is the only thing that
+/// helps.
+///
+/// Deliberately NOT [`has_visible_answer`], which counts text only: a message
+/// carrying nothing but tool calls is a perfectly good step and must not be
+/// mistaken for a dropped one.
+///
+/// Traced from a live session on 2026-08-23. The provider dropped a request
+/// mid-stream — its own dashboard billed that call **zero tokens** — and
+/// Aurora received a thinking block whose text stops mid-sentence. The retry
+/// that exists for exactly this case was keyed on `blocks.is_empty()`, and the
+/// message had one block, so it never fired: a truncated thought became the
+/// end of the turn, and was persisted where it would be replayed to the
+/// provider on every later request.
+pub(super) fn can_advance_turn(message: &ConversationMessage) -> bool {
+    message.blocks.iter().any(|block| match block {
+        ContentBlock::Text { text } => !text.trim().is_empty(),
+        ContentBlock::ToolUse { .. } => true,
         _ => false,
     })
 }

@@ -38,6 +38,7 @@ pub mod diagnostics;
 pub mod editor_ops;
 pub mod fonts;
 pub mod git;
+pub mod kenari;
 pub mod local_providers;
 pub mod opencode;
 pub mod plans;

@@ -47,6 +47,7 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
+import { KenariUsageCard } from "./KenariUsageCard";
 import { CursorProviderCard } from "./CursorProviderCard";
 import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
@@ -989,6 +990,16 @@ const ProviderDetail: React.FC<{
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
           onKeyImported={(apiKey) => updateProvider(provider.id, { apiKey })}
+        />
+      ) : kenari ? (
+        /* kenari owns its head for the same reason the four above do: the plan
+           bar is the first thing worth reading, and the generic name/type head
+           would push it below the fold. The connection fields and the model
+           list still render underneath — unlike Codex, kenari has a real key
+           and real models to edit. */
+        <KenariUsageCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
       ) : (
         <div className="agw-prov-detail-head">

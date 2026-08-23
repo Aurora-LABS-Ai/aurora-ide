@@ -2453,6 +2453,155 @@ async fn run_turn_default_no_hook_still_compiles_and_runs() {
         .expect("ok");
 }
 
+/// Traced from session `58e4f8a9` on 2026-08-23. The provider dropped a
+/// request mid-stream — kenari's own dashboard billed that call **zero
+/// tokens** — and Aurora received one thinking block whose text stops
+/// mid-sentence. The retry that exists for a dropped response was keyed on
+/// `blocks.is_empty()`, and the message had a block, so it never fired: 29
+/// successful tool calls were thrown away and the user got "the model reasoned
+/// but never produced an answer" with a Retry button.
+#[tokio::test(start_paused = true)]
+async fn reasoning_that_stops_without_answering_is_retried_not_kept() {
+    let stalled = ConversationMessage::assistant(
+        vec![ContentBlock::Thinking {
+            text: "Now I have a complete picture. Let me confirm the data layer is".into(),
+            signature: None,
+            duration_ms: Some(11_711),
+        }],
+        1_700_000_000_000,
+    );
+    let api = Arc::new(MockApi::new(vec![
+        TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(stalled, "end_turn")),
+        },
+        TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text("the real answer"), "end_turn")),
+        },
+    ]));
+    let runtime =
+        ConversationRuntime::new(api, Arc::new(ToolRegistry::new()), RuntimeConfig::default());
+
+    let mut session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(64);
+    runtime
+        .run_turn(
+            &mut session,
+            user_msg("explain this"),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the retry rescues the turn");
+
+    let assistant_blocks: Vec<&ContentBlock> = session
+        .messages
+        .iter()
+        .filter(|m| m.role == MessageRole::Assistant)
+        .flat_map(|m| m.blocks.iter())
+        .collect();
+
+    assert!(
+        assistant_blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "the real answer")),
+        "the retry's answer must reach the session"
+    );
+    // The dead thought must not be persisted. History is replayed to the
+    // provider on every later request in the thread, so keeping it means
+    // paying for a truncated reasoning segment again and again.
+    assert!(
+        !assistant_blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. })),
+        "the cut-off reasoning was persisted: {assistant_blocks:?}"
+    );
+}
+
+/// The other half: a reply carrying only tool calls is a perfectly good step
+/// and must never be mistaken for a dropped one. `has_visible_answer` counts
+/// text only, so reusing it here would have stalled every tool-using turn.
+#[tokio::test(start_paused = true)]
+async fn a_reply_that_is_only_tool_calls_is_not_treated_as_dropped() {
+    let api = Arc::new(MockApi::new(vec![
+        TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_uses(&[("call-1", "echo")]),
+                "tool_use",
+            )),
+        },
+        // The tool result comes back, so the loop needs a second model call to
+        // finish. A spurious retry would consume a third.
+        TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text("done"), "end_turn")),
+        },
+    ]));
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register(Arc::new(RecordingTool {
+        name: "echo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "hi".into(),
+    }));
+    let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
+
+    let mut session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(64);
+    let outcome = runtime
+        .run_turn(&mut session, user_msg("go"), tx, CancellationToken::new())
+        .await
+        .expect("tool-only replies advance the turn");
+
+    // Two model calls: the tool call and the answer after it. A third would
+    // mean the retry fired on a reply that was advancing the turn perfectly
+    // well.
+    assert_eq!(outcome.iterations, 2);
+    assert!(session.messages.iter().any(|m| m.role == MessageRole::Tool));
+}
+
+#[test]
+fn the_backoff_ladder_is_capped_and_jittered() {
+    // Capped: without a ceiling, attempt 6 of an 8-attempt ladder would be
+    // half a minute and attempt 10 would be eight. A retry that long is a
+    // hang wearing a progress message.
+    for attempt in 1..40 {
+        let delay = stream_retry_delay_ms(attempt, None);
+        assert!(
+            delay
+                <= STREAM_RETRY_MAX_DELAY_MS
+                    + (STREAM_RETRY_MAX_DELAY_MS as f64 * STREAM_RETRY_JITTER_FRACTION) as u64,
+            "attempt {attempt} waited {delay}ms"
+        );
+    }
+
+    // The first step is the base delay plus at most a quarter of it.
+    let first = stream_retry_delay_ms(1, None);
+    assert!(first >= STREAM_RETRY_BASE_DELAY_MS);
+    assert!(first <= STREAM_RETRY_BASE_DELAY_MS + STREAM_RETRY_BASE_DELAY_MS / 4);
+
+    // Jittered: every Aurora window that lost the same gateway must not come
+    // back on the same schedule. Twenty draws landing on one value would mean
+    // the jitter is not wired up.
+    let draws: std::collections::HashSet<u64> =
+        (0..20).map(|_| stream_retry_delay_ms(4, None)).collect();
+    assert!(draws.len() > 1, "backoff is not jittered: {draws:?}");
+}
+
+#[test]
+fn a_provider_that_names_its_own_wait_is_obeyed_over_the_ladder() {
+    // Attempt 1's ladder guess is ~1s. When a 429 says 60, the guess is simply
+    // wrong, and retrying early is what extends a rate limit rather than
+    // clearing it.
+    assert_eq!(stream_retry_delay_ms(1, Some(60)), 60_000);
+    // It wins at every attempt, not just the first — the ladder never
+    // out-bids a measured answer.
+    assert_eq!(stream_retry_delay_ms(5, Some(3)), 3_000);
+    // Zero is a legitimate "go ahead now".
+    assert_eq!(stream_retry_delay_ms(2, Some(0)), 0);
+}
+
 #[tokio::test(start_paused = true)]
 async fn run_turn_propagates_recoverable_api_error_with_event() {
     // A rate limit is retried before it is reported, so the script has to
@@ -2462,7 +2611,9 @@ async fn run_turn_propagates_recoverable_api_error_with_event() {
     let script = (0..MAX_STREAM_ATTEMPTS)
         .map(|_| TurnScript {
             events: vec![],
-            result: Err(ApiError::RateLimit),
+            result: Err(ApiError::RateLimit {
+                retry_after_secs: None,
+            }),
         })
         .collect();
     let api = Arc::new(MockApi::new(script));
@@ -2478,7 +2629,7 @@ async fn run_turn_propagates_recoverable_api_error_with_event() {
         .await
         .expect_err("must surface api err");
     match err {
-        RuntimeError::Api(ApiError::RateLimit) => {}
+        RuntimeError::Api(ApiError::RateLimit { .. }) => {}
         other => panic!("expected Api(RateLimit), got {other:?}"),
     }
 

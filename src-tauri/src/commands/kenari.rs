@@ -359,7 +359,8 @@ async fn await_session(
     loop {
         if std::time::Instant::now() > deadline {
             return Err(
-                "Timed out waiting for the kenari sign-in. Try Sign in to kenari again.".to_string(),
+                "Timed out waiting for the kenari sign-in. Try Sign in to kenari again."
+                    .to_string(),
             );
         }
 

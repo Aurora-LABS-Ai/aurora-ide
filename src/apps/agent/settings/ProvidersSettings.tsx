@@ -23,8 +23,10 @@ import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
 import { isCursorProvider } from "@/apps/agent/services/providers/cursor";
 import {
+  defaultOpenCodeWire,
   isOpenCodeProvider,
-  openCodeWire,
+  openCodeWireFor,
+  OPENCODE_PROVIDER_ID,
   OPENCODE_WIRES,
   type OpenCodeWire,
 } from "@/apps/agent/services/providers/opencode";
@@ -539,6 +541,9 @@ const ModelRow: React.FC<{
   const deleteModel = useSettingsStore((s) => s.deleteModel);
   const [editing, setEditing] = useState(false);
   const reasoning = model.reasoning;
+  const isOpenCode = model.providerId === OPENCODE_PROVIDER_ID;
+  const ocDefault = defaultOpenCodeWire(model.modelKey);
+  const ocWire = openCodeWireFor(model);
   const ctx = model.contextWindow ? formatContextWindow(model.contextWindow) : null;
   const price =
     model.priceOutputPerMtok != null
@@ -600,6 +605,49 @@ const ModelRow: React.FC<{
           </span>
         )}
       </div>
+
+      {/* OpenCode Go picks its wire per MODEL, so the control belongs on the
+          row. It gets its own line rather than a place beside the reasoning
+          levels for two reasons, both learned the hard way: a model with six
+          reasoning levels plus three formats overflows the top row and squeezes
+          the model's own name to nothing, and two unlabelled segmented controls
+          side by side give no clue which is which.
+
+          Not folded into Override fields, though: this is the first thing to
+          reach for when a model errors, and the plan gains models faster than
+          the defaults table can be updated. */}
+      {isOpenCode && (
+        <div className="agw-prov-model-wire">
+          <span className="agw-prov-model-wire-label">Format</span>
+          <AgwSegmented<OpenCodeWire>
+            ariaLabel={`API format for ${model.label || model.modelKey}`}
+            value={ocWire}
+            options={OPENCODE_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+            onChange={(next) =>
+              updateModel(model.id, {
+                // Choosing the default again clears the override, so a row the
+                // user never really changed keeps tracking the table instead of
+                // freezing on today's answer.
+                providerType: next === ocDefault ? undefined : next,
+              })
+            }
+          />
+          {/* Shown only on a row that differs from its default, so the changed
+              ones stand out down a long list. An action rather than a sentence:
+              it names the default AND is the way back to it, where a line of
+              prose would only describe the situation and leave the user to work
+              out which of the three to click. */}
+          {ocWire !== ocDefault && (
+            <button
+              type="button"
+              className="agw-prov-model-wire-reset"
+              onClick={() => updateModel(model.id, { providerType: undefined })}
+            >
+              Reset to {OPENCODE_WIRES.find((w) => w.value === ocDefault)?.label}
+            </button>
+          )}
+        </div>
+      )}
 
       {editing && (
         <div className="agw-prov-edit">
@@ -942,7 +990,6 @@ const ProviderDetail: React.FC<{
   const builtIn = isBuiltInProvider(provider);
   const kenari = isKenariProvider(provider);
   const wire = kenariWire(provider);
-  const ocWire = openCodeWire(provider);
 
   // Only a provider the user added can be deleted. The ones Aurora ships with
   // are theirs to configure, not to remove — so the destructive control simply
@@ -1041,24 +1088,11 @@ const ProviderDetail: React.FC<{
             </span>
           </label>
         )}
-        {/* Same choice, same reason, for OpenCode Go: one account, two wires,
-            and one of them silently returns no reasoning at all. Two options
-            rather than kenari's three — the Anthropic shape answers on this
-            host but returns an empty message for every model on the plan. */}
-        {opencode && (
-          <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
-            <span>API format</span>
-            <AgwSegmented<OpenCodeWire>
-              ariaLabel="OpenCode API format"
-              value={ocWire}
-              options={OPENCODE_WIRES.map((w) => ({ value: w.value, label: w.label }))}
-              onChange={(next) => updateProvider(provider.id, { providerType: next })}
-            />
-            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
-              {OPENCODE_WIRES.find((w) => w.value === ocWire)?.detail}
-            </span>
-          </label>
-        )}
+        {/* OpenCode Go has no row-level format picker, unlike kenari above.
+            kenari's three wires all serve the same account, so choosing one is
+            a real preference. Here the wire belongs to the model — each id
+            accepts exactly one and answers 500 or a misleading 401 on the
+            others — so the control lives on each model row instead. */}
         {provider.isCustom && (
           <>
             <label className="agw-prov-edit-field">
@@ -1148,6 +1182,17 @@ const ProviderDetail: React.FC<{
             New models auto-fill from models.dev — context window, limits, capabilities, pricing, and
             reasoning levels. Everything is overridable.
           </p>
+          {/* Said once, above the list, rather than on all 29 rows. Every row
+              carries the control; only a row that differs from its default
+              carries anything else. Repeating one sentence down a list teaches
+              nobody anything and buries the rows that genuinely differ. */}
+          {opencode && (
+            <p className="agw-prov-models-hint">
+              Each model answers on one API format, already set per model. Change a Format only
+              when that model starts failing. The wrong one returns a server error, or a 401 that
+              looks like a rejected key.
+            </p>
+          )}
           <div className="agw-prov-models-panel">
             <div className="agw-prov-models agw-scroll">
               {models.length === 0 ? (

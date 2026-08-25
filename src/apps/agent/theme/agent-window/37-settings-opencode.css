@@ -68,6 +68,47 @@
   color: var(--agw-text-subtle);
 }
 
+/* ── Per-model API format ──────────────────────────────────────────────────
+   Lives here rather than with the other `.agw-prov-model-*` rules because only
+   OpenCode Go rows render it: every other provider's format is a property of
+   the account, not of the model.
+
+   Its own line, under the chips. It shared the top row briefly and that was a
+   mistake twice over — a model with six reasoning levels pushed the name out of
+   existence, and an unlabelled `Chat Messages Responses` next to an unlabelled
+   `Low High Max` reads as one confusing six-button control. A label costs one
+   word and removes the question. */
+.agw-prov-model-wire {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 9px;
+}
+.agw-prov-model-wire-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-dim);
+}
+/* The way back to the default, on the rows that left it. Quiet by default so a
+   changed row reads as changed without shouting, and colour-only on hover —
+   nothing moves, per the restraint the rest of this surface keeps. */
+.agw-prov-model-wire-reset {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-size: var(--agw-fs-micro);
+  font-family: inherit;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color 0.15s var(--agw-ease-out, ease);
+}
+.agw-prov-model-wire-reset:hover,
+.agw-prov-model-wire-reset:focus-visible {
+  color: var(--agw-text);
+  outline: none;
+}
+
 .agw-opencode-windows {
   display: flex;
   flex-direction: column;

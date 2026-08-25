@@ -281,11 +281,14 @@ export type ProviderType =
   | 'kenari'           // kenari over OpenAI Chat Completions (the default)
   | 'kenari-messages'  // kenari over the Anthropic Messages shape
   | 'kenari-responses' // kenari over the Responses shape (Codex wire)
-  // OpenCode Go — the same account over two wires, for the same reason as
-  // kenari's three. The default is the RESPONSES shape, because the chat one
-  // returns no reasoning on any model (it accepts every reasoning setting and
-  // sends none back). The bare row id is the default type so that a row with
-  // no type still routes to the wire that works.
-  | 'opencode-go'      // OpenCode Go over the Responses shape (the default)
-  | 'opencode-go-chat' // OpenCode Go over OpenAI Chat Completions
+  // OpenCode Go — three wires on one account and one base URL, but unlike
+  // kenari's three these are NOT interchangeable: each model accepts exactly
+  // one and fails hard on the others (500, or a 401 that reads as a bad key).
+  // So the choice is made per MODEL (`LLMModel.providerType`, resolved by
+  // `applyOpenCodeWire`), and these names only say which adapter each wire
+  // means. The bare row id stays the Responses shape so it remains a prefix of
+  // its own variants, which is what lets a stored choice survive a relaunch.
+  | 'opencode-go'          // OpenCode Go over the Responses shape
+  | 'opencode-go-chat'     // OpenCode Go over OpenAI Chat Completions
+  | 'opencode-go-messages' // OpenCode Go over the Anthropic Messages shape
   | 'custom';          // Custom OpenAI-compatible

@@ -150,13 +150,21 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
 }
+/* The name is the row's identity, so it is the last thing allowed to give way.
+   `min-width: 0` alone let it shrink to literally zero the moment the controls
+   opposite got wide enough — a row with six reasoning levels rendered with no
+   name at all. It still truncates with an ellipsis, which is the right way to
+   lose space; it just cannot vanish. */
 .agw-prov-model-main {
   display: flex;
   align-items: center;
   gap: 9px;
-  min-width: 0;
+  min-width: 8rem;
+  flex: 1 1 auto;
+  text-align: left;
   border: none;
   background: transparent;
   color: var(--agw-text);
@@ -185,8 +193,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Wraps under the name instead of overflowing the card when a model carries
+   more controls than the width allows. `flex-shrink: 0` on its own had nowhere
+   to put the overflow, so it took it out of the name. */
 .agw-prov-model-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
   flex-shrink: 0;
 }

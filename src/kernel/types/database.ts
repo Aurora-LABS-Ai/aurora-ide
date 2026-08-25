@@ -247,6 +247,13 @@ export interface DbProviderModel {
    * `defaultTemperature`, then Aurora's own default.
    */
   temperature: number | null;
+  /**
+   * Wire format for this one model (v24+). `null` inherits the provider's own
+   * type, which is how every provider whose format is a row-wide property
+   * behaves. Set per model where the format belongs to the model instead — see
+   * `LLMModel.providerType`.
+   */
+  providerType: string | null;
   /** Reasoning capability + chosen default (models.dev, v17+). */
   reasoning: ModelReasoning | null;
   /** Extra request-body fields merged verbatim at send time (v18+). */

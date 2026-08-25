@@ -119,6 +119,57 @@ fn named_child_text(node: Node<'_>, field: &str, src: &[u8]) -> Option<String> {
         .map(|n| text(n, src).to_string())
 }
 
+fn is_react_component_wrapper_binding(
+    name_node: Node<'_>,
+    src: &[u8],
+    imports: &[RawImport],
+) -> bool {
+    let Some(declarator) = name_node
+        .parent()
+        .filter(|parent| parent.kind() == "variable_declarator")
+    else {
+        return false;
+    };
+    let Some(call) = declarator
+        .child_by_field_name("value")
+        .filter(|value| value.kind() == "call_expression")
+    else {
+        return false;
+    };
+    let Some(callee) = call.child_by_field_name("function") else {
+        return false;
+    };
+    let is_wrapper = |name: &str| matches!(name, "memo" | "forwardRef");
+    let namespace_from_react = |local: &str| {
+        imports.iter().any(|import| {
+            import.module == "react" && import.local == local && import.imported == local
+        })
+    };
+
+    match callee.kind() {
+        // `import { memo as keep } from "react"; const Panel = keep(Impl)`.
+        "identifier" => {
+            let local = text(callee, src);
+            imports.iter().any(|import| {
+                import.module == "react" && import.local == local && is_wrapper(&import.imported)
+            })
+        }
+        // Default and namespace imports, including aliases:
+        // `React.memo(Impl)` and `R.forwardRef(Impl)`.
+        "member_expression" => {
+            let Some(object) = callee.child_by_field_name("object") else {
+                return false;
+            };
+            let Some(property) = callee.child_by_field_name("property") else {
+                return false;
+            };
+            let wrapper = text(property, src);
+            is_wrapper(wrapper) && namespace_from_react(text(object, src))
+        }
+        _ => false,
+    }
+}
+
 /// The type named INSIDE a C++ out-of-line definition: the `Grid` of
 /// `void Grid::draw() {}`.
 ///
@@ -607,10 +658,22 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
         }
     }
 
-    for (node, kind) in defs.values() {
+    for (node, captured_kind) in defs.values() {
         let pos = node.start_position();
         let name = text(*node, src).to_string();
         let container = enclosing_container(*node, src, lang);
+        // React's `memo` and `forwardRef` return callable component values, but
+        // their declarations are syntactically variable declarators. Promote
+        // only wrappers proven to come from the `react` import; a project-local
+        // helper that happens to be named `memo` must remain an ordinary value.
+        let kind = if *captured_kind == "variable"
+            && matches!(lang, Lang::TypeScript | Lang::Tsx)
+            && is_react_component_wrapper_binding(*node, src, &facts.imports)
+        {
+            "function"
+        } else {
+            captured_kind
+        };
         let metadata = super::metadata::extract(*node, lang, kind, src);
         // Top-level only: `export { run }` exports the module-level `run`, and
         // must not brand a same-named method inside some class as public API.
@@ -618,7 +681,7 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
             || (container.is_none() && late_exports.contains(name.as_str()));
         facts.symbols.push(RawSymbol {
             name,
-            kind: (*kind).to_string(),
+            kind: kind.to_string(),
             line: pos.row as u32 + 1,
             col: pos.column as u32 + 1,
             container,
@@ -879,6 +942,47 @@ mod tests {
         assert!(s.exported);
         let call = f.refs.iter().find(|r| r.name == "run").unwrap();
         assert_eq!(call.from.as_deref(), Some("compile"));
+    }
+
+    #[test]
+    fn react_memo_and_forward_ref_bindings_are_functions() {
+        let f = facts(
+            Lang::Tsx,
+            "import React, { memo as keep, forwardRef, useMemo } from 'react';\n\
+             import * as R from 'react';\n\
+             const Impl = () => null;\n\
+             export const Memoized = React.memo(Impl);\n\
+             export const NamespaceMemo = R.memo(Impl);\n\
+             export const AliasedMemo = keep(Impl);\n\
+             export const Forwarded = forwardRef((props, ref) => <div ref={ref} />);\n\
+             export const TypedForwarded = React.forwardRef<HTMLDivElement, Props>((props, ref) => <div ref={ref} />);\n\
+             export const Cached = useMemo(() => 1, []);\n\
+             const localMemo = (value) => value;\n\
+             export const LocallyWrapped = localMemo(Impl);\n",
+        );
+
+        for component in [
+            "Memoized",
+            "NamespaceMemo",
+            "AliasedMemo",
+            "Forwarded",
+            "TypedForwarded",
+        ] {
+            assert_eq!(
+                sym(&f, component).kind,
+                "function",
+                "React wrapper did not make {component} callable: {:?}",
+                f.symbols
+            );
+        }
+        for ordinary_value in ["Cached", "LocallyWrapped"] {
+            assert_eq!(
+                sym(&f, ordinary_value).kind,
+                "variable",
+                "non-component value {ordinary_value} was promoted: {:?}",
+                f.symbols
+            );
+        }
     }
 
     #[test]

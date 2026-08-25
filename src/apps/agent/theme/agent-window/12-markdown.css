@@ -210,8 +210,17 @@
   border: 1px solid var(--agw-border);
   padding: 6px 10px;
   text-align: left;
-  /* Wrap long cell content instead of overflowing the clipped wrapper. */
+  /* Dense tables must stay inside the conversation measure. Long content may
+   * break as a last resort; the compact index column is protected below. */
+  word-break: normal;
   overflow-wrap: anywhere;
+}
+.agw-md th:first-child,
+.agw-md td:first-child {
+  /* Keep short row labels such as `m1` horizontal without forcing every column
+   * to its max-content width and exposing Streamdown's horizontal scrollbar. */
+  min-width: 3ch;
+  overflow-wrap: normal;
 }
 .agw-md th {
   background: var(--agw-surface);

@@ -179,13 +179,19 @@ impl ProviderKind {
     #[must_use]
     pub fn detect(provider_type: &str) -> Self {
         match provider_type.trim() {
-            "anthropic" | "minimax" | "kenari-messages" => ProviderKind::Anthropic,
+            "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages" => {
+                ProviderKind::Anthropic
+            }
             "deepseek" => ProviderKind::DeepSeek,
-            // `opencode-go` is the bare row id as well as its default type, so
-            // a row that somehow arrives without a type still lands on
-            // Responses — the only OpenCode surface that returns reasoning.
-            // `opencode-go-chat` falls through to OpenAI Chat Completions
-            // below, which is exactly what that choice means.
+            // On OpenCode Go the wire belongs to the MODEL, not the row: the
+            // same key and base URL answer all three formats and each model
+            // accepts only its own (GLM returns 500 on anything but chat
+            // completions, GPT 5.6 Luna on anything but responses, the Qwen and
+            // MiniMax ids want messages). The type that arrives here has
+            // therefore already been resolved per model by
+            // `applyOpenCodeWire`; these arms only say which adapter each of
+            // the three names means. `opencode-go-chat` falls through to OpenAI
+            // Chat Completions below.
             "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go" => {
                 ProviderKind::OpenAIResponses
             }

@@ -62,7 +62,7 @@ fn required_name(input: &Value, op: &str) -> Result<String, ToolError> {
         .map(str::to_string)
         .ok_or_else(|| {
             ToolError::InvalidInput(format!(
-                "`{op}` needs a `name` — the function, class, type or method to look up."
+                "`{op}` needs a `name` — the function, React component, class, type or method to look up."
             ))
         })
 }
@@ -656,7 +656,7 @@ impl ToolExecutor for CodeTool {
             description: "Ask where a symbol is defined, who uses it, or what a file contains — \
 answered from an index of the whole workspace, not by searching text.
 
-Use it instead of `grep` whenever you are looking for a FUNCTION, CLASS, TYPE or METHOD:
+Use it instead of `grep` whenever you are looking for a FUNCTION, REACT COMPONENT, CLASS, TYPE or METHOD:
   • `definition` — where is `X` defined? Returns its exact file, line, declaration signature and \
 documentation summary when present, instead of every line that mentions the word.
   • `usages` — who calls `X`? The list of functions that use it, so you know what a change breaks \
@@ -992,6 +992,39 @@ mod tests {
             "the import is reported separately: {v}"
         );
         assert_eq!(v["usedBy"][0]["caller"], "go", "{v}");
+    }
+
+    #[test]
+    fn memoized_react_component_resolves_jsx_usages_with_in_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/AgentMarkdown.tsx"),
+            "import React from 'react';\n\
+             const AgentMarkdownImpl = () => null;\n\
+             export const AgentMarkdown = React.memo(AgentMarkdownImpl);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/Chat.tsx"),
+            "import { AgentMarkdown } from './AgentMarkdown';\n\
+             export const Chat = () => <AgentMarkdown />;\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let definition = idx.definitions("AgentMarkdown");
+        assert_eq!(definition.len(), 1, "{definition:?}");
+        assert_eq!(definition[0].kind, "function", "{definition:?}");
+
+        // This exact filtered call used to return `no_such_definition`; without
+        // `in_file` the same symbol returned `not_callable` instead.
+        let v = op_usages(&idx, "AgentMarkdown", Some("src/AgentMarkdown.tsx"));
+        assert_eq!(v["resolved"], true, "{v}");
+        assert_eq!(v["totalUsages"], 1, "{v}");
+        assert_eq!(v["importedByFiles"], 1, "{v}");
+        assert_eq!(v["usedBy"][0]["caller"], "Chat", "{v}");
+        assert_eq!(v["coupling"][0]["kind"], "rendered as a component", "{v}");
     }
 
     #[test]

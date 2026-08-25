@@ -9,12 +9,19 @@
 //! }
 //! ```
 //!
-//! **The two are different keys, and picking the wrong one fails in a way that
-//! reads as a billing problem rather than a configuration one.** A Zen key on
-//! the Go endpoint answers `CreditsError: No payment method` — which sends a
-//! subscriber to a billing page for a plan they have already paid for. So this
-//! reads `opencode-go` and nothing else; there is no fallback to `opencode`,
-//! deliberately.
+//! Those two entries are **not** two kinds of key. Both are ordinary workspace
+//! keys — `sk-` plus 64 characters from the same generator — and the entry name
+//! only records which slot the user pasted into. Measured against a real
+//! `auth.json` holding both: each key returns the same thing on the same
+//! endpoint, and what decides Go access is the **workspace's** subscription,
+//! not which name the key sits under.
+//!
+//! This module used to claim otherwise, and refused to fall back to `opencode`
+//! on the strength of it. That cost nothing when the CLI had written both, and
+//! everything when it had written only the other one.
+//!
+//! Reading `opencode-go` first is still right — it is where a Go subscriber's
+//! key normally lands — but `opencode` is a candidate, not a trap.
 //!
 //! Read-only, like the Cursor equivalent: Aurora never writes to another
 //! product's credential store.
@@ -22,8 +29,13 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// The entry Aurora wants. Named for the subscription, not the vendor.
-const GO_ENTRY: &str = "opencode-go";
+/// Entries that can hold a usable workspace key, best first.
+///
+/// `opencode-go` leads because that is where a Go subscriber's key normally
+/// lands. `opencode` follows because it holds the same kind of key and is
+/// sometimes the only one present — a workspace with a live plan works from
+/// either slot, and a workspace without one works from neither.
+const KEY_ENTRIES: [&str; 2] = ["opencode-go", "opencode"];
 
 #[derive(Deserialize)]
 struct AuthEntry {
@@ -84,12 +96,23 @@ fn read_local_key() -> Result<Option<String>, String> {
     let entries: std::collections::HashMap<String, AuthEntry> = serde_json::from_str(&raw)
         .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))?;
 
-    Ok(entries
-        .get(GO_ENTRY)
-        .and_then(|entry| entry.key.as_deref())
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(str::to_string))
+    Ok(pick_key(&entries))
+}
+
+/// The first entry in [`KEY_ENTRIES`] that actually holds a key.
+///
+/// Split out so the selection is testable without a real credential file on
+/// disk — the part worth testing is which entry wins, not whether `read_to_string`
+/// works.
+fn pick_key(entries: &std::collections::HashMap<String, AuthEntry>) -> Option<String> {
+    KEY_ENTRIES.iter().find_map(|name| {
+        entries
+            .get(*name)
+            .and_then(|entry| entry.key.as_deref())
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+    })
 }
 
 /// Where Aurora looked — shown when nothing was found, so a user with a
@@ -136,10 +159,20 @@ async fn get_json(path: &str, api_key: Option<&str>) -> Result<serde_json::Value
     let body = response.text().await.unwrap_or_default();
 
     if !status.is_success() {
-        // The far end explains itself well — an expired key, a plan without a
-        // payment method — so its own words beat a status code.
+        // 401 and 403 mean different things here and used to be reported as one.
+        //
+        // 401 is the key: the workspace it names does not exist or the key was
+        // revoked. 403 is `EntitlementError` — the key is fine and the request
+        // reached the account, but that workspace has no live Go plan. Telling
+        // someone whose subscription lapsed to "check your key" sends them to
+        // re-copy a key that was never the problem, which is exactly how a
+        // lapsed plan looked from inside Aurora.
         return Err(match status.as_u16() {
-            401 | 403 => "OpenCode rejected this key. Check it at opencode.ai/auth.".to_string(),
+            401 => "OpenCode rejected this key. Copy it again from your workspace's Keys page."
+                .to_string(),
+            403 => "This key works, but its workspace has no active OpenCode Go plan. \
+                    Resubscribe, or add a key from a workspace that is subscribed."
+                .to_string(),
             _ => format!("OpenCode returned {status}: {}", body.trim()),
         });
     }
@@ -172,21 +205,42 @@ pub async fn opencode_usage(api_key: String) -> Result<serde_json::Value, String
 mod tests {
     use super::*;
 
+    fn parse(raw: &str) -> std::collections::HashMap<String, AuthEntry> {
+        serde_json::from_str(raw).unwrap()
+    }
+
     #[test]
-    fn reads_the_go_key_and_not_the_zen_one() {
-        // The whole reason this module names one entry: both keys are `sk-…`
-        // and look interchangeable, but the Zen one on the Go endpoint fails
-        // as a billing error on a plan the user already pays for.
-        let raw = r#"{
-            "opencode":    { "type": "api", "key": "sk-zen-key" },
-            "opencode-go": { "type": "api", "key": "sk-go-key" }
-        }"#;
-        let entries: std::collections::HashMap<String, AuthEntry> =
-            serde_json::from_str(raw).unwrap();
-        assert_eq!(
-            entries.get(GO_ENTRY).unwrap().key.as_deref(),
-            Some("sk-go-key")
+    fn the_go_entry_wins_when_both_are_present() {
+        // Not because the other one is unusable — both are ordinary workspace
+        // keys — but because a Go subscriber's key normally lands here, so it
+        // is the better first guess.
+        let entries = parse(
+            r#"{
+                "opencode":    { "type": "api", "key": "sk-other" },
+                "opencode-go": { "type": "api", "key": "sk-go-key" }
+            }"#,
         );
+        assert_eq!(pick_key(&entries).as_deref(), Some("sk-go-key"));
+    }
+
+    #[test]
+    fn the_plain_entry_is_used_when_the_go_one_is_absent() {
+        // The case this module used to fail: a real, working key sitting in the
+        // file, reported as "no OpenCode sign-in found" because of the name
+        // above it.
+        let entries = parse(r#"{ "opencode": { "type": "api", "key": "sk-other" } }"#);
+        assert_eq!(pick_key(&entries).as_deref(), Some("sk-other"));
+    }
+
+    #[test]
+    fn a_blank_key_falls_through_to_the_next_entry() {
+        let entries = parse(
+            r#"{
+                "opencode":    { "type": "api", "key": "sk-other" },
+                "opencode-go": { "type": "api", "key": "   " }
+            }"#,
+        );
+        assert_eq!(pick_key(&entries).as_deref(), Some("sk-other"));
     }
 
     #[test]
@@ -194,25 +248,20 @@ mod tests {
         // The same file carries OAuth entries with `refresh`/`access`/`expires`
         // and no `key` at all. A strict struct would reject the whole file and
         // report "no key" over one that is sitting right there.
-        let raw = r#"{
-            "openai":      { "type": "oauth", "refresh": "rt_x", "expires": 1 },
-            "opencode-go": { "type": "api", "key": "sk-go-key" }
-        }"#;
-        let entries: std::collections::HashMap<String, AuthEntry> =
-            serde_json::from_str(raw).unwrap();
-        assert_eq!(
-            entries.get(GO_ENTRY).unwrap().key.as_deref(),
-            Some("sk-go-key")
+        let entries = parse(
+            r#"{
+                "openai":      { "type": "oauth", "refresh": "rt_x", "expires": 1 },
+                "opencode-go": { "type": "api", "key": "sk-go-key" }
+            }"#,
         );
+        assert_eq!(pick_key(&entries).as_deref(), Some("sk-go-key"));
         assert!(entries.get("openai").unwrap().key.is_none());
     }
 
     #[test]
-    fn a_missing_go_entry_is_not_an_error() {
-        let raw = r#"{ "opencode": { "type": "api", "key": "sk-zen-key" } }"#;
-        let entries: std::collections::HashMap<String, AuthEntry> =
-            serde_json::from_str(raw).unwrap();
-        assert!(entries.get(GO_ENTRY).is_none());
+    fn no_usable_entry_is_not_an_error() {
+        let entries = parse(r#"{ "firepass": { "type": "api", "key": "fw_x" } }"#);
+        assert!(pick_key(&entries).is_none());
     }
 
     #[test]

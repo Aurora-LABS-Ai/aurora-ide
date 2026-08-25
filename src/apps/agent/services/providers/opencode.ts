@@ -27,26 +27,32 @@
  * required — so an existing Rust adapter drives it and this feature adds no
  * Rust to the request path at all.
  *
- * ## Which surface, and why it matters
+ * ## Which surface, and why it is a per-MODEL setting
  *
- * The endpoint answers on **both** shapes, and they are not equivalent:
+ * This endpoint answers on three shapes, and **the model decides which one**,
+ * not the account. From OpenCode's own endpoint table, confirmed live:
  *
- * - `/chat/completions` — works, streams, calls tools, reports usage with
- *   `prompt_tokens_details.cached_tokens`. But it returns **no reasoning at
- *   all**. Measured against `gpt-5.6-luna` with `reasoning_effort: "xhigh"`,
- *   with `reasoning: {effort, summary}`, and with `include_reasoning: true`:
- *   every one answered 200 and every one carried zero reasoning fields. The
- *   parameters are accepted and the thinking is dropped.
- * - `/responses` — the same model, same key, same question: 162
- *   `response.reasoning_summary_text.delta` events plus
- *   `reasoning.encrypted_content` items, and it closes on `response.completed`.
+ * - `/chat/completions` — GLM, Kimi, DeepSeek, MiMo, Hy3, Ox.
+ * - `/messages` — every MiniMax and Qwen id. The Anthropic shape: it
+ *   authenticates with `x-api-key`, **rejects a bearer token with 401**, and
+ *   returns native `thinking` blocks.
+ * - `/responses` — Grok 4.5, GPT 5.6 Luna, Muse Spark. Returns reasoning as
+ *   `response.reasoning_summary_text.delta` plus `reasoning.encrypted_content`.
  *
- * So the preset speaks **Responses**, and the provider page offers the switch
- * (`OPENCODE_WIRES`) the way kenari's does — the choice changes real behaviour,
- * so it belongs on the page with its cost written under it rather than buried
- * in an extra-fields box. On chat completions a reasoning model silently reads
- * as one that does not think, which is the worst of both: the plan is billed
- * for the reasoning either way.
+ * Sending a model to the wrong one fails hard: `glm-5.2` on Responses answers
+ * **500**, `gpt-5.6-luna` on Chat answers **500**, and `qwen3.7-plus` on
+ * Responses answers **401** with `Model … is not supported for format openai` —
+ * a status that reads as a rejected key and sends you to check your billing.
+ *
+ * So the wire lives on the model row (`LLMModel.providerType`), defaulted per
+ * id by {@link defaultOpenCodeWire} and overridable there. A row-wide setting
+ * could only ever be right for one family at a time; this used to be one, which
+ * meant the shipped default model on the shipped default wire returned 500.
+ *
+ * The override is not a power-user escape hatch either. The plan already serves
+ * six models the documentation does not list, and nothing on the wire says
+ * which format a new one wants, so being able to try the other two is how a
+ * model added next month becomes usable the same day.
  *
  * Two quirks of the chat-completions surface, worth keeping written down
  * because `openai_compat.rs` still meets them through custom rows: it sends
@@ -79,47 +85,128 @@ export function isOpenCodeProvider(provider: { id?: string }): boolean {
 // ── Which wire ───────────────────────────────────────────────────────────────
 
 /**
- * The provider types this row can carry.
+ * The provider types a model on this plan can carry.
  *
  * `opencode-go` — the bare id — is Responses, and that is deliberate: the base
  * type has to be a PREFIX of its variants for a stored choice to survive a
  * relaunch (`resolveProviderType`), and it doubles as the fallback when a row
- * arrives with no type at all, so a half-written row still lands on the wire
- * that works.
+ * arrives with no type at all.
  */
-export type OpenCodeWire = "opencode-go" | "opencode-go-chat";
+export type OpenCodeWire = "opencode-go" | "opencode-go-chat" | "opencode-go-messages";
 
 /**
- * The two shapes this endpoint answers on, and what choosing one costs.
+ * The three shapes this endpoint answers on.
  *
- * There is no third. `/messages` — the Anthropic shape — is reachable and
- * authenticates with `x-api-key`, but answers **400 with an empty assistant
- * message** for every model on the plan, streaming or not. It is not offered
- * rather than offered-and-broken.
+ * All three are real, and an earlier note here was wrong to dismiss `/messages`
+ * as "reachable but answers 400 for every model". It was measured against a
+ * chat-completions model. Sent a model that belongs to it, `/messages` returns
+ * 200 with native `thinking` blocks. It authenticates with `x-api-key` and
+ * **rejects a bearer token outright**, which is why it maps to the Anthropic
+ * adapter rather than to a variant of the OpenAI one.
+ *
+ * Carries no description per option, unlike kenari's. There, three wires serve
+ * one account and the user is choosing between them, so the trade-off has to be
+ * on screen. Here the right answer is already selected and the picker exists
+ * only for the rare model whose default is wrong, so a paragraph under every
+ * row would repeat itself down the whole list without helping anyone.
  */
 export const OPENCODE_WIRES: ReadonlyArray<{
   value: OpenCodeWire;
   label: string;
-  /** Shown under the picker, so the choice is made with its cost visible. */
-  detail: string;
 }> = [
-  {
-    value: "opencode-go",
-    label: "Responses",
-    detail:
-      "Recommended. The only format that shows the model's reasoning and carries it into the next turn.",
-  },
-  {
-    value: "opencode-go-chat",
-    label: "Chat",
-    detail:
-      "A fallback. Streams replies and runs tools, but reasoning never comes back on this format.",
-  },
+  { value: "opencode-go-chat", label: "Chat" },
+  { value: "opencode-go-messages", label: "Messages" },
+  { value: "opencode-go", label: "Responses" },
 ];
 
-/** Which wire this row is on. Unknown / missing reads as the default. */
-export function openCodeWire(provider: { providerType?: string | null }): OpenCodeWire {
-  return provider.providerType === "opencode-go-chat" ? "opencode-go-chat" : "opencode-go";
+/**
+ * Which wire each model answers on, from OpenCode's own endpoint table.
+ *
+ * This is a lookup rather than something discovered at runtime because the
+ * plan's `/models` endpoint publishes nothing but `id`, `object`, `created` and
+ * `owned_by`. The mapping exists only in the documentation, so it is copied
+ * here — and, because a copied table goes stale, every model row can override
+ * it (see {@link openCodeWireFor}).
+ *
+ * Sending the wrong one is not a soft failure. GLM-5.2 on Responses returns
+ * 500, GPT 5.6 Luna on Chat returns 500, and a Qwen id on Responses returns
+ * **401** with `Model … is not supported for format openai` — a status that
+ * reads as a bad key.
+ */
+const OPENCODE_MODEL_WIRES: Readonly<Record<string, OpenCodeWire>> = {
+  "grok-4.5": "opencode-go",
+  "gpt-5.6-luna": "opencode-go",
+  "muse-spark-1.2-contributor": "opencode-go",
+
+  "minimax-m3": "opencode-go-messages",
+  "minimax-m2.7": "opencode-go-messages",
+  "minimax-m2.5": "opencode-go-messages",
+  "qwen3.8-max": "opencode-go-messages",
+  "qwen3.7-max": "opencode-go-messages",
+  "qwen3.7-plus": "opencode-go-messages",
+  "qwen3.6-plus": "opencode-go-messages",
+
+  "glm-5.3": "opencode-go-chat",
+  "glm-5.2": "opencode-go-chat",
+  "glm-5.1": "opencode-go-chat",
+  "kimi-k3": "opencode-go-chat",
+  "kimi-k2.7-code": "opencode-go-chat",
+  "kimi-k2.6": "opencode-go-chat",
+  "deepseek-v4-pro": "opencode-go-chat",
+  "deepseek-v4-flash": "opencode-go-chat",
+  "deepseek-v4-flash-vision-exp": "opencode-go-chat",
+  "mimo-v2.5": "opencode-go-chat",
+  "mimo-v2.5-pro": "opencode-go-chat",
+  hy3: "opencode-go-chat",
+  "ox-alpha-free": "opencode-go-chat",
+};
+
+/**
+ * The wire a model id defaults to.
+ *
+ * The table above is the answer where it has one. Everything else follows the
+ * family, because the plan lists more models than the documentation does —
+ * `kimi-k2.5`, `glm-5`, `qwen3.5-plus`, `mimo-v2-pro`, `mimo-v2-omni` and
+ * `hy3-preview` were all live and undocumented when this was written.
+ *
+ * The family rule is measured, not assumed: every one of the 29 ids the plan
+ * served was sent to the wire this function picks, and all 23 that were
+ * runnable answered 200 on the first try, the four undocumented ones included.
+ * The other six failed for reasons that have nothing to do with the format —
+ * two DeepSeek ids are region-locked to China, Muse Spark needs a data-policy
+ * opt-in, and three are simply retired upstream — so no wire would have helped
+ * them and none is at fault.
+ *
+ * A `-free` suffix is a tier, not a different model, so it is stripped before
+ * matching.
+ */
+export function defaultOpenCodeWire(modelKey: string): OpenCodeWire {
+  const id = modelKey.trim().toLowerCase().replace(/-free$/, "");
+  const known = OPENCODE_MODEL_WIRES[id];
+  if (known) return known;
+
+  if (/^(qwen|minimax)/.test(id)) return "opencode-go-messages";
+  if (/^(gpt|grok|muse)/.test(id)) return "opencode-go";
+  return "opencode-go-chat";
+}
+
+/**
+ * The wire one model row will actually use: what the user set, else the
+ * default for its id.
+ *
+ * The override is what makes a new model usable on the day it appears rather
+ * than on the day this file is updated — the failure is loud and immediate, so
+ * trying the other two takes seconds.
+ */
+export function openCodeWireFor(model: {
+  modelKey: string;
+  providerType?: string | null;
+}): OpenCodeWire {
+  const chosen = model.providerType;
+  if (chosen === "opencode-go" || chosen === "opencode-go-chat" || chosen === "opencode-go-messages") {
+    return chosen;
+  }
+  return defaultOpenCodeWire(model.modelKey);
 }
 
 // ── Importing the key the OpenCode CLI already has ───────────────────────────
@@ -170,9 +257,12 @@ export const OPENCODE_PRESET: ProviderCatalogPreset = {
   supportsThinking: true,
   supportsToolStream: true,
   supportsVision: false,
-  // Responses by default, switchable to Chat on the provider page. See the
-  // surface note at the top of this file and `OPENCODE_WIRES`.
-  providerType: "opencode-go",
+  // The row-level type is only a fallback now: every turn resolves the wire
+  // from the MODEL (`applyOpenCodeWire`). It is set to the wire `model` above
+  // actually answers on, so that even a fallback lands somewhere that works —
+  // this shipped as Responses while the default model was GLM-5.2, which is a
+  // guaranteed 500 on the first turn of a fresh install.
+  providerType: "opencode-go-chat",
   requiresApiKey: true,
   customModels: [],
 };

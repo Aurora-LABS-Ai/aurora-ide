@@ -19,6 +19,10 @@ import type { ProviderConfig } from "@/kernel/services/providers/types";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
 import { cursorWireModel } from "@/apps/agent/services/providers/cursor-variants";
 import { isFastOn } from "@/apps/agent/lib/model/cursor-fast";
+import {
+  openCodeWireFor,
+  OPENCODE_PROVIDER_ID,
+} from "@/apps/agent/services/providers/opencode";
 
 /** Fallback output cap when neither the model nor the provider sets one. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
@@ -159,8 +163,40 @@ export function resolveModelRequest(
   const knobs = resolveModelRequestKnobs(config, model, thinkingPreference);
 
   applyCursorVariant(config, model, selection);
+  applyOpenCodeWire(config, model);
 
   return { providerConfig: config, ...knobs };
+}
+
+/**
+ * OpenCode Go: pick the wire from the **model**, not the provider row.
+ *
+ * One base URL and one key answer `/chat/completions`, `/messages` and
+ * `/responses`, and each model accepts only its own. A row-wide type is
+ * therefore wrong for every family but one, and wrong loudly: GLM on Responses
+ * is a 500, GPT 5.6 Luna on Chat is a 500, and a Qwen id on Responses is a 401
+ * that reads as a rejected key.
+ *
+ * Resolution is override first, then the id's documented default. The row's own
+ * `providerType` is deliberately not consulted — if it were, a row left on one
+ * format would keep overriding models that cannot speak it, which is the bug
+ * this replaces.
+ *
+ * A no-op for every other provider.
+ */
+export function applyOpenCodeWire(
+  config: ProviderConfig,
+  model: LLMModel | null | undefined,
+): void {
+  if (config.id !== OPENCODE_PROVIDER_ID) return;
+
+  // `config.model` rather than `model.modelKey`: the turn sends that id, and a
+  // row can exist with no model record behind it (a key typed straight into the
+  // provider's Model field never creates one).
+  config.providerType = openCodeWireFor({
+    modelKey: model?.modelKey || config.model,
+    providerType: model?.providerType,
+  });
 }
 
 /**

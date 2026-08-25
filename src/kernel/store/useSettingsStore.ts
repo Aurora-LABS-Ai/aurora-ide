@@ -680,6 +680,20 @@ export interface LLMModel {
    * is set here, so a stale value is inert rather than a 400. (v22+)
    */
   temperature?: number;
+  /**
+   * Wire format for this one model. `undefined` inherits the provider's own
+   * type, which is right for every provider whose format is a property of the
+   * account rather than of the model. (v24+)
+   *
+   * OpenCode Go is why this exists. One base URL and one key answer
+   * `/chat/completions`, `/messages` and `/responses`, and each model accepts
+   * only its own — GLM-5.2 returns 500 on anything but chat completions,
+   * GPT 5.6 Luna returns 500 on anything but responses, and the Qwen and
+   * MiniMax ids want messages. It is also editable rather than fixed, because
+   * the plan gains models faster than any table can be updated and the wire a
+   * new one wants is not published anywhere.
+   */
+  providerType?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -971,6 +985,7 @@ function dbToModel(row: DbProviderModel): LLMModel {
     reasoning: row.reasoning ?? undefined,
     extraBody: row.extraBody ?? undefined,
     temperature: row.temperature ?? undefined,
+    providerType: row.providerType ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -998,6 +1013,7 @@ function modelToDb(model: LLMModel): DbProviderModel {
     reasoning: model.reasoning ?? null,
     extraBody: model.extraBody ?? null,
     temperature: model.temperature ?? null,
+    providerType: model.providerType ?? null,
     createdAt: model.createdAt || now,
     updatedAt: now,
   };

@@ -365,6 +365,18 @@ pub struct ProviderModel {
     /// says, so a value left here is inert rather than a 400.
     #[serde(default)]
     pub temperature: Option<f64>,
+    /// Wire format for THIS model. `None` inherits the provider's own type,
+    /// which is what every provider whose format is a row-wide property does.
+    ///
+    /// Set per model because on some surfaces the format belongs to the model,
+    /// not the account. OpenCode Go answers all three of `/chat/completions`,
+    /// `/messages` and `/responses` on one base URL and one key, and each model
+    /// accepts only its own: GLM-5.2 returns 500 on anything but chat
+    /// completions, GPT 5.6 Luna returns 500 on anything but responses, and the
+    /// Qwen and MiniMax ids want messages. A row-wide setting is wrong for all
+    /// but one of them at a time.
+    #[serde(default)]
+    pub provider_type: Option<String>,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

@@ -21,10 +21,10 @@ use std::path::{Path, PathBuf};
 /// by an older Aurora is discarded and rebuilt rather than reused with stale
 /// facts — the rebuild is sub-second, so there is never a reason to migrate it.
 ///
-/// v9: symbols carry bounded declaration signatures and documentation. A v8
-/// cache has no metadata columns, so it must rebuild rather than answer an
-/// explicit definition lookup without the new fields.
-pub const FORMAT_VERSION: u32 = 9;
+/// v10: React components returned by imported `memo` and `forwardRef` wrappers
+/// are extracted as functions. A v9 cache still labels them as variables, so it
+/// must rebuild before `code usages` can resolve their JSX references.
+pub const FORMAT_VERSION: u32 = 10;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.

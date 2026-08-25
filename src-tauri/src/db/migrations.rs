@@ -246,6 +246,25 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [23])?;
             Ok(())
         }
+        24 => {
+            // Migration from v23 to v24: add `provider_type` to
+            // `provider_models` — the wire format for one model rather than for
+            // a whole provider row.
+            //
+            // OpenCode Go is the case that forced it: the same key and the same
+            // base URL answer three different formats, and which one a model
+            // accepts is a property of the model. GLM-5.2 answers only
+            // `/chat/completions`, GPT 5.6 Luna only `/responses`, and every
+            // MiniMax and Qwen id `/messages`. A row-wide setting cannot be
+            // right for more than one of them at a time.
+            //
+            // NULL means "use the provider's own type", so every existing model
+            // under every other provider behaves exactly as before.
+            migration_v24(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [24])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -281,6 +300,26 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
 /// only shows up as a query error weeks later.
 fn migration_v23(conn: &Connection) -> DbResult<()> {
     crate::db::schema::create_cursor_models_table(conn)
+}
+
+/// v24: the per-model wire format.
+///
+/// Guarded with the same PRAGMA sniff as its neighbours so re-running against a
+/// hand-patched database, or one where a fresh install already created the
+/// column, is a no-op rather than an error.
+fn migration_v24(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(provider_models)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "provider_type") {
+        conn.execute(
+            "ALTER TABLE provider_models ADD COLUMN provider_type TEXT",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn migration_v22(conn: &Connection) -> DbResult<()> {

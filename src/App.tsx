@@ -20,30 +20,26 @@
  * See: src/apps/ide/services/theme-service.ts for theme utilities
  */
 
-import { useEffect, useState } from "react";
-// The router is the one file that legitimately knows about both products.
-import { MainLayout } from "@/apps/ide/app/MainLayout";
-import { AgentWindow } from "@/apps/agent";
+import { lazy, Suspense, useEffect } from "react";
 
-import { useWorkspaceBootstrap } from "@/apps/ide/hooks/useWorkspaceBootstrap";
-import { useEditorStore } from "@/kernel/store/useEditorStore";
+// The router is the one file that legitimately knows about both products, and
+// it now knows about them LAZILY. Importing both statically put the whole IDE
+// and the whole agent app in one chunk, so each window downloaded and parsed
+// the other product before showing anything. Two dynamic imports make the
+// pathname branch below a real fork: one surface loads, the other never does.
+//
+// `@/apps/agent` is the barrel deliberately — behind a dynamic import that is
+// the point, because the chunk it drags in IS the agent window.
+const IdeSurface = lazy(() => import("./surfaces/IdeSurface"));
+const AgentWindow = lazy(() =>
+  import("@/apps/agent").then((m) => ({ default: m.AgentWindow })),
+);
+
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useThemeStore } from "@/apps/ide/store/useThemeStore";
-import { useAutoSave } from "@/apps/ide/hooks/useAutoSave";
-import { useTauriDragDrop } from "@/apps/ide/hooks/useTauriDragDrop";
-import { useInternalDrag } from "@/apps/ide/hooks/useInternalDrag";
 import { useWindowClose } from "@/bridge/useWindowClose";
-import { useCliOpen } from "@/apps/ide/hooks/useCliOpen";
-import { DragPreview } from "@/apps/ide/ui/DragPreview";
-import { OnboardingModal } from "@/apps/ide/features/settings/OnboardingModal";
-import { QuickOpenModal } from "@/apps/ide/features/settings/QuickOpenModal";
-import { useGlobalShortcuts } from "@/apps/ide/hooks/useGlobalShortcuts";
 import { initializeSystemInfo } from "@/apps/agent/services/runtime/context-builder";
-import {
-  installAgentIdeListeners,
-  handleOpenInIde,
-} from "@/bridge/agent-ide-events";
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+import { installAgentIdeListeners } from "@/bridge/agent-ide-events";
 import { useLocalProviderDetection } from "@/apps/ide/hooks/useLocalProviderDetection";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 
@@ -73,36 +69,18 @@ if (typeof window !== 'undefined') {
 
 function App() {
   const { initializeFromDatabase } = useThemeStore();
-  const settingsInitialized = useSettingsStore((state) => state.isInitialized);
-  const hasSeenOnboarding = useSettingsStore((state) => state.hasSeenOnboarding);
   const initializeSettings = useSettingsStore((state) => state.initializeFromDatabase);
-  const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
   const isAgentWindow =
     typeof window !== "undefined" && window.location.pathname === "/agent-window";
-  const restoreWorkspace = useEditorStore((state) => state.restoreWorkspace);
-  useWorkspaceBootstrap();
 
-  // Initialize auto-save functionality
-  useAutoSave();
+  // Everything below this line runs in BOTH windows. Anything that belongs to
+  // one product lives in that product's surface component — see
+  // `surfaces/IdeSurface.tsx` for what moved and why.
 
-  // Save all state on window close (VS Code pattern)
+  // Save all state on window close (VS Code pattern). Shared on purpose: it
+  // flushes the agent's current thread as well as the editor's workspace, so
+  // the agent window has to run it too.
   useWindowClose();
-
-  // Handle external file drops from OS via Tauri
-  useTauriDragDrop();
-
-  // Handle internal drag-drop via mouse events
-  useInternalDrag();
-
-  // Handle CLI open requests (aurora . command)
-  useCliOpen();
-
-  // Restore workspace state from database on app startup
-  useEffect(() => {
-    if (!isAgentWindow) {
-      restoreWorkspace();
-    }
-  }, [isAgentWindow, restoreWorkspace]);
 
   useEffect(() => {
     initializeSettings();
@@ -139,27 +117,6 @@ function App() {
     };
   }, []);
 
-  // Main-window startup: if the agent window asked to open a file while the IDE
-  // was CLOSED, the backend re-created this window and queued the file. Drain it
-  // now and open it (gated by pathname, not the async window-type state, so a
-  // secondary window can never grab the queue first).
-  useEffect(() => {
-    const path = window.location.pathname;
-    const isSecondary = path === "/agent-window";
-    if (isSecondary) return;
-    let cancelled = false;
-    void auroraInvoke<{ path: string; line?: number } | null>("take_pending_ide_open")
-      .then((pending) => {
-        if (!cancelled && pending?.path) void handleOpenInIde(pending);
-      })
-      .catch(() => {
-        // No pending open / not in the Tauri runtime — nothing to do.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   // Disable default context menu globally (except for text-selectable areas)
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
@@ -191,43 +148,32 @@ function App() {
     return () => document.removeEventListener("contextmenu", handleContextMenu);
   }, []);
 
-  // Background-probe for local AI servers (Ollama, LM Studio)
+  // Background-probe for local AI servers (Ollama, LM Studio). Shared: the
+  // agent window needs the provider list too, and someone who works only in
+  // that window would never mount the IDE surface.
   useLocalProviderDetection();
 
-  // Handle global shortcuts - MUST be called before any conditional returns (React hooks rule)
-  useGlobalShortcuts(() => setIsQuickOpenOpen(prev => !prev));
-
-  // Render the standalone agent window if on that route
-  if (isAgentWindow) {
-    return <AgentWindow />;
-  }
-
-  // Hold initial render until settings are initialized, preventing
-  // first-frame UI flash behind onboarding.
-  if (!settingsInitialized) {
-    return (
-      <div className="h-full w-full bg-editor text-text-primary flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-8 w-8 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-center animate-pulse">
-            <div className="h-3 w-3 rounded-full bg-primary" />
-          </div>
-          <p className="text-xs text-text-secondary uppercase tracking-wider">Initializing Aurora</p>
-        </div>
-      </div>
-    );
-  }
-
-  // First-run onboarding is a full-screen takeover. The IDE mounts only after completion.
-  if (!hasSeenOnboarding) {
-    return <OnboardingModal />;
-  }
-
+  // One surface or the other, never both.
+  //
+  // The fallback paints the window's own background and nothing else. These
+  // chunks come off local disk in a Tauri bundle, so a spinner here would
+  // flash for a few frames and read as a stutter; each surface shows its own
+  // "Initializing Aurora" state once it mounts, which is the honest one to
+  // show because it waits on settings rather than on a download.
   return (
-    <>
-      <MainLayout />
-      <DragPreview />
-      <QuickOpenModal isOpen={isQuickOpenOpen} onClose={() => setIsQuickOpenOpen(false)} />
-    </>
+    <Suspense
+      fallback={
+        <div
+          style={{
+            height: "100%",
+            width: "100%",
+            background: "var(--aurora-editor-background, #0d0d0d)",
+          }}
+        />
+      }
+    >
+      {isAgentWindow ? <AgentWindow /> : <IdeSurface />}
+    </Suspense>
   );
 }
 

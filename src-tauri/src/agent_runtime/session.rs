@@ -341,6 +341,22 @@ impl Session {
         });
     }
 
+    /// `true` when a journal is attached and the file already holds every
+    /// message in memory.
+    ///
+    /// This is the difference between "the full save failed and the turn is
+    /// gone" and "the full save failed but every line was already appended as
+    /// it happened". The caller decides how loudly to report a failed
+    /// `save_to_path` based on the answer, so a rewrite that could not run is
+    /// not reported as lost work when the transcript is in fact complete.
+    #[must_use]
+    pub fn journal_is_current(&self) -> bool {
+        self.journal
+            .inner
+            .as_ref()
+            .is_some_and(|j| j.written.load(std::sync::atomic::Ordering::Relaxed) == self.messages.len())
+    }
+
     /// Append a message to the session's history. Bumps `updated_at`
     /// to the current wall-clock millis.
     ///

@@ -551,6 +551,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::get_system_info,
             // System fonts (Settings → Appearance → Typography)
             commands::fonts::system_font_families,
+            commands::icon_themes::list_installed_icon_themes,
+            commands::icon_themes::read_icon_theme_assets,
             // Shell registry (Settings → Tools → Shell)
             commands::shell_profiles::shell_profiles_get,
             commands::shell_profiles::shell_profiles_scan,

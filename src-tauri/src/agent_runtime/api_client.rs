@@ -143,6 +143,16 @@ pub enum ApiError {
     /// working. Naming a cause nobody measured is worse than quoting one.
     #[error("unauthorized — {0}")]
     Unauthorized(String),
+    /// The endpoint refused the request because the reasoning it produced on an
+    /// earlier turn was not handed back to it.
+    ///
+    /// Unlike every other 400, this one is worth re-issuing: the endpoint has
+    /// just told us what the next request must contain, the requirement is
+    /// recorded against that endpoint and model, and the rebuilt request is
+    /// therefore NOT byte-identical. Retrying is acting on new information
+    /// rather than hoping.
+    #[error("this endpoint requires its reasoning to be replayed — retrying with it")]
+    ReasoningReplayRequired,
     #[error("request was cancelled")]
     Cancelled,
 }
@@ -188,6 +198,11 @@ impl ApiError {
     ///   [`Self::is_context_overflow`]. It arrives in the retryable bucket
     ///   and must be pulled back out: the request is byte-identical on
     ///   every attempt and too big on every attempt.
+    /// - `ReasoningReplayRequired` — the one 400 that IS worth re-issuing. It
+    ///   is retried because the request changes: the endpoint named what it
+    ///   needs, that is now recorded against it, and the rebuilt body carries
+    ///   the reasoning. Retrying an unchanged request would still be pointless;
+    ///   this one is not unchanged.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         if self.is_context_overflow() {
@@ -195,7 +210,10 @@ impl ApiError {
         }
         matches!(
             self,
-            ApiError::Network(_) | ApiError::Provider(_) | ApiError::RateLimit { .. }
+            ApiError::Network(_)
+                | ApiError::Provider(_)
+                | ApiError::RateLimit { .. }
+                | ApiError::ReasoningReplayRequired
         )
     }
 

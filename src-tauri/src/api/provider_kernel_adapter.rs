@@ -156,6 +156,21 @@ fn map_status_error_inner(
         // overflow / tool incompatibility rather than trusting the status
         // alone. The request-fault check gets the first and final say.
         400..=499 => {
+            // One 4xx names a fault in the request AND tells us how to fix it.
+            // Checked before everything else because the body mentions
+            // "thinking mode", which the request-fault list would otherwise
+            // read as a parameter problem and give up on.
+            //
+            // No table can predict this one. Aurora's own history has DeepSeek
+            // behind an OpenAI-shaped gateway running 79 clean turns without
+            // replayed reasoning, and the same vendor behind AgentRouter
+            // failing on the second request — so the requirement belongs to
+            // the endpoint, and the endpoint is the only thing that knows it.
+            // Record what it said and let the retry act on it.
+            if let Some(field) = reasoning_requirement_from_body(&body) {
+                remember_reasoning_requirement(origin.url, origin.model, field);
+                return ApiError::ReasoningReplayRequired;
+            }
             let lower = body.to_lowercase();
             if !body_names_request_fault(&lower) && body_names_upstream_fault(&lower, &body) {
                 ApiError::Provider(message)
@@ -1566,6 +1581,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
             request,
             config.supports_vision,
             config.effective_provider_type(),
+            &config.base_url,
         )),
     );
     body.insert("stream".to_string(), Value::Bool(true));
@@ -1672,7 +1688,89 @@ pub(crate) fn should_request_stream_usage(provider_type: &str) -> bool {
 ///
 /// Returns `Some("reasoning_content")`, `Some("reasoning")`, or
 /// `None` (= drop reasoning entirely from outgoing messages).
-pub(crate) fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
+/// Endpoints that have told us, in their own 400, that they need reasoning
+/// replayed. Keyed by host + model, because the requirement belongs to neither
+/// on its own: `agentrouter.org` needs it for `deepseek-v4-flash` and not for
+/// `glm-5.2`, and Byteplus needs it for neither.
+///
+/// Process-global and not persisted. One failed request per endpoint per run
+/// is a cheap price for never guessing, and a learned table that survives
+/// restarts would also survive a gateway changing its mind.
+fn learned_reasoning() -> &'static std::sync::Mutex<HashMap<String, &'static str>> {
+    static LEARNED: std::sync::OnceLock<std::sync::Mutex<HashMap<String, &'static str>>> =
+        std::sync::OnceLock::new();
+    LEARNED.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Host + model, normalised so the URL a request was SENT to and the base URL a
+/// request is BUILT from produce the same key.
+fn endpoint_key(url_or_base: &str, model: &str) -> String {
+    let host = url_or_base
+        .split("://")
+        .nth(1)
+        .unwrap_or(url_or_base)
+        .split('/')
+        .next()
+        .unwrap_or(url_or_base)
+        .to_ascii_lowercase();
+    format!("{host}|{}", model.to_ascii_lowercase())
+}
+
+/// Record that this endpoint rejected a request for want of replayed reasoning.
+pub(crate) fn remember_reasoning_requirement(url: &str, model: &str, field: &'static str) {
+    if let Ok(mut map) = learned_reasoning().lock() {
+        if map.insert(endpoint_key(url, model), field).is_none() {
+            crate::logging::log_warn(
+                "api.reasoning",
+                &format!(
+                    "{url} (model {model}) requires `{field}` to be replayed — recorded, \
+                     retrying with it. Later turns on this endpoint will include it from the start."
+                ),
+            );
+        }
+    }
+}
+
+/// What this endpoint has already told us it needs, if anything.
+pub(crate) fn learned_reasoning_field(url: &str, model: &str) -> Option<&'static str> {
+    learned_reasoning()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&endpoint_key(url, model)).copied())
+}
+
+/// Does this 400 body say the request was refused for want of replayed
+/// reasoning, and if so under which key?
+///
+/// Matched on text because there is no code for it. Observed live from
+/// AgentRouter on 2026-08-25: `The reasoning_content in the thinking mode must
+/// be passed back to the API.` The match is deliberately narrow — it wants the
+/// field NAME and a phrase about sending it back, so an unrelated 400 that
+/// merely mentions reasoning does not start replaying it.
+pub(crate) fn reasoning_requirement_from_body(body: &str) -> Option<&'static str> {
+    let lower = body.to_ascii_lowercase();
+    let asks_for_it = lower.contains("must be passed back")
+        || lower.contains("must be returned")
+        || lower.contains("should be passed back")
+        || lower.contains("is required in the request");
+    if !asks_for_it {
+        return None;
+    }
+    if lower.contains("reasoning_content") {
+        return Some("reasoning_content");
+    }
+    if lower.contains("reasoning") {
+        return Some("reasoning");
+    }
+    None
+}
+
+///
+/// `model` is accepted and deliberately unused: the comment on the `_` arm
+/// records why reading it here was tried and rejected. Keeping it in the
+/// signature keeps the next person's fix in the right place — the endpoint,
+/// not another guess about model names.
+pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&'static str> {
     match provider_type.to_ascii_lowercase().as_str() {
         // DeepSeek + GLM thinking-mode models *require* the original
         // `reasoning_content` to be replayed or the API returns 400.
@@ -1689,10 +1787,34 @@ pub(crate) fn reasoning_field_for(provider_type: &str) -> Option<&'static str> {
         // — the gateway strips the field before forwarding, so replaying it
         // buys nothing and costs the user its tokens on the way out.
         "kenari" | "kenari-messages" | "kenari-responses" => None,
-        // Fireworks, OpenAI proper, MiniMax, Ollama, "custom" and
-        // everyone else: NEVER include reasoning fields. Fireworks in
-        // particular validates schema strictly and rejects the request
+        // Backends that answer to their own name AND validate strictly. These
+        // must never be overridden by what the model is called: Fireworks
+        // serves DeepSeek models under its own ids and rejects unknown fields
         // with "Extra inputs are not permitted, field: …".
+        "fireworks" | "minimax" | "ollama" | "anthropic" | "openai-responses" | "codex"
+        | "cursor" => None,
+        // Everyone else, `"openai"` very much included, sends nothing until
+        // the endpoint itself says otherwise. See `learned_reasoning_field`.
+        //
+        // The obvious-looking fix here is to read the MODEL when the provider
+        // type is only a wire shape — `agentrouter:deepseek-v4-flash` declares
+        // `providerType: "openai"` and failed on 2026-08-25 with "The
+        // reasoning_content in the thinking mode must be passed back to the
+        // API", so "a DeepSeek model behind a gateway needs the replay" writes
+        // itself. Aurora's own session history says it is wrong:
+        //
+        //   f4f41a66 (Larprouter, type openai)  glm-5.3     233 turns, 0 failures
+        //   agentrouter (type openai)           glm-5.2     220 turns, 0 failures
+        //   9b01ab80 (Byteplus, type openai)    glm-5.2     134 turns, 0 failures
+        //   9b01ab80 (Byteplus, type openai)    deepseek-v4-pro  79 turns, 0 failures
+        //
+        // DeepSeek behind an OpenAI-shaped gateway ran 79 clean turns without
+        // the field. So the requirement does not follow from the vendor, the
+        // model family, or the wire shape — it is a property of one gateway's
+        // routing of one model in thinking mode, and no table can predict it.
+        // Guessing costs the user tokens on 587 turns that never needed it.
+        //
+        // The endpoint already knows the answer and says so in its 400. Ask it.
         _ => None,
     }
 }
@@ -1701,6 +1823,10 @@ fn openai_messages(
     request: &ApiRequest<'_>,
     supports_vision: bool,
     provider_type: &str,
+    // The endpoint this body is bound for. Only consulted for reasoning
+    // replay, and only when the provider type has no opinion — see
+    // `learned_reasoning_field`. Empty in the pure-builder tests below.
+    base_url: &str,
 ) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
 
@@ -1763,7 +1889,12 @@ fn openai_messages(
                 // 400). OpenAI-compat is a tribe, not a spec — emit
                 // whichever key (if any) the actual provider accepts.
                 if !reasoning.is_empty() {
-                    if let Some(key) = reasoning_field_for(provider_type) {
+                    // The table first, then whatever this endpoint has told us
+                    // about itself. The table is what we know about vendors;
+                    // the learned entry is what one gateway measured on us.
+                    let key = reasoning_field_for(provider_type, request.model)
+                        .or_else(|| learned_reasoning_field(base_url, request.model));
+                    if let Some(key) = key {
                         payload.insert(key.into(), Value::String(reasoning));
                     }
                 }
@@ -2111,9 +2242,27 @@ pub enum BlockState {
         name: String,
         raw_input: String,
     },
+    // (impl below carries `has_content`, used to tell a gateway that forgot to
+    // terminate its stream from one that was cut off before saying anything.)
 }
 
 impl BlockState {
+    /// Whether this block actually carries something the model produced.
+    ///
+    /// A stream that ends without its terminator is two different failures
+    /// wearing one face: a gateway that never sends `message_stop` (the reply
+    /// is complete and usable) and a connection cut off before the model said
+    /// anything (it is not). An opened-but-empty block is the tell.
+    #[must_use]
+    pub fn has_content(&self) -> bool {
+        match self {
+            BlockState::Text { text } | BlockState::Thinking { text, .. } => !text.is_empty(),
+            // A tool call is only actionable once its name is known; the
+            // arguments may legitimately still be an empty object.
+            BlockState::ToolUse { name, .. } => !name.is_empty(),
+        }
+    }
+
     /// Open a reasoning block and start its clock.
     pub fn new_thinking(text: String, signature: Option<String>) -> Self {
         let now = now_unix_ms();
@@ -2577,6 +2726,164 @@ pub fn __unused_hashmap_marker() -> HashMap<i32, String> {
 mod tests {
     use super::*;
 
+    /// The model name must NEVER decide this, however tempting it looks.
+    ///
+    /// A live 400 on `agentrouter:deepseek-v4-flash` ("The reasoning_content in
+    /// the thinking mode must be passed back to the API") makes "DeepSeek
+    /// behind a gateway needs the replay" write itself. Aurora's own history
+    /// says otherwise, and so does the endpoint when you ask it directly:
+    ///
+    ///   Larprouter (type openai)  glm-5.3          233 turns, 0 failures
+    ///   AgentRouter (type openai) glm-5.2          220 turns, 0 failures
+    ///   Byteplus (type openai)    glm-5.2          134 turns, 0 failures
+    ///   Byteplus (type openai)    deepseek-v4-pro   79 turns, 0 failures
+    ///
+    /// Probed live on 2026-08-25, `agentrouter/deepseek-v4-flash` returned 200
+    /// on every shape that was supposed to fail: chat completions and
+    /// `/v1/messages`, thinking on and off, with tools, streaming, over several
+    /// turns, with the reasoning dropped. Whatever produced that 400, it does
+    /// not follow from the vendor or the model family.
+    #[test]
+    fn the_model_name_never_decides_the_reasoning_field() {
+        for model in [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "glm-5.2",
+            "gpt-5.6",
+            "o4-mini",
+        ] {
+            assert_eq!(
+                reasoning_field_for("openai", model),
+                None,
+                "{model}: 587 recorded turns say an OpenAI-shaped gateway needs nothing"
+            );
+        }
+    }
+
+    /// Strict backends answer to their own name and must stay at `None`
+    /// whatever they are serving. Fireworks rejects the field outright:
+    /// "Extra inputs are not permitted".
+    #[test]
+    fn a_strict_backend_sends_nothing() {
+        assert_eq!(
+            reasoning_field_for("fireworks", "accounts/fireworks/models/deepseek-v3"),
+            None,
+        );
+        assert_eq!(reasoning_field_for("minimax", "deepseek-chat"), None);
+        assert_eq!(reasoning_field_for("ollama", "deepseek-r1"), None);
+    }
+
+    /// What an endpoint says about itself DOES decide it — that is the whole
+    /// point of learning instead of tabulating. Keyed by host and model,
+    /// because AgentRouter needs nothing for `glm-5.2` whatever it may need
+    /// for another model.
+    #[test]
+    fn an_endpoint_that_asks_for_its_reasoning_back_is_believed() {
+        let url = "https://learn-test.example/v1/chat/completions";
+        assert_eq!(
+            learned_reasoning_field(url, "m-1"),
+            None,
+            "nothing learned yet"
+        );
+
+        let field = reasoning_requirement_from_body(
+            r#"{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API. [trace_id=9f97f082]"}}"#,
+        );
+        assert_eq!(
+            field,
+            Some("reasoning_content"),
+            "read straight off the 400"
+        );
+
+        remember_reasoning_requirement(url, "m-1", field.unwrap());
+        assert_eq!(
+            learned_reasoning_field(url, "m-1"),
+            Some("reasoning_content")
+        );
+        // Scoped to that model, and to that host.
+        assert_eq!(learned_reasoning_field(url, "m-2"), None);
+        assert_eq!(
+            learned_reasoning_field("https://other.example/v1", "m-1"),
+            None
+        );
+        // The base URL a request is BUILT from and the URL it was SENT to
+        // resolve to the same key.
+        assert_eq!(
+            learned_reasoning_field("https://learn-test.example/v1", "m-1"),
+            Some("reasoning_content")
+        );
+    }
+
+    /// The match has to be narrow. A 400 that merely mentions reasoning, or
+    /// one about something else entirely, must not start a replay.
+    #[test]
+    fn an_unrelated_400_does_not_trigger_a_replay() {
+        for body in [
+            r#"{"error":{"message":"unsupported parameter: reasoning_effort"}}"#,
+            r#"{"error":{"message":"context length exceeded"}}"#,
+            r#"{"error":{"message":"stream_options should be set along with stream = true"}}"#,
+            r#"{"error":{"message":"Extra inputs are not permitted, field: reasoning_content"}}"#,
+        ] {
+            assert_eq!(reasoning_requirement_from_body(body), None, "body: {body}");
+        }
+    }
+
+    /// kenari serves DeepSeek and GLM but strips the field before forwarding.
+    /// Measured, not assumed — replaying it there only costs the user tokens.
+    #[test]
+    fn kenari_still_sends_nothing_whatever_the_model_is_called() {
+        assert_eq!(reasoning_field_for("kenari", "deepseek-v4-pro"), None);
+        assert_eq!(reasoning_field_for("kenari", "glm-5.2"), None);
+    }
+
+    /// The direct providers keep their existing answers.
+    #[test]
+    fn naming_the_vendor_outright_still_decides_it() {
+        assert_eq!(
+            reasoning_field_for("deepseek", "deepseek-chat"),
+            Some("reasoning_content")
+        );
+        assert_eq!(
+            reasoning_field_for("glm", "glm-4.6"),
+            Some("reasoning_content")
+        );
+        assert_eq!(
+            reasoning_field_for("openrouter", "anything"),
+            Some("reasoning")
+        );
+        assert_eq!(
+            reasoning_field_for("lmstudio", "local-model"),
+            Some("reasoning")
+        );
+    }
+
+    /// The token estimate and the request builder must never disagree about
+    /// whether a stored reasoning block reaches the wire — that disagreement
+    /// is what invented ~92k tokens of phantom context once already.
+    #[test]
+    fn the_token_estimate_agrees_with_what_the_builder_emits() {
+        use crate::api::{reasoning_replay_for, ReasoningReplay};
+        const URL: &str = "https://estimate-test.example/v1";
+        for (provider, model) in [
+            ("openai", "deepseek-v4-flash"),
+            ("openai", "gpt-5.6"),
+            ("fireworks", "deepseek-v3"),
+            ("kenari", "deepseek-v4-pro"),
+            ("deepseek", "deepseek-chat"),
+            ("custom", "glm-5.2"),
+        ] {
+            let builder_emits = reasoning_field_for(provider, model)
+                .or_else(|| learned_reasoning_field(URL, model))
+                .is_some();
+            let estimate_charges =
+                reasoning_replay_for(provider, model, URL) == ReasoningReplay::Text;
+            assert_eq!(
+                builder_emits, estimate_charges,
+                "{provider}/{model}: the estimate and the wire disagree"
+            );
+        }
+    }
+
     /// `Some(0)` and `None` are different claims and the UI acts on both.
     ///
     /// A provider that reports `cached_tokens: 0` is saying the cache missed
@@ -2826,7 +3133,7 @@ mod tests {
             thinking_budget_tokens: None,
         };
 
-        let out = openai_messages(&request, true, "openai");
+        let out = openai_messages(&request, true, "openai", "");
 
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[0]["role"], "tool");
@@ -2888,7 +3195,7 @@ mod tests {
             thinking_budget_tokens: None,
         };
 
-        let out = openai_messages(&request, true, "openai");
+        let out = openai_messages(&request, true, "openai", "");
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[1]["role"], "user");
         let parts = out[1]["content"].as_array().expect("multimodal array");
@@ -2903,7 +3210,7 @@ mod tests {
         );
 
         // Non-vision: the marker is stripped to a placeholder, never base64.
-        let out = openai_messages(&request, false, "openai");
+        let out = openai_messages(&request, false, "openai", "");
         let content = out[1]["content"].as_str().expect("plain string content");
         assert!(content.contains("use this design"));
         assert!(!content.contains("QUJD"), "no raw base64 for non-vision");
@@ -3467,7 +3774,7 @@ mod tests {
         let mut request = caching_request(&messages, &tools);
         request.system_prompt = Some(&prompt);
 
-        let out = openai_messages(&request, false, "openai");
+        let out = openai_messages(&request, false, "openai", "");
 
         assert_eq!(out[0]["content"], "STATIC RULES\n\n# Mode: plan");
     }

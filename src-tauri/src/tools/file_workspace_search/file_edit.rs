@@ -35,7 +35,9 @@ use crate::commands::editor_ops::{
 use crate::tools::shell_editor_todo::IdeEventSink;
 
 use super::resolve_path;
-use super::search_replace::{diff_side, emit_post_write, render_response};
+use super::search_replace::{
+    describe_diagnosis, diff_side, emit_post_write, render_response, window_note,
+};
 use super::streaming_targets;
 
 pub struct FileEditTool {
@@ -55,6 +57,27 @@ impl ToolExecutor for FileEditTool {
         "file_edit"
     }
 
+    /// ## What this description deliberately withholds
+    ///
+    /// A zero-match edit whose only fault is a straightened quote or dash is
+    /// repaired and applied (see `editor_ops::recover_typographic`). This
+    /// description does **not** say so, and that is the point.
+    ///
+    /// The contract stays "match exactly", because it is still true and it is
+    /// still the instruction that produces correct calls. Advertising the net
+    /// would teach carelessness across the board while the net covers exactly
+    /// one class — indentation, trailing whitespace and over-escaping are all
+    /// still hard failures. A model told "Aurora fixes my quotes" has no way to
+    /// learn where the fixing stops.
+    ///
+    /// The caller is not kept in the dark either: a repaired edit says so in
+    /// its result ("matched after correcting N spots"), at the moment that
+    /// knowing is useful and cannot be mistaken for permission.
+    ///
+    /// What IS advertised is the failure shape, because it changes what the
+    /// model should DO. The learned habit after a failed edit is to re-read the
+    /// file and try again; the failure now carries the exact correction, so
+    /// that habit spends a round trip on an answer already in hand.
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_edit".into(),
@@ -70,7 +93,10 @@ impl ToolExecutor for FileEditTool {
                           exactly and be unique unless replace_all=true. Copy old_string from text \
                           you have actually seen (file_read, or a search result that returned the \
                           line). replace_all=true additionally REQUIRES that the file was read this \
-                          session, because it rewrites occurrences you have not seen. A successful \
+                          session, because it rewrites occurrences you have not seen. When no match \
+                          is found the failure names the closest text in the file and the exact \
+                          characters that differ — correct those and send old_string again, rather \
+                          than re-reading the file and guessing a second time. A successful \
                           edit may return an `impact` field naming symbols this file exports that \
                           OTHER files use — if you changed one of their signatures or behavior, \
                           check those call sites before moving on.",
@@ -209,6 +235,7 @@ impl ToolExecutor for FileEditTool {
             response,
             false,
             impact.as_deref(),
+            super::read_tracker::last_window(&ctx.thread_id, &resolved_str),
         ))
     }
 }
@@ -347,10 +374,11 @@ impl FileEditTool {
                         needs_read_json(&g.raw, &g.resolved)
                     });
                 }
+                let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
                 return Ok(if multi {
-                    render_multi_failure(&g.raw, &g.resolved, resp)
+                    render_multi_failure(&g.raw, &g.resolved, resp, window)
                 } else {
-                    render_response(&g.raw, &g.resolved, resp, true, None)
+                    render_response(&g.raw, &g.resolved, resp, true, None, window)
                 });
             }
             prepared.push((g.raw.clone(), g.resolved.clone(), resp));
@@ -376,12 +404,14 @@ impl FileEditTool {
         if committed.len() == 1 {
             let note = notes.into_iter().next().flatten();
             let (raw, resolved, resp) = committed.into_iter().next().unwrap();
+            // Committed, so this renders a success: no window to explain.
             return Ok(render_response(
                 &raw,
                 &resolved,
                 resp,
                 true,
                 note.as_deref(),
+                None,
             ));
         }
         // Multi-file: each note names its file, or the model cannot tell whose
@@ -601,7 +631,9 @@ fn render_multi_failure(
     raw_path: &str,
     full_path: &str,
     response: SearchReplaceResponse,
+    window: Option<(usize, usize, usize)>,
 ) -> String {
+    let mut diagnosis_payload = None;
     let (error, failed_at, occurrences) = match response {
         // `failed_at` counts within THIS FILE's edits, not across the batch —
         // it is `index + 1` over the replacements planned for one path. Read as
@@ -609,15 +641,30 @@ fn render_multi_failure(
         // "(edit 1)" beside a multi-file failure invites exactly that. Naming
         // the scope in the string is cheaper than being misread on a failure
         // path, which is the one place the reader is already off balance.
-        SearchReplaceResponse::NotFound { failed_at } => (
-            format!(
-                "{raw_path} (this file's edit {failed_at}): could not find the specified text. \
-                 Line endings are handled automatically; check indentation or surrounding \
-                 context."
-            ),
+        SearchReplaceResponse::NotFound {
             failed_at,
-            None,
-        ),
+            diagnosis,
+        } => {
+            // Same reasoning as the single-file branch: name the characters
+            // that differ instead of sending the caller off to re-check line
+            // endings and indentation, which are almost never the cause.
+            let detail = diagnosis.as_ref().map(describe_diagnosis);
+            diagnosis_payload = diagnosis;
+            (
+                match detail {
+                    Some(detail) => format!(
+                        "{raw_path} (this file's edit {failed_at}): no match for old_string.\n\
+                         {detail}"
+                    ),
+                    None => format!(
+                        "{raw_path} (this file's edit {failed_at}): no match for old_string, and \
+                         nothing in the file resembles it."
+                    ),
+                },
+                failed_at,
+                None,
+            )
+        }
         SearchReplaceResponse::NotUnique {
             failed_at,
             occurrences,
@@ -643,7 +690,7 @@ fn render_multi_failure(
         // Unreachable: only non-Ok responses reach here.
         SearchReplaceResponse::Ok { .. } => ("unexpected success".to_string(), 0, None),
     };
-    serde_json::to_string(&json!({
+    let mut payload = json!({
         "success": false,
         "multiFile": true,
         "error": error,
@@ -652,8 +699,15 @@ fn render_multi_failure(
         "failedAt": failed_at,
         "occurrences": occurrences,
         "hint": "No files were changed — a batch applies to every file or none. Fix this edit and retry.",
-    }))
-    .unwrap()
+    });
+    if let Some(note) = window_note(window) {
+        let hint = payload["hint"].as_str().unwrap_or_default();
+        payload["hint"] = json!(format!("{note} {hint}"));
+    }
+    if let Some(detail) = diagnosis_payload {
+        payload["diagnosis"] = json!(detail);
+    }
+    serde_json::to_string(&payload).unwrap()
 }
 
 /// Render a successful multi-file batch. Each entry carries its own before/after
@@ -764,8 +818,11 @@ mod tests {
     fn a_batch_failure_says_which_edit_list_it_is_counting() {
         for (response, expected) in [
             (
-                SearchReplaceResponse::NotFound { failed_at: 1 },
-                "could not find",
+                SearchReplaceResponse::NotFound {
+                    failed_at: 1,
+                    diagnosis: None,
+                },
+                "no match for old_string",
             ),
             (
                 SearchReplaceResponse::NotUnique {
@@ -782,7 +839,7 @@ mod tests {
                 "overlaps",
             ),
         ] {
-            let rendered = render_multi_failure("src/math.ts", "E:/ws/src/math.ts", response);
+            let rendered = render_multi_failure("src/math.ts", "E:/ws/src/math.ts", response, None);
             let parsed: Value = serde_json::from_str(&rendered).unwrap();
             let error = parsed["error"].as_str().unwrap();
             assert!(
@@ -1176,6 +1233,7 @@ mod tests {
                 total_replacements: 1,
                 replacement_details: Vec::new(),
                 wrote_to_disk: false,
+                typography_repairs: Vec::new(),
             },
         )
     }

@@ -20,7 +20,18 @@ export default defineConfig({
     build: {
         // Aurora ships as a Tauri desktop bundle — chunks are loaded
         // off the local disk, not the network, so large chunks are fine.
-        chunkSizeWarningLimit: 4000,
+        //
+        // Set just above the two chunks that legitimately exceed it, so a
+        // NEW oversized chunk still trips the warning instead of hiding in
+        // noise that fires on every build:
+        //   ts.worker  ~6.6 MB — Monaco's bundled TypeScript compiler, run in
+        //                        a web worker and only when a TS file opens.
+        //                        It is the compiler; there is nothing to split.
+        //   monaco     ~4.1 MB — its own manualChunk, loaded by the IDE
+        //                        surface alone (see src/App.tsx).
+        // Raise this only after checking WHICH chunk grew. If it is neither
+        // of those two, the answer is a code split, not a bigger number.
+        chunkSizeWarningLimit: 7000,
 
         // Vite 8 — Rolldown replaces Rollup, but the option key is renamed.
         // Plugin/output shape is Rollup-compatible, so the body is unchanged.

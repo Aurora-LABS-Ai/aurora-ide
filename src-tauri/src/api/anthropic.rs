@@ -239,15 +239,53 @@ where
         // iteration will pick it up via `biased; cancelled()`.
     }
 
-    // No `message_stop` and no stop reason: Anthropic never signalled the end,
-    // so the socket died mid-reply. Reporting it as a recoverable network error
-    // beats fabricating `end_turn` and passing a truncated answer off as a
-    // finished one — the user would see the agent stop for no visible reason.
+    // No `message_stop` and no stop reason. That used to be reported as "the
+    // connection dropped mid-reply", which named a cause nobody had measured —
+    // and for at least one real gateway it was simply wrong.
+    //
+    // Measured on 2026-08-25 against AgentRouter's `/v1/messages` with
+    // `deepseek-v4-flash`: 10 requests out of 10, plain / thinking / with tools
+    // / a 50-second 568 KB generation, the stream ends after the last
+    // `content_block_delta` and NEVER sends `message_delta` or `message_stop`.
+    // The socket closes cleanly on a frame boundary with nothing left over. The
+    // connection was healthy; the gateway just does not terminate its streams.
+    //
+    // So separate the two endings the old check conflated:
+    //
+    //  * EOF on a frame boundary with content already delivered — a
+    //    non-conforming gateway. The reply IS complete; refusing it threw away
+    //    a finished answer and then re-sent the whole request six times, which
+    //    on that 50-second generation is six times the wait and the money for
+    //    an ending that can never arrive.
+    //  * EOF mid-frame, or with nothing delivered at all — genuinely cut off.
+    //    Still an error, and still retryable, but now it says what was actually
+    //    observed instead of guessing at a dropped socket.
     if !saw_terminator && stop_reason.is_none() {
-        return Err(ApiError::Network(
-            "the response stream ended before the model finished — the connection dropped              mid-reply. Retry to run the turn again."
-                .to_string(),
-        ));
+        let ended_on_a_frame_boundary = sse.pending_len() == 0;
+        let delivered_content = block_order
+            .iter()
+            .filter_map(|index| blocks.get(index))
+            .any(BlockState::has_content);
+
+        if !ended_on_a_frame_boundary || !delivered_content {
+            return Err(ApiError::Network(format!(
+                "the response stream stopped early — {}. Retry to run the turn again.",
+                if delivered_content {
+                    "it was cut off partway through an event"
+                } else {
+                    "it closed before any content arrived"
+                }
+            )));
+        }
+
+        crate::logging::log_warn(
+            "api.anthropic",
+            "stream closed cleanly after its last content event but sent no `message_delta` \
+             or `message_stop`. This endpoint does not terminate its streams the way the \
+             Anthropic wire specifies; the reply was complete, so it is being accepted with \
+             stop_reason `end_turn`. Token usage for this turn may be under-reported, because \
+             the final usage rides on the `message_delta` that never came.",
+        );
     }
 
     let final_stop = stop_reason
@@ -267,13 +305,47 @@ where
         .filter_map(|idx| blocks.remove(&idx))
         .collect();
 
-    let assistant_message = finalize_assistant_message(ordered, usage.clone());
+    let assistant_message = finalize_assistant_message(coalesce_text(ordered), usage.clone());
 
     Ok(TurnUsage {
         usage,
         stop_reason: final_stop,
         assistant_message,
     })
+}
+
+/// Join runs of consecutive text blocks into one.
+///
+/// This adapter is the only one that takes its block structure from the wire:
+/// `openai_compat` and `responses` both append each chunk into the open text
+/// block, so neither can produce a run of them. Here every
+/// `content_block_start` opens a block, which is right for Anthropic itself —
+/// it sends one text block per stretch of prose — and wrong for a proxy that
+/// re-opens a block per token.
+///
+/// A proxy that does opens one block per token, and the reply is stored as a
+/// hundred one-word blocks. It still LOOKS correct while it streams, because
+/// the composer coalesces the deltas it renders, so the damage only appears
+/// when the thread is reopened: the reload path joins adjacent text blocks
+/// with a newline, and the reply comes back one word per line, split
+/// mid-word wherever the tokenizer split it ("order" / "-creation").
+///
+/// Joined with nothing between them, which is what the pieces were: the
+/// deltas that built them were concatenated with no separator on the way to
+/// the screen, so this reproduces exactly what the user watched arrive.
+/// Genuinely separate text blocks are left alone — a run only forms when
+/// nothing else sits between them, which the real API never does.
+fn coalesce_text(blocks: Vec<BlockState>) -> Vec<BlockState> {
+    let mut out: Vec<BlockState> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match (out.last_mut(), block) {
+            (Some(BlockState::Text { text: prev }), BlockState::Text { text }) => {
+                prev.push_str(&text);
+            }
+            (_, block) => out.push(block),
+        }
+    }
+    out
 }
 
 /// Process one decoded Anthropic SSE event.
@@ -531,6 +603,7 @@ async fn handle_anthropic_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runtime::types::ContentBlock;
 
     async fn drive(body: &str) -> Result<TurnUsage, ApiError> {
         let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![Ok(body.as_bytes().to_vec())];
@@ -558,18 +631,70 @@ mod tests {
         }
     }
 
-    /// A dropped connection reaches EOF with neither `message_stop` nor a
-    /// stop reason. Fabricating `end_turn` there presented a truncated reply
-    /// as a complete one; it must surface as an error instead.
+    /// A stream cut off PARTWAY THROUGH a frame really is truncated: the
+    /// bytes stop mid-event, so whatever was being sent never arrived whole.
+    /// Fabricating `end_turn` there passes a broken reply off as a complete
+    /// one.
     #[tokio::test]
-    async fn truncated_stream_is_an_error_not_a_finished_turn() {
-        let body = "data: {\"type\":\"content_block_delta\",\"index\":0,\
-                    \"delta\":{\"type\":\"text_delta\",\"text\":\"half a sen\"}}\n\n";
+    async fn a_stream_cut_off_mid_event_is_an_error() {
+        // Content delivered, then a frame that never closes.
+        let body = "data: {\"type\":\"content_block_start\",\"index\":0,\
+                    \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"half a \"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"sen";
         match drive(body).await {
             Err(ApiError::Network(msg)) => {
-                assert!(msg.contains("ended before"), "unexpected message: {msg}");
+                assert!(msg.contains("cut off partway"), "unexpected message: {msg}");
             }
-            other => panic!("expected a Network error for a truncated stream, got {other:?}"),
+            other => panic!("expected a Network error, got {other:?}"),
+        }
+    }
+
+    /// EOF before the model said anything at all is an error whatever else is
+    /// true — there is no reply to accept.
+    #[tokio::test]
+    async fn a_stream_that_delivers_nothing_is_an_error() {
+        let body = "data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\"}}\n\n";
+        match drive(body).await {
+            Err(ApiError::Network(msg)) => {
+                assert!(
+                    msg.contains("before any content arrived"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected a Network error, got {other:?}"),
+        }
+    }
+
+    /// A gateway that simply never terminates its streams.
+    ///
+    /// Measured against AgentRouter's `/v1/messages` with `deepseek-v4-flash`
+    /// on 2026-08-25: 10 of 10 requests — plain, thinking, with tools, and a
+    /// 50-second 568 KB generation — ended after the last
+    /// `content_block_delta` with no `message_delta` and no `message_stop`,
+    /// closing cleanly on a frame boundary with nothing left in the buffer.
+    ///
+    /// This is NOT the same as a dropped connection. A dropped connection
+    /// surfaces as `Some(Err(_))` from the byte stream and is rejected further
+    /// up; reaching a clean EOF means the HTTP body completed normally. The
+    /// reply is whole, so refusing it threw away a finished answer and then
+    /// re-sent the entire request six times chasing an ending that was never
+    /// going to come.
+    #[tokio::test]
+    async fn a_gateway_that_never_sends_message_stop_is_still_a_finished_turn() {
+        let body = "data: {\"type\":\"content_block_start\",\"index\":0,\
+                    \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"a whole answer\"}}\n\n";
+        let turn = drive(body)
+            .await
+            .expect("a complete reply must not be thrown away over a missing terminator");
+        assert_eq!(turn.stop_reason, "end_turn");
+        match turn.assistant_message.blocks.as_slice() {
+            [ContentBlock::Text { text }] => assert_eq!(text, "a whole answer"),
+            other => panic!("expected the delivered text, got {other:?}"),
         }
     }
 
@@ -594,5 +719,77 @@ mod tests {
                     data: {\"type\":\"message_stop\"}\n\n";
         let turn = drive(body).await.expect("a capped turn still completes");
         assert_eq!(turn.stop_reason, "max_tokens");
+    }
+
+    /// Build the SSE for one text block: start, one delta, stop.
+    fn text_block(index: usize, text: &str) -> String {
+        format!(
+            "data: {{\"type\":\"content_block_start\",\"index\":{index},\
+             \"content_block\":{{\"type\":\"text\"}}}}\n\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":{index},\
+             \"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+             data: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"
+        )
+    }
+
+    /// A proxy that opens a content block per token — observed on Kimi K3
+    /// served over the Anthropic wire format — used to be stored verbatim as
+    /// one block per token. It streamed correctly and then came back one word
+    /// per line when the thread was reopened, broken mid-word wherever the
+    /// tokenizer had split it.
+    #[tokio::test]
+    async fn a_block_opened_per_token_is_stored_as_one_piece_of_prose() {
+        let mut body = String::new();
+        // The split that gave it away: "order-creation" arrived in two pieces.
+        for (i, token) in ["Check", " the", " order", "-creation", " flow"]
+            .iter()
+            .enumerate()
+        {
+            body.push_str(&text_block(i, token));
+        }
+        body.push_str("data: {\"type\":\"message_stop\"}\n\n");
+
+        let turn = drive(&body).await.expect("turn completes");
+        let texts: Vec<&str> = turn
+            .assistant_message
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["Check the order-creation flow"],
+            "per-token blocks must rejoin into the prose that was streamed"
+        );
+    }
+
+    /// Text on either side of a tool call is two separate thoughts and must
+    /// stay two blocks — the merge only closes runs, and a tool call breaks
+    /// the run.
+    #[tokio::test]
+    async fn text_around_a_tool_call_stays_separate() {
+        let mut body = text_block(0, "before");
+        body.push_str(
+            "data: {\"type\":\"content_block_start\",\"index\":1,\
+             \"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"grep\"}}\n\n\
+             data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        );
+        body.push_str(&text_block(2, "after"));
+        body.push_str("data: {\"type\":\"message_stop\"}\n\n");
+
+        let turn = drive(&body).await.expect("turn completes");
+        let texts: Vec<&str> = turn
+            .assistant_message
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["before", "after"]);
     }
 }

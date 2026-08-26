@@ -243,14 +243,27 @@ pub enum ReasoningReplay {
 /// Derived from [`ProviderKind::detect`] plus the same
 /// `reasoning_field_for` table the OpenAI request builder consults, so the
 /// estimate can never disagree with what the builder emits.
+///
+/// Takes the model for the same reason the builder does: behind an
+/// OpenAI-compatible gateway the provider type is a wire shape, not a vendor,
+/// and only the model name says whose reasoning rules apply. Passing a
+/// different model here than the request carries would put the estimate and
+/// the wire back out of step, which is the one thing this function exists to
+/// prevent.
 #[must_use]
-pub fn reasoning_replay_for(provider_type: &str) -> ReasoningReplay {
+pub fn reasoning_replay_for(provider_type: &str, model: &str, base_url: &str) -> ReasoningReplay {
     match ProviderKind::detect(provider_type) {
         // Anthropic replays `thinking` blocks verbatim and requires it once
         // extended thinking is on.
         ProviderKind::Anthropic => ReasoningReplay::Text,
         ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
-        _ => match super::provider_kernel_adapter::reasoning_field_for(provider_type) {
+        // Both halves of what the builder consults, in the builder's order.
+        // Missing the learned half here would put the estimate back out of
+        // step the moment an endpoint taught us something — the exact class of
+        // bug that invented ~92k tokens of phantom context once already.
+        _ => match super::provider_kernel_adapter::reasoning_field_for(provider_type, model)
+            .or_else(|| super::provider_kernel_adapter::learned_reasoning_field(base_url, model))
+        {
             Some(_) => ReasoningReplay::Text,
             None => ReasoningReplay::Dropped,
         },

@@ -19,6 +19,7 @@ import {
   settingsSubtlePanelStyle,
 } from "@/apps/ide/features/settings/settings-shared";
 import { ActionButton, StatusPill } from "@/apps/ide/features/settings/settings-primitives";
+import { InstalledIconThemes } from "@/apps/ide/features/theme/InstalledIconThemes";
 
 const sampleRequests = [
   { name: "src", isFolder: true, isOpen: false },
@@ -229,6 +230,8 @@ export const ExplorerIconPackPanel: React.FC = () => {
             {error}
           </div>
         )}
+
+        <InstalledIconThemes />
 
         {activePack && (
           <div

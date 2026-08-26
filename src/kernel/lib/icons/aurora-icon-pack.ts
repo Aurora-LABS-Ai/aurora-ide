@@ -34,7 +34,14 @@ const normalizeIconData = (source: string): string => {
     return trimmed;
   }
 
-  if (trimmed.startsWith("<svg")) {
+  // `<svg` is where the markup starts, not where the FILE starts. Anything
+  // Inkscape saves opens with `<?xml version="1.0"?>`, and licence banners are
+  // usually a comment above the root element — testing only the first four
+  // characters rejected those as "not a data URI or inline SVG payload", which
+  // reads as a corrupt pack rather than a too-strict check.
+  if (
+    /^(?:\s*(?:<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>))*\s*<svg[\s/>]/i.test(trimmed)
+  ) {
     return `data:image/svg+xml;utf8,${encodeURIComponent(trimmed)}`;
   }
 

@@ -73,6 +73,7 @@ pub mod move_path;
 /// Internal: the parallel batch reader, reused by `file_read`'s array
 /// form. Not registered as a standalone tool.
 pub mod multi_file_read;
+pub mod path_recovery;
 /// Internal: per-session read-before-edit guard state.
 pub mod read_tracker;
 /// Internal: shared edit-result/diff helpers used by `file_edit` and

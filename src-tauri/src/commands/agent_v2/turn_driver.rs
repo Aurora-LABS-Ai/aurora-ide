@@ -41,7 +41,14 @@ use super::*;
 ///    error, then release.
 /// 9. Persist the entire post-turn session via [`Session::save_to_path`]
 ///    in a `finally`-style block (success OR error path, both write).
-///    Atomic-rename keeps partial writes off disk.
+///    Atomic-rename keeps partial writes off disk. Messages already
+///    reached the file one at a time through the session's journal
+///    (attached in [`AgentRegistry::load_or_create_session`]); this
+///    rewrite is the authority that re-syncs it. A rewrite that fails
+///    while the journal is current is a warning — the file is already
+///    complete. A rewrite that fails when it is not ends the turn as
+///    [`RuntimeError::NotPersisted`] rather than reporting success for
+///    a transcript nobody can reopen.
 /// 10. `unregister_in_flight(turn_id)` and `bridge_router.drop_turn(turn_id)`
 ///     to reclaim any leftover oneshot senders.
 /// 11. On `Ok`: emit `agent_turn_complete`. On `Err`: emit
@@ -237,32 +244,26 @@ impl<E: EventEmitter> TurnDriver<E> {
             .clone()
             .filter(|v| !v.is_empty());
 
-        // 5b. Durability for a brand-new chat: persist the user message to the
-        //     JSONL *now*, before the (potentially long) agent loop runs. The
-        //     full session is otherwise only flushed at turn END
-        //     (`save_to_path` below), so until then a fresh draft has an empty
-        //     `.jsonl` (messageCount 0) — invisible to `thread_list_summaries`
-        //     and therefore unreachable if the user navigates away mid-turn.
-        //     Writing message #1 up front makes the thread real on disk
-        //     immediately: it lists, it survives a mid-turn reload/crash, and
-        //     the rail can route back to it. Scoped to genuinely fresh threads
-        //     (empty log) so existing chats keep their untouched hot path; the
-        //     post-turn full `save_to_path` reconciles the line either way, so
-        //     there is never a duplicate on the success path.
+        // 5b. Make the thread real on disk before the turn runs, so a chat the
+        //     user navigates away from mid-turn is still listed and routable.
+        //
+        //     Only the metadata sidecar is written here. The user message
+        //     itself reaches the JSONL through the session's journal, on the
+        //     runtime's very first step (`run_turn_with_id` appends it before
+        //     any provider call), which covers every thread rather than only a
+        //     fresh one.
+        //
+        //     This used to `append_to_path` the message directly, behind the
+        //     session's back. That was safe only while journaling was off:
+        //     with a journal attached, the raw append advances the FILE
+        //     without advancing the session's written counter, so the
+        //     runtime's own append still looks in sync and writes the same
+        //     user message a second time. One durability fix would have
+        //     re-introduced a duplicate-message bug. One path owns the
+        //     append now.
         {
             let store = self.registry.store();
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
-            let early_path = self.registry.session_path(&thread_id);
-            let is_fresh = std::fs::metadata(&early_path)
-                .map(|m| m.len() == 0)
-                .unwrap_or(true);
-            if is_fresh {
-                if let Err(e) = Session::append_to_path(&early_path, &user_message) {
-                    eprintln!(
-                        "agent_v2: early user-message persist failed for thread {thread_id}: {e}"
-                    );
-                }
-            }
         }
 
         // 7. Bounded channel + forwarder task. The forwarder exits when
@@ -333,26 +334,69 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    Err paths write so a turn that errored after partial
         //    progress (e.g. one tool call worth of state) still leaves
         //    the disk log up to date with what the in-memory session
-        //    holds. Save errors are logged but never returned — the
-        //    user-visible error is whatever `result` already carries.
+        //    holds.
+        //
+        //    A failed save used to be printed and dropped, which meant the
+        //    turn reported success while the transcript was not on disk —
+        //    and because the Agent Window keeps its optimistic copy rather
+        //    than reloading, nothing looked wrong until the chat was
+        //    reopened and the turn was missing. `uncommitted` carries the
+        //    failure to step 11 instead.
+        let mut uncommitted: Option<String> = None;
         {
             let session = session_arc.lock().await;
-            if let Err(persist_err) = session.save_to_path(&session_path) {
-                eprintln!(
-                    "agent_v2: failed to persist session for thread {thread_id}: {persist_err}"
-                );
-            }
-            // Full-fidelity edit results accumulated this turn ride the
-            // `.rich.jsonl` sidecar so a reloaded thread renders complete
-            // diffs. Best-effort: losing them degrades one turn's reload
-            // view to the clamped copy, never the conversation itself.
-            let rich = session.drain_rich_results();
-            if !rich.is_empty() {
-                if let Err(rich_err) = self.registry.store().append_rich_results(&thread_id, &rich)
-                {
-                    eprintln!(
-                        "agent_v2: failed to persist rich tool results for thread {thread_id}: {rich_err}"
+            match session.save_to_path(&session_path) {
+                Ok(()) => {
+                    // Full-fidelity edit results accumulated this turn ride
+                    // the `.rich.jsonl` sidecar so a reloaded thread renders
+                    // complete diffs. Best-effort: losing them degrades one
+                    // turn's reload view to the clamped copy, never the
+                    // conversation itself.
+                    //
+                    // Drained only after the transcript is committed. A rich
+                    // result whose base tool message never landed enriches
+                    // nothing, and draining it anyway would discard it for
+                    // good — the slot is take-once.
+                    let rich = session.drain_rich_results();
+                    if !rich.is_empty() {
+                        if let Err(rich_err) =
+                            self.registry.store().append_rich_results(&thread_id, &rich)
+                        {
+                            crate::logging::log_error(
+                                "agent_v2.persist",
+                                &format!(
+                                    "rich tool results for thread {thread_id} were not written \
+                                     ({rich_err}); this turn's reloaded diffs fall back to the \
+                                     clamped copy"
+                                ),
+                            );
+                        }
+                    }
+                }
+                Err(persist_err) if session.journal_is_current() => {
+                    // The rewrite failed, but every message was appended as it
+                    // happened and the file already holds the whole turn. The
+                    // user loses nothing, so this is a warning rather than a
+                    // failed turn. Rich results stay in the slot for the next
+                    // successful save.
+                    crate::logging::log_warn(
+                        "agent_v2.persist",
+                        &format!(
+                            "full save failed for thread {thread_id} ({persist_err}), but the \
+                             journal already holds all {} message(s) — transcript is intact",
+                            session.messages().len(),
+                        ),
                     );
+                }
+                Err(persist_err) => {
+                    crate::logging::log_error(
+                        "agent_v2.persist",
+                        &format!(
+                            "thread {thread_id} was not saved to {}: {persist_err}",
+                            session_path.display(),
+                        ),
+                    );
+                    uncommitted = Some(persist_err.to_string());
                 }
             }
         }
@@ -371,8 +415,10 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     Skipped when the runtime didn't append anything (factory
         //     failure, immediate cancel) so a zero-progress turn
         //     doesn't pollute the chat list with a fresh "New Chat"
-        //     row.
-        if turn_appended {
+        //     row, and skipped when the transcript did not reach disk —
+        //     an `updatedAt` bump for a turn the file does not contain
+        //     advertises work the rail cannot open.
+        if turn_appended && uncommitted.is_none() {
             let store = self.registry.store();
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
             let _ = store.set_workspace_and_model(
@@ -410,6 +456,22 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     literal "cancelled" so the frontend has ONE observable
         //     signal that the turn is over without success.
         match result {
+            // The model answered, but the transcript did not reach disk and
+            // the journal did not cover it either. Reporting this as a clean
+            // turn would hide the loss until the chat is reopened, so it ends
+            // as an error naming what happened. The reply is still on screen —
+            // what the user needs to know is that reopening will not show it.
+            Ok(_) if uncommitted.is_some() => {
+                let detail = uncommitted.unwrap_or_default();
+                let err = RuntimeError::NotPersisted(format!(
+                    "the reply is on screen but was not written to disk and will be gone if you \
+                     reopen this chat ({detail})"
+                ));
+                let payload = err.to_string();
+                let hint = classify_error(&payload);
+                self.emitter.emit_turn_error(&turn_id, &payload, hint);
+                Err(err)
+            }
             Ok(summary) => {
                 self.emitter.emit_turn_complete(&turn_id, &summary);
                 Ok(summary)
@@ -498,8 +560,12 @@ pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig 
         // the token estimate prices a stored reasoning block exactly as the
         // request builder will treat it: dropped, replayed as text, or
         // replayed as an opaque encrypted item.
+        // The model rides along because an OpenAI-compatible gateway's type
+        // says nothing about whose model answers — see `reasoning_field_for`.
         reasoning_replay: crate::api::reasoning_replay_for(
             request.provider_config.effective_provider_type(),
+            &request.model,
+            &request.provider_config.base_url,
         ),
     }
 }

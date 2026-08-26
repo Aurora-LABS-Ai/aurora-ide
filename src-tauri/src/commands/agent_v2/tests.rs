@@ -1945,3 +1945,177 @@ fn the_deferrable_rule_names_buckets_not_individual_tools() {
         assert!(!is_deferrable(core), "{core} must never be deferred");
     }
 }
+
+// ── Mid-turn durability ─────────────────────────────────────────
+//
+// A turn used to exist only in RAM until it returned, so a kill during a
+// twenty-minute tool run cost the whole turn — the user's own message
+// included, on any thread that was not brand new. The session journal puts
+// each message on disk as it is appended; these tests pin the two things
+// that have to be true for that to be worth anything: the user message is
+// already on disk by the time the provider is called, and it is there
+// exactly once.
+
+/// Reads the thread's JSONL at the moment `stream` is called — i.e. from
+/// inside the turn, before any reply exists — and records what it found.
+struct DiskSpy {
+    session_path: PathBuf,
+    seen: StdMutex<Vec<String>>,
+}
+
+#[async_trait]
+impl StreamingApiClient for DiskSpy {
+    async fn stream(
+        &self,
+        _request: ApiRequest<'_>,
+        _event_sink: mpsc::Sender<AssistantEvent>,
+        _cancel_token: CancellationToken,
+    ) -> Result<TurnUsage, ApiError> {
+        let contents = std::fs::read_to_string(&self.session_path).unwrap_or_default();
+        *self.seen.lock().expect("seen mutex") = contents
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        Ok(turn_usage(assistant_text_msg("ack"), "end_turn"))
+    }
+}
+
+/// Hands back one pre-built client, whatever its concrete type.
+struct FixedFactory(Arc<dyn StreamingApiClient>);
+
+impl ApiFactory for FixedFactory {
+    fn build(
+        &self,
+        _config: &crate::api::ProviderConfigSnapshot,
+    ) -> Result<Arc<dyn StreamingApiClient>, RuntimeError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// How many of `lines` are user messages carrying `text`.
+fn user_lines_with(lines: &[String], text: &str) -> usize {
+    lines
+        .iter()
+        .filter_map(|l| serde_json::from_str::<ConversationMessage>(l).ok())
+        .filter(|m| {
+            m.role == MessageRole::User
+                && m.blocks.iter().any(|b| match b {
+                    ContentBlock::Text { text: t } => t.contains(text),
+                    _ => false,
+                })
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn the_user_message_is_on_disk_before_the_provider_is_called() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(MockApiFactory::from_api(Arc::new(MockApi::new(vec![])))),
+        dir.path().to_path_buf(),
+    ));
+    let spy = Arc::new(DiskSpy {
+        session_path: registry.session_path("fresh-thread"),
+        seen: StdMutex::new(Vec::new()),
+    });
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(FixedFactory(spy.clone() as Arc<dyn StreamingApiClient>)),
+        dir.path().to_path_buf(),
+    ));
+    let driver = TurnDriver::new(registry, Arc::new(MockEmitter::default()));
+
+    driver
+        .run_turn(make_request("t-1", "fresh-thread", "please analyse this repo"))
+        .await
+        .expect("turn");
+
+    let seen = spy.seen.lock().expect("seen mutex").clone();
+    assert_eq!(
+        user_lines_with(&seen, "please analyse this repo"),
+        1,
+        "the user message must be on disk before the model is asked anything, exactly once — \
+         saw {seen:#?}"
+    );
+}
+
+#[tokio::test]
+async fn a_follow_up_message_is_on_disk_before_the_provider_is_called() {
+    // The regression this pins: the old early write fired only for a thread
+    // whose file was empty, so every message after the first lived in RAM
+    // until the turn ended. A kill mid-turn took the user's own words with it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = SessionStore::new(dir.path().to_path_buf()).session_path("existing-thread");
+    let mut seeded = Session::new("existing-thread");
+    seeded.append_message(ConversationMessage::user_text("first question", 1));
+    seeded.append_message(ConversationMessage::assistant(
+        vec![ContentBlock::Text {
+            text: "first answer".into(),
+        }],
+        2,
+    ));
+    seeded.save_to_path(&path).expect("seed");
+
+    let spy = Arc::new(DiskSpy {
+        session_path: path.clone(),
+        seen: StdMutex::new(Vec::new()),
+    });
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(FixedFactory(spy.clone() as Arc<dyn StreamingApiClient>)),
+        dir.path().to_path_buf(),
+    ));
+    let driver = TurnDriver::new(registry, Arc::new(MockEmitter::default()));
+
+    driver
+        .run_turn(make_request("t-2", "existing-thread", "second question"))
+        .await
+        .expect("turn");
+
+    let seen = spy.seen.lock().expect("seen mutex").clone();
+    assert_eq!(
+        seen.len(),
+        3,
+        "the two seeded messages plus the new one must be on disk mid-turn — saw {seen:#?}"
+    );
+    assert_eq!(
+        user_lines_with(&seen, "second question"),
+        1,
+        "the follow-up must be on disk before the model is asked, exactly once"
+    );
+}
+
+#[tokio::test]
+async fn the_completed_turn_holds_no_duplicate_user_message() {
+    // The hazard removed with the raw early write: it advanced the FILE without
+    // advancing the journal's counter, so the runtime's own append still looked
+    // in sync and wrote the same user message a second time. The end-of-turn
+    // rewrite hid it, but a kill before that did not.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let api = Arc::new(MockApi::new(vec![TurnScript::Reply {
+        events: vec![],
+        result: Ok(turn_usage(assistant_text_msg("ack"), "end_turn")),
+    }]));
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(MockApiFactory::from_api(api)),
+        dir.path().to_path_buf(),
+    ));
+    let driver = TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default()));
+
+    driver
+        .run_turn(make_request("t-3", "dupe-thread", "only once please"))
+        .await
+        .expect("turn");
+
+    let raw = std::fs::read_to_string(registry.session_path("dupe-thread")).expect("read");
+    let lines: Vec<String> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        user_lines_with(&lines, "only once please"),
+        1,
+        "the user message must appear once — saw {lines:#?}"
+    );
+    assert_eq!(lines.len(), 2, "one user message, one reply — saw {lines:#?}");
+}

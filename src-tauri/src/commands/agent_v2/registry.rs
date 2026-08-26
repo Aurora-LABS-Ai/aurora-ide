@@ -244,15 +244,17 @@ impl AgentRegistry {
         // once journal to several files and never contend: this session is the
         // one behind `sessions[thread_id]`, and a turn holds that mutex for its
         // whole run.
-        // DISABLED 2026-08-17 pending a stack-overflow bisect. The first release
-        // build carrying this also carried the conversation/agent_v2 splits,
-        // tool_search and context_limits — none of which had ever been in a
-        // release binary — and the crash appeared with that build. Journaling is
-        // the change added last, so it is the one switched off first. Re-enable
-        // by uncommenting; `attach_journal` and its tests are untouched.
-        let _ = &path;
-        // let already_written = session.messages().len();
-        // session.attach_journal(&path, already_written);
+        //
+        // Switched off 2026-08-17 as the first suspect in a stack-overflow
+        // bisect, then cleared: the crash reproduced with journaling disabled
+        // (`.knowledge/knowledge.md`, "Still open: the stack overflow is NOT
+        // diagnosed"), and the suspect was never let back in. Restored
+        // 2026-08-25. This is the only thing that puts a running turn on disk —
+        // without it a twenty-minute turn is one kill away from nothing, and
+        // `turn_driver` no longer carries a separate early write to soften
+        // that for the first message of a fresh thread.
+        let already_written = session.messages().len();
+        session.attach_journal(&path, already_written);
 
         // `entry().or_insert_with(...)` makes the cache insert atomic
         // against a racing concurrent `load_or_create_session` for the

@@ -190,8 +190,10 @@ impl ToolExecutor for FileWriteTool {
 
                 // The agent now knows this file's exact content (it just
                 // wrote it), so a follow-up file_edit should pass the
-                // read-before-edit guard without a redundant read.
-                super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
+                // read-before-edit guard without a redundant read. It also
+                // clears any window an earlier partial read left recorded —
+                // the file it wrote is the file it knows.
+                super::read_tracker::record_whole(&ctx.thread_id, &resolved.to_string_lossy());
 
                 // An overwrite is the highest-impact write there is — every
                 // symbol the file defined may have changed shape. A brand-new

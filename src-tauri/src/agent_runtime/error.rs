@@ -32,6 +32,14 @@ pub enum RuntimeError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// The turn itself ran, but its transcript could not be committed to
+    /// disk. Separate from [`Self::Io`] because the distinction matters to
+    /// the person reading it: the model answered and the answer is on
+    /// screen, so what failed is whether any of it survives reopening the
+    /// chat. Reporting the turn as a success would make that loss silent.
+    #[error("this turn was not saved: {0}")]
+    NotPersisted(String),
+
     /// JSON (de)serialization failed. Used when projecting the
     /// JSONL session log onto the in-memory model and when validating
     /// IPC payloads at the boundary.

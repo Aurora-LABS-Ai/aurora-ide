@@ -79,9 +79,18 @@ pub enum SearchReplaceResponse {
         total_replacements: usize,
         replacement_details: Vec<ReplacementDetail>,
         wrote_to_disk: bool,
+        /// Replacements that only matched after folding the file's typographic
+        /// characters to ASCII. Empty on an ordinary exact-match edit.
+        typography_repairs: Vec<TypographyRepair>,
     },
     #[serde(rename = "not_found")]
-    NotFound { failed_at: usize },
+    NotFound {
+        failed_at: usize,
+        /// What the closest text in the file is and how it differs. `None`
+        /// when nothing in the file resembles `old_string` closely enough for
+        /// a comparison to mean anything.
+        diagnosis: Option<MatchDiagnosis>,
+    },
     #[serde(rename = "not_unique")]
     NotUnique {
         failed_at: usize,
@@ -92,6 +101,62 @@ pub enum SearchReplaceResponse {
         failed_at: usize,
         conflicting_replacement: usize,
     },
+}
+
+/// One place where the text the caller sent and the text in the file diverge.
+///
+/// A zero-match edit is almost never a wild guess — it is usually the right
+/// text with one character class wrong (a straightened quote, an extra
+/// backslash, indentation that lost a space). The engine has the whole file in
+/// hand when it fails, so it can name the difference instead of asking the
+/// caller to hunt for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineDifference {
+    /// 1-based line number in the file.
+    pub line: usize,
+    /// 1-based character column where the two texts start to diverge.
+    pub column: usize,
+    /// The run the caller sent, rendered for reading.
+    pub sent: String,
+    /// The run the file actually holds at that spot, rendered for reading.
+    pub found: String,
+    /// Codepoints of the sent run. Present only for short runs, where naming
+    /// `U+201C` is the whole answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sent_codes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found_codes: Option<Vec<String>>,
+    /// Set when the shape of the difference has a known cause worth naming.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// The closest text in the file to an `old_string` that matched nowhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchDiagnosis {
+    /// 1-based inclusive line range in the file holding the closest text.
+    pub start_line: usize,
+    pub end_line: usize,
+    pub differences: Vec<LineDifference>,
+    /// True when the comparison found more differences than it listed.
+    pub more_differences: bool,
+    /// How many places would match if the quotes, dashes and spaces were
+    /// copied from the file. Zero means typography is not the problem; two or
+    /// more means it is, but the text is no longer unique.
+    pub typographic_matches: usize,
+}
+
+/// A replacement that landed only because the file's typographic characters
+/// were folded to ASCII before matching.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypographyRepair {
+    /// 1-based position of this replacement within the call.
+    pub replacement_index: usize,
+    pub occurrences: usize,
+    pub differences: Vec<LineDifference>,
 }
 
 #[tauri::command]
@@ -137,7 +202,13 @@ fn run_multi_search_replace(
     let plan = plan_multi_search_replace(&original_content, &request.replacements);
 
     match plan {
-        PlanResult::NotFound { failed_at } => Ok(SearchReplaceResponse::NotFound { failed_at }),
+        PlanResult::NotFound {
+            failed_at,
+            diagnosis,
+        } => Ok(SearchReplaceResponse::NotFound {
+            failed_at,
+            diagnosis,
+        }),
         PlanResult::NotUnique {
             failed_at,
             occurrences,
@@ -159,6 +230,7 @@ fn run_multi_search_replace(
             lines_removed,
             total_replacements,
             replacement_details,
+            typography_repairs,
         } => {
             let mut wrote_to_disk = false;
             if request.write {
@@ -177,6 +249,7 @@ fn run_multi_search_replace(
                 total_replacements,
                 replacement_details,
                 wrote_to_disk,
+                typography_repairs,
             })
         }
     }
@@ -194,9 +267,11 @@ enum PlanResult {
         lines_removed: usize,
         total_replacements: usize,
         replacement_details: Vec<ReplacementDetail>,
+        typography_repairs: Vec<TypographyRepair>,
     },
     NotFound {
         failed_at: usize,
+        diagnosis: Option<MatchDiagnosis>,
     },
     NotUnique {
         failed_at: usize,
@@ -226,6 +301,7 @@ fn plan_multi_search_replace(
 
     let mut planned_ranges: Vec<PlannedRange> = Vec::new();
     let mut replacement_details: Vec<ReplacementDetail> = Vec::with_capacity(replacements.len());
+    let mut typography_repairs: Vec<TypographyRepair> = Vec::new();
     let mut total_replacements = 0usize;
     let mut total_lines_added = 0usize;
     let mut total_lines_removed = 0usize;
@@ -243,35 +319,74 @@ fn plan_multi_search_replace(
         if normalized_old.is_empty() {
             return PlanResult::NotFound {
                 failed_at: index + 1,
+                diagnosis: None,
             };
         }
 
         // SIMD-accelerated occurrence scan.
         let finder = memmem::Finder::new(normalized_old.as_bytes());
-        let occurrences: Vec<usize> = finder.find_iter(normalized_original.as_bytes()).collect();
-        let occurrence_count = occurrences.len();
+        let exact: Vec<usize> = finder.find_iter(normalized_original.as_bytes()).collect();
 
-        if occurrence_count == 0 {
-            return PlanResult::NotFound {
-                failed_at: index + 1,
+        // Byte ranges in `normalized_original` this replacement will rewrite.
+        // Exact hits and typography-recovered hits both land here, so the
+        // overlap check and the accounting below stay one code path.
+        let ranges: Vec<(usize, usize)>;
+        let occurrence_count: usize;
+
+        if exact.is_empty() {
+            // Zero exact matches. Before giving up, ask the one question the
+            // engine can answer for free: does this text exist in the file with
+            // the quotes, dashes and spaces the file actually uses? Models
+            // straighten those constantly when they copy text out of a read,
+            // and the result is a whole failed round trip over two characters.
+            //
+            // Every repair here is confirmed against the file — the recovered
+            // range is re-folded and checked against what matched, so nothing
+            // is guessed. Ambiguity is refused rather than resolved: without
+            // `replace_all`, anything other than exactly one hit is an error,
+            // because picking one of several would edit a place the caller
+            // never chose.
+            let recovered = recover_typographic(&normalized_original, &normalized_old);
+            let usable = if replacement.replace_all {
+                !recovered.is_empty()
+            } else {
+                recovered.len() == 1
             };
-        }
 
-        if occurrence_count > 1 && !replacement.replace_all {
-            return PlanResult::NotUnique {
-                failed_at: index + 1,
-                occurrences: occurrence_count,
-            };
-        }
+            if !usable {
+                return PlanResult::NotFound {
+                    failed_at: index + 1,
+                    diagnosis: diagnose_no_match(&normalized_original, &normalized_old, &recovered),
+                };
+            }
 
-        let selected_starts: &[usize] = if replacement.replace_all {
-            &occurrences[..]
+            typography_repairs.push(TypographyRepair {
+                replacement_index: index + 1,
+                occurrences: recovered.len(),
+                differences: describe_span(&normalized_original, &normalized_old, recovered[0]),
+            });
+            occurrence_count = recovered.len();
+            ranges = recovered;
         } else {
-            &occurrences[..1]
-        };
+            if exact.len() > 1 && !replacement.replace_all {
+                return PlanResult::NotUnique {
+                    failed_at: index + 1,
+                    occurrences: exact.len(),
+                };
+            }
+            occurrence_count = exact.len();
+            let selected: &[usize] = if replacement.replace_all {
+                &exact[..]
+            } else {
+                &exact[..1]
+            };
+            ranges = selected
+                .iter()
+                .map(|&start| (start, start + normalized_old.len()))
+                .collect();
+        }
 
-        for &start in selected_starts {
-            let end = start + normalized_old.len();
+        for &(start, end) in &ranges {
             let candidate = PlannedRange {
                 start,
                 end,
@@ -289,11 +404,7 @@ fn plan_multi_search_replace(
             planned_ranges.push(candidate);
         }
 
-        let replaced_count = if replacement.replace_all {
-            occurrence_count
-        } else {
-            1
-        };
+        let replaced_count = ranges.len();
 
         total_lines_removed += line_count(&normalized_old) * replaced_count;
         total_lines_added += line_count(&normalized_new) * replaced_count;
@@ -322,6 +433,7 @@ fn plan_multi_search_replace(
         if !buffer.is_char_boundary(range.start) || !buffer.is_char_boundary(range.end) {
             return PlanResult::NotFound {
                 failed_at: range.replacement_index,
+                diagnosis: None,
             };
         }
         buffer.replace_range(range.start..range.end, &range.new_text);
@@ -336,6 +448,7 @@ fn plan_multi_search_replace(
         lines_removed: total_lines_removed,
         total_replacements,
         replacement_details,
+        typography_repairs,
     }
 }
 
@@ -398,6 +511,425 @@ fn line_count(value: &str) -> usize {
     // Match the JS implementation: `value.split('\n').length`. Empty string
     // counts as one line.
     1 + memchr::memchr_iter(b'\n', value.as_bytes()).count()
+}
+
+// ---------------------------------------------------------------------------
+// Why an edit that matched nothing still has something to say
+// ---------------------------------------------------------------------------
+//
+// A `not_found` used to end the story: "could not find the specified text".
+// That is true and useless. Over 707 recorded sessions, 53 of the 83 zero-match
+// failures happened on a file the agent had ALREADY read that session — so the
+// text was not a guess, it was a transcription that slipped by a character or
+// two. The engine holds the whole file at the moment it fails. It can say which
+// character, and for the one class where the two texts are the same text, it
+// can just do the edit.
+//
+// Two rules keep that from turning into guesswork:
+//   * every recovered range is re-folded and checked against what matched, so
+//     a repair is confirmed against the file rather than inferred;
+//   * ambiguity is refused, never resolved — several candidates means an error,
+//     because choosing one edits a place the caller did not pick.
+
+/// How many differences a diagnosis will list before it stops.
+const MAX_DIFFERENCES: usize = 6;
+/// How much of a differing run to print before truncating it.
+const MAX_RUN_CHARS: usize = 80;
+/// Lines below this similarity to the anchor are not close enough to be worth
+/// showing. Pointing at unrelated text is worse than saying nothing.
+const MIN_ANCHOR_SIMILARITY: f32 = 0.5;
+/// An anchor shorter than this says nothing about WHERE the text belongs.
+/// `}`, `*/`, `});` and `/**` each match hundreds of lines in a real file.
+const MIN_ANCHOR_CHARS: usize = 12;
+/// Diagnosis walks every line of the file. Past this size the failure message
+/// is not worth the scan.
+const MAX_DIAGNOSABLE_LINES: usize = 200_000;
+
+/// The ASCII a model reaches for when it retypes one of the characters a text
+/// editor inserted. Folding is one-way, toward ASCII, and both sides of a
+/// comparison get folded — which covers the mistake in either direction.
+fn typographic_ascii(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => "'",
+        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' => "\"",
+        '\u{2013}' | '\u{2014}' | '\u{2212}' => "-",
+        '\u{00A0}' | '\u{2007}' | '\u{2009}' | '\u{200A}' | '\u{202F}' => " ",
+        '\u{2026}' => "...",
+        _ => return None,
+    })
+}
+
+/// A string with its typographic characters folded to ASCII, carrying the map
+/// back to where each byte came from.
+struct Folded {
+    text: String,
+    /// Byte offset in the source for each byte of `text`, plus a final entry
+    /// equal to `source.len()` so an exclusive end maps cleanly.
+    offsets: Vec<usize>,
+    /// Whether folding changed anything. When neither side changed there is no
+    /// point searching a second time.
+    changed: bool,
+}
+
+fn fold_typography(source: &str) -> Folded {
+    let mut text = String::with_capacity(source.len());
+    let mut offsets = Vec::with_capacity(source.len() + 1);
+    let mut changed = false;
+
+    for (byte_index, ch) in source.char_indices() {
+        let before = text.len();
+        match typographic_ascii(ch) {
+            Some(replacement) => {
+                changed = true;
+                text.push_str(replacement);
+            }
+            None => text.push(ch),
+        }
+        offsets.resize(text.len(), byte_index);
+        debug_assert!(text.len() > before || ch == '\0');
+    }
+    offsets.push(source.len());
+
+    Folded {
+        text,
+        offsets,
+        changed,
+    }
+}
+
+/// Every place in `file` that `old` matches once both are folded to ASCII,
+/// as byte ranges in `file` itself.
+fn recover_typographic(file: &str, old: &str) -> Vec<(usize, usize)> {
+    let folded_file = fold_typography(file);
+    let folded_old = fold_typography(old);
+
+    // Nothing was folded on either side, so a second search would run the same
+    // comparison that already failed.
+    if !folded_file.changed && !folded_old.changed {
+        return Vec::new();
+    }
+    if folded_old.text.is_empty() {
+        return Vec::new();
+    }
+
+    memmem::Finder::new(folded_old.text.as_bytes())
+        .find_iter(folded_file.text.as_bytes())
+        .filter_map(|start| {
+            let end = start + folded_old.text.len();
+            let source_start = *folded_file.offsets.get(start)?;
+            let source_end = *folded_file.offsets.get(end)?;
+            if source_start >= source_end {
+                return None;
+            }
+            if !file.is_char_boundary(source_start) || !file.is_char_boundary(source_end) {
+                return None;
+            }
+            // The confirmation step. A match that straddled a folded character
+            // (the "..." an ellipsis expands into, say) maps back to a range
+            // that does not re-fold to what matched — drop it rather than edit
+            // the wrong bytes.
+            let slice = file.get(source_start..source_end)?;
+            let matched = folded_file.text.get(start..end)?;
+            if fold_typography(slice).text != matched {
+                return None;
+            }
+            Some((source_start, source_end))
+        })
+        .collect()
+}
+
+/// 1-based line number of the byte at `offset`.
+fn line_of_offset(text: &str, offset: usize) -> usize {
+    1 + memchr::memchr_iter(b'\n', &text.as_bytes()[..offset.min(text.len())]).count()
+}
+
+/// Compare the text at a known range against what the caller sent. Used for a
+/// repair that already landed, so the message can say what was corrected.
+fn describe_span(file: &str, sent: &str, range: (usize, usize)) -> Vec<LineDifference> {
+    let (start, end) = range;
+    let Some(found) = file.get(start..end) else {
+        return Vec::new();
+    };
+    let first_line = line_of_offset(file, start);
+    let found_lines: Vec<&str> = found.split('\n').collect();
+    let sent_lines: Vec<&str> = sent.split('\n').collect();
+    compare_lines(&found_lines, &sent_lines, first_line).0
+}
+
+/// Walk two blocks of lines in step and describe where they diverge.
+///
+/// Returns the differences and whether more existed than were listed.
+fn compare_lines(
+    found_lines: &[&str],
+    sent_lines: &[&str],
+    first_line: usize,
+) -> (Vec<LineDifference>, bool) {
+    let mut differences = Vec::new();
+    let mut more = false;
+
+    for (offset, sent_line) in sent_lines.iter().enumerate() {
+        if differences.len() >= MAX_DIFFERENCES {
+            more = true;
+            break;
+        }
+        let line_number = first_line + offset;
+        let Some(found_line) = found_lines.get(offset) else {
+            differences.push(LineDifference {
+                line: line_number,
+                column: 1,
+                sent: render_run(sent_line),
+                found: "nothing — the file's text ends before this line".to_string(),
+                sent_codes: None,
+                found_codes: None,
+                note: Some(
+                    "old_string runs past the end of the text it matches. Send fewer lines."
+                        .to_string(),
+                ),
+            });
+            more = offset + 1 < sent_lines.len();
+            break;
+        };
+        if found_line == sent_line {
+            continue;
+        }
+        differences.push(diff_one_line(found_line, sent_line, line_number));
+    }
+
+    (differences, more)
+}
+
+/// Narrow two differing lines to the run that actually differs.
+///
+/// Trimming the shared prefix and suffix is what makes the message readable:
+/// on a 200-character line where one quote is wrong, the caller sees the quote,
+/// not the line.
+fn diff_one_line(found_line: &str, sent_line: &str, line_number: usize) -> LineDifference {
+    let found: Vec<char> = found_line.chars().collect();
+    let sent: Vec<char> = sent_line.chars().collect();
+
+    let prefix = found
+        .iter()
+        .zip(sent.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let max_suffix = found.len().min(sent.len()) - prefix;
+    let suffix = found
+        .iter()
+        .rev()
+        .zip(sent.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(max_suffix);
+
+    let found_run: String = found[prefix..found.len() - suffix].iter().collect();
+    let sent_run: String = sent[prefix..sent.len() - suffix].iter().collect();
+
+    LineDifference {
+        line: line_number,
+        column: prefix + 1,
+        sent: render_run(&sent_run),
+        found: render_run(&found_run),
+        sent_codes: codepoints(&sent_run),
+        found_codes: codepoints(&found_run),
+        note: difference_note(&sent_run, &found_run),
+    }
+}
+
+/// Render a run for a human to read. Whitespace is counted rather than printed,
+/// because two spaces beside one space on a screen says nothing at all.
+fn render_run(run: &str) -> String {
+    if run.is_empty() {
+        return "nothing".to_string();
+    }
+    if run.chars().all(|c| c == ' ' || c == '\t') {
+        let spaces = run.chars().filter(|&c| c == ' ').count();
+        let tabs = run.chars().filter(|&c| c == '\t').count();
+        let mut parts = Vec::new();
+        if spaces > 0 {
+            parts.push(format!("{spaces} space{}", plural(spaces)));
+        }
+        if tabs > 0 {
+            parts.push(format!("{tabs} tab{}", plural(tabs)));
+        }
+        return parts.join(" and ");
+    }
+    let shown: String = run.chars().take(MAX_RUN_CHARS).collect();
+    if shown.chars().count() < run.chars().count() {
+        format!("{shown}...")
+    } else {
+        shown
+    }
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+/// Codepoints, but only for a run short enough that naming each one is the
+/// answer rather than noise.
+fn codepoints(run: &str) -> Option<Vec<String>> {
+    let count = run.chars().count();
+    if count == 0 || count > 8 {
+        return None;
+    }
+    Some(run.chars().map(|c| format!("U+{:04X}", c as u32)).collect())
+}
+
+/// Name the cause when the shape of a difference gives it away.
+fn difference_note(sent: &str, found: &str) -> Option<String> {
+    if sent == found {
+        return None;
+    }
+    if fold_typography(sent).text == fold_typography(found).text {
+        return Some(
+            "Same text, different characters. Copy the quotes, dashes and spaces exactly as the \
+             file writes them."
+                .to_string(),
+        );
+    }
+    if sent.contains('\\') && !found.contains('\\') && sent.replace('\\', "") == found {
+        return Some(
+            "One escape level too many. The file's text is not escaped — send it without the \
+             backslashes."
+                .to_string(),
+        );
+    }
+    if found.contains('\\') && !sent.contains('\\') && found.replace('\\', "") == sent {
+        return Some(
+            "The file's text IS escaped. Keep the backslashes exactly as the file has them."
+                .to_string(),
+        );
+    }
+    if !sent.is_empty() && !found.is_empty() && sent.trim().is_empty() && found.trim().is_empty() {
+        return Some("Whitespace only. Match the file's indentation exactly.".to_string());
+    }
+    if sent.is_empty() || found.is_empty() {
+        return Some("One side has text the other does not.".to_string());
+    }
+    None
+}
+
+/// How alike two lines are, on a 0..1 scale, measured by shared prefix and
+/// suffix. Cheap, and tuned for the case that matters: two lines that are
+/// nearly the same.
+fn line_similarity(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 1.0;
+    }
+    let ac: Vec<char> = a.chars().collect();
+    let bc: Vec<char> = b.chars().collect();
+    let longest = ac.len().max(bc.len());
+    if longest == 0 {
+        return 1.0;
+    }
+    let prefix = ac.iter().zip(bc.iter()).take_while(|(x, y)| x == y).count();
+    let max_suffix = ac.len().min(bc.len()) - prefix;
+    let suffix = ac
+        .iter()
+        .rev()
+        .zip(bc.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count()
+        .min(max_suffix);
+    (prefix + suffix) as f32 / longest as f32
+}
+
+/// Find the closest text in the file to an `old_string` that matched nowhere,
+/// and describe how it differs.
+///
+/// Returns `None` when nothing in the file is close enough for the comparison
+/// to mean anything — a message pointing at unrelated text would send the
+/// caller further from the answer, not closer.
+fn diagnose_no_match(
+    file: &str,
+    old: &str,
+    recovered: &[(usize, usize)],
+) -> Option<MatchDiagnosis> {
+    let typographic_matches = recovered.len();
+
+    // When folding found candidates, the location is not a guess — it is a
+    // measured byte range. Describe the first one instead of running a
+    // similarity search that could only do worse.
+    if let Some(&(start, end)) = recovered.first() {
+        let differences = describe_span(file, old, (start, end));
+        if !differences.is_empty() {
+            return Some(MatchDiagnosis {
+                start_line: line_of_offset(file, start),
+                end_line: line_of_offset(file, end),
+                more_differences: differences.len() >= MAX_DIFFERENCES,
+                differences,
+                typographic_matches,
+            });
+        }
+    }
+
+    let file_lines: Vec<&str> = file.split('\n').collect();
+    if file_lines.len() > MAX_DIAGNOSABLE_LINES {
+        return None;
+    }
+    let sent_lines: Vec<&str> = old.split('\n').collect();
+
+    // Anchor on the LONGEST line, not the first one with something in it.
+    //
+    // Verified against a real failure: an `old_string` opening with `/**`
+    // anchored on the first `/**` in the file and reported the differences
+    // between a doc comment and a banner 900 lines from anything relevant. A
+    // short line is not an anchor, it is a coincidence. The longest line
+    // carries the most text to be wrong about, so it is the one that either
+    // finds the right place or honestly finds nothing.
+    let anchor_offset = sent_lines
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, line)| line.trim().chars().count())
+        .map(|(index, _)| index)?;
+    let anchor_text = sent_lines[anchor_offset].trim_end();
+    if anchor_text.trim().chars().count() < MIN_ANCHOR_CHARS {
+        return None;
+    }
+    let anchor = fold_typography(anchor_text).text;
+
+    let mut best_index = 0usize;
+    let mut best_score = 0.0f32;
+    for (index, line) in file_lines.iter().enumerate() {
+        let candidate = fold_typography(line.trim_end()).text;
+        let score = line_similarity(&anchor, &candidate);
+        if score > best_score {
+            best_score = score;
+            best_index = index;
+            if score >= 1.0 {
+                break;
+            }
+        }
+    }
+
+    if best_score < MIN_ANCHOR_SIMILARITY {
+        return None;
+    }
+
+    // Line up the two blocks so the anchor sits on its match, then compare
+    // straight down.
+    let start_index = best_index.saturating_sub(anchor_offset);
+    let end_index = (start_index + sent_lines.len()).min(file_lines.len());
+    let window = &file_lines[start_index..end_index];
+    let (differences, more_differences) = compare_lines(window, &sent_lines, start_index + 1);
+
+    // Identical after alignment means the anchor landed somewhere the caller
+    // did not mean; there is nothing honest to report.
+    if differences.is_empty() {
+        return None;
+    }
+
+    Some(MatchDiagnosis {
+        start_line: start_index + 1,
+        end_line: end_index.max(start_index + 1),
+        differences,
+        more_differences,
+        typographic_matches,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,5 +1876,294 @@ mod tests {
     fn exclusion_check_passes_normal_source_files() {
         let result = evaluate_exclusion("src/components/Foo.tsx".to_string());
         assert!(!result.excluded);
+    }
+
+    // -----------------------------------------------------------------------
+    // Zero-match recovery and diagnosis
+    //
+    // Every case below is copied from a real failure in Aurora's own session
+    // logs, so a regression here is a regression against something that
+    // actually cost a round trip.
+    // -----------------------------------------------------------------------
+
+    fn plan_one(file: &str, old: &str, new: &str) -> PlanResult {
+        plan_multi_search_replace(
+            file,
+            &[SearchReplaceItem {
+                old_string: old.to_string(),
+                new_string: new.to_string(),
+                replace_all: false,
+            }],
+        )
+    }
+
+    /// Thread 652b75d3, 2026-08-25. `.knowledge/knowledge.md` holds
+    /// `\u{201C}Request a quote\u{201D}`; the model sent straight quotes and
+    /// everything else matched character for character. Two failed edits and a
+    /// shell fallback came out of two characters.
+    #[test]
+    fn straightened_quotes_still_edit_the_file() {
+        let file =
+            "- **Next work:** make \u{201C}Request a quote\u{201D} lead to a real flow.\n\n---\n";
+        let plan = plan_one(
+            file,
+            "- **Next work:** make \"Request a quote\" lead to a real flow.\n\n---",
+            "REPLACED",
+        );
+
+        let PlanResult::Ok {
+            new_content,
+            typography_repairs,
+            total_replacements,
+            ..
+        } = plan
+        else {
+            panic!("a straightened quote must not cost a round trip");
+        };
+        assert_eq!(total_replacements, 1);
+        assert_eq!(new_content, "REPLACED\n");
+        // The repair is reported, never silent: the caller's version of the
+        // text was wrong and its next edit to these lines would miss again.
+        assert_eq!(typography_repairs.len(), 1);
+        let differences = &typography_repairs[0].differences;
+        assert_eq!(differences.len(), 1, "one line differed");
+        assert!(differences[0].found.contains('\u{201C}'));
+        assert!(differences[0].sent.contains('"'));
+    }
+
+    #[test]
+    fn long_dashes_and_no_break_spaces_are_recovered_too() {
+        let file = "## Handoff \u{2014} 2026-08-09\nrate\u{00A0}limit\n";
+        let plan = plan_one(file, "## Handoff - 2026-08-09\nrate limit", "done");
+        assert!(
+            matches!(plan, PlanResult::Ok { .. }),
+            "em dash and no-break space are the same straightening mistake"
+        );
+    }
+
+    /// The other half of the rule: a repair is only applied where the file
+    /// leaves no choice about which text was meant.
+    #[test]
+    fn an_ambiguous_repair_is_refused_not_guessed() {
+        let file = "say \u{201C}hi\u{201D} here\nand say \u{201C}hi\u{201D} there\n";
+        let plan = plan_one(file, "say \"hi\"", "say BYE");
+
+        let PlanResult::NotFound { diagnosis, .. } = plan else {
+            panic!("two candidates must not be resolved by picking one");
+        };
+        let diagnosis = diagnosis.expect("the caller is told why");
+        assert_eq!(
+            diagnosis.typographic_matches, 2,
+            "and told that fixing the quotes alone is not enough"
+        );
+    }
+
+    /// Thread 652b75d3 again, `storefront.ts`. The file holds `"ultra"`; the
+    /// model sent `\"ultra\"`. Escapes are NOT auto-repaired — a backslash
+    /// carries meaning in code — but the failure now names the cause.
+    #[test]
+    fn an_over_escaped_quote_is_named_rather_than_repaired() {
+        let file = " * printed the raw id and shipped \"ultra\" to customers as a plan name.\n";
+        let plan = plan_one(
+            file,
+            " * printed the raw id and shipped \\\"ultra\\\" to customers as a plan name.",
+            "x",
+        );
+
+        let PlanResult::NotFound { diagnosis, .. } = plan else {
+            panic!("an escape difference is a real miss");
+        };
+        let diagnosis = diagnosis.expect("but a diagnosable one");
+        assert_eq!(diagnosis.differences.len(), 1);
+        let difference = &diagnosis.differences[0];
+        assert_eq!(difference.line, 1);
+        assert!(
+            difference
+                .note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("without the backslashes"),
+            "the note says what to do, got {:?}",
+            difference.note
+        );
+    }
+
+    /// Trailing whitespace is the difference a caller cannot see. Counting it
+    /// beats printing it.
+    #[test]
+    fn invisible_whitespace_is_described_in_words() {
+        let file = "const a = 1;   \nconst b = 2;\n";
+        let plan = plan_one(file, "const a = 1;\nconst b = 2;", "x");
+
+        let PlanResult::NotFound { diagnosis, .. } = plan else {
+            panic!("trailing spaces really do break the match");
+        };
+        let difference = &diagnosis.expect("diagnosed").differences[0];
+        assert_eq!(difference.found, "3 spaces");
+        assert_eq!(difference.sent, "nothing");
+        assert_eq!(difference.line, 1);
+        assert_eq!(difference.column, 13, "column points past `const a = 1;`");
+    }
+
+    #[test]
+    fn the_diagnosis_names_the_line_the_closest_text_sits_on() {
+        let file = "one\ntwo\nthree\nlet total = 1;\nfive\n";
+        let plan = plan_one(file, "let total = 2;", "x");
+
+        let diagnosis = match plan {
+            PlanResult::NotFound { diagnosis, .. } => diagnosis.expect("diagnosed"),
+            _ => panic!("no match expected"),
+        };
+        assert_eq!(
+            diagnosis.start_line, 4,
+            "1-based, and it is the file's line"
+        );
+        assert_eq!(diagnosis.differences[0].line, 4);
+        assert_eq!(diagnosis.differences[0].sent, "2");
+        assert_eq!(diagnosis.differences[0].found, "1");
+        assert_eq!(
+            diagnosis.differences[0].sent_codes.as_deref(),
+            Some(["U+0032".to_string()].as_slice()),
+            "one wrong character is named by codepoint"
+        );
+    }
+
+    /// Pointing at unrelated text would send the caller further from the
+    /// answer. Saying nothing is the honest option.
+    #[test]
+    fn text_that_resembles_nothing_gets_no_invented_diagnosis() {
+        let file = "alpha\nbeta\ngamma\n";
+        let plan = plan_one(file, "completely unrelated content here", "x");
+        match plan {
+            PlanResult::NotFound { diagnosis, .. } => {
+                assert!(diagnosis.is_none(), "got {diagnosis:?}");
+            }
+            _ => panic!("no match expected"),
+        }
+    }
+
+    /// The guard that keeps a repair honest: a folded range must re-fold to
+    /// what matched, or it is not the range that matched.
+    #[test]
+    fn a_recovered_range_maps_back_to_the_real_bytes() {
+        // The ellipsis folds to three characters, so a naive offset map would
+        // hand back a range that starts or ends inside it.
+        let file = "wait\u{2026}then go\n";
+        let plan = plan_one(file, "wait...then go", "done");
+        let PlanResult::Ok { new_content, .. } = plan else {
+            panic!("an ellipsis is a straightening mistake like any other");
+        };
+        assert_eq!(new_content, "done\n", "the whole ellipsis was consumed");
+    }
+
+    #[test]
+    fn folding_maps_every_byte_back_to_its_source() {
+        let source = "a\u{201C}b\u{2026}c";
+        let folded = fold_typography(source);
+        assert_eq!(folded.text, "a\"b...c");
+        assert!(folded.changed);
+        // One offset per byte of the folded text, plus the end sentinel.
+        assert_eq!(folded.offsets.len(), folded.text.len() + 1);
+        assert_eq!(*folded.offsets.last().unwrap(), source.len());
+        for (index, &offset) in folded.offsets.iter().enumerate() {
+            assert!(
+                source.is_char_boundary(offset),
+                "offset {offset} for folded byte {index} splits a character"
+            );
+        }
+    }
+
+    /// `replace_all` waives uniqueness by design, so recovery may return every
+    /// hit — there is no candidate being chosen on the caller's behalf.
+    #[test]
+    fn replace_all_recovers_every_occurrence() {
+        let file = "\u{201C}x\u{201D} and \u{201C}x\u{201D}\n";
+        let plan = plan_multi_search_replace(
+            file,
+            &[SearchReplaceItem {
+                old_string: "\"x\"".to_string(),
+                new_string: "Q".to_string(),
+                replace_all: true,
+            }],
+        );
+        let PlanResult::Ok {
+            new_content,
+            total_replacements,
+            ..
+        } = plan
+        else {
+            panic!("replace_all has no ambiguity to refuse");
+        };
+        assert_eq!(total_replacements, 2);
+        assert_eq!(new_content, "Q and Q\n");
+    }
+
+    /// An exact match must never take the recovery path, and must never
+    /// report a repair it did not make.
+    #[test]
+    fn an_exact_match_is_untouched_by_any_of_this() {
+        let file = "let total = 1;\n";
+        let plan = plan_one(file, "let total = 1;", "let total = 2;");
+        let PlanResult::Ok {
+            new_content,
+            typography_repairs,
+            ..
+        } = plan
+        else {
+            panic!("exact matches still match");
+        };
+        assert_eq!(new_content, "let total = 2;\n");
+        assert!(typography_repairs.is_empty());
+    }
+
+    /// Typography folding must not quietly rescue a genuinely wrong edit: the
+    /// characters either say the same thing or they do not.
+    #[test]
+    fn folding_does_not_make_different_text_match() {
+        let file = "let total = 1;\n";
+        let plan = plan_one(file, "let total = 2;", "x");
+        assert!(matches!(plan, PlanResult::NotFound { .. }));
+    }
+
+    /// Caught against the real `storefront.ts`. Anchoring on the first
+    /// non-blank line meant an `old_string` starting with `/**` anchored on the
+    /// file's first `/**` and reported the differences between a doc comment
+    /// and a banner hundreds of lines away. The longest line is the one worth
+    /// aligning on.
+    #[test]
+    fn the_anchor_is_the_longest_line_not_the_first_one() {
+        let file = "/**\n * banner at the top\n */\nfn a() {}\n\n/**\n * the tier-to-name map lives here now\n */\nfn b() {}\n";
+        let plan = plan_one(
+            file,
+            "/**\n * the tier-to-name map lives HERE now\n */",
+            "x",
+        );
+
+        let diagnosis = match plan {
+            PlanResult::NotFound { diagnosis, .. } => diagnosis.expect("diagnosed"),
+            _ => panic!("no match expected"),
+        };
+        assert_eq!(
+            diagnosis.start_line, 6,
+            "aligned on the second comment, not the first `/**`"
+        );
+        assert_eq!(diagnosis.differences[0].line, 7);
+        assert_eq!(diagnosis.differences[0].sent, "HERE");
+        assert_eq!(diagnosis.differences[0].found, "here");
+    }
+
+    /// `}` on its own says nothing about where a block belongs. Reporting a
+    /// match for it would be reporting a coincidence.
+    #[test]
+    fn a_short_anchor_produces_no_diagnosis_at_all() {
+        let file = "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n";
+        let plan = plan_one(file, "}\n", "x");
+        match plan {
+            PlanResult::NotFound { diagnosis, .. } => assert!(diagnosis.is_none()),
+            // A bare "}" is present twice, so uniqueness catches it first —
+            // either way nothing is guessed.
+            PlanResult::NotUnique { .. } => {}
+            _ => panic!("must not silently pick one of the braces"),
+        }
     }
 }

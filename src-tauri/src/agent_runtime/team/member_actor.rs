@@ -1053,7 +1053,11 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
         allow_outside_workspace: false,
         // Members run their own provider — price their stored reasoning by
         // what THAT provider replays, not the lead's.
-        reasoning_replay: crate::api::reasoning_replay_for(run.provider.effective_provider_type()),
+        reasoning_replay: crate::api::reasoning_replay_for(
+            run.provider.effective_provider_type(),
+            &run.provider.model,
+            &run.provider.base_url,
+        ),
     };
     let runtime = ConversationRuntime::new(client, registry, config);
 

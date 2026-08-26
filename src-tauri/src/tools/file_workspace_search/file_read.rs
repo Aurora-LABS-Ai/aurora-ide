@@ -280,23 +280,67 @@ impl ToolExecutor for FileReadTool {
 
         let path = targets[0].as_str();
 
-        let resolved = match resolve_path_for_read_with_spill(
+        let resolution = resolve_path_for_read_with_spill(
             path,
             ctx.workspace_root.as_deref(),
             ctx.allow_outside_workspace,
             ctx.spill_dir.as_deref(),
-        ) {
-            Ok(resolved) => resolved,
-            Err(ToolError::Execution(err)) => {
-                return Ok(serde_json::to_string(&json!({
-                    "success": false,
-                    "path": path,
-                    "error": format!("Invalid file path: {err}"),
-                }))
-                .unwrap());
-            }
+        );
+        // A hard rejection (outside the workspace with the opt-in off) is a
+        // policy answer, not a typo, and recovery must not smuggle a file past
+        // it. Only a resolvable-but-unreadable path is worth repairing.
+        let resolved = match resolution {
+            Ok(resolved) => Some(resolved),
+            Err(ToolError::Execution(_)) => None,
             Err(err) => return Err(err),
         };
+
+        // A path that opens goes straight through — the repair path costs a
+        // `stat` at most, and on a hit it saves the model a whole round trip
+        // spent working out what it meant.
+        let mut path = path.to_string();
+        let mut correction: Option<String> = None;
+        let resolved = if resolved.as_deref().is_some_and(Path::is_file) {
+            resolved.unwrap_or_default()
+        } else {
+            match super::path_recovery::recover(&path, resolved.as_deref(), &ctx).await {
+                super::path_recovery::Recovery::Corrected {
+                    full,
+                    display,
+                    note,
+                } => {
+                    path = display;
+                    correction = Some(note);
+                    full
+                }
+                super::path_recovery::Recovery::Ambiguous { note, candidates } => {
+                    return Ok(serde_json::to_string(&json!({
+                        "success": false,
+                        "exists": false,
+                        "path": path,
+                        "error": note,
+                        "candidates": candidates,
+                    }))
+                    .unwrap());
+                }
+                // Nothing to offer. Report exactly what we would have before:
+                // the read error for a path that resolved, the resolution
+                // error for one that did not.
+                super::path_recovery::Recovery::None => match resolved {
+                    Some(resolved) => resolved,
+                    None => {
+                        return Ok(serde_json::to_string(&json!({
+                            "success": false,
+                            "path": path,
+                            "error": "Invalid file path: it does not resolve inside this \
+                                      workspace, and no file of that name was found in it.",
+                        }))
+                        .unwrap());
+                    }
+                },
+            }
+        };
+        let path = path.as_str();
         let start_line = input
             .get("start_line")
             .and_then(Value::as_u64)
@@ -321,6 +365,7 @@ impl ToolExecutor for FileReadTool {
         let path_owned = resolved.to_string_lossy().to_string();
         let resolved_for_record = path_owned.clone();
         let raw_path = path.to_string();
+        let thread_for_extent = ctx.thread_id.clone();
 
         let body = tokio::task::spawn_blocking(move || {
             read_with_policy(
@@ -330,6 +375,7 @@ impl ToolExecutor for FileReadTool {
                 end_line,
                 max_lines,
                 force_full_content,
+                &thread_for_extent,
             )
         })
         .await
@@ -340,8 +386,29 @@ impl ToolExecutor for FileReadTool {
         // is harmless: file_edit independently fails on a missing file.
         super::read_tracker::record(&ctx.thread_id, &resolved_for_record);
 
-        Ok(body)
+        Ok(match correction {
+            Some(note) => annotate(body, note),
+            None => body,
+        })
     }
+}
+
+/// Fold a path-repair note into a result the reader already produced.
+///
+/// `pathCorrected` is the flag a UI can key on; `note` is the sentence the
+/// model reads. Both ride alongside the content rather than replacing it —
+/// the file WAS read, and burying that under a warning would trade one
+/// wasted round trip for another.
+///
+/// A body that will not parse is returned untouched. Losing the note is a
+/// smaller failure than losing the file.
+fn annotate(body: String, note: String) -> String {
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(&body) else {
+        return body;
+    };
+    map.insert("pathCorrected".into(), Value::Bool(true));
+    map.insert("note".into(), Value::String(note));
+    serde_json::to_string(&Value::Object(map)).unwrap_or(body)
 }
 
 fn read_with_policy(
@@ -351,6 +418,10 @@ fn read_with_policy(
     end_line: Option<usize>,
     max_lines: Option<usize>,
     force_full_content: bool,
+    // Recorded here rather than at the call site because this is the only place
+    // that knows whether the caller ended up holding the file or a window onto
+    // it. `file_edit` reads it back when a match fails.
+    thread_id: &str,
 ) -> Result<String, ToolError> {
     let content = match std::fs::read_to_string(Path::new(full_path)) {
         Ok(c) => c,
@@ -388,6 +459,7 @@ fn read_with_policy(
             "truncated": false,
             "forcedFullContent": true,
         });
+        super::read_tracker::record_whole(thread_id, full_path);
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -406,6 +478,7 @@ fn read_with_policy(
             "size": content.len(),
             "largeFile": false,
         });
+        super::read_tracker::record_whole(thread_id, full_path);
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -432,6 +505,9 @@ fn read_with_policy(
                 "endLine": std::cmp::min(MAX_SINGLE_READ_LINES, total_lines),
             }
         });
+        // Refused, so no line of it was seen. Recorded as an empty window: an
+        // edit after this one is matching against text the caller never got.
+        super::read_tracker::record_window(thread_id, full_path, 0, 0, total_lines);
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -501,6 +577,17 @@ fn read_with_policy(
         "omittedLinesAfter": omit_after,
         "warning": warning,
     });
+    if range_start <= 1 && range_end >= total_lines {
+        super::read_tracker::record_whole(thread_id, full_path);
+    } else {
+        super::read_tracker::record_window(
+            thread_id,
+            full_path,
+            range_start,
+            range_end,
+            total_lines,
+        );
+    }
     Ok(serde_json::to_string(&payload).unwrap())
 }
 
@@ -1257,6 +1344,133 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Failed to read file"));
+    }
+
+    // ── Path repair ─────────────────────────────────────────────
+    //
+    // A failed read costs a full round trip. These cover the two failures
+    // Aurora can already see the answer to, and the one it must refuse to
+    // guess at.
+
+    /// Read `path` in a workspace holding `files`, as the tool really runs it.
+    async fn read_in_workspace(
+        files: &[(&str, &str)],
+        path: &str,
+    ) -> (tempfile::TempDir, serde_json::Value) {
+        let tmp = tempfile::tempdir().unwrap();
+        for (rel, body) in files {
+            let full = tmp.path().join(rel);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, body).unwrap();
+        }
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let raw = tool
+            .execute(
+                serde_json::json!({ "path": path }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("a bad path must not fail the whole tool call");
+        let parsed = serde_json::from_str(&raw).unwrap();
+        (tmp, parsed)
+    }
+
+    /// Observed live on Kimi K3: the model wrote the path as a string literal
+    /// and let the closing quote into it. Windows rejects the whole filename
+    /// (`os error 123`) and the read failed on a file sitting right there.
+    #[tokio::test]
+    async fn a_stray_quote_in_the_path_is_removed_and_the_file_is_read() {
+        let (_tmp, parsed) =
+            read_in_workspace(&[("app/Shop.tsx", "export default Shop")], "app/Shop.tsx\"").await;
+
+        assert_eq!(parsed["success"], true, "got {parsed}");
+        assert_eq!(parsed["pathCorrected"], true);
+        assert_eq!(
+            parsed["path"], "app/Shop.tsx",
+            "the card must name the file \
+                   that was actually read, not the broken path"
+        );
+        assert!(parsed["content"]
+            .as_str()
+            .unwrap()
+            .contains("export default Shop"));
+        let note = parsed["note"].as_str().unwrap();
+        assert!(
+            note.contains("quote"),
+            "the note must say what changed: {note}"
+        );
+    }
+
+    /// Right name, wrong folder. One file carries the name, so reading it is
+    /// unambiguous and saves the round trip.
+    #[tokio::test]
+    async fn a_uniquely_named_file_is_found_in_the_folder_it_actually_lives_in() {
+        let (_tmp, parsed) = read_in_workspace(
+            &[("app/shop/Shop.tsx", "the real one")],
+            "components/Shop.tsx",
+        )
+        .await;
+
+        // ripgrep is a bundled sidecar; without it there is nothing to search
+        // with and the tool correctly reports the miss instead.
+        if parsed["success"] == false {
+            return;
+        }
+        assert_eq!(parsed["pathCorrected"], true);
+        assert_eq!(parsed["path"], "app/shop/Shop.tsx");
+        assert!(parsed["content"].as_str().unwrap().contains("the real one"));
+    }
+
+    /// Two files, one name. Reading either would be a coin flip, and a wrong
+    /// file delivered with a confident note is worse than the original error —
+    /// the model would build on it and never know. It gets the list instead.
+    #[tokio::test]
+    async fn a_name_shared_by_several_files_reads_nothing_and_lists_them() {
+        let (_tmp, parsed) = read_in_workspace(
+            &[
+                ("app/shop/Shop.tsx", "one"),
+                ("app/admin/Shop.tsx", "two"),
+                ("app/page.tsx", "unrelated"),
+            ],
+            "Shop.tsx",
+        )
+        .await;
+
+        assert_eq!(parsed["success"], false, "nothing may be read: {parsed}");
+        assert!(parsed["content"].is_null(), "no content may be returned");
+        let candidates: Vec<&str> = match parsed["candidates"].as_array() {
+            Some(list) => list.iter().filter_map(|c| c.as_str()).collect(),
+            // No ripgrep available — the miss is reported the old way.
+            None => return,
+        };
+        assert_eq!(candidates.len(), 2, "got {candidates:?}");
+        assert!(candidates.contains(&"app/shop/Shop.tsx"));
+        assert!(candidates.contains(&"app/admin/Shop.tsx"));
+
+        // The paths belong in `candidates` and nowhere else. Spelling them out
+        // in the message as well sent one list twice in a single tool result —
+        // observed live on a Next.js app where 80 files are named `page.tsx`,
+        // which is the last place a failed read should be spending context.
+        let error = parsed["error"].as_str().unwrap();
+        for path in &candidates {
+            assert!(
+                !error.contains(path),
+                "`{path}` is in `candidates` already; the message must not repeat it: {error}"
+            );
+        }
+    }
+
+    /// A name that matches nothing must read exactly as it always did. The
+    /// repair path is additive; it cannot turn a plain miss into a new shape
+    /// the model has to learn.
+    #[tokio::test]
+    async fn a_path_matching_nothing_still_reports_the_plain_miss() {
+        let (_tmp, parsed) = read_in_workspace(&[("a.txt", "x")], "nowhere/absent.txt").await;
+
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["exists"], false);
+        assert!(parsed["pathCorrected"].is_null());
+        assert!(parsed["candidates"].is_null());
     }
 
     #[tokio::test]

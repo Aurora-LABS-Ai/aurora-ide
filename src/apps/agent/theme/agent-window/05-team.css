@@ -233,6 +233,19 @@
   color: var(--agw-text);
   border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border-strong));
 }
+/* Agent Team switched off: the trace stays as a record of what happened, but
+ * there is no panel left to open, so it must not read as interactive — and
+ * nothing is waiting on an answer, so the "ask" dot stops pulsing. */
+.agw-team-trace[data-static="true"] {
+  cursor: default;
+}
+.agw-team-trace[data-static="true"]:hover {
+  color: var(--agw-text-muted);
+  border-color: var(--agw-border-strong);
+}
+.agw-team-trace[data-static="true"] .agw-team-trace-dot {
+  animation: none;
+}
 .agw-team-trace-dot {
   width: 6px;
   height: 6px;

@@ -31,7 +31,10 @@ import {
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
-import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
+import {
+  normalizeThreadModelSelection,
+  pinnedThreadModel,
+} from "@/apps/agent/lib/thread/thread-model";
 import {
   bumpUsage,
   rankByUsage,
@@ -45,7 +48,10 @@ import {
   type FastPreferences,
 } from "@/apps/agent/lib/model/cursor-fast";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
-import { cursorHasFast } from "@/apps/agent/services/providers/cursor-variants";
+import {
+  cursorFastAvailable,
+  resolveCursorFast,
+} from "@/apps/agent/services/providers/cursor-run";
 
 interface RichOption {
   providerId: string;
@@ -324,7 +330,11 @@ const RowBudget: React.FC<{
 
 // ── Per-row reasoning control (merged from the old ReasoningPicker) ───────────
 
-const RowReasoning: React.FC<{ opt: RichOption }> = ({ opt }) => {
+const RowReasoning: React.FC<{
+  opt: RichOption;
+  fastOn: boolean;
+  onFastUnavailable: () => void;
+}> = ({ opt, fastOn, onFastUnavailable }) => {
   const updateModel = useSettingsStore((s) => s.updateModel);
   const r = opt.reasoning;
   if (!r || !opt.id) return null;
@@ -333,16 +343,25 @@ const RowReasoning: React.FC<{ opt: RichOption }> = ({ opt }) => {
   const levels = r.levels ?? [];
   const hasEffort = r.type === "effort" && levels.length > 0;
   // Natively-reasoning models (`toggleable: false`) have no on/off — effort only.
-  const showSwitch = r.type === "toggle" || r.toggleable !== false;
+  const showSwitch = r.toggleable !== false;
   const current = String(r.default ?? levels[levels.length - 1] ?? "");
 
-  const setOn = (next: boolean) =>
-    updateModel(opt.id!, { reasoning: { ...r, enabled: next } });
+  const commit = (next: NonNullable<LLMModel["reasoning"]>) => {
+    if (
+      opt.providerId === CURSOR_PROVIDER_ID &&
+      fastOn &&
+      !cursorFastAvailable({ modelKey: opt.model, reasoning: next })
+    ) {
+      onFastUnavailable();
+    }
+    updateModel(opt.id!, { reasoning: next });
+  };
+  const setOn = (next: boolean) => commit({ ...r, enabled: next });
   const cycleEffort = () => {
     if (!levels.length) return;
     const i = levels.indexOf(current);
     const next = levels[(i + 1) % levels.length];
-    updateModel(opt.id!, { reasoning: { ...r, enabled: true, default: next } });
+    commit({ ...r, enabled: true, default: next });
   };
 
   return (
@@ -396,9 +415,9 @@ const RowReasoning: React.FC<{ opt: RichOption }> = ({ opt }) => {
  * that doesn't — the chip is a sibling of the effort tier and reads as the
  * same kind of choice, because it is: both change which model id gets sent.
  *
- * Rendered only where the account actually has a `-fast` twin. A greyed-out
- * chip on the models that don't would be a control that can never do
- * anything, which is worse than an absent one.
+ * Rendered only where the exact thinking and effort choice has a Fast twin.
+ * If a previously valid preference becomes unavailable, the chip remains long
+ * enough to explain the conflict and let the user turn it off.
  */
 const RowFast: React.FC<{
   opt: RichOption;
@@ -406,26 +425,34 @@ const RowFast: React.FC<{
   onToggle: (next: boolean) => void;
 }> = ({ opt, on, onToggle }) => {
   if (opt.providerId !== CURSOR_PROVIDER_ID) return null;
-  if (!cursorHasFast(opt.model)) return null;
+  const resolution = resolveCursorFast({
+    modelKey: opt.model,
+    reasoning: opt.reasoning,
+  });
+  const available = resolution.ok;
+  if (!available && !on) return null;
 
   return (
     <button
       type="button"
       className="agw-model-effort"
-      data-on={on || undefined}
-      aria-pressed={on}
+      data-on={on && available ? true : undefined}
+      data-unavailable={!available || undefined}
+      aria-pressed={on && available}
       aria-label={`Fast mode for ${opt.label}`}
       title={
-        on
+        !available
+          ? "Fast is not available with the selected reasoning setting. Click to turn it off."
+          : on
           ? "Fast is on — answers sooner, on your Cursor plan's faster lane"
           : "Fast — answers sooner, on your Cursor plan's faster lane"
       }
       onClick={(e) => {
         e.stopPropagation();
-        onToggle(!on);
+        onToggle(available ? !on : false);
       }}
     >
-      Fast
+      {available ? "Fast" : "Fast unavailable"}
     </button>
   );
 };
@@ -454,12 +481,25 @@ export const ModelSelector: React.FC<{
   // it directly is what made every chat display whichever model was picked last
   // anywhere. See `lib/thread-model`.
   const defaultModel = useSettingsStore((s) => s.selectedModel);
-  const pinned = useAgentChatStore((s) => pinnedThreadModel(s, forThread));
-  const selectedModel = pinned ?? defaultModel;
-
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
   const providers = useSettingsStore((s) => s.providers);
   const models = useSettingsStore((s) => s.models);
+  const pinned = useAgentChatStore((s) => pinnedThreadModel(s, forThread));
+  const selectedModel = useMemo(
+    () => normalizeThreadModelSelection(pinned ?? defaultModel, models),
+    [pinned, defaultModel, models],
+  );
+
+  // Threads created before Cursor's stable model rows can still carry a wire
+  // variant such as `cursor-grok-4.6-high-fast`. Display the stable row now and
+  // repair the sidecar once, so every later lookup uses the same identity.
+  useEffect(() => {
+    if (forThread && pinned && selectedModel !== pinned) {
+      void setThreadModel(forThread, selectedModel);
+    } else if (!pinned && selectedModel !== defaultModel) {
+      setSelectedModel(selectedModel);
+    }
+  }, [forThread, pinned, selectedModel, defaultModel, setThreadModel, setSelectedModel]);
 
   // Agent/Plan execution mode now lives inside this picker (no separate chip).
   // Same `agentExecutionMode` the settings page writes, so they never disagree.
@@ -662,9 +702,13 @@ export const ModelSelector: React.FC<{
   const currentFast = useMemo(
     () =>
       current?.providerId === CURSOR_PROVIDER_ID &&
-      fast[selectedModel] === true &&
-      cursorHasFast(current.model),
-    [current, fast, selectedModel],
+      !!current.id &&
+      fast[current.id] === true &&
+      cursorFastAvailable({
+        modelKey: current.model,
+        reasoning: current.reasoning,
+      }),
+    [current, fast],
   );
 
   /**
@@ -829,12 +873,26 @@ export const ModelSelector: React.FC<{
               className="agw-model-cap"
             />
           )}
+          {/* Keyed by the model ROW's id, exactly like the reasoning controls
+              above — not by the selection string. A selection is composed at
+              runtime and its spelling has changed more than once; a row id is a
+              database identity and cannot drift. Every "Fast is on but the
+              turn ran slow" bug came from writing under one spelling and
+              reading under another. */}
           <RowFast
             opt={opt}
-            on={fast[id] === true}
-            onToggle={(next) => setFast(setFastOn(id, next))}
+            on={!!opt.id && fast[opt.id] === true}
+            onToggle={(next) => {
+              if (opt.id) setFast(setFastOn(opt.id, next));
+            }}
           />
-          <RowReasoning opt={opt} />
+          <RowReasoning
+            opt={opt}
+            fastOn={!!opt.id && fast[opt.id] === true}
+            onFastUnavailable={() => {
+              if (opt.id) setFast(setFastOn(opt.id, false));
+            }}
+          />
           {active && (
             <AgentIcon name="check" size={15} style={{ color: "var(--agw-accent)" }} />
           )}

@@ -26,6 +26,9 @@ export interface ProviderTestReport {
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  reasoningRequested: boolean;
+  reasoningReceived: boolean;
+  warning: string | null;
   error: string | null;
 }
 
@@ -45,12 +48,10 @@ export async function testProviderModel(
     throw new Error("This model is not attached to a configured provider.");
   }
 
-  const { providerConfig, thinkingEnabled, thinkingBudgetTokens } = resolved;
+  const { providerConfig } = resolved;
 
   return auroraInvoke<ProviderTestReport>("provider_test_model", {
     config: AgentRuntimeClient.buildProviderConfigSnapshot(providerConfig),
     model: providerConfig.model,
-    thinkingEnabled,
-    thinkingBudgetTokens,
   });
 }

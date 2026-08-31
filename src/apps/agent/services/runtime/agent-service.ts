@@ -445,6 +445,7 @@ export class AgentService {
         ideContext: composedIdeContext,
         tools: availableTools as RuntimeToolDefinitionLike[],
         workspacePath,
+        modelSelection: this.config.modelSelection ?? null,
         attachedSelectedElements: promptContext?.attachedSelectedElements ?? null,
         attachedPromptChips: promptContext?.attachedPromptChips ?? null,
       });
@@ -523,9 +524,9 @@ export class AgentService {
    * engine's view (the IDE seeds it), but that engine is never seeded for
    * agent-window threads — `context_get_state` throws there — so we fall
    * back to deriving the numbers from the provider-reported usage and the
-   * model's context window. Mirrors `ContextRing`'s own derivation
-   * (`used = prompt + cacheRead`, `pct = used / window`) so the persisted
-   * snapshot matches the live ring.
+   * model's context window. Mirrors `ContextRing`'s own derivation so the
+   * persisted snapshot matches the live ring. Cursor's adapter folds its
+   * checkpoint total into these fields, preserving that measured value.
    */
   private async computeContextUsage(
     usage: TokenUsage,
@@ -542,7 +543,11 @@ export class AgentService {
     } catch {
       // Legacy engine not seeded (agent window) — derive from usage below.
     }
-    const usedTokens = usage.promptTokens + (usage.cacheReadTokens ?? 0);
+    const usedTokens =
+      usage.promptTokens +
+      usage.completionTokens +
+      (usage.cacheReadTokens ?? 0) +
+      (usage.cacheWriteTokens ?? 0);
     const contextWindow = this.config.providerConfig?.contextWindow || 128_000;
     const percentage =
       contextWindow > 0

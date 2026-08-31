@@ -17,11 +17,18 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 
 export const AgentQueuedDock: React.FC<{
   /** The conversation whose queue this shows. Omit for the open chat. */
   threadId?: string | null;
-}> = ({ threadId }) => {
+  /**
+   * Draft key of the composer this dock sits above — where the pencil
+   * returns the text. Defaults to the thread id (the main pane's key); the
+   * docked ChatPanel keeps its own `dock:`-prefixed draft and passes it.
+   */
+  draftKey?: string;
+}> = ({ threadId, draftKey }) => {
   const openThreadId = useAgentChatStore((s) => s.currentThreadId);
   const currentThreadId = threadId === undefined ? openThreadId : threadId;
   const queued = useAgentChatStore((s) =>
@@ -63,6 +70,26 @@ export const AgentQueuedDock: React.FC<{
               )}
               {queued.text}
             </span>
+            <button
+              type="button"
+              className="agw-tasks-x"
+              title="Edit — back to the composer"
+              aria-label="Edit queued message in the composer"
+              onClick={() => {
+                if (!currentThreadId) return;
+                const text = queued.text;
+                void cancel(currentThreadId);
+                // Restore the text into the composer this dock sits above —
+                // the composer is draft-driven, so it appears immediately. A
+                // half-typed draft is kept, the queued text joins below it.
+                const key = draftKey ?? currentThreadId;
+                const drafts = useAgentDraftStore.getState();
+                const existing = drafts.getDraft(key);
+                drafts.setDraft(key, existing ? `${existing}\n${text}` : text);
+              }}
+            >
+              <AgentIcon name="pencil" size={13} />
+            </button>
             <button
               type="button"
               className="agw-tasks-x"

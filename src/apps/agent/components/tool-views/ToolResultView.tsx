@@ -7,15 +7,13 @@
  * `ToolItem`, kept isolated (own `--agw-*` chrome, own icons).
  */
 
-import React, { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import React from "react";
 
-import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { FileIcon } from "@/kernel/ui/FileIcons";
-import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
 import { DiffView } from "@/apps/agent/components/tool-views/DiffView";
 import { GlobResultsView } from "@/apps/agent/components/tool-views/GlobResultsView";
 import { GrepResultsView } from "@/apps/agent/components/tool-views/GrepResultsView";
+import { ImageResult } from "@/apps/agent/components/tool-views/ImageResult";
 import { MultiFileResultsView } from "@/apps/agent/components/tool-views/MultiFileResultsView";
 import { ShellOutputView } from "@/apps/agent/components/tool-views/ShellOutputView";
 import { FileListView } from "@/apps/agent/components/tool-views/FileListView";
@@ -24,60 +22,13 @@ import { WorkspaceTreeView } from "@/apps/agent/components/tool-views/WorkspaceT
 import { baseName, type ParsedToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { ToolCode } from "@/apps/agent/components/tool-views/ToolCode";
 
-/**
- * Screenshot result body. Renders the captured PNG from its on-disk path (via
- * the asset protocol) as a thumbnail; clicking it opens the shared full-size
- * image modal — the same viewer a chat-bubble image uses. Only mounts inside the
- * expanded card, so the image loads on demand, not while the card is collapsed.
- */
-const ScreenshotResult: React.FC<{
-  shot: NonNullable<ParsedToolResult["screenshot"]>;
-}> = ({ shot }) => {
-  const [open, setOpen] = useState(false);
-  // Prefer the on-disk file (small, asset-protocol). If it 404s — pruned after
-  // an hour, or a reloaded thread whose file is gone — fall back to the base64
-  // embedded in the result so the image still renders. Never a dumped blob.
-  const [fileBroken, setFileBroken] = useState(false);
-  const fileSrc =
-    shot.path && !fileBroken ? (isTauri() ? convertFileSrc(shot.path) : shot.path) : null;
-  const dataSrc = shot.base64 ? `data:image/png;base64,${shot.base64}` : null;
-  const src = fileSrc ?? dataSrc;
-  if (!src) {
-    // Neither a path nor base64 — the header summary already notes the capture.
-    return null;
-  }
-  const ratio = shot.width && shot.height ? `${shot.width} / ${shot.height}` : undefined;
-  return (
-    <div className="agw-tool-shot">
-      <button
-        type="button"
-        className="agw-tool-shot-btn"
-        title="Open screenshot"
-        onClick={() => setOpen(true)}
-      >
-        <img
-          src={src}
-          alt={shot.url ? `Screenshot of ${shot.url}` : "Screenshot"}
-          className="agw-tool-shot-img"
-          style={ratio ? { aspectRatio: ratio } : undefined}
-          loading="lazy"
-          draggable={false}
-          onError={() => {
-            // On-disk file failed to load — drop to the base64 fallback (if any).
-            if (fileSrc && dataSrc) setFileBroken(true);
-          }}
-        />
-      </button>
-      <AgentImageModal open={open} mode="preview" src={open ? src : null} onClose={() => setOpen(false)} />
-    </div>
-  );
-};
-
 export const ToolResultView: React.FC<{
   parsed: ParsedToolResult;
   activeMultiFileIndex?: number;
 }> = ({ parsed, activeMultiFileIndex = 0 }) => {
-  if (parsed.screenshot) return <ScreenshotResult shot={parsed.screenshot} />;
+  // A result that is one picture. Several pictures ride on `multiFile` below,
+  // where they share the file chips with the text files read beside them.
+  if (parsed.image) return <ImageResult image={parsed.image} />;
   // Not gated on a non-empty hit list: "nothing came back" is a real answer to
   // a search, and its own panel says so. The fallback would dump raw JSON.
   if (parsed.web) return <WebResultsView data={parsed.web} />;
@@ -108,7 +59,7 @@ export const ToolResultView: React.FC<{
           </span>
         </div>
         <div className="agw-multi-read">
-          <DiffView oldText={diff.oldText} newText={diff.newText} maxHeight={300} />
+          <DiffView oldText={diff.oldText} newText={diff.newText} maxHeight={300} path={path} />
         </div>
         {diff.truncated && (
           <div className="agw-rv-trunc-note" role="note">
@@ -124,7 +75,12 @@ export const ToolResultView: React.FC<{
   if (parsed.diff) {
     return (
       <>
-        <DiffView oldText={parsed.diff.oldText} newText={parsed.diff.newText} maxHeight={300} />
+        <DiffView
+          oldText={parsed.diff.oldText}
+          newText={parsed.diff.newText}
+          maxHeight={300}
+          path={parsed.diff.fullPath ?? parsed.diff.path ?? null}
+        />
         {parsed.diff.truncated && (
           <div className="agw-rv-trunc-note" role="note">
             Showing the beginning — the full change was too large to keep in

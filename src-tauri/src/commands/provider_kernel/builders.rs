@@ -186,6 +186,11 @@ fn build_openai_request_body(request: &AuroraProviderRequest, preset: &ProviderP
 
     if let Some(custom_params) = &provider.custom_params {
         for (key, value) in custom_params {
+            // Aurora directive for the agent runtime's replay policy — never
+            // a wire parameter (strict backends 400 on unknown fields).
+            if key == "reasoning_replay" {
+                continue;
+            }
             body.insert(key.clone(), value.clone());
         }
     }
@@ -311,6 +316,10 @@ fn build_anthropic_request_body(request: &AuroraProviderRequest) -> Result<Value
 
     if let Some(custom_params) = &provider.custom_params {
         for (key, value) in custom_params {
+            // Same strip as the OpenAI-shaped builder above.
+            if key == "reasoning_replay" {
+                continue;
+            }
             body.insert(key.clone(), value.clone());
         }
     }

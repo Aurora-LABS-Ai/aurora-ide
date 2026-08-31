@@ -62,7 +62,22 @@ export type TimelineEvent =
    */
   | { kind: "tool"; id: string; call: ToolCall; at?: number }
   | { kind: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
-  | { kind: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
+  /**
+   * `startedAt`/`durationMs` exist because compaction is the one thing in the
+   * transcript that can run for minutes with nothing to show. Measured
+   * 2026-08-27: a 257k-token summary took 3m 22s behind an identical shimmer,
+   * and the only way to tell it apart from a hang was to read the session file.
+   * Live-only — neither is persisted, so a reopened chat shows the drop alone.
+   */
+  | {
+      kind: "compaction";
+      id: string;
+      beforeTokens: number;
+      afterTokens: number;
+      running: boolean;
+      startedAt?: number;
+      durationMs?: number;
+    }
   | { kind: "notice"; id: string; text: string }
   /**
    * The connection died mid-reply and the runtime is re-requesting it.
@@ -80,7 +95,15 @@ export type TimelineRow =
   | { type: "content"; id: string; text: string }
   | { type: "tools"; id: string; tools: ToolCall[] }
   | { type: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
-  | { type: "compaction"; id: string; beforeTokens: number; afterTokens: number; running: boolean }
+  | {
+      type: "compaction";
+      id: string;
+      beforeTokens: number;
+      afterTokens: number;
+      running: boolean;
+      startedAt?: number;
+      durationMs?: number;
+    }
   | { type: "notice"; id: string; text: string }
   | { type: "reconnect"; id: string; attempt: number; maxAttempts: number }
   /** A `chapter` call — the agent naming the part of the work it is starting.
@@ -108,7 +131,13 @@ export interface AgwTurn {
    * the live shimmer; `beforeTokens`/`afterTokens` label the drop once done.
    * The summary itself is never carried to the UI.
    */
-  compaction?: { beforeTokens: number; afterTokens: number; running: boolean };
+  compaction?: {
+    beforeTokens: number;
+    afterTokens: number;
+    running: boolean;
+    startedAt?: number;
+    durationMs?: number;
+  };
   /**
    * Assistant only — when the work started, i.e. the timestamp of the user
    * message that prompted this turn. Paired with {@link AgwTurn.endedAt} it
@@ -260,7 +289,20 @@ export function appendNotice(tl: TimelineEvent[], text: string): TimelineEvent[]
  *  where compaction fired mid-turn). Returns the event id so the caller can
  *  flip `running`/counts on completion. */
 export function appendCompaction(tl: TimelineEvent[], id: string): TimelineEvent[] {
-  return [...tl, { kind: "compaction", id, beforeTokens: 0, afterTokens: 0, running: true }];
+  return [
+    ...tl,
+    {
+      kind: "compaction",
+      id,
+      beforeTokens: 0,
+      afterTokens: 0,
+      running: true,
+      // Stamped here rather than in the card, so the clock survives the card
+      // unmounting and remounting — which is exactly what happens when someone
+      // leaves for Settings to check whether the thing has hung.
+      startedAt: Date.now(),
+    },
+  ];
 }
 
 /** Mark a compaction event done with its before→after counts. */
@@ -272,7 +314,17 @@ export function updateCompaction(
 ): TimelineEvent[] {
   return tl.map((e) =>
     e.kind === "compaction" && e.id === id
-      ? { kind: "compaction", id, beforeTokens, afterTokens, running: false }
+      ? {
+          kind: "compaction",
+          id,
+          beforeTokens,
+          afterTokens,
+          running: false,
+          startedAt: e.startedAt,
+          // Kept after the fact: how long a compaction took is the number that
+          // says whether the next one is worth pinning a cheaper summarizer for.
+          durationMs: e.startedAt ? Date.now() - e.startedAt : undefined,
+        }
       : e,
   );
 }
@@ -573,6 +625,45 @@ function isSilentContent(text: string): boolean {
 }
 
 /**
+ * A line that is nothing but dots — `...`, `…`, `. . .`.
+ *
+ * Narrower than [`isSilentContent`] on purpose. That one judges a whole block,
+ * where a lone `---` is filler; this one judges lines INSIDE a block, where
+ * `---` is a horizontal rule and `***` is emphasis, and deleting either would
+ * damage real prose.
+ */
+const DOTS_ONLY_LINE = /^[.\s]*[.…][.…\s]*$/;
+
+/**
+ * Drop dots-only lines from the START and END of a content block.
+ *
+ * `isSilentContent` catches a block that is ONLY filler, and that was enough
+ * while models emitted their `...` as a block of its own. They do not: content
+ * deltas are merged by `appendContent`, so a model that narrates and then emits
+ * a separator produces ONE block reading `"Let me read the wiring files.\n\n..."`.
+ * That block has real words in it, passes the silence check as it should, and
+ * the markdown renderer then draws the trailing dots as their own paragraph —
+ * a stray `...` under the sentence, above the tool card it was separating.
+ *
+ * Only the ends are trimmed. A dots line in the MIDDLE of a block can be
+ * elided code inside a fence (```` ``` ````…`...`…```` ``` ````) or the author's
+ * own ellipsis, and neither is ours to remove; a separator, by definition, sits
+ * at an edge.
+ */
+function trimFillerEdges(text: string): string {
+  const lines = text.split("\n");
+  let start = 0;
+  let end = lines.length;
+  while (start < end && (lines[start].trim() === "" || DOTS_ONLY_LINE.test(lines[start]))) {
+    start += 1;
+  }
+  while (end > start && (lines[end - 1].trim() === "" || DOTS_ONLY_LINE.test(lines[end - 1]))) {
+    end -= 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+/**
  * `chapter` is not a tool card — it is the agent naming the part of the work it
  * is starting, and it renders as a heading at the exact point it was called.
  *
@@ -769,9 +860,11 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
           beforeTokens: e.beforeTokens,
           afterTokens: e.afterTokens,
           running: e.running,
+          startedAt: e.startedAt,
+          durationMs: e.durationMs,
         });
       } else {
-        rows.push({ type: "content", id: e.id, text: e.text });
+        rows.push({ type: "content", id: e.id, text: trimFillerEdges(e.text) });
       }
     }
   }

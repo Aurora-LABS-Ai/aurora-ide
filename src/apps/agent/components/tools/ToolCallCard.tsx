@@ -28,6 +28,7 @@ import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import {
   describeToolActivity,
@@ -98,28 +99,206 @@ const ACT_TITLE: Record<string, string> = {
  * stack answers a different question from the number: the number is how many,
  * the marks are what kind. All-markdown shows one mark, and that is the honest
  * answer.
+ *
+ * The `kind` rides along because it is also the mark's REACT KEY. Keying by
+ * path made the whole stack blink when the result landed: while the arguments
+ * stream the targets are the paths the model typed, and the moment the result
+ * arrives they are replaced by the result's own paths (`fullPath`, usually
+ * absolute). Same files, same marks, different strings — so every key changed,
+ * React unmounted and remounted each `<img>`, and four icons repainted for no
+ * reason a reader could name. The kind is what the mark actually draws, and it
+ * survives that swap untouched.
  */
-function stackTargets(targets: ChipTarget[]): ChipTarget[] {
+interface StackMark {
+  target: ChipTarget;
+  /** Extension (`.tsx`), bare name (`dockerfile`), or `" folder"`. */
+  kind: string;
+}
+
+function markKind(target: ChipTarget): string {
+  const name = basename(target.path) || target.name;
+  const dot = name.lastIndexOf(".");
+  // Extension where there is one; otherwise the whole name, because
+  // `Dockerfile` and `Makefile` get their own marks by name, not by suffix.
+  return target.kind === "folder"
+    ? " folder"
+    : dot > 0
+      ? name.slice(dot).toLowerCase()
+      : name.toLowerCase();
+}
+
+function stackTargets(targets: ChipTarget[]): StackMark[] {
   const seen = new Set<string>();
-  const marks: ChipTarget[] = [];
+  const marks: StackMark[] = [];
   for (const target of targets) {
-    const name = basename(target.path) || target.name;
-    const dot = name.lastIndexOf(".");
-    // Extension where there is one; otherwise the whole name, because
-    // `Dockerfile` and `Makefile` get their own marks by name, not by suffix.
-    const kind =
-      target.kind === "folder"
-        ? " folder"
-        : dot > 0
-          ? name.slice(dot).toLowerCase()
-          : name.toLowerCase();
+    const kind = markKind(target);
     if (seen.has(kind)) continue;
     seen.add(kind);
-    marks.push(target);
+    marks.push({ target, kind });
     if (marks.length >= COUNT_CHIP_MARKS) break;
   }
   return marks;
 }
+
+/* ── The target reel ────────────────────────────────────────────────────────
+ * A call that names several files SAYS them, one at a time, and then keeps the
+ * summary. It borrows the reply drum's motion whole (`.agw-suggest-drum`,
+ * 09-tool-cards.css): each name arrives from below on a tilted curve, the one
+ * before it leaves through the top, and the container's mask cuts both — no
+ * fade in place, because a fade in place is what made the old row read as a
+ * repaint rather than as an arrival.
+ *
+ * The last thing to ride through is the summary the row keeps, so the settle
+ * is the same motion as every step before it. There is no moment where one
+ * kind of chip is swapped for another.
+ */
+
+/**
+ * How long one name holds the reel before the next rides in — the floor under
+ * the paced reel, straight from the design's `PACE_MS`.
+ *
+ * This shipped at 850ms, which was the design page's **0.35× inspection
+ * speed** read off the screen rather than its 1× number. The reel is a live
+ * report on work in flight, and at that beat it was not live: five reads
+ * finishing in under a second left the row still naming the second file while
+ * the agent had moved on to the next tool. A report that lags the work it
+ * reports on is worse than no report — the row is describing the past while
+ * claiming to be current.
+ */
+const REEL_HOLD_MS = 300;
+
+/**
+ * The glide itself, in seconds.
+ *
+ * `0.18s`, because that is what `.agw-suggest-item` uses and this motion is
+ * that drum's, borrowed whole. The 0.5s it shipped with was the same 0.35×
+ * slowdown, and it quietly made the claim below — "the reply drum's,
+ * unchanged" — untrue.
+ */
+const REEL_GLIDE_S = 0.18;
+
+/**
+ * Past this many files the row states the count instead of reading the list.
+ *
+ * At the beat above, thirty files is nine seconds of a settled row still
+ * talking. The reel is a live report on work in flight; when the list is
+ * longer than anyone would follow, the count is the more honest answer.
+ */
+const REEL_NAME_LIMIT = 8;
+
+/** Travel, in px: one cell height, so a leaving cell clears the window exactly. */
+const REEL_TRAVEL = 19;
+
+/** Degrees of X-tilt, straight from `.agw-suggest-item`. */
+const REEL_TILT = 48;
+
+/** `ease`, as the drum's stylesheet spells it. */
+const REEL_EASE = [0.25, 0.1, 0.25, 1] as const;
+
+const ToolTargetReel: React.FC<{
+  /** Every file the call names, in the order it named them. */
+  targets: ChipTarget[];
+  /** The call is over — once the names run out, the summary stays. */
+  settled: boolean;
+  /** What the row keeps: today's mark stack and count. */
+  children: React.ReactNode;
+}> = ({ targets, settled, children }) => {
+  const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
+  /**
+   * Was this call still running when the card mounted?
+   *
+   * If it was not, there is nothing to narrate — a reloaded thread must not
+   * replay every read in it — and the row renders its summary as PLAIN
+   * CONTENT: no reel, no absolute cells, no measurement, no motion. A
+   * historical card is then byte-for-byte the card it was before the reel
+   * existed, which is the only way to be certain the reel cannot cost anyone
+   * their transcript. It already did once: the reel's cells are absolutely
+   * positioned so the reel owns its width, that width is set from a measured
+   * ref, and on a settled card the measurement never ran — leaving every
+   * multi-file row in the history an empty grey pill where its icons were.
+   */
+  const [narrates] = useState(() => !settled);
+  const [index, setIndex] = useState(0);
+
+  const readable = Math.min(targets.length, REEL_NAME_LIMIT);
+  const drained = index >= readable;
+  // While the call is still running, a drained reel HOLDS on its last name
+  // rather than showing the summary early: a path arriving after that would
+  // otherwise send the row summary → name → summary, which is the flicker
+  // wearing a different coat.
+  const showSummary = drained && settled;
+  const active = targets[Math.min(index, readable - 1)];
+
+  useEffect(() => {
+    if (!narrates || drained) return;
+    const timer = window.setTimeout(() => setIndex((current) => current + 1), REEL_HOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [narrates, drained, index]);
+
+  const cellKey = showSummary || !active ? " summary" : `${index}:${active.path}`;
+
+  /**
+   * The cells are absolutely stacked, so the reel owns its own width — and
+   * animating it is what stops `error.tsx` → `ToolCallCard.tsx` from snapping
+   * the row ninety pixels wider between two frames. Measured on the cell's
+   * mount (a ref callback fires exactly once per cell, and every cell has its
+   * own key), never on the one that is leaving.
+   *
+   * Reached through `parentElement`, NOT through a ref on the reel: React
+   * attaches refs CHILD FIRST, so a ref on the parent is still null while this
+   * runs and the width was never written at all.
+   */
+  const measure = (node: HTMLSpanElement | null) => {
+    const reel = node?.parentElement;
+    if (!node || !reel) return;
+    reel.style.width = `${node.offsetWidth}px`;
+  };
+
+  // Every hook above runs either way; only the rendering below differs.
+  if (!narrates) return <>{children}</>;
+
+  const glide = reduceMotion
+    ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
+    : {
+        initial: { opacity: 0, y: REEL_TRAVEL, rotateX: -REEL_TILT, scale: 0.94 },
+        animate: { opacity: 1, y: 0, rotateX: 0, scale: 1 },
+        exit: { opacity: 0, y: -REEL_TRAVEL, rotateX: REEL_TILT, scale: 0.94 },
+      };
+
+  return (
+    <span className="agw-tool-reel">
+      {/* `initial={false}`: the first cell is the chip appearing, and a settled
+          card's first cell is its summary — neither should ride in. */}
+      <AnimatePresence initial={false}>
+        <motion.span
+          key={cellKey}
+          ref={measure}
+          className="agw-tool-reel-cell"
+          data-live={showSummary ? undefined : ""}
+          {...glide}
+          transition={{ duration: reduceMotion ? 0.12 : REEL_GLIDE_S, ease: REEL_EASE }}
+        >
+          {showSummary || !active ? (
+            children
+          ) : (
+            <>
+              {active.kind === "folder" ? (
+                <FolderIcon name={active.name} className="agw-file-ico" />
+              ) : (
+                <FileIcon
+                  name={basename(active.path) || active.name}
+                  path={active.path}
+                  className="agw-file-ico"
+                />
+              )}
+              <span>{basename(active.path) || active.name}</span>
+            </>
+          )}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+};
 
 /** "4 files" / "2 folders" / "5 items" — the noun follows what was touched. */
 function countLabel(targets: ChipTarget[]): string {
@@ -687,6 +866,10 @@ const StandardToolCallCard: React.FC<{
   // The rule is the tool-agnostic part: a 3-file read compacts exactly like a
   // 4-file edit, so the row's shape stops depending on which tool ran.
   const isMultiTarget = activityTargets.length > 1;
+  // The call NAMES its paths as a list, whether one has arrived or four have.
+  // A settled call re-read from disk answers this the same way a live one
+  // does, because it is a fact about the argument and not about the clock.
+  const listTargets = activity.targetsAreList === true && activityTargets.length > 0;
   const title = ACT_TITLE[call.name] ?? defaultTitle;
   const isSelectableMultiFileResult = resultFileTargets.length > 1;
   const selectedFileIndex = isSelectableMultiFileResult
@@ -819,8 +1002,8 @@ const StandardToolCallCard: React.FC<{
       parsed.edit?.removed ||
       parsed.edit?.added ||
       parsed.code ||
-      parsed.screenshot?.path ||
-      parsed.screenshot?.base64,
+      parsed.image?.path ||
+      parsed.image?.base64,
   );
   // `isMultiTarget` counts: the file list now lives in the body, so a call that
   // touched several things always has something to open even when its result
@@ -918,31 +1101,42 @@ const StandardToolCallCard: React.FC<{
         {/* One target: its name, which is the most useful thing on the row.
             Several: one chip carrying the count, wearing the same shape as the
             strip it replaces so the row still reads as files and not only as a
-            number. The names are in the dropdown. */}
-        {isMultiTarget ? (
+            number. The names are in the dropdown.
+
+            A call whose paths arrived as a LIST takes this chip from its very
+            first path — `listTargets`, not `isMultiTarget`. The count is the
+            shape a list ends in, so committing to it up front is what removes
+            the mid-stream swap: the row used to draw a filename at one path and
+            throw it away for a count seventy milliseconds later, losing about
+            ninety pixels of width in a single frame. Nothing is lost by
+            committing early, because the reel inside says every name anyway. */}
+        {listTargets || isMultiTarget ? (
           <span
             className="agw-tool-chip agw-tool-chip-count"
             title={activityTargets.map((target) => target.path).join("\n")}
           >
-            <span className="agw-chip-stack" aria-hidden>
-              {stackTargets(activityTargets).map((target, index) =>
-                target.kind === "folder" ? (
-                  <FolderIcon
-                    key={`${target.path}:${index}`}
-                    name={target.name}
-                    className="agw-file-ico"
-                  />
-                ) : (
-                  <FileIcon
-                    key={`${target.path}:${index}`}
-                    name={basename(target.path) || target.name}
-                    path={target.path}
-                    className="agw-file-ico"
-                  />
-                ),
-              )}
-            </span>
-            {countLabel(activityTargets)}
+            <ToolTargetReel targets={activityTargets} settled={status !== "running"}>
+              <span className="agw-chip-stack" aria-hidden>
+                {stackTargets(activityTargets).map(({ target, kind }) =>
+                  target.kind === "folder" ? (
+                    <FolderIcon key={kind} name={target.name} className="agw-file-ico" />
+                  ) : (
+                    <FileIcon
+                      key={kind}
+                      name={basename(target.path) || target.name}
+                      path={target.path}
+                      className="agw-file-ico"
+                    />
+                  ),
+                )}
+              </span>
+              {/* A one-path list keeps saying that path's NAME. "1 file" is a
+                  worse answer to the same question, and the reel has just
+                  spent its whole run establishing the name. */}
+              {activityTargets.length === 1 && activityTargets[0]
+                ? basename(activityTargets[0].path) || activityTargets[0].name
+                : countLabel(activityTargets)}
+            </ToolTargetReel>
           </span>
         ) : (
           (singleChip || searchPattern) && (

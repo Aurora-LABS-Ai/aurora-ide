@@ -159,6 +159,17 @@ pub struct CodeIndex {
     /// `(file, local name) -> (imported name, module specifier)`.
     #[serde(skip)]
     imports_by_file: HashMap<(u32, String), (String, String)>,
+    /// `file -> the files it imports`, resolved once.
+    ///
+    /// The counterpart to [`imports_by_file`](Self::imports_by_file) for
+    /// languages whose imports bind no names. A Dart `import 'post.dart';`
+    /// brings that library's whole public surface into scope without listing
+    /// anything, so the file's import list still answers "where did this name
+    /// come from" — it just answers with a FILE. Measured on a real Flutter
+    /// app: without this, the import arm of the cascade fired on 0.0% of
+    /// ambiguous names and half of them stayed unresolved.
+    #[serde(skip)]
+    imported_files: HashMap<u32, Vec<u32>>,
     /// Forward-slashed relative path -> file id, for module resolution.
     #[serde(skip)]
     file_ids: HashMap<String, u32>,
@@ -256,6 +267,7 @@ impl CodeIndex {
             by_name: HashMap::new(),
             refs_by_name: HashMap::new(),
             imports_by_file: HashMap::new(),
+            imported_files: HashMap::new(),
             file_ids: HashMap::new(),
         };
 
@@ -369,6 +381,18 @@ impl CodeIndex {
         for (i, f) in self.files.iter().enumerate() {
             self.file_ids.insert(f.path.clone(), i as u32);
         }
+        // Last, and deliberately: `resolve_module` reads `file_ids`, so this
+        // is the one lookup that depends on another being built first.
+        let mut imported_files: HashMap<u32, Vec<u32>> = HashMap::new();
+        for imp in &self.imports {
+            if let Some(target) = self.resolve_module(imp.file, &imp.module) {
+                let seen = imported_files.entry(imp.file).or_default();
+                if !seen.contains(&target) {
+                    seen.push(target);
+                }
+            }
+        }
+        self.imported_files = imported_files;
     }
 
     fn compute_resolution(&self) -> ResolutionStats {
@@ -469,6 +493,21 @@ impl CodeIndex {
         } else if spec.contains('\\') {
             // PHP namespaces separate with a backslash: `App\Models\User`.
             spec.replace('\\', "/")
+        } else if let Some(rest) = spec.strip_prefix("package:") {
+            // Dart. `package:<name>/<path>` is this workspace's own code only
+            // when `<name>` is a package it declares — Flutter apps import
+            // themselves this way alongside relative paths, and the two forms
+            // reach the same files. A pub dependency
+            // (`package:flutter/material.dart`) names no local package and
+            // must MISS: resolving it by path would let it collide with an
+            // unrelated local file that happens to share the name.
+            self.workspace_package_path(rest)?
+        } else if spec.ends_with(".dart") {
+            // A Dart specifier is a path carrying its own extension, and a
+            // sibling is written bare — `'home_screen.dart'`, no `./`. Without
+            // this it reaches the dotted-package branch below, which reads the
+            // extension as a directory and looks for `home_screen/dart`.
+            join_rel(from_dir, spec)
         } else if spec.contains('.') && !spec.contains('/') {
             // Python absolute `a.b.c` — and the same shape carries Java,
             // Kotlin and C# imports (`com.acme.Widget`, `System.Text`), which
@@ -498,7 +537,7 @@ impl CodeIndex {
         const EXTS: &[&str] = &[
             ".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".rs", ".py",
             ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".go", ".java", ".cs", ".rb", ".php",
-            ".kt", ".swift",
+            ".kt", ".swift", ".dart",
         ];
         const INDEXES: &[&str] = &[
             "/index.ts",
@@ -606,6 +645,26 @@ impl CodeIndex {
             .collect();
         if !same_file.is_empty() {
             return (same_file, Confidence::SameFile);
+        }
+
+        // The file's imports, answering with a FILE rather than a name — see
+        // `imported_files`. Ranked below same-file because a local definition
+        // shadows an imported one in every language here, and above same-dir
+        // because a file you actually import beats a sibling you do not.
+        //
+        // Exactly ONE imported file may define the name. Two is a real
+        // ambiguity, and resolving it by picking either would be the guess this
+        // whole cascade exists to refuse.
+        if let Some(visible) = self.imported_files.get(&from_file) {
+            let hit: Vec<&Symbol> = defs
+                .iter()
+                .copied()
+                .filter(|s| visible.contains(&s.file))
+                .collect();
+            let distinct: std::collections::HashSet<u32> = hit.iter().map(|s| s.file).collect();
+            if distinct.len() == 1 {
+                return (hit, Confidence::Import);
+            }
         }
 
         let dir = self
@@ -824,6 +883,7 @@ impl CodeIndex {
             by_name: HashMap::new(),
             refs_by_name: HashMap::new(),
             imports_by_file: HashMap::new(),
+            imported_files: HashMap::new(),
             file_ids: HashMap::new(),
         };
         idx.rebuild_lookups();
@@ -1079,6 +1139,51 @@ mod tests {
         assert!(
             hits.iter().any(|r| r.from.as_deref() == Some("go")),
             "the aliased call must retain its caller: {hits:?}"
+        );
+    }
+
+    /// Flutter writes the same file three ways — relative, bare sibling, and
+    /// `package:<own name>/…` — and a real app mixes all three. Each one that
+    /// misses is a dependency edge silently gone.
+    #[test]
+    fn dart_specifiers_resolve_in_every_form_a_flutter_app_writes() {
+        let (_d, idx) = index_of(&[
+            (
+                "pubspec.yaml",
+                "name: paynu_app\ndescription: \"An app.\"\n",
+            ),
+            ("lib/domain/models/post.dart", "class Post {}\n"),
+            ("lib/ui/utils/camera_filters.dart", "class Filters {}\n"),
+            ("lib/screens/home_screen.dart", "class HomeScreen {}\n"),
+            (
+                "lib/screens/create_post_screen.dart",
+                "import '../domain/models/post.dart';\n\
+                 import 'package:paynu_app/ui/utils/camera_filters.dart';\n\
+                 export 'home_screen.dart';\n\
+                 import 'package:flutter/material.dart';\n",
+            ),
+        ]);
+
+        let from = file_id(&idx, "lib/screens/create_post_screen.dart");
+        assert_eq!(
+            idx.resolve_module(from, "../domain/models/post.dart"),
+            Some(file_id(&idx, "lib/domain/models/post.dart")),
+            "a relative Dart import"
+        );
+        assert_eq!(
+            idx.resolve_module(from, "package:paynu_app/ui/utils/camera_filters.dart"),
+            Some(file_id(&idx, "lib/ui/utils/camera_filters.dart")),
+            "the app importing itself by its own pubspec name, through lib/"
+        );
+        assert_eq!(
+            idx.resolve_module(from, "home_screen.dart"),
+            Some(file_id(&idx, "lib/screens/home_screen.dart")),
+            "a bare sibling, which Dart writes without a ./ prefix"
+        );
+        assert_eq!(
+            idx.resolve_module(from, "package:flutter/material.dart"),
+            None,
+            "a pub dependency is not a file in this workspace"
         );
     }
 

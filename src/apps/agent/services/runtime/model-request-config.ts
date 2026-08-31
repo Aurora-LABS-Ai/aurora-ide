@@ -15,10 +15,14 @@ import {
   useSettingsStore,
   type LLMModel,
 } from "@/kernel/store/useSettingsStore";
-import type { ProviderConfig } from "@/kernel/services/providers/types";
+import type {
+  ProviderConfig,
+  ReasoningRequestConfig,
+} from "@/kernel/services/providers/types";
+import type { ReasoningReplayMode } from "@/kernel/types/database";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
-import { cursorWireModel } from "@/apps/agent/services/providers/cursor-variants";
-import { isFastOn } from "@/apps/agent/lib/model/cursor-fast";
+import { resolveCursorModelRun } from "@/apps/agent/services/providers/cursor-run";
+import { cursorVariantFailureMessage } from "@/apps/agent/services/providers/cursor-variants";
 import {
   openCodeWireFor,
   OPENCODE_PROVIDER_ID,
@@ -70,15 +74,30 @@ export function withProviderDefaults(config: ProviderConfig): ProviderConfig {
 }
 
 export interface ResolvedModelKnobs {
-  /** Drives the provider's native `thinking` field. */
+  /** The one provider-neutral reasoning contract every request path uses. */
+  reasoning: ReasoningRequestConfig;
+  /** @deprecated Read `reasoning.enabled`. Kept for old callers during cutover. */
   thinkingEnabled: boolean;
-  /** Only set for budget-style reasoning models. */
+  /** @deprecated Read `reasoning.budgetTokens`. */
   thinkingBudgetTokens: number | undefined;
+}
+
+function legacyReplayMode(model: LLMModel | null | undefined): ReasoningReplayMode {
+  const value = model?.extraBody?.["reasoning_replay"];
+  if (value === false) return "off";
+  if (typeof value !== "string") return "auto";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "reasoning_content" || normalized === "reasoning") {
+    return normalized;
+  }
+  return ["off", "none", "drop", "false"].includes(normalized) ? "off" : "auto";
 }
 
 /**
  * Fold a model row's reasoning settings and extra body fields into
- * `providerConfig`, and report the thinking knobs the runtime needs.
+ * `providerConfig`, and report the semantic reasoning request the runtime
+ * needs. This function does not encode an API body. Rust's selected adapter
+ * owns that translation.
  *
  * Mutates `providerConfig.customParams` — callers pass a config they own.
  *
@@ -92,11 +111,8 @@ export function resolveModelRequestKnobs(
 ): ResolvedModelKnobs {
   const reasoning = model?.reasoning;
   let thinkingEnabled = thinkingPreference && (providerConfig.supportsThinking ?? false);
-  // Budget models carry a token number instead of a tier. It rides its own
-  // field to the runtime (NOT customParams) because the wire shape differs
-  // per provider: Anthropic wants `thinking.budget_tokens`, OpenAI-compat
-  // backends mostly want nothing at all.
   let thinkingBudgetTokens: number | undefined;
+  let effort: string | undefined;
 
   if (reasoning) {
     const on = reasoningIsOn(reasoning);
@@ -104,38 +120,50 @@ export function resolveModelRequestKnobs(
       thinkingBudgetTokens = reasoning.default;
     }
     if (reasoning.type === "effort") {
-      // Effort models control reasoning with `reasoning_effort` — NOT the
-      // `thinking` field. Sending BOTH is rejected by some providers
-      // ("cannot specify both 'thinking' and 'reasoning_effort'"), so we never
-      // set the `thinking` field for an effort model; the effort level alone
-      // turns reasoning on. (A provider that also wants `thinking` can add it
-      // via the model's Extra request fields.)
-      thinkingEnabled = false;
+      // This is semantic state, not a decision to emit a `thinking` object.
+      // The old code set this false to avoid sending both fields on OpenAI
+      // Chat Completions. That also disabled Responses summaries and the
+      // DeepSeek adapter's own reasoning branch. Keep intent true here and let
+      // each adapter choose the field it actually supports.
+      thinkingEnabled = on;
       if (on && reasoning.default) {
-        providerConfig.customParams = {
-          ...(providerConfig.customParams || {}),
-          // The EXACT level the user picked (low/medium/high/xhigh) — verbatim.
-          reasoning_effort: String(reasoning.default),
-        };
+        effort = String(reasoning.default);
       }
     } else {
-      // toggle / budget — the `thinking` field is the on/off control.
       thinkingEnabled = on;
     }
   }
 
+  const resolvedReasoning: ReasoningRequestConfig = {
+    enabled: !!providerConfig.supportsThinking && thinkingEnabled,
+    control: reasoning?.type ?? (providerConfig.supportsThinking ? "toggle" : "none"),
+    effort,
+    budgetTokens: thinkingBudgetTokens,
+    requestMode: reasoning?.requestMode ?? "auto",
+    replay: reasoning?.replay ?? legacyReplayMode(model),
+  };
+  providerConfig.reasoning = resolvedReasoning;
+
   // Manual escape hatch: merge the model's extra request-body fields verbatim.
-  // These are applied LAST so a user can override anything (including the
-  // structured `reasoning_effort` above) per model — e.g. add
+  // These are applied LAST by the Rust adapter so a user can override anything
+  // per model — e.g. add
   // `{ "thinking": { "type": "enabled" } }` for a provider we don't special-case.
   if (model?.extraBody && Object.keys(model.extraBody).length > 0) {
+    // `reasoning_replay` used to be smuggled through this map. It now has a
+    // typed home above and must never look like an upstream API parameter.
+    const wireFields = { ...model.extraBody };
+    delete wireFields.reasoning_replay;
     providerConfig.customParams = {
       ...(providerConfig.customParams || {}),
-      ...model.extraBody,
+      ...wireFields,
     };
   }
 
-  return { thinkingEnabled, thinkingBudgetTokens };
+  return {
+    reasoning: resolvedReasoning,
+    thinkingEnabled: resolvedReasoning.enabled,
+    thinkingBudgetTokens: resolvedReasoning.budgetTokens,
+  };
 }
 
 /**
@@ -147,7 +175,7 @@ export function resolveModelRequestKnobs(
 export function resolveModelRequest(
   selection: string,
   thinkingPreference: boolean,
-): { providerConfig: ProviderConfig } & ResolvedModelKnobs | null {
+): { providerConfig: ProviderConfig; model: LLMModel | null } & ResolvedModelKnobs | null {
   const store = useSettingsStore.getState();
   const resolved = store.getLLMConfigFor(selection);
   if (!resolved) return null;
@@ -159,13 +187,24 @@ export function resolveModelRequest(
     customParams: resolved.customParams ? { ...resolved.customParams } : undefined,
   };
 
-  const model = store.getModelFor(selection);
+  // `getLLMConfigFor` deliberately falls back to the active provider when a
+  // saved selection was deleted. Resolve the model row from the config it
+  // actually returned, not blindly from the stale selection, or the fallback
+  // would send the active model with no reasoning profile of its own.
+  const selectedModel = store.getModelFor(selection);
+  const model =
+    selectedModel?.providerId === config.id && selectedModel.modelKey === config.model
+      ? selectedModel
+      : store.models.find(
+          (candidate) =>
+            candidate.providerId === config.id && candidate.modelKey === config.model,
+        ) ?? null;
   const knobs = resolveModelRequestKnobs(config, model, thinkingPreference);
 
-  applyCursorVariant(config, model, selection);
+  applyCursorVariant(config, model);
   applyOpenCodeWire(config, model);
 
-  return { providerConfig: config, ...knobs };
+  return { providerConfig: config, model, ...knobs };
 }
 
 /**
@@ -209,7 +248,7 @@ export function applyOpenCodeWire(
  *
  * So the controls the user touched in the picker are resolved here into the
  * one id that expresses them, checked against the account's real catalogue so
- * a model with no fast twin is never sent `-fast`. And `reasoning_effort` is
+ * an unsupported combination fails before the request starts. And `reasoning_effort` is
  * dropped: Aurora set it a moment ago because the model row says "effort", but
  * on this wire it is a field nothing reads, and leaving it in the body would
  * be a control that looks connected and is not.
@@ -219,7 +258,6 @@ export function applyOpenCodeWire(
 export function applyCursorVariant(
   config: ProviderConfig,
   model: LLMModel | null | undefined,
-  selection: string,
 ): void {
   if (config.id !== CURSOR_PROVIDER_ID) return;
 
@@ -229,17 +267,9 @@ export function applyCursorVariant(
     config.customParams = Object.keys(rest).length > 0 ? rest : undefined;
   }
 
-  const reasoning = model?.reasoning;
-  const on = reasoning ? reasoningIsOn(reasoning) : false;
-
-  config.model = cursorWireModel(config.model, {
-    // `toggleable: false` models have thinking ids and nothing else, so the
-    // switch is absent and thinking is simply how they run.
-    thinking: reasoning ? on : undefined,
-    effort:
-      reasoning?.type === "effort" && on && typeof reasoning.default === "string"
-        ? reasoning.default
-        : undefined,
-    fast: isFastOn(selection),
-  });
+  const resolved = resolveCursorModelRun(
+    model ?? { modelKey: config.model },
+  );
+  if (!resolved.ok) throw new Error(cursorVariantFailureMessage(resolved));
+  config.model = resolved.wireModel;
 }

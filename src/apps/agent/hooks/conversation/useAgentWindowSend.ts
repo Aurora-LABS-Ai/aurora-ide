@@ -30,11 +30,9 @@ import {
 } from "@/apps/agent/services";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
-  applyCursorVariant,
   DEFAULT_MAX_OUTPUT_TOKENS,
-  resolveModelRequestKnobs,
+  resolveModelRequest,
   resolveTemperature,
-  withProviderDefaults,
 } from "@/apps/agent/services/runtime/model-request-config";
 import { classifyError } from "@/apps/agent/lib/error-classifier";
 import type {
@@ -636,8 +634,26 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const settings = useSettingsStore.getState();
     // Compaction is a real model call on this conversation's history, so it
     // rides the conversation's own model — not whichever one is selected now.
-    const llmConfig = settings.getLLMConfigFor(resolveThreadModel(threadId));
-    if (!llmConfig) return;
+    const modelSelection = resolveThreadModel(threadId);
+    let compactRequest: ReturnType<typeof resolveModelRequest>;
+    try {
+      compactRequest = resolveModelRequest(modelSelection, settings.thinkingEnabled);
+    } catch {
+      return;
+    }
+    if (!compactRequest) return;
+    const llmConfig = compactRequest.providerConfig;
+    let compactionProvider;
+    try {
+      compactionProvider = settings.compactionModel
+        ? resolveModelRequest(settings.compactionModel, settings.thinkingEnabled)
+            ?.providerConfig
+        : undefined;
+    } catch {
+      // A stale auxiliary Cursor variant must not prevent the conversation's
+      // own model from compacting. Undefined deliberately falls back to it.
+      compactionProvider = undefined;
+    }
 
     // A docked chat compacts against ITS project, not the window's current
     // scope — the window may have been re-scoped since the tab was opened.
@@ -654,10 +670,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
     const agent = new AgentService();
     runningAgents.set(threadId, agent);
-    agent.setProvider(withProviderDefaults(llmConfig));
+    agent.setProvider(llmConfig);
     agent.setThreadId(threadId);
     agent.updateConfig({
       executionMode,
+      reasoning: compactRequest.reasoning,
       workspacePath: projectRoot,
       maxTokens:
         llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
@@ -665,7 +682,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionSummaryBudget: settings.compactionSummaryBudget,
       // A manual `/compact` honours the pinned summarizer exactly as an
       // automatic one does — same call, same model.
-      compactionProvider: settings.getCompactionConfig() ?? undefined,
+      compactionProvider,
       allowOutsideWorkspace: settings.allowOutsideWorkspace,
     });
 
@@ -940,7 +957,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // user's default. Resolved at SEND time so a pick made while the composer
     // was focused counts toward this turn.
     const modelSelection = resolveThreadModel(threadId);
-    const llmConfig = settings.getLLMConfigFor(modelSelection);
 
     // Capture the project for THIS turn now — the user may navigate to another
     // project while it runs, and tools must stay rooted at the originating one.
@@ -951,11 +967,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // running and re-attaches when the user opens this chat again.
     store.beginTurn(threadId, target?.seed, projectRoot);
 
-    // The model this turn's requests are billed against. Captured here rather
-    // than read at usage time, for the same reason `projectRoot` is: the user
-    // can pick a different model in the selector while this turn is still
-    // streaming, and these requests were priced by the model that ran them.
-    const turnModel = modelSelection;
     // Reset the turn's running cost. Every request this turn makes folds into
     // it, so a long tool-using turn shows a cost that climbs instead of one
     // that reports only its final request.
@@ -986,16 +997,63 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       void maybeGenerateTitle(threadId, content);
     }
 
-    if (!llmConfig) {
+    // Resolve every model-specific request choice before doing the expensive
+    // context work below. Cursor resolution is exact and can fail when a saved
+    // combination no longer exists on the account. Surface that as a
+    // recoverable assistant message and close the optimistic turn cleanly.
+    let resolvedRequest: ReturnType<typeof resolveModelRequest>;
+    try {
+      // This is the SAME resolver the per-model connection test calls. It
+      // applies the model-level API format, the typed reasoning request, and
+      // provider-native variants once. Keeping a second hand-built path here
+      // is how tests passed on one wire while real turns ran on another.
+      resolvedRequest = resolveModelRequest(modelSelection, settings.thinkingEnabled);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       store.appendTurnMessage(threadId, {
         id: genId(),
         role: "assistant",
-        content:
-          "No model is configured. Add a provider and API key in the IDE's Settings, then try again.",
+        content: `Cursor couldn't start this turn.\n\n${detail}`,
         timestamp: nowIso(),
       });
       store.endTurn(threadId);
       return;
+    }
+    if (!resolvedRequest) {
+      store.appendTurnMessage(threadId, {
+        id: genId(),
+        role: "assistant",
+        content:
+          "This chat's model is no longer available, or no provider is configured. Choose a model in Settings → Providers and try again.",
+        timestamp: nowIso(),
+      });
+      store.endTurn(threadId);
+      return;
+    }
+    const {
+      providerConfig,
+      model: activeModel,
+      reasoning,
+      thinkingEnabled,
+      thinkingBudgetTokens,
+    } = resolvedRequest;
+    // The model this turn's requests are billed against. Use the row the
+    // resolver actually selected (important when a deleted pin fell back),
+    // while keeping Cursor's composed wire id out of durable accounting.
+    const turnModel = activeModel
+      ? `${activeModel.providerId}:${activeModel.modelKey}`
+      : `${providerConfig.id}:${providerConfig.model}`;
+
+    let compactionProvider;
+    try {
+      compactionProvider = settings.compactionModel
+        ? resolveModelRequest(settings.compactionModel, settings.thinkingEnabled)
+            ?.providerConfig
+        : undefined;
+    } catch {
+      // Keep the chat usable when a pinned auxiliary Cursor variant vanished;
+      // the Rust runtime will summarize on this conversation's own model.
+      compactionProvider = undefined;
     }
 
     // The streaming assistant target.
@@ -1206,8 +1264,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       });
     };
 
-    const providerConfig = withProviderDefaults(llmConfig);
-
     // Minimal, authoritative context: the runtime roots tools at this path; the
     // model just needs to KNOW the path so it can reason about / explore it.
     const baseContext = projectRoot
@@ -1328,26 +1384,13 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         .filter(Boolean)
         .join("\n\n") || null;
 
-    // Per-model reasoning: the active model may carry a reasoning level (set in
-    // Provider settings / the composer picker). Effort tiers are forwarded as
-    // `reasoning_effort`; a toggle model drives whether thinking is on at all;
-    // a budget model additionally carries the token budget the user chose.
+    // Per-model reasoning: the active model may carry an effort, toggle, or
+    // budget profile set in Provider settings / the composer picker. The
+    // provider-neutral profile is already resolved above; the Rust adapter
+    // translates it into the selected API format.
     // THIS turn's model row, not the globally-active one: reasoning config
     // (effort tier / thinking budget) hangs off the model, so reading the
     // active row would apply another conversation's reasoning settings here.
-    const activeModel = useSettingsStore.getState().getModelFor(modelSelection);
-    // Shared with the provider settings connection test so a "working"
-    // test and a working turn can never mean different things.
-    const { thinkingEnabled, thinkingBudgetTokens } = resolveModelRequestKnobs(
-      providerConfig,
-      activeModel,
-      settings.thinkingEnabled,
-    );
-    // Cursor expresses effort, thinking and Fast in the model id rather than in
-    // the request body — so the knobs resolved above have to be folded back
-    // into `providerConfig.model`. A no-op for every other provider.
-    applyCursorVariant(providerConfig, activeModel, modelSelection);
-
     // Track whether the provider ever reported token usage this turn. If it
     // doesn't (many OpenAI-compatible backends skip `stream_options.include_usage`),
     // we fall back to a local tiktoken estimate so the context ring still shows.
@@ -1373,6 +1416,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     agent.setProvider(providerConfig);
     agent.setThreadId(threadId);
     agent.updateConfig({
+      reasoning,
+      // Backward-compatible mirrors for older runtime payload readers. Both
+      // are derived from `reasoning`; no second resolution happens here.
       thinkingEnabled,
       thinkingBudgetTokens,
       executionMode,
@@ -1380,12 +1426,20 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // Pin tools to THIS turn's project (not the global store) so a turn keeps
       // operating on its own directory even after the user switches projects.
       workspacePath: projectRoot,
+      // What the conversation is on, as opposed to what the request carries.
+      // `applyCursorVariant` above folds the effort tier and Fast into
+      // `providerConfig.model`; that composed id is a wire detail and must not
+      // become the thread's model, or the row holding this model's context
+      // window stops matching it.
+      modelSelection,
       // Model → provider → Aurora's default. Set per model in Settings →
       // Providers; stripped in the Rust adapter for models that reject
       // sampling, so a value on a Claude 5 row costs nothing.
-      temperature: resolveTemperature(activeModel, llmConfig.defaultTemperature),
+      temperature: resolveTemperature(activeModel, providerConfig.defaultTemperature),
       maxTokens:
-        llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+        providerConfig.defaultMaxTokens ??
+        providerConfig.maxOutputTokens ??
+        DEFAULT_MAX_OUTPUT_TOKENS,
       // Agentic by design: no artificial tool-call cap — the runtime stops when
       // the model stops requesting tools.
       maxToolIterations: undefined,
@@ -1397,7 +1451,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionSummaryBudget: settings.compactionSummaryBudget,
       // `null` when nothing is pinned (or the pin points at a deleted
       // provider) → the runtime summarizes on the conversation's own model.
-      compactionProvider: settings.getCompactionConfig() ?? undefined,
+      compactionProvider,
       allowOutsideWorkspace: settings.allowOutsideWorkspace,
       // Read once, here, for BOTH the tool roster and the prompt instruction —
       // this config field is what `AgentService` hands to
@@ -1663,19 +1717,28 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       if (!usageFired) {
         const liveMsgs =
           useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
-        const contextWindow = llmConfig.contextWindow || 128_000;
+        const contextWindow = providerConfig.contextWindow || 128_000;
         const estMaxOutput =
-          llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+          providerConfig.defaultMaxTokens ??
+          providerConfig.maxOutputTokens ??
+          DEFAULT_MAX_OUTPUT_TOKENS;
         const est = await estimateTurnUsage(
           liveMsgs,
-          llmConfig.model,
+          providerConfig.model,
           contextWindow,
           estMaxOutput,
           agent.getLastPromptOverhead(),
         );
         if (est && !usageFired) {
           useAgentContextStore.getState().setUsage(threadId, est);
-          const usedTokens = est.promptTokens + (est.cacheReadTokens ?? 0);
+          // Persist the same four disjoint slices the live ContextRing sums.
+          // Otherwise reopening the thread could replace the live reading with
+          // a smaller snapshot that silently dropped output/cache-write tokens.
+          const usedTokens =
+            est.promptTokens +
+            est.completionTokens +
+            (est.cacheReadTokens ?? 0) +
+            (est.cacheWriteTokens ?? 0);
           void threadService
             .updateUsage(threadId, est, {
               usedTokens,

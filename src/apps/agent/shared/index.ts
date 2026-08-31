@@ -10,3 +10,4 @@ export { AgentIcon } from "./AgentIcon";
 export type { AgentIconName } from "./AgentIcon";
 export { AgentSelect } from "./AgentSelect";
 export type { AgentSelectOption } from "./AgentSelect";
+export { ScrollingLabel } from "./ScrollingLabel";

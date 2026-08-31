@@ -633,3 +633,137 @@ describe("web search and page fetch", () => {
     expect(parsed.web).toBeNull();
   });
 });
+
+describe("images in a result", () => {
+  const marker = (attrs: string, body = "QUJDREVGRw==") =>
+    `<aurora_image ${attrs}>${body}</aurora_image>`;
+
+  it("renders a screenshot's lean envelope from its path, named by the page", () => {
+    const parsed = parseToolResult(
+      "browser_screenshot",
+      {},
+      JSON.stringify({
+        screenshot: {
+          path: "C:\\cache\\shot-1.jpg",
+          width: 1024,
+          height: 640,
+          url: "http://localhost:3001/pricing",
+        },
+      }),
+    );
+
+    expect(parsed.image?.path).toBe("C:\\cache\\shot-1.jpg");
+    expect(parsed.summary).toBe("Captured localhost:3001");
+  });
+
+  // The bug this closes: a PNG named in file_read used to come back as
+  // "stream did not contain valid UTF-8". It now returns a marker, and the card
+  // has to label it with the file that was read — not with the cache file the
+  // encoded copy lives in.
+  it("names a file_read image by the file, not by its cache copy", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["docs/hub-dashboard.png"] },
+      `${marker(
+        'media_type="image/jpeg" width="1024" height="594" ' +
+          'src="C:\\cache\\agent-images\\img-9f2c.jpg" name="docs/hub-dashboard.png"',
+        "",
+      )}\ndocs/hub-dashboard.png — PNG image, 1400×812 px, 235 KB.`,
+    );
+
+    expect(parsed.image?.path).toBe("C:\\cache\\agent-images\\img-9f2c.jpg");
+    expect(parsed.image?.name).toBe("docs/hub-dashboard.png");
+    // The chip is labelled by the file, not by the folder it sits in.
+    expect(parsed.summary).toBe("hub-dashboard.png");
+    // The base64 must never reach the text fallback and get dumped in the card.
+    expect(parsed.code).toBeNull();
+  });
+
+  // Several pictures share the file chips with any text files read beside them,
+  // one on screen at a time — stacking them down the card buried the result.
+  it("puts several images on the file list so one selection drives the card", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["a.png", "b.png"] },
+      [
+        `${marker('media_type="image/jpeg" src="C:\\cache\\a.jpg" name="a.png"', "")}\na.png — PNG image.`,
+        `${marker('media_type="image/jpeg" src="C:\\cache\\b.jpg" name="b.png"', "")}\nb.png — PNG image.`,
+      ].join("\n\n"),
+    );
+
+    expect(parsed.multiFile?.map((file) => file.path)).toEqual(["a.png", "b.png"]);
+    expect(parsed.multiFile?.map((file) => file.image?.path)).toEqual([
+      "C:\\cache\\a.jpg",
+      "C:\\cache\\b.jpg",
+    ]);
+    expect(parsed.image).toBeNull();
+    expect(parsed.summary).toBe("2 images");
+  });
+
+  // A mixed read answers in two shapes: the pictures, then the ordinary batch
+  // envelope. The whole string is not JSON, so the envelope has to be recovered
+  // from after the markers or the text files vanish from the card.
+  it("keeps the text files a mixed read returned, in the order they were named", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["shot.png", "notes.md", "app.ico"] },
+      [
+        `${marker('media_type="image/jpeg" src="C:\\cache\\a.jpg" name="shot.png"', "")}\nshot.png — PNG image.`,
+        JSON.stringify({
+          success: true,
+          filesRead: 2,
+          filesError: 1,
+          totalFiles: 3,
+          files: [
+            { path: "shot.png", success: true, kind: "image" },
+            { path: "notes.md", success: true, content: "hello\n", lines: 1 },
+            { path: "app.ico", success: false, error: "app.ico is not a text file" },
+          ],
+        }),
+      ].join("\n\n"),
+    );
+
+    expect(parsed.multiFile?.map((file) => file.path)).toEqual([
+      "shot.png",
+      "notes.md",
+      "app.ico",
+    ]);
+    // The picture lands on ITS row, matched by the path the caller named.
+    expect(parsed.multiFile?.[0].image?.path).toBe("C:\\cache\\a.jpg");
+    expect(parsed.multiFile?.[1].image).toBeUndefined();
+    expect(parsed.multiFile?.[1].content).toBe("hello\n");
+    expect(parsed.multiFile?.[2].error).toContain("not a text file");
+    expect(parsed.summary).toBe("1 image");
+  });
+
+  // A file_read image is JPEG. Labelling its data URI `image/png` — the old
+  // hard-coded fallback — renders as a broken image.
+  it("carries the media type the marker declared", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["logo.png"] },
+      `${marker('media_type="image/jpeg" name="logo.png"')}\nlogo.png — PNG image.`,
+    );
+    expect(parsed.image?.mediaType).toBe("image/jpeg");
+    expect(parsed.image?.base64).toBe("QUJDREVGRw==");
+  });
+
+  // The regression the validated parser exists for: source and docs that quote
+  // the marker syntax must read as text, not render as an image card.
+  it("does not turn a file that merely quotes the marker syntax into an image", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["knowledge.md"] },
+      JSON.stringify({
+        success: true,
+        exactRead: true,
+        path: "knowledge.md",
+        content:
+          'The UI copy parses the raw `<aurora_image ... src=.. >BASE64</aurora_image>` block.',
+      }),
+    );
+    expect(parsed.image).toBeNull();
+    expect(parsed.multiFile).toBeNull();
+    expect(parsed.code).toContain("aurora_image");
+  });
+});

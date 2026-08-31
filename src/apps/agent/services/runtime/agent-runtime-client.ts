@@ -25,7 +25,10 @@
  */
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { parseToolArguments } from "@/kernel/lib/llm/tool-arguments";
-import type { ProviderConfig } from "@/kernel/services/providers/types";
+import type {
+  ProviderConfig,
+  ReasoningRequestConfig,
+} from "@/kernel/services/providers/types";
 import type { ToolCallRequest, TokenUsage } from "@/kernel/services/providers/types";
 import type { AgentCallbacks, AgentConfig } from "@/apps/agent/services/runtime/agent-service.types";
 import type {
@@ -113,6 +116,8 @@ export interface ProviderConfigSnapshot {
   defaultTemperature?: number;
   defaultMaxTokens?: number;
   supportsThinking: boolean;
+  /** One semantic reasoning contract; adapters decide its wire fields. */
+  reasoning?: ReasoningRequestConfig;
   /**
    * Does the active model accept image content blocks? Drives whether
    * `browser_screenshot` is registered in the tool list AND whether
@@ -135,6 +140,8 @@ export interface AgentChatRequest {
   userMessage: string;
   providerId: string;
   model: string;
+  /** See {@link AgentRuntimeChatInput.modelSelection}. */
+  modelSelection: string | null;
   workspacePath: string | null;
   executionMode: "agent" | "plan" | "team";
   providerConfig: ProviderConfigSnapshot;
@@ -374,6 +381,20 @@ export interface AgentRuntimeChatInput {
   ideContext: string | null;
   tools: RuntimeToolDefinitionLike[];
   workspacePath?: string | null;
+  /**
+   * The model as the conversation is pinned to it — `provider:modelKey` — when
+   * that differs from the id the request carries.
+   *
+   * Only Cursor differs. Its effort tier and Fast lane are capabilities the
+   * user chooses, so the row and the pin hold `cursor-grok-4.6` while the
+   * request carries what those choices compose to. Sending the composed id as
+   * the thread's model made it the pin, and the pin is the key every later
+   * lookup uses — so the row holding the model's context window stopped
+   * matching, and the turn was budgeted against the provider default.
+   *
+   * Omitted by every other provider, where the wire model is the pin.
+   */
+  modelSelection?: string | null;
   attachedSelectedElements?: AttachedSelectedElement[] | null;
   attachedPromptChips?: AttachedPromptChip[] | null;
 }
@@ -504,6 +525,7 @@ export class AgentRuntimeClient {
       defaultTemperature: config.defaultTemperature,
       defaultMaxTokens: config.defaultMaxTokens,
       supportsThinking: config.supportsThinking ?? false,
+      reasoning: config.reasoning,
       supportsVision: config.supportsVision ?? false,
       contextWindow: config.contextWindow,
       maxOutputTokens: config.maxOutputTokens,
@@ -545,6 +567,7 @@ export class AgentRuntimeClient {
       userMessage: input.userMessage,
       providerId: providerConfig.id,
       model: providerConfig.model,
+      modelSelection: input.modelSelection ?? null,
       workspacePath: input.workspacePath ?? null,
       executionMode: config.executionMode ?? "agent",
       providerConfig: AgentRuntimeClient.buildProviderConfigSnapshot(providerConfig),
@@ -557,13 +580,23 @@ export class AgentRuntimeClient {
       tools: AgentRuntimeClient.buildAllowedTools(input.tools),
       temperature: typeof config.temperature === "number" ? config.temperature : null,
       maxOutputTokens: typeof config.maxTokens === "number" ? config.maxTokens : null,
-      thinkingEnabled: typeof config.thinkingEnabled === "boolean"
-        ? config.thinkingEnabled
-        : null,
+      // Legacy top-level mirrors for an older Rust hot-reload target. When the
+      // canonical contract exists, derive both values from it so they cannot
+      // disagree with the provider snapshot the current runtime reads.
+      thinkingEnabled:
+        typeof config.reasoning?.enabled === "boolean"
+          ? config.reasoning.enabled
+          : typeof config.thinkingEnabled === "boolean"
+            ? config.thinkingEnabled
+            : null,
       thinkingBudgetTokens:
-        typeof config.thinkingBudgetTokens === "number" && config.thinkingBudgetTokens > 0
-          ? Math.round(config.thinkingBudgetTokens)
-          : null,
+        typeof config.reasoning?.budgetTokens === "number" &&
+        config.reasoning.budgetTokens > 0
+          ? Math.round(config.reasoning.budgetTokens)
+          : typeof config.thinkingBudgetTokens === "number" &&
+              config.thinkingBudgetTokens > 0
+            ? Math.round(config.thinkingBudgetTokens)
+            : null,
       // Pass the active provider's advertised window so the Rust runtime
       // can budget-trim older messages before each API call. Falls back
       // to null when the provider config doesn't carry a window value

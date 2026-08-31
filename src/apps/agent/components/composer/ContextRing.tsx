@@ -68,6 +68,13 @@ import {
   type KenariUsage,
 } from "@/apps/agent/services/providers/kenari";
 import {
+  cursorMeterValue,
+  cursorResetLabel,
+  cursorUsageGet,
+  CURSOR_PROVIDER_ID,
+  type CursorUsageSnapshot,
+} from "@/apps/agent/services/providers/cursor";
+import {
   useReservedCostLines,
   useSticky,
   useThrottled,
@@ -174,6 +181,30 @@ async function getKenariUsageCached(): Promise<KenariPlanState> {
   }
   kenariUsageCache = { at: Date.now(), state };
   return state;
+}
+
+/**
+ * Cursor plan usage, cached the same way and for the same reason.
+ *
+ * Unkeyed, like kenari's: the session comes from the Cursor desktop install
+ * and there is exactly one of it.
+ */
+let cursorUsageCache: { at: number; snap: CursorUsageSnapshot } | null = null;
+
+async function getCursorUsageCached(): Promise<CursorUsageSnapshot | null> {
+  if (cursorUsageCache && Date.now() - cursorUsageCache.at < PLAN_USAGE_TTL_MS) {
+    return cursorUsageCache.snap;
+  }
+  try {
+    const snap = await cursorUsageGet();
+    cursorUsageCache = { at: Date.now(), snap };
+    return snap;
+  } catch {
+    // Not connected, or the account reported nothing readable — the tooltip
+    // omits the section rather than explaining it. The provider page is where
+    // a broken read gets a reason.
+    return null;
+  }
 }
 
 /** The plan's windows, in the order pressure actually arrives. */
@@ -331,6 +362,41 @@ const QuotaRow: React.FC<{ label: string; usedPercent: number; caption?: string 
   );
 };
 
+/**
+ * One Cursor bucket.
+ *
+ * Two of its three lines are quota and the third is money, so this cannot be
+ * [`QuotaRow`] — that row reports what is LEFT, and "−1% left" is not what an
+ * on-demand overage means. Spend states the amount against its cap and lets
+ * the pair speak: `$70.46 of $70` needs no adjective.
+ */
+const CursorPlanRow: React.FC<{ win: CursorUsageSnapshot["windows"][number] }> = ({ win }) => {
+  if (win.kind === "quota") {
+    return <QuotaRow label={win.label} usedPercent={win.usedPercent} />;
+  }
+  const over = win.usedUsd != null && win.limitUsd != null && win.usedUsd > win.limitUsd;
+  // An overage is past the top of its own band, so it is coloured as the
+  // hard stop it is rather than by a percentage that has stopped moving.
+  const tone = over ? bandColor(100) : bandColor(win.usedPercent);
+  return (
+    <>
+      <div className="agw-ctx-row">
+        <span className="agw-ctx-label">{win.label}</span>
+        <span className="agw-ctx-val" style={{ color: tone }}>
+          {cursorMeterValue(win)}
+        </span>
+      </div>
+      <div className="agw-ctx-bar">
+        <div
+          className="agw-ctx-bar-fill"
+          style={{ width: `${Math.min(100, win.usedPercent)}%`, background: tone }}
+        />
+      </div>
+      {over && <div className="agw-ctx-sub">billed on top of the subscription</div>}
+    </>
+  );
+};
+
 /** A Codex window, named and counted down the way Codex reports it. */
 const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> = ({
   win,
@@ -409,6 +475,9 @@ export const ContextRing: React.FC = () => {
   // headroom, not by the token, so the ring's cost figures say nothing useful
   // and the limit windows say everything.
   const isOpenCode = selectedModel.startsWith(`${OPENCODE_PROVIDER_ID}:`);
+  // And the third: a Cursor turn bills against a plan, so the per-token cost
+  // figures above are $0.00 for a conversation that is genuinely spending.
+  const isCursor = selectedModel.startsWith(`${CURSOR_PROVIDER_ID}:`);
   // The plan's own key — the model list needs no auth, but the usage endpoint
   // is about the account. Read from the provider row rather than held here:
   // pasting a new key in Settings must change what the ring reports.
@@ -525,6 +594,7 @@ export const ContextRing: React.FC = () => {
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
   const [kenariPlan, setKenariPlan] = useState<KenariPlanState>(null);
+  const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
 
   // Loaded from the hover/focus handlers (not an effect): the quota is only
   // wanted while the card is visible, and the module cache absorbs repeat
@@ -549,8 +619,16 @@ export const ContextRing: React.FC = () => {
     // stored sign-in, and whether there is one is exactly what this asks.
     if (isKenari) {
       void getKenariUsageCached().then(setKenariPlan);
+      return;
     }
-  }, [isCodex, isOpenCode, isKenari, openCodeKey]);
+    // Nothing to gate on here either: the session is the Cursor app's, and
+    // whether Aurora has adopted one is exactly what this asks.
+    if (isCursor) {
+      void getCursorUsageCached().then((snap) => {
+        if (snap) setCursorUsage(snap);
+      });
+    }
+  }, [isCodex, isOpenCode, isKenari, isCursor, openCodeKey]);
 
   /**
    * Read the conversation's cost basis when the card opens.
@@ -881,6 +959,38 @@ export const ContextRing: React.FC = () => {
                     />
                   );
                 })}
+              </>
+            )}
+
+            {/* Cursor, for the same reason as the two above — a subscription
+              * turn has no per-token price, so the cost lines read $0.00 while
+              * the plan is genuinely being spent.
+              *
+              * All three buckets, not a blended one: Cursor Models and Other
+              * Models empty independently (this account sits at 16% and 100%
+              * of the same allowance), and On-Demand is not an allowance at
+              * all — it is money billed afterwards. One number would hide
+              * which of the three you are actually out of. */}
+            {isCursor && cursorUsage && cursorUsage.windows.length > 0 && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-card-head">
+                  <AgentIcon name="chat" size={11} />
+                  <span>Cursor plan</span>
+                </div>
+                {/* Cursor's own sentence about its own account, carried
+                  * verbatim rather than reworded from the percentages. */}
+                {cursorUsage.notice && (
+                  <div className="agw-ctx-sub">{cursorUsage.notice}</div>
+                )}
+                {cursorUsage.windows.map((win) => (
+                  <CursorPlanRow key={win.label} win={win} />
+                ))}
+                {cursorResetLabel(cursorUsage.resetsAtMs) && (
+                  <div className="agw-ctx-sub">
+                    {cursorResetLabel(cursorUsage.resetsAtMs)}
+                  </div>
+                )}
               </>
             )}
 

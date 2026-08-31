@@ -44,6 +44,18 @@ export interface AgentActivity {
   /** Whether the target is a file or a folder — picks the icon. */
   kind?: "file" | "folder";
   targets?: AgentActivityTarget[];
+  /**
+   * The call's paths arrived as an ARRAY, not a single string.
+   *
+   * The row needs this from the first fragment, because it decides the chip's
+   * shape and the shape must not depend on how much of the argument has landed
+   * yet. Counting `targets` cannot answer it: a list of four reads as one
+   * target for the ~70ms before the second path closes its quotes, and a row
+   * that draws a filename and then throws it away for a count is the flicker
+   * this exists to prevent. The argument's TYPE is known the moment the
+   * bracket opens and never changes after.
+   */
+  targetsAreList?: boolean;
 }
 
 /** Present-continuous verb per tool. */
@@ -146,11 +158,11 @@ const asStr = (v: unknown) =>
 /**
  * Every path a call names, in order, de-duplicated.
  *
- * `file_read`'s `path` takes EITHER a string or an array — one slot, so a
- * strictly-decoding model cannot contradict itself (see `read_targets` in
- * `file_read.rs`). `paths` is still read because threads already on disk were
- * recorded under it, and a card has to render an old transcript as faithfully
- * as a new one.
+ * `file_read`'s `path` is an ARRAY — one slot, one type, so no gateway has to
+ * choose how to serialise it (see `read_targets` in `file_read.rs` for what a
+ * union `type` did to three of them). A bare string is still read here, and
+ * so is `paths`: threads already on disk carry both, and a card has to render
+ * an old transcript as faithfully as a new one.
  */
 function pathListOf(args: Record<string, unknown>): string[] {
   const out: string[] = [];
@@ -227,6 +239,27 @@ function announcedPaths(args: Record<string, unknown>): string[] {
     if (paths.length > 0) return paths;
   }
   return [];
+}
+
+/**
+ * Does this call name its paths as a LIST?
+ *
+ * For the read tools this is true the moment the bracket is seen, not once the
+ * list is complete — that is the whole point (see `targetsAreList`).
+ *
+ * An announced list is counted only from two paths up, and that is not the
+ * same compromise: `affected_paths` is parsed a whole bracket at a time, so it
+ * never arrives half-grown, and a `file_write` announcing its one file must
+ * keep saying that file's NAME rather than "1 file".
+ */
+function pathsAreList(name: string, args: Record<string, unknown>): boolean {
+  if (
+    (name === "file_read" || name === "multi_file_read" || name === "read_lints") &&
+    (Array.isArray(args.path) || Array.isArray(args.paths))
+  ) {
+    return true;
+  }
+  return announcedPaths(args).length > 1;
 }
 
 function targetsOf(
@@ -482,6 +515,7 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
       ...target,
       name: displayName,
       targets,
+      targetsAreList: pathsAreList(name, args) || undefined,
     };
   }
 

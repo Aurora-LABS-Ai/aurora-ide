@@ -75,13 +75,68 @@ export function codexAuthCancelLogin(): Promise<void> {
   return invoke<void>("codex_auth_cancel_login");
 }
 
-/** Removes `~/.codex/auth.json` — signs out Codex CLI on this machine too. */
+/** Signs out of the account serving requests. Codex CLI keeps its own. */
 export function codexAuthLogout(): Promise<void> {
   return invoke<void>("codex_auth_logout");
 }
 
 export function codexUsageGet(): Promise<CodexUsageSnapshot> {
   return invoke<CodexUsageSnapshot>("codex_usage_get");
+}
+
+// ── Accounts ─────────────────────────────────────────────────────────────────
+
+export interface CodexAccountRow {
+  accountId: string;
+  email: string | null;
+  planType: string | null;
+  addedAt: string;
+  /** The account the user chose. Exactly one row is true. */
+  isMain: boolean;
+  /** What the next request will use — differs from `isMain` only while main is spent. */
+  isActive: boolean;
+  /** When the window is expected back. Detail — `spent` is the decision. */
+  exhaustedUntilMs: number | null;
+  /** Resolved against the backend's clock, so the view never reads one of its own. */
+  spent: boolean;
+  usage: CodexUsageSnapshot | null;
+  usageError: string | null;
+}
+
+export interface CodexAccountsSnapshot {
+  accounts: CodexAccountRow[];
+  /** Credits pooled across every account whose balance parsed as a number. */
+  totalCredits: number | null;
+  anyUnlimited: boolean;
+  /** How many accounts the total covers, so the card never implies it read all of them. */
+  counted: number;
+  total: number;
+}
+
+export function codexAccountsList(): Promise<CodexAccountsSnapshot> {
+  return invoke<CodexAccountsSnapshot>("codex_accounts_list");
+}
+
+export function codexAccountSetMain(accountId: string): Promise<void> {
+  return invoke<void>("codex_account_set_main", { accountId });
+}
+
+export function codexAccountRemove(accountId: string): Promise<void> {
+  return invoke<void>("codex_account_remove", { accountId });
+}
+
+export function codexAccountClearLimit(accountId: string): Promise<void> {
+  return invoke<void>("codex_account_clear_limit", { accountId });
+}
+
+/** Adds whatever Codex CLI is signed into, without disturbing it. */
+export function codexAccountImportCli(): Promise<string> {
+  return invoke<string>("codex_account_import_cli");
+}
+
+/** Compact credit figure for the header — `3,850`, not `3850.0000001`. */
+export function codexFmtCredits(value: number): string {
+  return Math.round(value).toLocaleString();
 }
 
 // ── Detection / formatting ───────────────────────────────────────────────────
@@ -151,10 +206,25 @@ export const CODEX_PRESET: ProviderCatalogPreset = {
   // Informational only — the Rust adapter pins the real endpoint.
   baseUrl: "https://chatgpt.com/backend-api/codex",
   model: CODEX_SEED_MODELS[0].id,
-  // Follows the seed default (GPT-5.6): the 5.4+ tier carries ~1.05M. The
-  // mini and Codex Spark rows are narrower and get their real limits from
-  // the models.dev enrichment pass.
-  contextWindow: 1_050_000,
+  // **The subscription serves a quarter of what the API does, for the same
+  // model.** Measured 2026-08-30 from the Codex backend's own catalogue
+  // (`~/.codex/models_cache.json`, fetched 06:09Z by CLI 0.151.0): every slug
+  // it serves reports `context_window: 272_000` with
+  // `effective_context_window_percent: 95` — so ~258k usable — while
+  // `max_context_window` shows what the model could do elsewhere
+  // (872_000 for the 5.6 family, 1_000_000 for gpt-5.4).
+  //
+  // This used to read 1_050_000 "because the 5.4+ tier carries ~1.05M", which
+  // is the API's number and not this route's. `context_window` is what drives
+  // compaction, so believing 1M against a 272k backend does not merely
+  // overstate a figure in the UI — the turn sails past the real cap, gets a
+  // context-overflow rejection, and `is_context_overflow` refuses to retry it.
+  // The conversation ends instead of compacting.
+  //
+  // NOTE: the models.dev enrichment pass reads platform API windows, which are
+  // the wrong ones here for exactly the same reason the pricing below is
+  // pinned to zero. A row it has already enriched keeps its value.
+  contextWindow: 260_000,
   maxOutputTokens: 128_000,
   supportsThinking: true,
   supportsToolStream: true,

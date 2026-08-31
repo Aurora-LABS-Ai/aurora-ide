@@ -24,7 +24,16 @@ use std::path::{Path, PathBuf};
 /// v10: React components returned by imported `memo` and `forwardRef` wrappers
 /// are extracted as functions. A v9 cache still labels them as variables, so it
 /// must rebuild before `code usages` can resolve their JSX references.
-pub const FORMAT_VERSION: u32 = 10;
+///
+/// v11: JavaScript `require()` is an import edge. A v10 cache of a CommonJS
+/// project holds no import rows at all, so `modules` would keep answering
+/// `dependencies: 0` from the cache long after the extractor learned to read
+/// them — the rebuild is what makes the fix visible.
+///
+/// v12: Dart/Flutter is indexed. A v11 cache of a Flutter project holds no
+/// `.dart` files at all, so every answer about one would keep coming back
+/// empty from disk after the grammar was added.
+pub const FORMAT_VERSION: u32 = 12;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.
@@ -235,6 +244,100 @@ pub fn save(idx: &CodeIndex, path: &Path) -> Result<u64> {
     Ok(len)
 }
 
+/// Caches kept after a build, newest first.
+///
+/// Generous on purpose. A cache is one project, it costs a sub-second rebuild
+/// to lose, and mtime records when it was BUILT rather than when it was last
+/// opened — so a project you read from every day but never edit keeps an old
+/// timestamp. A tight cap would collect exactly that project. Twenty-four is
+/// past any plausible set of live workspaces, which leaves this rule doing the
+/// one job it is for: stopping the directory growing without bound.
+pub const KEEP_CACHES: usize = 24;
+
+/// Bytes read from a cache to learn its format version.
+///
+/// `version` is the first field [`Packed`] declares, so it lands within the
+/// first handful of bytes and the whole file never has to be parsed — the
+/// largest of these is 31 MB and there can be dozens. Pinned by
+/// `the_version_is_readable_without_parsing_the_whole_file`.
+const VERSION_PROBE_BYTES: usize = 64;
+
+/// The format version a cache was written with, without parsing it.
+///
+/// `None` when the file cannot be read or does not announce one in its head.
+/// That answer is deliberately NOT "delete it": an unrecognised file in this
+/// directory is something this code does not understand, and guessing wrong
+/// destroys data to save bytes.
+fn cached_version(path: &Path) -> Option<u32> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; VERSION_PROBE_BYTES];
+    let read = file.read(&mut head).ok()?;
+    // Lossy: a path stored later in the file may be cut mid-character, and the
+    // version is ASCII well before that point.
+    let text = String::from_utf8_lossy(&head[..read]);
+    let at = text.find("\"version\":")? + "\"version\":".len();
+    let digits: String = text[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Sweep the cache directory after a build.
+///
+/// Nothing did this before, and nothing else ever would: caches are written per
+/// project and never revisited, so a directory inspected on 2026-08-31 held 34
+/// files and 190 MB, fifteen of them in formats from v4 to v9 that no build has
+/// been able to read for weeks. A cache whose version is not the current one is
+/// not stale data — it is unreachable data, since [`unpack`] refuses it and the
+/// project rebuilds from source instead.
+///
+/// Two rules, in order:
+///
+/// 1. **Wrong format → delete.** It can never be adopted again.
+/// 2. **Past [`KEEP_CACHES`] → delete the oldest.** The bound that keeps a
+///    machine which opens hundreds of projects from keeping all of them.
+///
+/// Runs after the write, so the cache just saved is the newest and always
+/// survives. Best-effort and silent throughout: a directory that cannot be
+/// swept is not a reason to fail a build that already succeeded.
+pub fn prune(dir: &Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut live: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match cached_version(&path) {
+            Some(version) if version != FORMAT_VERSION => {
+                let _ = std::fs::remove_file(&path);
+            }
+            Some(_) => {
+                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                    live.push((modified, path));
+                }
+            }
+            // Not ours, or unreadable. Left alone — see `cached_version`.
+            None => {}
+        }
+    }
+
+    if live.len() <= keep {
+        return;
+    }
+    // Newest first, then drop everything past the keep count.
+    live.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in live.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 pub fn load(path: &Path) -> Result<CodeIndex> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let packed: Packed = serde_json::from_slice(&bytes).context("parsing code index")?;
@@ -254,6 +357,84 @@ mod tests {
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
         (dir, idx)
+    }
+
+    /// `prune` reads the version out of the file's first bytes instead of
+    /// parsing it — the biggest of these is 31 MB and a sweep touches every
+    /// one. That only holds while `version` is the first field `Packed`
+    /// declares, which a field reorder would silently break: the sweep would
+    /// then find no version anywhere, treat every cache as unrecognised, and
+    /// quietly stop reclaiming anything.
+    #[test]
+    fn the_version_is_readable_without_parsing_the_whole_file() {
+        let (dir, idx) = fixture_index();
+        let path = dir.path().join("idx.json");
+        save(&idx, &path).unwrap();
+
+        assert_eq!(
+            cached_version(&path),
+            Some(FORMAT_VERSION),
+            "the version must sit inside the first {VERSION_PROBE_BYTES} bytes"
+        );
+    }
+
+    /// A cache in an old format is not stale data, it is unreachable data:
+    /// `unpack` refuses it and the project rebuilds from source. Nothing swept
+    /// them, so a real machine held 34 caches and 190 MB with fifteen of them
+    /// in formats from v4 to v9 (2026-08-31).
+    #[test]
+    fn a_cache_this_build_cannot_read_is_collected() {
+        let (dir, idx) = fixture_index();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let current = cache_dir.join("current.json");
+        save(&idx, &current).unwrap();
+
+        // An older Aurora's cache, byte-for-byte as one is written.
+        let mut old = pack(&idx);
+        old.version = FORMAT_VERSION - 1;
+        let stale = cache_dir.join("stale.json");
+        std::fs::write(&stale, serde_json::to_vec(&old).unwrap()).unwrap();
+
+        // Something else entirely. Deleting this would be destroying a file
+        // nobody in this module understands.
+        let foreign = cache_dir.join("notes.json");
+        std::fs::write(&foreign, b"{\"hello\":true}").unwrap();
+
+        prune(&cache_dir, KEEP_CACHES);
+
+        assert!(!stale.exists(), "an unreadable format must be reclaimed");
+        assert!(current.exists(), "the current cache must survive");
+        assert!(foreign.exists(), "an unrecognised file must be left alone");
+    }
+
+    /// The bound itself, on caches this build CAN read. Oldest go first, and
+    /// the one just written is the newest, so a build can never collect the
+    /// cache it just saved.
+    #[test]
+    fn past_the_cap_the_oldest_caches_go_first() {
+        let (dir, idx) = fixture_index();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Written oldest-first, with a real pause: the sweep orders by mtime,
+        // and a filesystem whose timestamps land in the same tick would make
+        // the assertion below meaningless rather than wrong.
+        let mut written = Vec::new();
+        for n in 0..4 {
+            let path = cache_dir.join(format!("cache-{n}.json"));
+            save(&idx, &path).unwrap();
+            written.push(path);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        prune(&cache_dir, 2);
+
+        assert!(!written[0].exists(), "oldest collected: {written:?}");
+        assert!(!written[1].exists(), "second oldest collected: {written:?}");
+        assert!(written[2].exists(), "newest two kept: {written:?}");
+        assert!(written[3].exists(), "the freshest write always survives");
     }
 
     #[test]

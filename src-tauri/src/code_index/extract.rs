@@ -308,6 +308,42 @@ fn declarator_identifier(node: Node<'_>, src: &[u8]) -> Option<String> {
 /// Arrow functions and function expressions are anonymous — their name lives on
 /// the `variable_declarator` that binds them, which is why this reaches upward
 /// instead of only reading a `name:` field.
+/// The name of the Dart member whose body this node is.
+///
+/// Dart writes a signature and its body as SIBLINGS — `void launch()` and
+/// `{ … }` are two nodes under one member — so the body, which is the node a
+/// call actually sits inside, carries no name at all. Walking back to the
+/// nearest preceding sibling that does is what turns a Dart file into caller →
+/// callee edges instead of a list of unattributed mentions.
+fn dart_body_name(body: Node<'_>, src: &[u8]) -> Option<String> {
+    let mut sibling = body.prev_named_sibling();
+    while let Some(node) = sibling {
+        if let Some(name) = dart_signature_name(node, src, 0) {
+            return Some(name);
+        }
+        sibling = node.prev_named_sibling();
+    }
+    None
+}
+
+/// First `name:` field at or under `node`. A member's name sits one or two
+/// levels in (`method_signature > function_signature > name`), so this
+/// descends — bounded, because a signature is small and an unbounded walk here
+/// would run over a whole parameter list for nothing.
+fn dart_signature_name(node: Node<'_>, src: &[u8], depth: u8) -> Option<String> {
+    if let Some(name) = named_child_text(node, "name", src) {
+        return Some(name);
+    }
+    if depth >= 3 {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let children: Vec<Node> = node.named_children(&mut cursor).collect();
+    children
+        .into_iter()
+        .find_map(|child| dart_signature_name(child, src, depth + 1))
+}
+
 fn callable_name(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
     let bare = named_child_text(node, "name", src)
         .or_else(|| {
@@ -322,6 +358,13 @@ fn callable_name(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
             let parent = node.parent()?;
             if parent.kind() == "variable_declarator" {
                 named_child_text(parent, "name", src)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            if lang == Lang::Dart {
+                dart_body_name(node, src)
             } else {
                 None
             }
@@ -428,6 +471,12 @@ fn is_exported(name_node: Node<'_>, src: &[u8], lang: Lang) -> bool {
             .chars()
             .next()
             .is_some_and(|c| c.is_uppercase()),
+
+        // Dart has no visibility keyword at all: a leading underscore makes a
+        // name private to its LIBRARY (its file, plus any `part` of it), and
+        // everything else is public. Name-based like Go's capital, and it is
+        // the whole rule — which is why Flutter is full of `_HomeScreenState`.
+        Lang::Dart => !text(name_node, src).starts_with('_'),
 
         // Java and C# default to package-private / private, so the absence of
         // a keyword is a real answer rather than a missing one.
@@ -1085,6 +1134,202 @@ mod tests {
                 .iter()
                 .any(|i| i.local.is_empty() && i.imported.is_empty() && i.module == "./barrel"),
             "re-export dependency was lost: {:?}",
+            f.imports
+        );
+    }
+
+    /// CommonJS is how Node and Electron projects are wired, and the graph read
+    /// none of it: `modules` answered "how is this project wired" with
+    /// `dependencies: 0` for a workspace whose eight directories plainly
+    /// require each other, and `usages` reported `importedByFiles: 0` for a
+    /// class whose callers it had just listed. Reported from a real workspace
+    /// on 2026-08-31.
+    #[test]
+    fn commonjs_require_is_an_import_edge() {
+        let f = facts(
+            Lang::TypeScript,
+            "const engine = require('../core/engine');\n\
+             const { Session } = require('./session');\n\
+             const { Profiles: P } = require('./profiles');\n\
+             require('./register-handlers');\n",
+        );
+
+        let edge = |module: &str| f.imports.iter().find(|i| i.module == module).cloned();
+
+        assert!(
+            edge("../core/engine").is_some(),
+            "whole-module require lost: {:?}",
+            f.imports
+        );
+        assert!(
+            f.imports
+                .iter()
+                .any(|i| i.local == "Session" && i.imported == "Session"),
+            "destructured require lost: {:?}",
+            f.imports
+        );
+        assert!(
+            f.imports
+                .iter()
+                .any(|i| i.local == "P" && i.imported == "Profiles"),
+            "renamed destructured require lost its pairing: {:?}",
+            f.imports
+        );
+        assert!(
+            edge("./register-handlers").is_some(),
+            "side-effect require lost: {:?}",
+            f.imports
+        );
+    }
+
+    /// `require` is a call, not syntax, so the patterns lean on `#eq?` to tell
+    /// it from every other one-string call. If predicates were NOT applied,
+    /// this passes silently in the wrong direction: every logged string in the
+    /// project becomes a module edge, and the dependency graph fills with
+    /// files that do not exist. Ruby's query skips `require` for exactly this
+    /// risk (see ruby.scm) — this test is what lets JavaScript take it.
+    #[test]
+    fn a_one_string_call_that_is_not_require_is_not_an_import() {
+        let f = facts(
+            Lang::TypeScript,
+            "console.log('./session');\nregisterModule('./engine');\nimport('./real');\n",
+        );
+
+        assert!(
+            !f.imports.iter().any(|i| i.module == "./session"),
+            "a logged string was read as a module edge — `#eq?` is not filtering: {:?}",
+            f.imports
+        );
+        assert!(
+            !f.imports.iter().any(|i| i.module == "./engine"),
+            "an unrelated one-string call became a module edge: {:?}",
+            f.imports
+        );
+    }
+
+    /// The binding a `require` introduces is still a variable this file owns.
+    /// Losing that would trade one gap for another: the import edge appears and
+    /// `code definition` stops finding the name.
+    #[test]
+    fn a_required_binding_stays_a_variable_definition() {
+        let f = facts(Lang::TypeScript, "const paths = require('./paths');\n");
+        assert_eq!(sym(&f, "paths").kind, "variable");
+        assert!(f.imports.iter().any(|i| i.module == "./paths"));
+    }
+
+    /// The shapes a Flutter file is actually made of, taken from a real app:
+    /// a widget pair, a model with fields and a named constructor, an enum, a
+    /// mixin, an extension, and the four import forms the ecosystem uses.
+    #[test]
+    fn dart_flutter_declarations_are_extracted() {
+        let f = facts(
+            Lang::Dart,
+            "import 'package:flutter/material.dart';\n\
+             import 'package:path/path.dart' as p;\n\
+             import '../domain/models/post.dart';\n\
+             export 'create_story_screen.dart';\n\
+             \n\
+             typedef PostFilter = bool Function(Post post);\n\
+             \n\
+             enum MediaType { photo, video }\n\
+             \n\
+             mixin Disposable { void dispose(); }\n\
+             \n\
+             extension PostX on Post { bool get isFresh => true; }\n\
+             \n\
+             class Post {\n\
+               final String postId;\n\
+               const Post({required this.postId});\n\
+               factory Post.empty() => const Post(postId: '');\n\
+               String get slug => postId;\n\
+               void archive() { markArchived(postId); }\n\
+             }\n\
+             \n\
+             class HomeScreen extends StatefulWidget {\n\
+               @override\n\
+               State<HomeScreen> createState() => _HomeScreenState();\n\
+             }\n\
+             \n\
+             class _HomeScreenState extends State<HomeScreen> {\n\
+               @override\n\
+               Widget build(BuildContext context) { return buildBody(); }\n\
+             }\n",
+        );
+
+        let kind_of = |name: &str| f.symbols.iter().find(|s| s.name == name).map(|s| &s.kind);
+        assert_eq!(kind_of("Post").map(String::as_str), Some("class"));
+        assert_eq!(kind_of("HomeScreen").map(String::as_str), Some("class"));
+        assert_eq!(kind_of("MediaType").map(String::as_str), Some("enum"));
+        assert_eq!(kind_of("photo").map(String::as_str), Some("variant"));
+        assert_eq!(kind_of("Disposable").map(String::as_str), Some("trait"));
+        assert_eq!(kind_of("PostX").map(String::as_str), Some("trait"));
+        assert_eq!(kind_of("PostFilter").map(String::as_str), Some("type"));
+        assert_eq!(kind_of("archive").map(String::as_str), Some("method"));
+        assert_eq!(kind_of("slug").map(String::as_str), Some("method"));
+        assert_eq!(kind_of("postId").map(String::as_str), Some("field"));
+
+        // A method belongs to its class, which is what makes `code outline`
+        // and a qualified `Post.archive` lookup work.
+        assert_eq!(
+            sym(&f, "archive").container.as_deref(),
+            Some("Post"),
+            "method must carry its class: {:?}",
+            f.symbols
+        );
+
+        // Dart's whole visibility rule is the leading underscore.
+        assert!(sym(&f, "HomeScreen").exported, "public widget");
+        assert!(
+            !sym(&f, "_HomeScreenState").exported,
+            "underscore is private"
+        );
+    }
+
+    /// Dart declares a member's signature and its body as siblings, so naming
+    /// the declaration as the callable node would attribute every call inside a
+    /// method to nothing. This is the test that catches that.
+    #[test]
+    fn a_dart_call_is_attributed_to_the_method_it_sits_in() {
+        let f = facts(
+            Lang::Dart,
+            "class Engine {\n  void launch() { startSession(); }\n}\n",
+        );
+        let call = f
+            .refs
+            .iter()
+            .find(|r| r.name == "startSession")
+            .expect("the call was captured");
+        assert_eq!(call.kind, "call");
+        assert_eq!(
+            call.from.as_deref(),
+            Some("Engine::launch"),
+            "a call must name the method it is inside, qualified by its class: {:?}",
+            f.refs
+        );
+    }
+
+    /// Flutter's own ecosystem is relative imports plus `export` barrels, with
+    /// `package:` for pub dependencies. All four have to become import rows or
+    /// the dependency graph is empty — the same failure CommonJS had.
+    #[test]
+    fn dart_imports_cover_package_relative_aliased_and_barrel_forms() {
+        let f = facts(
+            Lang::Dart,
+            "import 'package:flutter/material.dart';\n\
+             import 'package:path/path.dart' as p;\n\
+             import '../domain/models/post.dart';\n\
+             export 'screens/home_screen.dart';\n",
+        );
+
+        let module = |m: &str| f.imports.iter().any(|i| i.module == m);
+        assert!(module("package:flutter/material.dart"), "{:?}", f.imports);
+        assert!(module("../domain/models/post.dart"), "{:?}", f.imports);
+        assert!(module("screens/home_screen.dart"), "export barrel");
+        assert!(
+            f.imports
+                .iter()
+                .any(|i| i.local == "p" && i.module == "package:path/path.dart"),
+            "an `as p` alias binds a namespace: {:?}",
             f.imports
         );
     }

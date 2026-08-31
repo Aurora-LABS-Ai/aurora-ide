@@ -430,7 +430,11 @@ pub(super) const MAX_UI_TOOL_RESULT_LENGTH: usize = 512 * 1024; // 512 KiB
 pub(super) const MAX_UI_JSON_FIELD_LENGTH: usize = 128 * 1024; // 128 KiB per string field
 
 pub(super) fn truncate_tool_content_for_ui(tool_name: &str, s: String) -> String {
-    if tool_name == "browser_screenshot" {
+    // Keyed on the CONTENT, not the tool: `file_read` returns an image marker
+    // whenever the path was a picture, and the UI copy is the one that gets
+    // persisted — letting base64 through it would put megabytes of encoded
+    // pixels into the thread store for every image the agent opens.
+    if tool_name == "browser_screenshot" || crate::api::aurora_image::has_marker(&s) {
         return screenshot_ui_payload(&s);
     }
 
@@ -463,14 +467,16 @@ pub(super) fn truncate_tool_content_for_ui(tool_name: &str, s: String) -> String
     out
 }
 
-/// Build the UI-facing payload for a `browser_screenshot` result.
+/// Build the UI-facing payload for a result carrying an image — a
+/// `browser_screenshot` capture, or a picture opened by `file_read`.
 ///
 /// The model-history copy keeps the full `<aurora_image>…base64…</aurora_image>`
 /// block (the vision path). The UI must NOT carry that base64 — it would bloat
 /// every persisted thread. Instead we emit a small JSON envelope the tool card's
-/// parser understands: the on-disk PNG `path` (asset-protocol loadable), its
-/// pixel `width`/`height`, and the page `url`. The card renders the image from
-/// `path`; no image bytes touch the thread store.
+/// parser understands: the on-disk `path` (asset-protocol loadable), its pixel
+/// `width`/`height`, the page `url` for a capture, and the file `name` for a
+/// read. The card renders the image from `path`; no image bytes touch the
+/// thread store.
 ///
 /// Falls back gracefully: if there's no `<aurora_image>` block at all (e.g. an
 /// error string), the original text passes through unchanged.
@@ -479,9 +485,24 @@ pub(super) fn screenshot_ui_payload(s: &str) -> String {
         return s.to_string();
     };
 
+    // A `file_read` may return several pictures, and their captions, and the
+    // JSON for the text files read alongside them. That does not fit one
+    // envelope, so it keeps its own shape and only sheds the base64 — the card
+    // reads the markers back and renders every image from its `src`.
+    if crate::api::aurora_image::find_marker(s, marker.end).is_some() {
+        return leanify_aurora_images(s);
+    }
+
     let path = marker.src().map(|v| unescape_xml_attr(v.to_string()));
     let width = marker.attr("width").and_then(|v| v.parse::<u64>().ok());
     let height = marker.attr("height").and_then(|v| v.parse::<u64>().ok());
+    // A capture is named by the page it photographed; a file read is named by
+    // the file. Only one of the two is ever present, and the card labels itself
+    // from whichever it got — the cache filename (`img-9f2c….jpg`) names
+    // nothing anybody asked for.
+    let name = marker
+        .attr("name")
+        .map(|v| unescape_xml_attr(v.to_string()));
 
     // The caption after the block reads `Screenshot of <url> (WxH px)` — pull the
     // URL out of it for the card's summary line.
@@ -498,6 +519,7 @@ pub(super) fn screenshot_ui_payload(s: &str) -> String {
             "width": width,
             "height": height,
             "url": url,
+            "name": name,
         }
     })
     .to_string()
@@ -531,10 +553,10 @@ pub(super) fn leanify_aurora_images(s: &str) -> String {
     out
 }
 
-/// Reverse the minimal XML-attribute escaping applied when the screenshot path
-/// was written into the `src` attribute (`&amp;` → `&`, `&quot;` → `"`).
+/// Reverse the minimal XML-attribute escaping applied when the image path was
+/// written into the `src` attribute (`&amp;` → `&`, `&quot;` → `"`).
 pub(super) fn unescape_xml_attr(v: String) -> String {
-    v.replace("&quot;", "\"").replace("&amp;", "&")
+    crate::api::aurora_image::unescape_attr(&v)
 }
 
 /// Recursively clamp every string in a JSON value to

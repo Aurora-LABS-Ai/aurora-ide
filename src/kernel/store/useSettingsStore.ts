@@ -23,7 +23,7 @@ import { ATLAS_CLOUD_PRESET } from "@/apps/agent/services/providers/atlascloud";
 import { CODEX_PRESET } from "@/apps/agent/services/providers/codex";
 import { CURSOR_PRESET } from "@/apps/agent/services/providers/cursor";
 import { OPENCODE_PRESET } from "@/apps/agent/services/providers/opencode";
-import { AGENT_ROUTER_PRESET } from "@/apps/agent/services/providers/agentrouter";
+import { AGENT_ROUTER_PRESET, isAgentRouterWireChoice } from "@/apps/agent/services/providers/agentrouter";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
 import { MAX_ENABLED_SKILLS } from "@/apps/agent/services/skills/skills";
 import type {
@@ -399,6 +399,14 @@ interface SettingsState {
    * it stops a removed built-in from silently re-seeding on the next launch.
    */
   removedProviderIds: string[];
+  /**
+   * Model ids (`providerId::modelKey`) the user deleted from a built-in
+   * provider. Same job as {@link removedProviderIds}, one level down: preset
+   * rosters re-add any missing model key on launch, and this record is what
+   * makes the delete survive the restart. Re-adding the model by hand clears
+   * its entry.
+   */
+  removedPresetModelIds: string[];
 
   // Editor Settings
   explorerIconPack: ExplorerIconPackId;
@@ -609,7 +617,7 @@ export interface LLMProvider {
   // shape. The choice rides here rather than in a separate field so everything
   // downstream (URL builder, streaming client, reasoning replay) follows from
   // one value that cannot disagree with itself.
-  providerType?: "openai" | "openai-responses" | "codex" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "opencode-go" | "opencode-go-chat" | "custom"; // Explicit provider type
+  providerType?: "openai" | "openai-responses" | "codex" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -752,6 +760,11 @@ const presetToProvider = (preset: ProviderCatalogPreset): LLMProvider => ({
  * session, and be gone the next morning, which is the worst way for a control
  * to fail. A stored type that is a variant of the preset's own is therefore
  * kept.
+ *
+ * AgentRouter is the second such provider: its two wires are the plain
+ * `openai` / `anthropic` types (no variant prefix to detect), so its stored
+ * choice is preserved by name at the call site — see
+ * {@link isAgentRouterWireChoice}.
  */
 export function resolveProviderType(
   presetType: LLMProvider["providerType"],
@@ -1161,7 +1174,14 @@ function buildProviderConfigForSelection(
     supportsToolStream:
       resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
     supportsVision: resolved?.supportsVision ?? false,
-    providerType: provider.providerType ?? "custom",
+    // The wire can belong to the model. Schema v24 already persists this, but
+    // the generic resolver used to ignore it and only OpenCode's one-off
+    // post-processor read the field. That made the settings test and a live
+    // turn disagree for every other mixed-format gateway.
+    providerType:
+      (resolved?.providerType as LLMProvider["providerType"] | undefined) ??
+      provider.providerType ??
+      "custom",
     customHeaders: provider.customHeaders,
     customParams: provider.customParams,
     defaultTemperature: provider.defaultTemperature,
@@ -1294,6 +1314,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Providers the user removed from the Providers page (presets re-seed
   // each launch, so removal is tracked here and filtered out on merge).
   removedProviderIds: [],
+  // Preset models the user deleted — same mechanism, per model row.
+  removedPresetModelIds: [],
 
   // Theme
   theme: "dark",
@@ -1388,10 +1410,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // Fetched up-front (the full app-settings load happens later); failure
       // defaults to "nothing removed".
       let removedProviderIds: string[] = [];
+      let removedPresetModelIds: string[] = [];
       try {
         const earlySettings = await databaseService.getAppSettings();
         if (Array.isArray(earlySettings?.removedProviderIds)) {
           removedProviderIds = earlySettings.removedProviderIds;
+        }
+        if (Array.isArray(earlySettings?.removedPresetModelIds)) {
+          removedPresetModelIds = earlySettings.removedPresetModelIds;
         }
       } catch {
         // ignore — treat as nothing removed
@@ -1421,10 +1447,15 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               ...presetProvider,
               ...dbProvider,
               isCustom: false,
-              providerType: resolveProviderType(
-                presetProvider.providerType,
-                dbProvider.providerType,
-              ),
+              // AgentRouter's wire (Chat vs Messages) is the user's choice —
+              // restoring the preset's `openai` here would silently undo it
+              // on every launch.
+              providerType: isAgentRouterWireChoice(dbProvider)
+                ? dbProvider.providerType
+                : resolveProviderType(
+                    presetProvider.providerType,
+                    dbProvider.providerType,
+                  ),
               // The catalogue owns a built-in's display name — it cannot be
               // edited in the UI, so a stored one is only ever a stale copy,
               // and letting it win would freeze a name we later corrected.
@@ -1473,11 +1504,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           }
         }
         // For each preset, ensure every model_key appears at least once.
-        // Preset-supplied capabilities only seed; user edits stick.
+        // Preset-supplied capabilities only seed; user edits stick — and so
+        // do DELETES: a missing row the user removed on purpose is recorded
+        // in `removedPresetModelIds` and must not resurrect here. Without
+        // that record, "delete gpt-5.5" worked for a session and the model
+        // was back every morning.
+        const removedModelSet = new Set(removedPresetModelIds);
         for (const preset of presetProviders) {
           const presetModels = modelsFromPreset(preset);
           for (const pm of presetModels) {
-            if (!seenIds.has(pm.id)) {
+            if (!seenIds.has(pm.id) && !removedModelSet.has(pm.id)) {
               mergedModels.push(pm);
               seenIds.add(pm.id);
               // Persist the seeded preset model row.
@@ -1617,6 +1653,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           fireworksTabEnabled: appSettings.fireworksTabEnabled ?? false,
           fireworksAccountId: appSettings.fireworksAccountId ?? "",
           removedProviderIds: appSettings.removedProviderIds ?? [],
+          removedPresetModelIds: appSettings.removedPresetModelIds ?? [],
           fontSize: appSettings.fontSize ?? 14,
           wrapMode: appSettings.wrapMode ?? true,
           theme: (appSettings.theme as 'dark' | 'light') || "dark",
@@ -1724,6 +1761,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         fireworksTabEnabled: state.fireworksTabEnabled,
         fireworksAccountId: state.fireworksAccountId,
         removedProviderIds: state.removedProviderIds,
+        removedPresetModelIds: state.removedPresetModelIds,
         fontSize: state.fontSize,
         wrapMode: state.wrapMode,
         theme: state.theme,
@@ -2107,7 +2145,15 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         nextModels,
         state.selectedModel,
       );
-      return { models: nextModels, providers: synthesized };
+      return {
+        models: nextModels,
+        providers: synthesized,
+        // Re-adding a model the user once deleted is a change of mind —
+        // lift its tombstone so the roster and the record agree.
+        removedPresetModelIds: state.removedPresetModelIds.includes(id)
+          ? state.removedPresetModelIds.filter((r) => r !== id)
+          : state.removedPresetModelIds,
+      };
     });
     databaseService.upsertProviderModel(modelToDb(newModel)).catch(console.error);
     return id;
@@ -2166,7 +2212,20 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       nextModels,
       nextSelected,
     );
-    set({ models: nextModels, selectedModel: nextSelected, providers: synthesized });
+    // A model deleted from a BUILT-IN provider must not resurrect: the
+    // preset roster re-adds any missing key on launch, so record the id.
+    // Custom providers' models are truly deleted — nothing re-seeds them.
+    const owner = state.providers.find((p) => p.id === target.providerId);
+    const removedPresetModelIds =
+      owner && !owner.isCustom && !state.removedPresetModelIds.includes(id)
+        ? [...state.removedPresetModelIds, id]
+        : state.removedPresetModelIds;
+    set({
+      models: nextModels,
+      selectedModel: nextSelected,
+      providers: synthesized,
+      removedPresetModelIds,
+    });
     get().saveToDatabase();
   },
 
@@ -2588,7 +2647,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         supportsToolStream:
           resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
         supportsVision: resolved?.supportsVision ?? false,
-        providerType: provider.providerType ?? "custom",
+        providerType:
+          (resolved?.providerType as LLMProvider["providerType"] | undefined) ??
+          provider.providerType ??
+          "custom",
         customHeaders: provider.customHeaders,
         customParams: provider.customParams,
         defaultTemperature: provider.defaultTemperature,
@@ -2622,7 +2684,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         supportsToolStream:
           resolved?.supportsToolStream ?? fallback.supportsToolStream ?? false,
         supportsVision: resolved?.supportsVision ?? false,
-        providerType: fallback.providerType ?? "custom",
+        providerType:
+          (resolved?.providerType as LLMProvider["providerType"] | undefined) ??
+          fallback.providerType ??
+          "custom",
         customHeaders: fallback.customHeaders,
         customParams: fallback.customParams,
         defaultTemperature: fallback.defaultTemperature,

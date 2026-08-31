@@ -58,6 +58,38 @@ pub struct TurnDriver<E: EventEmitter> {
     registry: Arc<AgentRegistry>,
     emitter: Arc<E>,
 }
+/// What to persist as the thread's model.
+///
+/// The pin answers "what is this conversation on", and every later capability
+/// lookup keys on it — the context window the turn is budgeted against most of
+/// all. So it has to be the model as the user picked it, not the id the wire
+/// happened to need. See [`AgentChatRequest::model_selection`]; for every
+/// provider but Cursor the two are the same string.
+fn pinned_model(request: &AgentChatRequest) -> String {
+    pin_for(
+        request.model_selection.as_deref(),
+        &request.model,
+        &request.provider_id,
+    )
+}
+
+/// [`pinned_model`] over plain strings, so the rule can be tested without
+/// standing up a whole request.
+fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &str) -> String {
+    let model = selection
+        .map(str::trim)
+        .filter(|selection| !selection.is_empty())
+        .unwrap_or(wire_model);
+    // A selection usually arrives already qualified (`cursor:cursor-grok-4.6`),
+    // because that is the form models are selected by. Prefixing it again gives
+    // `cursor:cursor:…`, which matches nothing — the same failure by a
+    // different route.
+    if model.contains(':') {
+        model.to_string()
+    } else {
+        format!("{provider_id}:{model}")
+    }
+}
 
 impl<E: EventEmitter> TurnDriver<E> {
     #[must_use]
@@ -123,7 +155,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                     session.workspace_root = Some(ws.clone());
                 }
             }
-            session.model = Some(format!("{}:{}", request.provider_id, request.model));
+            session.model = Some(pinned_model(&request));
 
             let mut seq = 0;
             runtime
@@ -147,7 +179,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         let _ = store.set_workspace_and_model(
             &thread_id,
             request.workspace_path.clone(),
-            Some(format!("{}:{}", request.provider_id, request.model)),
+            Some(pinned_model(&request)),
         );
 
         self.registry.unregister_in_flight(&turn_id);
@@ -291,16 +323,11 @@ impl<E: EventEmitter> TurnDriver<E> {
                     session.workspace_root = Some(ws.clone());
                 }
             }
-            // The active model MUST track the current request every turn.
-            // `conversation.rs` sends `session.model` to the provider, while
-            // the provider endpoint + API key come from THIS request's
-            // provider_config. Pinning the model on the first turn only meant
-            // a mid-thread model switch sent the OLD model id to the NEW
-            // provider's endpoint — e.g. a Fireworks model id posted to the
-            // DeepSeek endpoint → HTTP 400 "supported API model names are …".
-            // Updating every turn keeps model + provider consistent, and the
-            // thread's persisted model reflects the one actually in use.
-            session.model = Some(format!("{}:{}", request.provider_id, request.model));
+            // The stable pin MUST track the current selection every turn. The
+            // runtime sends `request.model` through `RuntimeConfig::wire_model`;
+            // `session.model` is the durable identity used by later capability
+            // and context-window lookups. They differ only for Cursor.
+            session.model = Some(pinned_model(&request));
 
             // Snapshot the message count before the runtime runs so we
             // can detect whether this turn actually appended anything
@@ -424,7 +451,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             let _ = store.set_workspace_and_model(
                 &thread_id,
                 request.workspace_path.clone(),
-                Some(format!("{}:{}", request.provider_id, request.model)),
+                Some(pinned_model(&request)),
             );
             // Auto-title from the first user message: derive a clean
             // chat-list label by stripping markdown fences, JSON
@@ -494,7 +521,6 @@ impl<E: EventEmitter> TurnDriver<E> {
         }
     }
 }
-
 /// Compose `RuntimeConfig` from the request's per-turn overrides.
 ///
 /// The defaults (max_iterations: None, default_max_output_tokens:
@@ -527,18 +553,29 @@ pub(super) fn with_compaction_model(
 pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
     let defaults = RuntimeConfig::default();
     RuntimeConfig {
+        // What to SEND, as the frontend composed it. Distinct from the pin the
+        // session records — see `RuntimeConfig::wire_model`.
+        wire_model: request.model.clone(),
         max_iterations: defaults.max_iterations,
         system_prompt: request.system_prompt.clone(),
         default_max_output_tokens: request
             .max_output_tokens
             .unwrap_or(defaults.default_max_output_tokens),
-        thinking_enabled: request
-            .thinking_enabled
-            .unwrap_or(defaults.thinking_enabled),
-        // A budget of 0 is the frontend's "no explicit budget" encoding for a
-        // model whose reasoning control isn't a budget — treat it as absent so
-        // the adapter falls back to its effort-derived default.
-        thinking_budget_tokens: request.thinking_budget_tokens.filter(|b| *b > 0),
+        // New payloads carry one typed reasoning contract inside the provider
+        // snapshot. The legacy pair remains an input fallback so an older
+        // frontend can hot-reload against this backend without losing turns.
+        reasoning: request
+            .provider_config
+            .reasoning
+            .clone()
+            .unwrap_or_else(|| {
+                crate::agent_runtime::api_client::ReasoningConfig::legacy(
+                    request
+                        .thinking_enabled
+                        .unwrap_or(defaults.reasoning.enabled),
+                    request.thinking_budget_tokens,
+                )
+            }),
         default_temperature: request.temperature.or(defaults.default_temperature),
         ide_context: request.ide_context.clone(),
         // Budget-aware trim engages only when the frontend supplies the
@@ -566,6 +603,11 @@ pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig 
             request.provider_config.effective_provider_type(),
             &request.model,
             &request.provider_config.base_url,
+            request.provider_config.reasoning.as_ref().map_or(
+                crate::agent_runtime::api_client::ReasoningReplayMode::Auto,
+                |reasoning| reasoning.replay,
+            ),
+            request.provider_config.custom_params.as_ref(),
         ),
     }
 }

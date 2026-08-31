@@ -310,6 +310,51 @@ mod tests {
         );
     }
 
+    /// The reported failure, reproduced at the layer that produced it: an
+    /// Electron workspace wired entirely with `require()` came back from
+    /// `modules` as `dependencies: 0` across eight directories, every one
+    /// reporting `fanIn: 0, fanOut: 0`. The extractor read no CommonJS, so the
+    /// graph had nothing to roll up.
+    ///
+    /// The file shapes below are the ones from that workspace: `gui` requires
+    /// `../core/engine`, and `core` requires its own siblings.
+    #[test]
+    fn a_commonjs_project_is_wired_like_any_other() {
+        let (_d, idx) = build_index(&[
+            ("core/paths.js", "module.exports = { root: '/' };\n"),
+            (
+                "core/session.js",
+                "const paths = require('./paths');\nclass Session {}\nmodule.exports = { Session };\n",
+            ),
+            (
+                "core/engine.js",
+                "const { Session } = require('./session');\nconst profiles = require('./profiles');\nclass Engine {}\nmodule.exports = { Engine };\n",
+            ),
+            ("core/profiles.js", "module.exports = {};\n"),
+            (
+                "gui/main.js",
+                "const { Engine } = require('../core/engine');\nnew Engine();\n",
+            ),
+        ]);
+        let g = build(&idx, Granularity::Dir);
+
+        let core = g.nodes.iter().find(|n| n.name == "core").expect("core");
+        assert!(
+            core.fan_in > 0,
+            "gui requires core, so core is depended upon: {:?}",
+            g.nodes
+        );
+        let gui = g.nodes.iter().find(|n| n.name == "gui").expect("gui");
+        assert_eq!(gui.fan_out, 1, "gui depends on core: {:?}", g.nodes);
+        assert!(
+            g.edges
+                .iter()
+                .any(|(from, to, _)| from == "gui" && to == "core"),
+            "the gui -> core edge the report named is missing: {:?}",
+            g.edges
+        );
+    }
+
     #[test]
     fn side_effect_imports_are_dependencies_even_without_a_local_binding() {
         let (_d, idx) = build_index(&[

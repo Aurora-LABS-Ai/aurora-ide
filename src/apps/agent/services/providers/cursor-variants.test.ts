@@ -6,6 +6,8 @@ import {
   cursorHasFast,
   cursorWireModel,
   primeCursorVariants,
+  resetCursorVariantHydration,
+  resolveCursorVariant,
   splitCursorVariant,
   toRunnableModels,
 } from "./cursor-variants";
@@ -115,19 +117,19 @@ describe("cursorWireModel", () => {
     );
   });
 
-  it("runs non-fast rather than sending an id the account cannot reach", () => {
-    // The whole reason composition is checked against the catalogue: a model
-    // with no fast twin sent `-fast` fails the turn with nothing to explain it.
+  it("rejects Fast when the exact twin does not exist", () => {
     primeCursorVariants([view("cursor-composer-2.5")]);
-    expect(cursorWireModel("cursor-composer-2.5", { fast: true })).toBe(
-      "cursor-composer-2.5",
-    );
+    expect(resolveCursorVariant("cursor-composer-2.5", { fast: true })).toMatchObject({
+      ok: false,
+      reason: "unsupported_combination",
+    });
   });
 
-  it("ignores thinking on a model that has no thinking ids", () => {
-    expect(cursorWireModel("cursor-grok-4.6-high", { thinking: true })).toBe(
-      "cursor-grok-4.6-high",
-    );
+  it("rejects thinking on a model that has no thinking ids", () => {
+    expect(resolveCursorVariant("cursor-grok-4.6-high", { thinking: true })).toMatchObject({
+      ok: false,
+      reason: "unsupported_combination",
+    });
   });
 
   it("drops thinking when the switch is off", () => {
@@ -142,13 +144,14 @@ describe("cursorWireModel", () => {
     ).toBe("cursor-claude-opus-5-high");
   });
 
-  it("falls back to the picked id when nothing has been loaded", () => {
-    // The index is empty before the catalogue syncs. The picked id came from
-    // that same catalogue, so it is always safe to send as-is — a turn must
-    // not fail because a background refresh had not finished.
+  it("fails closed when no catalogue has been loaded", () => {
     clearCursorVariants();
-    expect(cursorWireModel("cursor-grok-4.6-high", { fast: true, effort: "low" })).toBe(
-      "cursor-grok-4.6-high",
+    expect(resolveCursorVariant("cursor-grok-4.6", { fast: true, effort: "low" })).toMatchObject({
+      ok: false,
+      reason: "catalogue_unavailable",
+    });
+    expect(() => cursorWireModel("cursor-grok-4.6", { effort: "low" })).toThrow(
+      /catalogue is not ready/i,
     );
   });
 
@@ -157,16 +160,37 @@ describe("cursorWireModel", () => {
       "cursor-grok-4.6-medium-fast",
     );
   });
+
+  it("returns Cursor's real spelling when modifier order is reversed", () => {
+    primeCursorVariants([view("cursor-claude-opus-5-high-thinking")]);
+    expect(
+      cursorWireModel("cursor-claude-opus-5", { thinking: true, effort: "high" }),
+    ).toBe("cursor-claude-opus-5-high-thinking");
+  });
 });
 
 describe("cursorHasFast", () => {
-  it("is true only where the account carries a twin", () => {
+  it("is true only for an exact effort and thinking tuple", () => {
     primeCursorVariants([
       ...GROK.map((id) => view(id)),
       view("cursor-composer-2.5"),
     ]);
-    expect(cursorHasFast("cursor-grok-4.6-high")).toBe(true);
+    expect(cursorHasFast("cursor-grok-4.6", { thinking: false, effort: "high" })).toBe(true);
     expect(cursorHasFast("cursor-composer-2.5")).toBe(false);
+  });
+
+  it("does not claim Fast for a tier whose twin is missing", () => {
+    primeCursorVariants(
+      ["gpt-5.4-low", "gpt-5.4-medium", "gpt-5.4-medium-fast"].map((id) => view(id)),
+    );
+    expect(cursorHasFast("gpt-5.4", { effort: "low", thinking: false })).toBe(false);
+    expect(cursorHasFast("gpt-5.4", { effort: "medium", thinking: false })).toBe(true);
+  });
+
+  it("hydrates the mirror before a UI capability read", () => {
+    primeCursorVariants(GROK.map((id) => view(id)));
+    resetCursorVariantHydration();
+    expect(cursorHasFast("cursor-grok-4.6", { effort: "high", thinking: false })).toBe(true);
   });
 });
 

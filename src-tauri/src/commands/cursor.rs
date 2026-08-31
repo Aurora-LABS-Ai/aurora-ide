@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::api::cursor::auth::{self, CursorAuthStatus};
+use crate::api::cursor::usage::{self, CursorUsageSnapshot};
 use crate::db::{CursorModel, Database};
 
 /// Current sign-in state.
@@ -25,6 +26,15 @@ pub async fn cursor_auth_status() -> Result<CursorAuthStatus, String> {
     tokio::task::spawn_blocking(auth::status)
         .await
         .map_err(|err| format!("Status task failed: {err}"))?
+}
+
+/// How much of the Cursor plan is left.
+///
+/// Already `async` and network-bound, so unlike its neighbours it needs no
+/// `spawn_blocking` — nothing here touches the disk on the UI thread.
+#[tauri::command]
+pub async fn cursor_usage_get() -> Result<CursorUsageSnapshot, String> {
+    usage::fetch_usage().await
 }
 
 /// Adopt the Cursor desktop app's session into Aurora's own store.

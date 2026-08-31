@@ -31,6 +31,7 @@ import {
 } from "@/apps/agent/services/providers/cursor";
 import {
   clearCursorVariants,
+  cursorReasons,
   primeCursorVariants,
   toRunnableModels,
   type CursorEffort,
@@ -51,18 +52,35 @@ function toModelRow(
   catalog: ModelsDevEntry | null,
 ): Omit<LLMModel, "id" | "providerId" | "sortOrder"> {
   return {
-    // A real, sendable id. Effort and Fast rewrite it at send time; this is
-    // what the conversation pins to and what the picker lists.
-    modelKey: model.representativeId,
+    // The model's own id, with nothing said about how to run it.
+    //
+    // Effort and Fast are **capabilities the user chooses**, not part of what
+    // the model is — so they belong to the controls on this row, and the id
+    // that carries them is built at send time (`applyCursorVariant`). Storing a
+    // decorated id here instead made `cursor-grok-4.6-high` the model's name in
+    // the database and on the provider page, which is not its name; and once
+    // that decorated string became what the conversation pinned, it stopped
+    // matching this row, so the model's context window could no longer be found
+    // and the turn fell back to the provider default.
+    modelKey: model.stem,
     label: model.label,
-    contextWindow: catalog?.contextWindow,
-    maxOutputTokens: catalog?.maxOutputTokens,
+    // What is already on the row wins over models.dev.
+    //
+    // These two are editable — the same as on every other provider — and the
+    // catalogue is replaced wholesale on every refresh, so reading models.dev
+    // first would quietly undo a correction on a schedule nobody sees.
+    // models.dev seeds a row that has no number yet; it is not an authority
+    // that overwrites one. Clearing the field and refreshing re-seeds it.
+    contextWindow: previous?.contextWindow ?? catalog?.contextWindow,
+    maxOutputTokens: previous?.maxOutputTokens ?? catalog?.maxOutputTokens,
     // Cursor's wire says nothing about modality or price, so models.dev is the
     // only honest source. A miss leaves the flags off rather than guessing —
     // an unclaimed capability degrades to "not offered", a wrongly claimed one
     // fails mid-turn with an image the model cannot read.
     supportsVision: catalog?.supportsVision ?? false,
-    supportsThinking: model.hasThinking || (catalog?.supportsThinking ?? false),
+    // An effort tier is this wire's reasoning control, so a model carrying
+    // tiers reasons even with no `-thinking` id anywhere on the account.
+    supportsThinking: cursorReasons(model) || (catalog?.supportsThinking ?? false),
     // Every model Cursor's agent service exposes can call tools — that is what
     // the service is for.
     supportsToolStream: true,
@@ -150,21 +168,29 @@ export async function syncCursorModelsIntoStore(): Promise<number> {
   // would compose to sits in the same group.
   primeCursorVariants(catalogue.models);
 
-  const enabled = catalogue.models.filter((m) => m.enabled);
-  const runnable = toRunnableModels(enabled);
+  // Enablement is a family-level choice in the UI. Build capabilities from
+  // every current variant, then keep families where any member is enabled.
+  // This also makes a newly published tier immediately part of an already
+  // enabled family instead of leaving the selector with a partial matrix.
+  const runnable = toRunnableModels(catalogue.models).filter((model) => model.enabled);
 
-  const store = useSettingsStore.getState();
-  const existing = new Map(
-    store.models
-      .filter((m) => m.providerId === CURSOR_PROVIDER_ID)
-      .map((m) => [m.modelKey, m]),
+  const catalogs = await Promise.all(
+    runnable.map(async (model) => {
+      return model.catalogKey ? lookupModel(model.catalogKey).catch(() => null) : null;
+    }),
   );
 
-  const rows = await Promise.all(
-    runnable.map(async (model) => {
-      const catalog = model.catalogKey ? await lookupModel(model.catalogKey).catch(() => null) : null;
-      return toModelRow(model, existing.get(model.representativeId), catalog);
-    }),
+  // Metadata lookup crosses the network. Re-read editable rows after it
+  // returns so a context-window or reasoning change made during the refresh is
+  // not overwritten by a stale pre-await snapshot.
+  const existing = new Map(
+    useSettingsStore
+      .getState()
+      .models.filter((model) => model.providerId === CURSOR_PROVIDER_ID)
+      .map((model) => [model.modelKey, model]),
+  );
+  const rows = runnable.map((model, index) =>
+    toModelRow(model, existing.get(model.stem), catalogs[index]),
   );
 
   useSettingsStore.getState().replaceModelsForProvider(CURSOR_PROVIDER_ID, rows);

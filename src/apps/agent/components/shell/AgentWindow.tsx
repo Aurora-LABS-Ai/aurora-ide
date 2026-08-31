@@ -98,12 +98,19 @@ export const AgentWindow: React.FC = () => {
 
   // Keep the team brain snapshot warm for whatever project this window is scoped
   // to, so the rail's Team entry and the Team screen are live the moment they're
-  // shown (and re-scope with the project).
+  // shown (and re-scope with the project). Off in Settings means off in the
+  // window too: nothing polls, and any team surface still open is taken down —
+  // including a `team` tab restored from a previous session.
+  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
   useEffect(() => {
+    if (!teamEnabled) {
+      useAgentWorkspaceStore.getState().closeTeamTabs();
+      return;
+    }
     if (!projectRoot) return;
     void useTeamStore.getState().start(projectRoot);
     return () => useTeamStore.getState().stop();
-  }, [projectRoot]);
+  }, [projectRoot, teamEnabled]);
 
   // Route the agent's `ask_question` tool to this window's question store, so a
   // tool call rises the inline prompt above the composer and blocks the turn

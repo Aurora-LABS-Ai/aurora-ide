@@ -262,6 +262,10 @@
   color: var(--agw-added);
   border-color: color-mix(in srgb, var(--agw-added) 34%, transparent);
 }
+.agw-prov-test-btn[data-state="warn"] {
+  color: var(--agw-warning);
+  border-color: color-mix(in srgb, var(--agw-warning) 38%, transparent);
+}
 .agw-prov-test-btn[data-state="fail"] {
   color: var(--agw-removed);
   border-color: color-mix(in srgb, var(--agw-removed) 34%, transparent);
@@ -346,6 +350,11 @@
   border-top: 1px solid var(--agw-border);
   color: var(--agw-removed);
 }
+.agw-prov-test-line[data-tone="warn"] {
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  color: var(--agw-warning);
+}
 .agw-prov-test-meta {
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
@@ -385,6 +394,13 @@
   font-weight: var(--agw-fw-medium);
   color: var(--agw-text-muted);
 }
+/* The row disagreeing with the provider card above it. The neighbouring chips
+   are capabilities (Vision, Tools) and stay quiet; this one is a deviation the
+   reader has to notice, so it takes the accent — the only one on the row. */
+.agw-prov-chip[data-tone="override"] {
+  border-color: color-mix(in srgb, var(--agw-accent) 40%, transparent);
+  color: var(--agw-accent);
+}
 .agw-prov-edit {
   display: grid;
   /* Same collapse rule as .agw-prov-conn: one column when narrow so the
@@ -395,6 +411,103 @@
   padding-top: 12px;
   border-top: 1px solid var(--agw-border);
 }
+/* A field-level correction inside .agw-prov-edit — a stated fault plus the one
+   action that clears it, sitting under the field it is about rather than in a
+   banner at the top of the panel where it would be read as being about the
+   provider. Spans the grid so the sentence never wraps into a 280px column. */
+.agw-prov-field-note {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: -4px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-warning);
+}
+.agw-prov-field-note svg {
+  flex-shrink: 0;
+  /* Optical: the icon centres on the first line of text rather than its box. */
+  margin-top: 1px;
+}
+.agw-prov-field-note-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.agw-prov-field-note-btn:hover:not(:disabled) {
+  color: var(--agw-text);
+}
+.agw-prov-field-note-btn:focus-visible {
+  outline: 1px solid var(--agw-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.agw-prov-field-note-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* Disclosure header for the gateway wire overrides. Reads as a row of the
+   settings form, not as a button: the affordance is the chevron and the hover,
+   the way the rail's group headers behave. */
+.agw-prov-wire-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.04em;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  text-align: left;
+}
+.agw-prov-wire-toggle:hover {
+  color: var(--agw-text);
+}
+.agw-prov-wire-toggle:focus-visible {
+  outline: 1px solid var(--agw-accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+/* Driven by the button's own `aria-expanded`, not a prop on the icon:
+   `AgentIcon` forwards only name/size/strokeWidth/className/style/title, so a
+   `data-open` passed to it is dropped and the chevron never turns. One source
+   of truth, and the state a screen reader reads is the state the arrow shows. */
+.agw-prov-wire-toggle svg {
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+  transition: transform 0.16s ease;
+}
+.agw-prov-wire-toggle[aria-expanded="true"] svg {
+  transform: rotate(0deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-prov-wire-toggle svg {
+    transition: none;
+  }
+}
+
+/* A switch belongs on the same line as the thing it answers, not stacked under
+   it like a text field's value. */
+.agw-prov-reason-toggle {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 10px;
+}
+.agw-prov-reason-toggle > .agw-set-row-hint {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
 .agw-prov-edit-toggles {
   grid-column: 1 / -1;
   display: flex;

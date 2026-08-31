@@ -28,7 +28,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent_runtime::api_client::StreamingApiClient;
+use crate::agent_runtime::api_client::{ReasoningConfig, StreamingApiClient};
 
 use super::anthropic::AnthropicAdapter;
 use super::codex::adapter::CodexAdapter;
@@ -94,6 +94,10 @@ pub struct ProviderConfigSnapshot {
     pub default_max_tokens: Option<u32>,
     #[serde(default)]
     pub supports_thinking: bool,
+    /// Fully resolved reasoning intent for this exact model. Optional for
+    /// older payloads; the command layer falls back to the legacy fields.
+    #[serde(default)]
+    pub reasoning: Option<ReasoningConfig>,
     /// Does the active model accept image content blocks?
     /// `true` switches the API adapter into vision mode for tool
     /// results (Anthropic uses native multimodal `tool_result`,
@@ -251,19 +255,31 @@ pub enum ReasoningReplay {
 /// the wire back out of step, which is the one thing this function exists to
 /// prevent.
 #[must_use]
-pub fn reasoning_replay_for(provider_type: &str, model: &str, base_url: &str) -> ReasoningReplay {
+pub fn reasoning_replay_for(
+    provider_type: &str,
+    model: &str,
+    base_url: &str,
+    replay_mode: crate::agent_runtime::api_client::ReasoningReplayMode,
+    custom_params: Option<&std::collections::HashMap<String, serde_json::Value>>,
+) -> ReasoningReplay {
     match ProviderKind::detect(provider_type) {
         // Anthropic replays `thinking` blocks verbatim and requires it once
         // extended thinking is on.
         ProviderKind::Anthropic => ReasoningReplay::Text,
         ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
-        // Both halves of what the builder consults, in the builder's order.
-        // Missing the learned half here would put the estimate back out of
-        // step the moment an endpoint taught us something — the exact class of
-        // bug that invented ~92k tokens of phantom context once already.
-        _ => match super::provider_kernel_adapter::reasoning_field_for(provider_type, model)
-            .or_else(|| super::provider_kernel_adapter::learned_reasoning_field(base_url, model))
-        {
+        // The SAME resolution the builder runs — learned demand, then the
+        // user's `reasoning_replay` directive, then the vendor table. Any
+        // half missing here puts the estimate out of step with the wire —
+        // the exact class of bug that invented ~92k tokens of phantom
+        // context once already.
+        _ => match super::provider_kernel_adapter::resolve_reasoning_field(
+            provider_type,
+            model,
+            base_url,
+            super::provider_kernel_adapter::reasoning_replay_mode_override(replay_mode).or_else(
+                || super::provider_kernel_adapter::reasoning_replay_override(custom_params),
+            ),
+        ) {
             Some(_) => ReasoningReplay::Text,
             None => ReasoningReplay::Dropped,
         },
@@ -328,6 +344,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: false,
+            reasoning: None,
             supports_vision: false,
         }
     }

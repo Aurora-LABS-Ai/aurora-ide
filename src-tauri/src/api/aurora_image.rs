@@ -44,6 +44,74 @@
 //! Because rule 4 is enforced here, every consumer may treat
 //! [`AuroraImageMarker::body`] as a valid base64 payload without re-checking.
 
+/// Longest edge any image handed to a model is allowed. Applies to BOTH axes —
+/// a full-page capture is tall, not wide, so bounding the width alone left the
+/// expensive dimension unbounded.
+pub const MAX_EDGE: u32 = 1024;
+
+/// JPEG quality for the encoded image. 85 is the measured knee: at 1024px it
+/// held every small UI label a PNG of the same capture held, at roughly a fifth
+/// of the bytes — and those bytes are re-sent on every subsequent turn, since
+/// history keeps a path and rehydrates the file into each request.
+pub const JPEG_QUALITY: u8 = 85;
+
+/// Media type [`encode_for_vision`] always produces.
+pub const ENCODED_MEDIA_TYPE: &str = "image/jpeg";
+
+/// Decode an image, fit it inside [`MAX_EDGE`] square (aspect preserved, never
+/// upscaled), and re-encode as JPEG. Returns `(jpeg_bytes, width, height)` where
+/// the dimensions are those of the RETURNED image.
+///
+/// On any decode/encode failure the original bytes come back with `(0, 0)`
+/// dimensions, so the caller still has an image — one that degrades to "the
+/// file exactly as it is on disk" is still an image the model can see, as long
+/// as the format is one the provider accepts.
+///
+/// Format-agnostic on input: it reads the bytes rather than trusting a name, so
+/// neither caller has to announce what it holds.
+pub fn encode_for_vision(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
+    let Ok(img) = image::load_from_memory(&bytes) else {
+        return (bytes, 0, 0);
+    };
+    let (w, h) = (img.width(), img.height());
+    // `resize` fits WITHIN the box and keeps the aspect ratio, so passing the
+    // bound on both axes is what makes it a longest-edge cap.
+    let img = if w > MAX_EDGE || h > MAX_EDGE {
+        img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+    let (ow, oh) = (img.width(), img.height());
+    // JPEG has no alpha channel; `to_rgb8` composites away a channel the
+    // encoder would otherwise reject outright.
+    let rgb = img.to_rgb8();
+    let mut out = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut out);
+    let encoded = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, JPEG_QUALITY)
+        .encode_image(&rgb)
+        .is_ok();
+    if encoded {
+        (out, ow, oh)
+    } else {
+        (bytes, w, h)
+    }
+}
+
+/// Escape a value for a marker attribute.
+///
+/// Values are read back by [`AuroraImageMarker::attr`], whose parser scans to
+/// the next `"` — so a Windows path containing a quote would end the value
+/// early and turn the rest of the header into garbage attributes. `&` goes
+/// first, or the escape of the escape would be ambiguous.
+pub fn escape_attr(value: &str) -> String {
+    value.replace('&', "&amp;").replace('"', "&quot;")
+}
+
+/// Reverse [`escape_attr`].
+pub fn unescape_attr(value: &str) -> String {
+    value.replace("&quot;", "\"").replace("&amp;", "&")
+}
+
 /// Opening token. The trailing space is part of the contract: the tag always
 /// carries at least a `media_type` attribute.
 const OPEN: &str = "<aurora_image ";

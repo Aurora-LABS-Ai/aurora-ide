@@ -325,6 +325,7 @@ fn default_provider_config() -> crate::api::ProviderConfigSnapshot {
         default_temperature: None,
         default_max_tokens: None,
         supports_thinking: false,
+        reasoning: None,
         supports_vision: false,
     }
 }
@@ -336,6 +337,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         user_message: msg.into(),
         provider_id: "mock-provider".into(),
         model: "mock-model".into(),
+        model_selection: None,
         workspace_path: None,
         execution_mode: AgentExecutionMode::Agent,
         provider_config: default_provider_config(),
@@ -1189,6 +1191,46 @@ async fn factory_receives_provider_id_and_model_from_request() {
     assert_eq!(calls[0].model, "claude-test-99");
 }
 
+#[tokio::test]
+async fn cursor_persists_the_stable_pin_and_sends_the_concrete_wire_model() {
+    let api = Arc::new(MockApi::new(vec![TurnScript::Reply {
+        events: vec![],
+        result: Ok(turn_usage(assistant_text_msg("done"), "end_turn")),
+    }]));
+    let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(
+        factory.clone(),
+        dir.path().to_path_buf(),
+    ));
+    let driver = TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default()));
+    let mut req = make_request("t-cursor-model", "thread-cursor-model", "hi");
+    req.provider_id = "cursor".into();
+    req.model = "cursor-grok-4.6-xhigh-fast".into();
+    req.model_selection = Some("cursor:cursor-grok-4.6".into());
+    req.provider_config.provider_id = "cursor".into();
+    req.provider_config.provider_type = Some("cursor".into());
+    req.provider_config.model = req.model.clone();
+
+    driver.run_turn(req).await.expect("ok");
+
+    assert_eq!(
+        api.last_model.lock().expect("last_model mutex").as_deref(),
+        Some("cursor-grok-4.6-xhigh-fast")
+    );
+    assert_eq!(
+        factory.built_with_snapshot()[0].model,
+        "cursor-grok-4.6-xhigh-fast"
+    );
+    let session = registry
+        .load_or_create_session("thread-cursor-model")
+        .expect("session");
+    assert_eq!(
+        session.lock().await.model.as_deref(),
+        Some("cursor:cursor-grok-4.6")
+    );
+}
+
 // ── Test 14 ─────────────────────────────────────────────────────
 // Factory error surfaces as RuntimeError::InvalidState (the variant
 // the mock returns) — documented choice: factory errors are wrapped
@@ -1704,7 +1746,7 @@ fn build_runtime_config_overlays_request_fields() {
     assert_eq!(cfg.system_prompt.as_deref(), Some("system"));
     assert_eq!(cfg.default_temperature, Some(0.9));
     assert_eq!(cfg.default_max_output_tokens, 2048);
-    assert!(cfg.thinking_enabled);
+    assert!(cfg.reasoning.enabled);
     assert_eq!(cfg.ide_context.as_deref(), Some("ctx"));
 }
 
@@ -1719,7 +1761,7 @@ fn build_runtime_config_falls_back_to_defaults_when_unset() {
         cfg.default_max_output_tokens,
         defaults.default_max_output_tokens
     );
-    assert_eq!(cfg.thinking_enabled, defaults.thinking_enabled);
+    assert_eq!(cfg.reasoning.enabled, defaults.reasoning.enabled);
     assert!(cfg.ide_context.is_none());
 }
 
@@ -2026,7 +2068,11 @@ async fn the_user_message_is_on_disk_before_the_provider_is_called() {
     let driver = TurnDriver::new(registry, Arc::new(MockEmitter::default()));
 
     driver
-        .run_turn(make_request("t-1", "fresh-thread", "please analyse this repo"))
+        .run_turn(make_request(
+            "t-1",
+            "fresh-thread",
+            "please analyse this repo",
+        ))
         .await
         .expect("turn");
 
@@ -2117,5 +2163,9 @@ async fn the_completed_turn_holds_no_duplicate_user_message() {
         1,
         "the user message must appear once — saw {lines:#?}"
     );
-    assert_eq!(lines.len(), 2, "one user message, one reply — saw {lines:#?}");
+    assert_eq!(
+        lines.len(),
+        2,
+        "one user message, one reply — saw {lines:#?}"
+    );
 }

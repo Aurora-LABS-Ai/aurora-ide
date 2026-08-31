@@ -6,6 +6,11 @@
  * it collapses to "Thought" followed by how long that took. Isolated — all
  * colour comes from `--agw-*`.
  *
+ * That auto-expand is a DEFAULT, never a lock: clicking the header always wins,
+ * so a live reasoning dump can be folded away mid-stream and stays folded. The
+ * header keeps shimmering "Thinking…" and running its clock while collapsed, so
+ * hiding the text never hides the fact that the model is still working.
+ *
  * The duration sits ON the rule at a FIXED offset from the label (a short
  * `lead` stub, the number, then the rule resuming to the edge) rather than at
  * the rule's midpoint. A centred number moves with the available width, so it
@@ -31,8 +36,13 @@ const AgentThinkingBlockImpl: React.FC<{
   /** Settled wall-clock for the segment. Undefined = never measured. */
   durationMs?: number;
 }> = ({ content, isGenerating = false, startedAt, durationMs }) => {
-  const [manuallyExpanded, setManuallyExpanded] = useState(false);
-  const expanded = isGenerating || manuallyExpanded;
+  // Three states, not two. `null` follows the automatic behaviour (open while
+  // reasoning, shut once it settles); `true`/`false` is the user's own choice
+  // and OUTRANKS it. A plain boolean OR'd with `isGenerating` made the toggle
+  // dead for the whole time the model was thinking — exactly when a long
+  // reasoning dump is most in the way and most worth folding out of sight.
+  const [override, setOverride] = useState<boolean | null>(null);
+  const expanded = override ?? isGenerating;
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // A clock, not derived state: the interval only advances `now` and the
@@ -67,7 +77,7 @@ const AgentThinkingBlockImpl: React.FC<{
         type="button"
         className="agw-think-toggle"
         aria-expanded={expanded}
-        onClick={() => setManuallyExpanded((v) => !v)}
+        onClick={() => setOverride(!expanded)}
       >
         <AgentIcon
           name="chevron-down"

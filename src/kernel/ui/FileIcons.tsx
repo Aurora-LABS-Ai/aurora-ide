@@ -87,15 +87,56 @@ const AuroraFolderIcon: React.FC<{ open?: boolean; className?: string }> = ({ op
   </div>
 );
 
-const AssetIcon: React.FC<{ src: string; alt: string; className?: string }> = ({ src, alt, className }) => (
-  <img
-    src={src}
-    alt={alt}
-    className={className}
-    draggable={false}
-    style={{ objectFit: 'contain' }}
-  />
-);
+/**
+ * Every icon source this session has already painted at least once.
+ *
+ * These marks are `<img>` elements pointing at a per-extension SVG, so the very
+ * first `.tsx` in a session costs a real fetch and the box sits empty until it
+ * lands. In a settled explorer nobody notices; in a streaming tool row, where
+ * four marks appear inside 200ms, the empty box and then the picture read as
+ * two separate events and the row looks like it is glitching.
+ *
+ * The set is what keeps the cure from being worse than the disease: a source
+ * that has been seen before is decoded already, so it renders at full opacity
+ * on its first frame and never fades. Only the genuine fetch fades in, once.
+ */
+const PAINTED_ICON_SOURCES = new Set<string>();
+
+const AssetIcon: React.FC<{ src: string; alt: string; className?: string }> = ({ src, alt, className }) => {
+  const [painted, setPainted] = React.useState(() => PAINTED_ICON_SOURCES.has(src));
+  // The node is reused when only the source changes (an icon-pack switch, or a
+  // chip whose file changed underneath it), so the answer is re-derived during
+  // render rather than in an effect — an effect would run a frame late and put
+  // a blank frame in front of an icon that was already cached.
+  const [renderedSrc, setRenderedSrc] = React.useState(src);
+  if (src !== renderedSrc) {
+    setRenderedSrc(src);
+    setPainted(PAINTED_ICON_SOURCES.has(src));
+  }
+
+  const settle = () => {
+    PAINTED_ICON_SOURCES.add(src);
+    setPainted(true);
+  };
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      draggable={false}
+      // `onError` settles too: a missing icon should fall back to whatever the
+      // browser draws for a broken image, exactly as before, never to nothing.
+      onLoad={settle}
+      onError={settle}
+      style={{
+        objectFit: 'contain',
+        opacity: painted ? 1 : 0,
+        transition: 'opacity 120ms cubic-bezier(0, 0, 0.2, 1)',
+      }}
+    />
+  );
+};
 
 export const FileIcon: React.FC<IconProps> = ({ name, className, path }) => {
   const explorerIconPack = useSettingsStore((state) => state.explorerIconPack);

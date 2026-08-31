@@ -18,6 +18,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 
 import { useSettingsStore, type LLMModel, type LLMProvider } from "@/kernel/store/useSettingsStore";
+import type {
+  ReasoningReplayMode,
+  ReasoningRequestMode,
+} from "@/kernel/types/database";
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud";
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
@@ -44,6 +48,12 @@ import {
   KENARI_WIRES,
   type KenariWire,
 } from "@/apps/agent/services/providers/kenari";
+import {
+  isAgentRouterProvider,
+  agentRouterWire,
+  AGENT_ROUTER_WIRES,
+  type AgentRouterWire,
+} from "@/apps/agent/services/providers/agentrouter";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
@@ -121,6 +131,53 @@ function keyPoolSize(p: LLMProvider): number {
  */
 const enrichedModelIds = new Set<string>();
 
+type EditableApiFormat = "inherit" | "chat" | "responses" | "messages";
+
+/** One set of words for the three formats — the picker, the row chip and the
+ *  provider-level note all read from here so they can never drift apart. */
+const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = {
+  chat: "Chat",
+  responses: "Responses",
+  messages: "Messages",
+};
+
+function apiFormatForProviderType(type: string | undefined): Exclude<EditableApiFormat, "inherit"> {
+  const normalized = (type ?? "").toLowerCase();
+  if (["anthropic", "minimax", "kenari-messages", "opencode-go-messages"].includes(normalized)) {
+    return "messages";
+  }
+  if (["openai-responses", "kenari-responses", "opencode-go", "codex"].includes(normalized)) {
+    return "responses";
+  }
+  return "chat";
+}
+
+/** Preserve a gateway's named dialect when changing only its wire format. */
+function providerTypeForApiFormat(
+  providerType: string | undefined,
+  format: Exclude<EditableApiFormat, "inherit">,
+): string {
+  const owner = (providerType ?? "custom").toLowerCase();
+  if (owner.startsWith("kenari")) {
+    return format === "responses"
+      ? "kenari-responses"
+      : format === "messages"
+        ? "kenari-messages"
+        : "kenari";
+  }
+  if (owner.startsWith("opencode-go")) {
+    return format === "responses"
+      ? "opencode-go"
+      : format === "messages"
+        ? "opencode-go-messages"
+        : "opencode-go-chat";
+  }
+  if (format === "responses") return "openai-responses";
+  if (format === "messages") return "anthropic";
+  // Dedicated Chat adapters keep their vendor behavior when Chat is chosen.
+  return apiFormatForProviderType(owner) === "chat" ? owner : "openai";
+}
+
 function entryToModelInit(e: ModelsDevEntry): Omit<LLMModel, "id" | "providerId" | "sortOrder"> {
   return {
     modelKey: e.modelKey,
@@ -139,6 +196,45 @@ function entryToModelInit(e: ModelsDevEntry): Omit<LLMModel, "id" | "providerId"
   };
 }
 
+// ── Comma-separated list input ───────────────────────────────────────────────
+
+/**
+ * A text input for a comma-separated list whose PARSED value lives in the
+ * store. The naive version — `value={items.join(", ")}` re-rendered on every
+ * keystroke — made separators untypable: the parser trims and drops empty
+ * segments, so the `,` or space you just typed was parsed away and the render
+ * snapped the text back without it. Only pasting a complete string worked.
+ *
+ * While focused, the field shows exactly what was typed (the draft); every
+ * keystroke still parses into the store so the rest of the UI stays live.
+ * On blur the draft is dropped and the field snaps to the normalized
+ * `join(", ")` form.
+ */
+const AgwListInput: React.FC<{
+  items: string[];
+  placeholder?: string;
+  onItems: (items: string[]) => void;
+}> = ({ items, placeholder, onItems }) => {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <AgwTextInput
+      value={draft ?? items.join(", ")}
+      placeholder={placeholder}
+      onFocus={() => setDraft(items.join(", "))}
+      onBlur={() => setDraft(null)}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onItems(
+          e.target.value
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+      }}
+    />
+  );
+};
+
 // ── Extra request-body editor (manual escape hatch) ──────────────────────────
 
 /**
@@ -153,11 +249,16 @@ const ExtraBodyEditor: React.FC<{
   updateModel: (id: string, updates: Partial<LLMModel>) => void;
 }> = ({ model, updateModel }) => {
   type Row = { k: string; v: string };
+  // `reasoning_replay` has a dedicated control (the Thinking-replay selector
+  // above); it is hidden here and preserved on save so the two never fight
+  // over one key.
   const [rows, setRows] = useState<Row[]>(() =>
-    Object.entries(model.extraBody ?? {}).map(([k, val]) => ({
-      k,
-      v: typeof val === "string" ? val : JSON.stringify(val),
-    })),
+    Object.entries(model.extraBody ?? {})
+      .filter(([k]) => k !== "reasoning_replay")
+      .map(([k, val]) => ({
+        k,
+        v: typeof val === "string" ? val : JSON.stringify(val),
+      })),
   );
 
   const persist = (next: Row[]) => {
@@ -178,6 +279,10 @@ const ExtraBodyEditor: React.FC<{
         value = "";
       }
       obj[key] = value;
+    }
+    const replay = model.extraBody?.["reasoning_replay"];
+    if (replay !== undefined) {
+      obj["reasoning_replay"] = replay;
     }
     updateModel(model.id, {
       extraBody: Object.keys(obj).length > 0 ? obj : undefined,
@@ -536,19 +641,104 @@ const ModelRow: React.FC<{
   onActivate: () => void;
   /** The provider's own default, shown as what an empty Temperature inherits. */
   providerTemperature?: number;
-}> = ({ model, active, onActivate, providerTemperature }) => {
+  /** The provider's wire format — a model-level override wins over it. */
+  providerType?: string;
+}> = ({ model, active, onActivate, providerTemperature, providerType }) => {
   const updateModel = useSettingsStore((s) => s.updateModel);
   const deleteModel = useSettingsStore((s) => s.deleteModel);
   const [editing, setEditing] = useState(false);
+  const [limitsBusy, setLimitsBusy] = useState(false);
+  const [limitsNote, setLimitsNote] = useState<string | null>(null);
   const reasoning = model.reasoning;
   const isOpenCode = model.providerId === OPENCODE_PROVIDER_ID;
   const ocDefault = defaultOpenCodeWire(model.modelKey);
   const ocWire = openCodeWireFor(model);
   const ctx = model.contextWindow ? formatContextWindow(model.contextWindow) : null;
+  // Both numbers must be present to compare them; an unset field inherits and
+  // is not a contradiction.
+  const outputExceedsWindow =
+    typeof model.contextWindow === "number" &&
+    typeof model.maxOutputTokens === "number" &&
+    model.maxOutputTokens >= model.contextWindow;
   const price =
     model.priceOutputPerMtok != null
       ? `$${model.priceCacheMissPerMtok ?? "?"} / $${model.priceOutputPerMtok}`
       : null;
+
+  // Thinking replay applies only on the OpenAI-compatible wire. Anthropic,
+  // Responses, Codex and Cursor replay thinking natively — showing the
+  // control there would be a switch that does nothing.
+  const effectiveWire = (isOpenCode ? ocWire : model.providerType ?? providerType ?? "").toLowerCase();
+  const wireFormat: "chat" | "responses" | "messages" | "native" =
+    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages"].includes(effectiveWire)
+      ? "messages"
+      : ["openai-responses", "kenari-responses", "opencode-go"].includes(effectiveWire)
+        ? "responses"
+        : ["codex", "cursor"].includes(effectiveWire)
+          ? "native"
+          : "chat";
+  const replayApplies = !!reasoning && wireFormat === "chat";
+  // The provider card names one API type, and this row is allowed to disagree
+  // with it — the model's own choice is what reaches the wire. A header that
+  // silently does not apply is worse than no header, so the row states which
+  // format it actually uses whenever it differs. Absent when the row inherits:
+  // repeating the provider's own answer on every model is noise.
+  // OpenCode already carries a visible Format control of its own further down.
+  const providerApiFormat = apiFormatForProviderType(providerType);
+  const modelApiFormat = model.providerType
+    ? apiFormatForProviderType(model.providerType)
+    : providerApiFormat;
+  const apiFormatOverridden =
+    !isOpenCode && !!model.providerType && modelApiFormat !== providerApiFormat;
+  // New rows store replay beside the rest of the reasoning profile. Read the
+  // old extra-body key as a migration fallback until the row is edited.
+  const replayRaw = reasoning?.replay ?? model.extraBody?.["reasoning_replay"];
+  const replayValue: ReasoningReplayMode =
+    replayRaw === false
+      ? "off"
+      : typeof replayRaw === "string"
+        ? replayRaw.toLowerCase() === "reasoning_content"
+          ? "reasoning_content"
+          : replayRaw.toLowerCase() === "reasoning"
+            ? "reasoning"
+            : ["off", "none", "drop", "false"].includes(replayRaw.toLowerCase())
+              ? "off"
+              : "auto"
+        : "auto";
+  const setReplay = (next: ReasoningReplayMode) => {
+    if (!reasoning) return;
+    const rest = { ...(model.extraBody ?? {}) };
+    delete rest["reasoning_replay"];
+    updateModel(model.id, {
+      reasoning: {
+        ...reasoning,
+        replay: next === "auto" ? undefined : next,
+      },
+      extraBody: Object.keys(rest).length > 0 ? rest : undefined,
+    });
+  };
+  const requestMode: ReasoningRequestMode = reasoning?.requestMode ?? "auto";
+  const requestModeOptions: Array<{ value: ReasoningRequestMode; label: string }> =
+    wireFormat === "messages"
+      ? [
+          { value: "auto", label: "Auto" },
+          { value: "anthropic-adaptive", label: "Adaptive" },
+          { value: "anthropic-budget", label: "Token budget" },
+        ]
+      : wireFormat === "chat"
+        ? [
+            { value: "auto", label: "Auto" },
+            { value: "openai-effort", label: "Effort field" },
+            { value: "openai-thinking", label: "Thinking object" },
+          ]
+        : [];
+
+  // Either wire override moved off Auto. Drives both the "Overridden" pill and
+  // the disclosure's initial state: a setting someone changed has to still be
+  // findable, so it opens itself rather than hiding behind a closed row.
+  const wireOverridden = requestMode !== "auto" || replayValue !== "auto";
+  const [wireOpen, setWireOpen] = useState(wireOverridden);
+  const [pricingOpen, setPricingOpen] = useState(false);
 
   return (
     <div className="agw-prov-model" data-active={active || undefined}>
@@ -593,6 +783,15 @@ const ModelRow: React.FC<{
         <span className="agw-prov-key">{model.modelKey}</span>
         {ctx && <span className="agw-prov-meta-dot">{ctx} ctx</span>}
         {price && <span className="agw-prov-meta-dot">{price}</span>}
+        {apiFormatOverridden && (
+          <span
+            className="agw-prov-chip"
+            data-tone="override"
+            title={`This model uses the ${API_FORMAT_LABEL[modelApiFormat]} format instead of the provider's ${API_FORMAT_LABEL[providerApiFormat]}.`}
+          >
+            {API_FORMAT_LABEL[modelApiFormat]} format
+          </span>
+        )}
         {model.supportsVision && <span className="agw-prov-chip">Vision</span>}
         {model.supportsToolStream && <span className="agw-prov-chip">Tools</span>}
         {reasoning && (
@@ -661,6 +860,32 @@ const ModelRow: React.FC<{
               }
             />
           </label>
+          {!isOpenCode && !["codex", "cursor"].includes((providerType ?? "").toLowerCase()) && (
+            <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+              <span>API format</span>
+              <AgwSegmented<EditableApiFormat>
+                ariaLabel={`API format for ${model.label || model.modelKey}`}
+                value={model.providerType ? apiFormatForProviderType(model.providerType) : "inherit"}
+                options={[
+                  { value: "inherit", label: "Provider default" },
+                  { value: "chat", label: API_FORMAT_LABEL.chat },
+                  { value: "responses", label: API_FORMAT_LABEL.responses },
+                  { value: "messages", label: API_FORMAT_LABEL.messages },
+                ]}
+                onChange={(next) =>
+                  updateModel(model.id, {
+                    providerType:
+                      next === "inherit"
+                        ? undefined
+                        : providerTypeForApiFormat(providerType, next),
+                  })
+                }
+              />
+              <span className="agw-set-row-hint">
+                Overrides this model only. Use it when one account serves different models on different endpoints, or when one format returns text but drops reasoning.
+              </span>
+            </div>
+          )}
           <label className="agw-prov-edit-field">
             <span>Context window</span>
             <AgwTextInput
@@ -683,10 +908,54 @@ const ModelRow: React.FC<{
               }
             />
           </label>
+          {/* An output cap at or above the context window is impossible: the
+              prompt and the reply are drawn from the same window. Providers
+              reject it outright, before a token is generated, so every turn on
+              the model fails — and the number is invisible unless you open this
+              panel. Real: a catalogue entry published output = context =
+              1,048,560 for glm-5.2, which no endpoint serving it accepts.
+              Warn where the number lives, and offer the repair rather than
+              leaving the user to find the right one. */}
+          {outputExceedsWindow && (
+            <div className="agw-prov-field-note" role="status">
+              <AgentIcon name="alert" size={13} />
+              <span>
+                Max output is larger than the context window. They share one budget, so this
+                model's requests are rejected before they run.{" "}
+                <button
+                  type="button"
+                  className="agw-prov-field-note-btn"
+                  disabled={limitsBusy}
+                  onClick={async () => {
+                    setLimitsBusy(true);
+                    setLimitsNote(null);
+                    try {
+                      const entry = await lookupModel(model.modelKey, providerType);
+                      if (entry?.maxOutputTokens) {
+                        updateModel(model.id, {
+                          contextWindow: entry.contextWindow ?? model.contextWindow,
+                          maxOutputTokens: entry.maxOutputTokens,
+                        });
+                      } else {
+                        setLimitsNote(
+                          "No published limit for this model — set Max output by hand (128,000 is a safe start).",
+                        );
+                      }
+                    } finally {
+                      setLimitsBusy(false);
+                    }
+                  }}
+                >
+                  {limitsBusy ? "Checking…" : "Use published limits"}
+                </button>
+              </span>
+            </div>
+          )}
+          {limitsNote && <div className="agw-prov-field-note">{limitsNote}</div>}
           {/* Temperature is a property of the MODEL, not of the app: one key
               addresses a model that wants 0.2 and another that rejects the
-              parameter outright. Empty inherits — the provider's default, then
-              Aurora's 0.8 — so an untouched install behaves as it always did.
+              parameter outright. Empty inherits the provider's default, or
+              omits the field when that is also empty.
               Claude 5 and newer reject sampling, and so does any model while
               reasoning is on; the Rust adapter drops the field there, which is
               why this says "ignored" rather than pretending to be universal. */}
@@ -715,63 +984,88 @@ const ModelRow: React.FC<{
               }
             />
           </label>
-          <label className="agw-prov-edit-field">
-            <span>Input price · per 1M</span>
-            <AgwTextInput
-              type="number"
-              value={model.priceCacheMissPerMtok ?? ""}
-              placeholder="—"
-              onChange={(e) =>
-                updateModel(model.id, {
-                  priceCacheMissPerMtok: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-            />
-          </label>
-          <label className="agw-prov-edit-field">
-            <span>Output price · per 1M</span>
-            <AgwTextInput
-              type="number"
-              value={model.priceOutputPerMtok ?? ""}
-              placeholder="—"
-              onChange={(e) =>
-                updateModel(model.id, {
-                  priceOutputPerMtok: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-            />
-          </label>
-          {/* Both cache rates fall back to the input price rather than to zero,
-            * and the placeholder says so — a blank price field that silently
-            * meant "free" is what made cached conversations under-report their
-            * cost. Cached input is usually a large discount (often ~10% of
-            * base); cache writes are usually at or slightly above base. */}
-          <label className="agw-prov-edit-field">
-            <span>Cached input · per 1M</span>
-            <AgwTextInput
-              type="number"
-              value={model.priceCacheHitPerMtok ?? ""}
-              placeholder="= input price"
-              onChange={(e) =>
-                updateModel(model.id, {
-                  priceCacheHitPerMtok: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-            />
-          </label>
-          <label className="agw-prov-edit-field">
-            <span>Cache write · per 1M</span>
-            <AgwTextInput
-              type="number"
-              value={model.priceCacheWritePerMtok ?? ""}
-              placeholder="= input price"
-              onChange={(e) =>
-                updateModel(model.id, {
-                  priceCacheWritePerMtok: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-            />
-          </label>
+          {/* Four rates, filled from models.dev on add and edited about once in
+              a model's life — but they used to occupy half the open card, every
+              time it opened, next to the fields people actually come here for.
+              Behind a row that already answers the question most people have
+              ("is a price set at all?"), so opening it is for changing one. */}
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <button
+              type="button"
+              className="agw-prov-wire-toggle"
+              aria-expanded={pricingOpen}
+              onClick={() => setPricingOpen((v) => !v)}
+            >
+              <AgentIcon name="chevron-down" size={12} />
+              <span>Pricing</span>
+              <AgwPill tone="neutral">
+                {price ? `${price} per 1M` : "not set"}
+              </AgwPill>
+            </button>
+          </div>
+
+          {pricingOpen && (
+            <>
+              <label className="agw-prov-edit-field">
+                <span>Input price · per 1M</span>
+                <AgwTextInput
+                  type="number"
+                  value={model.priceCacheMissPerMtok ?? ""}
+                  placeholder="—"
+                  onChange={(e) =>
+                    updateModel(model.id, {
+                      priceCacheMissPerMtok: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                />
+              </label>
+              <label className="agw-prov-edit-field">
+                <span>Output price · per 1M</span>
+                <AgwTextInput
+                  type="number"
+                  value={model.priceOutputPerMtok ?? ""}
+                  placeholder="—"
+                  onChange={(e) =>
+                    updateModel(model.id, {
+                      priceOutputPerMtok: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                />
+              </label>
+              {/* Both cache rates fall back to the input price rather than to
+                * zero, and the placeholder says so — a blank price field that
+                * silently meant "free" is what made cached conversations
+                * under-report their cost. Cached input is usually a large
+                * discount (often ~10% of base); cache writes are usually at or
+                * slightly above base. */}
+              <label className="agw-prov-edit-field">
+                <span>Cached input · per 1M</span>
+                <AgwTextInput
+                  type="number"
+                  value={model.priceCacheHitPerMtok ?? ""}
+                  placeholder="= input price"
+                  onChange={(e) =>
+                    updateModel(model.id, {
+                      priceCacheHitPerMtok: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                />
+              </label>
+              <label className="agw-prov-edit-field">
+                <span>Cache write · per 1M</span>
+                <AgwTextInput
+                  type="number"
+                  value={model.priceCacheWritePerMtok ?? ""}
+                  placeholder="= input price"
+                  onChange={(e) =>
+                    updateModel(model.id, {
+                      priceCacheWritePerMtok: e.target.value ? Number(e.target.value) : undefined,
+                    })
+                  }
+                />
+              </label>
+            </>
+          )}
           <div className="agw-prov-edit-toggles">
             <button
               type="button"
@@ -808,7 +1102,13 @@ const ModelRow: React.FC<{
                 options={(
                   [
                     { value: "none", label: "None" },
-                    { value: "toggle", label: "On/off" },
+                    // "Toggle", not "On/off": the row below asks whether a
+                    // level-based model can be switched OFF, and two controls
+                    // two rows apart both saying "off" meant neither could be
+                    // read without the other. This one names the KIND of
+                    // control (and matches the stored `toggle` value); that one
+                    // names a property of the model.
+                    { value: "toggle", label: "Toggle" },
                     { value: "effort", label: "Effort" },
                     { value: "budget", label: "Budget" },
                   ] as const
@@ -824,7 +1124,15 @@ const ModelRow: React.FC<{
                 onChange={(t) => {
                   if (t === "none") return updateModel(model.id, { reasoning: undefined, supportsThinking: false });
                   if (t === "toggle")
-                    return updateModel(model.id, { reasoning: { type: "toggle", default: true }, supportsThinking: true });
+                    return updateModel(model.id, {
+                      reasoning: {
+                        type: "toggle",
+                        default: true,
+                        requestMode: reasoning?.requestMode,
+                        replay: reasoning?.replay,
+                      },
+                      supportsThinking: true,
+                    });
                   // `default` carries a TIER for effort models and a TOKEN COUNT
                   // for budget models. Switching type must not drag the old
                   // shape across, or an effort model ends up sending
@@ -841,7 +1149,13 @@ const ModelRow: React.FC<{
                           ? "medium"
                           : levels[levels.length - 1];
                     return updateModel(model.id, {
-                      reasoning: { type: "effort", levels, default: carried },
+                      reasoning: {
+                        type: "effort",
+                        levels,
+                        default: carried,
+                        requestMode: reasoning?.requestMode,
+                        replay: reasoning?.replay,
+                      },
                       supportsThinking: true,
                     });
                   }
@@ -851,6 +1165,8 @@ const ModelRow: React.FC<{
                       min: reasoning?.min ?? 1024,
                       max: reasoning?.max ?? 32000,
                       default: typeof reasoning?.default === "number" ? reasoning.default : 8000,
+                      requestMode: reasoning?.requestMode,
+                      replay: reasoning?.replay,
                     },
                     supportsThinking: true,
                   });
@@ -861,11 +1177,10 @@ const ModelRow: React.FC<{
             {reasoning?.type === "effort" && (
               <label className="agw-prov-edit-field">
                 <span>Levels (comma-separated)</span>
-                <AgwTextInput
-                  value={(reasoning.levels ?? []).join(", ")}
+                <AgwListInput
+                  items={reasoning.levels ?? []}
                   placeholder="low, medium, high"
-                  onChange={(e) => {
-                    const levels = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                  onItems={(levels) => {
                     const def =
                       levels.includes(String(reasoning.default)) ? reasoning.default : levels[levels.length - 1];
                     updateModel(model.id, { reasoning: { ...reasoning, levels, default: def } });
@@ -874,23 +1189,34 @@ const ModelRow: React.FC<{
               </label>
             )}
 
+            {/* Asks one thing — can this model stop reasoning? — and shows the
+                answer as a switch. It used to be a captioned button whose label
+                restated its own caption ("Reasoning on/off" over "Always on
+                (native)"), which read as a SECOND reasoning-type picker sitting
+                directly under the first. */}
+            {/* States a property of the MODEL — it always reasons — rather than
+                asking about a control, so it shares no vocabulary with the
+                reasoning-kind row above. Shown inverted against the stored
+                `toggleable` for the same reason: "can be switched off" put the
+                word "off" beside a "Toggle" option and neither row could be
+                read on its own. */}
             {reasoning?.type === "effort" && (
-              <label className="agw-prov-edit-field">
-                <span>Reasoning on/off</span>
-                <button
-                  type="button"
-                  className="agw-prov-cap"
-                  data-on={reasoning.toggleable !== false || undefined}
-                  onClick={() =>
+              <div className="agw-prov-edit-field agw-prov-reason-toggle">
+                <span>Always reasons</span>
+                <AgwSwitch
+                  ariaLabel="This model always reasons and cannot be stopped"
+                  checked={reasoning.toggleable === false}
+                  onChange={(alwaysReasons) =>
                     updateModel(model.id, {
-                      reasoning: { ...reasoning, toggleable: reasoning.toggleable === false },
+                      reasoning: { ...reasoning, toggleable: !alwaysReasons },
                     })
                   }
-                  title="Turn OFF for a natively-reasoning model that can't be disabled — the composer then shows only the effort selector, no on/off."
-                >
-                  {reasoning.toggleable !== false ? "Has on/off switch" : "Always on (native)"}
-                </button>
-              </label>
+                />
+                <span className="agw-set-row-hint">
+                  On for a model that cannot stop reasoning. The composer then shows only the
+                  level, with no switch beside it.
+                </span>
+              </div>
             )}
 
             {reasoning?.type === "budget" && (
@@ -963,6 +1289,91 @@ const ModelRow: React.FC<{
             )}
           </div>
 
+          {/* The two wire-shape overrides, behind a disclosure.
+              They are not more reasoning settings — they describe how this
+              GATEWAY wants the reasoning fields spelled, and Auto is right for
+              every provider that behaves. Left expanded they put two more
+              "Reasoning …" captions and four paragraphs of prose directly under
+              the reasoning configurator, so the panel read as five competing
+              copies of one setting.
+              Open when either is set, so an override is never hidden from the
+              person who has to find it again. */}
+          {(reasoning && requestModeOptions.length > 0) || replayApplies ? (
+            <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+              <button
+                type="button"
+                className="agw-prov-wire-toggle"
+                aria-expanded={wireOpen}
+                onClick={() => setWireOpen((v) => !v)}
+              >
+                <AgentIcon name="chevron-down" size={12} />
+                <span>Gateway wire format</span>
+                {wireOverridden && <AgwPill tone="neutral">Overridden</AgwPill>}
+              </button>
+              <span className="agw-set-row-hint">
+                How this endpoint spells the reasoning fields. Auto is correct unless the
+                gateway documents otherwise.
+              </span>
+            </div>
+          ) : null}
+
+          {wireOpen && reasoning && requestModeOptions.length > 0 && (
+            <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+              <span>Reasoning request</span>
+              <AgwSegmented<ReasoningRequestMode>
+                ariaLabel="Reasoning request format"
+                value={requestMode}
+                options={requestModeOptions}
+                onChange={(next) =>
+                  updateModel(model.id, {
+                    reasoning: {
+                      ...reasoning,
+                      requestMode: next === "auto" ? undefined : next,
+                    },
+                  })
+                }
+              />
+              <span className="agw-set-row-hint">
+                {wireFormat === "messages"
+                  ? "How this gateway is asked for reasoning depth. Adaptive for newer Messages APIs, Token budget for older ones."
+                  : "How this gateway is asked for reasoning depth. Change it only if it documents a different shape."}
+              </span>
+            </div>
+          )}
+
+          {/* What happens to the model's earlier thinking on the next request.
+              Auto = the measured policy (send only when this endpoint demands
+              it in a 400). The explicit Send options exist for gateways that
+              quietly accept the field — no signal can detect those, so only
+              the person who knows their gateway can flip it. */}
+          {/* A <div>, NOT a <label>: a click anywhere inside a label — the
+              caption, the hint, the whitespace — is forwarded by the browser
+              to its first form control, which here is the segmented group's
+              first button. Wrapped in a label, clicking the hint text reset
+              the control to its first option. Same reason the Reasoning
+              configurator above uses a span. */}
+          {wireOpen && replayApplies && (
+            <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+              <span>Thinking replay</span>
+              <AgwSegmented
+                ariaLabel="Thinking replay"
+                value={replayValue}
+                options={[
+                  { value: "auto", label: "Auto" },
+                  { value: "reasoning_content", label: "reasoning_content" },
+                  { value: "reasoning", label: "reasoning" },
+                  { value: "off", label: "Off" },
+                ]}
+                onChange={(v) => setReplay(v as ReasoningReplayMode)}
+              />
+              <span className="agw-set-row-hint">
+                Which field carries the model's earlier thinking back to this provider. Auto
+                matches the provider's own; a gateway that refuses or requires the field
+                overrides this.
+              </span>
+            </div>
+          )}
+
           <ExtraBodyEditor model={model} updateModel={updateModel} />
         </div>
       )}
@@ -990,6 +1401,18 @@ const ProviderDetail: React.FC<{
   const builtIn = isBuiltInProvider(provider);
   const kenari = isKenariProvider(provider);
   const wire = kenariWire(provider);
+  const agentrouter = isAgentRouterProvider(provider);
+  const arWire = agentRouterWire(provider);
+  // How many model rows below have set their own API format. The control here
+  // reads as the answer for the whole provider, and for those rows it is not —
+  // so it says so, next to itself, rather than letting someone read a request
+  // shape off this card that a model row has already changed.
+  const modelsWithOwnApiFormat = models.filter(
+    (m) =>
+      m.providerType &&
+      apiFormatForProviderType(m.providerType) !==
+        apiFormatForProviderType(provider.providerType),
+  ).length;
 
   // Only a provider the user added can be deleted. The ones Aurora ships with
   // are theirs to configure, not to remove — so the destructive control simply
@@ -1074,8 +1497,12 @@ const ProviderDetail: React.FC<{
             rather than buried in Extra request fields, with what each one
             costs you written underneath, because the two non-default options
             both give something up. */}
+        {/* <div> wrappers, not <label>: a click anywhere inside a label lands
+            on its first form control — here the segmented group's first
+            button — so clicking the detail line silently flipped the picker
+            back to its first option. */}
         {kenari && (
-          <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
             <span>API format</span>
             <AgwSegmented<KenariWire>
               ariaLabel="kenari API format"
@@ -1086,7 +1513,25 @@ const ProviderDetail: React.FC<{
             <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
               {KENARI_WIRES.find((w) => w.value === wire)?.detail}
             </span>
-          </label>
+          </div>
+        )}
+        {/* AgentRouter answers the same account on two wires, kenari-style.
+            Both are standard shapes, so the choice is just the provider type.
+            No Responses option: /v1/responses is a 404 and the root path only
+            serves the dashboard page (probed live 2026-08-27). */}
+        {agentrouter && (
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>API format</span>
+            <AgwSegmented<AgentRouterWire>
+              ariaLabel="AgentRouter API format"
+              value={arWire}
+              options={AGENT_ROUTER_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+              onChange={(next) => updateProvider(provider.id, { providerType: next })}
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {AGENT_ROUTER_WIRES.find((w) => w.value === arWire)?.detail}
+            </span>
+          </div>
         )}
         {/* OpenCode Go has no row-level format picker, unlike kenari above.
             kenari's three wires all serve the same account, so choosing one is
@@ -1099,7 +1544,7 @@ const ProviderDetail: React.FC<{
               <span>Name</span>
               <AgwTextInput value={provider.name} onChange={(e) => updateProvider(provider.id, { name: e.target.value })} />
             </label>
-            <label className="agw-prov-edit-field">
+            <div className="agw-prov-edit-field">
               <span>API type</span>
               <AgwSegmented<"openai" | "openai-responses" | "anthropic">
                 ariaLabel="Provider API type"
@@ -1115,7 +1560,14 @@ const ProviderDetail: React.FC<{
                 ]}
                 onChange={(t) => updateProvider(provider.id, { providerType: t })}
               />
-            </label>
+              {modelsWithOwnApiFormat > 0 && (
+                <span className="agw-set-row-hint">
+                  {modelsWithOwnApiFormat === 1
+                    ? "1 model below sets its own format and ignores this."
+                    : `${modelsWithOwnApiFormat} models below set their own format and ignore this.`}
+                </span>
+              )}
+            </div>
           </>
         )}
         <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
@@ -1205,6 +1657,7 @@ const ProviderDetail: React.FC<{
                     active={selectedModel === `${provider.id}:${m.modelKey}`}
                     onActivate={() => setSelectedModel(`${provider.id}:${m.modelKey}`)}
                     providerTemperature={provider.defaultTemperature}
+                    providerType={provider.providerType}
                   />
                 ))
               )}

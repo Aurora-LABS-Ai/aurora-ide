@@ -38,12 +38,17 @@ Examples:
         // strict validators (xAI/grok) answer HTTP 400, and two slots let a
         // strictly-decoding model fill both and then be told its own
         // schema-obedient call was malformed.
+        //
+        // The union `['string', 'array']` that replaced it was wrong too, and
+        // quieter about it — gateways serialise a two-typed parameter
+        // differently from one another, one of them by truncating the call
+        // mid-argument. The Rust schema carries the measurements.
         path: {
-          type: ['string', 'array'],
-          minLength: 1,
+          type: 'array',
+          minItems: 1,
           maxItems: 20,
           items: { type: 'string', minLength: 1 },
-          description: 'One file path as a string, or 1-20 file paths as an array of strings to read in parallel. A line range, if given, applies to every path.',
+          description: 'The files to read, as an array of paths — one entry for a single file, up to 20 to read in parallel. A line range, if given, applies to every path.',
         },
         start_line: {
           type: 'number',

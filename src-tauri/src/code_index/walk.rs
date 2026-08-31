@@ -160,7 +160,9 @@ pub fn workspace_packages(root: &Path) -> Vec<(String, String)> {
         .build();
 
     for entry in walker.flatten() {
-        if entry.file_name() != "package.json" {
+        let manifest = entry.file_name().to_str().unwrap_or_default();
+        let is_pubspec = manifest == "pubspec.yaml";
+        if manifest != "package.json" && !is_pubspec {
             continue;
         }
         let Some(dir) = entry.path().parent() else {
@@ -169,10 +171,17 @@ pub fn workspace_packages(root: &Path) -> Vec<(String, String)> {
         let Ok(text) = std::fs::read_to_string(entry.path()) else {
             continue;
         };
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let Some(name) = json.get("name").and_then(|v| v.as_str()) else {
+        let Some(name) = (if is_pubspec {
+            pubspec_name(&text)
+        } else {
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|json| {
+                    json.get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+        }) else {
             continue;
         };
         let rel = dir
@@ -180,11 +189,48 @@ pub fn workspace_packages(root: &Path) -> Vec<(String, String)> {
             .unwrap_or(dir)
             .to_string_lossy()
             .replace('\\', "/");
-        out.push((name.to_string(), rel));
+        // Dart resolves `package:<name>/x.dart` to `<pkg dir>/lib/x.dart` —
+        // the `lib/` is the language's rule, not this package's choice — so it
+        // is folded in here and the resolver stays one shape for every
+        // ecosystem.
+        let rel = if is_pubspec {
+            if rel.is_empty() {
+                "lib".to_string()
+            } else {
+                format!("{rel}/lib")
+            }
+        } else {
+            rel
+        };
+        out.push((name, rel));
     }
     // Longest directory first so a nested package wins over its parent.
     out.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
     out
+}
+
+/// The `name:` of a `pubspec.yaml`, read by line rather than with a YAML
+/// parser.
+///
+/// `name` is a required top-level scalar in every pubspec, so it is the first
+/// unindented `name:` in the file. Only a top-level key counts — a `name:`
+/// nested under `dependencies:` belongs to something else, and indentation is
+/// the whole difference. Worth a hand-rolled reader to keep a YAML dependency
+/// out of the tree for one field.
+fn pubspec_name(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if line.starts_with(char::is_whitespace) || line.starts_with('#') {
+            continue;
+        }
+        let Some(value) = line.strip_prefix("name:") else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 /// How many recent commits touched each file, keyed by forward-slashed path

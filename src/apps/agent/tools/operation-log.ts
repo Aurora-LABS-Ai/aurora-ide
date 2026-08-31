@@ -4,7 +4,9 @@
  * Inspired by Shai CLI's operation logging
  */
 export interface FsOperation {
-  metadata?: Record<string, any>;
+  // Free-form per-operation detail — `unknown` so a reader has to check what it
+  // got rather than inheriting `any`'s silence.
+  metadata?: Record<string, unknown>;
   path: string;
   timestamp: number;
   type: FsOperationType;
@@ -107,7 +109,7 @@ export class FsOperationLog {
   public logOperation(
     type: FsOperationType,
     path: string,
-    metadata?: Record<string, any>
+    metadata?: Record<string, unknown>
   ): void {
     const operation: FsOperation = {
       type,

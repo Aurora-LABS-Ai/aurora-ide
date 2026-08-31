@@ -21,13 +21,15 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::agent_runtime::api_client::{ApiError, ApiRequest, ToolSchema};
+use crate::agent_runtime::api_client::{
+    ApiError, ApiRequest, ReasoningControl, ReasoningReplayMode, ReasoningRequestMode, ToolSchema,
+};
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
 
 use super::client::ProviderConfigSnapshot;
@@ -171,7 +173,37 @@ fn map_status_error_inner(
                 remember_reasoning_requirement(origin.url, origin.model, field);
                 return ApiError::ReasoningReplayRequired;
             }
+            // The same statement in the opposite direction, and it has to be
+            // read for the same reason: replay is now ON by default for
+            // unknown OpenAI-shaped gateways, so the strict ones need a way to
+            // turn it off that does not involve the user finding a setting.
+            // Recorded against the endpoint, then re-issued without the field.
+            if body_rejects_replayed_reasoning(&body) {
+                remember_reasoning_refusal(origin.url, origin.model);
+                return ApiError::ReasoningReplayRefused;
+            }
+            // Same mechanism again, for the cache-affinity key. It has to be
+            // learned rather than predicted: two gateways on the same provider
+            // TYPE answered oppositely when probed with Aurora's own body
+            // (`should_send_prompt_cache_key`), and the one that refuses says
+            // only "a parameter is unsupported" without naming which. So the
+            // trigger is narrow on both sides — this endpoint must actually
+            // have been sent the field, and the 400 must be about a parameter
+            // rather than context, tools or money.
+            {
+                let lower = body.to_lowercase();
+                if prompt_cache_key_was_sent(origin.url, origin.model)
+                    && !prompt_cache_key_refused(origin.url, origin.model)
+                    && body_names_parameter_fault(&lower, &body)
+                {
+                    remember_prompt_cache_key_refusal(origin.url, origin.model);
+                    return ApiError::PromptCacheKeyRefused;
+                }
+            }
             let lower = body.to_lowercase();
+            if !body_names_request_fault(&lower) && body_names_output_cap_fault(&lower, &body) {
+                return ApiError::Provider(message);
+            }
             if !body_names_request_fault(&lower) && body_names_upstream_fault(&lower, &body) {
                 ApiError::Provider(message)
             } else {
@@ -219,6 +251,58 @@ fn body_names_request_fault(lower: &str) -> bool {
         || lower.contains("credit")
         || lower.contains("insufficient")
         || lower.contains("payment required")
+}
+
+/// Whether a 4xx body is complaining about the OUTPUT-LENGTH parameter
+/// (`max_tokens` / `max_completion_tokens`) rather than about the conversation.
+///
+/// Normally a rejected parameter is a dead end — the next request carries the
+/// same bytes and earns the same 400. This one is different, because a gateway
+/// fronting a pool does not answer it consistently. Measured against
+/// `vectide.cn` on 2026-08-29, eight identical `glm-5.2` requests each:
+///
+/// ```text
+/// max_tokens =     8,192  →  8 accepted, 0 rejected
+/// max_tokens =   131,072  →  5 accepted, 3 rejected   ← same bytes, both answers
+/// max_tokens =   200,000  →  4 accepted, 4 rejected
+/// ```
+///
+/// The nodes behind one hostname disagree about the ceiling, so which one
+/// answers decides whether the turn runs. Treating that as unfixable ends a
+/// conversation on a coin flip; re-issuing it re-rolls, and by
+/// `MAX_STREAM_ATTEMPTS` a value that works on most nodes has almost certainly
+/// landed on one.
+///
+/// Retrying is cheap in exactly the way [`body_names_upstream_fault`] describes:
+/// a 4xx is refused before generation, so the extra attempt bills nothing. A cap
+/// that no node accepts still fails — it just costs the backoff ladder first,
+/// which is the right trade against ending a turn that would have worked.
+///
+/// Aurora should not be ASKING for an impossible cap in the first place; that is
+/// the catalogue's job, and `models-dev.ts::agreedLimits` is where it was fixed.
+/// This is the backstop for the endpoints that are simply inconsistent.
+fn body_names_output_cap_fault(lower: &str, body: &str) -> bool {
+    let names_the_parameter = lower.contains("max_tokens")
+        || lower.contains("max_completion_tokens")
+        || lower.contains("max_output_tokens");
+    if !names_the_parameter {
+        return false;
+    }
+    // A body that names the parameter as ONE suspect among many is the
+    // gateway's generic "something in here is wrong" and says nothing about the
+    // cap — `vectide` answers exactly that, listing model, temperature, top_p,
+    // max_tokens, tools and tool_choice together.
+    let blames_it_alone = !(lower.contains("temperature") && lower.contains("tool_choice"));
+    blames_it_alone
+        && (lower.contains("must be")
+            || lower.contains("invalid")
+            || lower.contains("greater than")
+            || lower.contains("out of range")
+            // 输出长度参数格式错误 — "output length parameter format error", the
+            // sentence the Chinese-language gateways answer with. `lower` keeps
+            // non-ASCII verbatim; matched against `body` so that is plain.
+            || body.contains("输出长度")
+            || body.contains("必须是大于"))
 }
 
 /// Whether a 4xx body describes a transient fault UPSTREAM of the endpoint we
@@ -753,7 +837,7 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         // the current history means the NEXT iteration reads all of it from
         // cache and only writes the delta. Without this, a 25-iteration turn
         // re-pays full price for the whole conversation 25 times.
-        mark_last_content_block(&mut messages);
+        mark_last_content_block(&mut messages, request.volatile_tail_messages);
     }
 
     let mut body = Map::new();
@@ -810,27 +894,49 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         body.insert("tools".to_string(), Value::Array(tools));
     }
 
-    // Reasoning. Two frontend paths land here and BOTH must produce a `thinking`
-    // block, because Anthropic's `/v1/messages` has no `reasoning_effort` field:
-    //
-    //  * toggle/budget models  → `request.thinking_enabled`
-    //  * effort models         → the frontend sets `thinking_enabled = false` and
-    //    injects an OpenAI-shaped `reasoning_effort` into `custom_params` instead
-    //    (see `useAgentWindowSend`). Forwarding that key verbatim to Anthropic is
-    //    a silent no-op — the request succeeds and simply returns no reasoning.
-    //    Translate it into a real thinking budget and drop the foreign key.
-    let effort = config
-        .custom_params
-        .as_ref()
-        .and_then(|p| p.get("reasoning_effort"))
-        .and_then(|v| v.as_str())
+    // One semantic request lands here. The adapter translates it; the
+    // frontend no longer has to smuggle an OpenAI field through custom params
+    // and hope this builder notices it.
+    let effort = request
+        .reasoning
+        .effort
+        // Backward compatibility for persisted/manual pre-cutover fields.
+        .or_else(|| {
+            config
+                .custom_params
+                .as_ref()
+                .and_then(|p| p.get("reasoning_effort"))
+                .and_then(Value::as_str)
+        })
         .map(str::to_ascii_lowercase);
 
-    let wants_thinking = (request.thinking_enabled && config.supports_thinking) || effort.is_some();
+    let wants_thinking = request.reasoning.enabled && config.supports_thinking;
 
     // What THIS model accepts. The reasoning contract changed at Claude 4.7 and
     // the old shape is a hard error there, so one body cannot serve both.
-    let surface = anthropic_surface_for(request.model);
+    let mut surface = anthropic_surface_for(request.model);
+    match request.reasoning.request_mode {
+        ReasoningRequestMode::AnthropicAdaptive => {
+            // Explicit compatibility override for a gateway/model whose id is
+            // not a Claude family name. Adaptive APIs reject budget_tokens and
+            // sampling, and readable summaries need to be requested.
+            surface.adaptive = true;
+            surface.thinks_by_default = false;
+            surface.allows_disabled = true;
+            surface.max_effort = Some(AnthropicEffort::Max);
+            surface.allows_sampling = false;
+            surface.summaries_need_opt_in = true;
+        }
+        ReasoningRequestMode::AnthropicBudget => {
+            surface.adaptive = false;
+            surface.thinks_by_default = false;
+            surface.allows_disabled = true;
+            surface.max_effort = None;
+            surface.allows_sampling = true;
+            surface.summaries_need_opt_in = false;
+        }
+        _ => {}
+    }
 
     let thinking_on = if surface.adaptive {
         // ── Claude 4.6+ ──────────────────────────────────────────────
@@ -879,7 +985,7 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         // gateways implement.
         if wants_thinking {
             match anthropic_thinking_plan(
-                request.thinking_budget_tokens,
+                request.reasoning.budget_tokens,
                 effort.as_deref(),
                 max_tokens,
             ) {
@@ -918,8 +1024,12 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
             // Never forward `reasoning_effort` — it is not an Anthropic field and
-            // was already translated into `thinking` above.
-            if key.eq_ignore_ascii_case("reasoning_effort") {
+            // was already translated into `thinking` above. `reasoning_replay`
+            // is an Aurora directive for the OpenAI-compat path; Anthropic
+            // replays thinking natively, so here it is only noise to strip.
+            if key.eq_ignore_ascii_case("reasoning_effort")
+                || key.eq_ignore_ascii_case("reasoning_replay")
+            {
                 continue;
             }
             body.insert(key.clone(), value.clone());
@@ -1118,7 +1228,14 @@ fn set_cache_control(block: &mut Value) {
     }
 }
 
-/// Put a cache breakpoint on the final content block of the final message.
+/// Put a cache breakpoint on the final content block of the last STABLE
+/// message — the final message minus any volatile tail the runtime
+/// declared (`ApiRequest::volatile_tail_messages`).
+///
+/// The tail matters because a breakpoint caches the exact prefix up to
+/// itself: anchored on a message whose bytes change every request (the
+/// IDE-context/checklist tail), the cached prefix can never match again
+/// and the entire conversation body re-bills on every iteration.
 ///
 /// Handles both content shapes Anthropic accepts: a bare string (promoted
 /// to a one-element text block, since a string has nowhere to hang the
@@ -1126,8 +1243,14 @@ fn set_cache_control(block: &mut Value) {
 ///
 /// Anthropic allows at most 4 breakpoints per request; this is the third
 /// and last one Aurora sets, after tools and system.
-fn mark_last_content_block(messages: &mut [Value]) {
-    let Some(last_message) = messages.last_mut() else {
+fn mark_last_content_block(messages: &mut [Value], volatile_tail: usize) {
+    // If everything is volatile there is nothing stable to anchor on —
+    // better no message breakpoint than one that can never hit.
+    let stable = messages.len().checked_sub(volatile_tail);
+    let Some(last_message) = stable
+        .filter(|n| *n > 0)
+        .and_then(|n| messages.get_mut(n - 1))
+    else {
         return;
     };
     let Some(content) = last_message.get_mut("content") else {
@@ -1276,7 +1399,8 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
                 is_error,
             } => {
                 // Detect `<aurora_image>` markers (emitted by
-                // `browser_screenshot`) and rewrite the tool_result
+                // `browser_screenshot` and by `file_read` on a picture)
+                // and rewrite the tool_result
                 // content as a multimodal array — but only if the
                 // selected model declares vision support. Otherwise
                 // strip the marker down to a placeholder so the
@@ -1310,10 +1434,11 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
     Value::Array(arr)
 }
 
-/// Aurora's `browser_screenshot` tool returns its base64 PNG inside an
-/// `<aurora_image media_type="image/png">BASE64</aurora_image>` marker.
+/// Aurora returns pictures — a `browser_screenshot` capture, an image
+/// `file_read` opened — inside an
+/// `<aurora_image media_type="image/jpeg">BASE64</aurora_image>` marker.
 /// For Anthropic the marker is split out into a real `image` content
-/// block so the model literally sees the screenshot; the surrounding
+/// block so the model literally sees the picture; the surrounding
 /// text becomes a sibling `text` block. Plain text content (the vast
 /// majority of tool results) round-trips as a single string for
 /// minimum wire-format churn.
@@ -1421,7 +1546,7 @@ pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
 fn rehydrate_image_from_src(src: Option<&str>) -> Option<String> {
     use base64::Engine;
     // The value was minimally XML-escaped when written into the attribute.
-    let path = src?.replace("&quot;", "\"").replace("&amp;", "&");
+    let path = crate::api::aurora_image::unescape_attr(src?);
     let bytes = std::fs::read(&path).ok()?;
     Some(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
@@ -1531,8 +1656,12 @@ pub(crate) fn strip_aurora_images_for_text(content: &str) -> String {
         match piece {
             AuroraImagePiece::Text(t) => out.push_str(t),
             AuroraImagePiece::Image { media_type, .. } => {
+                // Deliberately not "screenshot": images now also arrive from
+                // `file_read`, and a model told its own file read produced a
+                // screenshot learns something false about what it just did.
+                // The caption line that follows names the source either way.
                 out.push_str(&format!(
-                    "[Screenshot omitted: {media_type} image — current provider does not accept images in tool results]"
+                    "[Image omitted: {media_type} — the selected model does not accept images]"
                 ));
             }
         }
@@ -1582,6 +1711,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
             config.supports_vision,
             config.effective_provider_type(),
             &config.base_url,
+            reasoning_replay_override_for_config(config),
         )),
     );
     body.insert("stream".to_string(), Value::Bool(true));
@@ -1607,21 +1737,36 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
         body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
     }
 
-    if request.thinking_enabled && config.supports_thinking {
-        // `budget_tokens` rides along ONLY when the user explicitly picked one.
-        // Anthropic-behind-an-OpenAI-compat-proxy honours it; most other compat
-        // backends have never seen the key and some reject unknown fields with
-        // HTTP 400, so the default stays the bare enable flag we've always sent.
-        match request.thinking_budget_tokens.filter(|b| *b > 0) {
-            Some(budget) => body.insert(
-                "thinking".to_string(),
-                json!({
-                    "type": "enabled",
-                    "budget_tokens": budget.min(max_tokens.saturating_sub(1).max(1)),
-                }),
-            ),
-            None => body.insert("thinking".to_string(), json!({ "type": "enabled" })),
-        };
+    if request.reasoning.enabled && config.supports_thinking {
+        let effort_mode =
+            matches!(
+                request.reasoning.request_mode,
+                ReasoningRequestMode::OpenaiEffort
+            ) || (matches!(request.reasoning.request_mode, ReasoningRequestMode::Auto)
+                && request.reasoning.control == ReasoningControl::Effort);
+
+        if effort_mode {
+            if let Some(effort) = request.reasoning.effort {
+                body.insert(
+                    "reasoning_effort".to_string(),
+                    Value::String(effort.to_string()),
+                );
+            }
+        } else {
+            // `budget_tokens` rides along only when the user explicitly picked
+            // one. Unknown compat backends often reject it, so a toggle stays
+            // the bare enable object.
+            match request.reasoning.budget_tokens.filter(|b| *b > 0) {
+                Some(budget) => body.insert(
+                    "thinking".to_string(),
+                    json!({
+                        "type": "enabled",
+                        "budget_tokens": budget.min(max_tokens.saturating_sub(1).max(1)),
+                    }),
+                ),
+                None => body.insert("thinking".to_string(), json!({ "type": "enabled" })),
+            };
+        }
     }
 
     // Ask the provider to emit `usage` on the final stream chunk.
@@ -1638,8 +1783,30 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
         );
     }
 
+    // Cache-routing affinity: same conversation, same key, same cache node.
+    // The Responses adapter has carried this since the prompt-cache work
+    // landed (`api/responses.rs`); the chat wire never did, so every request
+    // was free to arrive at a machine holding no copy of the thread — and a
+    // gateway that cannot find the copy re-reads the whole conversation and
+    // bills it. Placed BEFORE `custom_params` so a user who needs a different
+    // key can still override it.
+    if should_send_prompt_cache_key(config.effective_provider_type(), &config.base_url, model) {
+        if let Some(session_key) = request.session_key.filter(|key| !key.is_empty()) {
+            body.insert(
+                "prompt_cache_key".to_string(),
+                Value::String(session_key.to_string()),
+            );
+            note_prompt_cache_key_sent(&config.base_url, model);
+        }
+    }
+
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
+            // Aurora directive, not a wire parameter — already consumed by
+            // `reasoning_replay_override` above; strict backends 400 on it.
+            if key == "reasoning_replay" {
+                continue;
+            }
             body.insert(key.clone(), value.clone());
         }
     }
@@ -1679,6 +1846,125 @@ pub(crate) fn should_request_stream_usage(provider_type: &str) -> bool {
             | "kimi"
             | "perplexity"
     )
+}
+
+/// Which OpenAI-compatible providers may carry `prompt_cache_key`.
+///
+/// It is the Chat Completions counterpart of the field `api/responses.rs`
+/// already sends: requests sharing a key land on the same cache node, so a
+/// long thread reads its own prefix instead of depending on routing luck.
+/// Measured on the user's own sessions before this was added — threads on
+/// generic gateways sat at 26–78% cache reads with sudden mid-turn collapses
+/// to zero, against 99% on the Responses wire, which does send it.
+///
+/// **The provider TYPE cannot decide this, and a first version that thought it
+/// could would have broken every Vectide turn.** Probed 2026-08-30 with the
+/// exact body Aurora sends (streaming, tools, `stream_options`), both rows
+/// typed `openai`:
+///
+/// | endpoint | without the field | with it |
+/// |---|---|---|
+/// | `us-api.x5m5x.com` (5 models) | 200 | **200** |
+/// | `vectide.cn` (glm-5.3) | 200 | **400** |
+///
+/// So the type gate only says "this is a generic OpenAI-shaped gateway, try
+/// it"; the endpoint gets the final say via [`prompt_cache_key_refused`], the
+/// same shape [`learned_reasoning`] uses — on by default, and the strict ones
+/// turn it off themselves without the user having to find a setting.
+/// Dedicated vendor types (deepseek, glm, moonshot, …) stay out entirely: they
+/// run their own automatic prefix caching and have never documented the field.
+pub(crate) fn should_send_prompt_cache_key(
+    provider_type: &str,
+    base_url: &str,
+    model: &str,
+) -> bool {
+    matches!(provider_type.to_ascii_lowercase().as_str(), "openai")
+        && !prompt_cache_key_refused(base_url, model)
+}
+
+/// Endpoints that have carried `prompt_cache_key`, and endpoints that rejected
+/// it. Two sets rather than one so a 400 is only ever blamed on the field at an
+/// endpoint that actually received it — everywhere else the retry would be
+/// byte-identical, which is the one thing a retry must never be.
+///
+/// Process-global and not persisted, for the reason [`learned_reasoning`]
+/// gives: a table that survived restarts would also survive a gateway changing
+/// its mind. One rejected request per endpoint per run is the whole cost.
+fn prompt_cache_key_state() -> &'static std::sync::Mutex<(HashSet<String>, HashSet<String>)> {
+    static STATE: std::sync::OnceLock<std::sync::Mutex<(HashSet<String>, HashSet<String>)>> =
+        std::sync::OnceLock::new();
+    STATE.get_or_init(|| std::sync::Mutex::new((HashSet::new(), HashSet::new())))
+}
+
+/// Note that this endpoint has been sent the field, so a 400 from it is worth
+/// reading as a rejection of the field.
+fn note_prompt_cache_key_sent(base_url: &str, model: &str) {
+    if let Ok(mut state) = prompt_cache_key_state().lock() {
+        state.0.insert(endpoint_key(base_url, model));
+    }
+}
+
+pub(crate) fn prompt_cache_key_was_sent(url: &str, model: &str) -> bool {
+    prompt_cache_key_state()
+        .lock()
+        .map(|state| state.0.contains(&endpoint_key(url, model)))
+        .unwrap_or(false)
+}
+
+/// Record that this endpoint rejected the field, and say so once in the log.
+pub(crate) fn remember_prompt_cache_key_refusal(url: &str, model: &str) {
+    if let Ok(mut state) = prompt_cache_key_state().lock() {
+        if state.1.insert(endpoint_key(url, model)) {
+            crate::logging::log_warn(
+                "api.cache",
+                &format!(
+                    "{url} (model {model}) rejected `prompt_cache_key` — recorded, retrying \
+                     without it. Later turns on this endpoint will omit it, and its prompt \
+                     cache will depend on the gateway's own routing."
+                ),
+            );
+        }
+    }
+}
+
+pub(crate) fn prompt_cache_key_refused(url: &str, model: &str) -> bool {
+    prompt_cache_key_state()
+        .lock()
+        .map(|state| state.1.contains(&endpoint_key(url, model)))
+        .unwrap_or(false)
+}
+
+/// Whether a 4xx body is complaining about a request PARAMETER, as opposed to
+/// the conversation being too big, the tool blocks being malformed, or the
+/// account being out of money — all of which have their own handling and must
+/// not be mistaken for "drop the cache key and try again".
+///
+/// The CJK phrases are not decoration: `vectide.cn` answers
+/// `请求参数值或格式不受支持` ("the request parameter value or format is not
+/// supported") and never names the offending field, so an English-only matcher
+/// reads its rejection as an unexplained `InvalidRequest` and ends the turn.
+fn body_names_parameter_fault(lower: &str, body: &str) -> bool {
+    if lower.contains("context length")
+        || lower.contains("context_length")
+        || lower.contains("maximum context")
+        || lower.contains("too many tokens")
+        || lower.contains("prompt is too long")
+        || lower.contains("tool_use")
+        || lower.contains("tool_result")
+        || lower.contains("tool_call")
+        || lower.contains("quota")
+        || lower.contains("billing")
+        || lower.contains("insufficient")
+    {
+        return false;
+    }
+    lower.contains("unsupported parameter")
+        || lower.contains("unknown parameter")
+        || lower.contains("unrecognized")
+        || lower.contains("extra_forbidden")
+        || lower.contains("invalid parameter")
+        || body.contains("参数")
+        || body.contains("不受支持")
 }
 
 /// Which key (if any) a given provider expects for replayed
@@ -1739,20 +2025,261 @@ pub(crate) fn learned_reasoning_field(url: &str, model: &str) -> Option<&'static
         .and_then(|map| map.get(&endpoint_key(url, model)).copied())
 }
 
+/// Endpoints that have REFUSED replayed reasoning — the mirror of
+/// [`learned_reasoning`], and the reason Aurora can afford to send the field by
+/// default.
+///
+/// Replay is on for unknown OpenAI-shaped gateways (see [`reasoning_field_for`])
+/// because a model that cannot see its own earlier thinking re-derives it every
+/// tool call. The cost of that default is the strict backends — Fireworks
+/// answers `Extra inputs are not permitted, field: reasoning_content` — where an
+/// always-on field would fail every request forever.
+///
+/// So the default is a question, not an assumption: send it, and if the endpoint
+/// says no, stop sending it to that endpoint. One rejected request, which bills
+/// nothing because a 4xx is refused before generation, buys the answer for the
+/// rest of the run.
+fn refused_reasoning() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static REFUSED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    REFUSED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Record that this endpoint rejected the request BECAUSE it carried replayed
+/// reasoning.
+pub(crate) fn remember_reasoning_refusal(url: &str, model: &str) {
+    if let Ok(mut set) = refused_reasoning().lock() {
+        if set.insert(endpoint_key(url, model)) {
+            crate::logging::log_warn(
+                "api.reasoning",
+                &format!(
+                    "{url} (model {model}) rejects replayed reasoning — recorded, retrying \
+                     without it. Later turns on this endpoint will omit it from the start."
+                ),
+            );
+        }
+    }
+}
+
+/// Whether this endpoint has told us to stop sending replayed reasoning.
+pub(crate) fn reasoning_is_refused(url: &str, model: &str) -> bool {
+    refused_reasoning()
+        .lock()
+        .ok()
+        .is_some_and(|set| set.contains(&endpoint_key(url, model)))
+}
+
+/// The user's explicit replay decision for this provider, read from its
+/// Whether the user has forced thinking replay on or off, through the
+/// custom params (`"reasoning_replay"`). This is an Aurora directive, not a
+/// wire parameter — every body builder strips the key before sending.
+///
+/// Exists because the automatic policy cannot see one case: a gateway that
+/// silently ACCEPTS replayed reasoning. Endpoints that require it teach us
+/// via their 400; endpoints that reject it must never receive it; but an
+/// accepting gateway gives no signal, and dropping there costs the model its
+/// own earlier plans. Only the user can know their gateway forwards the
+/// field, so this is their switch:
+///
+/// - `"reasoning_content"` / `"reasoning"` — force replay under that key.
+/// - `"off"` (also `"none"`, `"drop"`, `false`) — force replay off.
+///
+/// Returns `None` for no directive (automatic policy applies),
+/// `Some(Some(key))` to force a key, `Some(None)` to force off.
+pub(crate) fn reasoning_replay_override(
+    custom_params: Option<&std::collections::HashMap<String, Value>>,
+) -> Option<Option<&'static str>> {
+    let value = custom_params?.get("reasoning_replay")?;
+    if value.as_bool() == Some(false) {
+        return Some(None);
+    }
+    match value.as_str().map(str::to_ascii_lowercase).as_deref() {
+        Some("reasoning_content") => Some(Some("reasoning_content")),
+        Some("reasoning") => Some(Some("reasoning")),
+        Some("off" | "none" | "drop" | "false") => Some(None),
+        other => {
+            crate::logging::log_warn(
+                "api.reasoning",
+                &format!(
+                    "ignoring invalid `reasoning_replay` custom param {other:?} — expected \
+                     \"reasoning_content\", \"reasoning\", or \"off\""
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// Typed replay policy from the resolved model request. `Auto` deliberately
+/// returns no override so endpoint learning and the provider table still work.
+#[must_use]
+pub(crate) fn reasoning_replay_mode_override(
+    mode: ReasoningReplayMode,
+) -> Option<Option<&'static str>> {
+    match mode {
+        ReasoningReplayMode::Auto => None,
+        ReasoningReplayMode::ReasoningContent => Some(Some("reasoning_content")),
+        ReasoningReplayMode::Reasoning => Some(Some("reasoning")),
+        ReasoningReplayMode::Off => Some(None),
+    }
+}
+
+/// Resolve the new typed policy first, then the legacy custom-param directive
+/// for rows that have not yet been edited since the cutover.
+#[must_use]
+pub(crate) fn reasoning_replay_override_for_config(
+    config: &ProviderConfigSnapshot,
+) -> Option<Option<&'static str>> {
+    config
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning_replay_mode_override(reasoning.replay))
+        .or_else(|| reasoning_replay_override(config.custom_params.as_ref()))
+}
+
+/// Which key (if any) replayed reasoning goes out under, combining every source
+/// in precedence order:
+///
+/// 1. What the endpoint DEMANDED in its own 400 (`learned_reasoning_field`) —
+///    ground truth, and it must outrank a user "off" or the request would
+///    just fail again.
+/// 2. What the endpoint REFUSED in its own 400 (`reasoning_is_refused`) — the
+///    same ground truth pointing the other way. It outranks the user's choice
+///    for the same reason: an endpoint that rejects the field rejects every
+///    request carrying it, so honouring a "Send" setting here would leave the
+///    provider unusable and the cause invisible.
+/// 3. The user's explicit `reasoning_replay` directive.
+/// 4. The built-in per-provider table (`reasoning_field_for`).
+pub(crate) fn resolve_reasoning_field(
+    provider_type: &str,
+    model: &str,
+    base_url: &str,
+    override_directive: Option<Option<&'static str>>,
+) -> Option<&'static str> {
+    if let Some(demanded) = learned_reasoning_field(base_url, model) {
+        return Some(demanded);
+    }
+    if reasoning_is_refused(base_url, model) {
+        return None;
+    }
+    match override_directive {
+        Some(forced) => forced,
+        None => reasoning_field_for(provider_type, model),
+    }
+}
+
+/// A body complaining that the field is UNWANTED rather than missing.
+///
+/// The two read almost identically to a substring check and mean opposite
+/// things, and acting on the wrong one puts Aurora in a loop: add the field,
+/// get refused, record the refusal as a demand, add it again. Fireworks is the
+/// live example — `Extra inputs are not permitted, field: reasoning_content`.
+///
+/// Checked before anything else, so no later branch can act on it.
+fn body_refuses_the_field(lower: &str) -> bool {
+    lower.contains("not permitted")
+        || lower.contains("not allowed")
+        || lower.contains("unknown field")
+        || lower.contains("unrecognized")
+        || lower.contains("extra inputs")
+}
+
+/// Whether a 4xx says the request was rejected FOR CARRYING replayed reasoning.
+///
+/// [`body_refuses_the_field`] answers "is this a refusal?" and is used to stop a
+/// refusal being misread as a demand. This answers the narrower question the
+/// retry needs: is the refused field the reasoning one? Both halves must be
+/// present — a gateway rejecting some other unknown parameter says nothing about
+/// replay, and dropping the reasoning in response would be a guess.
+///
+/// Verbatim from Fireworks, which is why the check exists at all:
+/// `Extra inputs are not permitted, field: reasoning_content`.
+fn body_rejects_replayed_reasoning(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    body_refuses_the_field(&lower)
+        && (lower.contains("reasoning_content") || lower.contains("reasoning"))
+}
+
+/// The REPLAY field named in an OpenAI-shaped error's machine-readable slots.
+///
+/// `param` says which argument is at fault and `code` is a stable identifier,
+/// so a gateway that fills either has named the field in a form no phrasebook
+/// can miss. That matters more than it looks: these errors are written for
+/// humans, and not all of those humans read English.
+///
+/// Both checks are EXACT, and that is the whole of the care here. The same
+/// gateway also rejects `reasoning_effort` with
+/// `"code":"VectorTide_invalid_reasoning_effort"` — a complaint about a
+/// sampling knob, which merely contains the word. A loose `contains("reasoning")`
+/// reads that as "replay your thinking", starts sending a field the endpoint
+/// never asked for, and buries the real fault under a bogus retry.
+fn reasoning_named_in_error_fields(body: &str) -> Option<&'static str> {
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = parsed.get("error")?;
+    let slot = |key: &str| {
+        error
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_lowercase)
+    };
+
+    // `param` is a field PATH — `messages.reasoning_content`. Only its leaf is
+    // the field name, and it has to match one outright.
+    if let Some(param) = slot("param") {
+        match param.rsplit('.').next().unwrap_or(&param) {
+            "reasoning_content" => return Some("reasoning_content"),
+            "reasoning" => return Some("reasoning"),
+            _ => {}
+        }
+    }
+
+    // `code` is a vendor identifier, not a path, so it is read as a phrase:
+    // the replay field spelled out AND a word that means the request lacked it.
+    if let Some(code) = slot("code") {
+        if code.contains("reasoning_content")
+            && (code.contains("required") || code.contains("missing") || code.contains("must"))
+        {
+            return Some("reasoning_content");
+        }
+    }
+    None
+}
+
 /// Does this 400 body say the request was refused for want of replayed
 /// reasoning, and if so under which key?
 ///
-/// Matched on text because there is no code for it. Observed live from
-/// AgentRouter on 2026-08-25: `The reasoning_content in the thinking mode must
-/// be passed back to the API.` The match is deliberately narrow — it wants the
-/// field NAME and a phrase about sending it back, so an unrelated 400 that
-/// merely mentions reasoning does not start replaying it.
+/// Two readings, in order of how much they can be trusted.
+///
+/// **The error's own fields**, when it has them. Observed live on 2026-08-29:
+/// `"param":"messages.reasoning_content"`,
+/// `"code":"VectorTide_reasoning_content_required"` — as clear a statement of
+/// the requirement as an API can make, sitting beside a `message` written
+/// entirely in Chinese. The prose-only detector this replaces read four English
+/// phrases, matched none of them, classified the 400 as an unfixable bad
+/// request, and killed the turn on a gateway that had just explained the fix.
+/// A phrasebook was never going to be the right shape for this.
+///
+/// **Then the prose**, for the endpoints that send nothing else. Deliberately
+/// narrow — it wants the field NAME and a phrase about sending it back, so an
+/// unrelated 400 that merely mentions reasoning does not start a replay.
 pub(crate) fn reasoning_requirement_from_body(body: &str) -> Option<&'static str> {
     let lower = body.to_ascii_lowercase();
+    if body_refuses_the_field(&lower) {
+        return None;
+    }
+    if let Some(field) = reasoning_named_in_error_fields(body) {
+        return Some(field);
+    }
     let asks_for_it = lower.contains("must be passed back")
         || lower.contains("must be returned")
         || lower.contains("should be passed back")
-        || lower.contains("is required in the request");
+        || lower.contains("is required in the request")
+        // 回传 — "send back" — is the verb the Chinese-language gateways use
+        // for this, in both halves of the sentence Aurora was given ("必须回传
+        // 上一轮 reasoning_content … 请保留并原样回传该字段后重试").
+        // `to_ascii_lowercase` leaves non-ASCII alone, so `lower` still carries
+        // it verbatim.
+        || lower.contains("回传");
     if !asks_for_it {
         return None;
     }
@@ -1779,43 +2306,54 @@ pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&
         // Including it is safe; omitting it is also safe (the model
         // just re-thinks). Match real behaviour and emit it.
         "openrouter" | "lmstudio" | "lm-studio" => Some("reasoning"),
-        // kenari serves DeepSeek and GLM models, so the obvious move is to put
-        // it on the `reasoning_content` line above. Measured against the live
-        // API, that would be waste: a second turn on `deepseek-v4-pro` returns
-        // 200 with `prompt_tokens: 7661` whether the assistant message carries
-        // `reasoning_content`, `reasoning`, or neither. Identical to the token
-        // — the gateway strips the field before forwarding, so replaying it
-        // buys nothing and costs the user its tokens on the way out.
-        "kenari" | "kenari-messages" | "kenari-responses" => None,
-        // Backends that answer to their own name AND validate strictly. These
-        // must never be overridden by what the model is called: Fireworks
-        // serves DeepSeek models under its own ids and rejects unknown fields
-        // with "Extra inputs are not permitted, field: …".
-        "fireworks" | "minimax" | "ollama" | "anthropic" | "openai-responses" | "codex"
-        | "cursor" => None,
-        // Everyone else, `"openai"` very much included, sends nothing until
-        // the endpoint itself says otherwise. See `learned_reasoning_field`.
+        // Wires where this field does not exist. Not an exemption — a
+        // different protocol: Anthropic and MiniMax build `thinking` blocks
+        // (`build_anthropic_body`), Responses and Codex replay an encrypted
+        // reasoning item, and Cursor speaks its own. Putting an OpenAI chat
+        // field in any of those bodies would be malformed, not merely unwanted.
+        "minimax" | "anthropic" | "openai-responses" | "codex" | "cursor"
+        | "kenari-messages" | "kenari-responses" => None,
+        // Every other OpenAI-compatible provider — `"openai"`, `"custom"`,
+        // Fireworks, Ollama, kenari, and anything Aurora has never heard of:
+        // send it, whether or not that provider is known to want it.
         //
-        // The obvious-looking fix here is to read the MODEL when the provider
-        // type is only a wire shape — `agentrouter:deepseek-v4-flash` declares
-        // `providerType: "openai"` and failed on 2026-08-25 with "The
-        // reasoning_content in the thinking mode must be passed back to the
-        // API", so "a DeepSeek model behind a gateway needs the replay" writes
-        // itself. Aurora's own session history says it is wrong:
+        // This arm used to be `None` — send nothing until an endpoint demands
+        // the field in a 400 — and the evidence for that was 587 turns across
+        // four gateways with zero failures without it:
         //
         //   f4f41a66 (Larprouter, type openai)  glm-5.3     233 turns, 0 failures
         //   agentrouter (type openai)           glm-5.2     220 turns, 0 failures
         //   9b01ab80 (Byteplus, type openai)    glm-5.2     134 turns, 0 failures
         //   9b01ab80 (Byteplus, type openai)    deepseek-v4-pro  79 turns, 0 failures
         //
-        // DeepSeek behind an OpenAI-shaped gateway ran 79 clean turns without
-        // the field. So the requirement does not follow from the vendor, the
-        // model family, or the wire shape — it is a property of one gateway's
-        // routing of one model in thinking mode, and no table can predict it.
-        // Guessing costs the user tokens on 587 turns that never needed it.
+        // Those numbers are real and they measured the wrong thing. "Zero
+        // failures" says dropping the field does not ERROR. It says nothing
+        // about what the model lost — and what it loses is its own reasoning
+        // from one tool call to the next, which it then pays to re-derive.
+        // Waiting for a 400 only ever finds the gateways rude enough to send
+        // one; the polite ones say nothing, and Aurora reads their silence as
+        // consent. `vectide.cn` writes "Reasoning content was not preserved by
+        // the client" into the reasoning slot instead of erroring, so the
+        // learn-from-400 policy never fired and the user watched that sentence
+        // render as the model's thoughts, once per tool call, for a whole
+        // conversation.
         //
-        // The endpoint already knows the answer and says so in its 400. Ask it.
-        _ => None,
+        // opencode reaches the same conclusion with no policy at all: its
+        // OpenAI-chat message builder attaches `reasoning_content` to every
+        // assistant message that has reasoning, unconditionally, on every
+        // provider (`packages/llm/src/protocols/openai-chat.ts`,
+        // `lowerAssistantMessage`). No table, no learning, no waiting.
+        //
+        // The cost this arm used to avoid — tokens spent on gateways that did
+        // not need the field — is real but small next to a model re-thinking
+        // every iteration. The cost it could NOT avoid, a strict backend that
+        // rejects unknown fields, is now handled where it belongs: Fireworks
+        // answers `Extra inputs are not permitted, field: reasoning_content`
+        // once, `remember_reasoning_refusal` records it, and the retry goes out
+        // clean. That single rejected request bills nothing — a 4xx is refused
+        // before generation — which is what makes "send it to everyone" an
+        // affordable default rather than a gamble with the user's provider.
+        _ => Some("reasoning_content"),
     }
 }
 
@@ -1827,6 +2365,9 @@ fn openai_messages(
     // replay, and only when the provider type has no opinion — see
     // `learned_reasoning_field`. Empty in the pure-builder tests below.
     base_url: &str,
+    // The user's explicit replay directive, if any — see
+    // `reasoning_replay_override`. `None` in the pure-builder tests.
+    reasoning_override: Option<Option<&'static str>>,
 ) -> Vec<Value> {
     let mut output: Vec<Value> = Vec::new();
 
@@ -1889,11 +2430,14 @@ fn openai_messages(
                 // 400). OpenAI-compat is a tribe, not a spec — emit
                 // whichever key (if any) the actual provider accepts.
                 if !reasoning.is_empty() {
-                    // The table first, then whatever this endpoint has told us
-                    // about itself. The table is what we know about vendors;
-                    // the learned entry is what one gateway measured on us.
-                    let key = reasoning_field_for(provider_type, request.model)
-                        .or_else(|| learned_reasoning_field(base_url, request.model));
+                    // Endpoint's own demand, then the user's directive, then
+                    // the vendor table — see `resolve_reasoning_field`.
+                    let key = resolve_reasoning_field(
+                        provider_type,
+                        request.model,
+                        base_url,
+                        reasoning_override,
+                    );
                     if let Some(key) = key {
                         payload.insert(key.into(), Value::String(reasoning));
                     }
@@ -2726,23 +3270,19 @@ pub fn __unused_hashmap_marker() -> HashMap<i32, String> {
 mod tests {
     use super::*;
 
-    /// The model name must NEVER decide this, however tempting it looks.
+    /// The model name must NEVER decide this, however tempting it looks — and
+    /// it no longer needs to, because the answer is the same for all of them.
     ///
     /// A live 400 on `agentrouter:deepseek-v4-flash` ("The reasoning_content in
     /// the thinking mode must be passed back to the API") makes "DeepSeek
-    /// behind a gateway needs the replay" write itself. Aurora's own history
-    /// says otherwise, and so does the endpoint when you ask it directly:
+    /// behind a gateway needs the replay" write itself, and probing on
+    /// 2026-08-25 showed the same endpoint returning 200 on every shape that
+    /// was supposed to fail. So the requirement follows from neither the vendor
+    /// nor the model family, and reading the model id here would be a guess
+    /// whichever way it pointed.
     ///
-    ///   Larprouter (type openai)  glm-5.3          233 turns, 0 failures
-    ///   AgentRouter (type openai) glm-5.2          220 turns, 0 failures
-    ///   Byteplus (type openai)    glm-5.2          134 turns, 0 failures
-    ///   Byteplus (type openai)    deepseek-v4-pro   79 turns, 0 failures
-    ///
-    /// Probed live on 2026-08-25, `agentrouter/deepseek-v4-flash` returned 200
-    /// on every shape that was supposed to fail: chat completions and
-    /// `/v1/messages`, thinking on and off, with tools, streaming, over several
-    /// turns, with the reasoning dropped. Whatever produced that 400, it does
-    /// not follow from the vendor or the model family.
+    /// Every OpenAI-compatible gateway now gets the field, wanted or not, so a
+    /// per-model branch has nothing left to decide.
     #[test]
     fn the_model_name_never_decides_the_reasoning_field() {
         for model in [
@@ -2754,23 +3294,107 @@ mod tests {
         ] {
             assert_eq!(
                 reasoning_field_for("openai", model),
-                None,
-                "{model}: 587 recorded turns say an OpenAI-shaped gateway needs nothing"
+                Some("reasoning_content"),
+                "{model}: the chat wire replays reasoning regardless of the model id"
             );
         }
     }
 
-    /// Strict backends answer to their own name and must stay at `None`
-    /// whatever they are serving. Fireworks rejects the field outright:
-    /// "Extra inputs are not permitted".
+    /// Every OpenAI-compatible provider replays, including the ones known to
+    /// reject it.
+    ///
+    /// Fireworks answers `Extra inputs are not permitted, field:
+    /// reasoning_content`, and that used to earn it a permanent exemption in
+    /// this table. A hardcoded exemption is a guess that never gets checked:
+    /// it stays wrong after the provider changes, and it silently covers every
+    /// gateway nobody has tested. The endpoint saying "no" once — recorded by
+    /// `remember_reasoning_refusal`, retried clean, and billed nothing because
+    /// a 4xx is refused before generation — is the same answer, measured.
     #[test]
-    fn a_strict_backend_sends_nothing() {
+    fn every_openai_compatible_provider_replays() {
+        for provider in ["openai", "custom", "fireworks", "ollama", "kenari", ""] {
+            assert_eq!(
+                reasoning_field_for(provider, "some-model"),
+                Some("reasoning_content"),
+                "{provider}: the chat wire replays by default"
+            );
+        }
+        // The vendors that publish the legacy key keep it.
+        assert_eq!(reasoning_field_for("openrouter", "m"), Some("reasoning"));
+        assert_eq!(reasoning_field_for("lmstudio", "m"), Some("reasoning"));
+    }
+
+    /// A refusal is recorded and then honoured, so the field stops going out.
+    #[test]
+    fn an_endpoint_that_rejects_the_field_stops_receiving_it() {
+        const URL: &str = "https://strict-backend.example/v1/chat/completions";
+        // Before the endpoint has said anything, the default applies.
         assert_eq!(
-            reasoning_field_for("fireworks", "accounts/fireworks/models/deepseek-v3"),
+            resolve_reasoning_field("openai", "m-9", URL, None),
+            Some("reasoning_content"),
+        );
+
+        let body = r#"{"error":{"message":"Extra inputs are not permitted, field: reasoning_content","type":"invalid_request_error"}}"#;
+        let err = map_status_error_inner(
+            400,
+            body.to_string(),
+            None,
+            RequestOrigin {
+                url: URL,
+                model: "m-9",
+            },
+        );
+        assert!(
+            matches!(err, ApiError::ReasoningReplayRefused),
+            "got {err:?}"
+        );
+        assert!(
+            err.is_retryable(),
+            "the rebuilt request differs, so re-issuing acts on new information"
+        );
+
+        // Recorded, and it now outranks even an explicit "Send" from the user —
+        // honouring that setting here would leave the provider unusable.
+        assert_eq!(resolve_reasoning_field("openai", "m-9", URL, None), None);
+        assert_eq!(
+            resolve_reasoning_field("openai", "m-9", URL, Some(Some("reasoning_content"))),
             None,
         );
+        // Scoped to that endpoint and model, like every other learned fact.
+        assert_eq!(
+            resolve_reasoning_field("openai", "m-10", URL, None),
+            Some("reasoning_content"),
+        );
+    }
+
+    /// A refusal naming some OTHER field must not turn replay off.
+    #[test]
+    fn an_unrelated_rejected_parameter_leaves_replay_alone() {
+        let body = r#"{"error":{"message":"Extra inputs are not permitted, field: top_k","type":"invalid_request_error"}}"#;
+        let err = map_status_error_inner(
+            400,
+            body.to_string(),
+            None,
+            RequestOrigin {
+                url: "https://other.example/v1/chat/completions",
+                model: "m-11",
+            },
+        );
+        assert!(
+            !matches!(err, ApiError::ReasoningReplayRefused),
+            "dropping reasoning over an unrelated field would be a guess, got {err:?}"
+        );
+    }
+
+    /// Wires where the field does not exist send nothing — a different
+    /// protocol, not an exemption.
+    #[test]
+    fn a_non_chat_wire_sends_nothing() {
+        assert_eq!(reasoning_field_for("anthropic", "claude-opus-5"), None);
         assert_eq!(reasoning_field_for("minimax", "deepseek-chat"), None);
-        assert_eq!(reasoning_field_for("ollama", "deepseek-r1"), None);
+        assert_eq!(reasoning_field_for("openai-responses", "gpt-5"), None);
+        assert_eq!(reasoning_field_for("codex", "gpt-5"), None);
+        assert_eq!(reasoning_field_for("cursor", "claude"), None);
     }
 
     /// What an endpoint says about itself DOES decide it — that is the whole
@@ -2823,17 +3447,84 @@ mod tests {
             r#"{"error":{"message":"context length exceeded"}}"#,
             r#"{"error":{"message":"stream_options should be set along with stream = true"}}"#,
             r#"{"error":{"message":"Extra inputs are not permitted, field: reasoning_content"}}"#,
+            // The same refusal with the field in `param` too. The structured
+            // read must not turn "stop sending this" into "start sending this".
+            r#"{"error":{"message":"Extra inputs are not permitted","param":"messages.reasoning_content","code":"unknown_field"}}"#,
+            // A DIFFERENT field that merely contains the word. Same gateway,
+            // same day, and a loose substring match reads it as a demand for
+            // replayed thinking — then retries with a field nobody asked for
+            // while the real fault (an effort value the endpoint won't take)
+            // goes unreported.
+            r#"{"error":{"message":"reasoning_effort 取值无效。请使用 low、medium、high、xhigh 或 none。","type":"invalid_request_error","param":"reasoning_effort","code":"VectorTide_invalid_reasoning_effort"}}"#,
         ] {
             assert_eq!(reasoning_requirement_from_body(body), None, "body: {body}");
         }
     }
 
-    /// kenari serves DeepSeek and GLM but strips the field before forwarding.
-    /// Measured, not assumed — replaying it there only costs the user tokens.
+    /// The 400 that showed the phrasebook was the wrong shape.
+    ///
+    /// Verbatim from the gateway on 2026-08-29. Every word of the message is
+    /// Chinese; the requirement is stated twice more, in `param` and `code`,
+    /// in a form that needs no translation. Reading those is what stops a
+    /// turn dying on an endpoint that has just explained how to fix it.
     #[test]
-    fn kenari_still_sends_nothing_whatever_the_model_is_called() {
-        assert_eq!(reasoning_field_for("kenari", "deepseek-v4-pro"), None);
-        assert_eq!(reasoning_field_for("kenari", "glm-5.2"), None);
+    fn reads_the_requirement_when_the_message_is_not_in_english() {
+        let body = r#"{"error":{"message":"thinking 模式的多轮对话必须回传上一轮 reasoning_content。请保留并原样回传该字段后重试。","type":"invalid_request_error","param":"messages.reasoning_content","code":"VectorTide_reasoning_content_required"}}"#;
+        assert_eq!(
+            reasoning_requirement_from_body(body),
+            Some("reasoning_content")
+        );
+
+        // …and the prose alone is enough when a gateway sends no `param`.
+        assert_eq!(
+            reasoning_requirement_from_body(
+                r#"{"error":{"message":"多轮对话必须回传上一轮 reasoning_content"}}"#
+            ),
+            Some("reasoning_content")
+        );
+    }
+
+    /// A gateway may name the field in `param` without spelling out why. That
+    /// is still the endpoint naming what it wants, and it is the only signal
+    /// present — so it counts.
+    #[test]
+    fn a_named_param_is_enough_on_its_own() {
+        assert_eq!(
+            reasoning_requirement_from_body(
+                r#"{"error":{"message":"invalid request","param":"messages.reasoning_content","code":"missing_required_field"}}"#
+            ),
+            Some("reasoning_content")
+        );
+    }
+
+    /// kenari's chat wire replays like every other OpenAI-compatible provider.
+    ///
+    /// It used to be exempt on measured grounds: a second turn on
+    /// `deepseek-v4-pro` returned `prompt_tokens: 7661` with the field, without
+    /// it, and under either key — identical to the token, because the gateway
+    /// strips it before forwarding. That made replay pure waste there.
+    ///
+    /// The exemption is gone anyway, because "wasted tokens" is not the test
+    /// this table should be applying. A stripped field costs a little; a
+    /// hardcoded exemption costs correctness the day kenari stops stripping it,
+    /// and nothing would notice. The one signal that stays true is the
+    /// endpoint's own answer, and kenari never refuses the field — so it is
+    /// sent, like everywhere else.
+    ///
+    /// Its Messages and Responses wires still send nothing: there the field is
+    /// not unwanted, it is not part of the protocol.
+    #[test]
+    fn kenari_chat_replays_and_its_other_wires_do_not() {
+        assert_eq!(
+            reasoning_field_for("kenari", "deepseek-v4-pro"),
+            Some("reasoning_content")
+        );
+        assert_eq!(
+            reasoning_field_for("kenari", "glm-5.2"),
+            Some("reasoning_content")
+        );
+        assert_eq!(reasoning_field_for("kenari-messages", "glm-5.2"), None);
+        assert_eq!(reasoning_field_for("kenari-responses", "glm-5.2"), None);
     }
 
     /// The direct providers keep their existing answers.
@@ -2862,6 +3553,7 @@ mod tests {
     /// is what invented ~92k tokens of phantom context once already.
     #[test]
     fn the_token_estimate_agrees_with_what_the_builder_emits() {
+        use crate::agent_runtime::api_client::ReasoningReplayMode;
         use crate::api::{reasoning_replay_for, ReasoningReplay};
         const URL: &str = "https://estimate-test.example/v1";
         for (provider, model) in [
@@ -2876,12 +3568,159 @@ mod tests {
                 .or_else(|| learned_reasoning_field(URL, model))
                 .is_some();
             let estimate_charges =
-                reasoning_replay_for(provider, model, URL) == ReasoningReplay::Text;
+                reasoning_replay_for(provider, model, URL, ReasoningReplayMode::Auto, None)
+                    == ReasoningReplay::Text;
             assert_eq!(
                 builder_emits, estimate_charges,
                 "{provider}/{model}: the estimate and the wire disagree"
             );
         }
+    }
+
+    /// The user's `reasoning_replay` custom param is the switch for gateways
+    /// that silently ACCEPT replayed reasoning: no automatic signal can find
+    /// those, and dropping there costs the model its own earlier plans.
+    #[test]
+    fn reasoning_replay_directive_overrides_the_table_both_ways() {
+        use std::collections::HashMap;
+        let params_on: HashMap<String, Value> =
+            HashMap::from([("reasoning_replay".to_string(), json!("reasoning_content"))]);
+        let params_off: HashMap<String, Value> =
+            HashMap::from([("reasoning_replay".to_string(), json!("off"))]);
+
+        // Force ON for a custom gateway the table would drop for.
+        assert_eq!(
+            resolve_reasoning_field(
+                "openai",
+                "glm-5.3",
+                "https://directive-test.example/v1",
+                reasoning_replay_override(Some(&params_on)),
+            ),
+            Some("reasoning_content")
+        );
+        // Force OFF for a provider the table would emit for.
+        assert_eq!(
+            resolve_reasoning_field(
+                "glm",
+                "glm-4.6",
+                "https://directive-test.example/v1",
+                reasoning_replay_override(Some(&params_off)),
+            ),
+            None
+        );
+        // No directive → table applies untouched.
+        assert_eq!(
+            resolve_reasoning_field("glm", "glm-4.6", "https://directive-test.example/v1", None),
+            Some("reasoning_content")
+        );
+        // An endpoint's own 400 outranks even an explicit OFF — otherwise
+        // the next request just fails the same way again.
+        remember_reasoning_requirement(
+            "https://demanding-endpoint.example/v1",
+            "stubborn-model",
+            "reasoning_content",
+        );
+        assert_eq!(
+            resolve_reasoning_field(
+                "openai",
+                "stubborn-model",
+                "https://demanding-endpoint.example/v1",
+                reasoning_replay_override(Some(&params_off)),
+            ),
+            Some("reasoning_content")
+        );
+        // The estimator follows the directive too — wire and estimate must
+        // never disagree about whether stored reasoning is billed.
+        use crate::agent_runtime::api_client::ReasoningReplayMode;
+        use crate::api::{reasoning_replay_for, ReasoningReplay};
+        assert_eq!(
+            reasoning_replay_for(
+                "openai",
+                "glm-5.3",
+                "https://directive-test.example/v1",
+                ReasoningReplayMode::Auto,
+                Some(&params_on)
+            ),
+            ReasoningReplay::Text
+        );
+        assert_eq!(
+            reasoning_replay_for(
+                "glm",
+                "glm-4.6",
+                "https://directive-test.example/v1",
+                ReasoningReplayMode::Auto,
+                Some(&params_off)
+            ),
+            ReasoningReplay::Dropped
+        );
+    }
+
+    /// The directive steers the builder but must never reach the wire —
+    /// strict backends reject unknown body fields with HTTP 400.
+    #[test]
+    fn reasoning_replay_directive_never_reaches_the_wire() {
+        let messages = vec![
+            ConversationMessage::user_text("hi", 0),
+            ConversationMessage::assistant(
+                vec![
+                    ContentBlock::Thinking {
+                        text: "the plan lives here".into(),
+                        signature: None,
+                        duration_ms: None,
+                    },
+                    ContentBlock::Text { text: "ok".into() },
+                ],
+                1,
+            ),
+        ];
+        let request = ApiRequest {
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            model: "glm-5.3",
+            temperature: None,
+            max_output_tokens: 1024,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
+        };
+        let mut config = ProviderConfigSnapshot {
+            provider_id: "custom-gw".into(),
+            provider_type: Some("openai".into()),
+            base_url: "https://directive-wire.example/v1".into(),
+            api_key: "k".into(),
+            api_keys: None,
+            model: "glm-5.3".into(),
+            custom_headers: None,
+            custom_params: Some(std::collections::HashMap::from([(
+                "reasoning_replay".to_string(),
+                json!("reasoning_content"),
+            )])),
+            default_temperature: None,
+            default_max_tokens: None,
+            supports_thinking: false,
+            reasoning: None,
+            supports_vision: false,
+        };
+
+        let body = build_openai_body(&request, &config);
+        // Directive consumed, not forwarded.
+        assert!(body.get("reasoning_replay").is_none());
+        // And it did its job: the assistant message carries the reasoning.
+        assert_eq!(
+            body["messages"][1]["reasoning_content"],
+            "the plan lives here"
+        );
+
+        // Same request with the directive off: reasoning stays home.
+        config.custom_params = Some(std::collections::HashMap::from([(
+            "reasoning_replay".to_string(),
+            json!("off"),
+        )]));
+        let body = build_openai_body(&request, &config);
+        assert!(body.get("reasoning_replay").is_none());
+        assert!(body["messages"][1].get("reasoning_content").is_none());
     }
 
     /// `Some(0)` and `None` are different claims and the UI acts on both.
@@ -3129,11 +3968,13 @@ mod tests {
             model: "claude-opus-5",
             temperature: None,
             max_output_tokens: 1024,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
 
-        let out = openai_messages(&request, true, "openai", "");
+        let out = openai_messages(&request, true, "openai", "", None);
 
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[0]["role"], "tool");
@@ -3191,11 +4032,13 @@ mod tests {
             model: "claude-opus-5",
             temperature: None,
             max_output_tokens: 1024,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
 
-        let out = openai_messages(&request, true, "openai", "");
+        let out = openai_messages(&request, true, "openai", "", None);
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[1]["role"], "user");
         let parts = out[1]["content"].as_array().expect("multimodal array");
@@ -3210,7 +4053,7 @@ mod tests {
         );
 
         // Non-vision: the marker is stripped to a placeholder, never base64.
-        let out = openai_messages(&request, false, "openai", "");
+        let out = openai_messages(&request, false, "openai", "", None);
         let content = out[1]["content"].as_str().expect("plain string content");
         assert!(content.contains("use this design"));
         assert!(!content.contains("QUJD"), "no raw base64 for non-vision");
@@ -3533,6 +4376,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: true,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -3548,8 +4392,10 @@ mod tests {
             tools,
             temperature: None,
             max_output_tokens: 8_000,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         }
     }
 
@@ -3596,6 +4442,45 @@ mod tests {
             .matches("cache_control")
             .count();
         assert!(count <= 4, "too many cache breakpoints: {count}");
+    }
+
+    #[test]
+    fn rolling_breakpoint_skips_the_volatile_tail_message() {
+        // The runtime appends an IDE-context/checklist message whose bytes
+        // change every request. A breakpoint anchored on it caches a prefix
+        // no later request can match — the conversation body would re-bill
+        // on every iteration. The breakpoint must land one message earlier.
+        let mut config = thinking_config();
+        config.provider_id = "anthropic".into();
+        let messages = [
+            ConversationMessage::user_text("the question", 0),
+            ConversationMessage::user_text("<aurora_task_reminder>…</aurora_task_reminder>", 1),
+        ];
+        let mut request = caching_request(&messages, &[]);
+        request.volatile_tail_messages = 1;
+
+        let body = build_anthropic_body(&request, &config);
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "breakpoint anchors on the last STABLE message"
+        );
+        assert!(
+            body["messages"][1]["content"][0]
+                .get("cache_control")
+                .is_none(),
+            "the volatile tail must never carry the breakpoint"
+        );
+
+        // Everything volatile → no message breakpoint at all, rather than
+        // one that can never hit.
+        let one = [ConversationMessage::user_text("tail-only", 0)];
+        let mut request = caching_request(&one, &[]);
+        request.volatile_tail_messages = 1;
+        let body = build_anthropic_body(&request, &config);
+        assert!(body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none(),);
     }
 
     /// `reqwest` sends no `User-Agent` unless one is configured, and a request
@@ -3647,6 +4532,64 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("my-proxy/1.0")
         );
+    }
+
+    #[test]
+    /// A gateway whose nodes disagree about the output ceiling must not end the
+    /// turn on the node that says no.
+    ///
+    /// Measured against `vectide.cn` on 2026-08-29: eight identical `glm-5.2`
+    /// requests at `max_tokens: 131,072` were accepted five times and rejected
+    /// three. Classified as `InvalidRequest` the turn stopped after one attempt
+    /// (`aurora.log` 07:53:53, "after 1 attempt(s)") on what was a coin flip.
+    #[test]
+    fn an_output_cap_rejection_is_retried_because_the_answer_is_not_stable() {
+        let origin = RequestOrigin {
+            url: "https://vectide.cn/v1/chat/completions",
+            model: "glm-5.2",
+        };
+        // Verbatim, including the claim that a positive integer is not one.
+        let body = r#"{"error":{"message":"输出长度参数格式错误。max_tokens 或 max_completion_tokens 必须是大于 0 的整数。","type":"invalid_request_error","param":"max_tokens","code":"VectorTide_invalid_max_tokens"}}"#;
+        let err = map_status_error_inner(400, body.to_string(), None, origin);
+        assert!(
+            err.is_retryable(),
+            "an unstable output-cap rejection must be re-issued, got {err:?}"
+        );
+
+        // The English spelling of the same complaint.
+        let english = r#"{"error":{"message":"max_tokens is invalid: must be a positive integer","param":"max_tokens"}}"#;
+        assert!(map_status_error_inner(400, english.to_string(), None, origin).is_retryable());
+    }
+
+    #[test]
+    fn a_generic_parameter_complaint_is_still_a_dead_end() {
+        let origin = RequestOrigin {
+            url: "https://vectide.cn/v1/chat/completions",
+            model: "glm-5.2",
+        };
+        // The same gateway's OTHER 400 names max_tokens as one suspect among
+        // six. That is "something in here is wrong", not a statement about the
+        // cap, and re-sending identical bytes cannot make it right.
+        let body = r#"{"error":{"message":"请求参数值或格式不受支持。请重点检查 model、temperature、top_p、max_tokens、tools 和 tool_choice；如无法定位，请逐项移除可选参数后重试。","type":"invalid_request_error","param":null,"code":"VectorTide_invalid_request"}}"#;
+        let err = map_status_error_inner(400, body.to_string(), None, origin);
+        assert!(
+            !err.is_retryable(),
+            "a scattergun parameter complaint is not an output-cap fault, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_context_overflow_that_mentions_the_cap_stays_unretryable() {
+        let origin = RequestOrigin {
+            url: "https://example.test/v1/chat/completions",
+            model: "m-1",
+        };
+        // `body_names_request_fault` wins outright, as it does for every other
+        // branch: an oversized prompt is compaction's job, and three attempts at
+        // it is three times the wait for the same dead end.
+        let body = r#"{"error":{"message":"This model's maximum context length is 128000 tokens, however you requested 130000 tokens (120000 in the messages, 10000 in max_tokens)","code":"context_length_exceeded"}}"#;
+        let err = map_status_error_inner(400, body.to_string(), None, origin);
+        assert!(!err.is_retryable(), "got {err:?}");
     }
 
     #[test]
@@ -3774,7 +4717,7 @@ mod tests {
         let mut request = caching_request(&messages, &tools);
         request.system_prompt = Some(&prompt);
 
-        let out = openai_messages(&request, false, "openai", "");
+        let out = openai_messages(&request, false, "openai", "", None);
 
         assert_eq!(out[0]["content"], "STATIC RULES\n\n# Mode: plan");
     }
@@ -3876,13 +4819,19 @@ mod tests {
             tools: &[],
             temperature: None,
             max_output_tokens: 32_000,
-            thinking_enabled: true,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: ReasoningControl::Toggle,
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            },
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
         let body = build_openai_body(&request, &config);
         assert_eq!(body["thinking"], json!({ "type": "enabled" }));
 
-        request.thinking_budget_tokens = Some(12_000);
+        request.reasoning.budget_tokens = Some(12_000);
         let body = build_openai_body(&request, &config);
         assert_eq!(
             body["thinking"],
@@ -3890,9 +4839,255 @@ mod tests {
         );
 
         // Thinking off ⇒ no `thinking` key at all, budget or not.
-        request.thinking_enabled = false;
+        request.reasoning.enabled = false;
         let body = build_openai_body(&request, &config);
         assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn canonical_effort_uses_the_chat_completions_effort_field() {
+        let config = thinking_config();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let request = ApiRequest {
+            model: "custom:reasoner",
+            system_prompt: None,
+            messages: &messages,
+            tools: &[],
+            temperature: None,
+            max_output_tokens: 32_000,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: ReasoningControl::Effort,
+                effort: Some("xhigh"),
+                request_mode: ReasoningRequestMode::OpenaiEffort,
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            },
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
+        };
+
+        let body = build_openai_body(&request, &config);
+
+        assert_eq!(body["reasoning_effort"], "xhigh");
+        assert!(
+            body.get("thinking").is_none(),
+            "one semantic request must not become two competing wire controls"
+        );
+    }
+
+    /// The chat wire had no way to say "this is the same conversation", so a
+    /// gateway was free to route each request to a different cache node and
+    /// re-bill the whole thread. Measured on real sessions before the fix:
+    /// 26–78% cache reads with mid-turn collapses to zero, against 99% on the
+    /// Responses wire, which has always sent this field.
+    #[test]
+    fn prompt_cache_key_rides_the_chat_wire_for_generic_gateways() {
+        let mut config = thinking_config();
+        config.provider_type = Some("openai".into());
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = "glm-5.3";
+        request.session_key = Some("7414d198-da34-4ebf-a7b3-2acbdf0c40db");
+
+        let body = build_openai_body(&request, &config);
+
+        assert_eq!(
+            body["prompt_cache_key"],
+            "7414d198-da34-4ebf-a7b3-2acbdf0c40db"
+        );
+    }
+
+    /// Three ways it must stay off the wire. An unknown body field is an HTTP
+    /// 400 on a strict backend, and an empty key is worse than none — it would
+    /// route every conversation in the app onto one node.
+    #[test]
+    fn prompt_cache_key_is_withheld_where_it_could_break_the_request() {
+        let messages = [ConversationMessage::user_text("hi", 0)];
+
+        // 1. A provider type outside the allowlist, even with a key to send.
+        let mut strict = thinking_config();
+        strict.provider_type = Some("fireworks".into());
+        let mut request = caching_request(&messages, &[]);
+        request.session_key = Some("thread-1");
+        assert!(build_openai_body(&request, &strict)
+            .get("prompt_cache_key")
+            .is_none());
+
+        // 2. No conversation identity (a one-off request).
+        let mut generic = thinking_config();
+        generic.provider_type = Some("openai".into());
+        let mut anonymous = caching_request(&messages, &[]);
+        anonymous.session_key = None;
+        assert!(build_openai_body(&anonymous, &generic)
+            .get("prompt_cache_key")
+            .is_none());
+
+        // 3. An empty key would pool every thread onto one node.
+        let mut blank = caching_request(&messages, &[]);
+        blank.session_key = Some("");
+        assert!(build_openai_body(&blank, &generic)
+            .get("prompt_cache_key")
+            .is_none());
+    }
+
+    /// The endpoint gets the last word, because the provider type cannot have
+    /// it: probed 2026-08-30 with Aurora's own body, `us-api.x5m5x.com`
+    /// answered 200 with the field on all five models and `vectide.cn`
+    /// answered 400 — both rows typed `openai`. Vectide's body is reproduced
+    /// verbatim here, and note what it does NOT contain: the name of the field
+    /// it is rejecting.
+    #[test]
+    fn an_endpoint_that_rejects_the_cache_key_teaches_us_once_and_is_retried() {
+        const HOST: &str = "https://cache-key-refuser.example/v1";
+        const MODEL: &str = "glm-5.3";
+        let mut config = thinking_config();
+        config.provider_type = Some("openai".into());
+        config.base_url = HOST.into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = MODEL;
+        request.session_key = Some("thread-1");
+
+        // First request carries it.
+        assert_eq!(build_openai_body(&request, &config)["prompt_cache_key"], "thread-1");
+        assert!(prompt_cache_key_was_sent(HOST, MODEL));
+
+        // Vectide's actual 400, verbatim — generic, and never names the field.
+        let body = r#"{"error":{"message":"请求参数值或格式不受支持。请重点检查 model、temperature、top_p、max_tokens、tools 和 tool_choice；如无法定位，请逐项移除可选参数后重试。","type":"invalid_request_error","param":null,"code":"VectorTide_invalid_request"}}"#;
+        let err = map_status_error_inner(
+            400,
+            body.to_string(),
+            None,
+            RequestOrigin {
+                url: HOST,
+                model: MODEL,
+            },
+        );
+        assert!(
+            matches!(err, ApiError::PromptCacheKeyRefused),
+            "got {err:?} — an unexplained 400 from an endpoint we just sent the field to \
+             must become the retryable refusal, not a turn-ending InvalidRequest"
+        );
+        assert!(
+            err.is_retryable(),
+            "the rebuilt request differs from the one that failed, so it is worth re-issuing"
+        );
+
+        // Learned: the next body for this endpoint goes out clean, and stays
+        // clean for the rest of the run.
+        let retried = build_openai_body(&request, &config);
+        assert!(retried.get("prompt_cache_key").is_none());
+        assert!(build_openai_body(&request, &config)
+            .get("prompt_cache_key")
+            .is_none());
+    }
+
+    /// The trigger has to stay narrow in both directions, or it turns real
+    /// faults into a wasted extra attempt and hides what actually went wrong.
+    #[test]
+    fn only_a_parameter_fault_from_a_key_carrying_endpoint_is_blamed_on_the_key() {
+        const HOST: &str = "https://cache-key-innocent.example/v1";
+        const MODEL: &str = "glm-5.2";
+        let mut config = thinking_config();
+        config.provider_type = Some("openai".into());
+        config.base_url = HOST.into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = MODEL;
+        request.session_key = Some("thread-1");
+        let _ = build_openai_body(&request, &config);
+
+        // A conversation that outgrew the window is compaction's problem, not
+        // the cache key's — blaming the key here would drop it for good AND
+        // spend an attempt on an identically oversized body.
+        let overflow = map_status_error_inner(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 131072 tokens","type":"invalid_request_error"}}"#.to_string(),
+            None,
+            RequestOrigin { url: HOST, model: MODEL },
+        );
+        assert!(!matches!(overflow, ApiError::PromptCacheKeyRefused), "{overflow:?}");
+        assert!(!prompt_cache_key_refused(HOST, MODEL));
+
+        // And an endpoint that never received the field is never blamed: the
+        // retry would be byte-identical, which is the one thing it must not be.
+        let elsewhere = map_status_error_inner(
+            400,
+            r#"{"error":{"message":"Unsupported parameter: top_k"}}"#.to_string(),
+            None,
+            RequestOrigin {
+                url: "https://never-sent-the-key.example/v1",
+                model: "m-1",
+            },
+        );
+        assert!(!matches!(elsewhere, ApiError::PromptCacheKeyRefused), "{elsewhere:?}");
+    }
+
+    /// The escape hatch has to keep working: `custom_params` is applied after
+    /// the affinity key, so a gateway wanting a different value still wins.
+    #[test]
+    fn custom_params_can_override_the_prompt_cache_key() {
+        let mut config = thinking_config();
+        config.provider_type = Some("openai".into());
+        config.custom_params = Some(std::collections::HashMap::from([(
+            "prompt_cache_key".to_string(),
+            json!("my-own-routing-key"),
+        )]));
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.session_key = Some("thread-1");
+
+        let body = build_openai_body(&request, &config);
+
+        assert_eq!(body["prompt_cache_key"], "my-own-routing-key");
+    }
+
+    #[test]
+    fn explicit_adaptive_mode_handles_an_unrecognised_messages_model() {
+        let mut config = thinking_config();
+        config.provider_id = "gateway".into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = "gateway:model-without-a-claude-name";
+        request.temperature = Some(0.4);
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+            enabled: true,
+            control: ReasoningControl::Effort,
+            effort: Some("max"),
+            request_mode: ReasoningRequestMode::AnthropicAdaptive,
+            ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+        };
+
+        let body = build_anthropic_body(&request, &config);
+
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(body["output_config"]["effort"], "max");
+        assert!(body["thinking"].get("budget_tokens").is_none());
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn explicit_budget_mode_handles_an_unrecognised_messages_model() {
+        let mut config = thinking_config();
+        config.provider_id = "gateway".into();
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = "gateway:model-without-a-claude-name";
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+            enabled: true,
+            control: ReasoningControl::Budget,
+            budget_tokens: Some(4_000),
+            request_mode: ReasoningRequestMode::AnthropicBudget,
+            ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+        };
+
+        let body = build_anthropic_body(&request, &config);
+
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 4_000);
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]

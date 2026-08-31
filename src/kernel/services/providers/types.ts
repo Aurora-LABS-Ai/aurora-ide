@@ -8,6 +8,11 @@
  * - Custom providers
  */
 
+import type {
+  ReasoningReplayMode,
+  ReasoningRequestMode,
+} from "@/kernel/types/database";
+
 // ============================================================
 // PROVIDER TYPES
 // ============================================================
@@ -143,10 +148,37 @@ export interface ProviderConfig {
   name: string;
   providerType: ProviderType;
 
+  /**
+   * Fully resolved reasoning request for this exact provider + model pair.
+   * This is the one semantic contract sent to Rust. Provider adapters encode
+   * it as `reasoning_effort`, `thinking`, `output_config`, or the Responses
+   * `reasoning` object without asking TypeScript to know each wire shape.
+   */
+  reasoning?: ReasoningRequestConfig;
+
   // Capabilities
   supportsThinking: boolean;
   supportsToolStream: boolean;
   supportsVision: boolean;
+}
+
+export type ReasoningControl = 'none' | 'toggle' | 'effort' | 'budget';
+
+/**
+ * Provider-neutral reasoning intent for one model invocation.
+ *
+ * `enabled` describes the user's/model's intent. It never means "emit a
+ * `thinking` field"; that decision belongs to the selected adapter. Keeping
+ * those two meanings separate prevents effort models from disabling the very
+ * adapter logic that needs to translate their effort.
+ */
+export interface ReasoningRequestConfig {
+  enabled: boolean;
+  control: ReasoningControl;
+  effort?: string;
+  budgetTokens?: number;
+  requestMode: ReasoningRequestMode;
+  replay: ReasoningReplayMode;
 }
 
 // ============================================================
@@ -267,6 +299,7 @@ export type ProviderType =
   | 'openai'           // OpenAI and compatible APIs (Chat Completions)
   | 'openai-responses' // OpenAI Responses API (/responses, typed streaming events)
   | 'codex'            // Codex via ChatGPT backend (subscription OAuth, Responses dialect)
+  | 'cursor'           // Cursor subscription via its native agent protocol
   | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
   | 'anthropic'        // Native Anthropic Claude API
   | 'deepseek'         // DeepSeek (OpenAI-compatible with extensions)

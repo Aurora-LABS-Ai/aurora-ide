@@ -80,11 +80,36 @@ const NO_IDE_FROM_AGENT = {
 }
 
 export default defineConfig([
-  // `thirdparty/` holds vendored upstream repos kept for reference (their own
-  // git, their own style, their own lint config). It is gitignored and never
-  // bundled, so linting it only buries Aurora's own findings under thousands
-  // of other projects' opinions.
-  globalIgnores(['dist', 'thirdparty']),
+  // Everything here is GENERATED or VENDORED — nobody authors it, so a finding
+  // in it is not something anyone can act on, and there are enough of them to
+  // hide the findings that are.
+  //
+  //   dist, build, src-tauri/target, src-tauri/gen
+  //     Build output. `build/` is where Tauri puts the compiled app (aurora.exe,
+  //     .pdb, DirectML.dll, installer bundles) and it also carries whatever JS
+  //     the bundler happened to emit. ESLint cannot parse most of it, so it
+  //     reported 1018 parse errors from `build/release` alone — against 47 real
+  //     findings in src/. A whole-repo run was therefore useless: a genuine
+  //     regression could not be seen in the noise, so nobody ran it, so the
+  //     gate did not exist. All four are gitignored (.gitignore: dist, build,
+  //     target, src-tauri/target/, src-tauri/gen/).
+  //
+  //   thirdparty
+  //     Vendored upstream repos kept for reference — their own git, their own
+  //     style, their own lint config. Gitignored and never bundled, so linting
+  //     it buries Aurora's own findings under other projects' opinions.
+  //
+  // Anything added here must be genuinely generated or vendored. Silencing
+  // authored code by adding its folder is how a lint gate stops meaning
+  // anything; disable the specific rule on the specific line instead, with the
+  // reason.
+  globalIgnores([
+    'dist',
+    'build',
+    'src-tauri/target',
+    'src-tauri/gen',
+    'thirdparty',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

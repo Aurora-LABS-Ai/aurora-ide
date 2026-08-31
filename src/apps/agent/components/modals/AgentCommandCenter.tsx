@@ -57,6 +57,7 @@ export const AgentCommandCenter: React.FC = () => {
   const notifyOnTurnComplete = useSettingsStore((s) => s.notifyOnTurnComplete);
   const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
+  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -135,17 +136,23 @@ export const AgentCommandCenter: React.FC = () => {
           void openIdeWindow();
         },
       },
-      {
-        id: "open-team",
-        title: "Open agent team",
-        keywords: "parallel lead agents",
-        group: "Navigate",
-        icon: "users",
-        run: () => {
-          useAgentUiStore.getState().closeSettings();
-          useAgentWorkspaceStore.getState().openTab("team");
-        },
-      },
+      // Only while Agent Team is on — the palette must not list a way into a
+      // feature that is switched off.
+      ...(teamEnabled
+        ? [
+            {
+              id: "open-team",
+              title: "Open agent team",
+              keywords: "parallel lead agents",
+              group: "Navigate",
+              icon: "users",
+              run: () => {
+                useAgentUiStore.getState().closeSettings();
+                useAgentWorkspaceStore.getState().openTab("team");
+              },
+            } satisfies CommandItem,
+          ]
+        : []),
       ...(["files", "browser", "terminal", "review"] as const).map<CommandItem>((kind) => ({
         id: `dock:${kind}`,
         title: `Open ${kind}`,
@@ -249,6 +256,7 @@ export const AgentCommandCenter: React.FC = () => {
     query,
     railOpen,
     showActivityInTitle,
+    teamEnabled,
   ]);
 
   const results = useMemo(() => {

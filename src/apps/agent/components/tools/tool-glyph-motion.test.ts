@@ -121,9 +121,12 @@ describe("live tool marks", () => {
   });
 
   it("drops the spinner from the tool row and mounts the scan only while running", () => {
+    // Anchored on the target chip's own class rather than the condition that
+    // renders it: which targets earn the count chip is a display decision that
+    // has changed before and will again, and it is not what this test is about.
     const head = cardSource.slice(
       cardSource.indexOf('className="agw-tool-head"'),
-      cardSource.indexOf("{isMultiTarget ? ("),
+      cardSource.indexOf('className="agw-tool-chip agw-tool-chip-count"'),
     );
     expect(head).not.toContain("agw-spinner");
     expect(head).toContain('data-live={status === "running" ? "" : undefined}');

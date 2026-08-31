@@ -63,6 +63,7 @@ export type AgentIconName =
   | "file-read"
   | "file-write"
   | "file-edit"
+  | "pencil"
   | "file-move"
   | "file-delete"
   | "workspace-tree"
@@ -344,6 +345,19 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M8 3.5A1.5 1.5 0 0 0 6 5v13.5A1.5 1.5 0 0 0 7.5 20H10" />
       <path d="M8.8 12.2h3" pathLength={1} data-part="line" />
       <path d="M15.7 12.5l1.9 1.9-4.4 4.4-2.4.5.5-2.4z" data-part="nib" />
+    </>
+  ),
+
+  // pencil — the bare tool, no document under it.
+  //
+  // `file-edit` already carries a pencil, but it carries a page as well, so it
+  // says "edit this file". Where the thing being edited is a value already on
+  // screen — a number in a row — the page is a second subject the glyph does
+  // not have.
+  pencil: (
+    <>
+      <path d="M16.4 4.6l3 3-9.6 9.6-4 1 1-4z" />
+      <path d="M14.3 6.7l3 3" data-part="nib" />
     </>
   ),
 

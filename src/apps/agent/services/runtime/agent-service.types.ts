@@ -1,4 +1,8 @@
-import type { StreamCallbacks as ProviderStreamCallbacks, ToolCallRequest } from "@/kernel/services/providers/types";
+import type {
+  ReasoningRequestConfig,
+  StreamCallbacks as ProviderStreamCallbacks,
+  ToolCallRequest,
+} from "@/kernel/services/providers/types";
 import type { AgentExecutionMode } from "@/apps/agent/services/runtime/agent-execution-mode";
 
 export interface AgentCallbacks extends ProviderStreamCallbacks {
@@ -77,6 +81,16 @@ export interface AgentConfig {
   maxTokens?: number;
   maxToolIterations?: number;
   /**
+   * The model as the conversation is pinned to it (`provider:modelKey`), when
+   * that differs from the id the request carries.
+   *
+   * Only Cursor separates the two: its effort tier and Fast lane are choices
+   * folded into the model id at send time, and the pin has to stay the model
+   * itself — it is the key every capability lookup uses, the context window
+   * included.
+   */
+  modelSelection?: string;
+  /**
    * Compaction trigger as a percentage of the context window (50–95). When the
    * projected request crosses it, the Rust runtime summarizes older history
    * into a persistent marker before continuing. `undefined`/`0` disables
@@ -109,6 +123,12 @@ export interface AgentConfig {
   providerConfig?: import("@/apps/agent/services/providers").ProviderConfig;
   systemPrompt?: string;
   temperature?: number;
+  /**
+   * Canonical provider-neutral reasoning intent for this model. The selected
+   * adapter owns the actual request fields.
+   */
+  reasoning?: ReasoningRequestConfig;
+  /** @deprecated Derived from `reasoning.enabled` for older callers. */
   thinkingEnabled?: boolean;
   /**
    * Explicit extended-thinking token budget for models whose reasoning control
@@ -116,6 +136,7 @@ export interface AgentConfig {
    * model picker). Only read when `thinkingEnabled` — a budget never turns
    * thinking on by itself. `undefined` lets the provider adapter derive one.
    */
+  /** @deprecated Derived from `reasoning.budgetTokens` for older callers. */
   thinkingBudgetTokens?: number;
   threadId?: string;
   /**

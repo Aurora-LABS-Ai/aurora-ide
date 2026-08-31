@@ -120,7 +120,10 @@ export interface TimelineEvent {
 }
 
 export interface ToolCall {
-  args: Record<string, any>;
+  // `unknown`, not `any`: these are arguments decoded from a model's JSON, so
+  // nothing is known about them until a reader checks. `any` turned every
+  // downstream read into an unchecked one.
+  args: Record<string, unknown>;
   error?: string;
   id: string;
   name: string;
@@ -135,7 +138,7 @@ export interface ToolProposal {
   id: string;
   modifiedContent?: string;
   originalContent?: string;
-  parameters: Record<string, any>;
+  parameters: Record<string, unknown>;
   riskLevel: 'low' | 'medium' | 'high';
   status: 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
   toolName: string;

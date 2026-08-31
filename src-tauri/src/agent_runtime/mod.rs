@@ -53,6 +53,7 @@ pub mod session;
 pub mod session_store;
 pub mod team;
 pub mod title;
+pub mod tool_bridge;
 pub mod tool_executor;
 pub mod tool_pairing;
 pub mod tool_spill;

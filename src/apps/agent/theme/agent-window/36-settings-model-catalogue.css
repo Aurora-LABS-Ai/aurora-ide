@@ -214,6 +214,71 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Editing the context window.
+   `.agw-modelcat-tags` is `pointer-events: none` so the whole row stays one
+   hit target — these two controls have to opt back IN, or neither can be
+   reached. They sit above the row's own button for the same reason. */
+.agw-modelcat-window {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: auto;
+}
+.agw-modelcat-window input {
+  width: 84px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.agw-modelcat-window input::placeholder {
+  color: var(--agw-text-subtle);
+  opacity: 0.65;
+}
+
+/* The pencil, and the tick that replaces it while editing. Both are quiet
+   until the row is hovered — the number is read far more often than it is
+   changed, and a control on every row would compete with the names. */
+.agw-modelcat-window-edit,
+.agw-modelcat-window-save {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--agw-radius-sm, 6px);
+  background: none;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0;
+  transition:
+    opacity 160ms var(--agw-ease-out, ease),
+    color 160ms var(--agw-ease-out, ease);
+}
+.agw-modelcat-row:hover .agw-modelcat-window-edit,
+.agw-modelcat-window-edit:focus-visible,
+.agw-modelcat-window-save {
+  opacity: 1;
+}
+.agw-modelcat-window-edit:hover,
+.agw-modelcat-window-edit:focus-visible,
+.agw-modelcat-window-save:hover {
+  color: var(--agw-text);
+  background: var(--agw-surface-raised);
+  outline: none;
+}
+.agw-modelcat-window-save {
+  color: var(--agw-accent);
+}
+
 .agw-modelcat-empty {
   display: flex;
   flex-direction: column;

@@ -38,6 +38,7 @@ pub mod history;
 pub mod models;
 pub mod session;
 pub mod unary;
+pub mod usage;
 
 /// Cursor's API root. Both the auth endpoints and `agent.v1.AgentService`
 /// live here.

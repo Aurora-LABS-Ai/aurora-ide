@@ -76,6 +76,38 @@ impl ConversationRuntime {
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         seq: &mut u64,
     ) -> Result<ToolBatchOutcome, RuntimeError> {
+        let event_seq = AtomicU64::new(*seq);
+        let outcome = self
+            .execute_tool_calls_seq(
+                calls,
+                session,
+                turn_id,
+                cancel_token,
+                event_sink,
+                &event_seq,
+            )
+            .await;
+        // Hand the counter back. Everything inside drew from `event_seq`, so
+        // the caller's next event must continue from where it landed.
+        *seq = event_seq.load(AtomicOrdering::Relaxed);
+        outcome
+    }
+
+    /// [`Self::execute_tool_calls`] against a counter the caller owns.
+    ///
+    /// A bidirectional provider runs its tools while its stream is still open
+    /// and still emitting, so the event counter has to be one both sides draw
+    /// from rather than a number handed over and handed back. See
+    /// [`crate::agent_runtime::tool_bridge`].
+    pub(super) async fn execute_tool_calls_seq(
+        &self,
+        calls: Vec<PendingToolCall>,
+        session: &Session,
+        turn_id: &str,
+        cancel_token: &CancellationToken,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+        event_seq: &AtomicU64,
+    ) -> Result<ToolBatchOutcome, RuntimeError> {
         let mut result_blocks = Vec::with_capacity(calls.len());
         // Set when a tool reports `ToolError::Cancelled`. The batch is not
         // abandoned at that point: results that already landed are real work
@@ -86,11 +118,6 @@ impl ConversationRuntime {
         // `FailureLoopGuard` — a model that re-issues an identical failing
         // call needs to be told so, or it will keep re-issuing it.
         let mut loop_guard = FailureLoopGuard::default();
-
-        // Concurrent futures each emit their own completion event, so the
-        // sequence counter has to be shareable for the duration. Written
-        // back into the caller's `seq` once the loop is done.
-        let event_seq = AtomicU64::new(*seq);
 
         let mut cursor = 0usize;
         while cursor < calls.len() {
@@ -118,7 +145,7 @@ impl ConversationRuntime {
                     emit_native_tool_event_shared(
                         event_sink,
                         turn_id,
-                        &event_seq,
+                        event_seq,
                         AssistantEvent::ToolExecutionStart {
                             id: call.id.clone(),
                             name: call.name.clone(),
@@ -146,7 +173,7 @@ impl ConversationRuntime {
             // Borrowed once, outside the closure: an `async move` block that
             // mentioned the counter directly would move it, and there is one
             // counter for the whole turn.
-            let seq_cell = &event_seq;
+            let seq_cell = event_seq;
             let outcomes =
                 futures_util::future::join_all(batch.iter().zip(lifecycles.iter().copied()).map(
                     |(call, uses_frontend_lifecycle)| {
@@ -344,18 +371,25 @@ impl ConversationRuntime {
             }
         }
 
-        // Hand the counter back. Everything above drew from `event_seq`, so
-        // the caller's next event must continue from where it landed.
-        *seq = event_seq.load(AtomicOrdering::Relaxed);
-
         // Calls from batches that were never dispatched. `cursor` already
         // points past the last batch that ran, so this is exactly the tail the
         // cancellation cut off. They still need answers.
         if cancelled && cursor < calls.len() {
             let skipped = &calls[cursor..];
+            // `fail_pending_tool_calls` counts with a plain `&mut u64`; borrow
+            // the shared value across the call and put it back, so the two
+            // numbering schemes stay one sequence.
+            let mut tail_seq = event_seq.load(AtomicOrdering::Relaxed);
             let pending = self
-                .fail_pending_tool_calls(skipped, STOPPED_BEFORE_RUN, turn_id, seq, event_sink)
+                .fail_pending_tool_calls(
+                    skipped,
+                    STOPPED_BEFORE_RUN,
+                    turn_id,
+                    &mut tail_seq,
+                    event_sink,
+                )
                 .await;
+            event_seq.store(tail_seq, AtomicOrdering::Relaxed);
             result_blocks.extend(pending.blocks);
         }
 
@@ -445,6 +479,89 @@ impl ConversationRuntime {
 
         let ids: Vec<String> = calls.iter().map(|call| call.id.clone()).collect();
         synthetic_tool_results(&ids, reason)
+    }
+
+    /// Answer one [`BridgeRequest`] from a provider whose stream is still open.
+    ///
+    /// This is the *only* extra path tools reach, and it deliberately does no
+    /// tool work of its own — it writes the transcript and then calls the same
+    /// [`Self::execute_tool_calls_seq`] the normal loop calls. That is what
+    /// keeps the permission gate, the concurrency rules, the output caps and
+    /// the rich sidecars identical on a bidirectional provider. Reimplementing
+    /// any of it here would fork the gate, and a forked gate is one that stops
+    /// asking before `shell_execute`.
+    ///
+    /// Ordering is the other half of the contract. The assistant message
+    /// carrying the `tool_use` blocks is appended **before** the tools run, so
+    /// the transcript never holds results whose call has not been written yet
+    /// — which is also what keeps the per-message journal correct through a
+    /// turn that now spans one long connection.
+    pub(super) async fn serve_tool_bridge(
+        &self,
+        assistant: ConversationMessage,
+        calls: Vec<BridgeToolCall>,
+        session: &mut Session,
+        turn_id: &str,
+        cancel_token: &CancellationToken,
+        event_sink: &mpsc::Sender<AgentEventEnvelope>,
+        event_seq: &AtomicU64,
+    ) -> Result<BridgeReply, RuntimeError> {
+        session.append_message(assistant);
+
+        let pending: Vec<PendingToolCall> = calls
+            .iter()
+            .map(|call| PendingToolCall {
+                id: call.id.clone(),
+                name: call.name.clone(),
+                input: call.input.clone(),
+            })
+            .collect();
+
+        let batch = self
+            .execute_tool_calls_seq(
+                pending,
+                session,
+                turn_id,
+                cancel_token,
+                event_sink,
+                event_seq,
+            )
+            .await?;
+
+        // Read the answers back out of the message rather than tracking them
+        // alongside it: the message is what the transcript and the provider
+        // both see, and a second copy could disagree with it after the spill
+        // rewrites an oversized result into a file path.
+        let mut results = Vec::with_capacity(calls.len());
+        for call in &calls {
+            let found = batch.message.blocks.iter().find_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } if *tool_use_id == call.id => Some((content.clone(), is_error.unwrap_or(false))),
+                _ => None,
+            });
+            // Every call is answered by construction, so a miss is a bug rather
+            // than a state to model. Still answered here: the far end is
+            // holding a stream open on this id, and silence would hang it.
+            let (content, is_error) = found.unwrap_or_else(|| {
+                (
+                    "This tool produced no result block, which is an Aurora bug.".to_string(),
+                    true,
+                )
+            });
+            results.push(BridgeToolResult {
+                id: call.id.clone(),
+                content,
+                is_error,
+            });
+        }
+
+        let cancelled = batch.cancelled;
+        session.append_message(batch.message);
+
+        Ok(BridgeReply { results, cancelled })
     }
 }
 

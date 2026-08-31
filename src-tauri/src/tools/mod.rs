@@ -259,6 +259,42 @@ mod tests {
         );
     }
 
+    /// Every declared tool parameter names exactly ONE JSON type.
+    ///
+    /// A union — `"type": ["string", "array"]` — is legal JSON Schema, reads as
+    /// harmless, and is serialised differently by every gateway. Measured on
+    /// 2026-08-29 with one identical `file_read` call across three providers:
+    /// byteplus produced the array correctly, kenari flattened it into a
+    /// string, and vectide truncated the call at `{"path": ` and emitted the
+    /// rest as message text — which failed every read in that turn, with a 200
+    /// on the request and no error anywhere to point at the cause.
+    ///
+    /// The schema list is the one part of a request Aurora fully controls. This
+    /// keeps a union from returning on the next tool someone writes.
+    #[test]
+    fn no_tool_parameter_declares_a_union_type() {
+        let reg = ToolRegistry::new();
+        register_builtin_tools(&reg, Arc::new(shell_editor_todo::NoopIdeEventSink), None);
+
+        for schema in reg.schemas() {
+            let Some(properties) = schema
+                .input_schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            for (field, spec) in properties {
+                assert!(
+                    !spec.get("type").is_some_and(serde_json::Value::is_array),
+                    "`{}`.{field} declares a union `type` — pick one. \
+                     See file_read.rs's `path` for what a union does on a real gateway.",
+                    schema.name
+                );
+            }
+        }
+    }
+
     #[test]
     fn register_builtin_tools_without_browser_mounts_bucket_tools() {
         let reg = ToolRegistry::new();

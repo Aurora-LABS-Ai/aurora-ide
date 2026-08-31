@@ -183,6 +183,9 @@ where
     // tool_calls index → blocks-position map for fan-in.
     let mut blocks: Vec<BlockState> = Vec::new();
     let mut last_kind: Option<DeltaKind> = None;
+    // Carries partial `<think>` tags across SSE frames — see
+    // `InlineThinkingSplitter`.
+    let mut inline_thinking = InlineThinkingSplitter::default();
     // Map tool_call index → position in `blocks`.
     let mut tool_positions: std::collections::HashMap<i32, usize> =
         std::collections::HashMap::new();
@@ -308,10 +311,31 @@ where
 
                     if let Some(content) = delta.content {
                         if !content.is_empty() {
-                            append_or_open_text(&mut blocks, &mut last_kind, &content);
-                            let _ = event_sink
-                                .send(AssistantEvent::TextDelta { delta: content })
-                                .await;
+                            // Content is not automatically the answer: a model
+                            // that writes its thinking here wraps it in
+                            // `<think>` tags, and that belongs in the thinking
+                            // card — see `InlineThinkingSplitter`. A stream
+                            // with no such tags passes through unchanged, one
+                            // segment per delta.
+                            for segment in inline_thinking.push(&content) {
+                                match segment {
+                                    InlineSegment::Text(text) => {
+                                        append_or_open_text(&mut blocks, &mut last_kind, &text);
+                                        let _ = event_sink
+                                            .send(AssistantEvent::TextDelta { delta: text })
+                                            .await;
+                                    }
+                                    InlineSegment::Thinking(text) => {
+                                        append_or_open_thinking(&mut blocks, &mut last_kind, &text);
+                                        let _ = event_sink
+                                            .send(AssistantEvent::Thinking {
+                                                text,
+                                                signature: None,
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -427,6 +451,29 @@ where
         ));
     }
 
+    // Anything the splitter was still holding — a tag that never completed, or
+    // a thinking block the model never closed. Held bytes must reach the user
+    // one way or another; silently dropping them would lose real output.
+    if let Some(segment) = inline_thinking.flush() {
+        match segment {
+            InlineSegment::Text(text) => {
+                append_or_open_text(&mut blocks, &mut last_kind, &text);
+                let _ = event_sink
+                    .send(AssistantEvent::TextDelta { delta: text })
+                    .await;
+            }
+            InlineSegment::Thinking(text) => {
+                append_or_open_thinking(&mut blocks, &mut last_kind, &text);
+                let _ = event_sink
+                    .send(AssistantEvent::Thinking {
+                        text,
+                        signature: None,
+                    })
+                    .await;
+            }
+        }
+    }
+
     // Emit one ToolUse event per accumulated tool call now that the
     // arguments are fully assembled.
     for block in &blocks {
@@ -470,6 +517,127 @@ enum DeltaKind {
     Tool,
 }
 
+/// A model writing its thinking into `content` instead of `reasoning_content`
+/// wraps it in one of these. Both families are accepted, and a block opened
+/// with either closes on either, because a model that got the field wrong is
+/// not a model to trust for matching tags.
+const INLINE_THINKING_OPEN: [&str; 2] = ["<think>", "<thinking>"];
+const INLINE_THINKING_CLOSE: [&str; 2] = ["</think>", "</thinking>"];
+
+#[derive(Debug, PartialEq, Eq)]
+enum InlineSegment {
+    Text(String),
+    Thinking(String),
+}
+
+/// Pulls `<think>`-wrapped prose out of the visible content stream so it lands
+/// in the thinking card instead of the reply.
+///
+/// Measured need, `MiniMax-M3` on `us-api.x5m5x.com`, 2026-08-30. Aurora
+/// replays a model's own prior thinking as `reasoning_content` on the assistant
+/// message, and this model answers by *imitating* it in plain text: 6 of 6
+/// probe turns with replay wrote `<thinking>…</thinking>` into `content`, 0 of
+/// 3 without it. Session `558c643d` shows the result — half the turns rendered
+/// "The user wants me to explain the architecture…" as the visible answer.
+///
+/// Fixed here rather than by dropping replay for MiniMax, because
+/// `reasoning_field_for` says outright that the decision belongs to the
+/// endpoint and never to a guess at model names — and this endpoint does not
+/// error, it degrades silently, so there is nothing for it to teach us. A
+/// content-side splitter needs no table and covers every model that does this.
+///
+/// Streaming-safe: a tag split across two SSE frames is held in `pending`
+/// rather than emitted as text, so `…<thin` + `king>…` still opens a block.
+#[derive(Default)]
+struct InlineThinkingSplitter {
+    inside: bool,
+    pending: String,
+}
+
+impl InlineThinkingSplitter {
+    fn push(&mut self, chunk: &str) -> Vec<InlineSegment> {
+        let mut out = Vec::new();
+        let mut buf = std::mem::take(&mut self.pending);
+        buf.push_str(chunk);
+
+        loop {
+            // ASCII-only tags, so lowercasing cannot move a byte index.
+            let lower = buf.to_ascii_lowercase();
+            let tags: &[&str] = if self.inside {
+                &INLINE_THINKING_CLOSE
+            } else {
+                &INLINE_THINKING_OPEN
+            };
+
+            if let Some((at, len)) = first_tag(&lower, tags) {
+                self.emit(&mut out, &buf[..at]);
+                buf = buf[at + len..].to_string();
+                self.inside = !self.inside;
+                continue;
+            }
+
+            // No complete tag. Whatever tail of this buffer could still grow
+            // into one waits for the next frame instead of reaching the UI.
+            let hold = partial_tag_len(&lower, tags);
+            let emit_to = buf.len() - hold;
+            self.emit(&mut out, &buf[..emit_to]);
+            self.pending = buf[emit_to..].to_string();
+            break;
+        }
+        out
+    }
+
+    /// Whatever never closed. An unterminated `<thinking>` stays thinking —
+    /// the model said what it was, and showing it as the answer is the bug
+    /// this exists to fix.
+    fn flush(&mut self) -> Option<InlineSegment> {
+        let rest = std::mem::take(&mut self.pending);
+        if rest.is_empty() {
+            return None;
+        }
+        Some(if self.inside {
+            InlineSegment::Thinking(rest)
+        } else {
+            InlineSegment::Text(rest)
+        })
+    }
+
+    fn emit(&self, out: &mut Vec<InlineSegment>, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        out.push(if self.inside {
+            InlineSegment::Thinking(text.to_string())
+        } else {
+            InlineSegment::Text(text.to_string())
+        });
+    }
+}
+
+/// The earliest complete tag in `lower`, as (byte offset, tag length).
+fn first_tag(lower: &str, tags: &[&str]) -> Option<(usize, usize)> {
+    tags.iter()
+        .filter_map(|tag| lower.find(tag).map(|at| (at, tag.len())))
+        .min_by_key(|(at, _)| *at)
+}
+
+/// How many trailing bytes of `lower` are a proper prefix of some tag, and so
+/// must be held back rather than emitted as text.
+fn partial_tag_len(lower: &str, tags: &[&str]) -> usize {
+    let longest = tags.iter().map(|t| t.len()).max().unwrap_or(0);
+    let start = lower.len().saturating_sub(longest.saturating_sub(1));
+    for at in start..lower.len() {
+        if !lower.is_char_boundary(at) {
+            continue;
+        }
+        let tail = &lower[at..];
+        if tags.iter().any(|tag| tag.starts_with(tail)) {
+            return lower.len() - at;
+        }
+    }
+    0
+}
+
 fn append_or_open_text(blocks: &mut Vec<BlockState>, last: &mut Option<DeltaKind>, chunk: &str) {
     if matches!(last, Some(DeltaKind::Text)) {
         if let Some(BlockState::Text { text }) = blocks.last_mut() {
@@ -497,6 +665,121 @@ fn append_or_open_thinking(
     }
     blocks.push(BlockState::new_thinking(chunk.to_string(), None));
     *last = Some(DeltaKind::Thinking);
+}
+
+#[cfg(test)]
+mod inline_thinking_tests {
+    use super::*;
+
+    /// Run the chunks through and coalesce adjacent segments of the same kind.
+    ///
+    /// The splitter emits per frame; `append_or_open_text` /
+    /// `append_or_open_thinking` are what join them into blocks downstream, so
+    /// asserting on raw per-frame segments would test frame arrival rather than
+    /// the split. What matters is where the boundaries land.
+    fn split_all(chunks: &[&str]) -> Vec<InlineSegment> {
+        let mut splitter = InlineThinkingSplitter::default();
+        let mut raw: Vec<InlineSegment> = chunks.iter().flat_map(|c| splitter.push(c)).collect();
+        raw.extend(splitter.flush());
+
+        let mut out: Vec<InlineSegment> = Vec::new();
+        for segment in raw {
+            match (out.last_mut(), segment) {
+                (Some(InlineSegment::Text(prev)), InlineSegment::Text(next)) => prev.push_str(&next),
+                (Some(InlineSegment::Thinking(prev)), InlineSegment::Thinking(next)) => {
+                    prev.push_str(&next)
+                }
+                (_, segment) => out.push(segment),
+            }
+        }
+        out
+    }
+
+    fn text(s: &str) -> InlineSegment {
+        InlineSegment::Text(s.to_string())
+    }
+    fn thinking(s: &str) -> InlineSegment {
+        InlineSegment::Thinking(s.to_string())
+    }
+
+    /// The regression, verbatim from session `558c643d` (MiniMax-M3 on
+    /// x5m5x): the model's private reasoning rendered as the visible answer.
+    #[test]
+    fn tagged_thinking_in_the_content_stream_becomes_thinking() {
+        assert_eq!(
+            split_all(&[
+                "<thinking>The user wants me to explain the architecture.</thinking>Here is the overview."
+            ]),
+            vec![
+                thinking("The user wants me to explain the architecture."),
+                text("Here is the overview."),
+            ]
+        );
+        // Both tag families, and a block opened by one closes on the other —
+        // a model that put thinking in the wrong field is not one to trust for
+        // matching tags.
+        assert_eq!(
+            split_all(&["<think>weighing it up</think>done"]),
+            vec![thinking("weighing it up"), text("done")]
+        );
+        assert_eq!(
+            split_all(&["<thinking>mismatched</think>done"]),
+            vec![thinking("mismatched"), text("done")]
+        );
+        // Case is the model's business, not ours.
+        assert_eq!(
+            split_all(&["<Thinking>shouted</THINKING>ok"]),
+            vec![thinking("shouted"), text("ok")]
+        );
+    }
+
+    /// The whole reason this is a splitter and not a `replace`: deltas arrive
+    /// a few characters at a time, so a tag routinely straddles two frames.
+    #[test]
+    fn a_tag_split_across_frames_still_opens_the_block() {
+        assert_eq!(
+            split_all(&["intro <thin", "king>the plan</thin", "king> answer"]),
+            vec![text("intro "), thinking("the plan"), text(" answer")]
+        );
+        // One character per frame — the worst case a provider can produce.
+        let one_at_a_time: Vec<&str> = ["<think>hm</think>hi"]
+            .iter()
+            .flat_map(|s| s.split("").filter(|c| !c.is_empty()))
+            .collect();
+        assert_eq!(
+            split_all(&one_at_a_time),
+            vec![thinking("hm"), text("hi")]
+        );
+    }
+
+    /// Held bytes must always come out. A tag the model started and never
+    /// finished cannot silently eat the rest of the reply.
+    #[test]
+    fn nothing_is_swallowed_when_the_stream_ends_mid_tag() {
+        // Never closed: it is still thinking, and it is still delivered.
+        assert_eq!(
+            split_all(&["<thinking>ran out of room"]),
+            vec![thinking("ran out of room")]
+        );
+        // A lone `<` that never became a tag is ordinary text.
+        assert_eq!(split_all(&["2 < 3 is true"]), vec![text("2 < 3 is true")]);
+        assert_eq!(split_all(&["trailing <thin"]), vec![text("trailing <thin")]);
+    }
+
+    /// A stream with no tags in it must be byte-for-byte what it was, or every
+    /// model that never does this pays for the one that does.
+    #[test]
+    fn untagged_content_passes_through_unchanged() {
+        let chunks = ["Here is ", "some `<div>` markup ", "and a < sign."];
+        let joined: String = split_all(&chunks)
+            .into_iter()
+            .map(|s| match s {
+                InlineSegment::Text(t) => t,
+                InlineSegment::Thinking(t) => panic!("plain content became thinking: {t}"),
+            })
+            .collect();
+        assert_eq!(joined, chunks.concat());
+    }
 }
 
 #[cfg(test)]

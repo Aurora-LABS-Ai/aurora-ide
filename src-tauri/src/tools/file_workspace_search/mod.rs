@@ -17,7 +17,7 @@
 //!
 //! | name               | role                                                                         |
 //! |--------------------|------------------------------------------------------------------------------|
-//! | `file_read`        | read one file or many — `path` takes a string or an array; missing → exists:false |
+//! | `file_read`        | read one file or many — `path` is always an array; missing → exists:false     |
 //! | `file_write`       | create or overwrite a whole file; `content` required; `must_not_exist` guard  |
 //! | `file_edit`        | exact-text edit, single or `edits[]` batch (atomic); read-before-edit guard    |
 //! | `move_path`        | move/rename a file OR folder (`std::fs::rename`)                              |
@@ -35,8 +35,9 @@
 //! reach for one of the other two, which is why the tree was over-used.
 //!
 //! Internal (unregistered) helpers: `multi_file_read` (batch reader for
-//! `file_read`), `search_replace` (diff/result helpers for `file_edit` /
-//! `file_write`), `read_tracker` (read-before-edit state).
+//! `file_read`), `image_read` (`file_read`'s image path), `search_replace`
+//! (diff/result helpers for `file_edit` / `file_write`), `read_tracker`
+//! (read-before-edit state).
 //!
 //! ## Path safety
 //!
@@ -69,6 +70,9 @@ pub mod file_write;
 pub mod folder_create;
 pub mod glob;
 pub mod grep;
+/// Internal: `file_read`'s image path — detects a picture by its bytes and
+/// returns it as something a vision model can actually see.
+pub mod image_read;
 pub mod move_path;
 /// Internal: the parallel batch reader, reused by `file_read`'s array
 /// form. Not registered as a standalone tool.

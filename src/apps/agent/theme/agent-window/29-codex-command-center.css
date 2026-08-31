@@ -79,6 +79,182 @@
   color: var(--agw-text-muted);
 }
 
+/* ── Account switcher ───────────────────────────────────────────────────────
+   The pooled credit figure doubles as the disclosure for the per-account
+   breakdown. One control, because a total nobody can decompose is a number
+   you cannot act on, and a permanently open list of four accounts is noise
+   for the many sessions where only the main one matters. */
+.agw-codex-accounts {
+  margin-top: 4px;
+}
+.agw-codex-accounts-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+}
+.agw-codex-accounts-summary .agw-icon {
+  color: var(--agw-text-subtle);
+  transition: transform 200ms var(--agw-ease-out, ease-out);
+}
+.agw-codex-accounts[data-open] .agw-codex-accounts-summary .agw-icon {
+  transform: rotate(180deg);
+}
+.agw-codex-accounts-total {
+  font-weight: var(--agw-fw-medium);
+}
+/* Pushed right and quiet: it names the affordance without competing with the
+   number, which is the thing being read. */
+.agw-codex-accounts-hint {
+  margin-left: auto;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-codex-accounts-summary:hover .agw-codex-accounts-hint,
+.agw-codex-accounts-summary:focus-visible .agw-codex-accounts-hint {
+  color: var(--agw-text-muted);
+}
+
+.agw-codex-accounts-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-surface-elevated) 60%, transparent);
+}
+.agw-codex-acct-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agw-codex-acct {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--agw-radius-sm);
+}
+.agw-codex-acct:hover {
+  background: color-mix(in srgb, var(--agw-text) 5%, transparent);
+}
+/* The whole row selects, so it is one button rather than a small target
+   beside three others of the same size. */
+.agw-codex-acct-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agw-codex-acct-main:disabled {
+  cursor: default;
+}
+/* Selection is carried by a filled dot, the same signal a radio gives, so a
+   glance answers "which one is serving" without reading any text. */
+.agw-codex-acct-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 50%;
+}
+.agw-codex-acct[data-main] .agw-codex-acct-dot {
+  border-color: var(--agw-accent);
+  background: var(--agw-accent);
+}
+.agw-codex-acct-id {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agw-codex-acct-email {
+  overflow: hidden;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-codex-acct-plan {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  text-transform: uppercase;
+}
+.agw-codex-acct-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-left: auto;
+  padding-left: 10px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+}
+.agw-codex-acct-credits {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+/* A spent account stays listed and stays selectable — it is not gone, its
+   window has simply not reset yet, and hiding it would make the pooled total
+   unexplainable. */
+.agw-codex-acct[data-spent] .agw-codex-acct-email,
+.agw-codex-acct[data-spent] .agw-codex-acct-credits {
+  color: var(--agw-text-subtle);
+}
+.agw-codex-acct-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.agw-codex-acct-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+/* Destructive and permanent, so it stays out of the way until the row is
+   under the pointer — but never for keyboard users, who cannot hover. */
+.agw-codex-acct-remove {
+  flex: none;
+  opacity: 0;
+}
+.agw-codex-acct:hover .agw-codex-acct-remove,
+.agw-codex-acct-remove:focus-visible {
+  opacity: 1;
+}
+.agw-codex-accounts-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-codex-accounts-actions .agw-codex-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 /* ── Command center ─────────────────────────────────────────────────────── */
 .agw-command-overlay {
   position: fixed;

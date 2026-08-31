@@ -77,3 +77,79 @@
   cursor: default;
   opacity: 0.5;
 }
+
+/* ── Plan & usage ──────────────────────────────────────────────────────────
+   Sits above the model list inside the same card body, so it carries no
+   border of its own — grouping here is whitespace, not another box.
+
+   The bar itself is `.agw-atlas-meter` (28-atlas-usage.css), shared with the
+   Codex and Atlas cards: three providers answering "how much is left" have to
+   be readable against each other, and that only holds if they are drawn the
+   same way. What Cursor keeps to itself is the right-hand value — a share for
+   an allowance, dollars for a bill. */
+.agw-cursor-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agw-cursor-usage-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.agw-cursor-usage-title h3 {
+  margin: 0;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+
+/* Cursor's own status sentence. Coloured as a warning because that is what it
+   is sent for, but left as text rather than made into a badge — it is a full
+   sentence, and a pill around a sentence reads as a control. */
+.agw-cursor-usage-notice {
+  font-size: var(--agw-fs-label);
+  color: #d9a441;
+}
+
+.agw-cursor-usage-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agw-cursor-usage-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agw-cursor-usage-label {
+  font-size: var(--agw-fs-ui);
+  color: var(--agw-text);
+}
+/* Tabular figures so a column of amounts lines up on the decimal point
+   instead of shifting as the digits change. */
+.agw-cursor-usage-value {
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--agw-text-subtle);
+}
+/* Matched to the meter fill exactly, so the number and its bar never disagree
+   about how bad the situation is. */
+.agw-cursor-usage-value[data-tone="warn"] {
+  color: #d9a441;
+}
+.agw-cursor-usage-value[data-tone="danger"] {
+  color: #e5534b;
+}
+
+.agw-cursor-usage-empty,
+.agw-cursor-usage-foot {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}

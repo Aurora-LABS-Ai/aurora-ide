@@ -136,6 +136,7 @@ tree-sitter-ruby = "0.23"
 tree-sitter-php = "0.24"
 tree-sitter-kotlin-ng = "1.1"
 tree-sitter-swift = "0.7"
+tree-sitter-dart = "0.2"
 streaming-iterator = "0.1"   # tree-sitter 0.25+ returns QueryMatches as a StreamingIterator
 ignore = "0.4"
 
@@ -155,10 +156,11 @@ cursor-proto = { path = "../crates/cursor-proto" }
 flate2 = "1"
 anyhow = "1"
 
-# Screenshot post-processing (decode → downscale → re-encode PNG). PNG-only to
-# keep the dependency surface + compile time small; used by browser_runtime to
-# bound the size of agent browser screenshots before they reach the model.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Image post-processing (decode → downscale → re-encode JPEG) for everything a
+# vision model is shown: browser screenshots, and files opened with `file_read`.
+# The feature list is exactly the four formats the vision APIs themselves accept,
+# so Aurora can decode anything it is allowed to send and nothing it is not.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # Codex (ChatGPT) provider — PKCE code-challenge hashing + verifier entropy
 sha2 = "0.10"

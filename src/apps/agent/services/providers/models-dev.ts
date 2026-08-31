@@ -242,7 +242,88 @@ export async function ensureModelsCatalog(force = false): Promise<ModelsDevEntry
   return inflight;
 }
 
-/** Case-insensitive lookup by exact model key. `providerHint` is preferred when several providers expose the same id. */
+/**
+ * Whether an entry's published limits can both be true.
+ *
+ * Output tokens are drawn from the context window — the reply and the prompt
+ * share it — so a model cannot emit as many tokens as its whole window holds.
+ * An entry saying otherwise has copied the context number into the output slot,
+ * and its limits carry no information.
+ *
+ * Real: models.dev lists `glm-5.2` under 30 providers. `neuralwatt` publishes
+ * `context 1,048,560 / output 1,048,560`, and it happens to sort first.
+ */
+function limitsAreCoherent(e: ModelsDevEntry): boolean {
+  const ctx = e.contextWindow;
+  const out = e.maxOutputTokens;
+  if (typeof ctx !== "number" || typeof out !== "number") return true;
+  return out > 0 && ctx > 0 && out < ctx;
+}
+
+/**
+ * The value the most providers agree on, ties broken by taking the smallest.
+ *
+ * Smallest on a tie because the two errors are not symmetric: an output cap
+ * larger than the endpoint serves is a hard 400 that kills the turn, while one
+ * smaller than it had to be costs a slightly shorter reply. The same asymmetry
+ * governs `context_limits.rs`'s SAFETY_MARGIN on the Rust side.
+ */
+function consensus(values: number[]): number | undefined {
+  if (values.length === 0) return undefined;
+  const tally = new Map<number, number>();
+  for (const v of values) tally.set(v, (tally.get(v) ?? 0) + 1);
+  let best: number | undefined;
+  let bestCount = 0;
+  for (const [value, count] of tally) {
+    if (count > bestCount || (count === bestCount && best !== undefined && value < best)) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
+ * Token limits for a model id, agreed across every provider that serves it.
+ *
+ * **Limits belong to the model, prices belong to the reseller.** Which provider
+ * entry we return still decides pricing and capabilities — those genuinely
+ * differ per host. The context and output ceilings do not: they are properties
+ * of the weights, and one provider's broken row should not become Aurora's
+ * answer just because it sorted first.
+ *
+ * Measured on the live catalogue: of the 30 providers publishing `glm-5.2`,
+ * 20 say output = 131,072. Aurora used to take `matches[0]` — 1,048,560, from
+ * the one provider whose row is self-contradictory — and then sent it as
+ * `max_tokens`, which no endpoint serving that model accepts. Every turn on
+ * that model died on a 400 before a token was generated.
+ */
+function agreedLimits(matches: ModelsDevEntry[]): {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+} {
+  const usable = matches.filter(limitsAreCoherent);
+  // Nothing coherent to vote on — say nothing rather than pass on a number we
+  // have just decided is meaningless. The fields stay empty and overridable.
+  if (usable.length === 0) return {};
+  return {
+    contextWindow: consensus(
+      usable.map((e) => e.contextWindow).filter((v): v is number => typeof v === "number"),
+    ),
+    maxOutputTokens: consensus(
+      usable.map((e) => e.maxOutputTokens).filter((v): v is number => typeof v === "number"),
+    ),
+  };
+}
+
+/**
+ * Case-insensitive lookup by exact model key. `providerHint` is preferred when
+ * several providers expose the same id.
+ *
+ * The chosen entry supplies pricing, capabilities and reasoning — all of which
+ * are the host's own. Its token limits are replaced by what the field agrees
+ * on; see [`agreedLimits`] for why those two halves are resolved differently.
+ */
 export async function lookupModel(
   modelKey: string,
   providerHint?: string,
@@ -252,12 +333,11 @@ export async function lookupModel(
   const all = await ensureModelsCatalog();
   const matches = all.filter((e) => e.modelKey.toLowerCase() === key);
   if (matches.length === 0) return null;
-  if (providerHint) {
-    const hint = providerHint.toLowerCase();
-    const preferred = matches.find((e) => e.providerId.toLowerCase().includes(hint));
-    if (preferred) return preferred;
-  }
-  return matches[0];
+  const hint = providerHint?.toLowerCase();
+  const chosen =
+    (hint ? matches.find((e) => e.providerId.toLowerCase().includes(hint)) : undefined) ??
+    matches[0];
+  return { ...chosen, ...agreedLimits(matches) };
 }
 
 /** Typeahead: rank by prefix then substring over id + name. De-dupes by model key. */
@@ -289,4 +369,4 @@ export async function searchModels(query: string, limit = 24): Promise<ModelsDev
 }
 
 /** Internals exposed for tests only — not part of this module's public surface. */
-export const __testing = { rate };
+export const __testing = { rate, agreedLimits, consensus, limitsAreCoherent };

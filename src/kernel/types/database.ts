@@ -101,6 +101,14 @@ export interface AppSettings {
    * recorded here and filtered out of the seeded list. Reversible.
    */
   removedProviderIds?: string[];
+  /**
+   * Model row ids (`providerId::modelKey`) the user DELETED from a built-in
+   * provider. Preset model rosters re-seed any missing key on every launch,
+   * so — same story as `removedProviderIds` — a plain delete cannot stick
+   * without a record of it. Cleared for an id when the user re-adds that
+   * model by hand.
+   */
+  removedPresetModelIds?: string[];
   maxTokens: number;
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
@@ -181,6 +189,28 @@ export interface DbLLMProvider {
  *  - `toggle`  → reasoning is simply on/off; `default` is a boolean.
  *  - `budget`  → a token budget in `[min, max]`; `default` is the chosen number.
  */
+/**
+ * How Aurora should encode a model's reasoning request.
+ *
+ * `auto` lets the selected API format choose its native representation. The
+ * explicit modes exist for compatibility gateways whose model id does not say
+ * which generation of a protocol they implement. This is request metadata,
+ * not an arbitrary body field, so the adapter can validate and translate it.
+ */
+export type ReasoningRequestMode =
+  | "auto"
+  | "anthropic-adaptive"
+  | "anthropic-budget"
+  | "openai-effort"
+  | "openai-thinking";
+
+/** What Aurora does with a stored reasoning block on the next request. */
+export type ReasoningReplayMode =
+  | "auto"
+  | "reasoning_content"
+  | "reasoning"
+  | "off";
+
 export interface ModelReasoning {
   type: "effort" | "toggle" | "budget";
   levels?: string[];
@@ -215,6 +245,17 @@ export interface ModelReasoning {
    * and offer everything, rather than hiding controls the user already set.
    */
   supported?: ("effort" | "toggle" | "budget")[];
+  /**
+   * Optional wire-encoding override. Undefined is the same as `auto` and is
+   * what catalogue-backed models should normally keep.
+   */
+  requestMode?: ReasoningRequestMode;
+  /**
+   * Typed replacement for the old `extraBody.reasoning_replay` directive.
+   * The resolver still reads that legacy key so existing rows keep working,
+   * but every new edit is stored here and never leaks into an HTTP body.
+   */
+  replay?: ReasoningReplayMode;
 }
 
 export interface DbProviderModel {

@@ -14,7 +14,11 @@
 
 import { streamedToolStringArguments } from "@/apps/agent/components/tools/tool-call";
 import { computeDiff } from "@/apps/agent/components/tool-views/diff";
-import { findImageMarker, hasImageMarker } from "@/apps/agent/lib/render/image-markers";
+import {
+  findImageMarker,
+  hasImageMarker,
+  MARKER_CLOSE,
+} from "@/apps/agent/lib/render/image-markers";
 
 // ── Data shapes ──────────────────────────────────────────────────────
 
@@ -68,6 +72,26 @@ export interface MultiFileEntry {
   truncated?: boolean;
   /** Set when the caller asked for a line range rather than the whole file. */
   window?: ReadWindow;
+  /** Set when this entry is a picture rather than text. A read can name images
+   *  and source files in one call, so the two share the file list and the same
+   *  selection — the body shows the picture for this entry and the code for the
+   *  next, instead of stacking every image down the card. */
+  image?: ToolImage;
+}
+
+/** One picture in a result, from a capture or an opened file. */
+export interface ToolImage {
+  /** The on-disk copy, asset-protocol loadable. */
+  path?: string;
+  width?: number;
+  height?: number;
+  /** A captured page's URL. Absent for a file that was read. */
+  url?: string;
+  /** The path the caller named. Absent for a capture. */
+  name?: string;
+  /** Inline fallback for when the on-disk copy is gone. */
+  base64?: string;
+  mediaType?: string;
 }
 
 /**
@@ -179,18 +203,14 @@ export interface ParsedToolResult {
   /** Source path behind `code` (file_read / content payloads), so the view can
    *  pick a syntax-highlight language. `null` when the text isn't a file. */
   codePath: string | null;
-  /** `browser_screenshot` result — the on-disk PNG (asset-protocol loadable via
-   *  `convertFileSrc`), its pixel dimensions, and the captured page URL. The card
-   *  renders the image only when expanded; clicking it opens the image modal.
-   *  `base64` is the embedded fallback used when the on-disk file is gone (pruned)
-   *  or a persisted/reloaded thread carries the raw `<aurora_image>` block. */
-  screenshot: {
-    path?: string;
-    width?: number;
-    height?: number;
-    url?: string;
-    base64?: string;
-  } | null;
+  /** A result that is ONE picture and nothing else — a `browser_screenshot`
+   *  capture, or a single image opened by `file_read`. The card renders it only
+   *  when expanded; clicking it opens the image modal.
+   *
+   *  A call that named several files puts its pictures on `multiFile` instead,
+   *  so they share the file chips and one selection with the text files beside
+   *  them rather than stacking down the card. */
+  image: ToolImage | null;
   /** `auroro_websearch` — either a results page or one fetched document. */
   web: WebData | null;
 }
@@ -292,53 +312,153 @@ function hostOf(url: string | undefined): string | null {
   }
 }
 
+/** Reverse the escaping applied when a path was written into a marker
+ *  attribute. Mirrors `aurora_image::unescape_attr` on the Rust side. */
+function unescapeAttr(value: string): string {
+  return value.replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+}
+
 /**
- * Extract a `browser_screenshot` result in EITHER shape:
- *  - lean JSON `{ screenshot: { path, width, height, url } }` (the live UI event)
- *  - the raw model string `<aurora_image ... src=.. width=.. height=..>BASE64</aurora_image>
- *    \nScreenshot of URL (W×H px)` (persisted/reloaded threads carry this — the
- *    UI copy isn't re-persisted, only the model-history copy is).
- * Returns null when neither shape is present. NEVER lets the raw base64 leak to
- * the text/code fallback.
+ * Extract every picture in a result, in EITHER shape:
+ *  - lean JSON `{ screenshot: { path, width, height, url, name } }` — the live
+ *    UI event for a result holding exactly one image;
+ *  - the raw string `<aurora_image ... src=.. width=.. height=..>BASE64</aurora_image>`
+ *    followed by its caption. Persisted/reloaded threads carry this (only the
+ *    model-history copy is re-persisted), and so does any live result with more
+ *    than one image, which does not fit the single envelope.
+ *
+ * Returns null when neither shape is present. NEVER lets raw base64 leak to the
+ * text/code fallback.
  *
  * The raw branch uses the validated marker parser: a plain file read whose
  * content merely quotes the marker syntax used to land here and render as a
  * "Captured screenshot" card.
  */
-function parseScreenshotResult(
+function parseImageResults(
   parsed: Record<string, unknown> | null,
   raw: string,
-): ParsedToolResult["screenshot"] {
+): ToolImage[] | null {
   const j = parsed ? rec(parsed.screenshot) : null;
   if (j) {
-    return {
-      path: asStr(j.path),
-      width: asNum(j.width),
-      height: asNum(j.height),
-      url: asStr(j.url),
-      base64: asStr(j.base64),
-    };
+    return [
+      {
+        path: asStr(j.path),
+        width: asNum(j.width),
+        height: asNum(j.height),
+        url: asStr(j.url),
+        name: asStr(j.name),
+        base64: asStr(j.base64),
+      },
+    ];
   }
 
-  const marker = findImageMarker(raw);
-  if (!marker) return null;
-  const attr = (name: string): string | undefined => marker.attrs[name];
-  const base64 = marker.body.trim() || undefined;
-
+  // Only a capture's caption carries a URL, and there is at most one of them in
+  // a result, so it is read once rather than per image.
   const capAt = raw.indexOf("Screenshot of ");
   const url =
-    capAt >= 0 ? raw.slice(capAt + "Screenshot of ".length).split(" (")[0].trim() || undefined : undefined;
+    capAt >= 0
+      ? raw.slice(capAt + "Screenshot of ".length).split(" (")[0].trim() || undefined
+      : undefined;
 
-  const rawPath = attr("src");
-  const w = attr("width");
-  const h = attr("height");
-  return {
-    path: rawPath ? rawPath.replace(/&quot;/g, '"').replace(/&amp;/g, "&") : undefined,
-    width: w ? Number(w) : undefined,
-    height: h ? Number(h) : undefined,
-    url,
-    base64: base64 || undefined,
-  };
+  const out: ToolImage[] = [];
+  for (let cursor = 0; ; ) {
+    const marker = findImageMarker(raw, cursor);
+    if (!marker) break;
+    cursor = marker.end;
+
+    const rawPath = marker.attrs.src;
+    const w = marker.attrs.width;
+    const h = marker.attrs.height;
+    out.push({
+      path: rawPath ? unescapeAttr(rawPath) : undefined,
+      width: w ? Number(w) : undefined,
+      height: h ? Number(h) : undefined,
+      url,
+      name: marker.attrs.name ? unescapeAttr(marker.attrs.name) : undefined,
+      base64: marker.body.trim() || undefined,
+      mediaType: marker.attrs.media_type,
+    });
+  }
+  return out.length > 0 ? out : null;
+}
+
+/** A batch read's `files` rows → the card's file list. */
+function filesToEntries(files: unknown[], historyTruncated: boolean): MultiFileEntry[] {
+  const entries: MultiFileEntry[] = [];
+  for (const f of files) {
+    const o = rec(f);
+    if (!o) continue;
+    const content = typeof o.content === "string" ? splitHistoryTruncation(o.content) : null;
+    const range = rec(o.range);
+    entries.push({
+      path: asStr(o.path) ?? "",
+      success: o.success !== false,
+      lines: asNum(o.lines),
+      error: asStr(o.error),
+      content: content?.text,
+      fullPath: asStr(o.fullPath),
+      // A read the caller WINDOWED is not a read that was cut for size, and
+      // the card says a different thing for each. `outsideWindow` means "there
+      // are lines either side of what you asked for" — normal, and stated as
+      // the range. `truncated` means "this was too big to keep", which is the
+      // only case worth an apology.
+      truncated: o.truncated === true || historyTruncated || content?.truncated === true,
+      window:
+        o.windowed === true && range
+          ? { start: asNum(range.startLine) ?? 0, end: asNum(range.endLine) ?? 0 }
+          : undefined,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Recover the JSON inventory a mixed read appends AFTER its pictures.
+ *
+ * `file_read` answers a call naming both images and source files in two shapes:
+ * the `<aurora_image>` markers first, then the ordinary batch envelope. The
+ * whole string is therefore not JSON, so the caller's `JSON.parse` fails and
+ * the text files would be lost from the card even though the model got them.
+ *
+ * Returns null when there is no trailing object — a read of nothing but
+ * pictures, which is most of them.
+ */
+function trailingEnvelope(raw: string): Record<string, unknown> | null {
+  const lastClose = raw.lastIndexOf(MARKER_CLOSE);
+  if (lastClose < 0) return null;
+  const after = raw.slice(lastClose + MARKER_CLOSE.length);
+  const start = after.indexOf("{");
+  if (start < 0) return null;
+  try {
+    return rec(JSON.parse(after.slice(start)));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Put each picture on the file-list entry for the path it came from, so one
+ * selection drives the whole result.
+ *
+ * The pictures name the path the caller asked for (the marker's `name`), which
+ * is exactly the `path` the inventory rows carry — matching on it rather than
+ * on position is what keeps the seventh chip showing the seventh file when the
+ * two halves were read by different readers and came back in different orders.
+ *
+ * An image matching no row still gets an entry: a picture the card silently
+ * drops is worse than one listed twice.
+ */
+function mergeImagesIntoFiles(rows: MultiFileEntry[], images: ToolImage[]): MultiFileEntry[] {
+  const merged = rows.map((row) => {
+    const image = images.find((candidate) => candidate.name === row.path);
+    return image ? { ...row, image } : row;
+  });
+  const claimed = new Set(merged.map((row) => row.image?.name).filter(Boolean));
+  for (const image of images) {
+    if (image.name && claimed.has(image.name)) continue;
+    merged.push({ path: image.name ?? "", success: true, image });
+  }
+  return merged;
 }
 
 function toTreeNodes(v: unknown): WorkspaceTreeNode[] {
@@ -422,9 +542,9 @@ function recoverTruncatedRead(
   const contents = values.content ?? [];
   if (contents.length === 0) return false;
 
-  // `file_read`'s `path` is one slot taking a string OR an array; `paths` is
-  // what threads already on disk were recorded under. Both spell the same
-  // request, so a batch card renders the same either way.
+  // `file_read`'s `path` is one slot holding an ARRAY; a bare string and
+  // `paths` are what threads already on disk were recorded under. All three
+  // spell the same request, so a batch card renders the same either way.
   const argPaths = [args.path, args.paths].flatMap((value) =>
     Array.isArray(value)
       ? value.filter((path): path is string => typeof path === "string")
@@ -544,7 +664,7 @@ const EMPTY: ParsedToolResult = {
   diffs: null,
   code: null,
   codePath: null,
-  screenshot: null,
+  image: null,
   web: null,
 };
 
@@ -641,16 +761,38 @@ export function parseToolResult(
     }
   }
 
-  // browser_screenshot — handled FIRST (before the non-JSON fallback) so the raw
-  // `<aurora_image>…base64…` block a reloaded thread carries renders as an image,
-  // never as a dumped base64 blob. Covers both the lean JSON (live) and raw
-  // (persisted) shapes.
+  // Images — handled FIRST (before the non-JSON fallback) so the raw
+  // `<aurora_image>…base64…` block a reloaded thread carries renders as a
+  // picture, never as a dumped base64 blob. Covers both the lean JSON (live)
+  // and raw (persisted) shapes, for a captured page and for a file that was
+  // read alike.
   if (name === "browser_screenshot" || hasImageMarker(result)) {
-    const shot = parseScreenshotResult(parsed, result);
-    if (shot && (shot.path || shot.base64)) {
-      out.screenshot = shot;
-      const host = hostOf(shot.url);
-      out.summary = host ? `Captured ${host}` : "Captured screenshot";
+    const images = (parseImageResults(parsed, result) ?? []).filter(
+      (image) => image.path || image.base64,
+    );
+    if (images.length > 0) {
+      // A read that named several files appends its inventory as JSON after the
+      // pictures. Recovering it lets the images and the source files share ONE
+      // file list and one selection — the card shows the file you clicked,
+      // instead of stacking every picture down the page and dropping the text.
+      const inventory = trailingEnvelope(result);
+      const rows = inventory ? filesToEntries(asArr(inventory.files) ?? [], false) : [];
+
+      if (rows.length > 0 || images.length > 1) {
+        out.multiFile = mergeImagesIntoFiles(rows, images);
+        out.summary = `${images.length} ${images.length === 1 ? "image" : "images"}`;
+        return out;
+      }
+
+      // One picture and nothing else: a capture, or a single opened image.
+      const [image] = images;
+      out.image = image;
+      const host = hostOf(image.url);
+      out.summary = host
+        ? `Captured ${host}`
+        : image.name
+          ? baseName(image.name)
+          : "Captured screenshot";
       return out;
     }
   }
@@ -814,33 +956,7 @@ export function parseToolResult(
   // Batch reads now flow through `file_read` (paths form), which returns
   // the same `files` payload the old `multi_file_read` did.
   if ((name === "multi_file_read" || name === "file_read") && parsed.files) {
-    const files = asArr(parsed.files) ?? [];
-    const entries: MultiFileEntry[] = [];
-    for (const f of files) {
-      const o = rec(f);
-      if (!o) continue;
-      const content =
-        typeof o.content === "string" ? splitHistoryTruncation(o.content) : null;
-      const range = rec(o.range);
-      entries.push({
-        path: asStr(o.path) ?? "",
-        success: o.success !== false,
-        lines: asNum(o.lines),
-        error: asStr(o.error),
-        content: content?.text,
-        fullPath: asStr(o.fullPath),
-        // A read the caller WINDOWED is not a read that was cut for size, and
-        // the card says a different thing for each. `outsideWindow` means "there
-        // are lines either side of what you asked for" — normal, and stated as
-        // the range. `truncated` means "this was too big to keep", which is the
-        // only case worth an apology.
-        truncated: o.truncated === true || parsed.historyTruncated === true || content?.truncated === true,
-        window:
-          o.windowed === true && range
-            ? { start: asNum(range.startLine) ?? 0, end: asNum(range.endLine) ?? 0 }
-            : undefined,
-      });
-    }
+    const entries = filesToEntries(asArr(parsed.files) ?? [], parsed.historyTruncated === true);
     out.multiFile = entries;
     const n = asNum(parsed.filesRead) ?? entries.length;
     out.summary = `Read ${n} ${n === 1 ? "file" : "files"}`;

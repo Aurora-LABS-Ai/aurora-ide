@@ -23,9 +23,12 @@ import { AnimatePresence, motion } from "framer-motion";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { openFileDialog, openInTerminal, revealInExplorer } from "@/kernel/lib/ipc/tauri";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
+import { recentChats } from "@/apps/agent/lib/thread/recent-chats";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { ScrollingLabel } from "@/apps/agent/shared/ScrollingLabel";
 import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
 import { RailMenu, type RailMenuItem, type RailMenuState } from "@/apps/agent/components/shell/RailMenu";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore } from "@/apps/agent/store/ui/useAgentTerminalStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
@@ -59,6 +62,28 @@ const SHOW_ALL_PROJECTS_KEY = "agw-rail-projects-show-all";
 /** Codex-style: collapse a long project list to this many rows, with a
  *  "Show more" affordance to reveal the rest. */
 const PROJECTS_PREVIEW_LIMIT = 8;
+
+/** Whether the Recent / Pinned shortcuts are folded away. Remembered like the
+ *  other rail preferences — a section you shut should stay shut. */
+const RECENT_COLLAPSED_KEY = "agw-rail-recent-collapsed";
+const PINNED_COLLAPSED_KEY = "agw-rail-pinned-collapsed";
+
+/** Flip a shortcut section's collapse and remember it. */
+function flipCollapsed(
+  setter: React.Dispatch<React.SetStateAction<boolean>>,
+  key: string,
+): void {
+  setter((collapsed) => {
+    const next = !collapsed;
+    try {
+      localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      /* ignore quota / privacy-mode failures */
+    }
+    return next;
+  });
+}
+
 
 
 /**
@@ -167,6 +192,11 @@ export const LeftRail: React.FC = () => {
   const toggleRail = useAgentWorkspaceStore((s) => s.toggleRail);
   const openChatTab = useAgentWorkspaceStore((s) => s.openChatTab);
 
+  // Agent Team is opt-in. Off in Settings means no team surface here at all —
+  // not the rail entry, and not the "has team work" badges, which exist only to
+  // point at a panel that can no longer be opened.
+  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+
   // The Team lives in the right dock now ("Team" tab beside Canvas/Files).
   // Active when the dock is open on that tab.
   const teamTabActive = useAgentWorkspaceStore(
@@ -184,6 +214,8 @@ export const LeftRail: React.FC = () => {
   const teamThreadIds = useTeamHistoryStore((s) => s.threadIds);
   const teamProjectSet = useTeamHistoryStore((s) => s.projects);
   const refreshTeamHistory = useTeamHistoryStore((s) => s.refresh);
+  const chatHasTeamWork = (id: string) => teamEnabled && !!teamThreadIds[id];
+  const projectHasTeamWork = (root: string) => teamEnabled && !!teamProjectSet[root];
 
   const teamTag =
     teamSnapshot?.initialized && isActivePhase(teamSnapshot.team.phase)
@@ -282,6 +314,16 @@ export const LeftRail: React.FC = () => {
   const [actionNotice, setActionNotice] = useState<RailActionNotice | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
+  const [recentCollapsed, setRecentCollapsed] = useState<boolean>(
+    () =>
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem(RECENT_COLLAPSED_KEY) === "1",
+  );
+  const [pinnedCollapsed, setPinnedCollapsed] = useState<boolean>(
+    () =>
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem(PINNED_COLLAPSED_KEY) === "1",
+  );
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pinnedProjects, setPinnedProjects] = useState<string[]>(loadPinnedProjects);
   const pinnedProjectSet = useMemo(() => new Set(pinnedProjects), [pinnedProjects]);
@@ -311,6 +353,11 @@ export const LeftRail: React.FC = () => {
     );
   }, [allWithLive, query]);
   const pinned = useMemo(() => filtered.filter((t) => t.pinned), [filtered]);
+
+  // The chats you touched last, from every project (see `lib/thread/recent-chats`).
+  // Absent during a search: the rail is then showing matches, and a shortcut
+  // back to what you already had is not what you asked it for.
+  const recent = useMemo(() => (q ? [] : recentChats(filtered)), [filtered, q]);
 
   // Archived chats (every project), newest-archived first — powers the Archived
   // view + its footer count. Honours the same search box as the tree.
@@ -388,12 +435,15 @@ export const LeftRail: React.FC = () => {
   const projectsKey = useMemo(() => [...projects].sort().join("|"), [projects]);
   const teamPhase = teamSnapshot?.team.phase;
   useEffect(() => {
+    // Nothing reads the index while the feature is off — don't touch the disk for it.
+    if (!teamEnabled) return;
     void refreshTeamHistory(projects);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectsKey, teamPhase, refreshTeamHistory]);
+  }, [projectsKey, teamPhase, teamEnabled, refreshTeamHistory]);
 
   const isOpen = (root: string) => (q ? true : (expanded[root] ?? root === projectRoot));
   const projectsOpen = q ? true : !projectsCollapsed;
+  const pinnedOpen = q ? true : !pinnedCollapsed;
 
   const cycleSort = () => {
     const next = SORT_ORDER[(SORT_ORDER.indexOf(sortMode) + 1) % SORT_ORDER.length];
@@ -439,6 +489,9 @@ export const LeftRail: React.FC = () => {
       return next;
     });
   };
+
+  const toggleRecent = () => flipCollapsed(setRecentCollapsed, RECENT_COLLAPSED_KEY);
+  const togglePinned = () => flipCollapsed(setPinnedCollapsed, PINNED_COLLAPSED_KEY);
 
   const toggleProjectPin = (root: string) => {
     setPinnedProjects((prev) => {
@@ -697,6 +750,10 @@ export const LeftRail: React.FC = () => {
       <div
         key={thread.id}
         className="agw-rail-item"
+        // Hovering anywhere on the row slides a too-long title left to show its
+        // tail — chat titles are generated from the first message and routinely
+        // outrun the rail.
+        data-slide-host=""
         data-active={active}
         data-sub={subtitle ? true : undefined}
         data-running={running || undefined}
@@ -768,7 +825,10 @@ export const LeftRail: React.FC = () => {
               }}
             />
           ) : (
-            <span className="agw-rail-item-label">{thread.title || "New Chat"}</span>
+            <ScrollingLabel
+              className="agw-rail-item-label"
+              text={thread.title || "New Chat"}
+            />
           )}
           {!renaming && subtitle && <span className="agw-rail-item-sub">{subtitle}</span>}
         </div>
@@ -776,7 +836,7 @@ export const LeftRail: React.FC = () => {
             hover-in archive / pin actions in one reserved lane, so they can
             never overlap or shove the title around. */}
         <div className="agw-rail-item-actions">
-          {teamThreadIds[thread.id] && (
+          {chatHasTeamWork(thread.id) && (
             <span
               className="agw-rail-team-badge"
               title="This chat has team work"
@@ -825,6 +885,7 @@ export const LeftRail: React.FC = () => {
       <div
         key={thread.id}
         className="agw-rail-item"
+        data-slide-host=""
         data-active={thread.id === currentThreadId}
         data-sub
         role="button"
@@ -843,7 +904,10 @@ export const LeftRail: React.FC = () => {
           <AgentIcon name="archive" size={13} />
         </span>
         <div className="agw-rail-item-text">
-          <span className="agw-rail-item-label">{thread.title || "New Chat"}</span>
+          <ScrollingLabel
+            className="agw-rail-item-label"
+            text={thread.title || "New Chat"}
+          />
           <span className="agw-rail-item-sub">
             {folderName(thread.workspaceRoot ?? null)} · {countdown}
           </span>
@@ -967,26 +1031,82 @@ export const LeftRail: React.FC = () => {
         }}
       >
         {/* Team — a center-column takeover for the current project, opened from
-            here (above Pinned). Active state reflects the open team screen. */}
-        <button
-          type="button"
-          className="agw-rail-team"
-          data-active={teamTabActive || undefined}
-          onClick={() => useAgentWorkspaceStore.getState().openTab("team")}
-          title="Open the team panel for this project"
-        >
-          <AgentIcon name="users" size={15} />
-          <span>Team</span>
-          {teamTag && <span className="agw-rail-team-tag">{teamTag}</span>}
-        </button>
+            here (above Pinned). Active state reflects the open team screen.
+            Absent until Agent Team is switched on in Settings, so the rail never
+            offers a door into a feature the agent isn't allowed to use. */}
+        {teamEnabled && (
+          <button
+            type="button"
+            className="agw-rail-team"
+            data-active={teamTabActive || undefined}
+            onClick={() => useAgentWorkspaceStore.getState().openTab("team")}
+            title="Open the team panel for this project"
+          >
+            <AgentIcon name="users" size={15} />
+            <span>Team</span>
+            {teamTag && <span className="agw-rail-team-tag">{teamTag}</span>}
+          </button>
+        )}
 
-        {/* Pinned (global, across projects) */}
+        {/* Pinned (global, across projects). Forced open while searching, the
+            same way Projects is — a pinned chat that matches must not stay
+            hidden behind a fold you shut yesterday. */}
         {pinned.length > 0 && (
           <>
-            <div className="agw-rail-section-label">Pinned</div>
-            {pinned.map((t) =>
-              renderChat(t, t.workspaceRoot ? folderName(t.workspaceRoot) : undefined),
-            )}
+            <div className="agw-rail-section" data-flat="">
+              <button
+                type="button"
+                className="agw-rail-section-toggle"
+                aria-expanded={pinnedOpen}
+                onClick={togglePinned}
+                title={pinnedOpen ? "Collapse pinned chats" : "Expand pinned chats"}
+              >
+                <AgentIcon
+                  name="chevron-down"
+                  size={12}
+                  className="agw-rail-project-caret"
+                  style={{ transform: pinnedOpen ? "none" : "rotate(-90deg)" }}
+                />
+                <span>Pinned</span>
+              </button>
+            </div>
+            <Collapse open={pinnedOpen}>
+              {pinned.map((t) =>
+                renderChat(t, t.workspaceRoot ? folderName(t.workspaceRoot) : undefined),
+              )}
+            </Collapse>
+            <div style={{ height: 6 }} />
+          </>
+        )}
+
+        {/* Recent — the flat way back to the last few chats, across every
+            project. Same header, caret and collapse as Projects; `data-flat`
+            because two sticky headers in one scroller would pin to the same
+            edge and overlap, and a five-row section never needs to pin. */}
+        {recent.length > 0 && (
+          <>
+            <div className="agw-rail-section" data-flat="">
+              <button
+                type="button"
+                className="agw-rail-section-toggle"
+                aria-expanded={!recentCollapsed}
+                onClick={toggleRecent}
+                title={recentCollapsed ? "Expand recent chats" : "Collapse recent chats"}
+              >
+                <AgentIcon
+                  name="chevron-down"
+                  size={12}
+                  className="agw-rail-project-caret"
+                  style={{ transform: recentCollapsed ? "rotate(-90deg)" : "none" }}
+                />
+                <span>Recent</span>
+              </button>
+            </div>
+            <Collapse open={!recentCollapsed}>
+              {recent.map((t) =>
+                renderChat(t, t.workspaceRoot ? folderName(t.workspaceRoot) : undefined),
+              )}
+            </Collapse>
             <div style={{ height: 6 }} />
           </>
         )}
@@ -1072,6 +1192,7 @@ export const LeftRail: React.FC = () => {
                 <div key={root}>
                   <div
                     className="agw-rail-project"
+                    data-slide-host=""
                     data-active={root === projectRoot || undefined}
                     data-open={open || undefined}
                     data-stale={age.stale || undefined}
@@ -1095,7 +1216,10 @@ export const LeftRail: React.FC = () => {
                         style={{ transform: open ? "none" : "rotate(-90deg)" }}
                       />
                       <AgentIcon name="folder" size={14} style={{ flexShrink: 0 }} />
-                      <span className="agw-rail-project-name">{folderName(root)}</span>
+                      <ScrollingLabel
+                        className="agw-rail-project-name"
+                        text={folderName(root)}
+                      />
                       {meta && (
                         <span className="agw-rail-project-meta" aria-hidden>
                           <span className="agw-rail-project-count">{meta.count}</span>
@@ -1107,9 +1231,9 @@ export const LeftRail: React.FC = () => {
                     </button>
                     {/* Always-on status indicators share one spaced cluster so
                         the team badge and the running spinner never overlap. */}
-                    {(teamProjectSet[root] || projectRunning || projectUnseen) && (
+                    {(projectHasTeamWork(root) || projectRunning || projectUnseen) && (
                       <span className="agw-rail-project-status">
-                        {teamProjectSet[root] && (
+                        {projectHasTeamWork(root) && (
                           <span
                             className="agw-rail-team-badge agw-rail-project-team"
                             title="This project has team work"

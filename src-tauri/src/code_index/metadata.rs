@@ -188,6 +188,32 @@ fn declaration_node<'tree>(name: Node<'tree>, lang: Lang) -> Option<Node<'tree>>
                 | "property_declaration"
                 | "enum_entry"
         ),
+        // Dart splits a member into a signature node and a body node, and the
+        // signature is what carries the parameter list a reader wants in the
+        // outline — so the signatures are named here, not the declarations
+        // wrapping them.
+        Lang::Dart => matches!(
+            kind,
+            "class_declaration"
+                | "mixin_declaration"
+                | "extension_declaration"
+                | "extension_type_declaration"
+                | "enum_declaration"
+                | "enum_constant"
+                | "type_alias"
+                | "function_signature"
+                | "getter_signature"
+                | "setter_signature"
+                | "method_signature"
+                | "constructor_signature"
+                | "constant_constructor_signature"
+                | "factory_constructor_signature"
+                | "redirecting_factory_constructor_signature"
+                | "initialized_identifier"
+                | "static_final_declaration"
+                | "declaration"
+                | "top_level_variable_declaration"
+        ),
     };
 
     let mut current = name.parent();

@@ -28,6 +28,7 @@ import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
 import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import { authorColor } from "@/apps/agent/components/team/team-ui";
@@ -139,6 +140,11 @@ const AddMenu: React.FC<{
 }> = ({ onPick, onOpenChange }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Team is opt-in: with it off in Settings the entry doesn't belong in the
+  // menu at all — a greyed row can't explain itself, and Settings is where
+  // you'd go looking anyway.
+  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const entries = ADD_MENU.filter((e) => e.kind !== "team" || teamEnabled);
 
   // Single setter so visibility changes always notify the parent (which hides
   // the native browser webview so this menu isn't painted behind it).
@@ -175,7 +181,7 @@ const AddMenu: React.FC<{
       </button>
       {open && (
         <div className="agw-addmenu" role="menu">
-          {ADD_MENU.map((entry) => (
+          {entries.map((entry) => (
             <button
               key={entry.kind}
               type="button"

@@ -8,6 +8,7 @@
 import React from "react";
 
 import { FileIcon } from "@/kernel/ui/FileIcons";
+import { ImageResult } from "@/apps/agent/components/tool-views/ImageResult";
 import { baseName, type MultiFileEntry } from "@/apps/agent/components/tool-views/tool-result";
 import { ToolCode } from "@/apps/agent/components/tool-views/ToolCode";
 
@@ -25,10 +26,14 @@ export const MultiFileResultsView: React.FC<{
         <FileIcon name={baseName(file.path)} path={file.path} className="agw-file-ico" />
         <span className="agw-rv-title-file">{baseName(file.path)}</span>
         <span className="agw-rv-stats">
-          {/* A windowed read states the range it returned. "152 L" alone next to
-              20 visible lines reads as a contradiction — the file's length is
-              not what you are looking at. */}
-          {file.window ? (
+          {/* A picture has no lines. Its size is its dimensions, and those are
+              the ones on screen — the original's are in the caption the model
+              was given. */}
+          {file.image?.width && file.image.height ? (
+            <span>
+              {file.image.width}×{file.image.height}
+            </span>
+          ) : file.window ? (
             <span>
               L{file.window.start}–{file.window.end}
               {typeof file.lines === "number" && ` of ${file.lines.toLocaleString()}`}
@@ -39,7 +44,14 @@ export const MultiFileResultsView: React.FC<{
           <span>{selectedIndex + 1} / {files.length}</span>
         </span>
       </div>
-      {file.content !== undefined ? (
+      {/* A picture is this file's content. It goes through the same one-at-a-time
+          mount as the code below, so a read of eight screens never puts eight
+          images on the page at once. */}
+      {file.image ? (
+        <div className="agw-multi-read">
+          <ImageResult image={file.image} />
+        </div>
+      ) : file.content !== undefined ? (
         <div className="agw-multi-read">
           <ToolCode code={file.content} path={file.fullPath ?? file.path} />
           {/* Only ever about SIZE. A window omitting lines is the window doing

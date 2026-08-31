@@ -22,11 +22,48 @@
 
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import { splitCursorVariant } from "@/apps/agent/services/providers/cursor-variants";
 
 /** The chat-store shape this module reads. Structural, so tests can pass a stub. */
 interface ThreadModelSource {
   threads: Array<{ id: string; model?: string | null }>;
   allThreads: Array<{ id: string; model?: string | null }>;
+}
+
+interface ModelRowIdentity {
+  providerId: string;
+  modelKey: string;
+}
+
+/**
+ * Convert an old decorated Cursor pin to the stable model row it belongs to.
+ *
+ * Migration is deliberately conservative. An exact row always wins, and a
+ * suffix is stripped only when that exact row is gone and the resulting stem
+ * is present. This avoids treating a legitimate model name ending in `-high`
+ * or `-fast` as a run modifier on guesswork.
+ */
+export function normalizeThreadModelSelection(
+  selection: string,
+  models: ModelRowIdentity[],
+): string {
+  const separator = selection.indexOf(":");
+  if (separator < 1) return selection;
+  const providerId = selection.slice(0, separator);
+  const modelKey = selection.slice(separator + 1);
+  if (providerId !== CURSOR_PROVIDER_ID || !modelKey) return selection;
+  if (models.some((model) => model.providerId === providerId && model.modelKey === modelKey)) {
+    return selection;
+  }
+  const { stem } = splitCursorVariant(modelKey);
+  if (
+    stem !== modelKey &&
+    models.some((model) => model.providerId === providerId && model.modelKey === stem)
+  ) {
+    return `${providerId}:${stem}`;
+  }
+  return selection;
 }
 
 /**
@@ -52,6 +89,15 @@ export function pinnedThreadModel(
  * render time, so a pick made while the composer was focused still counts.
  */
 export function resolveThreadModel(threadId: string | null | undefined): string {
-  const pinned = pinnedThreadModel(useAgentChatStore.getState(), threadId);
-  return pinned ?? useSettingsStore.getState().selectedModel;
+  const chat = useAgentChatStore.getState();
+  const settings = useSettingsStore.getState();
+  const pinned = pinnedThreadModel(chat, threadId);
+  const source = pinned ?? settings.selectedModel;
+  const normalized = normalizeThreadModelSelection(source, settings.models);
+  if (pinned && normalized !== pinned && threadId) {
+    void chat.setThreadModel(threadId, normalized);
+  } else if (!pinned && normalized !== settings.selectedModel) {
+    settings.setSelectedModel(normalized);
+  }
+  return normalized;
 }

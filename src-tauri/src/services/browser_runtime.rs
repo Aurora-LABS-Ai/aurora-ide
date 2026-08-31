@@ -35,7 +35,6 @@
 //! `tauri.conf.json`) so `window.__TAURI_INTERNALS__.invoke(...)` is
 //! reachable in any window we create.
 
-use std::io::Cursor as IoCursor;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
@@ -1213,56 +1212,15 @@ impl BrowserManager {
     }
 }
 
-/// Longest edge a saved/model screenshot is allowed. Applies to BOTH axes — a
-/// full-page capture is tall, not wide, so bounding the width alone left the
-/// expensive dimension unbounded.
-const SCREENSHOT_MAX_EDGE: u32 = 1024;
-
-/// JPEG quality for the encoded capture. 85 is the measured knee: at 1024px it
-/// held every small UI label a PNG of the same capture held, at roughly a fifth
-/// of the bytes — and those bytes are re-sent on every subsequent turn, since
-/// history keeps a path and rehydrates the file into each request.
-const SCREENSHOT_JPEG_QUALITY: u8 = 85;
-
-/// Decode a capture, fit it inside [`SCREENSHOT_MAX_EDGE`] square (aspect
-/// preserved, never upscaled), and re-encode as JPEG. Returns
-/// `(jpeg_bytes, width, height)`. On any decode/encode failure the original
-/// bytes are returned with `(0, 0)` dimensions so the caller still has an image
-/// — a screenshot that degrades to "the original PNG" is still a screenshot.
+/// Prepare a capture for the model: decode, bound the longest edge, re-encode
+/// as JPEG. Returns `(jpeg_bytes, width, height)`.
 ///
-/// Format-agnostic on input: both capture paths produce PNG today, and reading
-/// by content rather than by assumption means neither has to announce itself.
+/// The rules live in [`crate::api::aurora_image::encode_for_vision`], shared
+/// with `file_read`'s image path so a screenshot and an opened PNG reach the
+/// model at the same size and quality — one definition of "how big an image
+/// Aurora sends", not two that drift.
 fn encode_screenshot(bytes: Vec<u8>) -> (Vec<u8>, u32, u32) {
-    let Ok(img) = image::load_from_memory(&bytes) else {
-        return (bytes, 0, 0);
-    };
-    let (w, h) = (img.width(), img.height());
-    // `resize` fits WITHIN the box and keeps the aspect ratio, so passing the
-    // bound on both axes is what makes it a longest-edge cap.
-    let img = if w > SCREENSHOT_MAX_EDGE || h > SCREENSHOT_MAX_EDGE {
-        img.resize(
-            SCREENSHOT_MAX_EDGE,
-            SCREENSHOT_MAX_EDGE,
-            image::imageops::FilterType::Lanczos3,
-        )
-    } else {
-        img
-    };
-    let (ow, oh) = (img.width(), img.height());
-    // JPEG has no alpha channel; `to_rgb8` composites away a channel the
-    // encoder would otherwise reject outright.
-    let rgb = img.to_rgb8();
-    let mut out = Vec::new();
-    let mut cursor = IoCursor::new(&mut out);
-    let encoded =
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, SCREENSHOT_JPEG_QUALITY)
-            .encode_image(&rgb)
-            .is_ok();
-    if encoded {
-        (out, ow, oh)
-    } else {
-        (bytes, w, h)
-    }
+    crate::api::aurora_image::encode_for_vision(bytes)
 }
 
 /// Keep only the newest [`SCREENSHOT_KEEP`] screenshot files, deleting the
@@ -2044,7 +2002,8 @@ const STAGEWISE_DEACTIVATE_SCRIPT: &str = r#"
 
 #[cfg(test)]
 mod screenshot_encoding_tests {
-    use super::{encode_screenshot, SCREENSHOT_MAX_EDGE};
+    use super::encode_screenshot;
+    use crate::api::aurora_image::MAX_EDGE as SCREENSHOT_MAX_EDGE;
     use std::io::Cursor;
 
     /// Build a PNG of the given size to feed the encoder.

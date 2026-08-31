@@ -5,6 +5,11 @@
 //! truncated windows; small files return full content). Returns a
 //! JSON object matching the TS executor's response shape so the
 //! agent's downstream behaviour does not change.
+//!
+//! One result is deliberately NOT that JSON: a path whose bytes are a PNG,
+//! JPEG, GIF or WebP comes back as an `<aurora_image>` marker plus a caption,
+//! the same shape `browser_screenshot` returns, so a vision model sees the
+//! picture instead of a UTF-8 error. See [`super::image_read`].
 
 use std::path::Path;
 
@@ -143,19 +148,22 @@ pub(super) fn read_targets(input: &Value) -> Result<ReadRequest, ToolError> {
                 push_entries(entries, &mut targets, key)?;
             }
             Some(other) => {
+                // The correction the model reads has to match the schema it was
+                // given, or the next attempt repeats the mistake it was just
+                // told about.
                 return Err(ToolError::InvalidInput(format!(
-                    "`{key}` received {}. Send one path as a string — `\"path\": \"src/a.ts\"` — \
-                     or several as an array of strings — \
-                     `\"path\": [\"src/a.ts\", \"src/b.ts\"]`.",
+                    "`{key}` received {}. Send an array of paths — \
+                     `\"path\": [\"src/a.ts\"]` for one file, \
+                     `\"path\": [\"src/a.ts\", \"src/b.ts\"]` for several.",
                     describe_value(other)
-                )))
+                )));
             }
         }
     }
 
     if targets.is_empty() {
         return Err(ToolError::InvalidInput(
-            "`path` is required: one file path as a string, or 1-20 paths as an array of strings"
+            "`path` is required: an array of 1-20 file paths, e.g. `\"path\": [\"src/a.ts\"]`"
                 .into(),
         ));
     }
@@ -189,38 +197,57 @@ impl ToolExecutor for FileReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "file_read".into(),
-            description: "Read one or more files. `path` takes a single path (`\"path\": \"src/a.ts\"`) or an array to read several in parallel (`\"path\": [\"src/a.ts\", \"src/b.ts\"]`, max 20). START WITH NO RANGE — you never need to guess how long a file is: files small enough come back whole, and anything larger comes back with its exact total line count and where to continue from, so one call tells you what still needs paging. Then window only the large ones. start_line/end_line/max_lines return EXACTLY the range asked for, up to 1000 lines per file per call — ask for more and you get the first 1000 plus the total, so continue from the next line. With several paths the SAME range is read from every file; to take DIFFERENT ranges from different files, issue one call per file in the same message — they run in parallel. Set force_full_content: true to take a whole file in one call with no line cap. A missing path reports exists=false rather than failing."
+            description: "Read one or more files. `path` is ALWAYS an array — one entry for a single file (`\"path\": [\"src/a.ts\"]`), up to 20 to read them in parallel (`\"path\": [\"src/a.ts\", \"src/b.ts\"]`). START WITH NO RANGE — you never need to guess how long a file is: files small enough come back whole, and anything larger comes back with its exact total line count and where to continue from, so one call tells you what still needs paging. Then window only the large ones. start_line/end_line/max_lines return EXACTLY the range asked for, up to 1000 lines per file per call — ask for more and you get the first 1000 plus the total, so continue from the next line. With several paths the SAME range is read from every file; to take DIFFERENT ranges from different files, issue one call per file in the same message — they run in parallel. Set force_full_content: true to take a whole file in one call with no line cap. A missing path reports exists=false rather than failing. IMAGES ARE FILES TOO — name a PNG, JPEG, GIF or WebP and you SEE it, so read a mockup, a screenshot or a design straight off disk instead of describing it blind; it can share a call with source files."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": {
-                        "type": ["string", "array"],
-                        "minLength": 1,
+                        "type": "array",
+                        "minItems": 1,
                         "maxItems": 20,
                         "items": { "type": "string", "minLength": 1 },
-                        "description": "One file path as a string, or 1-20 file paths as an array of strings to read in parallel. A line range, if given, applies to every path."
+                        "description": "The files to read, as an array of paths — one entry for a single file (`[\"src/a.ts\"]`), up to 20 to read in parallel. A line range, if given, applies to every path (and is simply unused on an image)."
                     },
                     "start_line": { "type": "number", "description": "1-based first line to return. The returned range is exactly what you ask for, capped at 1000 lines per file. With several paths, applies to every file." },
                     "end_line": { "type": "number", "description": "1-based inclusive last line to return. Ranges wider than 1000 lines return the first 1000; continue from the next line. With several paths, applies to every file." },
                     "max_lines": { "type": "number", "description": "Maximum lines to return from start_line (hard cap 1000 per file)." },
                     "force_full_content": { "type": "boolean", "description": "Return the whole file in one call with no line cap, however long it is. Use when you genuinely need the entire file; otherwise page with start_line/end_line." }
                 },
-                // ONE slot names what to read, so there is no second field
-                // that can contradict it and no exclusivity rule to enforce.
+                // ONE slot names what to read, and it declares ONE type.
                 //
-                // This replaced a `path` + `paths` pair whose "exactly one of"
-                // contract could not be expressed in the schema at all — a
-                // top-level `oneOf` makes strict validators (xAI/grok) reject
-                // the request with HTTP 400 — so it lived in prose and was
-                // enforced by REJECTION. A model decoding strictly fills every
-                // declared property, sent both, and was told its schema-obedient
-                // call was malformed. Measured: 6 of 60 `file_read` calls in one
-                // thread, every one of them a batch read, every one dead.
+                // The slot itself replaced a `path` + `paths` pair whose
+                // "exactly one of" contract could not be expressed in the
+                // schema at all — a top-level `oneOf` makes strict validators
+                // (xAI/grok) reject the request with HTTP 400 — so it lived in
+                // prose and was enforced by REJECTION. A model decoding
+                // strictly fills every declared property, sent both, and was
+                // told its schema-obedient call was malformed. Measured: 6 of
+                // 60 `file_read` calls in one thread, every one a batch read,
+                // every one dead.
                 //
-                // A union `"type": [...]` is safe where `oneOf` is not — the
-                // same pattern `shell_kill`'s `pid` already ships on every
-                // provider Aurora supports.
+                // The slot then declared `"type": ["string", "array"]`, on the
+                // theory that a union is safe where `oneOf` is not. It is not.
+                // Measured 2026-08-29 — one identical request, three gateways,
+                // three different serialisations of the same call:
+                //
+                //   byteplus  {"path": ["a.ts", "b.ts"]}   correct
+                //   kenari    {"path": "[\"a.ts\", \"b.ts\"]"}
+                //             the array flattened into a STRING. Harmless only
+                //             because `read_targets` already decodes that (see
+                //             its `Value::String` arm) — a workaround this
+                //             union is the reason for.
+                //   vectide   {"path":     …and then the REST OF THE CALL
+                //             emitted as message text:
+                //             `<tool_call><function=file_read>…`. The tool
+                //             call is truncated mid-argument and unrecoverable;
+                //             every read in the turn failed.
+                //
+                // One shape serialises correctly on all three: a plain array.
+                // So a single read is a one-element array, and no gateway has
+                // to choose between two types. `read_targets` still accepts a
+                // bare string and a JSON-encoded one, because older threads on
+                // disk are full of both.
                 "additionalProperties": false,
             }),
         }
@@ -252,17 +279,60 @@ impl ToolExecutor for FileReadTool {
 
         if !single {
             // Record each requested path as "seen" so a later file_edit knows
-            // the agent looked at it, then delegate to the parallel reader.
+            // the agent looked at it, and split the pictures out of the batch:
+            // the parallel reader decodes UTF-8, so an image handed to it comes
+            // back as "stream did not contain valid UTF-8" and the caller has
+            // to go find another way to look at its own file.
+            let mut image_jobs = Vec::new();
+            let mut text_targets: Vec<String> = Vec::new();
             for entry in &targets {
-                if let Ok(resolved) = resolve_path_for_read_with_spill(
+                let resolved = resolve_path_for_read_with_spill(
                     entry,
                     ctx.workspace_root.as_deref(),
                     ctx.allow_outside_workspace,
                     ctx.spill_dir.as_deref(),
-                ) {
+                );
+                if let Ok(resolved) = resolved {
                     super::read_tracker::record(&ctx.thread_id, &resolved.to_string_lossy());
+                    if let Some(kind) = super::image_read::sniff_path(&resolved) {
+                        image_jobs.push((entry.clone(), resolved, kind));
+                        continue;
+                    }
                 }
+                // Anything that did not resolve stays in the text list, so an
+                // unreadable path still gets the per-file error it always got.
+                text_targets.push(entry.clone());
             }
+
+            // Decoding and re-encoding is CPU + disk work; the whole batch of
+            // it goes to one blocking thread rather than stalling the runtime.
+            let opened = if image_jobs.is_empty() {
+                Vec::new()
+            } else {
+                tokio::task::spawn_blocking(move || {
+                    image_jobs
+                        .into_iter()
+                        .map(|(display, full, kind)| {
+                            super::image_read::read_image(&display, &full, kind)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|err| {
+                    ToolError::Execution(format!("file_read image task panicked: {err}"))
+                })?
+            };
+            let images = opened
+                .iter()
+                .map(|image| image.block.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let image_rows: Vec<Value> = opened.into_iter().map(|image| image.row).collect();
+
+            if text_targets.is_empty() {
+                return Ok(images);
+            }
+
             // Hand the parallel reader the RESOLVED list under the key it
             // reads. Passing the caller's raw input instead would put an
             // already-resolved call back through interpretation a second time —
@@ -272,10 +342,25 @@ impl ToolExecutor for FileReadTool {
                 object.remove("path");
                 object.insert(
                     "paths".into(),
-                    Value::Array(targets.iter().cloned().map(Value::String).collect()),
+                    Value::Array(
+                        text_targets
+                            .into_iter()
+                            .map(Value::String)
+                            .collect::<Vec<_>>(),
+                    ),
                 );
             }
-            return super::multi_file_read::read_many(delegated, ctx).await;
+            let text = super::multi_file_read::read_many(delegated, ctx).await?;
+            if images.is_empty() {
+                return Ok(text);
+            }
+            // Images FIRST so the body does not open with `{`: a result that
+            // looks like JSON but is not gets read as a broken envelope, and
+            // this one is deliberately two shapes — pictures, then the files.
+            return Ok(format!(
+                "{images}\n\n{}",
+                merge_image_rows(text, image_rows, &targets)
+            ));
         }
 
         let path = targets[0].as_str();
@@ -411,6 +496,78 @@ fn annotate(body: String, note: String) -> String {
     serde_json::to_string(&Value::Object(map)).unwrap_or(body)
 }
 
+/// Fold the pictures back into the batch reader's inventory so it describes the
+/// WHOLE call.
+///
+/// A mixed read is split in two — pictures handled here, text handed to the
+/// batch reader — and the batch reader can only count what it was given. Left
+/// alone, a nine-path call came back saying `totalFiles: 3`. That is not a
+/// smaller truth but a wrong one: the model cannot use the result as an
+/// inventory of what it asked for, and a file it never sees a row for looks
+/// like a file that was never read.
+///
+/// Found by the agent itself and filed through `report_aurora_issue`
+/// (2026-08-31) within an hour of the image reader shipping — the code that
+/// split the call is the code that has to put it back together.
+///
+/// Rows are returned in the order the CALLER named their paths, not in the
+/// order the two readers happened to finish. A body that will not parse is
+/// returned untouched: losing the counts is smaller than losing the files.
+fn merge_image_rows(envelope: String, images: Vec<Value>, order: &[String]) -> String {
+    if images.is_empty() {
+        return envelope;
+    }
+    let Ok(Value::Object(mut map)) = serde_json::from_str::<Value>(&envelope) else {
+        return envelope;
+    };
+    let Some(Value::Array(mut files)) = map.remove("files") else {
+        return envelope;
+    };
+
+    files.extend(images);
+    let position = |row: &Value| {
+        row.get("path")
+            .and_then(Value::as_str)
+            .and_then(|path| order.iter().position(|named| named == path))
+            .unwrap_or(usize::MAX)
+    };
+    files.sort_by_key(position);
+
+    let read = files
+        .iter()
+        .filter(|row| row.get("success") == Some(&Value::Bool(true)))
+        .count();
+    map.insert("filesRead".into(), json!(read));
+    map.insert("filesError".into(), json!(files.len() - read));
+    map.insert("totalFiles".into(), json!(files.len()));
+    map.insert("files".into(), Value::Array(files));
+
+    serde_json::to_string(&Value::Object(map)).unwrap_or(envelope)
+}
+
+/// What a file that opened but holds no text is told — an archive, a font, an
+/// image format Aurora cannot decode.
+///
+/// Shared with the batch reader so one file gets one answer whichever route
+/// read it. The batch path only ever sees the error as a STRING, which is why
+/// [`is_non_text_error`] exists beside this: `read_to_string`'s own wording,
+/// "stream did not contain valid UTF-8", names the decoder's problem rather
+/// than the caller's and leaves the reader with nothing to do next.
+pub(super) fn non_text_error(rel_path: &str) -> String {
+    format!(
+        "{rel_path} is not a text file — it holds bytes that are not UTF-8. file_read returns \
+         text, and PNG/JPEG/GIF/WebP images. For anything else, inspect it with a shell command \
+         that understands the format."
+    )
+}
+
+/// True when a batch reader's error string is `read_to_string` refusing a
+/// non-UTF-8 file. Matched on the message because that is all the batch path is
+/// handed — the `io::Error` is consumed several layers below it.
+pub(super) fn is_non_text_error(error: &str) -> bool {
+    error.contains("stream did not contain valid UTF-8")
+}
+
 fn read_with_policy(
     full_path: &str,
     rel_path: &str,
@@ -423,18 +580,47 @@ fn read_with_policy(
     // it. `file_edit` reads it back when a match fails.
     thread_id: &str,
 ) -> Result<String, ToolError> {
+    // A picture is not text and never was. Checked here rather than at the call
+    // site so it also covers a path that only became readable after recovery
+    // repaired it — and by the file's own bytes, so a `.png` holding source
+    // code still reads as source code below.
+    //
+    // Line arguments are not an error on this branch, they are simply spent: a
+    // range names lines, an image has none, and the caller gets the picture it
+    // asked for rather than a lecture about the argument it sent with it.
+    if let Some(kind) = super::image_read::sniff_path(Path::new(full_path)) {
+        // The inventory row is dropped on purpose: a single read answers about
+        // one file, so the caption already IS the inventory. Only a batch, which
+        // has to account for paths whose results took the other route, needs it.
+        return Ok(super::image_read::read_image(rel_path, Path::new(full_path), kind).block);
+    }
+
     let content = match std::fs::read_to_string(Path::new(full_path)) {
         Ok(c) => c,
         Err(err) => {
+            // A file that opened but does not hold text: an archive, a binary,
+            // a font, an image format Aurora cannot decode. `read_to_string`
+            // reports that as "stream did not contain valid UTF-8", which names
+            // the decoder's problem rather than the caller's, and leaves the
+            // reader with nothing to do next.
+            let error = if err.kind() == std::io::ErrorKind::InvalidData {
+                non_text_error(rel_path)
+            } else {
+                format!("Failed to read file: {err}")
+            };
             // Mirror TS executor: returns success=false JSON, NOT a thrown error.
             // `exists: false` folds in the old `file_exists` tool — callers can
             // probe a path's presence with file_read and branch on this flag.
+            //
+            // `exists` is what the byte-level failure above turns on: the file
+            // is right there, so claiming it is absent would send the caller
+            // looking for a path it already has.
             return Ok(serde_json::to_string(&json!({
                 "success": false,
-                "exists": false,
+                "exists": err.kind() == std::io::ErrorKind::InvalidData,
                 "path": rel_path,
                 "fullPath": full_path,
-                "error": format!("Failed to read file: {err}"),
+                "error": error,
             }))
             .unwrap());
         }
@@ -744,7 +930,105 @@ mod tests {
         }
     }
 
-    /// ONE slot names what to read, and it accepts either spelling.
+    /// A real 8×8 PNG, so the reader's own decoder decides what this is.
+    fn png_fixture() -> Vec<u8> {
+        let img = image::RgbImage::from_fn(8, 8, |x, _| image::Rgb([(x * 30) as u8, 90, 200]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode png");
+        out
+    }
+
+    /// A mixed call's inventory must account for every path the caller named,
+    /// in the order they named them.
+    ///
+    /// This is the bug the agent filed against Aurora on 2026-08-31, an hour
+    /// after the image reader shipped: a nine-path read answered `totalFiles: 3`
+    /// because only the text half reached the reader that counts. A count that
+    /// disagrees with the call is worse than no count — it reads as "six of your
+    /// files do not exist".
+    #[tokio::test]
+    async fn a_mixed_read_accounts_for_every_path_it_was_given() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("shot.png"), png_fixture()).unwrap();
+        std::fs::write(tmp.path().join("notes.md"), "hello\n").unwrap();
+        std::fs::write(tmp.path().join("second.png"), png_fixture()).unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": ["shot.png", "notes.md", "second.png", "missing.txt"]
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("a mixed read succeeds");
+
+        // The pictures come first, so the body never opens with `{`.
+        assert!(result.starts_with("<aurora_image "), "images lead the body");
+
+        let envelope = &result[result.find("\n\n{").expect("json envelope") + 2..];
+        let parsed: Value = serde_json::from_str(envelope).expect("valid JSON envelope");
+
+        assert_eq!(parsed["totalFiles"], 4, "every named path is accounted for");
+        assert_eq!(parsed["filesRead"], 3);
+        assert_eq!(parsed["filesError"], 1);
+
+        let rows = parsed["files"].as_array().expect("files array");
+        let paths: Vec<&str> = rows
+            .iter()
+            .map(|row| row["path"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["shot.png", "notes.md", "second.png", "missing.txt"],
+            "rows keep the caller's order, not the two readers' finishing order"
+        );
+        assert_eq!(rows[0]["kind"], "image");
+        assert_eq!(rows[0]["width"], 8);
+        assert_eq!(rows[1]["content"], "hello\n");
+        assert_eq!(rows[3]["success"], false);
+    }
+
+    /// A binary reached through the batch used to report the decoder's own
+    /// words. Both routes now say the same thing about the same file.
+    #[tokio::test]
+    async fn a_binary_in_a_batch_gets_the_same_sentence_as_a_single_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An ICO header, then bytes no decoder can read as UTF-8 (`0xFF` never
+        // appears in a valid sequence). Not text, and not one of the four
+        // formats Aurora shows — the exact case `app-icon.ico` hit in testing.
+        std::fs::write(
+            tmp.path().join("app.ico"),
+            [0u8, 0, 1, 0, 1, 0, 32, 32, 0xFF, 0xFE, 0xC0, 0x80],
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("notes.md"), "hello\n").unwrap();
+
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": ["app.ico", "notes.md"] }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("batch read");
+        let parsed: Value = serde_json::from_str(&result).expect("valid JSON");
+        let error = parsed["files"][0]["error"].as_str().unwrap_or_default();
+
+        assert!(
+            error.contains("is not a text file"),
+            "the caller's problem, not the decoder's: {error}"
+        );
+        assert!(
+            !error.contains("stream did not contain valid UTF-8"),
+            "the raw decoder wording must not reach the model: {error}"
+        );
+    }
+
+    /// ONE slot names what to read, and it declares ONE type.
     ///
     /// The pair this replaced could not state its own "exactly one of" rule in
     /// the schema — a top-level `oneOf` makes strict validators (xAI/grok)
@@ -752,7 +1036,15 @@ mod tests {
     /// rejection, and a strictly-decoding model that filled both fields was
     /// told its schema-obedient call was malformed.
     ///
-    /// A second declared field cannot come back without failing this.
+    /// The union `["string", "array"]` that followed had a quieter failure and
+    /// a worse one: gateways serialise a two-typed parameter differently from
+    /// each other. Measured across three on 2026-08-29 — byteplus correct,
+    /// kenari flattening the array into a string, vectide truncating the call
+    /// at `{"path": ` and emitting the remainder as message text, which killed
+    /// every read in the turn. An array serialises correctly on all three.
+    ///
+    /// Neither a second field nor a second type can come back without failing
+    /// this.
     #[test]
     fn schema_offers_exactly_one_way_to_name_what_to_read() {
         let schema = FileReadTool.schema();
@@ -766,11 +1058,15 @@ mod tests {
 
         let path = &properties["path"];
         assert_eq!(
-            path["type"],
-            serde_json::json!(["string", "array"]),
-            "one slot takes a single path or a list of them"
+            path["type"], "array",
+            "one slot, one type — a union is serialised wrongly by real gateways"
+        );
+        assert!(
+            !path["type"].is_array(),
+            "a union `type` is what truncated the call on vectide"
         );
         assert_eq!(path["items"]["type"], "string");
+        assert_eq!(path["minItems"], 1);
         assert_eq!(path["maxItems"], MAX_BATCH_PATHS);
     }
 

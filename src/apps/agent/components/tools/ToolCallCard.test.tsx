@@ -1,4 +1,10 @@
-import { act, type PropsWithChildren } from "react";
+import {
+  act,
+  createElement,
+  forwardRef,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,12 +18,27 @@ vi.mock("@/kernel/store/useSettingsStore", () => ({
   ) => select({ explorerIconPack: "material-icon-theme" }),
 }));
 
-vi.mock("framer-motion", () => ({
-  AnimatePresence: ({ children }: PropsWithChildren) => children,
-  motion: {
-    div: ({ children }: PropsWithChildren) => <div>{children}</div>,
-  },
-}));
+/**
+ * Motion elements render as their plain tag, keeping `className` and the rest
+ * of the DOM props (the target reel's cells are found by class) and forwarding
+ * the ref, which the reel uses to measure the cell it is widening to.
+ */
+vi.mock("framer-motion", () => {
+  const passthrough = (tag: "div" | "span") =>
+    forwardRef<HTMLElement, Record<string, unknown>>(function Motion(props, ref) {
+      const { children, initial, animate, exit, transition, layout, ...rest } = props;
+      void initial;
+      void animate;
+      void exit;
+      void transition;
+      void layout;
+      return createElement(tag, { ...rest, ref }, children as ReactNode);
+    });
+  return {
+    AnimatePresence: ({ children }: PropsWithChildren) => children,
+    motion: { div: passthrough("div"), span: passthrough("span") },
+  };
+});
 
 vi.mock("@/apps/agent/components/tool-views/ToolCode", () => ({
   ToolCode: ({ code }: { code: string }) => <pre data-tool-code>{code}</pre>,
@@ -75,15 +96,17 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).toContain("Running");
   });
 
-  it("states the count on the row when a call touched several files", () => {
+  const MULTI_EDIT_ARGS =
+    '{"target_paths":["tests/a.test.ts","tests/b.test.ts","tests/c.test.ts","tests/d.test.ts"],"edits":[';
+
+  it("states the count on the row once a call that touched several files settles", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard
-        isActivelyStreaming
         call={{
           id: "edit-1",
           name: "file_edit",
-          arguments:
-            '{"target_paths":["tests/a.test.ts","tests/b.test.ts","tests/c.test.ts","tests/d.test.ts"],"edits":[',
+          arguments: MULTI_EDIT_ARGS,
+          result: '{"success":true}',
         }}
       />,
     );
@@ -98,6 +121,45 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).toContain(">Edit</span>");
     expect(html).not.toContain("Editing Multiple Files");
     expect(html).not.toContain(">Edit Files</span>");
+  });
+
+  it("reads the files by name while the call is still running", () => {
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        isActivelyStreaming
+        call={{ id: "edit-2", name: "file_edit", arguments: MULTI_EDIT_ARGS }}
+      />,
+    );
+
+    // Same chip as the settled row above — the shape is decided by the
+    // argument being a list, not by how much of it has arrived, so there is no
+    // moment where one kind of chip is swapped for another.
+    expect(html.match(/class="agw-tool-chip agw-tool-chip-count"/g)).toHaveLength(1);
+    expect(html).toContain("agw-tool-reel");
+    // Saying the first file it will touch, not the count it settles on.
+    expect(html).toContain("a.test.ts");
+    expect(html).not.toContain("4 files");
+  });
+
+  it("never replays the reel for a call that was already finished", () => {
+    // A reloaded thread would otherwise narrate every read in it at once.
+    const html = renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "edit-3",
+          name: "file_edit",
+          arguments: MULTI_EDIT_ARGS,
+          result: '{"success":true}',
+        }}
+      />,
+    );
+
+    // `data-live` marks the cell that is reading a name out. A settled card
+    // opens on its summary and has none. (The paths themselves are still in
+    // the chip's tooltip and the dropdown, which is why this asserts the reel
+    // rather than the absence of the word.)
+    expect(html).toContain("4 files");
+    expect(html).not.toContain("data-live");
   });
 
   it("keeps its filename on the row when a call touched exactly one file", () => {

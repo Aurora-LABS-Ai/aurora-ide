@@ -23,7 +23,18 @@
 /** localStorage key. */
 export const CURSOR_FAST_KEY = "agw:cursor-fast";
 
-/** `"providerId:modelKey"` → whether Fast is on. Absent means off. */
+/**
+ * Model **row id** (`LLMModel.id`, e.g. `cursor::composer-2.5`) → whether Fast
+ * is on. Absent means off.
+ *
+ * Keyed by the row's database identity, not by a `provider:model` selection
+ * string. The selection is composed at runtime, and its spelling changed
+ * repeatedly as the Cursor provider took shape — each time, the picker wrote
+ * under one spelling and the send path read under another, so the switch
+ * showed on while the turn ran on the slow lane, with nothing reporting a
+ * miss. A row id cannot drift, and it is the same key the reasoning controls
+ * next to this one already use.
+ */
 export type FastPreferences = Record<string, boolean>;
 
 /**
@@ -68,17 +79,17 @@ export function writeFastPreferences(next: FastPreferences): void {
   }
 }
 
-/** Whether Fast is on for a `"providerId:modelKey"` selection. */
-export function isFastOn(selection: string): boolean {
-  return readFastPreferences()[selection] === true;
+/** Whether Fast is on for a stable provider-model row id. */
+export function isFastOn(modelRowId: string): boolean {
+  return readFastPreferences()[modelRowId] === true;
 }
 
-/** Set Fast for one selection and return the new map. */
-export function setFastOn(selection: string, on: boolean): FastPreferences {
+/** Set Fast for one stable provider-model row and return the new map. */
+export function setFastOn(modelRowId: string, on: boolean): FastPreferences {
   const current = readFastPreferences();
   const next = { ...current };
-  if (on) next[selection] = true;
-  else delete next[selection];
+  if (on) next[modelRowId] = true;
+  else delete next[modelRowId];
   writeFastPreferences(next);
   return next;
 }

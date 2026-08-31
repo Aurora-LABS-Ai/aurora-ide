@@ -256,6 +256,55 @@
   border-radius: 2px;
 }
 
+/* ── The target reel ───────────────────────────────────────────────────────
+ * A call that names several files says them one at a time inside the SAME
+ * chip, and the summary is simply the last thing to ride through. Geometry
+ * lives here; the timing lives in `ToolTargetReel` (ToolCallCard.tsx), which
+ * needs the same numbers to drive framer-motion.
+ *
+ * The motion is the reply drum's, unchanged: `.agw-suggest-drum` further down
+ * this file is where the 48deg tilt, the 340px perspective and the masked edge
+ * come from. Borrowing it whole is the point — two places in the window where
+ * a short line is replaced by another short line should not invent two
+ * different ways of doing it.
+ */
+.agw-tool-reel {
+  position: relative;
+  display: inline-block;
+  height: 19px;
+  overflow: hidden;
+  /* Depth for the tilt. Without it a rotateX is a vertical squash. */
+  perspective: 340px;
+  /* Set in px by the component from the entering cell's own width — the
+     transition is what stops a longer filename from snapping the row wider.
+     0.18s is the drum's own time (`.agw-suggest-item`, further down); it must
+     stay in step with `REEL_GLIDE_S`, which drives the cells riding through
+     this same width. */
+  transition: width 0.18s cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+.agw-tool-reel-cell {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 19px;
+  /* Absolute + nowrap is what lets a cell size to its content while the reel
+     around it is still the width of the PREVIOUS one. */
+  white-space: nowrap;
+  transform-origin: center;
+  backface-visibility: hidden;
+}
+/* The name being read is the live fact on the row; the summary it settles into
+ * is a record, so it rests at the chip's own quieter colour. */
+.agw-tool-reel-cell[data-live] {
+  color: var(--agw-text);
+}
+.agw-root[data-reduce-motion] .agw-tool-reel {
+  transition: none;
+}
+
 /* The file list, in the body. It WRAPS — the whole set is visible at once
  * instead of hidden behind a horizontal drag, which is the entire reason it
  * moved off the row. `align-items` matters: as a plain flex row the chips
@@ -339,9 +388,12 @@
   max-height: 168px;
 }
 
-/* Screenshot result — a bordered thumbnail; click opens the full-size modal. */
+/* Image result — a bordered thumbnail; click opens the full-size modal. Exactly
+   one is ever on screen: a read that opened several shows them through the file
+   chips, one at a time, like every other multi-file result. */
 .agw-tool-shot {
   display: flex;
+  min-width: 0;
 }
 .agw-tool-shot-btn {
   display: block;
@@ -861,15 +913,24 @@
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
   line-height: 1.55;
-  overflow: auto;
+  /* Code WRAPS here, so there is no horizontal scroll to allow. Sideways
+   * scrolling was actively harmful in this layout: a row is only as wide as the
+   * container, so scrolling left the +/− tint band and both line-number gutters
+   * behind — the reader ended up looking at unanchored code on a half-painted
+   * background. It also contradicted the streaming preview (`.agw-diff`), which
+   * has always wrapped, so a file appeared to change layout the moment its tool
+   * finished. */
+  overflow-x: hidden;
+  overflow-y: auto;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-md);
   background: var(--agw-code-surface);
 }
 .agw-dl {
   display: flex;
+  /* Top-aligned so a wrapped line keeps its number beside its FIRST visual row
+   * rather than floating to the middle of the block. */
   align-items: flex-start;
-  white-space: pre;
 }
 .agw-dl-no {
   flex: 0 0 auto;
@@ -893,6 +954,17 @@
   min-width: 0;
   padding-right: 10px;
   color: var(--agw-text-muted);
+  /* `pre-wrap`, not `pre`: source indentation is meaningful and must survive,
+   * but the line still has to fold at the card's edge. It also keeps a blank
+   * line's lone space from collapsing, which is what holds that row's height. */
+  white-space: pre-wrap;
+  /* Long import paths and URLs carry no break opportunity at all, so `anywhere`
+   * is the only value that folds them instead of forcing the row wide. */
+  overflow-wrap: anywhere;
+  /* Hanging indent: continuations sit slightly in from the true line start, so
+   * a folded line never reads as a second line of code. */
+  padding-left: 1.25ch;
+  text-indent: -1.25ch;
 }
 .agw-dl-ctx {
   /* default muted; nothing extra */
@@ -925,15 +997,18 @@
 /* Split (side-by-side) layout: old | new, each a [gutter, code] pair. */
 .agw-diffview-split .agw-ds {
   display: grid;
-  grid-template-columns: 40px 1fr 40px 1fr;
-  white-space: pre;
+  /* `minmax(0, 1fr)` rather than `1fr`: a bare `1fr` floors at the content's
+   * min width, so a long line widens its column instead of folding inside it. */
+  grid-template-columns: 40px minmax(0, 1fr) 40px minmax(0, 1fr);
 }
 .agw-ds .agw-dl-no {
   flex: none;
 }
 .agw-ds .agw-dl-code {
-  overflow: hidden;
-  padding-left: 6px;
+  /* Was `overflow: hidden`, which silently cut the tail off every long line —
+   * the reader had no way to tell a clipped line from a complete one. Wrapping
+   * costs height and shows the whole change. */
+  padding-left: calc(6px + 1.25ch);
 }
 /* Vertical seam between the two sides. */
 .agw-ds > .agw-dl-no:nth-child(3) {

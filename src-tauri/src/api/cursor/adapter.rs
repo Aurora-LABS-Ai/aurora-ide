@@ -8,27 +8,21 @@
 //! - map [`TurnEvent`]s back onto [`AssistantEvent`]s,
 //! - reconstruct the final assistant message the runtime persists.
 //!
-//! ## Token accounting: counted here, because the wire will not say
+//! ## Token accounting
 //!
 //! Cursor reports a **single** counter per turn (`TokenDeltaUpdate`) with no
-//! prompt/completion split — `input_tokens` genuinely does not exist on this
-//! wire. That is a problem, because Aurora's context ring is
-//! measurement-anchored: it draws from the last usage the provider reported.
-//! Left at zero, the ring would sit empty through a conversation that was
-//! actually filling the window, and the first sign of trouble would be a
-//! refusal from the far end.
+//! prompt/completion split. It also sends `ConversationTokenDetails` in its
+//! checkpoint updates. That message contains the current conversation's exact
+//! `used_tokens`, including Cursor's server-injected context. Aurora derives
+//! the input side as `used_tokens - output_tokens`, preserving Cursor's exact
+//! total for the context ring.
 //!
-//! So the prompt is counted locally with Aurora's own tokenizer
+//! Some Cursor runs omit the checkpoint. Those fall back to Aurora's tokenizer
 //! ([`crate::services::token_service`], tiktoken) over exactly what this turn
 //! sends — system prompt, history, and tool schemas. That is an estimate, not
 //! a measurement: tiktoken's vocabulary is not Grok's or Claude's, and
 //! Cursor's server prepends a system prompt of its own that Aurora cannot see
-//! or size. It is close enough to drive a ring honestly and far better than
-//! zero.
-//!
-//! The whole usage is therefore flagged `estimated: true`. This drives a money
-//! figure as well as a ring, and an exact-looking `$0.00` would be a false
-//! number rather than a missing one.
+//! or size. Only this fallback is flagged `estimated: true`.
 
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -40,7 +34,7 @@ use crate::api::client::ProviderConfigSnapshot;
 use crate::api::provider_kernel_adapter::unprefix_model;
 
 use super::history;
-use super::session::{self, DoneReason, RunTurn, TurnEvent};
+use super::session::{self, DoneReason, PumpMessage, RunTurn, ToolExchange, TurnEvent};
 
 pub struct CursorAdapter {
     config: ProviderConfigSnapshot,
@@ -63,9 +57,32 @@ struct TurnAccumulator {
     thinking: String,
     tool_uses: Vec<ContentBlock>,
     tokens: u32,
+    context_used_tokens: Option<u32>,
 }
 
 impl TurnAccumulator {
+    /// Close off one message's worth of blocks and keep accumulating.
+    ///
+    /// A bidirectional turn is several assistant messages on one connection:
+    /// the model talks, calls a tool, reads the result, then talks again — and
+    /// the transcript has to record that as separate messages so each
+    /// `tool_use` sits with the text that produced it.
+    ///
+    /// The token counter is deliberately **not** reset. Cursor reports one
+    /// figure for the whole turn with no per-message split, so it belongs to
+    /// the turn; zeroing it here would throw away everything counted before
+    /// the first tool call.
+    fn take_segment(&mut self) -> Vec<ContentBlock> {
+        Self {
+            text: std::mem::take(&mut self.text),
+            thinking: std::mem::take(&mut self.thinking),
+            tool_uses: std::mem::take(&mut self.tool_uses),
+            tokens: 0,
+            context_used_tokens: None,
+        }
+        .into_blocks()
+    }
+
     fn into_blocks(self) -> Vec<ContentBlock> {
         let mut blocks = Vec::new();
         if !self.thinking.is_empty() {
@@ -111,22 +128,73 @@ impl StreamingApiClient for CursorAdapter {
         // reveals itself here.
         let mut refreshed_once = false;
         loop {
-            let (tx, mut rx) = mpsc::channel::<TurnEvent>(64);
+            let (tx, mut rx) = mpsc::channel::<PumpMessage>(64);
 
             let turn = RunTurn {
                 access_token: &access,
                 model: &model,
                 input: input.clone(),
                 tools: tools.clone(),
+                in_stream_tools: request.tool_bridge.is_some(),
             };
 
             let sink = event_sink.clone();
             let cancel = cancel_token.clone();
+            // Owned for the pump task. `None` keeps the old behaviour: report
+            // the call and end the turn.
+            let bridge = request.tool_bridge.cloned();
             let pump = tokio::spawn(async move {
                 let mut acc = TurnAccumulator::default();
                 let mut done = DoneReason::Stop;
 
-                while let Some(event) = rx.recv().await {
+                while let Some(message) = rx.recv().await {
+                    let event = match message {
+                        PumpMessage::Event(event) => event,
+                        // The model called a tool and the connection is parked
+                        // on the answer.
+                        PumpMessage::Tools(exchange) => {
+                            let ToolExchange { calls, reply } = exchange;
+
+                            // The UI hears about the call here rather than
+                            // from the session, because only this channel
+                            // orders it against the text that preceded it.
+                            for call in &calls {
+                                acc.tool_uses.push(ContentBlock::ToolUse {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                    input: call.input.clone(),
+                                });
+                                let _ = sink
+                                    .send(AssistantEvent::ToolUse {
+                                        id: call.id.clone(),
+                                        name: call.name.clone(),
+                                        input: call.input.clone(),
+                                    })
+                                    .await;
+                            }
+
+                            // Close the message that made the call before
+                            // running it, so the runtime writes the pair in
+                            // the order the transcript requires.
+                            let assistant = ConversationMessage::assistant(
+                                acc.take_segment(),
+                                crate::api::provider_kernel_adapter::now_unix_ms(),
+                            );
+
+                            match &bridge {
+                                Some(bridge) => {
+                                    if let Some(answer) = bridge.run(assistant, calls).await {
+                                        let _ = reply.send(answer.results);
+                                    }
+                                    // Dropping `reply` unanswered is the
+                                    // signal the session reads as "the
+                                    // runtime is gone, end the turn".
+                                }
+                                None => drop(reply),
+                            }
+                            continue;
+                        }
+                    };
                     match event {
                         TurnEvent::Text(delta) => {
                             acc.text.push_str(&delta);
@@ -160,6 +228,11 @@ impl StreamingApiClient for CursorAdapter {
                             // overwrite — the last update is not the total.
                             acc.tokens =
                                 acc.tokens.saturating_add(tokens.unwrap_or(0).max(0) as u32);
+                        }
+                        TurnEvent::ContextUsage { used_tokens } => {
+                            // A checkpoint is a full snapshot, not a delta. The
+                            // latest one is the state Cursor finished with.
+                            acc.context_used_tokens = Some(used_tokens);
                         }
                         TurnEvent::Done(reason) => done = reason,
                     }
@@ -206,19 +279,17 @@ impl StreamingApiClient for CursorAdapter {
                     }
                     .to_string();
 
-                    let usage = TokenUsage {
-                        // Counted locally — the wire carries no prompt figure,
-                        // and a zero here would leave the context ring empty
-                        // while the window genuinely filled.
-                        input_tokens: estimate_prompt_tokens(&input, &tools, &model),
-                        output_tokens: acc.tokens,
-                        cache_creation_input_tokens: None,
-                        cache_read_input_tokens: None,
-                        estimated: Some(true),
-                        // Usage bills against the Cursor subscription, not
-                        // per token. A dollar figure here would be fiction.
-                        cost_usd: None,
-                    };
+                    let usage = resolve_usage(
+                        estimate_prompt_tokens(&input, &tools, &model),
+                        acc.tokens,
+                        acc.context_used_tokens,
+                    );
+                    // Cursor's adapter used to return usage only in
+                    // `TurnUsage`. The frontend listens to streamed Usage
+                    // events, so it never saw that value and ran its local
+                    // transcript estimator instead. Emit the settled reading
+                    // through the same contract as every other provider.
+                    let _ = event_sink.send(AssistantEvent::Usage(usage.clone())).await;
                     let blocks = acc.into_blocks();
                     let assistant_message = ConversationMessage::assistant_with_usage(
                         blocks,
@@ -234,6 +305,31 @@ impl StreamingApiClient for CursorAdapter {
                 }
             };
         }
+    }
+}
+
+/// Prefer Cursor's checkpoint total, retaining the local count only as a
+/// fallback for runs where the server omits or contradicts the checkpoint.
+fn resolve_usage(
+    estimated_input_tokens: u32,
+    output_tokens: u32,
+    context_used_tokens: Option<u32>,
+) -> TokenUsage {
+    let provider_total = context_used_tokens.filter(|used| *used >= output_tokens && *used > 0);
+    let (input_tokens, estimated) = match provider_total {
+        Some(total) => (total - output_tokens, None),
+        None => (estimated_input_tokens, Some(true)),
+    };
+
+    TokenUsage {
+        input_tokens,
+        output_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        estimated,
+        // Usage bills against the Cursor subscription, not per token. A dollar
+        // figure here would be fiction even when the token total is measured.
+        cost_usd: None,
     }
 }
 
@@ -380,19 +476,24 @@ mod tests {
     }
 
     #[test]
-    fn usage_is_flagged_estimated_because_the_wire_has_no_split() {
-        let usage = TokenUsage {
-            input_tokens: 4_200,
-            output_tokens: 120,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            estimated: Some(true),
-            cost_usd: None,
-        };
-        // Counted locally, so it must never present as measured: this drives a
-        // money figure, and an exact-looking cost from an estimate is a false
-        // number rather than a missing one.
-        assert_eq!(usage.estimated, Some(true));
+    fn cursor_checkpoint_total_is_the_exact_context_reading() {
+        let usage = resolve_usage(4_200, 120, Some(9_876));
+
+        assert_eq!(usage.input_tokens, 9_756);
+        assert_eq!(usage.output_tokens, 120);
+        assert_eq!(usage.total(), 9_876);
+        assert_eq!(usage.estimated, None);
+    }
+
+    #[test]
+    fn missing_or_stale_checkpoint_keeps_the_local_estimate_explicit() {
+        for checkpoint in [None, Some(0), Some(119)] {
+            let usage = resolve_usage(4_200, 120, checkpoint);
+
+            assert_eq!(usage.input_tokens, 4_200);
+            assert_eq!(usage.output_tokens, 120);
+            assert_eq!(usage.estimated, Some(true));
+        }
     }
 
     fn tool(name: &str, schema: &str) -> cursor_proto::agent::McpToolDefinition {

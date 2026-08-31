@@ -68,7 +68,9 @@ fn theme_is_renderable(extension_dir: &Path, package: &serde_json::Value) -> boo
         .and_then(|entries| {
             entries
                 .iter()
-                .find(|entry| entry.get("_preferred").and_then(serde_json::Value::as_bool) == Some(true))
+                .find(|entry| {
+                    entry.get("_preferred").and_then(serde_json::Value::as_bool) == Some(true)
+                })
                 .or_else(|| entries.first())
         })
         .and_then(|entry| entry.get("path"))
@@ -265,7 +267,8 @@ pub async fn read_icon_theme_assets(
     icon_paths: Vec<String>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     tokio::task::spawn_blocking(move || {
-        let root = std::fs::canonicalize(&extension_dir).unwrap_or_else(|_| PathBuf::from(&extension_dir));
+        let root =
+            std::fs::canonicalize(&extension_dir).unwrap_or_else(|_| PathBuf::from(&extension_dir));
         let theme_dir = Path::new(&theme_path)
             .parent()
             .map(Path::to_path_buf)
@@ -409,7 +412,10 @@ mod tests {
         assert!(as_png.starts_with("data:image/png;base64,"), "got {as_png}");
 
         let as_svg = icon_as_data_uri(&tmp.path().join("b.svg")).expect("svg read");
-        assert!(as_svg.starts_with("data:image/svg+xml;base64,"), "got {as_svg}");
+        assert!(
+            as_svg.starts_with("data:image/svg+xml;base64,"),
+            "got {as_svg}"
+        );
     }
 
     /// SVG used to come back as raw markup, which left the pack parser to
@@ -428,7 +434,10 @@ mod tests {
         );
 
         let encoded = icon_as_data_uri(&tmp.path().join("prologued.svg")).expect("svg read");
-        assert!(encoded.starts_with("data:image/svg+xml;base64,"), "got {encoded}");
+        assert!(
+            encoded.starts_with("data:image/svg+xml;base64,"),
+            "got {encoded}"
+        );
     }
 
     #[test]

@@ -9,6 +9,13 @@
  * not available to keyboard or touch users. The button's own icon
  * carries the verdict (plug → check → alert) so the outcome survives
  * without ever opening the panel, and without depending on colour.
+ *
+ * Clicking while a verdict is on screen DISMISSES it — it does not test
+ * again. A test is a real, billed request to the provider, so it must
+ * never be the accidental outcome of clicking the thing you were trying
+ * to close. Once dismissed the panel stays shut under the pointer, and
+ * the next click runs a fresh test; moving away and back brings the kept
+ * verdict back.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -18,12 +25,13 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { testProviderModel, type ProviderTestReport } from "@/apps/agent/services/providers/provider-test";
 import type { LLMModel } from "@/kernel/store/useSettingsStore";
 
-type TestState = "idle" | "running" | "pass" | "fail";
+type TestState = "idle" | "running" | "pass" | "warn" | "fail";
 
 const ICON_FOR_STATE: Record<TestState, "plug" | "check" | "alert"> = {
   idle: "plug",
   running: "plug",
   pass: "check",
+  warn: "alert",
   fail: "alert",
 };
 
@@ -31,8 +39,14 @@ const LABEL_FOR_STATE: Record<TestState, string> = {
   idle: "Test this model",
   running: "Testing…",
   pass: "Test passed — hover for details",
+  warn: "Connected, but reasoning was not returned — hover for details",
   fail: "Test failed — hover for details",
 };
+
+/** Shown while the verdict panel is open — the click closes it. */
+const DISMISS_LABEL = "Hide the test result";
+/** Shown once the verdict has been dismissed — the click tests again. */
+const RETEST_LABEL = "Test this model again";
 
 /** "1.4s" reads better than "1423ms" at a glance. */
 function formatLatency(ms: number): string {
@@ -72,6 +86,7 @@ function configFingerprint(model: LLMModel): string {
     model.supportsThinking,
     model.reasoning,
     model.extraBody,
+    model.providerType,
   ]);
 }
 
@@ -80,6 +95,10 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
   const [report, setReport] = useState<ProviderTestReport | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  // The user closed the panel by hand. Held until the pointer/focus leaves, so
+  // the hover that is still sitting on the button doesn't immediately re-open
+  // what was just dismissed.
+  const [dismissed, setDismissed] = useState(false);
   const [placement, setPlacement] = useState<PopPlacement | null>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -136,6 +155,7 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
     setReport(null);
     setFailure(null);
     setOpen(false);
+    setDismissed(false);
   }
 
   useEffect(() => {
@@ -155,7 +175,7 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
       const result = await testProviderModel(selection);
       if (!alive.current) return;
       setReport(result);
-      setState(result.ok ? "pass" : "fail");
+      setState(result.ok ? (result.warning ? "warn" : "pass") : "fail");
     } catch (err) {
       if (!alive.current) return;
       setFailure(err instanceof Error ? err.message : String(err));
@@ -164,33 +184,72 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
   }, [selection, show, state]);
 
   const hasResult = report !== null || failure !== null;
+  /** The panel is actually on screen (`open` alone isn't enough — see the render below). */
+  const showing = open && (state === "running" || hasResult);
+
+  /** Close the panel and keep it closed while the pointer/focus stays put. */
+  const dismiss = useCallback(() => {
+    setOpen(false);
+    setDismissed(true);
+  }, []);
+
+  /** Leaving the control forgets the dismissal, so hovering back shows the verdict again. */
+  const leave = useCallback(() => {
+    if (state === "running") return;
+    setOpen(false);
+    setDismissed(false);
+  }, [state]);
+
+  const handleClick = useCallback(() => {
+    // A verdict on screen means this click is a "close", not a "test again".
+    if (showing && hasResult) {
+      dismiss();
+      return;
+    }
+    setDismissed(false);
+    void run();
+  }, [showing, hasResult, dismiss, run]);
+
+  const label = showing && hasResult
+    ? DISMISS_LABEL
+    : dismissed && hasResult
+      ? RETEST_LABEL
+      : LABEL_FOR_STATE[state];
 
   return (
     <span
       ref={attachRoot}
       className="agw-prov-test"
-      onMouseEnter={() => hasResult && show()}
-      onMouseLeave={() => state !== "running" && setOpen(false)}
+      onMouseEnter={() => hasResult && !dismissed && show()}
+      onMouseLeave={leave}
     >
       <button
         ref={buttonRef}
         type="button"
         className="agw-prov-icon-btn agw-prov-test-btn"
         data-state={state}
-        onClick={run}
-        onFocus={() => hasResult && show()}
-        onBlur={() => state !== "running" && setOpen(false)}
+        onClick={handleClick}
+        onFocus={() => hasResult && !dismissed && show()}
+        onBlur={leave}
+        // Escape closes the panel without spending a request — the keyboard
+        // equivalent of the dismissing click.
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && showing) {
+            e.stopPropagation();
+            dismiss();
+          }
+        }}
         disabled={state === "running"}
-        aria-label={LABEL_FOR_STATE[state]}
-        title={state === "idle" ? "Test this model" : undefined}
+        aria-label={label}
+        aria-expanded={hasResult ? showing : undefined}
+        title={showing ? undefined : label}
       >
         <AgentIcon name={ICON_FOR_STATE[state]} size={14} />
       </button>
 
       {portalTarget &&
-        open &&
+        showing &&
         placement &&
-        (state === "running" || hasResult) &&
         createPortal(
           <span
             className="agw-prov-test-pop"
@@ -222,7 +281,15 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
                       {report.outputTokens != null && (
                         <> · {report.inputTokens ?? 0} in / {report.outputTokens} out</>
                       )}
+                      {report.reasoningRequested && (
+                        <> · reasoning {report.reasoningReceived ? "received" : "missing"}</>
+                      )}
                     </span>
+                    {report.warning && (
+                      <span className="agw-prov-test-line" data-tone="warn">
+                        {report.warning}
+                      </span>
+                    )}
                   </>
                 ) : (
                   <>

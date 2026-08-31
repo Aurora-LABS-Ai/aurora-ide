@@ -160,6 +160,80 @@ fn screenshot_model_history_is_leaned_but_rehydratable() {
     );
 }
 
+/// `file_read` on a picture returns the same marker shape a capture does, so
+/// it must get the same treatment all the way down: leaned for history, kept
+/// whole (never byte-clamped through the base64), and rendered from a path
+/// rather than a blob. The bug this closes was the read failing outright with
+/// "stream did not contain valid UTF-8"; the bug it must not introduce is the
+/// image being re-uploaded on every later turn.
+#[test]
+fn a_file_read_image_is_leaned_and_named_like_a_capture() {
+    let big_b64 = "C".repeat(20_000);
+    let raw = format!(
+        "<aurora_image media_type=\"image/jpeg\" width=\"1024\" height=\"594\" \
+         src=\"C:\\cache\\agent-images\\img-9f2c.jpg\" name=\"hub-dashboard.png\">{big_b64}\
+         </aurora_image>\ndocs/hub-dashboard.png — PNG image, 1400×812 px, 235 KB. \
+         Shown to you downscaled to 1024×594."
+    );
+
+    let leaned = truncate_tool_content("file_read", raw.clone());
+    assert!(!leaned.contains(&big_b64), "base64 stripped from history");
+    assert!(leaned.contains("img-9f2c.jpg"), "src pointer kept");
+    assert!(leaned.contains("</aurora_image>"), "close tag kept");
+    assert!(
+        leaned.contains("docs/hub-dashboard.png — PNG image"),
+        "caption kept — it is the whole result for a model without vision"
+    );
+
+    let ui = truncate_tool_content_for_ui("file_read", raw);
+    assert!(!ui.contains(&big_b64), "no base64 reaches the thread store");
+    let v: serde_json::Value = serde_json::from_str(&ui).expect("valid JSON payload");
+    let image = &v["screenshot"];
+    assert_eq!(image["path"], "C:\\cache\\agent-images\\img-9f2c.jpg");
+    assert_eq!(
+        image["name"], "hub-dashboard.png",
+        "the card labels itself with the file that was read, not the cache file"
+    );
+    assert!(image["url"].is_null(), "a file read captured no page");
+}
+
+/// A read naming several pictures cannot collapse into the single-image
+/// envelope: it keeps its own shape and only sheds the base64, so the card can
+/// find every marker and show as many images as the model was given.
+#[test]
+fn a_multi_image_read_keeps_every_marker_in_the_ui_copy() {
+    let raw = format!(
+        "{first}\n\n{second}",
+        first = "<aurora_image media_type=\"image/jpeg\" width=\"800\" height=\"600\" \
+                 src=\"C:\\cache\\a.jpg\" name=\"one.png\">QUJDREVGRw==</aurora_image>\none.png",
+        second = "<aurora_image media_type=\"image/jpeg\" width=\"640\" height=\"480\" \
+                  src=\"C:\\cache\\b.jpg\" name=\"two.png\">SElKS0xNTk8=</aurora_image>\ntwo.png",
+    );
+
+    let ui = truncate_tool_content_for_ui("file_read", raw);
+    assert!(!ui.contains("QUJDREVGRw=="), "first body stripped");
+    assert!(!ui.contains("SElKS0xNTk8="), "second body stripped");
+    assert!(ui.contains("C:\\cache\\a.jpg") && ui.contains("C:\\cache\\b.jpg"));
+    assert_eq!(ui.matches("</aurora_image>").count(), 2, "both kept");
+}
+
+/// An image is billed by the provider's tile formula, not by the length of its
+/// base64. Counting the marker as text put a single screenshot at ~7,000 tokens
+/// of context it does not occupy — enough to trip trimming on its own.
+#[test]
+fn an_image_result_costs_a_flat_estimate_not_its_base64_length() {
+    let body = "D".repeat(28_000);
+    let raw = format!(
+        "<aurora_image media_type=\"image/jpeg\" width=\"1024\" height=\"594\" \
+         name=\"mock.png\">{body}</aurora_image>\nmock.png — PNG image, 240 KB."
+    );
+    let counted = super::tokens::estimate_text_with_images(&raw);
+    assert!(
+        counted < super::tokens::IMAGE_TOKEN_ESTIMATE + 100,
+        "an image plus a one-line caption, not 7k of base64: got {counted}"
+    );
+}
+
 #[test]
 fn screenshot_without_src_keeps_inline_base64() {
     // If the on-disk save failed there's no `src`, so the body is the only
@@ -1961,7 +2035,7 @@ impl StreamingApiClient for CapturingApi {
             system_prompt: request.system_prompt.map(str::to_string),
             temperature: request.temperature,
             max_output_tokens: request.max_output_tokens,
-            thinking_enabled: request.thinking_enabled,
+            thinking_enabled: request.reasoning.enabled,
             model: request.model.to_string(),
         });
         Ok(turn_usage(assistant_text("ok"), "end_turn"))
@@ -2009,7 +2083,7 @@ async fn run_turn_forwards_system_prompt_max_tokens_thinking_into_api_request() 
         RuntimeConfig {
             system_prompt: Some("YOU ARE THE AURORA SYSTEM PROMPT".into()),
             default_max_output_tokens: 1234,
-            thinking_enabled: true,
+            reasoning: crate::agent_runtime::api_client::ReasoningConfig::legacy(true, None),
             default_temperature: Some(0.0),
             ..RuntimeConfig::default()
         },
@@ -2055,34 +2129,48 @@ impl StreamingApiClient for CapturingMessagesApi {
 }
 
 #[test]
-fn the_task_reminder_rides_on_the_latest_user_message() {
+fn volatile_context_rides_as_its_own_message_at_the_tail() {
     // The opposite placement from the repo map, for the opposite reason:
-    // this list changes every few tool calls, so at the head it would
-    // rewrite the cached prefix and re-bill the whole conversation.
-    let msgs = vec![
-        ConversationMessage::user_text("first question", 0),
-        ConversationMessage::user_text("second question", 1),
-    ];
-    let out = inject_task_reminder(
-        &msgs,
-        "<aurora_task_reminder>\n- [ ] t1 Do it (pending)\n</aurora_task_reminder>",
-    );
+    // the checklist and the IDE context change mid-turn, and spliced into
+    // any EXISTING message they rewrite bytes inside the provider's cached
+    // prefix — measured as the whole conversation re-billing as fresh
+    // input on every checklist update. As their own message at the end,
+    // a change touches nothing that was already cached.
+    let tail = trailing_context_message(
+        Some("OPEN_FILE: src/main.rs"),
+        Some("<aurora_task_reminder>\n- [ ] t1 Do it (pending)\n</aurora_task_reminder>"),
+    )
+    .expect("both blocks present produces a message");
 
-    let head = match &out[0].blocks[0] {
+    assert_eq!(tail.role, MessageRole::User);
+    let text = match &tail.blocks[0] {
         ContentBlock::Text { text } => text.clone(),
         other => panic!("expected text, got {other:?}"),
     };
+    assert!(text.starts_with("<aurora_runtime_state>"), "{text}");
+    assert!(text.contains("<ide_context>"), "{text}");
+    assert!(text.contains("OPEN_FILE: src/main.rs"), "{text}");
+    assert!(text.contains("<aurora_task_reminder>"), "{text}");
+
+    // The tail is the most recent USER message the model sees, and a user
+    // message carrying no request reads as the user having asked for nothing.
+    // Thread `d394396f` at 01:34:26 answered this block instead of the
+    // question above it ("No new task or question was included"), so the
+    // envelope has to disown itself in as many words.
+    assert!(text.contains("NOT from the user"), "{text}");
+    assert!(text.contains("NOT a new request"), "{text}");
+    assert!(text.contains("Do not reply to it"), "{text}");
     assert!(
-        !head.contains("aurora_task_reminder"),
-        "older messages stay untouched, or the cached prefix moves: {head}"
+        text.contains("user's most recent message above"),
+        "the block must point back at the real turn: {text}"
     );
 
-    let last = match &out[1].blocks[0] {
-        ContentBlock::Text { text } => text.clone(),
-        other => panic!("expected text, got {other:?}"),
-    };
-    assert!(last.starts_with("second question"), "{last}");
-    assert!(last.contains("<aurora_task_reminder>"), "{last}");
+    // Either block alone still produces a message; neither produces none.
+    assert!(trailing_context_message(Some("ctx"), None).is_some());
+    assert!(trailing_context_message(None, Some("reminder")).is_some());
+    assert!(trailing_context_message(None, None).is_none());
+    // Empty strings count as absent — an empty tail message is pure cost.
+    assert!(trailing_context_message(Some(""), Some("")).is_none());
 }
 
 #[test]
@@ -2219,7 +2307,9 @@ async fn run_turn_wraps_user_message_with_ide_context_for_api_only() {
         .await
         .expect("ok");
 
-    // API saw the user message wrapped with the ide_context block.
+    // API saw the ide_context as its own trailing user message — at the
+    // absolute end, past everything the provider may have cached — and the
+    // user's own message stayed byte-identical.
     let captured = captured.lock().expect("captured mutex");
     let captured = captured.as_ref().expect("api was called");
     let api_user = captured
@@ -2228,17 +2318,28 @@ async fn run_turn_wraps_user_message_with_ide_context_for_api_only() {
         .expect("api saw a user message");
     match &api_user.blocks[0] {
         ContentBlock::Text { text } => {
+            assert_eq!(
+                text, "hello, agent",
+                "the user's message must not be rewritten — that is the cached prefix"
+            );
+        }
+        other => panic!("expected Text, got {other:?}"),
+    }
+    let tail = captured.last().expect("api saw messages");
+    assert_eq!(
+        tail.role,
+        MessageRole::User,
+        "context tail is a user message"
+    );
+    match &tail.blocks[0] {
+        ContentBlock::Text { text } => {
             assert!(
                 text.contains("<ide_context>"),
-                "API user must include ide_context wrapper, got: {text}"
+                "tail must carry the ide_context wrapper, got: {text}"
             );
             assert!(
                 text.contains("OPEN_FILE: src/main.rs"),
-                "API user must include ide_context body, got: {text}"
-            );
-            assert!(
-                text.contains("hello, agent"),
-                "API user must still include the original message, got: {text}"
+                "tail must carry the ide_context body, got: {text}"
             );
         }
         other => panic!("expected Text, got {other:?}"),
@@ -2971,7 +3072,7 @@ impl StreamingApiClient for CacheKeyRecordingApi {
         self.seen.lock().expect("seen").push((
             request.system_prompt.map(str::to_string),
             request.tools.len(),
-            request.thinking_enabled,
+            request.reasoning.enabled,
             request.messages.len(),
         ));
         Ok(turn_usage(assistant_text(&self.reply), "end_turn"))
@@ -3008,7 +3109,7 @@ async fn summarizing_on_the_chat_model_reuses_its_prompt_prefix() {
         RuntimeConfig {
             system_prompt: Some("you are aurora".into()),
             context_window: Some(4000),
-            thinking_enabled: true,
+            reasoning: crate::agent_runtime::api_client::ReasoningConfig::legacy(true, None),
             ..RuntimeConfig::default()
         },
     );
@@ -3050,7 +3151,7 @@ async fn a_pinned_model_sends_the_lean_request_instead() {
         RuntimeConfig {
             system_prompt: Some("you are aurora".into()),
             context_window: Some(4000),
-            thinking_enabled: true,
+            reasoning: crate::agent_runtime::api_client::ReasoningConfig::legacy(true, None),
             ..RuntimeConfig::default()
         },
     )
@@ -4535,4 +4636,89 @@ async fn run_turn_does_not_trim_when_context_window_is_none() {
     assert_eq!(sys.as_deref(), Some("you are aurora"));
     // All 5 messages (4 seeded + the new user) reach the API.
     assert_eq!(msgs.len(), 5, "no trim → full session sent");
+}
+
+/// The call site for `Session::resync_journal`.
+///
+/// `session.rs` proves the mechanism — desync, rewrite, appends resume. This
+/// proves `compact_inner` actually invokes it, which is the half that decides
+/// whether a real turn is recoverable. Delete the `resync_journal` call in
+/// `compaction.rs` and this fails on the line count below.
+///
+/// The bug it guards: measured 2026-08-27, a compaction inserted its marker at
+/// line 122 of a 137-line file and the journal went silent for the remaining
+/// six minutes of the turn — forty messages, six of them file writes and
+/// edits, held in nothing but RAM.
+#[tokio::test]
+async fn compaction_rewrites_the_journal_so_the_rest_of_the_turn_is_recoverable() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("t.jsonl");
+
+    // One scripted turn: the summarizer's reply.
+    let api = Arc::new(MockApi::new(vec![TurnScript {
+        events: vec![],
+        result: Ok(turn_usage(
+            assistant_text("A note about everything above."),
+            "end_turn",
+        )),
+    }]));
+
+    let runtime = ConversationRuntime::new(
+        api,
+        Arc::new(ToolRegistry::new()),
+        RuntimeConfig {
+            // Small window and a low bar, so the seeded history is over the
+            // line and compaction is guaranteed to run.
+            context_window: Some(1_000),
+            compaction_threshold: Some(0.01),
+            ..RuntimeConfig::default()
+        },
+    );
+
+    let mut session = Session::new("t");
+    session.model = Some("test-model".into());
+    session.attach_journal(&path, 0);
+    // Enough history for the cut to have something on both sides of it.
+    for i in 0..12 {
+        session.append_message(user_msg(&format!("question {i} {}", "padding ".repeat(40))));
+        session.append_message(assistant_text(&format!("answer {i}")));
+    }
+    let before_lines = std::fs::read_to_string(&path)
+        .expect("journal")
+        .lines()
+        .count();
+    assert_eq!(before_lines, 24, "the journal kept up until compaction");
+
+    let (tx, _rx) = mpsc::channel(64);
+    let mut seq = 0u64;
+    runtime
+        .maybe_compact(
+            &mut session,
+            "turn-1",
+            &mut seq,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    // The marker went in mid-history, so without the rewrite the file would
+    // still hold 24 lines while memory holds 25.
+    assert_eq!(session.len(), 25, "a marker was inserted");
+    let on_disk = std::fs::read_to_string(&path).expect("journal");
+    assert_eq!(
+        on_disk.lines().count(),
+        25,
+        "compaction must rewrite the file, not leave it a message behind"
+    );
+
+    // And the journal is live again for the rest of the turn — the actual point.
+    session.append_message(assistant_text("post-compaction work"));
+    let recovered = Session::load_from_path("t", &path).expect("load");
+    assert_eq!(recovered.len(), 26);
+    assert!(
+        std::fs::read_to_string(&path)
+            .expect("journal")
+            .contains("post-compaction work"),
+        "appends must resume immediately, not wait for the end-of-turn save"
+    );
 }

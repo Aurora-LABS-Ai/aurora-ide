@@ -22,9 +22,9 @@
  * thinking / effort / fast the turn wants.
  *
  * Composition is checked against the account's real catalogue, never assumed.
- * A model with no `-fast` twin must not be sent `-fast` — that id 404s at
- * request time, which surfaces to the user as a failed turn with no
- * explanation. {@link cursorWireModel} degrades through what exists instead.
+ * A model with no `-fast` twin must not be sent `-fast`: that id fails at
+ * request time. Unsupported combinations fail before a turn starts instead of
+ * silently changing an effort, thinking mode, or speed choice.
  */
 
 import type { CursorModelView } from "./cursor";
@@ -128,105 +128,247 @@ export function composeCursorVariant(
 
 // ── The account's real catalogue ─────────────────────────────────────────────
 
+interface IndexedCursorVariant {
+  modelId: string;
+  parts: CursorVariantParts;
+}
+
 /**
- * Which ids the account actually carries, keyed by stem.
+ * Every real id the account carries, keyed by stable stem.
  *
- * Module-level rather than React state because {@link cursorWireModel} is
- * called from the send path, which is not a component and must stay
- * synchronous — an `await` there would put an IPC round-trip in front of every
- * turn and force two more call sites to become async.
- *
- * Empty until {@link primeCursorVariants} runs. An empty index is not an error
- * state: composition falls back to the id the user picked, which is always a
- * real one because it came from this same catalogue.
+ * The value keeps parsed parts instead of just an id set. Cursor writes
+ * modifiers in more than one order, so composing a preferred order and looking
+ * for that spelling can miss a real variant. Resolution compares the semantic
+ * tuple and returns the exact id Cursor supplied.
  */
-let index = new Map<string, Set<string>>();
+let index = new Map<string, IndexedCursorVariant[]>();
+
+/**
+ * Where the id list is mirrored so the index can outlive the module.
+ *
+ * Module-level state does not survive a Vite HMR update — a change to this
+ * file re-evaluates it and `index` comes back empty — and nothing re-primes it
+ * until the next catalogue sync, which only runs at window start-up. So during
+ * development the index could sit empty for an entire session, and every turn
+ * in that window composed an id it could not confirm.
+ *
+ * The same gap exists in production, just narrower: between the window opening
+ * and the first sync completing. Mirroring the list makes the index available
+ * immediately in both cases, from the last catalogue the account reported.
+ */
+const VARIANT_IDS_KEY = "agw:cursor-variant-ids";
 
 /** Replace the index with what the account currently carries. */
 export function primeCursorVariants(models: CursorModelView[]): void {
-  const next = new Map<string, Set<string>>();
-  for (const model of models) {
-    const { stem } = splitCursorVariant(model.modelId);
-    const bucket = next.get(stem);
-    if (bucket) bucket.add(model.modelId);
-    else next.set(stem, new Set([model.modelId]));
+  index = buildIndex(models.map((model) => model.modelId));
+  hydrated = true;
+  try {
+    localStorage.setItem(
+      VARIANT_IDS_KEY,
+      JSON.stringify(models.map((model) => model.modelId)),
+    );
+  } catch {
+    // Storage blocked or full. The in-memory index still holds for this
+    // session, which is the case that matters most.
   }
-  index = next;
 }
+
+/**
+ * Whether the mirror has been consulted yet.
+ *
+ * Distinct from "the index is empty": an account with no models is a real
+ * state, and re-reading storage on every lookup for it would be waste.
+ */
+let hydrated = false;
 
 /** Forget the catalogue — on disconnect, so a stale index can't outlive it. */
 export function clearCursorVariants(): void {
   index = new Map();
+  // Deliberately marked hydrated: disconnecting means "there is no catalogue",
+  // and re-reading the mirror would resurrect the one just discarded.
+  hydrated = true;
+  try {
+    localStorage.removeItem(VARIANT_IDS_KEY);
+  } catch {
+    // Nothing to do — the in-memory index is already empty.
+  }
 }
 
 /** Test seam. */
 export function cursorVariantIndexSize(): number {
+  ensureHydrated();
   return index.size;
 }
 
-function exists(stem: string, id: string): boolean {
-  return index.get(stem)?.has(id) ?? false;
+/** Test seam: forget memory so the next read must hydrate from the mirror. */
+export function resetCursorVariantHydration(): void {
+  index = new Map();
+  hydrated = false;
+}
+
+function buildIndex(modelIds: Iterable<string>): Map<string, IndexedCursorVariant[]> {
+  const next = new Map<string, IndexedCursorVariant[]>();
+  for (const modelId of modelIds) {
+    const parts = splitCursorVariant(modelId);
+    const variant = { modelId, parts };
+    const bucket = next.get(parts.stem);
+    if (bucket) bucket.push(variant);
+    else next.set(parts.stem, [variant]);
+  }
+  return next;
+}
+
+function ensureHydrated(): void {
+  if (!hydrated) hydrateFromMirror();
+}
+
+/** Rebuild the index from the last catalogue this browser saw. */
+function hydrateFromMirror(): void {
+  hydrated = true;
+  try {
+    const raw = localStorage.getItem(VARIANT_IDS_KEY);
+    if (!raw) return;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    index = buildIndex(parsed.filter((id): id is string => typeof id === "string" && id.length > 0));
+  } catch {
+    // A corrupt mirror is the same as no catalogue. Resolution fails closed
+    // until the normal account sync primes a fresh one.
+  }
 }
 
 // ── Composition ──────────────────────────────────────────────────────────────
 
 export interface CursorRunOptions {
-  /** Insert `-thinking`. Ignored when the model has no thinking variant. */
+  /** Whether the exact run must use a thinking variant. */
   thinking?: boolean;
   /** Effort tier. `null` for models whose ids carry none. */
   effort?: CursorEffort | string | null;
-  /** Append `-fast`. Ignored when the model has no fast twin. */
+  /** Whether the exact run must use Cursor's Fast lane. */
   fast?: boolean;
 }
 
-/**
- * The id to actually send for a picked model run a particular way.
- *
- * `picked` is a real id from the catalogue (it is what the model row stores),
- * so its own parts are the fallback for anything asked for that does not
- * exist. The chain gives up one request at a time, weakest wish first:
- *
- *   1. exactly what was asked for
- *   2. …without Fast (a model with no fast twin still runs, just not fast)
- *   3. …falling back to the effort the picked id already carries
- *   4. …without thinking
- *   5. the picked id, untouched
- *
- * Never invents an id: every step but the last is checked against the account.
- */
-export function cursorWireModel(picked: string, options: CursorRunOptions = {}): string {
-  const own = splitCursorVariant(picked);
-  const { stem } = own;
-
-  const thinking = options.thinking ?? own.thinking;
-  const effort = options.effort === undefined ? own.effort : options.effort;
-  const fast = options.fast ?? own.fast;
-
-  const attempts: Array<{ thinking: boolean; effort: CursorEffort | string | null; fast: boolean }> = [
-    { thinking, effort, fast },
-    { thinking, effort, fast: false },
-    { thinking, effort: own.effort, fast },
-    { thinking, effort: own.effort, fast: false },
-    { thinking: false, effort, fast },
-    { thinking: false, effort: own.effort, fast: false },
-  ];
-
-  for (const attempt of attempts) {
-    const candidate = composeCursorVariant(stem, attempt);
-    if (exists(stem, candidate)) return candidate;
-  }
-  return picked;
+export interface CursorVariantCapabilities {
+  stem: string;
+  efforts: CursorEffort[];
+  hasThinking: boolean;
+  thinkingOnly: boolean;
+  hasFast: boolean;
 }
 
-/** Whether this model has a `-fast` twin — what greys out the Fast control. */
-export function cursorHasFast(picked: string, options: CursorRunOptions = {}): boolean {
-  const own = splitCursorVariant(picked);
-  const thinking = options.thinking ?? own.thinking;
-  const effort = options.effort === undefined ? own.effort : options.effort;
-  return (
-    exists(own.stem, composeCursorVariant(own.stem, { thinking, effort, fast: true })) ||
-    exists(own.stem, composeCursorVariant(own.stem, { ...own, fast: true }))
+/** Capability summary from the same exact variants used for send resolution. */
+export function cursorVariantCapabilities(picked: string): CursorVariantCapabilities | null {
+  ensureHydrated();
+  const { stem } = splitCursorVariant(picked);
+  const variants = index.get(stem);
+  if (!variants?.length) return null;
+  const efforts = CURSOR_EFFORTS.filter((effort) =>
+    variants.some((variant) => variant.parts.effort === effort),
   );
+  const hasThinking = variants.some((variant) => variant.parts.thinking);
+  return {
+    stem,
+    efforts,
+    hasThinking,
+    thinkingOnly: hasThinking && variants.every((variant) => variant.parts.thinking),
+    hasFast: variants.some((variant) => variant.parts.fast),
+  };
+}
+
+export type CursorVariantFailureReason =
+  | "catalogue_unavailable"
+  | "unknown_model"
+  | "unsupported_combination";
+
+export type CursorVariantResolution =
+  | {
+      ok: true;
+      stem: string;
+      wireModel: string;
+      run: CursorVariantParts;
+    }
+  | {
+      ok: false;
+      stem: string;
+      reason: CursorVariantFailureReason;
+      requested: CursorVariantParts;
+    };
+
+function sameRun(
+  parts: CursorVariantParts,
+  requested: Pick<CursorVariantParts, "thinking" | "effort" | "fast">,
+): boolean {
+  return (
+    parts.thinking === requested.thinking &&
+    parts.effort === requested.effort &&
+    parts.fast === requested.fast
+  );
+}
+
+/** Resolve exactly one account-backed wire id. No guessing and no downgrades. */
+export function resolveCursorVariant(
+  picked: string,
+  options: CursorRunOptions = {},
+): CursorVariantResolution {
+  ensureHydrated();
+  const own = splitCursorVariant(picked);
+  const { stem } = own;
+  const requested: CursorVariantParts = {
+    stem,
+    thinking: options.thinking ?? own.thinking,
+    effort: (options.effort === undefined ? own.effort : options.effort) as CursorEffort | null,
+    fast: options.fast ?? own.fast,
+  };
+  const variants = index.get(stem);
+  if (!variants?.length) {
+    return {
+      ok: false,
+      stem,
+      reason: index.size === 0 ? "catalogue_unavailable" : "unknown_model",
+      requested,
+    };
+  }
+  const match = variants.find((variant) => sameRun(variant.parts, requested));
+  if (!match) {
+    return { ok: false, stem, reason: "unsupported_combination", requested };
+  }
+  return { ok: true, stem, wireModel: match.modelId, run: match.parts };
+}
+
+/**
+ * Convenience for request builders that need a string. Errors contain a calm,
+ * recoverable message suitable for a provider test or chat failure card.
+ */
+export function cursorWireModel(picked: string, options: CursorRunOptions = {}): string {
+  const resolved = resolveCursorVariant(picked, options);
+  if (resolved.ok) return resolved.wireModel;
+  throw new Error(cursorVariantFailureMessage(resolved));
+}
+
+export function cursorVariantFailureMessage(
+  failure: Extract<CursorVariantResolution, { ok: false }>,
+): string {
+  if (failure.reason === "catalogue_unavailable") {
+    return "Cursor's model catalogue is not ready. Reload Cursor models in Settings, then try again.";
+  }
+  if (failure.reason === "unknown_model") {
+    return `Cursor no longer offers ${failure.stem}. Reload its model catalogue and choose an available model.`;
+  }
+  const choices = [
+    failure.requested.thinking ? "thinking" : null,
+    failure.requested.effort ? `${failure.requested.effort} effort` : null,
+    failure.requested.fast ? "Fast" : null,
+  ].filter((choice): choice is string => choice !== null);
+  const run = choices.length > 0 ? choices.join(", ") : "the selected settings";
+  return `Cursor does not offer ${failure.stem} with ${run}. Change the model settings and try again.`;
+}
+
+/** Whether Fast exists for this exact thinking and effort combination. */
+export function cursorHasFast(
+  picked: string,
+  options: Omit<CursorRunOptions, "fast"> = {},
+): boolean {
+  return resolveCursorVariant(picked, { ...options, fast: true }).ok;
 }
 
 // ── Grouping a catalogue into pickable models ────────────────────────────────
@@ -237,7 +379,7 @@ export interface CursorRunnableModel {
   /** models.dev key — `grok-4.6`. `null` for `auto`. */
   catalogKey: string | null;
   label: string;
-  /** The id the model row stores: preferred effort, no fast, no thinking. */
+  /** Real raw id used to choose the row's initial effort and thinking defaults. */
   representativeId: string;
   /** Every id under this model — what a bulk enable/disable writes. */
   variantIds: string[];
@@ -271,6 +413,25 @@ const PREFERRED_EFFORTS: CursorEffort[] = ["high", "medium", "xhigh", "low", "ma
  * carrying different prefixes must not be merged into a row that can only
  * address one of them.
  */
+/**
+ * Whether this model reasons at all.
+ *
+ * Cursor says so in two ways, and only one of them uses the word. A model with
+ * `-thinking` ids obviously reasons — but so does one whose ids are
+ * `-low`/`-medium`/`-high`/`-xhigh`, because on this wire an effort tier IS the
+ * reasoning control; there is no separate field for it. Reading only the first
+ * left Grok, four tiers deep, marked as a model that does not think, sitting
+ * directly beneath a Claude row that does.
+ *
+ * `none` is a real tier meaning reasoning off, so a model offering only that
+ * one is not a reasoning model.
+ */
+export function cursorReasons(
+  model: Pick<CursorRunnableModel, "hasThinking" | "efforts">,
+): boolean {
+  return model.hasThinking || model.efforts.some((tier) => tier !== "none");
+}
+
 export function toRunnableModels(models: CursorModelView[]): CursorRunnableModel[] {
   const byStem = new Map<string, { parts: CursorVariantParts; view: CursorModelView }[]>();
 

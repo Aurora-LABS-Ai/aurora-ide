@@ -98,29 +98,35 @@ pub(super) fn generate_turn_id() -> String {
 
 /// Spawn a task that drains `api_rx` into `event_sink`, wrapping
 /// each [`AssistantEvent`] in an [`AgentEventEnvelope`] with a
-/// monotonic sequence number that starts at `start_seq`. Returns a
-/// `JoinHandle<u64>` whose final `u64` is the next sequence number to
-/// hand back to the runtime.
+/// monotonic sequence number drawn from `seq`.
+///
+/// The counter is shared rather than owned because a bidirectional provider
+/// runs its tools **while this forwarder is still streaming** (see
+/// [`crate::agent_runtime::tool_bridge`]). Two independent counters starting
+/// from the same number would hand the same `seq` to a text delta and to a
+/// tool card, and the frontend orders on it — the reply would render
+/// interleaved with itself. One counter, drawn from by both, keeps a single
+/// order over everything the turn emits.
+///
+/// The returned handle resolves once `api_rx` closes; read `seq` afterwards
+/// for the next number.
 pub(super) fn spawn_event_forwarder(
     turn_id: String,
-    start_seq: u64,
+    seq: Arc<AtomicU64>,
     mut api_rx: mpsc::Receiver<AssistantEvent>,
     event_sink: mpsc::Sender<AgentEventEnvelope>,
-) -> tokio::task::JoinHandle<u64> {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut seq = start_seq;
         while let Some(event) = api_rx.recv().await {
             let envelope = AgentEventEnvelope {
                 turn_id: turn_id.clone(),
-                seq,
+                seq: seq.fetch_add(1, AtomicOrdering::Relaxed),
                 event,
             };
-            seq = seq.saturating_add(1);
             if event_sink.send(envelope).await.is_err() {
                 // Caller dropped the receiver — stop forwarding.
                 break;
             }
         }
-        seq
     })
 }

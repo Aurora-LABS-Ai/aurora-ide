@@ -8,9 +8,16 @@
  *
  * All toggles read/write the shared `useSettingsStore` so they persist and stay
  * in lockstep with the IDE.
+ *
+ * Divided into categories the way Appearance is, and for the same reason: the
+ * page had grown to ten blocks on one scroll, so the thing you came to change
+ * was somewhere below the fold behind four things you did not. The tab bar,
+ * the persisted selection, the arrow-key movement and the search behaviour all
+ * mirror `AppearanceSettings` exactly — two settings pages that look divided
+ * the same way but behave differently would be worse than one long scroll.
  */
 
-import React from "react";
+import React, { useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { useSettingsStore, type TitleMakerMode } from "@/kernel/store/useSettingsStore";
@@ -43,7 +50,30 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./primitives";
+import { useSettingsQuery } from "./settings-search";
+import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { useAgentUiStore, type PreferencesTab } from "@/apps/agent/store/ui/useAgentUiStore";
 import { SpeechSettings } from "./SpeechSettings";
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+
+/**
+ * Three categories, split by what you are actually changing:
+ *
+ * - **General** — the app around the window: what opens on launch, how you
+ *   reach the command center.
+ * - **Composer** — every way words get into the message box, typed or spoken,
+ *   and the local model that helps with them.
+ * - **Chat** — the conversation itself: how it is named, how it tells you it
+ *   is done, how a reply is laid out.
+ *
+ * The order is the order of use: you launch, you write, you read.
+ */
+const TABS: { id: PreferencesTab; label: string; icon: AgentIconName }[] = [
+  { id: "general", label: "General", icon: "settings" },
+  { id: "composer", label: "Composer", icon: "send" },
+  { id: "chat", label: "Chat", icon: "chat" },
+];
 
 export const PreferencesSettings: React.FC = () => {
   const notifyOnTurnComplete = useSettingsStore((s) => s.notifyOnTurnComplete);
@@ -175,8 +205,93 @@ export const PreferencesSettings: React.FC = () => {
     if (typeof sel === "string") setModelPath(sel);
   };
 
+  // Persisted, so reopening Preferences returns to the category last worked in
+  // rather than to the top of the page.
+  const storedTab = useAgentUiStore((s) => s.preferencesTab);
+  const setTab = useAgentUiStore((s) => s.setPreferencesTab);
+  // A persisted value survives a rename or removal of the tab it names, and an
+  // id no section answers to renders a page with nothing on it. Fall back
+  // rather than show an empty Preferences.
+  const tab = TABS.some((t) => t.id === storedTab) ? storedTab : "general";
+
+  // A query turns the tabs off entirely rather than filtering within one: the
+  // sections hide themselves when they do not match, so rendering all of them
+  // is what lets a search for "chapters" find a switch two tabs away.
+  const searching = useSettingsQuery().length > 0;
+  const shows = (id: PreferencesTab) => searching || tab === id;
+
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Switch category and return to the top of the page.
+   *
+   * Without the scroll, leaving a long tab part-way down lands the next one at
+   * whatever offset the last one was at — a category that opens half-read, with
+   * its heading already off screen.
+   */
+  const selectTab = (next: PreferencesTab) => {
+    setTab(next);
+    tabsRef.current?.closest(".agw-settings-content")?.scrollTo({ top: 0 });
+  };
+
+  const onTabKeys = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const index = TABS.findIndex((t) => t.id === tab);
+    if (index < 0) return;
+    const step = e.key === "ArrowRight" ? 1 : TABS.length - 1;
+    selectTab(TABS[(index + step) % TABS.length].id);
+    e.preventDefault();
+  };
+
   return (
     <div className="agw-set-wide">
+      {/* Category tabs. Hidden while searching — see `searching` above. */}
+      {!searching && (
+        <div
+          ref={tabsRef}
+          className="agw-set-tabs"
+          role="tablist"
+          aria-label="Preferences categories"
+          onKeyDown={onTabKeys}
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              id={`agw-pref-tab-${t.id}`}
+              aria-selected={t.id === tab}
+              aria-controls={`agw-pref-panel-${t.id}`}
+              // Only the selected tab is in the tab order; the arrow keys move
+              // between them, which is what a tablist is expected to do.
+              tabIndex={t.id === tab ? 0 : -1}
+              className="agw-set-tab"
+              data-selected={t.id === tab || undefined}
+              onClick={() => selectTab(t.id)}
+            >
+              <AgentIcon name={t.icon} size={14} />
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div
+        // Carries the column gap `.agw-set-wide` would have applied directly to
+        // the sections, which this wrapper now sits between.
+        className="agw-set-tabpanel"
+        // One panel wrapper per rendered tab so the relationship the tabs
+        // announce actually exists in the a11y tree. While searching there is
+        // no selected tab, so the panel is a plain container.
+        {...(searching
+          ? {}
+          : {
+              role: "tabpanel",
+              id: `agw-pref-panel-${tab}`,
+              "aria-labelledby": `agw-pref-tab-${tab}`,
+            })}
+      >
+      {shows("general") && (
       <SettingsSection
         icon="external"
         title="Startup"
@@ -205,29 +320,9 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
       </SettingsSection>
+      )}
 
-      <SettingsSection
-        icon="send"
-        title="Composer"
-        description="How the message input's controls are arranged. Agent / Plan mode now lives inside the model picker."
-      >
-        <SettingsRow
-          last
-          label="Model selector position"
-          hint="Put the model picker in the top control row or the bottom action row."
-        >
-          <AgwSegmented<"top" | "bottom">
-            value={modelSelectorPosition}
-            ariaLabel="Model selector position"
-            options={[
-              { value: "top", label: "Top" },
-              { value: "bottom", label: "Bottom" },
-            ]}
-            onChange={setModelSelectorPosition}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
+      {shows("general") && (
       <SettingsSection
         icon="search"
         title="Command center"
@@ -264,7 +359,38 @@ export const PreferencesSettings: React.FC = () => {
           </button>
         </SettingsRow>
       </SettingsSection>
+      )}
 
+      {shows("composer") && (
+      <SettingsSection
+        icon="send"
+        // Not "Composer": this sits inside the Composer tab, and a section
+        // sharing its tab's name reads as the whole tab rather than as the one
+        // thing in it — where the controls sit.
+        title="Controls"
+        // Names the composer, so a search for it still lands here now that the
+        // section itself is no longer called that.
+        description="How the composer's controls are arranged. Agent / Plan mode now lives inside the model picker."
+      >
+        <SettingsRow
+          last
+          label="Model selector position"
+          hint="Put the model picker in the top control row or the bottom action row."
+        >
+          <AgwSegmented<"top" | "bottom">
+            value={modelSelectorPosition}
+            ariaLabel="Model selector position"
+            options={[
+              { value: "top", label: "Top" },
+              { value: "bottom", label: "Bottom" },
+            ]}
+            onChange={setModelSelectorPosition}
+          />
+        </SettingsRow>
+      </SettingsSection>
+      )}
+
+      {shows("composer") && (
       <SettingsSection
         icon="type"
         title="Typing assistance"
@@ -315,12 +441,15 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
       </SettingsSection>
+      )}
 
       {/* Voice sits next to typing: both are ways of getting words into the
-          composer. The dictation-polish toggle that consumes it lives further
-          down under "Composer assists", with the other refine-model options. */}
-      <SpeechSettings />
+          composer, which is also why they share a tab. The dictation-polish
+          toggle that consumes it lives further down under "Composer assists",
+          with the other refine-model options. */}
+      {shows("composer") && <SpeechSettings />}
 
+      {shows("composer") && (
       <SettingsSection
         icon="refine"
         title="Prompt refine"
@@ -427,7 +556,9 @@ export const PreferencesSettings: React.FC = () => {
           </>
         )}
       </SettingsSection>
+      )}
 
+      {shows("composer") && (
       <SettingsSection
         icon="refine"
         title="Composer assists"
@@ -462,7 +593,9 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
       </SettingsSection>
+      )}
 
+      {shows("chat") && (
       <SettingsSection
         icon="message"
         title="Chat titles"
@@ -551,7 +684,9 @@ export const PreferencesSettings: React.FC = () => {
           </>
         )}
       </SettingsSection>
+      )}
 
+      {shows("chat") && (
       <SettingsSection
         icon="chat"
         title="Chat status & cues"
@@ -580,7 +715,9 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
       </SettingsSection>
+      )}
 
+      {shows("chat") && (
       <SettingsSection
         icon="message"
         title="Transcript"
@@ -624,6 +761,8 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
       </SettingsSection>
+      )}
+      </div>
     </div>
   );
 };

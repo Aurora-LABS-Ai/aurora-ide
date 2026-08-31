@@ -54,7 +54,9 @@ fn auth_file_path() -> Result<PathBuf, String> {
         .ok_or_else(|| "Could not resolve the home directory.".to_string())
 }
 
-fn read_auth_value() -> Result<Option<Value>, String> {
+/// Read Codex CLI's own file. Only an import source now — see
+/// [`read_auth_value`].
+fn read_cli_auth_value() -> Result<Option<Value>, String> {
     let path = auth_file_path()?;
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
@@ -66,7 +68,7 @@ fn read_auth_value() -> Result<Option<Value>, String> {
         .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))
 }
 
-fn write_auth_value(value: &Value) -> Result<(), String> {
+fn write_cli_auth_value(value: &Value) -> Result<(), String> {
     let path = auth_file_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -76,6 +78,89 @@ fn write_auth_value(value: &Value) -> Result<(), String> {
         .map_err(|err| format!("Failed to serialize credentials: {err}"))?;
     std::fs::write(&path, rendered)
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))
+}
+
+/// The credentials the next request should use.
+///
+/// Aurora's own account list wins when it has anything in it; Codex CLI's
+/// `auth.json` is the fallback, which is what makes this change invisible to
+/// someone with one account who never opens the switcher. Everything
+/// downstream — `status`, `fresh_access`, the refresh race handling — is
+/// unchanged, because an account stores the identical value shape.
+fn read_auth_value() -> Result<Option<Value>, String> {
+    let store = super::accounts::load();
+    if let Some(active) = store.active(chrono::Utc::now().timestamp_millis()) {
+        return Ok(Some(active.auth.clone()));
+    }
+    read_cli_auth_value()
+}
+
+/// Persist a rotated token pair.
+///
+/// Routed by the account id **inside the value**, not by whichever account is
+/// active right now: a refresh that started before a failover has to land on
+/// the account it was actually for, or it would overwrite the credentials of
+/// the account that just took over.
+fn write_auth_value(value: &Value) -> Result<(), String> {
+    if let Some(account_id) = identity_of(value) {
+        if super::accounts::load().get(&account_id).is_some() {
+            return super::accounts::write_auth_for(&account_id, value.clone());
+        }
+    }
+    write_cli_auth_value(value)
+}
+
+/// Stable identity for one set of credentials.
+pub(super) fn identity_of(auth: &Value) -> Option<String> {
+    let tokens = auth.get("tokens");
+    if let Some(id) = tokens
+        .and_then(|t| t.get("account_id"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(id.to_string());
+    }
+    let id_token = tokens
+        .and_then(|t| t.get("id_token"))
+        .and_then(Value::as_str)?;
+    account_id_from_claims(&jwt_claims(id_token)?)
+}
+
+/// Email and plan for the account list, straight from the id token.
+pub(super) fn display_of(auth: &Value) -> (Option<String>, Option<String>) {
+    let Some(id_token) = auth
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(Value::as_str)
+    else {
+        return (None, None);
+    };
+    let Some(claims) = jwt_claims(id_token) else {
+        return (None, None);
+    };
+    (
+        claim_str(&claims, "email"),
+        openai_auth_claims(&claims).and_then(|a| claim_str(a, "chatgpt_plan_type")),
+    )
+}
+
+/// Copy whatever Codex CLI is signed into onto Aurora's list, without
+/// disturbing the CLI. Returns the account id.
+pub fn import_from_cli() -> Result<String, String> {
+    let auth = read_cli_auth_value()?
+        .ok_or("Codex CLI is not signed in on this machine (no ~/.codex/auth.json).")?;
+    if auth
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(Value::as_str)
+        .is_none()
+    {
+        return Err(
+            "Codex CLI is in API-key mode, not signed in to ChatGPT — nothing to import."
+                .to_string(),
+        );
+    }
+    super::accounts::upsert(auth)
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +279,19 @@ pub fn status() -> Result<CodexAuthStatus, String> {
     })
 }
 
-/// Remove the shared credential file. This signs out Codex CLI on this
-/// machine as well — the UI must say so before calling.
+/// Sign out of the account currently serving requests.
+///
+/// This used to `remove_file` Codex CLI's own `auth.json`, so signing out of
+/// Codex in Aurora signed the user out of the CLI too — on a machine where
+/// both are used daily, that is someone else's credentials being deleted by a
+/// button that does not say so. Now it only drops Aurora's own entry. The CLI
+/// file is deleted only in the legacy case where Aurora has no list of its own
+/// and that file genuinely IS the credential Aurora was using.
 pub fn logout() -> Result<(), String> {
+    let store = super::accounts::load();
+    if let Some(active) = store.active(chrono::Utc::now().timestamp_millis()) {
+        return super::accounts::remove(&active.account_id);
+    }
     let path = auth_file_path()?;
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
@@ -303,6 +398,51 @@ pub async fn fresh_access(force: bool) -> Result<CodexAccess, String> {
             ))
         }
     }
+}
+
+/// A valid access token for ONE named account, refreshing if needed.
+///
+/// [`fresh_access`] answers "who is serving requests right now"; this answers
+/// "this specific account", which is what the switcher needs to show four
+/// usage bars without making any of them the active one. Refreshing as a side
+/// effect is deliberate and free: the card is usually the first thing opened
+/// after a break, so the accounts are warm by the time one is picked.
+pub async fn fresh_access_for(account_id: &str, force: bool) -> Result<CodexAccess, String> {
+    let read = |id: &str| -> Result<Value, String> {
+        super::accounts::load()
+            .get(id)
+            .map(|a| a.auth.clone())
+            .ok_or_else(|| format!("No stored Codex account {id}."))
+    };
+
+    let auth = read(account_id)?;
+    let access = access_from_value(&auth).ok_or("Those stored credentials have no access token.")?;
+    if !force && access_is_fresh(&access) {
+        return Ok(access);
+    }
+
+    let _guard = refresh_lock().lock().await;
+    // Re-read inside the lock — a turn running on this account may have
+    // rotated the pair while we waited.
+    let auth = read(account_id)?;
+    let access = access_from_value(&auth).ok_or("Those stored credentials have no access token.")?;
+    if !force && access_is_fresh(&access) {
+        return Ok(access);
+    }
+
+    let refresh_token = auth
+        .get("tokens")
+        .and_then(|t| t.get("refresh_token"))
+        .and_then(Value::as_str)
+        .ok_or("Those stored credentials have no refresh token — sign in to that account again.")?
+        .to_string();
+
+    let tokens = request_refresh(&refresh_token)
+        .await
+        .map_err(|err| format!("Token refresh failed for that account: {err}"))?;
+    let updated = apply_token_response(auth, &tokens)?;
+    super::accounts::write_auth_for(account_id, updated.clone())?;
+    access_from_value(&updated).ok_or_else(|| "Refresh produced no tokens.".to_string())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -535,12 +675,19 @@ async fn run_callback_server(
 
         match exchange_code(code, &verifier, &redirect_uri).await {
             Ok(tokens) => {
-                let existing = read_auth_value()
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| json!({}));
-                let result = apply_token_response(existing, &tokens)
-                    .and_then(|value| write_auth_value(&value));
+                // Built from an empty object, NOT from whatever is signed in
+                // now: this callback may be adding a second account, and
+                // merging one account's tokens into another's stored blob is
+                // how you end up with an entry whose id and credentials
+                // disagree. `apply_token_response` writes every field a
+                // sign-in owns, so there is nothing to inherit.
+                //
+                // It also lands in Aurora's own list rather than Codex CLI's
+                // file, so adding an account here never signs the CLI out of
+                // the one it was using.
+                let result = apply_token_response(json!({}), &tokens)
+                    .and_then(super::accounts::upsert)
+                    .map(|_| ());
                 match result {
                     Ok(()) => {
                         let _ = respond(&mut stream, 200, &success_page()).await;

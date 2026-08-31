@@ -9,12 +9,20 @@
 ; reference. It is still attributed to the method it appears in, so "what
 ; touches flush" is answered — only the call/read distinction is lost.
 ;
-; NO IMPORT PATTERNS, deliberately. Ruby's `require` is an ordinary method call
-; with a string argument, not syntax — telling it apart from any other one-string
-; call needs a query predicate, and this extractor reads captures without
-; evaluating predicates, so a `@import.module` here would label every string
-; argument in the codebase as a module. Ruby therefore resolves by the
-; same-file / same-directory / ambiguous arms of the cascade only.
+; NO IMPORT PATTERNS. Ruby's `require` is an ordinary method call with a string
+; argument, not syntax.
+;
+; This once said predicates could not tell it from any other one-string call.
+; That was wrong — `cursor.matches` is given the source as a text provider, so
+; `#eq?` IS applied, and typescript.scm now uses exactly that to read CommonJS
+; `require()` (2026-08-31). The real obstacle is a different one: `require "set"`
+; names a LOAD PATH entry, not a file beside this one, so the captured string
+; resolves to nothing the walker indexed. `require_relative "./thing"` would
+; resolve, and is the one shape worth adding if Ruby dependency edges are ever
+; asked for.
+;
+; Until then Ruby resolves by the same-file / same-directory / ambiguous arms of
+; the cascade only.
 
 ; ---------------------------------------------------------------- definitions
 (method           name: (identifier) @def.function)

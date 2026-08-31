@@ -44,6 +44,10 @@ const cases: Array<{
         { name: "a.ts", path: "src/a.ts", kind: "file" },
         { name: "b.ts", path: "src/b.ts", kind: "file" },
       ],
+      // The bracket is open, so the row knows it is reading a LIST before it
+      // knows how long the list is — which is what lets the chip commit to one
+      // shape instead of drawing a filename and taking it back.
+      targetsAreList: true,
     },
   },
   {
@@ -119,6 +123,7 @@ const cases: Array<{
         { name: "c.test.ts", path: "tests/c.test.ts", kind: "file" },
         { name: "d.test.ts", path: "tests/d.test.ts", kind: "file" },
       ],
+      targetsAreList: true,
     },
   },
   {
@@ -134,6 +139,7 @@ const cases: Array<{
         { name: "a.test.ts", path: "tests/a.test.ts", kind: "file" },
         { name: "b.test.ts", path: "tests/b.test.ts", kind: "file" },
       ],
+      targetsAreList: true,
     },
   },
   {

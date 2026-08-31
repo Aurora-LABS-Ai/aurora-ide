@@ -22,6 +22,7 @@ import { motion } from "framer-motion";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { inertWhen } from "@/kernel/lib/a11y/inert";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import { AgentThinkingBlock } from "@/apps/agent/components/conversation/AgentThinkingBlock";
@@ -860,6 +861,8 @@ const AssistantTurn: React.FC<{
           beforeTokens={row.beforeTokens}
           afterTokens={row.afterTokens}
           running={row.running}
+          startedAt={row.startedAt}
+          durationMs={row.durationMs}
         />
       );
     }
@@ -1072,30 +1075,47 @@ const teamTrace = (content: string): { title: string; tone: "ask" | "done" } | n
   return null;
 };
 
-const TeamTracePill: React.FC<{ title: string; tone: "ask" | "done" }> = ({ title, tone }) => (
-  <div
-    className="agw-msg"
-    style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}
-  >
-    <button
-      type="button"
-      className="agw-team-trace"
-      data-tone={tone}
-      title="Open the Team panel"
-      onClick={() => {
-        // Lazy import avoids a cycle: the workspace store imports dock types
-        // that components also use.
-        void import("@/apps/agent/store/workspace/useAgentWorkspaceStore").then((m) =>
-          m.useAgentWorkspaceStore.getState().openTab("team"),
-        );
-      }}
-    >
+const TeamTracePill: React.FC<{ title: string; tone: "ask" | "done" }> = ({ title, tone }) => {
+  // An old chat keeps its team traces after Agent Team is switched off, but the
+  // panel they point at is gone. The record stays; it stops being a control,
+  // because a button that opens nothing is worse than a plain marker.
+  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const body = (
+    <>
       <span className="agw-team-trace-dot" />
       <span>{title}</span>
       <AgentIcon name="users" size={12} />
-    </button>
-  </div>
-);
+    </>
+  );
+  return (
+    <div
+      className="agw-msg"
+      style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}
+    >
+      {teamEnabled ? (
+        <button
+          type="button"
+          className="agw-team-trace"
+          data-tone={tone}
+          title="Open the Team panel"
+          onClick={() => {
+            // Lazy import avoids a cycle: the workspace store imports dock types
+            // that components also use.
+            void import("@/apps/agent/store/workspace/useAgentWorkspaceStore").then((m) =>
+              m.useAgentWorkspaceStore.getState().openTab("team"),
+            );
+          }}
+        >
+          {body}
+        </button>
+      ) : (
+        <span className="agw-team-trace" data-tone={tone} data-static="true">
+          {body}
+        </span>
+      )}
+    </div>
+  );
+};
 
 const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   message,

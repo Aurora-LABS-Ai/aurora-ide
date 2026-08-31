@@ -472,6 +472,17 @@
   background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
   border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
 }
+.agw-model-effort[data-unavailable] {
+  color: var(--agw-warning);
+  border-color: color-mix(in srgb, var(--agw-warning) 42%, transparent);
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+}
+.agw-model-effort[data-unavailable]:hover,
+.agw-model-effort[data-unavailable]:focus-visible {
+  color: var(--agw-warning);
+  border-color: var(--agw-warning);
+  background: color-mix(in srgb, var(--agw-warning) 16%, transparent);
+}
 /* Budget models: the chip is the same `.agw-model-effort` pill (so budget and
    effort rows keep identical heights); this wrapper just anchors its popover. */
 .agw-model-reason-wrap {

@@ -315,7 +315,22 @@ impl ConversationRuntime {
         // would be an instruction aimed at the wrong request.
         let head_view = apply_compaction(&session.messages()[..cut], None);
         let model = session.model.clone();
-        let summarized = self.summarize_head(&head_view, &model, cancel_token).await;
+        // The repo map the live requests carry in their first user message,
+        // from the same per-thread memo, so the summarizer can reproduce the
+        // conversation's prefix byte for byte. Without it the shared-cache
+        // request diverged at the very first message and the entire head was
+        // re-billed as fresh input — measured at a 6.9% cache-read rate on a
+        // 200k-token compaction whose premise was ~100%.
+        let repo_map = self.repo_map_block(session.workspace_root.as_deref(), &session.thread_id);
+        let summarized = self
+            .summarize_head(
+                &head_view,
+                &model,
+                repo_map.as_deref(),
+                &session.thread_id,
+                cancel_token,
+            )
+            .await;
         let summary_usage = summarized.as_ref().map(|(_, usage)| usage.clone());
 
         let summary = match summarized {
@@ -413,6 +428,28 @@ impl ConversationRuntime {
             *after_tokens = after;
         }
 
+        // The marker went in at `cut`, not at the end, which is an edit the
+        // journal cannot express as one more line — so it has just gone silent
+        // for the rest of this turn. Rewrite the file now to make it whole and
+        // let appends resume, rather than leaving the remainder of a turn that
+        // is often only half done in memory alone. Deliberately AFTER
+        // `after_tokens` is patched, so the file matches what is in memory
+        // instead of persisting the placeholder.
+        //
+        // Costs one full rewrite, on an event that happens a handful of times
+        // in a long conversation and has just spent minutes in a model call.
+        if let Err(error) = session.resync_journal() {
+            crate::logging::log_warn(
+                "agent_runtime.compaction",
+                &format!(
+                    "could not rewrite the session file for thread {} after compacting: {error} \
+                     — the rest of this turn is not crash-recoverable; it still persists in full \
+                     when the turn ends",
+                    session.thread_id,
+                ),
+            );
+        }
+
         emit_native_tool_event(
             event_sink,
             turn_id,
@@ -459,6 +496,8 @@ impl ConversationRuntime {
         &self,
         head_view: &[ConversationMessage],
         model: &Option<String>,
+        repo_map: Option<&str>,
+        session_key: &str,
         cancel_token: &CancellationToken,
     ) -> Option<(String, TokenUsage)> {
         // What a discarded first attempt cost. Kept, not dropped: it carried
@@ -471,7 +510,7 @@ impl ConversationRuntime {
         // Only the conversation's own client can hit the conversation's cache.
         if self.compaction_client.is_none() {
             let shared = self
-                .summarize_with(head_view, model, cancel_token, true)
+                .summarize_with(head_view, model, repo_map, session_key, cancel_token, true)
                 .await;
             // Advertising the tools is what preserves the cache key, and the
             // price of that is a model that occasionally answers with a tool
@@ -505,7 +544,7 @@ impl ConversationRuntime {
         }
 
         let fallback = self
-            .summarize_with(head_view, model, cancel_token, false)
+            .summarize_with(head_view, model, repo_map, session_key, cancel_token, false)
             .await;
         match (fallback, discarded) {
             (Some((note, usage)), Some(wasted)) => Some((note, sum_usage(wasted, usage))),
@@ -530,6 +569,8 @@ impl ConversationRuntime {
         &self,
         head_view: &[ConversationMessage],
         model: &Option<String>,
+        repo_map: Option<&str>,
+        session_key: &str,
         cancel_token: &CancellationToken,
         share_cache: bool,
     ) -> Option<(String, TokenUsage)> {
@@ -545,9 +586,15 @@ impl ConversationRuntime {
 
         // Reasoning is kept when sharing the cache — removing it would alter
         // the prefix and cost far more than it saves — and stripped otherwise,
-        // where it is unusable weight.
+        // where it is unusable weight. Sharing also reproduces the repo map
+        // in the first user message: the live requests carry it there, so a
+        // head without it diverges from the cached prefix at message one and
+        // the whole exercise is pointless.
         let head = if share_cache {
-            head_view.to_vec()
+            match repo_map {
+                Some(map) => inject_repo_map(head_view, map),
+                None => head_view.to_vec(),
+            }
         } else {
             strip_reasoning(head_view.to_vec())
         };
@@ -588,6 +635,12 @@ impl ConversationRuntime {
         } else {
             Vec::new()
         };
+        let standalone_reasoning = ReasoningConfig::default();
+        let reasoning = if share_cache {
+            self.config.reasoning.as_request()
+        } else {
+            standalone_reasoning.as_request()
+        };
         let request = ApiRequest {
             model: &model,
             system_prompt: if share_cache {
@@ -601,16 +654,18 @@ impl ConversationRuntime {
             // either way.
             temperature: Some(0.3),
             max_output_tokens: self.config.compaction_summary_budget,
-            // Thinking config IS part of the cache key. When sharing, it has to
-            // match the conversation's or the prefix is invalidated and the
-            // whole exercise is pointless. Standalone, it stays off —
-            // summarizing must never spend the user's reasoning budget.
-            thinking_enabled: share_cache && self.config.thinking_enabled,
-            thinking_budget_tokens: if share_cache {
-                self.config.thinking_budget_tokens
-            } else {
-                None
-            },
+            // Reasoning config IS part of the cache key. When sharing, it has
+            // to match the conversation's or the prefix is invalidated.
+            // Standalone summarization keeps it off.
+            reasoning,
+            // Summarizing never calls a tool, so there is nothing to keep a
+            // stream open for.
+            tool_bridge: None,
+            // Same conversation, same affinity key — this request exists to
+            // read the conversation's cache.
+            session_key: Some(session_key),
+            // The head is all-stable history; no context tail rides on it.
+            volatile_tail_messages: 0,
         };
         let result = client.stream(request, tx, cancel_token.clone()).await;
         let _ = drain.await;

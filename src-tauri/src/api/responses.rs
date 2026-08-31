@@ -222,6 +222,19 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         "include".to_string(),
         json!(["reasoning.encrypted_content"]),
     );
+    // Cache-routing affinity: requests carrying the same key land on the
+    // same cache node, so the conversation's prefix actually gets read
+    // instead of depending on routing luck. Spec-blessed on the Responses
+    // API (opencode sends it on every request, Codex backend included);
+    // absent for one-off requests with no conversation identity.
+    if let Some(session_key) = request.session_key {
+        if !session_key.is_empty() {
+            body.insert(
+                "prompt_cache_key".to_string(),
+                Value::String(session_key.to_string()),
+            );
+        }
+    }
 
     if let Some(instructions) = instructions {
         if !instructions.is_empty() {
@@ -257,35 +270,38 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         }
     }
 
-    if request.thinking_enabled && config.supports_thinking {
-        // `summary: "auto"` streams reasoning summaries into Aurora's
-        // thinking UI. Effort is left at the provider default; users
-        // can pin it via custom_params `{"reasoning": {...}}`.
-        body.insert("reasoning".to_string(), json!({ "summary": "auto" }));
+    if request.reasoning.enabled && config.supports_thinking {
+        // Responses owns one nested reasoning object. Build it from the
+        // canonical request rather than folding an OpenAI Chat field back out
+        // of custom params after the fact.
+        let mut reasoning = json!({ "summary": "auto" });
+        if let Some(effort) = request.reasoning.effort {
+            reasoning["effort"] = Value::String(effort.to_string());
+        }
+        body.insert("reasoning".to_string(), reasoning);
     }
 
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
+            // Aurora directive for the OpenAI-compat path; the Responses API
+            // replays reasoning natively (encrypted items), so it must not
+            // reach the wire here either.
+            if key == "reasoning_replay" {
+                continue;
+            }
             body.insert(key.clone(), value.clone());
         }
     }
 
-    // The composer's effort picker speaks the Chat-Completions dialect — a
-    // flat `reasoning_effort` custom param. The Responses API nests it
-    // (`reasoning.effort`) and hard-rejects the flat form ("Unsupported
-    // parameter: reasoning_effort"), so fold it in here. Runs after the
-    // custom-params merge so an explicit user-supplied `reasoning` object
-    // keeps its own keys — the picker only fills what's missing.
+    // Backward compatibility for a saved/manual pre-cutover flat field. New
+    // requests arrive through `request.reasoning.effort` above.
     if let Some(effort) = body.remove("reasoning_effort") {
         let reasoning = body
             .entry("reasoning".to_string())
             .or_insert_with(|| json!({}));
         if let Some(obj) = reasoning.as_object_mut() {
             obj.entry("effort".to_string()).or_insert(effort);
-            // Effort models stream their reasoning as summaries; ask for
-            // them so Aurora's thinking UI stays live (the frontend turns
-            // `thinking_enabled` OFF for effort models, so the earlier
-            // summary insertion above never ran).
+            // Effort models stream their reasoning as summaries.
             if config.supports_thinking {
                 obj.entry("summary".to_string())
                     .or_insert_with(|| Value::String("auto".to_string()));
@@ -1262,6 +1278,7 @@ mod tests {
             default_temperature: Some(0.7),
             default_max_tokens: None,
             supports_thinking: true,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -1274,8 +1291,14 @@ mod tests {
             tools,
             temperature: None,
             max_output_tokens: 4096,
-            thinking_enabled: true,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: crate::agent_runtime::api_client::ReasoningControl::Toggle,
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            },
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         }
     }
 
@@ -1318,14 +1341,31 @@ mod tests {
         assert_eq!(body["reasoning"]["summary"], "auto");
         // gpt-5 is a reasoning family → temperature must be omitted.
         assert!(body.get("temperature").is_none());
+        // No conversation identity on this request → no cache key.
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn conversation_identity_becomes_the_prompt_cache_key() {
+        // Same key on every request of a thread → the provider routes them
+        // to the same cache node. Without it, long conversations kept
+        // reading only the system-prompt-and-tools region from cache.
+        let messages = vec![ConversationMessage::user_text("hi", 0)];
+        let mut req = request(&messages, &[]);
+        req.session_key = Some("thread-abc-123");
+        let body = build_responses_body(&req, &config());
+        assert_eq!(body["prompt_cache_key"], "thread-abc-123");
+
+        // An empty key is no key.
+        req.session_key = Some("");
+        let body = build_responses_body(&req, &config());
+        assert!(body.get("prompt_cache_key").is_none());
     }
 
     #[test]
     fn flat_reasoning_effort_param_folds_into_nested_reasoning() {
-        // The composer's effort picker ships `customParams.reasoning_effort`
-        // (Chat-Completions dialect) with thinking_enabled OFF. The Responses
-        // API rejects the flat key, so the builder must nest it — and still
-        // request summaries so the thinking UI streams.
+        // A pre-cutover saved row may still carry a flat Chat-Completions
+        // field. Responses must nest it and request summaries.
         let messages = vec![ConversationMessage::user_text("hi", 0)];
         let mut cfg = config();
         cfg.custom_params = Some(std::collections::HashMap::from([(
@@ -1333,11 +1373,30 @@ mod tests {
             json!("xhigh"),
         )]));
         let mut req = request(&messages, &[]);
-        req.thinking_enabled = false;
+        req.reasoning = crate::agent_runtime::api_client::ReasoningRequest::disabled();
 
         let body = build_responses_body(&req, &cfg);
         assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+    }
+
+    #[test]
+    fn canonical_effort_becomes_the_responses_reasoning_object() {
+        let messages = vec![ConversationMessage::user_text("hi", 0)];
+        let mut req = request(&messages, &[]);
+        req.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+            enabled: true,
+            control: crate::agent_runtime::api_client::ReasoningControl::Effort,
+            effort: Some("high"),
+            request_mode: crate::agent_runtime::api_client::ReasoningRequestMode::OpenaiEffort,
+            ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+        };
+
+        let body = build_responses_body(&req, &config());
+
+        assert!(body.get("reasoning_effort").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
         assert_eq!(body["reasoning"]["summary"], "auto");
     }
 
@@ -1352,7 +1411,7 @@ mod tests {
             ("reasoning".to_string(), json!({ "effort": "high" })),
         ]));
         let mut req = request(&messages, &[]);
-        req.thinking_enabled = false;
+        req.reasoning = crate::agent_runtime::api_client::ReasoningRequest::disabled();
 
         let body = build_responses_body(&req, &cfg);
         assert!(body.get("reasoning_effort").is_none());
@@ -1753,8 +1812,10 @@ mod rejection_tests {
             tools: &[],
             temperature: None,
             max_output_tokens: 1024,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
         let (_, items) = responses_instructions_and_input(&request, false);
         assert!(!items.is_empty());
@@ -1802,8 +1863,10 @@ mod rejection_tests {
             tools: &[],
             temperature: None,
             max_output_tokens: 1024,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
 
         let (_, items) = responses_instructions_and_input(&request, true);

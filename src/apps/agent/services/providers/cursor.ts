@@ -13,9 +13,9 @@
  *
  * An account reaches ~200 model ids, but most of that is the same model
  * repeated at different effort levels: `claude-fable-5` alone ships ten. So
- * ids are grouped by {@link CursorModelView.catalogKey} — the vendor's real
- * model id — which turns 204 rows into about 32. Effort, thinking and Fast
- * become options on a row rather than rows of their own.
+ * ids are grouped by their parsed stable stem, which turns 204 rows into about
+ * 32. `catalogKey` is only the models.dev metadata join. Effort, thinking and
+ * Fast become options on a row rather than rows of their own.
  *
  * Capability (vision, context window, pricing) is **not** on Cursor's wire at
  * all. `catalogKey` is the join key into the models.dev catalogue Aurora
@@ -48,6 +48,34 @@ export interface CursorAuthStatus {
   /** Whether a Cursor desktop install was found to sign in from. */
   cursorAppDetected: boolean;
   lastRefresh: string | null;
+}
+
+/** Whether a meter shows a share of an allowance or money that gets billed. */
+export type CursorMeterKind = "quota" | "spend";
+
+/** One metered line. `label` is Cursor's own name for the bucket. */
+export interface CursorUsageWindow {
+  label: string;
+  kind: CursorMeterKind;
+  /** 0–100, already clamped. */
+  usedPercent: number;
+  /** Dollars. Deliberately **not** clamped — an overage is the point. */
+  usedUsd: number | null;
+  limitUsd: number | null;
+}
+
+export interface CursorUsageSnapshot {
+  /** Empty means connected with nothing metered to report. */
+  windows: CursorUsageWindow[];
+  /** Share of the whole included allowance. Not a bar — Cursor doesn't draw one. */
+  totalPercentUsed: number | null;
+  /** Free usage granted on top of the plan, in dollars. */
+  bonusUsd: number | null;
+  /** Cursor's own status sentence, e.g. "You've hit your usage limit". */
+  notice: string | null;
+  resetsAtMs: number | null;
+  source: "periodUsage" | "dashboard" | "authUsage";
+  fetchedAtMs: number;
 }
 
 export interface CursorModelView {
@@ -89,6 +117,62 @@ export function cursorAuthConnect(): Promise<CursorAuthStatus> {
 /** Forget Aurora's copy. The Cursor app stays signed in. */
 export function cursorAuthSignOut(): Promise<void> {
   return invoke<void>("cursor_auth_sign_out");
+}
+
+/**
+ * How much of the plan is left.
+ *
+ * Rejects when Cursor reported nothing readable, so the card can say what
+ * failed rather than drawing empty bars over a broken read.
+ */
+export function cursorUsageGet(): Promise<CursorUsageSnapshot> {
+  return invoke<CursorUsageSnapshot>("cursor_usage_get");
+}
+
+/**
+ * When the included allowance refills, in words.
+ *
+ * Lives beside the provider rather than in the ring, for the same reason
+ * kenari's and OpenCode's do: every provider draws its quota the same way, and
+ * what each keeps to itself is how it names a window and words a countdown.
+ */
+export function cursorResetLabel(resetsAtMs: number | null): string | null {
+  if (!resetsAtMs) return null;
+  const remaining = resetsAtMs - Date.now();
+  // A cycle end that has passed means the next read will move it. Saying
+  // "resets in -2d" would be worse than saying it is happening.
+  if (remaining <= 0) return "renewing now";
+  const days = Math.floor(remaining / 86_400_000);
+  if (days >= 1) return `resets in ${days}d`;
+  const hours = Math.floor(remaining / 3_600_000);
+  if (hours >= 1) return `resets in ${hours}h`;
+  return "resets within the hour";
+}
+
+/**
+ * Dollars, with cents only when there are any.
+ *
+ * `$70` and `$70.46` side by side is how the amount and its ceiling read as a
+ * pair; `$70.00 / $70.00` makes the eye do subtraction to notice the overage.
+ */
+export function cursorUsd(amount: number): string {
+  return Number.isInteger(amount) ? `$${amount}` : `$${amount.toFixed(2)}`;
+}
+
+/**
+ * What one metered line says on its right-hand side.
+ *
+ * Quota reads as a share, spend reads as money against its cap — and spend is
+ * never reduced to a percentage, because "100%" and "$70.46 of $70" are
+ * different facts and only the second one tells you that you are over.
+ */
+export function cursorMeterValue(win: CursorUsageWindow): string {
+  if (win.kind === "spend" && win.usedUsd != null) {
+    return win.limitUsd != null
+      ? `${cursorUsd(win.usedUsd)} of ${cursorUsd(win.limitUsd)}`
+      : cursorUsd(win.usedUsd);
+  }
+  return `${Math.round(win.usedPercent)}% used`;
 }
 
 /** Where Aurora looked for the Cursor install — shown when it found nothing. */

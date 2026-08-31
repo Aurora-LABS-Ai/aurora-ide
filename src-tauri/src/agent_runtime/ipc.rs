@@ -79,6 +79,23 @@ pub struct AgentChatRequest {
     /// `"claude-3-7-sonnet-20250219"`). Echoed by the runtime into the
     /// session log on the first turn for telemetry.
     pub model: String,
+    /// The model as the **conversation** is pinned to it, when that differs
+    /// from what goes on the wire.
+    ///
+    /// Cursor is the one provider where they differ. Its effort tier and its
+    /// Fast lane are capabilities the user picks, not part of what the model
+    /// is — so the row, the picker and this pin all hold `cursor-grok-4.6`,
+    /// while the request carries the id those choices compose to,
+    /// `cursor-grok-4.6-high-fast`.
+    ///
+    /// Recording the composed id as the pin is what this exists to prevent.
+    /// The pin is the key every later lookup uses, so a decorated one matches
+    /// no model row: the model's real context window becomes unfindable and
+    /// the turn is budgeted against the provider default instead.
+    ///
+    /// `None` — every other provider — means the wire model *is* the pin.
+    #[serde(default)]
+    pub model_selection: Option<String>,
     /// Optional workspace root. Tools that touch the filesystem
     /// resolve paths against this root.
     pub workspace_path: Option<String>,
@@ -295,6 +312,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: true,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -306,6 +324,7 @@ mod tests {
             user_message: "hello".into(),
             provider_id: "anthropic".into(),
             model: "claude-3-7-sonnet".into(),
+            model_selection: None,
             workspace_path: Some("E:/work".into()),
             execution_mode: AgentExecutionMode::Agent,
             provider_config: minimal_provider_config(),
@@ -476,6 +495,7 @@ mod tests {
             user_message: "u".into(),
             provider_id: "p".into(),
             model: "m".into(),
+            model_selection: None,
             workspace_path: None,
             execution_mode: AgentExecutionMode::Agent,
             provider_config: minimal_provider_config(),

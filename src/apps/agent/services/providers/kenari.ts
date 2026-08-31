@@ -10,11 +10,13 @@
  * All three were measured against the live API on `deepseek-v4-pro` before this
  * was written; the notes below are results, not readings of a docs page.
  *
- * **All three return the model's actual reasoning trace, in full.** That is
- * worth stating because the Responses wire delivers it through events named
- * `response.reasoning_summary_text.*` — OpenAI's summary channel, and the only
- * reasoning channel that wire defines. The name is inherited; the content is
- * the raw first-person trace, the same shorthand the other two wires return.
+ * Wire behavior is model-specific. DeepSeek V4 Pro returned its reasoning on
+ * all three when this integration was introduced; GLM 5.3 did not on
+ * 2026-08-29. For `glm-5-3`, Chat returned a correct answer plus reasoning,
+ * Messages returned text with no reasoning under both budget and adaptive
+ * thinking shapes, and Responses returned no reasoning plus a wrong/unrelated
+ * answer. The model-row test is therefore the authority, not a blanket claim
+ * about the account.
  *
  * Where they genuinely differ:
  *
@@ -68,13 +70,13 @@ export const KENARI_WIRES: ReadonlyArray<{
     value: "kenari-messages",
     label: "Messages",
     detail:
-      "Anthropic's format. The only one that signs each reasoning block, so a Claude model's thinking survives into the next turn.",
+      "Anthropic's format. Useful for signed Claude thinking; compatible non-Claude models can return text while silently dropping reasoning, so test the model row.",
   },
   {
     value: "kenari-responses",
     label: "Responses",
     detail:
-      "Built for Codex. Cannot carry a conversation forward on its own, and drops any tool that is not a plain function.",
+      "Built for Codex. Model support varies; GLM 5.3 returned no reasoning and failed the deterministic probe. Test before using it.",
   },
 ];
 

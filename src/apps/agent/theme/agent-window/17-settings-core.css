@@ -353,6 +353,70 @@
   line-height: 1.55;
 }
 
+/* ── Page category tabs ───────────────────────────────────────────────────
+ * Used by pages long enough that one column stops being navigable — Appearance
+ * (~50 token rows) and Preferences (ten sections).
+ *
+ * Deliberately NOT sticky. A pinned bar sits above the page's own top padding,
+ * so rows slide through the gap around it and it reads as a floating strip
+ * overlapping the content rather than as part of the page. Switching category
+ * also scrolls the panel back to the top, which puts the tabs back on screen
+ * anyway — the pin was solving a problem the page does not have. */
+.agw-set-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 4px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--agw-border);
+  /* A narrow window gets a scrollable strip rather than wrapped, half-width
+     tabs — the row stays one line at any width. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.agw-set-tabs::-webkit-scrollbar {
+  display: none;
+}
+.agw-set-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 7px 13px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+.agw-set-tab:hover {
+  background: var(--agw-hover);
+  color: var(--agw-text-muted);
+}
+/* Colour-only selection, matching the rest of the window: the selected tab is
+   the one drawn in full-strength text on a quiet fill. */
+.agw-set-tab[data-selected] {
+  background: var(--agw-surface);
+  color: var(--agw-text);
+}
+.agw-set-tab:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+/* The panel is one flex child of `.agw-set-wide`, so it has to re-supply the
+   column gap that container was applying to the sections directly. */
+.agw-set-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
 /* ── Section + panel ──────────────────────────────────────────────────── */
 .agw-set-section {
   display: flex;

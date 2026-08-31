@@ -19,6 +19,7 @@
  * tool }` with `isError=true`.
  */
 import { AgentRuntimeClient } from "@/apps/agent/services/runtime/agent-runtime-client";
+import { resolveModelRequest } from "@/apps/agent/services/runtime/model-request-config";
 import type { ProviderConfigSnapshot } from "@/apps/agent/services/runtime/agent-runtime-client";
 import * as team from "@/apps/agent/services/team/team-client";
 import { requestOpenTeamView } from "@/apps/agent/services/team/team-view-bridge";
@@ -105,8 +106,22 @@ function providerSnaps(): {
   member: ProviderConfigSnapshot;
 } {
   const settings = useSettingsStore.getState();
-  const leadConfig = settings.getTeamLeadConfig();
-  const memberConfig = settings.getTeamMemberConfig();
+  const resolveTeamModel = (selection: string, role: "Lead" | "member") => {
+    try {
+      return resolveModelRequest(selection, settings.thinkingEnabled)?.providerConfig;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`${role} model configuration is invalid. ${detail}`);
+    }
+  };
+  const leadConfig = resolveTeamModel(
+    settings.teamLeadModel || settings.selectedModel,
+    "Lead",
+  );
+  const memberConfig = resolveTeamModel(
+    settings.teamMemberModel || settings.selectedModel,
+    "member",
+  );
   if (!leadConfig || !memberConfig) {
     throw new Error(
       "No model is configured. Set Team models under Settings → Team, or select an active chat model.",

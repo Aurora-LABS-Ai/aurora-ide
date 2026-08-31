@@ -532,7 +532,11 @@ mod tests {
         .collect();
 
         let spread = folder_spread(&paths);
-        assert_eq!(spread[0], ("app/(client)/".to_string(), 3), "got {spread:?}");
+        assert_eq!(
+            spread[0],
+            ("app/(client)/".to_string(), 3),
+            "got {spread:?}"
+        );
         assert_eq!(spread.len(), 3);
     }
 

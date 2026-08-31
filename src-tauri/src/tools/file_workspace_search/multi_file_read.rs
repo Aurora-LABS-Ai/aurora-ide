@@ -315,10 +315,19 @@ impl ToolExecutor for MultiFileReadTool {
                 }
                 Some(Err(err)) => {
                     error_count += 1;
+                    // A binary read through the batch used to report the
+                    // decoder's own words. It gets the same sentence the single
+                    // reader gives — one file, one answer, whichever route
+                    // reached it.
+                    let error = if super::file_read::is_non_text_error(err) {
+                        super::file_read::non_text_error(&entry.input_path)
+                    } else {
+                        err.clone()
+                    };
                     files.push(json!({
                         "path": entry.input_path,
                         "success": false,
-                        "error": err,
+                        "error": error,
                     }));
                 }
                 None => {

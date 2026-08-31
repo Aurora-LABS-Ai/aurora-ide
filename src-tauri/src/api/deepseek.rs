@@ -6,7 +6,7 @@
 //! polluting the shared code path. This dedicated adapter keeps those
 //! tweaks in one place:
 //!
-//! - **Thinking mode wire shape.** When `thinking_enabled`, DeepSeek
+//! - **Thinking mode wire shape.** When the canonical reasoning request is enabled, DeepSeek
 //!   expects `extra_body.thinking = {type: "enabled"}` **and** a
 //!   `reasoning_effort` knob (`"high"` for regular requests, `"max"`
 //!   for heavy agent runs). The legacy provider_kernel path already
@@ -167,7 +167,7 @@ impl DeepSeekAdapter {
             json!({ "include_usage": true }),
         );
 
-        if request.thinking_enabled && self.config.supports_thinking {
+        if request.reasoning.enabled && self.config.supports_thinking {
             apply_thinking_tweaks(map, &self.config);
         }
 
@@ -374,6 +374,7 @@ mod tests {
             default_temperature: Some(1.0),
             default_max_tokens: Some(4096),
             supports_thinking: true,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -386,8 +387,14 @@ mod tests {
             tools: &[],
             temperature: Some(0.7),
             max_output_tokens: 1024,
-            thinking_enabled: true,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: crate::agent_runtime::api_client::ReasoningControl::Toggle,
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            },
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         }
     }
 
@@ -421,10 +428,29 @@ mod tests {
     }
 
     #[test]
+    fn canonical_effort_keeps_deepseek_thinking_enabled() {
+        let adapter = DeepSeekAdapter::new(base_config());
+        let mut request = empty_request();
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+            enabled: true,
+            control: crate::agent_runtime::api_client::ReasoningControl::Effort,
+            effort: Some("max"),
+            request_mode: crate::agent_runtime::api_client::ReasoningRequestMode::OpenaiEffort,
+            ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+        };
+
+        let body = adapter.build_body(&request);
+
+        assert_eq!(body["reasoning_effort"], "max");
+        assert_eq!(body["thinking"], json!({"type": "enabled"}));
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
     fn thinking_off_keeps_temperature() {
         let adapter = DeepSeekAdapter::new(base_config());
         let mut req = empty_request();
-        req.thinking_enabled = false;
+        req.reasoning.enabled = false;
         let body = adapter.build_body(&req);
         assert!(
             body.get("temperature").is_some(),
@@ -544,8 +570,10 @@ mod tests {
             tools: &request_tools,
             temperature: Some(0.7),
             max_output_tokens: 1024,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
 
         let body = adapter.build_body(&request);

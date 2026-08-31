@@ -85,6 +85,33 @@ fn build_codex_body(
     body
 }
 
+/// The `session_id` header value for one conversation: a UUID derived
+/// deterministically from the thread id, so every request of the thread
+/// carries the SAME id.
+///
+/// It used to be a fresh `Uuid::new_v4()` per request, which told the
+/// backend every call was a new session — working against the cache
+/// affinity the id exists to provide (Codex CLI holds one id for the whole
+/// conversation; opencode sends its stable session id). Hashed rather than
+/// used raw because the header has always carried a UUID and Aurora thread
+/// ids are not UUIDs.
+fn stable_session_id(session_key: Option<&str>) -> String {
+    let Some(key) = session_key.filter(|k| !k.is_empty()) else {
+        // No conversation identity (one-off requests): a random id per
+        // call, exactly the previous behaviour.
+        return uuid::Uuid::new_v4().to_string();
+    };
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Stamp the version (4) and variant bits so the id is a well-formed
+    // UUID, not just 32 hex digits with hyphens.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
 #[async_trait::async_trait]
 impl StreamingApiClient for CodexAdapter {
     async fn stream(
@@ -102,7 +129,7 @@ impl StreamingApiClient for CodexAdapter {
             .map_err(ApiError::Provider)?;
 
         let body = build_codex_body(&request, &self.config);
-        let session_id = uuid::Uuid::new_v4().to_string();
+        let session_id = stable_session_id(request.session_key);
 
         // One retry on 401: an unexpired-but-revoked token (password
         // change, session invalidation) only reveals itself here.
@@ -135,10 +162,37 @@ impl StreamingApiClient for CodexAdapter {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if status.as_u16() == 429 {
-                // Subscription window exhausted — say so instead of the
-                // generic "rate limited" that suggests retrying helps.
+                // One account's window is spent. If the user has stored
+                // others, that is a reason to keep working, not to stop: mark
+                // this one and hand the turn to the next account. The runtime
+                // retries because the rebuilt request carries a different
+                // account's token, so it is not the request that just failed.
+                //
+                // Marking happens whether or not a successor exists, so the
+                // switcher can show which accounts are spent and the next turn
+                // does not open on one that cannot serve.
+                let spent = access.account_id.clone();
+                let reset_in = reset_after_seconds(&body);
+                if let Some(id) = spent.as_deref() {
+                    if let Some(next) = super::accounts::note_exhausted(id, reset_in) {
+                        crate::logging::log_warn(
+                            "codex.accounts",
+                            &format!(
+                                "account {id} reported its limit reached — continuing on {} ({})",
+                                next.email.as_deref().unwrap_or(&next.account_id),
+                                next.account_id
+                            ),
+                        );
+                        return Err(ApiError::CodexAccountRotated {
+                            to: next.email.unwrap_or(next.account_id),
+                        });
+                    }
+                }
+                // Nothing left to fall back to — say what actually happened
+                // rather than the generic "rate limited" that suggests
+                // retrying helps.
                 return Err(ApiError::Provider(format!(
-                    "ChatGPT usage limit reached for your plan. It resets on a rolling window \u{2014} check Settings \u{2192} Providers \u{2192} Codex. ({})",
+                    "ChatGPT usage limit reached for your plan, and no other signed-in Codex account has headroom. It resets on a rolling window \u{2014} check Settings \u{2192} Providers \u{2192} Codex. ({})",
                     body.chars().take(160).collect::<String>()
                 )));
             }
@@ -151,6 +205,44 @@ impl StreamingApiClient for CodexAdapter {
 
         drive_responses_stream(bytes_stream, event_sink, cancel_token).await
     }
+}
+
+/// How long the backend says this window has left, in seconds, if it says.
+///
+/// Preferred over a guess for the obvious reason: parking an account for a
+/// flat fifteen minutes when the real window resets in four hours means every
+/// turn in between re-discovers the limit the hard way, and parking it for
+/// fifteen when it resets in thirty seconds wastes headroom the user paid for.
+/// Shapes vary across the backend's own error bodies, so read the ones it is
+/// known to send and fall back cleanly when none are present.
+fn reset_after_seconds(body: &str) -> Option<i64> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    for path in [
+        &["error", "resets_in_seconds"][..],
+        &["error", "reset_after_seconds"][..],
+        &["resets_in_seconds"][..],
+        &["reset_after_seconds"][..],
+    ] {
+        let mut node = &value;
+        let mut found = true;
+        for key in path {
+            match node.get(*key) {
+                Some(next) => node = next,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found {
+            if let Some(secs) = node.as_i64().or_else(|| node.as_f64().map(|f| f as i64)) {
+                if secs > 0 {
+                    return Some(secs);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -171,6 +263,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: true,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -183,8 +276,14 @@ mod tests {
             tools,
             temperature: Some(0.7),
             max_output_tokens: 8192,
-            thinking_enabled: true,
-            thinking_budget_tokens: None,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: crate::agent_runtime::api_client::ReasoningControl::Toggle,
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            },
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         }
     }
 
@@ -216,5 +315,28 @@ mod tests {
             headers.get("OpenAI-Beta").unwrap(),
             "responses=experimental"
         );
+    }
+
+    #[test]
+    fn session_id_is_stable_per_thread_and_a_well_formed_uuid() {
+        // The whole point: every request of a conversation announces the
+        // SAME session to the backend, so its cache affinity holds.
+        let a = stable_session_id(Some("thread-1"));
+        let b = stable_session_id(Some("thread-1"));
+        assert_eq!(a, b);
+        assert_ne!(a, stable_session_id(Some("thread-2")));
+        // Well-formed v4-shaped UUID — the header has always carried one.
+        let parsed = uuid::Uuid::parse_str(&a).expect("valid uuid");
+        assert_eq!(parsed.get_version_num(), 4);
+        // No identity → random per call, the pre-existing behaviour.
+        assert_ne!(stable_session_id(None), stable_session_id(None));
+    }
+
+    #[test]
+    fn conversation_key_rides_into_the_codex_body() {
+        let mut req = request(&[]);
+        req.session_key = Some("thread-1");
+        let body = build_codex_body(&req, &config());
+        assert_eq!(body["prompt_cache_key"], "thread-1");
     }
 }

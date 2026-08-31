@@ -343,6 +343,16 @@ impl SessionStore {
             if stem.ends_with(".jsonl") {
                 continue;
             }
+            // `<id>.rich.jsonl` is a SIDECAR of `<id>` (full-fidelity tool
+            // results, see `rich_path`), not a thread of its own. Its stem is
+            // `<id>.rich`, which the guard above does not catch. Left in, every
+            // sidecar was listed as a phantom thread: no metadata file of its
+            // own, so it fell back to the title "New Chat" with timestamps
+            // synthesised from the file's mtime — which sorted the whole set to
+            // the TOP of the newest-first listing.
+            if stem.ends_with(".rich") {
+                continue;
+            }
 
             match self.summarize_thread(&stem, &path) {
                 Ok(summary) => {
@@ -1161,6 +1171,44 @@ mod tests {
         let summaries = store.list_summaries().unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, "real");
+    }
+
+    /// A thread's rich-results sidecar is not a thread.
+    ///
+    /// `<id>.rich.jsonl` has the extension `jsonl` and the stem `<id>.rich`, so
+    /// it clears the `.jsonl.tmp` guard. Every one that got through was listed
+    /// as a phantom "New Chat" — and because its timestamps came from the
+    /// file's mtime rather than a metadata sidecar, the phantoms sorted above
+    /// every real conversation.
+    #[test]
+    fn list_summaries_skips_rich_results_sidecars() {
+        let (_g, store) = tmp_store();
+        store
+            .ensure_thread("real", Some("Real chat".into()), None)
+            .unwrap();
+        store
+            .append_rich_results(
+                "real",
+                &[RichToolResult {
+                    tool_use_id: "call-1".into(),
+                    tool: "file_read".into(),
+                    content: "full output".into(),
+                }],
+            )
+            .unwrap();
+        assert!(store.rich_path("real").exists(), "sidecar should exist");
+
+        let summaries = store.list_summaries().unwrap();
+        assert_eq!(
+            summaries.len(),
+            1,
+            "the sidecar must not list as its own thread"
+        );
+        assert_eq!(summaries[0].id, "real");
+        assert!(
+            !summaries.iter().any(|s| s.id.ends_with(".rich")),
+            "no phantom `<id>.rich` thread",
+        );
     }
 
     #[test]

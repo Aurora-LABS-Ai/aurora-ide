@@ -28,6 +28,7 @@ import {
 } from "@/apps/agent/services/providers/codex";
 import { fmtRelative } from "@/apps/agent/services/providers/atlascloud";
 import { AgentIcon } from "../shared/AgentIcon";
+import { CodexAccountSwitcher } from "./CodexAccountSwitcher";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { AgwButton, AgwPill, AgwSwitch } from "./primitives";
 
@@ -192,6 +193,9 @@ export const CodexUsageCard: React.FC<{
     signOut,
   } = useCodex();
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  // Bumped whenever something could have changed the account list — a
+  // sign-in, a usage refresh, or the switcher's own mutations.
+  const [accountsToken, setAccountsToken] = useState(0);
 
   const plan = codexPlanLabel(usage?.planType ?? auth?.planType);
 
@@ -314,15 +318,23 @@ export const CodexUsageCard: React.FC<{
                   No usage reported yet — limits appear after your first Codex chat.
                 </div>
               )}
-              {usage.credits?.hasCredits && usage.credits.balance && (
-                <div className="agw-atlas-note">
-                  {usage.credits.unlimited
-                    ? "Extra credits: unlimited"
-                    : `Extra credits: ${usage.credits.balance}`}
-                </div>
-              )}
             </>
           )}
+
+          {/* Credits used to be one line about one account. It is now the
+              pooled figure across every signed-in account, and the control
+              that opens the per-account breakdown — see
+              `CodexAccountSwitcher`. Kept below the meters because the
+              meters describe the account actually serving this turn, and
+              the pool only matters once one of them fills up. */}
+          <CodexAccountSwitcher
+            refreshToken={accountsToken}
+            onAddAccount={signIn}
+            onChanged={() => {
+              loadUsage();
+              setAccountsToken((n) => n + 1);
+            }}
+          />
 
           <div className="agw-codex-foot">
             {usage && (
@@ -333,7 +345,12 @@ export const CodexUsageCard: React.FC<{
             <span className="agw-codex-foot-spacer" />
             {confirmingSignOut ? (
               <span className="agw-codex-confirm">
-                Also signs out Codex CLI on this machine.
+                {/* This used to read "Also signs out Codex CLI on this
+                    machine", and it was true — sign-out deleted the CLI's own
+                    credential file. Aurora now keeps its own account list, so
+                    the CLI is untouched and the warning would be a lie. */}
+                Removes this account from Aurora. Codex CLI keeps its own
+                sign-in.
                 <button type="button" className="agw-codex-link" data-tone="danger" onClick={signOut}>
                   Sign out
                 </button>

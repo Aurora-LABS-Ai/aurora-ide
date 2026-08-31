@@ -38,13 +38,25 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 /// happened, small enough for a tooltip.
 const SNIPPET_LIMIT: usize = 280;
 
-/// Output cap for the probe. Small on purpose — this costs the user real
-/// money on every click, and 64 tokens is plenty to prove liveness.
+/// Output cap for a plain connectivity probe. Small on purpose — this costs
+/// the user real money on every click.
 const PROBE_MAX_TOKENS: u32 = 64;
 
-/// The prompt. Deliberately trivial and deterministic so the reply is
-/// short, cheap, and obviously model-generated rather than an echo.
-const PROBE_PROMPT: &str = "Reply with exactly: Aurora connection OK";
+/// Legacy Anthropic thinking has a 1,024-token floor and is omitted entirely
+/// when the answer allowance is not larger than that. A 64-token probe would
+/// therefore claim it tested reasoning while the adapter correctly sent none.
+/// This is still only a cap; the exact-answer prompt normally stops far below
+/// it.
+const REASONING_PROBE_MAX_TOKENS: u32 = 2_048;
+
+/// Deterministic but not a bare echo: reasoning-capable routes get a small
+/// problem to reason about, while the visible answer stays one cheap line.
+const PROBE_PROMPT: &str = concat!(
+    "Compare 17 × 19 with 18 × 18. If the first is smaller, reply exactly: ",
+    "Aurora connection OK. Otherwise reply exactly: Aurora connection failed. ",
+    "Do not show calculations in the final answer."
+);
+const EXPECTED_PROBE_REPLY: &str = "Aurora connection OK";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +78,12 @@ pub struct ProviderTestReport {
     pub latency_ms: u64,
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    /// Whether this exact saved model profile asked the adapter for reasoning.
+    pub reasoning_requested: bool,
+    /// Whether any non-empty reasoning text actually came back.
+    pub reasoning_received: bool,
+    /// A connected model can still silently lose a configured capability.
+    pub warning: Option<String>,
     /// Present only on failure. Already human-readable.
     pub error: Option<String>,
 }
@@ -79,12 +97,14 @@ pub struct ProviderTestReport {
 pub async fn provider_test_model(
     config: ProviderConfigSnapshot,
     model: String,
-    thinking_enabled: Option<bool>,
-    thinking_budget_tokens: Option<u32>,
 ) -> Result<ProviderTestReport, String> {
     let kind = ProviderKind::detect(config.effective_provider_type());
     let (wire_shape, url) = describe_route(kind, &config);
     let resolved_type = config.effective_provider_type().to_string();
+    let reasoning = config.reasoning.clone().unwrap_or_else(|| {
+        crate::agent_runtime::api_client::ReasoningConfig::legacy(config.supports_thinking, None)
+    });
+    let reasoning_requested = reasoning.enabled && config.supports_thinking;
 
     let mut report = ProviderTestReport {
         ok: false,
@@ -95,6 +115,9 @@ pub async fn provider_test_model(
         latency_ms: 0,
         input_tokens: None,
         output_tokens: None,
+        reasoning_requested,
+        reasoning_received: false,
+        warning: None,
         error: None,
     };
 
@@ -117,9 +140,17 @@ pub async fn provider_test_model(
         messages: &messages,
         tools: &[],
         temperature: None,
-        max_output_tokens: PROBE_MAX_TOKENS,
-        thinking_enabled: thinking_enabled.unwrap_or(false),
-        thinking_budget_tokens,
+        max_output_tokens: if reasoning_requested {
+            REASONING_PROBE_MAX_TOKENS
+        } else {
+            PROBE_MAX_TOKENS
+        },
+        reasoning: reasoning.as_request(),
+        // A connectivity probe sends no tools.
+        tool_bridge: None,
+        // …and belongs to no conversation, so no cache-affinity key.
+        session_key: None,
+        volatile_tail_messages: 0,
     };
 
     // Drain the sink concurrently. The adapters `.send().await` into this
@@ -128,14 +159,21 @@ pub async fn provider_test_model(
     let (tx, mut rx) = mpsc::channel::<AssistantEvent>(64);
     let collector = tokio::spawn(async move {
         let mut text = String::new();
+        let mut saw_reasoning = false;
         while let Some(event) = rx.recv().await {
-            if let AssistantEvent::TextDelta { delta } = event {
-                if text.len() < SNIPPET_LIMIT {
-                    text.push_str(&delta);
+            match event {
+                AssistantEvent::TextDelta { delta } => {
+                    if text.len() < SNIPPET_LIMIT {
+                        text.push_str(&delta);
+                    }
                 }
+                AssistantEvent::Thinking { text, .. } if !text.trim().is_empty() => {
+                    saw_reasoning = true
+                }
+                _ => {}
             }
         }
-        text
+        (text, saw_reasoning)
     });
 
     let started = Instant::now();
@@ -146,7 +184,7 @@ pub async fn provider_test_model(
     .await;
     report.latency_ms = started.elapsed().as_millis() as u64;
 
-    let streamed = collector.await.unwrap_or_default();
+    let (streamed, streamed_reasoning) = collector.await.unwrap_or_default();
 
     match outcome {
         Err(_elapsed) => {
@@ -167,6 +205,10 @@ pub async fn provider_test_model(
             // provider that only streams (and returns an empty final
             // message) still shows its text.
             let assembled = collect_text(&usage.assistant_message);
+            report.reasoning_received = streamed_reasoning
+                || usage.assistant_message.blocks.iter().any(|block| {
+                    matches!(block, ContentBlock::Thinking { text, .. } if !text.trim().is_empty())
+                });
             let text = if assembled.trim().is_empty() {
                 streamed
             } else {
@@ -181,9 +223,26 @@ pub async fn provider_test_model(
                     "Connected, but the provider returned an empty response — no text, no error. Check that the base URL and model ID are correct for this API type."
                         .into(),
                 );
+            } else if !probe_reply_is_valid(trimmed) {
+                // This is more than a style miss. The prompt is a fixed,
+                // deterministic comparison, so a wrong/unrelated answer means
+                // the route is not delivering usable behavior for this model
+                // even though transport succeeded. Kenari's Responses shim on
+                // GLM 5.3 returned both "Aurora connection failed" and an
+                // identity sentence here while Chat answered correctly.
+                report.error = Some(format!(
+                    "Connected, but this API format did not return the deterministic test answer. Expected ‘{EXPECTED_PROBE_REPLY}’; received ‘{}’. This route may not support this model correctly.",
+                    truncate(trimmed, 120)
+                ));
             } else {
                 report.ok = true;
                 report.snippet = truncate(trimmed, SNIPPET_LIMIT);
+                if report.reasoning_requested && !report.reasoning_received {
+                    report.warning = Some(
+                        "The model answered, but this API format returned no reasoning. Some gateways accept reasoning fields and silently discard the output. Try another API format or change this model's Reasoning request setting."
+                            .into(),
+                    );
+                }
             }
         }
     }
@@ -229,6 +288,15 @@ fn truncate(text: &str, limit: usize) -> String {
     }
     let cut: String = text.chars().take(limit).collect();
     format!("{}…", cut.trim_end())
+}
+
+fn probe_reply_is_valid(text: &str) -> bool {
+    let normalized = text
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`'))
+        .trim_end_matches(['.', '!'])
+        .trim();
+    normalized.eq_ignore_ascii_case(EXPECTED_PROBE_REPLY)
 }
 
 /// Turn an [`ApiError`] into something a person can act on. The raw
@@ -283,6 +351,7 @@ mod tests {
             default_temperature: None,
             default_max_tokens: None,
             supports_thinking: false,
+            reasoning: None,
             supports_vision: false,
         }
     }
@@ -306,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn blank_base_url_reports_before_any_request() {
-        let report = provider_test_model(config("openai", "  "), "gpt-5".into(), None, None)
+        let report = provider_test_model(config("openai", "  "), "gpt-5".into())
             .await
             .expect("command returns a report, never an Err");
         assert!(!report.ok);
@@ -315,14 +384,9 @@ mod tests {
 
     #[tokio::test]
     async fn blank_model_reports_before_any_request() {
-        let report = provider_test_model(
-            config("openai", "https://example.test/v1"),
-            "   ".into(),
-            None,
-            None,
-        )
-        .await
-        .expect("command returns a report, never an Err");
+        let report = provider_test_model(config("openai", "https://example.test/v1"), "   ".into())
+            .await
+            .expect("command returns a report, never an Err");
         assert!(!report.ok);
         assert!(report.error.unwrap().contains("model ID"));
     }
@@ -333,6 +397,17 @@ mod tests {
         assert_eq!(truncate("abcdef", 3), "abc…");
         // Must not split a multi-byte char.
         assert_eq!(truncate("héllo wörld", 4), "héll…");
+    }
+
+    #[test]
+    fn deterministic_probe_rejects_wrong_or_unrelated_answers() {
+        assert!(probe_reply_is_valid("Aurora connection OK"));
+        assert!(probe_reply_is_valid("Aurora connection OK."));
+        assert!(!probe_reply_is_valid("Aurora connection failed."));
+        assert!(!probe_reply_is_valid("I am GLM-5.3, developed by Z.ai."));
+        assert!(!probe_reply_is_valid(
+            "The requested result is Aurora connection OK."
+        ));
     }
 
     #[test]

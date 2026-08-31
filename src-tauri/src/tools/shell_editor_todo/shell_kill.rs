@@ -33,7 +33,14 @@ impl ToolExecutor for ShellKillTool {
                 "properties": {
                     "processId": {"type": "string", "description": "The process ID returned by shell_spawn"},
                     "requestId": {"type": "string", "description": "The underlying stream request id"},
-                    "pid": {"type": ["string", "number"], "description": "The OS process id"},
+                    // One declared type, for the reason recorded on
+                    // `file_read`'s `path`: a union `"type": [...]` is
+                    // serialised wrongly by real gateways, silently. A number
+                    // cannot be mangled the way an array was, but the rule is
+                    // worth holding everywhere rather than re-deciding per
+                    // field. `execute` still reads a JSON number, so a model
+                    // that sends one is not punished for it.
+                    "pid": {"type": "string", "description": "The OS process id"},
                     "name": {"type": "string", "description": "The friendly name passed to shell_spawn"}
                 },
                 "required": []

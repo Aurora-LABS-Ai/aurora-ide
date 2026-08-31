@@ -567,6 +567,8 @@ export const ConversationPane: React.FC = () => {
                           beforeTokens={turn.compaction?.beforeTokens ?? 0}
                           afterTokens={turn.compaction?.afterTokens ?? 0}
                           running={turn.compaction?.running ?? false}
+                          startedAt={turn.compaction?.startedAt}
+                          durationMs={turn.compaction?.durationMs}
                         />
                       </div>
                     );

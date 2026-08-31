@@ -948,12 +948,7 @@ impl ToolExecutor for BrowserScreenshotTool {
         let src_attr = value
             .get("path")
             .and_then(Value::as_str)
-            .map(|p| {
-                format!(
-                    " src=\"{}\"",
-                    p.replace('&', "&amp;").replace('"', "&quot;")
-                )
-            })
+            .map(|p| format!(" src=\"{}\"", crate::api::aurora_image::escape_attr(p)))
             .unwrap_or_default();
         // Read the URL from the PAGE, not from Aurora's record of where it sent
         // the page. A click that followed a link is a navigation Aurora never

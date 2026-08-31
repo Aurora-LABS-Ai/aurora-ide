@@ -20,18 +20,29 @@
 //! channel *while the stream is open*. So the request body cannot be finished
 //! before the response is read — both halves must be live at once.
 //!
-//! **Tools execute on our side.** Cursor normally drives tools server-side over
-//! the exec channel, but Aurora owns its own tool loop. So an `mcp_args` is not
-//! answered: it is surfaced as a tool call, the turn ends, and the result comes
-//! back as history on the next request. Paired with
-//! `x-cursor-agent-allowed-tools: mcp_tool_call`, the model sees Aurora's tools
-//! and none of Cursor's own.
+//! **Tools execute on our side, and are answered in place.** Cursor normally
+//! drives tools server-side over the exec channel, but Aurora owns its own tool
+//! loop. Paired with `x-cursor-agent-allowed-tools: mcp_tool_call`, the model
+//! sees Aurora's tools and none of Cursor's own.
+//!
+//! An `mcp_args` **parks** the stream — the server sends nothing further and
+//! waits for an `McpResult` on the same connection. So Aurora hands the call
+//! out through [`ToolExchange`], runs it through the ordinary runtime (same
+//! permission gate, same caps, same checkpoints), writes the result back, and
+//! the same turn carries on. One request covers the whole turn.
+//!
+//! Ending the stream instead is also correct — the result then arrives as
+//! history on the next request — and is what happens when no bridge is
+//! available. It is roughly 15× more expensive, because every tool call
+//! re-uploads the entire conversation, which is what it used to do.
 
 use futures::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+
+use crate::agent_runtime::tool_bridge::{BridgeToolCall, BridgeToolResult};
 
 use cursor_proto::agent as pb;
 use cursor_proto::Message as _;
@@ -68,7 +79,39 @@ pub enum TurnEvent {
     Usage {
         tokens: Option<i32>,
     },
+    /// Cursor's own current conversation occupancy. This is the value its
+    /// context indicator uses; unlike `TokenDeltaUpdate`, it includes the
+    /// prompt and Cursor's server-injected context.
+    ContextUsage {
+        used_tokens: u32,
+    },
     Done(DoneReason),
+}
+
+/// One in-stream tool exchange.
+///
+/// The model asked for tools and the connection is **parked** waiting for the
+/// answers. Whoever drains the turn runs them and sends the results back
+/// through `reply`; the session then writes them onto the still-open stream
+/// and the same turn carries on.
+///
+/// Dropping `reply` without answering is a legitimate outcome — it means the
+/// runtime is gone — and the session reads it as "end the turn", never as
+/// "wait longer".
+pub struct ToolExchange {
+    pub calls: Vec<BridgeToolCall>,
+    pub reply: oneshot::Sender<Vec<BridgeToolResult>>,
+}
+
+/// What the session hands to whoever is draining the turn.
+///
+/// A tool exchange rides the **same** channel as the deltas rather than one of
+/// its own, because the two are ordered against each other: the text before a
+/// tool call belongs to the message that made the call, and two channels would
+/// let it arrive after.
+pub enum PumpMessage {
+    Event(TurnEvent),
+    Tools(ToolExchange),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +130,17 @@ pub struct RunTurn<'a> {
     pub model: &'a str,
     pub input: TurnInput,
     pub tools: Vec<pb::McpToolDefinition>,
+    /// Whether tool results can be answered on this open connection.
+    ///
+    /// True when the runtime handed the adapter a tool bridge, which is the
+    /// path worth having: Cursor parks the stream on `mcp_args` and waits, so
+    /// answering it in place costs one request for the whole turn.
+    ///
+    /// False falls back to ending the turn on the first call. That is still
+    /// **correct** — the result arrives as history on the next request — and it
+    /// is the only option when nothing is listening. It is also roughly 15×
+    /// more expensive, because every call re-uploads the conversation.
+    pub in_stream_tools: bool,
 }
 
 /// Content-addressed store for the history the server pulls back.
@@ -278,6 +332,44 @@ fn shim_to_json(value: &cursor_proto::shim::Value) -> serde_json::Value {
     }
 }
 
+/// Answer one `mcp_args` on the open stream.
+///
+/// `McpResult` is a peer of `ShellResult` and `ReadResult` inside
+/// `ExecClientMessage` and carries the same `id` / `exec_id` correlation — it
+/// exists precisely so a client that owns its own tools can reply without
+/// tearing the connection down.
+///
+/// A failed tool goes back as a **successful** exchange carrying `is_error`,
+/// not as the `McpError` variant. The distinction is who failed: the tool ran
+/// and reported a problem the model should read and work around, which is not
+/// the same as Aurora being unable to run it. Sending the error variant makes
+/// Cursor treat it as a client fault and stop the turn, so the model never
+/// sees the message that would have told it what to do differently.
+fn build_mcp_result(id: u32, exec_id: String, result: &BridgeToolResult) -> pb::AgentClientMessage {
+    pb::AgentClientMessage {
+        message: Some(pb::agent_client_message::Message::ExecClientMessage(
+            pb::ExecClientMessage {
+                id,
+                exec_id,
+                message: Some(pb::exec_client_message::Message::McpResult(pb::McpResult {
+                    result: Some(pb::mcp_result::Result::Success(pb::McpSuccess {
+                        content: vec![pb::McpToolResultContentItem {
+                            content: Some(pb::mcp_tool_result_content_item::Content::Text(
+                                pb::McpTextContent {
+                                    text: result.content.clone(),
+                                    output_location: None,
+                                },
+                            )),
+                        }],
+                        is_error: result.is_error,
+                    })),
+                })),
+                ..Default::default()
+            },
+        )),
+    }
+}
+
 /// Assemble a tool call's arguments from the server's map.
 fn decode_args(args: &std::collections::BTreeMap<String, Vec<u8>>) -> serde_json::Value {
     serde_json::Value::Object(
@@ -293,7 +385,7 @@ fn decode_args(args: &std::collections::BTreeMap<String, Vec<u8>>) -> serde_json
 /// cancellation — a caller awaiting the sink must never be left hanging.
 pub async fn run_turn(
     turn: RunTurn<'_>,
-    events: mpsc::Sender<TurnEvent>,
+    events: mpsc::Sender<PumpMessage>,
     cancel: CancellationToken,
 ) -> Result<(), String> {
     let mut blobs = BlobStore::new();
@@ -342,7 +434,7 @@ pub async fn run_turn(
     let response = tokio::select! {
         biased;
         _ = cancel.cancelled() => {
-            let _ = events.send(TurnEvent::Done(DoneReason::Error("cancelled".into()))).await;
+            let _ = events.send(PumpMessage::Event(TurnEvent::Done(DoneReason::Error("cancelled".into())))).await;
             return Ok(());
         }
         result = http
@@ -365,7 +457,9 @@ pub async fn run_turn(
             status.as_u16()
         );
         let _ = events
-            .send(TurnEvent::Done(DoneReason::Error(message.clone())))
+            .send(PumpMessage::Event(TurnEvent::Done(DoneReason::Error(
+                message.clone(),
+            ))))
             .await;
         return Err(message);
     }
@@ -433,7 +527,9 @@ pub async fn run_turn(
     }
 
     let _ = events
-        .send(TurnEvent::Done(done.unwrap_or(DoneReason::Stop)))
+        .send(PumpMessage::Event(TurnEvent::Done(
+            done.unwrap_or(DoneReason::Stop),
+        )))
         .await;
     Ok(())
 }
@@ -443,7 +539,7 @@ async fn handle(
     message: pb::AgentServerMessage,
     blobs: &mut BlobStore,
     turn: &RunTurn<'_>,
-    events: &mpsc::Sender<TurnEvent>,
+    events: &mpsc::Sender<PumpMessage>,
     body_tx: &mut futures::channel::mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
 ) -> Result<Option<DoneReason>, String> {
     use pb::agent_server_message::Message as Server;
@@ -510,15 +606,56 @@ async fn handle(
                     args.tool_name.clone()
                 };
                 let name = super::history::short_tool_name(&raw).to_string();
-                let _ = events
-                    .send(TurnEvent::ToolCall {
-                        id,
-                        name,
-                        args: decode_args(&args.args),
-                    })
-                    .await;
-                // Hand control back — Aurora executes tools, not Cursor.
-                return Ok(Some(DoneReason::ToolCalls));
+                let call = BridgeToolCall {
+                    id,
+                    name,
+                    input: decode_args(&args.args),
+                };
+
+                // No bridge — end the turn and let the result arrive as
+                // history on the next request. Correct, and expensive.
+                if !turn.in_stream_tools {
+                    let _ = events
+                        .send(PumpMessage::Event(TurnEvent::ToolCall {
+                            id: call.id,
+                            name: call.name,
+                            args: call.input,
+                        }))
+                        .await;
+                    return Ok(Some(DoneReason::ToolCalls));
+                }
+
+                // Cursor is parked on this message waiting for an `McpResult`
+                // on the open stream. Answer it in place: one request carries
+                // the whole turn instead of one request per tool call, each
+                // re-uploading the conversation.
+                let call_id = call.id.clone();
+                let (reply, wait) = oneshot::channel();
+                let exchange = ToolExchange {
+                    calls: vec![call],
+                    reply,
+                };
+                if events.send(PumpMessage::Tools(exchange)).await.is_err() {
+                    return Ok(Some(DoneReason::ToolCalls));
+                }
+                // Nobody answered — the runtime is gone. End the turn rather
+                // than hold a stream open for a result that is not coming.
+                let Ok(results) = wait.await else {
+                    return Ok(Some(DoneReason::ToolCalls));
+                };
+
+                // The far end is parked on this exact id, so it is answered
+                // even when the batch comes back without it. A missing result
+                // is an Aurora bug; a silent one is a stream that never ends.
+                let answer = results
+                    .into_iter()
+                    .find(|result| result.id == call_id)
+                    .unwrap_or_else(|| BridgeToolResult {
+                        id: call_id,
+                        content: "Aurora ran this tool but produced no result.".to_string(),
+                        is_error: true,
+                    });
+                send(body_tx, build_mcp_result(exec.id, exec.exec_id, &answer)).await?;
             }
             // Every other exec request is a native tool Aurora hid via the
             // allowed-tools header. Reaching one means the header did not take
@@ -538,20 +675,37 @@ async fn handle(
             use pb::interaction_update::Message as Update;
             match update.message {
                 Some(Update::TextDelta(delta)) if !delta.text.is_empty() => {
-                    let _ = events.send(TurnEvent::Text(delta.text)).await;
+                    let _ = events
+                        .send(PumpMessage::Event(TurnEvent::Text(delta.text)))
+                        .await;
                 }
                 Some(Update::ThinkingDelta(delta)) if !delta.text.is_empty() => {
-                    let _ = events.send(TurnEvent::Thinking(delta.text)).await;
+                    let _ = events
+                        .send(PumpMessage::Event(TurnEvent::Thinking(delta.text)))
+                        .await;
                 }
                 Some(Update::TokenDelta(delta)) => {
                     let _ = events
-                        .send(TurnEvent::Usage {
+                        .send(PumpMessage::Event(TurnEvent::Usage {
                             tokens: Some(delta.tokens),
-                        })
+                        }))
                         .await;
                 }
                 Some(Update::TurnEnded(_)) => return Ok(Some(DoneReason::Stop)),
                 _ => {}
+            }
+        }
+
+        Server::ConversationCheckpointUpdate(state) => {
+            if let Some(details) = state
+                .token_details
+                .filter(|details| details.used_tokens > 0)
+            {
+                let _ = events
+                    .send(PumpMessage::Event(TurnEvent::ContextUsage {
+                        used_tokens: details.used_tokens,
+                    }))
+                    .await;
             }
         }
 
@@ -599,6 +753,7 @@ mod tests {
             model: Box::leak(model.to_string().into_boxed_str()),
             input,
             tools: Vec::new(),
+            in_stream_tools: false,
         }
     }
 
@@ -728,6 +883,73 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_result_goes_back_on_the_same_exec_ids_it_was_asked_on() {
+        let result = BridgeToolResult {
+            id: "call-1".into(),
+            content: "line 1\nline 2".into(),
+            is_error: false,
+        };
+        let message = build_mcp_result(11, "exec-9".into(), &result);
+
+        let Some(pb::agent_client_message::Message::ExecClientMessage(exec)) = message.message
+        else {
+            panic!("expected an exec reply");
+        };
+        // The correlation is the whole point: Cursor is parked on this pair,
+        // and an answer carrying different ids is an answer to nothing.
+        assert_eq!(exec.id, 11);
+        assert_eq!(exec.exec_id, "exec-9");
+
+        let Some(pb::exec_client_message::Message::McpResult(mcp)) = exec.message else {
+            panic!("expected an mcp result");
+        };
+        let Some(pb::mcp_result::Result::Success(success)) = mcp.result else {
+            panic!("expected success");
+        };
+        assert!(!success.is_error);
+        assert_eq!(success.content.len(), 1);
+        let Some(pb::mcp_tool_result_content_item::Content::Text(text)) =
+            &success.content[0].content
+        else {
+            panic!("expected a text content item");
+        };
+        assert_eq!(text.text, "line 1\nline 2");
+    }
+
+    #[test]
+    fn a_failed_tool_still_answers_as_a_completed_exchange() {
+        let result = BridgeToolResult {
+            id: "call-2".into(),
+            content: "permission denied".into(),
+            is_error: true,
+        };
+        let message = build_mcp_result(3, "exec-3".into(), &result);
+
+        let Some(pb::agent_client_message::Message::ExecClientMessage(exec)) = message.message
+        else {
+            panic!("expected an exec reply");
+        };
+        let Some(pb::exec_client_message::Message::McpResult(mcp)) = exec.message else {
+            panic!("expected an mcp result");
+        };
+        // `Success { is_error }` and not the `McpError` variant. The tool ran
+        // and reported a problem the model can read and work around, which is
+        // a different thing from Aurora being unable to run it — and the error
+        // variant reads as a client fault, ending the turn before the model
+        // ever sees the message that would have told it what to do next.
+        let Some(pb::mcp_result::Result::Success(success)) = mcp.result else {
+            panic!("a tool-reported failure must stay a completed exchange");
+        };
+        assert!(success.is_error);
+        let Some(pb::mcp_tool_result_content_item::Content::Text(text)) =
+            &success.content[0].content
+        else {
+            panic!("expected a text content item");
+        };
+        assert_eq!(text.text, "permission denied");
+    }
+
+    #[test]
     fn tool_arguments_decode_from_protobuf_values() {
         use cursor_proto::shim::{value::Kind, Value as ShimValue};
 
@@ -802,6 +1024,45 @@ mod tests {
         assert!(number_to_json(f64::INFINITY).is_null());
     }
 
+    #[tokio::test]
+    async fn conversation_checkpoint_emits_cursor_reported_context_usage() {
+        let message = pb::AgentServerMessage {
+            message: Some(
+                pb::agent_server_message::Message::ConversationCheckpointUpdate(
+                    pb::ConversationStateStructure {
+                        token_details: Some(pb::ConversationTokenDetails {
+                            used_tokens: 42_123,
+                            max_tokens: 250_000,
+                        }),
+                        ..Default::default()
+                    },
+                ),
+            ),
+        };
+        let (events, mut receiver) = mpsc::channel(1);
+        let (mut body_tx, _body_rx) = futures::channel::mpsc::channel(1);
+        let mut blobs = BlobStore::new();
+        let turn = turn_for(
+            "cursor-grok-4.6-high",
+            TurnInput {
+                root_messages: Vec::new(),
+                user_text: "hi".into(),
+            },
+        );
+
+        let done = handle(message, &mut blobs, &turn, &events, &mut body_tx)
+            .await
+            .expect("checkpoint must decode");
+
+        assert_eq!(done, None);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(PumpMessage::Event(TurnEvent::ContextUsage {
+                used_tokens: 42_123
+            }))
+        ));
+    }
+
     /// The exact call from the session that surfaced this, end to end.
     #[test]
     fn a_file_read_window_arrives_as_the_range_that_was_asked_for() {
@@ -834,8 +1095,15 @@ mod tests {
         let cancel = CancellationToken::new();
         let runner = tokio::spawn(async move {
             let mut collected = Vec::new();
-            while let Some(event) = rx.recv().await {
-                collected.push(event);
+            while let Some(message) = rx.recv().await {
+                match message {
+                    PumpMessage::Event(event) => collected.push(event),
+                    // These turns run with `in_stream_tools: false`, so the
+                    // session never asks. Refusing rather than ignoring keeps a
+                    // future test that flips the flag from hanging on a reply
+                    // nobody was going to send.
+                    PumpMessage::Tools(exchange) => drop(exchange.reply),
+                }
             }
             collected
         });
@@ -887,6 +1155,7 @@ mod tests {
             model: LIVE_MODEL,
             input,
             tools: Vec::new(),
+            in_stream_tools: false,
         })
         .await;
 
@@ -901,16 +1170,28 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, TurnEvent::Thinking(_)))
             .count();
+        let context_usage: Vec<u32> = events
+            .iter()
+            .filter_map(|event| match event {
+                TurnEvent::ContextUsage { used_tokens } => Some(*used_tokens),
+                _ => None,
+            })
+            .collect();
 
         println!("done:     {done:?}");
         println!("text:     {text}");
         println!("thinking: {thinking} deltas");
+        println!("context:  {context_usage:?}");
         println!("events:   {}", events.len());
 
         assert_eq!(done, DoneReason::Stop, "the turn must end cleanly");
         assert!(
             !text.trim().is_empty(),
             "the model must have said something"
+        );
+        assert!(
+            context_usage.last().is_some_and(|tokens| *tokens > 0),
+            "Cursor must report the context occupancy in its checkpoint"
         );
     }
 
@@ -959,6 +1240,9 @@ mod tests {
             model: LIVE_MODEL,
             input,
             tools,
+            // The old path: report the call and end the turn. Kept here so the
+            // test still proves the wire decoding on its own.
+            in_stream_tools: false,
         })
         .await;
 
@@ -969,7 +1253,10 @@ mod tests {
                     println!("TOOL  {name} id={id} args={args}")
                 }
                 TurnEvent::Text(t) => println!("TEXT  {t}"),
-                TurnEvent::Usage { tokens } => println!("USAGE {tokens:?}"),
+                TurnEvent::Usage { tokens } => println!("OUTPUT USAGE {tokens:?}"),
+                TurnEvent::ContextUsage { used_tokens } => {
+                    println!("CONTEXT USAGE {used_tokens}")
+                }
                 _ => {}
             }
         }
@@ -1034,6 +1321,7 @@ mod tests {
             input: build_turn_input(None, &messages),
             // Deliberately empty.
             tools: Vec::new(),
+            in_stream_tools: false,
         })
         .await;
 

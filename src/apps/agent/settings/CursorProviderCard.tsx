@@ -30,24 +30,32 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   CURSOR_PROVIDER_ID,
   cursorAuthConnect,
   cursorAuthSignOut,
   cursorAuthStatus,
+  cursorMeterValue,
   cursorModelsList,
   cursorModelsRefresh,
   cursorModelsSetEnabledBulk,
+  cursorResetLabel,
   cursorStateDbPath,
+  cursorUsageGet,
+  cursorUsd,
   enrichCatalogueRows,
   toCatalogueRows,
   type CursorAuthStatus,
   type CursorCatalogueRow,
+  type CursorUsageSnapshot,
+  type CursorUsageWindow,
 } from "@/apps/agent/services/providers/cursor";
 import {
   clearCursorModelsFromStore,
   syncCursorModelsIntoStore,
 } from "@/apps/agent/services/providers/cursor-sync";
+import { cursorReasons } from "@/apps/agent/services/providers/cursor-variants";
 import { fmtRelative } from "@/apps/agent/services/providers/atlascloud";
 import { AgentIcon } from "../shared/AgentIcon";
 import { ProviderAvatar } from "./ProviderAvatar";
@@ -72,6 +80,37 @@ function fmtWindow(tokens: number | undefined): string | null {
   return `${Math.round(tokens / 1000)}K`;
 }
 
+/**
+ * One metered bucket, drawn the way the Cursor app draws it.
+ *
+ * Quota and spend are the same row with different right-hand sides, because
+ * they are the same question asked of an allowance and of a bill. The bar
+ * clamps; the number never does — going past an on-demand ceiling is the one
+ * thing on this card that costs real money, and rounding it back to the cap
+ * would hide exactly that.
+ */
+const UsageMeter: React.FC<{ win: CursorUsageWindow }> = ({ win }) => {
+  const over = win.usedUsd != null && win.limitUsd != null && win.usedUsd > win.limitUsd;
+  const tone = over || win.usedPercent >= 100 ? "danger" : win.usedPercent >= 75 ? "warn" : "accent";
+  return (
+    <div className="agw-cursor-usage-row">
+      <div className="agw-cursor-usage-head">
+        <span className="agw-cursor-usage-label">{win.label}</span>
+        <span className="agw-cursor-usage-value" data-tone={tone}>
+          {cursorMeterValue(win)}
+        </span>
+      </div>
+      <div className="agw-atlas-meter">
+        <span
+          className="agw-atlas-meter-fill"
+          data-tone={tone}
+          style={{ width: `${Math.min(100, Math.max(0, win.usedPercent)).toFixed(1)}%` }}
+        />
+      </div>
+    </div>
+  );
+};
+
 export const CursorProviderCard: React.FC<{
   enabled: boolean;
   onToggleEnabled: (next: boolean) => void;
@@ -83,6 +122,12 @@ export const CursorProviderCard: React.FC<{
 
   const [rows, setRows] = useState<CursorCatalogueRow[]>([]);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
+  // Usage is loaded and reported independently of the catalogue: an account
+  // that cannot report its plan still has a perfectly good model list, and
+  // failing one must not blank the other.
+  const [usage, setUsage] = useState<CursorUsageSnapshot | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [showLegacy, setShowLegacy] = useState(false);
@@ -109,6 +154,19 @@ export const CursorProviderCard: React.FC<{
     }
   }, []);
 
+  const loadUsage = useCallback(async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      setUsage(await cursorUsageGet());
+    } catch (err) {
+      setUsage(null);
+      setUsageError(String(err));
+    } finally {
+      setUsageLoading(false);
+    }
+  }, []);
+
   const probe = useCallback(async () => {
     try {
       const next = await cursorAuthStatus();
@@ -117,12 +175,15 @@ export const CursorProviderCard: React.FC<{
       if (!next.signedIn && !next.cursorAppDetected) {
         setDbPath(await cursorStateDbPath());
       }
-      if (next.signedIn) void loadModels(false);
+      if (next.signedIn) {
+        void loadModels(false);
+        void loadUsage();
+      }
     } catch (err) {
       setError(String(err));
       setPhase("error");
     }
-  }, [loadModels]);
+  }, [loadModels, loadUsage]);
 
   useEffect(() => {
     void probe();
@@ -205,6 +266,41 @@ export const CursorProviderCard: React.FC<{
     [rows],
   );
 
+  // ── Editable context window ────────────────────────────────────────────────
+  //
+  // Cursor's wire carries no context window at all, so models.dev is the only
+  // source — and it is a seed, not an authority. This makes the number the
+  // user's to correct, the same as on every other provider.
+  //
+  // A model is one row here, keyed by its own id (`cursor-grok-4.6`); the
+  // effort and Fast that decorate it on the wire are choices, not separate
+  // models, so there is exactly one window to edit.
+  const allModels = useSettingsStore((s) => s.models);
+  const updateModel = useSettingsStore((s) => s.updateModel);
+  const cursorModels = useMemo(
+    () => allModels.filter((m) => m.providerId === CURSOR_PROVIDER_ID),
+    [allModels],
+  );
+
+  const rowFor = useCallback(
+    (row: CursorCatalogueRow) =>
+      cursorModels.find((m) => m.modelKey === row.model.stem),
+    [cursorModels],
+  );
+
+  const storedWindowFor = useCallback(
+    (row: CursorCatalogueRow) => rowFor(row)?.contextWindow,
+    [rowFor],
+  );
+
+  const setWindowFor = useCallback(
+    (row: CursorCatalogueRow, next: number | undefined) => {
+      const stored = rowFor(row);
+      if (stored) updateModel(stored.id, { contextWindow: next });
+    },
+    [rowFor, updateModel],
+  );
+
   const plan = planLabel(status?.membership ?? null);
 
   return (
@@ -238,10 +334,13 @@ export const CursorProviderCard: React.FC<{
             <button
               type="button"
               className="agw-prov-icon-btn"
-              title="Reload your plan's models"
-              aria-label="Reload your plan's models"
-              disabled={busy}
-              onClick={() => void loadModels(true)}
+              title="Reload plan usage and models"
+              aria-label="Reload plan usage and models"
+              disabled={busy || usageLoading}
+              onClick={() => {
+                void loadModels(true);
+                void loadUsage();
+              }}
             >
               <AgentIcon name="retry" size={14} />
             </button>
@@ -324,6 +423,58 @@ export const CursorProviderCard: React.FC<{
             </button>
           </div>
 
+          {/* Plan usage. Above the catalogue on purpose: how much is left
+              decides whether picking a model is worth doing at all. */}
+          <div className="agw-cursor-usage">
+            <div className="agw-cursor-usage-title">
+              <h3>Plan &amp; usage</h3>
+              {/* Cursor's own words about its own account. Preferred over
+                  anything Aurora would compose from the percentages — and it
+                  is the same sentence shown in the Cursor app, so the two
+                  never appear to disagree. */}
+              {usage?.notice && (
+                <span className="agw-cursor-usage-notice">{usage.notice}</span>
+              )}
+            </div>
+
+            {usageLoading && !usage && (
+              <>
+                <div className="agw-atlas-skeleton" />
+                <div className="agw-atlas-skeleton" style={{ width: "64%" }} />
+              </>
+            )}
+
+            {usageError && !usageLoading && (
+              <p className="agw-cursor-usage-empty" role="status">
+                {usageError}
+              </p>
+            )}
+
+            {usage && usage.windows.length === 0 && !usageLoading && (
+              <p className="agw-cursor-usage-empty">
+                Connected. This account has no metered plan usage to report.
+              </p>
+            )}
+
+            {usage?.windows.map((win) => (
+              <UsageMeter key={win.label} win={win} />
+            ))}
+
+            {usage && usage.windows.length > 0 && (
+              <p className="agw-cursor-usage-foot">
+                {cursorResetLabel(usage.resetsAtMs) ?? "No reset date reported"}
+                {usage.totalPercentUsed != null && (
+                  <> · {Math.round(usage.totalPercentUsed)}% of the included total used</>
+                )}
+                {/* Free usage Cursor granted on top of the plan. Their own
+                    screen keeps this in a tooltip; it is money not spent. */}
+                {usage.bonusUsd != null && (
+                  <> · {cursorUsd(usage.bonusUsd)} of that covered by Cursor</>
+                )}
+              </p>
+            )}
+          </div>
+
           {/* Catalogue */}
           <div className="agw-modelcat">
             <div className="agw-modelcat-head">
@@ -390,6 +541,8 @@ export const CursorProviderCard: React.FC<{
                     key={row.model.stem}
                     row={row}
                     onToggle={toggleRow}
+                    storedWindow={storedWindowFor(row)}
+                    onWindow={(next) => setWindowFor(row, next)}
                   />
                 ))}
               </div>
@@ -423,9 +576,37 @@ export const CursorProviderCard: React.FC<{
 const CursorModelRow: React.FC<{
   row: CursorCatalogueRow;
   onToggle: (row: CursorCatalogueRow, next: boolean) => void;
-}> = ({ row, onToggle }) => {
+  /** What the model's rows currently carry, when it is switched on. */
+  storedWindow?: number;
+  onWindow: (next: number | undefined) => void;
+}> = ({ row, onToggle, storedWindow, onWindow }) => {
   const { model, catalog } = row;
-  const window = fmtWindow(catalog?.contextWindow);
+  // What is actually in effect: the number on the row, else the one models.dev
+  // seeded it with.
+  const effective = storedWindow ?? catalog?.contextWindow;
+  const window = fmtWindow(effective);
+
+  // Editing is a mode, entered deliberately. A row of always-open inputs turns
+  // a list you read into a form you fill in, and the window is a number people
+  // look at far more often than they change.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const open = () => {
+    setDraft(storedWindow ? String(storedWindow) : "");
+    setEditing(true);
+  };
+  const commit = () => {
+    const trimmed = draft.trim();
+    const parsed = Number(trimmed);
+    // An empty box means "go back to what models.dev says", which is a real
+    // choice and the only way to undo an edit. Anything unparseable is left
+    // alone rather than written as a number nobody typed.
+    if (!trimmed) onWindow(undefined);
+    else if (Number.isFinite(parsed) && parsed > 0) onWindow(Math.round(parsed));
+    setEditing(false);
+  };
+
   const label = model.enabled
     ? `Remove ${model.label} from the model picker`
     : `Add ${model.label} to the model picker`;
@@ -446,15 +627,87 @@ const CursorModelRow: React.FC<{
 
       <span className="agw-modelcat-main">
         <span className="agw-modelcat-name">{model.label}</span>
-        <span className="agw-modelcat-id">{model.representativeId}</span>
+        {/* The model's own id, which is what the row stores. The tier and Fast
+            that decorate it on the wire are choices made in the composer, not
+            part of the model's name — printing `cursor-grok-4.6-high` here
+            named the model after one way of running it. */}
+        <span className="agw-modelcat-id">{model.stem}</span>
       </span>
 
       <span className="agw-modelcat-tags">
-        {model.hasThinking && <span className="agw-modelcat-tag">Thinking</span>}
+        {/* An effort tier is Cursor's reasoning control, so a model carrying
+            tiers thinks just as much as one carrying `-thinking` ids. */}
+        {cursorReasons(model) && <span className="agw-modelcat-tag">Thinking</span>}
         {catalog?.supportsVision && <span className="agw-modelcat-tag">Vision</span>}
         {model.hasFast && <span className="agw-modelcat-tag">Fast</span>}
-        {window && (
-          <span className="agw-modelcat-tag agw-modelcat-tag-quiet">{window}</span>
+        {/* The context window: a number you read, until you ask to change it.
+            Cursor's wire carries no window, so models.dev seeds it and the
+            user's own value overrides — the same as every other provider.
+            Only editable once the model is switched on, because until then
+            there is no row to write to.
+
+            Everything interactive here sits above the row's own click target
+            and stops propagation, or typing would toggle the model. */}
+        {editing ? (
+          <span
+            className="agw-modelcat-window"
+            onClick={(e) => e.stopPropagation()}
+            role="presentation"
+          >
+            <AgwTextInput
+              type="number"
+              autoFocus
+              value={draft}
+              // "inherit", not the seeded number: a greyed-out `500000` in an
+              // empty box is indistinguishable at a glance from a saved one.
+              placeholder="inherit"
+              aria-label={`Context window for ${model.label}, in tokens`}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") commit();
+                if (e.key === "Escape") setEditing(false);
+              }}
+              // Clicking away is a commit, not a cancel — the discard is
+              // Escape, and losing a typed number to a stray click is the
+              // worse of the two mistakes.
+              onBlur={commit}
+            />
+            <button
+              type="button"
+              className="agw-modelcat-window-save"
+              aria-label="Save context window"
+              title="Save"
+              // `mousedown` beats the input's `blur`, so the click is not
+              // swallowed by the field losing focus first.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                commit();
+              }}
+            >
+              <AgentIcon name="check" size={12} />
+            </button>
+          </span>
+        ) : (
+          <>
+            {window && (
+              <span className="agw-modelcat-tag agw-modelcat-tag-quiet">{window}</span>
+            )}
+            {model.enabled && (
+              <button
+                type="button"
+                className="agw-modelcat-window-edit"
+                aria-label={`Edit context window for ${model.label}`}
+                title="Edit context window"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  open();
+                }}
+              >
+                <AgentIcon name="pencil" size={11} />
+              </button>
+            )}
+          </>
         )}
         {model.efforts.length > 1 && (
           <span

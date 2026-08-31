@@ -130,9 +130,34 @@ pub fn legacy_mcp_config_file() -> PathBuf {
 }
 
 /// `<root>/cache/` — derived/regeneratable data (semantic indexes, etc).
-#[allow(dead_code)]
+///
+/// Its only caller today is [`agent_images_dir`], which resolves to scratch
+/// space under `cfg(test)` — so a test build genuinely reaches this through
+/// nothing, and the dead-code warning is right about the build it fires in and
+/// wrong about the product.
+#[cfg_attr(test, allow(dead_code))]
 pub fn cache_dir() -> PathBuf {
     ensure_subdir("cache")
+}
+
+/// `<root>/cache/agent-images/` — downscaled copies of images the agent opened
+/// with `file_read`, kept so a thread can re-show one without re-encoding.
+///
+/// Under `cache/` because every file here is regeneratable from the original on
+/// disk: deleting the folder costs a re-encode, never a picture.
+///
+/// Under `cargo test` this resolves to scratch space instead. The whole crate
+/// compiles with `cfg(test)` there, so a tool exercised through its real entry
+/// point — which cannot be handed a directory — still keeps its encodes out of
+/// the user's app data. A test that leaves files in the folder it is testing is
+/// how a picture nobody asked for ends up in somebody's cache.
+pub fn agent_images_dir() -> PathBuf {
+    #[cfg(test)]
+    let dir = std::env::temp_dir().join("aurora-agent-images-tests");
+    #[cfg(not(test))]
+    let dir = cache_dir().join("agent-images");
+    ensure(&dir);
+    dir
 }
 
 /// `~/.aurora/` — the **Agent Team shared brain** root.

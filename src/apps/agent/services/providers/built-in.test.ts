@@ -94,3 +94,37 @@ describe("kenari", () => {
     expect(builtInRank("kenari")).toBeLessThan(BUILT_IN_PROVIDER_ORDER.length);
   });
 });
+
+describe("agentrouter wire", () => {
+  it("reads the stored type as the wire, chat by default", async () => {
+    const { agentRouterWire } = await import("./agentrouter");
+    expect(agentRouterWire({ id: "agentrouter", providerType: "anthropic" })).toBe("anthropic");
+    expect(agentRouterWire({ id: "agentrouter", providerType: "openai" })).toBe("openai");
+    // A row stored before the picker existed carries the preset's own type or
+    // nothing at all — both mean the chat wire.
+    expect(agentRouterWire({ id: "agentrouter", providerType: undefined })).toBe("openai");
+  });
+
+  it("marks only real wire choices as merge-protected", async () => {
+    // The catalog merge preserves the stored type ONLY when it is one of the
+    // two wires the picker offers. A stale or foreign value must still be
+    // repaired to the preset's — otherwise a bad row could never self-heal.
+    const { isAgentRouterWireChoice } = await import("./agentrouter");
+    expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "anthropic" })).toBe(true);
+    expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "openai" })).toBe(true);
+    expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "custom" })).toBe(false);
+    expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: undefined })).toBe(false);
+    // Never another provider, even on a matching type.
+    expect(isAgentRouterWireChoice({ id: "anthropic", providerType: "anthropic" })).toBe(false);
+  });
+
+  it("offers exactly the two wires every model answers on", async () => {
+    // The Responses wire exists but is routed PER MODEL (probed live
+    // 2026-08-27: gpt-5.6-sol answers it, glm-5.3 is a 404, claude a 503
+    // "no channel"). A provider-level Responses option would break every
+    // non-GPT model on the row, so it is deliberately not offered here —
+    // if it ever ships, it belongs on the model row.
+    const { AGENT_ROUTER_WIRES } = await import("./agentrouter");
+    expect(AGENT_ROUTER_WIRES.map((w) => w.value)).toEqual(["openai", "anthropic"]);
+  });
+});

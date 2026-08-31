@@ -62,12 +62,10 @@ pub(crate) fn provider_preset(config: &AuroraProviderConfig) -> ProviderPreset {
         // client, reasoning replay) follows from a single value rather than
         // from a second setting that could disagree with it.
         //
-        // Chat completions is the default and the one to use. Measured against
-        // the live API on `deepseek-v4-pro`: it is the only wire every chat
-        // model serves (all 54 list `endpoints: ["chat"]`), it returns the FULL
-        // reasoning trace in `reasoning` + `reasoning_content` — both of which
-        // Aurora's OpenAI reader already handles — and tool calls stream
-        // normally.
+        // Chat completions is the default and the one to use. It is the only
+        // wire every chat model serves. Live probes returned the full reasoning
+        // trace for both `deepseek-v4-pro` and `glm-5-3`; the other two wires
+        // were model-dependent and lossy for GLM 5.3.
         "kenari" => ProviderPreset {
             auth_header: "Authorization",
             auth_type: AuthType::Bearer,
@@ -101,13 +99,10 @@ pub(crate) fn provider_preset(config: &AuroraProviderConfig) -> ProviderPreset {
         // tool that is not a plain function. It exists upstream for Codex CLI,
         // which has no chat wire left.
         //
-        // It does NOT short-change reasoning, which the event names suggest and
-        // a measurement disproves: the trace arrives through
-        // `response.reasoning_summary_text.delta` — OpenAI's summary channel,
-        // the only reasoning channel this wire defines — but the CONTENT is the
-        // model's raw trace, in the same first-person shorthand the other two
-        // wires return. Aurora reads that event already (`api/responses.rs`),
-        // so the trace shows.
+        // Reasoning support is model-dependent. DeepSeek V4 Pro emitted its
+        // trace through `response.reasoning_summary_text.delta`; GLM 5.3 emitted
+        // no reasoning and failed a deterministic answer probe at both `high`
+        // and `max`. The Provider model test is the authority for a row.
         "kenari-responses" => ProviderPreset {
             auth_header: "Authorization",
             auth_type: AuthType::Bearer,

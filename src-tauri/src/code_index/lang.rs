@@ -31,6 +31,7 @@ const RUBY_SCM: &str = include_str!("queries/ruby.scm");
 const PHP_SCM: &str = include_str!("queries/php.scm");
 const KOTLIN_SCM: &str = include_str!("queries/kotlin.scm");
 const SWIFT_SCM: &str = include_str!("queries/swift.scm");
+const DART_SCM: &str = include_str!("queries/dart.scm");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -47,12 +48,13 @@ pub enum Lang {
     Php,
     Kotlin,
     Swift,
+    Dart,
 }
 
 impl Lang {
     /// Every language this build can parse, in a stable order. Used to compile
     /// the whole query set at startup and to state coverage to a caller.
-    pub const ALL: [Lang; 13] = [
+    pub const ALL: [Lang; 14] = [
         Lang::Rust,
         Lang::TypeScript,
         Lang::Tsx,
@@ -66,6 +68,7 @@ impl Lang {
         Lang::Php,
         Lang::Kotlin,
         Lang::Swift,
+        Lang::Dart,
     ];
 
     /// What to tell a caller who asked about a file this index cannot read.
@@ -73,7 +76,7 @@ impl Lang {
     /// covered.
     pub const UNINDEXED_HINT: &'static str =
         "this index reads Rust, TypeScript/JavaScript, Python, C, C++, Go, Java, C#, Ruby, PHP, \
-         Kotlin and Swift — use `grep` or `file_read` for anything else";
+         Kotlin, Swift and Dart — use `grep` or `file_read` for anything else";
 
     /// Maps an extension to a grammar. `.js`/`.jsx` deliberately ride the
     /// TypeScript grammars — it is a superset, and a JS file parsed by the TS
@@ -105,6 +108,7 @@ impl Lang {
             "php" | "phtml" => Some(Lang::Php),
             "kt" | "kts" => Some(Lang::Kotlin),
             "swift" => Some(Lang::Swift),
+            "dart" => Some(Lang::Dart),
             _ => None,
         }
     }
@@ -124,6 +128,7 @@ impl Lang {
             Lang::Php => "php",
             Lang::Kotlin => "kotlin",
             Lang::Swift => "swift",
+            Lang::Dart => "dart",
         }
     }
 
@@ -143,6 +148,7 @@ impl Lang {
             Lang::Php => 10,
             Lang::Kotlin => 11,
             Lang::Swift => 12,
+            Lang::Dart => 13,
         }
     }
 
@@ -165,6 +171,7 @@ impl Lang {
             Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
             Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
             Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
+            Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
         }
     }
 
@@ -189,6 +196,7 @@ impl Lang {
             Lang::Php => PHP_SCM.to_string(),
             Lang::Kotlin => KOTLIN_SCM.to_string(),
             Lang::Swift => SWIFT_SCM.to_string(),
+            Lang::Dart => DART_SCM.to_string(),
         }
     }
 
@@ -252,6 +260,17 @@ impl Lang {
             // tree-sitter-swift spells `struct`, `enum` and `actor` as
             // `class_declaration` too — one node kind covers all four.
             Lang::Swift => matches!(kind, "class_declaration" | "protocol_declaration"),
+            // A Dart extension owns its methods the same way a class does, so
+            // `context.paddingOf(...)` is attributed to the extension that
+            // declares it rather than floating at file scope.
+            Lang::Dart => matches!(
+                kind,
+                "class_declaration"
+                    | "mixin_declaration"
+                    | "extension_declaration"
+                    | "extension_type_declaration"
+                    | "enum_declaration"
+            ),
         }
     }
 
@@ -299,6 +318,14 @@ impl Lang {
             Lang::Swift => matches!(
                 kind,
                 "function_declaration" | "init_declaration" | "deinit_declaration"
+            ),
+            // Dart declares a member's signature and its body as SIBLINGS, so
+            // the node a reference actually sits inside is the body, not the
+            // declaration. Naming the declarations here instead would attribute
+            // every call in a method to nothing.
+            Lang::Dart => matches!(
+                kind,
+                "function_body" | "function_expression_body" | "function_expression"
             ),
         }
     }

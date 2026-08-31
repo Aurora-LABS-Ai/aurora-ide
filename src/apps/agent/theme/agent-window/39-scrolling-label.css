@@ -1,0 +1,61 @@
+/* Sliding label — a one-line label that shows its own tail on row hover.
+ * Paired with `shared/ScrollingLabel.tsx`, which measures the overflow and
+ * writes `--agw-slide-shift` / `--agw-slide-dur` onto the clip.
+ *
+ * At rest the inner box is capped at the clip's width, so it ellipsises exactly
+ * as a plain truncated label does — the "…" stays the signal that there is more
+ * to read. On hover the cap is lifted, the inner box grows to its full text
+ * width, and the transform walks it left by precisely the amount that was
+ * hidden. It never overshoots and never loops: the tail arrives, and stops.
+ *
+ * It waits a second before setting off. That pause is what separates "I stopped
+ * here to read this" from a pointer crossing the rail on its way somewhere
+ * else — without it, running down a list of chats sets every row you pass in
+ * motion. Out is LINEAR at a constant ~45px/s (duration comes from the
+ * distance, so a long title takes longer rather than moving faster). Back is
+ * immediate and eased: leaving is an answer, not a reading, so it must never
+ * make you wait out a second delay of its own. */
+.agw-slide {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.agw-slide-inner {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateX(0);
+  /* Shorthand, so the return leg resets the delay the hover leg sets. */
+  transition: transform 0.2s cubic-bezier(0, 0, 0.2, 1);
+}
+[data-slide-host]:hover .agw-slide-inner,
+.agw-slide:hover .agw-slide-inner {
+  /* Let the text run past the clip so there is a tail to travel to. */
+  max-width: none;
+  text-overflow: clip;
+  /* Promoted only for the row actually being read — not for every row in a
+     rail that can hold a hundred of them. */
+  will-change: transform;
+  transform: translateX(var(--agw-slide-shift, 0px));
+  transition-duration: var(--agw-slide-dur, 0.2s);
+  transition-timing-function: linear;
+  /* Hover intent: stay a second, and the title reads itself out to you. */
+  transition-delay: var(--agw-slide-delay, 1s);
+}
+
+/* Motion off: the label stays truncated and the row's own `title` tooltip
+ * remains the way to read the whole thing — the same route touch and keyboard
+ * users already take. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slide-host]:hover .agw-slide-inner,
+  .agw-slide:hover .agw-slide-inner {
+    max-width: 100%;
+    text-overflow: ellipsis;
+    transform: none;
+    transition: none;
+  }
+}

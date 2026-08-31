@@ -1,12 +1,8 @@
-/* Section header (Pinned label / Projects toggle + sort). */
-.agw-rail-section-label {
-  font-size: var(--agw-fs-label);
-  font-weight: var(--agw-fw-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--agw-text-subtle);
-  padding: 8px 6px 4px;
-}
+/* Section header — one form for all three sections (Pinned, Recent, Projects),
+ * each a toggle with a caret. Pinned used to be a plain label; a fold that
+ * works on two of three sections is the kind of inconsistency you notice
+ * without being able to name. */
+
 /* STICKY to the rail scroller's top edge: while you're anywhere inside the
  * (possibly very long) expanded projects list, the header — and with it the
  * scope toggle and the order button — stays one click away, instead of the
@@ -24,6 +20,14 @@
   padding: 8px 4px 4px 2px;
   background: var(--agw-rail-paint);
   box-shadow: 0 1px 0 var(--agw-border);
+}
+/* A short section ABOVE the sticky one (Recent). Two sticky headers in the
+ * same scroller both pin to top:0 and overlap each other; this one is five
+ * rows tall, so it has nothing to pin for and gives up the seam with it. */
+.agw-rail-section[data-flat] {
+  position: static;
+  z-index: auto;
+  box-shadow: none;
 }
 .agw-rail-section-toggle {
   flex: 1;

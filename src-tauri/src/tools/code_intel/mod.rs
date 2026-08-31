@@ -1298,12 +1298,19 @@ mod tests {
     }
 
     /// A workspace whose real work is in a language this index cannot read.
+    /// A workspace holding one language the index reads and one it does not.
+    ///
+    /// The unreadable half was `.dart` until Dart joined the roster — which is
+    /// exactly the churn to expect here, and why the file has to be a language
+    /// nothing parses TODAY rather than a language chosen once. Lua is the
+    /// current pick: common enough to be a real workspace's second language,
+    /// and listed in `looks_like_source` so the walker counts it.
     fn unreadable_fixture() -> (tempfile::TempDir, CodeIndex) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(
-            dir.path().join("grid.dart"),
-            "class PianoRollGrid {\n  void paint() {}\n}\n",
+            dir.path().join("grid.lua"),
+            "PianoRollGrid = {}\nfunction PianoRollGrid.paint() end\n",
         )
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
@@ -1387,10 +1394,10 @@ mod tests {
         // The file is sitting right there. "No indexed file matches" is true
         // and useless; the caller needs to know it must reach for `grep`.
         let (_d, idx) = unreadable_fixture();
-        let v = op_outline(&idx, "grid.dart");
+        let v = op_outline(&idx, "grid.lua");
         assert_eq!(v["symbols"], 0);
         let msg = v["message"].as_str().unwrap();
-        assert!(msg.contains(".dart"), "{msg}");
+        assert!(msg.contains(".lua"), "{msg}");
         assert!(msg.contains("grep"), "the way forward must be named: {msg}");
         assert!(
             !msg.contains("No indexed file matches"),
@@ -1407,7 +1414,7 @@ mod tests {
         let v = op_definition(&idx, "PianoRollGrid", None);
         assert_eq!(v["found"], 0);
         let msg = v["message"].as_str().unwrap();
-        assert!(msg.contains(".dart"), "{msg}");
+        assert!(msg.contains(".lua"), "{msg}");
         assert!(
             !msg.starts_with("No definition of `PianoRollGrid` in this workspace."),
             "it IS in this workspace — only unreadable: {msg}"
@@ -1423,7 +1430,41 @@ mod tests {
         assert_eq!(v["resolved"], false);
         let msg = v["message"].as_str().unwrap();
         assert!(msg.contains("nothing calls it"), "{msg}");
-        assert!(msg.contains(".dart"), "{msg}");
+        assert!(msg.contains(".lua"), "{msg}");
+    }
+
+    /// A Dart class and its constructor share a name — the language writes
+    /// `Post` twice — so a lookup returns both. That is the same shape Java
+    /// already has (`constructor_declaration` is a `@def.method` there too),
+    /// and it is the honest answer: they are two declarations, told apart by
+    /// their container, `Post` against `Post::Post`.
+    ///
+    /// Pinned because it looks like a duplicate-symbol bug when you first meet
+    /// it in a `found: 2`, and the next person should find this instead of
+    /// "fixing" it by dropping the constructor.
+    #[test]
+    fn a_dart_class_and_its_constructor_are_two_named_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("post.dart"),
+            "class Post {\n  final String id;\n  const Post({required this.id});\n}\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let v = op_definition(&idx, "Post", None);
+        assert_eq!(v["found"], 2, "the class and its constructor: {v}");
+        let symbols: Vec<&str> = v["definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["symbol"].as_str().unwrap())
+            .collect();
+        assert!(symbols.contains(&"Post"), "the class: {symbols:?}");
+        assert!(
+            symbols.contains(&"Post::Post"),
+            "the constructor, qualified by its class: {symbols:?}"
+        );
     }
 
     #[test]

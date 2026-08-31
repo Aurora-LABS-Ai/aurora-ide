@@ -53,12 +53,15 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::api_client::{ApiError, ApiRequest, StreamingApiClient, ToolSchema};
+use super::api_client::{ApiError, ApiRequest, ReasoningConfig, StreamingApiClient, ToolSchema};
 use super::error::RuntimeError;
 use super::events::{AssistantEvent, TurnCompletion};
 use super::hooks::{Hook, NoopHook, ToolHookResult};
 use super::ipc::AgentEventEnvelope;
 use super::session::{RichToolResult, Session};
+use super::tool_bridge::{
+    BridgeReply, BridgeRequest, BridgeToolCall, BridgeToolResult, ToolBridge,
+};
 use super::tool_executor::{ToolContext, ToolError, ToolRegistry};
 use super::tool_pairing::{
     repair_tool_pairing, synthetic_tool_results, STOPPED_BEFORE_RUN, STOPPED_MID_RUN,
@@ -164,10 +167,28 @@ fn stream_retry_delay_ms(attempt: u32, retry_after: Option<u64>) -> u64 {
 /// [`crate::agent_runtime::ipc::AgentChatRequest`] into a fresh
 /// [`RuntimeConfig`] each turn — `TurnDriver::run_turn` builds one
 /// from the active workspace defaults and overlays the request's
-/// `system_prompt`, `temperature`, `max_output_tokens`,
-/// `thinking_enabled` fields before constructing the runtime.
+/// `system_prompt`, `temperature`, `max_output_tokens`, and the canonical
+/// reasoning contract before constructing the runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
+    /// The model id to put on the wire this turn.
+    ///
+    /// Separate from the model the conversation is **pinned** to, because on
+    /// one provider they are different strings. Cursor writes the effort tier
+    /// and the Fast lane into its model *id*, so the frontend composes
+    /// `composer-2.5` plus the user's choices into `composer-2.5-fast` for the
+    /// request, while the pin stays `cursor:composer-2.5` — the model itself,
+    /// which is what the picker lists and what every capability lookup keys on.
+    ///
+    /// The runtime used to read the model back out of `Session::model` for
+    /// this. That worked only while the two were the same string: the moment
+    /// the pin became the undecorated id, the composed one was discarded and
+    /// the account was sent a model that does not exist.
+    ///
+    /// Empty falls back to the session's pin, which is what every caller that
+    /// does not set this relies on.
+    pub wire_model: String,
+
     /// Hard cap on assistant↔tool round trips per turn. `None` means
     /// "let the model run as long as it wants" — the user's preference
     /// and the documented Aurora default after the tool-cap removal.
@@ -181,16 +202,9 @@ pub struct RuntimeConfig {
     /// doesn't override per-turn.
     pub default_max_output_tokens: u32,
 
-    /// Whether to enable extended thinking on every call. Wired
-    /// through the `ApiRequest::thinking_enabled` flag — the impl
-    /// silently drops it on providers that don't support thinking.
-    pub thinking_enabled: bool,
-
-    /// Explicit thinking token budget for models whose reasoning control
-    /// is a budget rather than an effort tier. `None` lets the adapter
-    /// derive one (Anthropic scales the effort tier against
-    /// `default_max_output_tokens`). Only read when `thinking_enabled`.
-    pub thinking_budget_tokens: Option<u32>,
+    /// Provider-neutral reasoning intent for the selected model. This one
+    /// value feeds every iteration, retry, and cache-sharing compaction call.
+    pub reasoning: ReasoningConfig,
 
     /// Default sampling temperature applied to every API call.
     /// `None` defers to the provider preset (some, like DeepSeek's
@@ -246,6 +260,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            wire_model: String::new(),
             max_iterations: None,
             system_prompt: None,
             // Reasoning tokens bill against the output cap on every provider
@@ -255,8 +270,7 @@ impl Default for RuntimeConfig {
             // a word, ending the turn at the cap with nothing to show. The
             // extra headroom costs ~9k of trim reserve on a 200k window.
             default_max_output_tokens: 16_384,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: ReasoningConfig::default(),
             default_temperature: None,
             ide_context: None,
             context_window: None,
@@ -494,7 +508,21 @@ impl ConversationRuntime {
                 .await;
 
             // ── Stream one assistant message ───────────────────────
+            //
+            // The pin. What this conversation is ON — the key the frontend's
+            // capability lookups use, and what the learned context limits below
+            // are filed under.
             let model = session.model.clone().unwrap_or_default();
+            // What actually goes on the wire, which is not always the same
+            // string: Cursor's effort tier and Fast lane live in its model id,
+            // so the frontend composes them in before sending. Falling back to
+            // the pin keeps every caller that sets no wire model working
+            // exactly as before.
+            let wire_model = if self.config.wire_model.is_empty() {
+                model.clone()
+            } else {
+                self.config.wire_model.clone()
+            };
             let tool_schemas = self.tools.schemas();
 
             // The event channel and its forwarder are built per *attempt*,
@@ -509,44 +537,19 @@ impl ConversationRuntime {
             // session round-trips unchanged.
             let compacted = self.compacted_view(session);
 
-            // Optionally wrap the latest user message with the
-            // IDE context block. We always work on a freshly cloned
-            // vector so the persisted session stays clean (the
-            // contract: `user_message` is verbatim in JSONL, the
-            // API sees `<ide_context>…</ide_context>` ahead of it).
-            let owned_messages: Option<Vec<ConversationMessage>> =
-                match self.config.ide_context.as_deref().filter(|s| !s.is_empty()) {
-                    Some(ctx) => Some(inject_ide_context(&compacted, ctx)),
-                    None => None,
-                };
-
             // Orientation for the workspace: what exists and roughly where.
             // Built from the same index the `code` tool reads, so the two can
-            // never describe different codebases.
+            // never describe different codebases. Byte-stable for the whole
+            // conversation (see `REPO_MAP_BY_THREAD`) because it rides in the
+            // FIRST user message — the start of the provider's cached prefix.
             //
             // Failure here is silent by design — the map is a convenience, and
             // an unindexable workspace must not cost the user their turn. The
             // agent still has `code`, `grep` and `workspace_tree`.
             let owned_messages: Option<Vec<ConversationMessage>> =
-                match self.repo_map_block(session.workspace_root.as_deref()) {
-                    Some(block) => Some(inject_repo_map(
-                        owned_messages.as_deref().unwrap_or(&compacted),
-                        &block,
-                    )),
-                    None => owned_messages,
-                };
-
-            // The live checklist, re-read from the store on EVERY request so a
-            // mid-turn update is reflected on the very next iteration. This is
-            // what keeps the model from having to remember its own list — or
-            // call `op: "read"` to recover it after a compaction.
-            let owned_messages: Option<Vec<ConversationMessage>> =
-                match task_reminder_block(&session.thread_id) {
-                    Some(reminder) => Some(inject_task_reminder(
-                        owned_messages.as_deref().unwrap_or(&compacted),
-                        &reminder,
-                    )),
-                    None => owned_messages,
+                match self.repo_map_block(session.workspace_root.as_deref(), &session.thread_id) {
+                    Some(block) => Some(inject_repo_map(&compacted, &block)),
+                    None => None,
                 };
 
             // Budget-aware trim. Same API-view-only contract as
@@ -579,7 +582,27 @@ impl ConversationRuntime {
                     repair.synthesized, repair.dropped,
                 );
             }
-            let messages_for_api: &[ConversationMessage] = &repair.messages;
+
+            // Volatile, present-state context — the IDE context block, and the
+            // live checklist re-read from the store on EVERY request so a
+            // mid-turn update is reflected on the very next iteration. It rides
+            // as its own user message at the ABSOLUTE END of the API view:
+            // these blocks change mid-turn, and spliced into the turn's user
+            // message (which sits before the whole tool loop) every change
+            // invalidated the provider's cached prefix from that message on.
+            // API-view only, like everything above — the JSONL never sees it.
+            let mut final_messages = repair.messages;
+            let mut volatile_tail_messages = 0usize;
+            if let Some(context_tail) = trailing_context_message(
+                self.config.ide_context.as_deref(),
+                task_reminder_block(&session.thread_id).as_deref(),
+            ) {
+                final_messages.push(context_tail);
+                // Its bytes change between requests, so breakpoint-style
+                // caches (Anthropic) must not anchor on it.
+                volatile_tail_messages = 1;
+            }
+            let messages_for_api: &[ConversationMessage] = &final_messages;
 
             // When the trim dropped messages, append a small notice to
             // the system prompt so the model knows the early conversation
@@ -604,7 +627,15 @@ impl ConversationRuntime {
             // request is rebuilt byte-identical on each attempt, so the
             // retry re-reads the provider's prompt cache rather than paying
             // for a fresh prompt.
+            // Set once this request has run tools on its open stream, which
+            // changes two later decisions — see the retry guard and the
+            // empty-reply check below.
+            let mut bridge_served = false;
             let mut attempt: u32 = 1;
+            // Owned copy: the request borrows it across the stream await,
+            // where `session` itself must stay mutably borrowable for the
+            // tool bridge.
+            let thread_key = session.thread_id.clone();
             let stream_result = loop {
                 // Internal event channel: API impl pushes `AssistantEvent`
                 // onto `api_tx`; a forwarder task wraps each in an envelope
@@ -612,35 +643,90 @@ impl ConversationRuntime {
                 // starting from the `seq` the previous attempt reached so
                 // the frontend's ordering stays monotonic across a retry.
                 let (api_tx, api_rx) = mpsc::channel::<AssistantEvent>(64);
-                let forwarder =
-                    spawn_event_forwarder(turn_id.clone(), seq, api_rx, event_sink.clone());
+                // One counter for everything this attempt emits. A
+                // bidirectional provider runs tools while the stream is still
+                // streaming, so the forwarder and the tool path have to draw
+                // from the same number — see `spawn_event_forwarder`.
+                let shared_seq = Arc::new(AtomicU64::new(seq));
+                let forwarder = spawn_event_forwarder(
+                    turn_id.clone(),
+                    Arc::clone(&shared_seq),
+                    api_rx,
+                    event_sink.clone(),
+                );
+
+                // Capacity 1 on purpose: the adapter is blocked on its own
+                // request until we answer it, so a deeper queue could only
+                // hide a protocol bug. Rebuilt per attempt — a retry opens a
+                // new stream, and results owed to the dead one are owed to
+                // nobody.
+                let (bridge_tx, mut bridge_rx) = mpsc::channel::<BridgeRequest>(1);
+                let bridge = ToolBridge::new(bridge_tx);
 
                 // Borrows only — rebuilding it per attempt costs nothing.
                 let request = ApiRequest {
-                    model: &model,
+                    model: &wire_model,
                     system_prompt,
                     messages: messages_for_api,
                     tools: &tool_schemas,
                     temperature: self.config.default_temperature,
                     max_output_tokens: self.config.default_max_output_tokens,
-                    thinking_enabled: self.config.thinking_enabled,
-                    thinking_budget_tokens: self.config.thinking_budget_tokens,
+                    reasoning: self.config.reasoning.as_request(),
+                    tool_bridge: Some(&bridge),
+                    // Cache affinity: same conversation, same key, same
+                    // provider-side cache node (OpenAI `prompt_cache_key`,
+                    // Codex `session_id`).
+                    session_key: Some(&thread_key),
+                    volatile_tail_messages,
                 };
 
-                let result = self
-                    .api_client
-                    .stream(request, api_tx, cancel_token.clone())
-                    .await;
-
-                // Drain the forwarder so we recover the final `seq`.
-                seq = match forwarder.await {
-                    Ok(final_seq) => final_seq,
-                    Err(join_err) => {
-                        return Err(RuntimeError::InvalidState(format!(
-                            "event forwarder task failed: {join_err}"
-                        )));
+                // Drive the stream and serve its tool requests in the same
+                // task. Adapters that never touch the bridge never take the
+                // second branch, and behave exactly as they did before.
+                //
+                // Pausing the stream while a batch runs is correct rather than
+                // merely tolerable: a provider that asked for a tool is
+                // waiting on that answer and sending nothing meanwhile, and
+                // the request body is flushed by the connection's own task, so
+                // nothing needs us to poll here for the reply to go out.
+                let result = {
+                    let stream = self
+                        .api_client
+                        .stream(request, api_tx, cancel_token.clone());
+                    tokio::pin!(stream);
+                    loop {
+                        tokio::select! {
+                            biased;
+                            finished = &mut stream => break finished,
+                            Some(ask) = bridge_rx.recv() => {
+                                bridge_served = true;
+                                let reply = self
+                                    .serve_tool_bridge(
+                                        ask.assistant,
+                                        ask.calls,
+                                        session,
+                                        &turn_id,
+                                        &cancel_token,
+                                        &event_sink,
+                                        &shared_seq,
+                                    )
+                                    .await?;
+                                // A dropped receiver means the adapter stopped
+                                // waiting; the stream branch reports why.
+                                let _ = ask.reply.send(reply);
+                            }
+                        }
                     }
                 };
+
+                // Drain the forwarder so everything it holds is out before we
+                // read the counter it was drawing from.
+                if let Err(join_err) = forwarder.await {
+                    return Err(RuntimeError::InvalidState(format!(
+                        "event forwarder task failed: {join_err}"
+                    )));
+                }
+                seq = shared_seq.load(AtomicOrdering::Relaxed);
 
                 let api_err = match result {
                     Ok(turn) => break Ok(turn),
@@ -658,7 +744,15 @@ impl ConversationRuntime {
                 // Out of attempts, or an error that re-issuing cannot fix.
                 // A cancel the stream itself reported lands here too —
                 // `Cancelled` is not retryable — and keeps its own identity.
-                if attempt >= MAX_STREAM_ATTEMPTS || !api_err.is_retryable() {
+                //
+                // A stream that already ran tools is never retried, whatever
+                // the error. Retrying re-sends `messages_for_api`, which was
+                // built before the turn started and therefore does not contain
+                // the results those tools just wrote — so the model would be
+                // asked to do the same work a second time with no memory of
+                // the first. The turn ends here instead; the session holds the
+                // completed work, and the next request is built from it.
+                if attempt >= MAX_STREAM_ATTEMPTS || !api_err.is_retryable() || bridge_served {
                     break Err(api_err);
                 }
 
@@ -898,13 +992,23 @@ impl ConversationRuntime {
             // thought in history is replayed to the provider on every later
             // request in the thread, so the truncation is paid for again and
             // again for reasoning that reached no conclusion.
-            let produced_nothing = !can_advance_turn(&assistant_message);
+            // On a provider that ran its tools mid-stream, an empty trailing
+            // message is a normal way for a turn to end: the model's last act
+            // was a tool call, and everything it said is already in the
+            // session. It must not be mistaken for a provider that answered
+            // with nothing — that would retry a turn which in fact succeeded.
+            let trailing_is_empty = !can_advance_turn(&assistant_message);
+            let produced_nothing = trailing_is_empty && !bridge_served;
             // Read before the message is moved below, and the distinction is
             // worth keeping: reasoning that stopped without concluding is a
             // cut stream, while nothing at all points at the provider or the
             // route.
             let stalled_after_reasoning = produced_nothing && has_thinking(&assistant_message);
-            if !produced_nothing {
+            // Keyed on emptiness, not on `produced_nothing`: an empty message
+            // must stay out of history either way — it serializes as an
+            // assistant turn with no content, which Anthropic rejects outright
+            // on every later request in the thread.
+            if !trailing_is_empty {
                 session.append_message(assistant_message.clone());
                 assistant_messages.push(assistant_message);
             }

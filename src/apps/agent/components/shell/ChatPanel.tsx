@@ -271,7 +271,7 @@ export const ChatPanel: React.FC<{
         <div className="agw-composer-dock">
           {/* Sending while this chat streams QUEUES the text as a mid-turn
               injection. Without this card the message would appear to vanish. */}
-          <AgentQueuedDock threadId={threadId} />
+          <AgentQueuedDock threadId={threadId} draftKey={draftKey} />
           {send.pendingApproval && (
             <ApprovalBar
               toolName={send.pendingApproval.toolName}

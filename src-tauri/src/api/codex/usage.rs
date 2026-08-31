@@ -52,10 +52,20 @@ pub struct CodexUsageSnapshot {
     pub fetched_at_ms: i64,
 }
 
-/// Fetch the current usage snapshot for the signed-in ChatGPT account.
+/// Fetch the current usage snapshot for the account serving requests.
 pub async fn fetch_usage() -> Result<CodexUsageSnapshot, String> {
     let access = auth::fresh_access(false).await?;
+    fetch_usage_with(&access).await
+}
 
+/// The same snapshot for one named account, whether or not it is the active
+/// one — this is what lets the switcher show every account's headroom at once.
+pub async fn fetch_usage_for(account_id: &str) -> Result<CodexUsageSnapshot, String> {
+    let access = auth::fresh_access_for(account_id, false).await?;
+    fetch_usage_with(&access).await
+}
+
+async fn fetch_usage_with(access: &auth::CodexAccess) -> Result<CodexUsageSnapshot, String> {
     let mut request = reqwest::Client::new()
         .get(format!("{CODEX_BACKEND_BASE}/wham/usage"))
         .bearer_auth(&access.access_token)

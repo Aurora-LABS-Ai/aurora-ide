@@ -286,13 +286,20 @@ impl CodeIndexService {
             );
         }
         let idx = Arc::new(CodeIndex::build(workspace)?);
+        let cache = self.cache_path(workspace);
         // A failed cache write must not fail the build — the index is already
         // usable in memory, and the only cost is rebuilding next launch.
-        if let Err(e) = persist::save(&idx, &self.cache_path(workspace)) {
+        if let Err(e) = persist::save(&idx, &cache) {
             crate::logging::log_warn(
                 "code_index",
                 &format!("could not cache {}: {e:#}", workspace.display()),
             );
+        }
+        // Sweep AFTER the write, so the cache just saved is the newest one and
+        // can never be the thing collected. This is the only moment the
+        // directory grows, so it is the only moment worth sweeping it.
+        if let Some(dir) = cache.parent() {
+            persist::prune(dir, persist::KEEP_CACHES);
         }
         self.indexes.insert(map_key(workspace), idx.clone());
         // A fresh build read the tree as it is now; whatever write flagged the

@@ -351,10 +351,32 @@ impl Session {
     /// not reported as lost work when the transcript is in fact complete.
     #[must_use]
     pub fn journal_is_current(&self) -> bool {
-        self.journal
-            .inner
-            .as_ref()
-            .is_some_and(|j| j.written.load(std::sync::atomic::Ordering::Relaxed) == self.messages.len())
+        self.journal.inner.as_ref().is_some_and(|j| {
+            j.written.load(std::sync::atomic::Ordering::Relaxed) == self.messages.len()
+        })
+    }
+
+    /// Rewrite the thread's own file so a journal silenced by an in-place
+    /// history edit starts appending again.
+    ///
+    /// [`journal_last`] can only ever say "one more line", so an edit it cannot
+    /// express — a compaction inserting a marker mid-history, a rewind — leaves
+    /// `written` behind `messages.len()` and every later append this turn goes
+    /// quiet. Until this exists the only thing that re-syncs is the end-of-turn
+    /// save, which on the turn that compacted is exactly the turn with the most
+    /// work in flight: measured 2026-08-27, a compaction at 07:35 left ten
+    /// minutes and forty messages — six file writes and edits among them —
+    /// living in nothing but RAM until the turn returned at 07:41.
+    ///
+    /// A no-op without a journal, and never fatal: the caller is mid-turn and a
+    /// file it could not rewrite costs crash-recovery, not the turn.
+    ///
+    /// [`journal_last`]: Session::journal_last
+    pub fn resync_journal(&self) -> Result<(), RuntimeError> {
+        let Some(path) = self.journal.inner.as_ref().map(|j| j.path.clone()) else {
+            return Ok(());
+        };
+        self.save_to_path(path)
     }
 
     /// Append a message to the session's history. Bumps `updated_at`
@@ -973,6 +995,66 @@ mod tests {
         session.append_message(assistant_msg("after save"));
         let recovered = Session::load_from_path("t", &path).expect("load");
         assert_eq!(recovered.len(), 3);
+    }
+
+    /// The turn that compacts is the turn with the most work in flight, and
+    /// before `resync_journal` existed it was the one turn that journaled
+    /// nothing after the halfway point.
+    ///
+    /// Measured on 2026-08-27: a compaction at 07:35 inserted its marker at
+    /// line 122 of a 137-line file, and the next forty messages — six file
+    /// writes and edits among them — reached disk only when the turn returned
+    /// six minutes later.
+    ///
+    /// This covers the mechanism, not the call site: it reproduces the exact
+    /// mid-history insert compaction performs and proves the desync, the
+    /// rewrite, and that appends resume afterwards. Whether `compact_inner`
+    /// still calls it is the other half, held by
+    /// `conversation::tests::compaction_rewrites_the_journal_so_the_rest_of_the_turn_is_recoverable`.
+    #[test]
+    fn compaction_resyncs_the_journal_so_the_rest_of_the_turn_is_recoverable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("t.jsonl");
+
+        let mut session = Session::new("t");
+        session.attach_journal(&path, 0);
+        session.append_message(user_msg("first"));
+        session.append_message(assistant_msg("second"));
+
+        // What compaction does: insert a marker mid-history, NOT at the end.
+        // The journal cannot express that as one more line, so it goes quiet.
+        session
+            .messages
+            .insert(1, assistant_msg("<compaction marker>"));
+        session.append_message(assistant_msg("silenced"));
+        let during = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(during.lines().count(), 2, "the desync must silence appends");
+
+        // The runtime rewrites the file the moment the marker is complete.
+        session.resync_journal().expect("resync");
+        let after_resync = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after_resync.lines().count(), 4, "the file is whole again");
+
+        // …and every later message this turn reaches disk as it happens, which
+        // is the whole point: a crash here must not cost the rest of the turn.
+        session.append_message(assistant_msg("post-compaction work"));
+        let recovered = Session::load_from_path("t", &path).expect("load");
+        assert_eq!(recovered.len(), 5);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("post-compaction work"),
+            "journaling must resume, not wait for the end-of-turn save"
+        );
+    }
+
+    /// `resync_journal` is called from the turn loop, where a session may have
+    /// no journal at all (a fork, a test, a non-persisting caller).
+    #[test]
+    fn resyncing_without_a_journal_writes_nothing_and_succeeds() {
+        let mut session = Session::new("t");
+        session.append_message(user_msg("first"));
+        session.resync_journal().expect("a no-op, not an error");
     }
 
     /// A fork must never inherit its source's write target, or two threads

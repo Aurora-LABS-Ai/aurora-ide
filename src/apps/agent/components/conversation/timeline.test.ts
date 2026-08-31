@@ -716,6 +716,46 @@ describe("agent-window whitespace between batched tool calls", () => {
   });
 
   /**
+   * The same separator, arriving in the SAME block as the narration.
+   *
+   * `appendContent` merges consecutive content deltas, so a model that writes a
+   * sentence and then a `...` separator produces one block, not two. It has real
+   * words in it, so the silence check passes it — and the trailing dots then
+   * rendered as their own paragraph under the sentence.
+   */
+  it("drops a trailing dots separator without touching the prose above it", () => {
+    const rows = buildRows([
+      {
+        kind: "content",
+        id: "c",
+        text: "Let me read the key wiring files to trace the IPC contract.\n\n...",
+      },
+    ]);
+    expect(rows).toEqual([
+      {
+        type: "content",
+        id: "c",
+        text: "Let me read the key wiring files to trace the IPC contract.",
+      },
+    ]);
+  });
+
+  it("leaves a dots line in the middle of a block alone", () => {
+    // Inside a fence it is elided code, and removing it would change what the
+    // author wrote. Only an edge can be a separator.
+    const body = "Here is the shape:\n\n```py\ndef f():\n    ...\n```\n\nThat is all.";
+    const rows = buildRows([{ kind: "content", id: "c", text: body }]);
+    expect(rows).toEqual([{ type: "content", id: "c", text: body }]);
+  });
+
+  it("never mistakes a horizontal rule for filler", () => {
+    // `---` is a thematic break and `***` is emphasis; both are real markdown.
+    const body = "Summary.\n\n---\n\n## Details";
+    const rows = buildRows([{ kind: "content", id: "c", text: body }]);
+    expect(rows).toEqual([{ type: "content", id: "c", text: body }]);
+  });
+
+  /**
    * Real thread `300e570b`: fifteen text blocks of exactly "..." between the
    * tool calls, one per gap, each rendering as a stray row of dots.
    */

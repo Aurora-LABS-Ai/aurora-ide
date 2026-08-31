@@ -5,6 +5,7 @@ import { getAgentService } from "@/apps/agent/services/runtime/agent-service";
 import type { PickedElement } from "@/apps/agent/services/browser/browser-service";
 import type { PromptAttachment } from "@/apps/agent/services/skills/prompt-assets";
 import type { Message, ToolCall, ToolProposal } from "@/kernel/types";
+import type { Task } from "@/apps/agent/store/tools/useTaskStore";
 
 /**
  * One user-typed message waiting to ride in on the next tool result.
@@ -143,10 +144,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...(typeof tool.args === 'object' && tool.args !== null ? tool.args : {}),
           ...(typeof updates.args === 'object' && updates.args !== null ? updates.args : {}),
         };
-        if (mergedArgs.todos) {
-          import('@/apps/agent/store/tools/useTaskStore').then(({ useTaskStore }) => {
-            useTaskStore.getState().setTasks(mergedArgs.todos);
-          });
+        // `todos` came out of a model's JSON, so it is checked before it
+        // becomes the checklist rather than after. Typing `args` as `unknown`
+        // is what surfaced this: under `any` the raw value went straight into
+        // the store, and a model that sent a string or an object there would
+        // have put a non-array into `Task[]` and broken every reader of it.
+        const todos = (mergedArgs as Record<string, unknown>).todos;
+        if (Array.isArray(todos)) {
+          const tasks = todos.filter(
+            (todo): todo is Task =>
+              typeof todo === 'object' &&
+              todo !== null &&
+              typeof (todo as Task).id === 'string' &&
+              typeof (todo as Task).content === 'string',
+          );
+          if (tasks.length > 0) {
+            import('@/apps/agent/store/tools/useTaskStore').then(({ useTaskStore }) => {
+              useTaskStore.getState().setTasks(tasks);
+            });
+          }
         }
       }
     }

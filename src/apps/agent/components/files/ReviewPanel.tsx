@@ -71,7 +71,13 @@ const FileRow: React.FC<{
       </div>
       {open && (
         <div style={{ padding: "0 10px 10px" }}>
-          <DiffView oldText={change.oldText} newText={change.newText} mode={mode} maxHeight={9000} />
+          <DiffView
+            oldText={change.oldText}
+            newText={change.newText}
+            mode={mode}
+            maxHeight={9000}
+            path={target}
+          />
         </div>
       )}
     </div>

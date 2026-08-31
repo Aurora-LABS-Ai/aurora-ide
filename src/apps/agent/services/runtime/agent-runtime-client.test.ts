@@ -148,6 +148,23 @@ describe("AgentRuntimeClient.buildProviderConfigSnapshot", () => {
     expect(snapshot.providerId).toBe("b1846984-2777-4815-8a29-90e29392a8e6");
     expect(snapshot.providerType).toBe("openai-responses");
   });
+
+  it("forwards the canonical reasoning contract intact", () => {
+    const reasoning = {
+      enabled: true,
+      control: "effort" as const,
+      effort: "high",
+      requestMode: "openai-effort" as const,
+      replay: "reasoning_content" as const,
+    };
+
+    const snapshot = AgentRuntimeClient.buildProviderConfigSnapshot({
+      ...sampleProviderConfig,
+      reasoning,
+    });
+
+    expect(snapshot.reasoning).toEqual(reasoning);
+  });
 });
 
 describe("AgentRuntimeClient.buildRequest", () => {
@@ -228,6 +245,28 @@ describe("AgentRuntimeClient.buildRequest", () => {
     expect(request.contextWindow).toBe(128000);
   });
 
+  it("keeps Cursor's stable selection separate from its wire model", () => {
+    const request = AgentRuntimeClient.buildRequest({
+      turnId: "cursor-turn",
+      threadId: "cursor-thread",
+      input: {
+        ...sampleInput,
+        modelSelection: "cursor:cursor-grok-4.6",
+      },
+      providerConfig: {
+        ...sampleProviderConfig,
+        id: "cursor",
+        providerType: "cursor",
+        model: "cursor-grok-4.6-xhigh-fast",
+      },
+      config: {},
+    });
+
+    expect(request.model).toBe("cursor-grok-4.6-xhigh-fast");
+    expect(request.modelSelection).toBe("cursor:cursor-grok-4.6");
+    expect(request.providerConfig.model).toBe("cursor-grok-4.6-xhigh-fast");
+  });
+
   it("forwards an explicit thinking budget and nulls a non-positive one", () => {
     const build = (thinkingBudgetTokens?: number) =>
       AgentRuntimeClient.buildRequest({
@@ -245,6 +284,39 @@ describe("AgentRuntimeClient.buildRequest", () => {
     // derives one from the effort tier instead of sending a bogus 0.
     expect(build(0).thinkingBudgetTokens).toBeNull();
     expect(build().thinkingBudgetTokens).toBeNull();
+  });
+
+  it("derives legacy thinking mirrors from the canonical contract", () => {
+    const request = AgentRuntimeClient.buildRequest({
+      turnId: "t",
+      threadId: "thread-1",
+      input: sampleInput,
+      providerConfig: {
+        ...sampleProviderConfig,
+        reasoning: {
+          enabled: true,
+          control: "budget",
+          budgetTokens: 12_500.4,
+          requestMode: "anthropic-budget",
+          replay: "off",
+        },
+      },
+      config: {
+        reasoning: {
+          enabled: true,
+          control: "budget",
+          budgetTokens: 12_500.4,
+          requestMode: "anthropic-budget",
+          replay: "off",
+        },
+        // Deliberately contradictory legacy values: canonical wins.
+        thinkingEnabled: false,
+        thinkingBudgetTokens: 2000,
+      },
+    });
+
+    expect(request.thinkingEnabled).toBe(true);
+    expect(request.thinkingBudgetTokens).toBe(12_500);
   });
 
   it("nulls contextWindow when the provider doesn't advertise one", () => {
@@ -407,7 +479,10 @@ describe("AgentRuntimeClient.chat — event routing", () => {
     dispatch(AGENT_EVENT_CHANNEL, {
       turnId,
       seq: 7,
-      event: { type: "usage", input_tokens: 10, output_tokens: 20 },
+      // Cursor's adapter derives these two fields from its provider checkpoint.
+      // Their sum must reach the context ring unchanged and unmarked as an
+      // Aurora estimate.
+      event: { type: "usage", input_tokens: 1_450, output_tokens: 84 },
     });
     dispatch(AGENT_EVENT_CHANNEL, {
       turnId,
@@ -442,9 +517,15 @@ describe("AgentRuntimeClient.chat — event routing", () => {
       expect.objectContaining({ id: "tu-2" }),
       "no matches",
     );
-    expect(onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({ promptTokens: 10, completionTokens: 20, totalTokens: 30 }),
-    );
+    expect(onUsage).toHaveBeenCalledWith({
+      promptTokens: 1_450,
+      completionTokens: 84,
+      totalTokens: 1_534,
+      cacheReadTokens: undefined,
+      cacheWriteTokens: undefined,
+      estimated: undefined,
+      costUsd: undefined,
+    });
     expect(onMessageStop).toHaveBeenCalledWith("end_turn");
     expect(onError).not.toHaveBeenCalled();
 

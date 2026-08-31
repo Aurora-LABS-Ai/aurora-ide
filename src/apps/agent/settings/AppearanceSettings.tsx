@@ -8,6 +8,18 @@
  * set (accent / background / foreground / fonts / contrast / translucent) and
  * per-region color editors (rail, conversation, composer, code, status…).
  *
+ * ## Why this page is tabbed and the others are not
+ *
+ * Every control here edits one token, and there are around fifty of them — as
+ * one column that is a page nobody reaches the bottom of, where the Reset that
+ * undoes a mistake is the furthest thing from the mistake. The tabs are the
+ * groupings that already existed as section headings, promoted to navigation so
+ * only one is on screen at a time.
+ *
+ * Search deliberately un-tabs the page: with a query active every group renders
+ * and the tab bar is gone, because a result the tabs are hiding is a result the
+ * search has failed to return. See `searching` below.
+ *
  * All `--agw-*` native — no IDE/Tailwind reuse.
  */
 
@@ -43,6 +55,27 @@ import {
   AgwSelect,
   type SelectOption,
 } from "./primitives";
+import { useSettingsQuery } from "./settings-search";
+import { useAgentUiStore, type AppearanceTab } from "@/apps/agent/store/ui/useAgentUiStore";
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+
+const TABS: { id: AppearanceTab; label: string; icon: AgentIconName }[] = [
+  { id: "theme", label: "Theme", icon: "palette" },
+  { id: "layout", label: "Layout", icon: "panel-left" },
+  { id: "text", label: "Text", icon: "type" },
+  { id: "colours", label: "Colours", icon: "contrast" },
+  { id: "advanced", label: "Advanced", icon: "sliders" },
+];
+
+/**
+ * Which tab owns each per-region colour group.
+ *
+ * "Shared surfaces" is the one group whose tokens repaint the entire window
+ * rather than one region, so it sits under Advanced beside Reset — the two
+ * things worth reaching deliberately rather than stumbling into.
+ */
+const ADVANCED_GROUP = "Shared surfaces";
 
 // ── Region / token groupings (full coverage of the editable token set) ───────
 
@@ -303,6 +336,43 @@ export const AppearanceSettings: React.FC = () => {
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
   const [notice, setNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  // Persisted, so reopening Appearance returns to the category last worked in
+  // rather than to the top of the page.
+  const storedTab = useAgentUiStore((s) => s.appearanceTab);
+  const setTab = useAgentUiStore((s) => s.setAppearanceTab);
+  // A persisted value survives a rename or removal of the tab it names, and an
+  // id no section answers to renders a page with nothing on it. Fall back
+  // rather than show an empty Appearance.
+  const tab = TABS.some((t) => t.id === storedTab) ? storedTab : "theme";
+
+  // A query turns the tabs off entirely rather than filtering within one: the
+  // sections hide themselves when they do not match, so rendering all of them
+  // is what lets a search for "scrollbar" find a token three tabs away.
+  const searching = useSettingsQuery().length > 0;
+  const shows = (id: AppearanceTab) => searching || tab === id;
+
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Switch category and return to the top of the page.
+   *
+   * Without the scroll, leaving a long tab part-way down lands the next one at
+   * whatever offset the last one was at — a category that opens half-read, with
+   * its heading already off screen.
+   */
+  const selectTab = (next: AppearanceTab) => {
+    setTab(next);
+    tabsRef.current?.closest(".agw-settings-content")?.scrollTo({ top: 0 });
+  };
+
+  const onTabKeys = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const index = TABS.findIndex((t) => t.id === tab);
+    if (index < 0) return;
+    const step = e.key === "ArrowRight" ? 1 : TABS.length - 1;
+    selectTab(TABS[(index + step) % TABS.length].id);
+    e.preventDefault();
+  };
   const noticeTimer = useRef<number | undefined>(undefined);
 
   // Editable (pre-contrast) token values: base theme + the user's overrides.
@@ -448,7 +518,55 @@ export const AppearanceSettings: React.FC = () => {
         </div>
       )}
 
+      {/* Category tabs. Hidden while searching — see `searching` above. */}
+      {!searching && (
+        <div
+          ref={tabsRef}
+          className="agw-set-tabs"
+          role="tablist"
+          aria-label="Appearance categories"
+          onKeyDown={onTabKeys}
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              id={`agw-appr-tab-${t.id}`}
+              aria-selected={t.id === tab}
+              aria-controls={`agw-appr-panel-${t.id}`}
+              // Only the selected tab is in the tab order; the arrow keys move
+              // between them, which is what a tablist is expected to do.
+              tabIndex={t.id === tab ? 0 : -1}
+              className="agw-set-tab"
+              data-selected={t.id === tab || undefined}
+              onClick={() => selectTab(t.id)}
+            >
+              <AgentIcon name={t.icon} size={14} />
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div
+        // Carries the column gap `.agw-set-wide` would have applied directly to
+        // the sections, which this wrapper now sits between.
+        className="agw-set-tabpanel"
+        // One panel wrapper per rendered tab so the relationship the tabs
+        // announce actually exists in the a11y tree. While searching there is
+        // no selected tab, so the panel is a plain container.
+        {...(searching
+          ? {}
+          : {
+              role: "tabpanel",
+              id: `agw-appr-panel-${tab}`,
+              "aria-labelledby": `agw-appr-tab-${tab}`,
+            })}
+      >
+
       {/* Preset themes + drop zone */}
+      {shows("theme") && (
       <SettingsSection
         title="Theme"
         icon="palette"
@@ -506,8 +624,10 @@ export const AppearanceSettings: React.FC = () => {
           </div>
         </SettingsBlock>
       </SettingsSection>
+      )}
 
       {/* Quick controls */}
+      {shows("theme") && (
       <SettingsSection
         title="Quick controls"
         icon="sliders"
@@ -557,7 +677,7 @@ export const AppearanceSettings: React.FC = () => {
           value={tokens.text}
           onChange={(v) => setToken("text", v)}
         />
-        <SettingsRow label="Contrast" hint="Foreground / line separation. 50 is neutral.">
+        <SettingsRow label="Contrast" hint="Foreground / line separation. 50 is neutral." last>
           <div className="agw-appr-range-wrap">
             <input
               type="range"
@@ -571,6 +691,17 @@ export const AppearanceSettings: React.FC = () => {
             <span className="agw-appr-range-val">{contrast}</span>
           </div>
         </SettingsRow>
+      </SettingsSection>
+      )}
+
+      {/* Shape, density, and the icon set — how the window is built rather than
+          how it is coloured. */}
+      {shows("layout") && (
+      <SettingsSection
+        title="Interface"
+        icon="panel-left"
+        description="Shape, density, and the file icon set."
+      >
         <SettingsRow label="Corner radius" hint="Roundness of cards, inputs and buttons.">
           <AgwSegmented<RadiusPreset>
             value={radiusPreset}
@@ -617,24 +748,30 @@ export const AppearanceSettings: React.FC = () => {
             width={180}
           />
         </SettingsRow>
-        <SettingsRow label="Translucent sidebar" hint="Frosted, semi-transparent rail and dock.">
+        <SettingsRow
+          label="Translucent sidebar"
+          hint="Frosted, semi-transparent rail and dock."
+          last
+        >
           <AgwSwitch
             checked={translucentSidebar}
             onChange={setTranslucentSidebar}
             ariaLabel="Translucent sidebar"
           />
         </SettingsRow>
-        <SettingsRow label="Reduce motion" hint="Minimize non-essential animation." last>
+      </SettingsSection>
+      )}
+
+      {/* Motion. Reduce motion leads because it overrides everything under it. */}
+      {shows("layout") && (
+      <SettingsSection
+        title="Motion"
+        icon="bolt"
+        description="How much the window animates, and how the rail and dock open and close."
+      >
+        <SettingsRow label="Reduce motion" hint="Minimize non-essential animation.">
           <AgwSwitch checked={reduceMotion} onChange={setReduceMotion} ariaLabel="Reduce motion" />
         </SettingsRow>
-      </SettingsSection>
-
-      {/* Panel open/close motion */}
-      <SettingsSection
-        title="Panel motion"
-        icon="panel-left"
-        description="How the left rail and right dock open and close."
-      >
         <SettingsRow
           label="Glide panels"
           hint="Animate the rail and dock sliding open and closed. Off snaps them open/closed instantly."
@@ -662,8 +799,10 @@ export const AppearanceSettings: React.FC = () => {
           </div>
         </SettingsRow>
       </SettingsSection>
+      )}
 
       {/* Typography */}
+      {shows("text") && (
       <SettingsSection
         title="Typography"
         icon="type"
@@ -827,10 +966,14 @@ export const AppearanceSettings: React.FC = () => {
           </div>
         </SettingsRow>
       </SettingsSection>
+      )}
 
       {/* Per-region color editors */}
       {REGION_GROUPS.map((group) => {
         const isCode = group.title === "Code & chips";
+        // Window-wide tokens live under Advanced; everything region-scoped
+        // under Colours.
+        if (!shows(group.title === ADVANCED_GROUP ? "advanced" : "colours")) return null;
         return (
           <SettingsSection
             key={group.title}
@@ -873,6 +1016,7 @@ export const AppearanceSettings: React.FC = () => {
       })}
 
       {/* Reset */}
+      {shows("advanced") && (
       <SettingsSection
         title="Reset"
         icon="reset"
@@ -897,6 +1041,8 @@ export const AppearanceSettings: React.FC = () => {
           </AgwButton>
         </SettingsRow>
       </SettingsSection>
+      )}
+      </div>
     </div>
   );
 };

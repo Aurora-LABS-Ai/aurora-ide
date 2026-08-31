@@ -37,6 +37,122 @@ use tokio_util::sync::CancellationToken;
 use super::events::AssistantEvent;
 use super::types::{ConversationMessage, TokenUsage};
 
+/// The model-facing control the user configured. This is semantic metadata,
+/// not a request-body field; each adapter chooses its native encoding.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningControl {
+    #[default]
+    None,
+    Toggle,
+    Effort,
+    Budget,
+}
+
+/// Optional override for gateways whose model id does not reveal which
+/// generation of a reasoning protocol they implement.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReasoningRequestMode {
+    #[default]
+    Auto,
+    AnthropicAdaptive,
+    AnthropicBudget,
+    OpenaiEffort,
+    OpenaiThinking,
+}
+
+/// How a stored reasoning block should travel on the next request.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningReplayMode {
+    #[default]
+    Auto,
+    ReasoningContent,
+    Reasoning,
+    Off,
+}
+
+/// Owned, provider-neutral reasoning intent carried in a provider snapshot.
+///
+/// This is the source of truth for a model invocation. It deliberately says
+/// nothing about `reasoning_effort`, `thinking`, or `output_config`; those are
+/// encodings chosen by the selected adapter.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub control: ReasoningControl,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub budget_tokens: Option<u32>,
+    #[serde(default)]
+    pub request_mode: ReasoningRequestMode,
+    #[serde(default)]
+    pub replay: ReasoningReplayMode,
+}
+
+impl ReasoningConfig {
+    #[must_use]
+    pub fn as_request(&self) -> ReasoningRequest<'_> {
+        ReasoningRequest {
+            enabled: self.enabled,
+            control: self.control,
+            effort: self.effort.as_deref(),
+            budget_tokens: self.budget_tokens.filter(|value| *value > 0),
+            request_mode: self.request_mode,
+            replay: self.replay,
+        }
+    }
+
+    /// Backward-compatible fallback for callers that only know the old
+    /// `thinking_enabled` + budget pair.
+    #[must_use]
+    pub fn legacy(enabled: bool, budget_tokens: Option<u32>) -> Self {
+        Self {
+            enabled,
+            control: if budget_tokens.is_some() {
+                ReasoningControl::Budget
+            } else if enabled {
+                ReasoningControl::Toggle
+            } else {
+                ReasoningControl::None
+            },
+            budget_tokens: budget_tokens.filter(|value| *value > 0),
+            ..Self::default()
+        }
+    }
+}
+
+/// Borrowed form embedded in [`ApiRequest`]. It stays `Copy`, which lets the
+/// key-pool adapter retry the identical request without rebuilding history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReasoningRequest<'a> {
+    pub enabled: bool,
+    pub control: ReasoningControl,
+    pub effort: Option<&'a str>,
+    pub budget_tokens: Option<u32>,
+    pub request_mode: ReasoningRequestMode,
+    pub replay: ReasoningReplayMode,
+}
+
+impl ReasoningRequest<'static> {
+    #[must_use]
+    pub const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            control: ReasoningControl::None,
+            effort: None,
+            budget_tokens: None,
+            request_mode: ReasoningRequestMode::Auto,
+            replay: ReasoningReplayMode::Auto,
+        }
+    }
+}
+
 /// One model invocation: messages plus tool catalogue plus knobs.
 ///
 /// Borrowed so the runtime can keep ownership of its `Vec<…>`s during
@@ -64,19 +180,44 @@ pub struct ApiRequest<'a> {
     /// Hard cap on output tokens for this single call. Aurora's
     /// session-level cap is enforced one layer above the trait.
     pub max_output_tokens: u32,
-    /// Whether to enable extended thinking for providers that support
-    /// it (Anthropic, MiniMax, GLM, DeepSeek). Impls without thinking
-    /// support must ignore this flag silently.
-    pub thinking_enabled: bool,
-    /// Explicit extended-thinking token budget the user picked for this
-    /// model (models whose reasoning control is a budget rather than an
-    /// effort tier — see `ModelReasoning` on the frontend).
+    /// One provider-neutral reasoning request. Adapters translate this into
+    /// their own fields instead of reverse-engineering intent from custom body
+    /// parameters and a boolean whose old meaning changed by provider.
+    pub reasoning: ReasoningRequest<'a>,
+    /// Where to run tools **without** ending the stream, for the providers
+    /// whose wire keeps the connection open and waits for results on it.
     ///
-    /// `None` means "no budget was chosen"; impls that need one derive it
-    /// from the effort tier instead. Only meaningful together with
-    /// [`Self::thinking_enabled`] — a budget never turns thinking on by
-    /// itself. Impls must clamp to whatever range their provider accepts.
-    pub thinking_budget_tokens: Option<u32>,
+    /// `None` — the normal case — means the impl reports `tool_use` blocks and
+    /// stops, and the runtime runs them before opening the next request. Impls
+    /// that do not speak a bidirectional protocol must ignore this field
+    /// entirely; it is not a capability to opt into, it is a channel back to
+    /// the caller that only helps if the far end is genuinely waiting.
+    ///
+    /// It is a borrow so [`ApiRequest`] stays `Copy` and can be rebuilt per
+    /// retry attempt for free. See [`super::tool_bridge`].
+    pub tool_bridge: Option<&'a super::tool_bridge::ToolBridge>,
+    /// Stable identity of the conversation this request belongs to (the
+    /// thread id). Not part of the prompt — it exists so an impl can tell
+    /// the provider "these requests share a prefix": OpenAI's
+    /// `prompt_cache_key` and the Codex backend's `session_id` header both
+    /// route same-key requests to the same cache. Measured without it,
+    /// long turns kept falling to the implicit-routing floor — only the
+    /// system-prompt-and-tools region read from cache while the
+    /// conversation body re-billed as fresh input. `None` (one-off
+    /// requests, tests) simply sends no affinity hint; impls with no such
+    /// concept ignore it entirely.
+    pub session_key: Option<&'a str>,
+    /// How many messages at the END of `messages` are volatile — rebuilt
+    /// with different bytes on the next request (the IDE-context/checklist
+    /// tail the runtime appends). Zero for a fully stable history.
+    ///
+    /// Prefix-hash caches (OpenAI, DeepSeek) don't care: a changed tail
+    /// only misses its own region. Anthropic's explicit `cache_control`
+    /// breakpoints do: a breakpoint ON a volatile message caches a prefix
+    /// no later request can ever match, so the rolling breakpoint must
+    /// land on the last STABLE message instead. Impls without breakpoints
+    /// ignore this.
+    pub volatile_tail_messages: usize,
 }
 
 /// Schema entry for one tool the model may call.
@@ -153,6 +294,39 @@ pub enum ApiError {
     /// rather than hoping.
     #[error("this endpoint requires its reasoning to be replayed — retrying with it")]
     ReasoningReplayRequired,
+    /// The endpoint refused the request BECAUSE it carried replayed reasoning.
+    ///
+    /// The mirror of [`Self::ReasoningReplayRequired`], and retryable for the
+    /// identical reason: the endpoint has just told us what the next request
+    /// must NOT contain, the refusal is recorded against that endpoint and
+    /// model, and the rebuilt request therefore differs from the one that
+    /// failed. Aurora replays reasoning by default on unknown OpenAI-shaped
+    /// gateways, so this is how a strict backend (Fireworks: `Extra inputs are
+    /// not permitted, field: reasoning_content`) turns it off without the user
+    /// having to find a setting.
+    #[error("this endpoint rejects replayed reasoning — retrying without it")]
+    ReasoningReplayRefused,
+    /// The endpoint refused the request BECAUSE it carried `prompt_cache_key`.
+    ///
+    /// The third of the same family, and retryable for the same reason: the
+    /// refusal is recorded against the endpoint and model, so the rebuilt
+    /// request omits the field and is not the request that failed.
+    ///
+    /// It cannot be predicted from the provider type. Probed 2026-08-30 with
+    /// Aurora's own body: `us-api.x5m5x.com` accepts it on all five models
+    /// tested, `vectide.cn` answers 400 — and both rows are typed `openai`.
+    /// Vectide's rejection never names the field ("请求参数值或格式不受支持"),
+    /// which is why the endpoint has to teach us rather than the body.
+    #[error("this endpoint rejects the prompt cache key — retrying without it")]
+    PromptCacheKeyRefused,
+    /// One Codex account hit its usage limit and another has taken over.
+    ///
+    /// Retryable for the same reason as the two above: the rebuilt request
+    /// carries a different account's token, so it is not the request that just
+    /// failed. Carries the account that took over so the turn can say what
+    /// happened rather than stalling silently on someone else's credits.
+    #[error("Codex account limit reached — continuing on {to}")]
+    CodexAccountRotated { to: String },
     #[error("request was cancelled")]
     Cancelled,
 }
@@ -214,6 +388,9 @@ impl ApiError {
                 | ApiError::Provider(_)
                 | ApiError::RateLimit { .. }
                 | ApiError::ReasoningReplayRequired
+                | ApiError::ReasoningReplayRefused
+                | ApiError::PromptCacheKeyRefused
+                | ApiError::CodexAccountRotated { .. }
         )
     }
 
@@ -340,8 +517,10 @@ mod tests {
             tools: &[],
             temperature: None,
             max_output_tokens: 16,
-            thinking_enabled: false,
-            thinking_budget_tokens: None,
+            reasoning: ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+            volatile_tail_messages: 0,
         };
         let result = client.stream(request, tx, cancel).await.expect("ok");
         let event = rx.recv().await.expect("event");

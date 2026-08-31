@@ -42,7 +42,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::agent_runtime::api_client::ToolSchema;
+use crate::agent_runtime::api_client::{ReasoningConfig, ToolSchema};
 use crate::agent_runtime::conversation::{ConversationRuntime, RuntimeConfig};
 use crate::agent_runtime::events::AssistantEvent;
 use crate::agent_runtime::ipc::AgentEventEnvelope;
@@ -1040,11 +1040,17 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
     let registry = Arc::new(member_registry(ctx));
     let client = build_api_client(&run.provider);
     let config = RuntimeConfig {
+        // Empty: a member's model is whatever its session is pinned to, and
+        // nothing composes an id for it. See `RuntimeConfig::wire_model`.
+        wire_model: String::new(),
         max_iterations: Some(MEMBER_MAX_ITERATIONS),
         system_prompt: Some(member_system_prompt(&ctx.role, &run.owned, &run.roster)),
         default_max_output_tokens: resolved_max_tokens(&run.provider),
-        thinking_enabled: run.provider.supports_thinking,
-        thinking_budget_tokens: None,
+        reasoning: run
+            .provider
+            .reasoning
+            .clone()
+            .unwrap_or_else(|| ReasoningConfig::legacy(run.provider.supports_thinking, None)),
         default_temperature: run.provider.default_temperature,
         ide_context: None,
         context_window: Some(MEMBER_CONTEXT_WINDOW),
@@ -1057,6 +1063,11 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
             run.provider.effective_provider_type(),
             &run.provider.model,
             &run.provider.base_url,
+            run.provider.reasoning.as_ref().map_or(
+                crate::agent_runtime::api_client::ReasoningReplayMode::Auto,
+                |reasoning| reasoning.replay,
+            ),
+            run.provider.custom_params.as_ref(),
         ),
     };
     let runtime = ConversationRuntime::new(client, registry, config);

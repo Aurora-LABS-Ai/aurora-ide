@@ -30,6 +30,7 @@
 //! [`StreamingApiClient`]: crate::agent_runtime::api_client::StreamingApiClient
 //! [`CodexAdapter`]: adapter::CodexAdapter
 
+pub mod accounts;
 pub mod adapter;
 pub mod auth;
 pub mod usage;

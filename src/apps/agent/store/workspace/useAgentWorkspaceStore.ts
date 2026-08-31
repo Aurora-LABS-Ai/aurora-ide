@@ -71,6 +71,14 @@ interface AgentWorkspaceState {
   setActiveTab: (id: string) => void;
   /** Close a tab; activates a neighbor, or closes the dock if it was the last. */
   closeTab: (id: string) => void;
+  /**
+   * Close the team screen and every member stream at once.
+   *
+   * Turning Agent Team off in Settings has to take the team OUT of the window,
+   * not just out of the model's tools — and the team tab is persisted, so a
+   * stale one can also come back on a reload after the feature was disabled.
+   */
+  closeTeamTabs: () => void;
 }
 
 export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
@@ -177,6 +185,17 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
             const neighbor = tabs[idx] ?? tabs[idx - 1] ?? null;
             activeTabId = neighbor?.id ?? null;
           }
+          const dockOpen = tabs.length > 0 && s.dockOpen;
+          return { tabs, activeTabId, dockOpen, expanded: dockOpen ? s.expanded : false };
+        }),
+
+      closeTeamTabs: () =>
+        set((s) => {
+          const tabs = s.tabs.filter((t) => t.kind !== "team" && t.kind !== "member");
+          if (tabs.length === s.tabs.length) return s;
+          const activeTabId = tabs.some((t) => t.id === s.activeTabId)
+            ? s.activeTabId
+            : (tabs[0]?.id ?? null);
           const dockOpen = tabs.length > 0 && s.dockOpen;
           return { tabs, activeTabId, dockOpen, expanded: dockOpen ? s.expanded : false };
         }),

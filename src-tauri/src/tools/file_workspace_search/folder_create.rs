@@ -60,7 +60,8 @@ impl ToolExecutor for FolderCreateTool {
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::InvalidInput("`path` must be a string".into()))?;
-        let resolved = resolve_path_for_create(path, ctx.workspace_root.as_deref())?;
+        let resolved =
+            resolve_path_for_create(path, ctx.workspace_root.as_deref(), ctx.workspace_access)?;
         let resolved_str = resolved.to_string_lossy().to_string();
         let raw_path = path.to_string();
 
@@ -119,7 +120,7 @@ mod tests {
             tool_call_id: "c".into(),
             thread_id: "s".into(),
             workspace_root: workspace,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             cancel_token: CancellationToken::new(),
             spill_dir: None,
         }

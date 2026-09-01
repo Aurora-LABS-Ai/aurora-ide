@@ -67,7 +67,10 @@ export interface AppSettings {
   titleMakerBaseUrl?: string;
   titleMakerApiKey?: string;
   titleMakerModel?: string;
-  /** Allow read-only file tools to read files outside the workspace. */
+  /** How far outside the open project the file tools may reach:
+   *  `workspace` | `read` | `full`. Empty means the row predates the mode. */
+  workspaceAccess?: string;
+  /** The boolean the mode above replaced. Read only when it is unset. */
   allowOutsideWorkspace?: boolean;
   /** Show the header flash + rail dot when a chat's turn finishes. Default on. */
   notifyOnTurnComplete?: boolean;

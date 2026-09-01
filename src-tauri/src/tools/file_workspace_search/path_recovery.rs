@@ -226,7 +226,7 @@ pub(crate) async fn recover(raw: &str, resolved: Option<&Path>, ctx: &ToolContex
         if let Ok(candidate) = super::resolve_path_for_read_with_spill(
             &cleaned,
             root,
-            ctx.allow_outside_workspace,
+            ctx.workspace_access,
             ctx.spill_dir.as_deref(),
         ) {
             if candidate.is_file() && Some(candidate.as_path()) != resolved {

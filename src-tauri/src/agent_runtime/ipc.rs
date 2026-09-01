@@ -105,6 +105,20 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub execution_mode: AgentExecutionMode,
 
+    /// The `aurora agent` task this turn is running, when it came from one.
+    ///
+    /// Set only for a turn the Agent Window started on behalf of a terminal
+    /// dispatch. The runtime uses it to tee this turn's events into the task's
+    /// transcript (see [`crate::cli_delegate::mirror`]) so `aurora agent
+    /// --follow` can watch the same work the window is showing.
+    ///
+    /// Carried on the request rather than bound by the frontend because the
+    /// binding needs a `turn_id`, and the turn id is generated *inside* the
+    /// runtime client — reaching it from the window would mean threading it
+    /// back out through every callback in the chain to serve one caller.
+    #[serde(default)]
+    pub cli_task_id: Option<String>,
+
     // ── Phase 2.3 NEW fields ───────────────────────────────────────
     /// Full provider configuration snapshot (api_key, base_url,
     /// custom_headers, custom_params, …). Sent verbatim from the
@@ -202,9 +216,19 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub compaction_provider_config: Option<crate::api::ProviderConfigSnapshot>,
 
-    /// When true, read-only file tools may read files OUTSIDE the workspace
-    /// (user opt-in, Settings → Agent). `None`/`false` keeps the strict
-    /// workspace boundary. Writes are never affected.
+    /// How far outside the project this turn's file tools may reach:
+    /// `"workspace"`, `"read"`, or `"full"` (user choice, Settings → Tools).
+    /// Absent or unrecognised keeps the strict workspace boundary.
+    #[serde(default)]
+    pub workspace_access: Option<String>,
+
+    /// The boolean this setting used to be, still accepted on the wire.
+    ///
+    /// An install that upgrades without opening Settings sends only this, and
+    /// dropping it would silently re-fence an agent the user had already let
+    /// out. `true` maps to `"read"` — never to `"full"`, which nobody has
+    /// consented to. Read only when [`Self::workspace_access`] is absent; see
+    /// `WorkspaceAccess::from_wire`.
     #[serde(default)]
     pub allow_outside_workspace: Option<bool>,
 
@@ -319,6 +343,7 @@ mod tests {
 
     fn full_request() -> AgentChatRequest {
         AgentChatRequest {
+            cli_task_id: None,
             turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             thread_id: "t-1".into(),
             user_message: "hello".into(),
@@ -349,6 +374,7 @@ mod tests {
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             compaction_provider_config: None,
+            workspace_access: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
             browser_tools: None,
@@ -490,6 +516,7 @@ mod tests {
     #[test]
     fn agent_chat_request_emits_workspace_path_as_null_when_absent() {
         let req = AgentChatRequest {
+            cli_task_id: None,
             turn_id: "x".into(),
             thread_id: "t".into(),
             user_message: "u".into(),
@@ -512,6 +539,7 @@ mod tests {
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             compaction_provider_config: None,
+            workspace_access: None,
             allow_outside_workspace: None,
             transcript_chapters: None,
             browser_tools: None,

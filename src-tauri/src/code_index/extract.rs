@@ -55,6 +55,38 @@ pub struct RawImport {
     /// `react`. Turning it into a file is the store's job, because only the
     /// store knows what files exist.
     pub module: String,
+    /// Byte offset of the module URI/path. Query patterns for one directive
+    /// overlap deliberately (named binding, alias, module edge), and this is
+    /// the stable key that lets the store collapse those matches back into one
+    /// directive without merging two separate imports of the same module.
+    pub directive: u32,
+    /// `export ... from` / Dart `export '...'`, as opposed to a name brought
+    /// into this file's own scope.
+    pub reexport: bool,
+    /// Ordered namespace narrowing. Dart applies these left to right, so a set
+    /// of shown/hidden names is not enough for `show A, B hide B`.
+    pub combinators: Vec<RawImportCombinator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RawCombinatorKind {
+    Show,
+    Hide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawImportCombinator {
+    pub kind: RawCombinatorKind,
+    pub names: Vec<String>,
+    /// Source position preserves the language-defined application order when
+    /// tree-sitter emits one match per combinator.
+    pub position: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawPartOf {
+    Uri(String),
+    LibraryName(String),
 }
 
 #[derive(Debug, Default)]
@@ -62,6 +94,13 @@ pub struct FileFacts {
     pub symbols: Vec<RawSymbol>,
     pub refs: Vec<RawRef>,
     pub imports: Vec<RawImport>,
+    /// Optional legacy Dart `library my.name;` identity. URI-based `part of`
+    /// is preferred, but real repositories still contain named libraries.
+    pub library_name: Option<String>,
+    /// Dart files named by `part 'file.dart';` in this primary library file.
+    pub parts: Vec<String>,
+    /// The primary library named by this Dart part file.
+    pub part_of: Option<RawPartOf>,
     /// tree-sitter always returns a tree; this reports whether it had to error-
     /// recover. Tracked so the probe can prove it survives half-written code
     /// rather than silently indexing garbage.
@@ -112,6 +151,32 @@ fn text<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
 /// Rust and Python paths arrive bare and pass through untouched.
 fn strip_module_quotes(raw: &str) -> &str {
     raw.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+}
+
+fn dotted_name(raw: &str) -> String {
+    raw.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn import_combinator(node: Node<'_>, src: &[u8]) -> Option<RawImportCombinator> {
+    let raw = text(node, src).trim();
+    let (kind, names) = if let Some(names) = raw.strip_prefix("show") {
+        (RawCombinatorKind::Show, names)
+    } else if let Some(names) = raw.strip_prefix("hide") {
+        (RawCombinatorKind::Hide, names)
+    } else {
+        return None;
+    };
+    let names = names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    Some(RawImportCombinator {
+        kind,
+        names,
+        position: node.start_byte() as u32,
+    })
 }
 
 fn named_child_text(node: Node<'_>, field: &str, src: &[u8]) -> Option<String> {
@@ -258,6 +323,22 @@ fn enclosing_container(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String>
             _ => {}
         }
         if lang.is_container_node(n.kind()) {
+            // A declaration's own name sits directly inside the node that will
+            // contain its MEMBERS. That node is not the declaration's
+            // container. Without this guard `class Post { ... }` becomes
+            // `Post::Post`, while a constructor or method inside it correctly
+            // remains `Post::Post` / `Post::method`.
+            //
+            // Compare byte ranges rather than text. A nested declaration may
+            // legitimately repeat an ancestor's name, and spelling alone
+            // cannot distinguish that from the name field we started at.
+            let owns_starting_name = n
+                .child_by_field_name("name")
+                .is_some_and(|name| name.byte_range() == node.byte_range());
+            if owns_starting_name {
+                cur = n.parent();
+                continue;
+            }
             // Rust `impl` blocks name their subject with `type:`, everything
             // else uses `name:`.
             if let Some(t) = named_child_text(n, "type", src) {
@@ -623,57 +704,116 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
         // nodes, and only their pairing carries information. Captures are
         // grouped by match and by nothing else, so the pairing has to be read
         // here, before the per-capture loop flattens them.
-        let mut module: Option<&str> = None;
+        let mut module: Option<(&str, u32)> = None;
+        let mut reexport = false;
         let mut imported: Vec<&str> = Vec::new();
         let mut locals: Vec<&str> = Vec::new();
+        let mut combinators = Vec::new();
         for cap in m.captures {
             match capture_names[cap.index as usize] {
-                "import.module" => module = Some(strip_module_quotes(text(cap.node, src))),
+                "import.module" => {
+                    module = Some((
+                        strip_module_quotes(text(cap.node, src)),
+                        cap.node.start_byte() as u32,
+                    ))
+                }
+                "reexport.module" => {
+                    module = Some((
+                        strip_module_quotes(text(cap.node, src)),
+                        cap.node.start_byte() as u32,
+                    ));
+                    reexport = true;
+                }
+                "import.combinator" | "reexport.combinator" => {
+                    if let Some(combinator) = import_combinator(cap.node, src) {
+                        combinators.push(combinator);
+                    }
+                }
                 "import.local" => locals.push(text(cap.node, src)),
                 "ref.import" => imported.push(text(cap.node, src)),
+                "library.name" => facts.library_name = Some(dotted_name(text(cap.node, src))),
+                "part.uri" => facts
+                    .parts
+                    .push(strip_module_quotes(text(cap.node, src)).to_string()),
+                "part.of_uri" => {
+                    facts.part_of = Some(RawPartOf::Uri(
+                        strip_module_quotes(text(cap.node, src)).to_string(),
+                    ));
+                }
+                "part.of_name" => {
+                    facts.part_of = Some(RawPartOf::LibraryName(dotted_name(text(cap.node, src))));
+                }
                 _ => {}
             }
         }
-        if let Some(module) = module.filter(|m| !m.is_empty()) {
+        combinators.sort_by_key(|combinator| combinator.position);
+        if let Some((module, directive)) = module.filter(|(module, _)| !module.is_empty()) {
+            let make_import = |local: String, imported: String| RawImport {
+                local,
+                imported,
+                module: module.to_string(),
+                directive,
+                reexport,
+                combinators: combinators.clone(),
+            };
             match (imported.as_slice(), locals.as_slice()) {
                 // An empty pair is a side-effect import or re-export. Keep the
                 // module edge without inventing a local symbol binding.
-                ([], []) => facts.imports.push(RawImport {
-                    local: String::new(),
-                    imported: String::new(),
-                    module: module.to_string(),
-                }),
+                ([], []) => {
+                    facts
+                        .imports
+                        .push(make_import(String::new(), String::new()));
+                    // `show` names are real unprefixed bindings. Derive them
+                    // from the complete ordered chain rather than from a query
+                    // capture alone, so `show A, B hide B` binds only `A`.
+                    if !reexport && !combinators.is_empty() {
+                        let mut candidates = std::collections::BTreeSet::new();
+                        for combinator in &combinators {
+                            if combinator.kind == RawCombinatorKind::Show {
+                                candidates.extend(combinator.names.iter().cloned());
+                            }
+                        }
+                        for name in candidates.into_iter().filter(|name| {
+                            let mut visible = true;
+                            for combinator in &combinators {
+                                let contains = combinator.names.contains(name);
+                                visible = match combinator.kind {
+                                    RawCombinatorKind::Show => visible && contains,
+                                    RawCombinatorKind::Hide => visible && !contains,
+                                };
+                            }
+                            visible
+                        }) {
+                            facts.imports.push(make_import(name.clone(), name));
+                        }
+                    }
+                }
                 // The alias and the exported name were captured by the same
                 // query match, so this is the only safe place to pair them.
-                ([imported], [local]) => facts.imports.push(RawImport {
-                    local: (*local).to_string(),
-                    imported: (*imported).to_string(),
-                    module: module.to_string(),
-                }),
+                ([imported], [local]) => facts
+                    .imports
+                    .push(make_import((*local).to_string(), (*imported).to_string())),
                 // A non-aliased import uses the same spelling on both sides.
                 (imported, []) => {
                     for imported_name in imported {
-                        facts.imports.push(RawImport {
-                            local: (*imported_name).to_string(),
-                            imported: (*imported_name).to_string(),
-                            module: module.to_string(),
-                        });
+                        facts.imports.push(make_import(
+                            (*imported_name).to_string(),
+                            (*imported_name).to_string(),
+                        ));
                     }
                 }
                 // No local binding exists for a side-effect import or a
                 // re-export pattern. Keep the module-only fact for the graph,
                 // but do not invent a symbol binding from incomplete captures.
-                _ => facts.imports.push(RawImport {
-                    local: String::new(),
-                    imported: String::new(),
-                    module: module.to_string(),
-                }),
+                _ => facts
+                    .imports
+                    .push(make_import(String::new(), String::new())),
             }
         }
 
         for cap in m.captures {
             let full = capture_names[cap.index as usize];
-            if full == "import.local" {
+            if matches!(full, "import.local" | "import.excluded") {
                 import_locals.insert(cap.node.byte_range());
                 continue;
             }
@@ -1084,6 +1224,46 @@ mod tests {
     }
 
     #[test]
+    fn a_type_is_not_its_own_container_but_still_contains_members() {
+        let cases = [
+            (
+                Lang::TypeScript,
+                "class Store { save() {} }",
+                "Store",
+                "save",
+            ),
+            (
+                Lang::Swift,
+                "class Store { func save() {} }",
+                "Store",
+                "save",
+            ),
+            (
+                Lang::Dart,
+                "class Store { void save() {} }",
+                "Store",
+                "save",
+            ),
+        ];
+
+        for (lang, source, type_name, member_name) in cases {
+            let f = facts(lang, source);
+            assert_eq!(
+                sym(&f, type_name).container,
+                None,
+                "{} type declaration",
+                lang.name()
+            );
+            assert_eq!(
+                sym(&f, member_name).container.as_deref(),
+                Some(type_name),
+                "{} member declaration",
+                lang.name()
+            );
+        }
+    }
+
+    #[test]
     fn a_value_that_is_read_but_never_called_still_counts_as_used() {
         // Caught on the real repo: with only call/type/import/jsx patterns,
         // every exported constant read `headers: HEADERS` looked unreferenced
@@ -1324,13 +1504,78 @@ mod tests {
         let module = |m: &str| f.imports.iter().any(|i| i.module == m);
         assert!(module("package:flutter/material.dart"), "{:?}", f.imports);
         assert!(module("../domain/models/post.dart"), "{:?}", f.imports);
-        assert!(module("screens/home_screen.dart"), "export barrel");
+        assert!(
+            f.imports
+                .iter()
+                .any(|import| import.module == "screens/home_screen.dart" && import.reexport),
+            "export barrel must stay distinct from a local import: {:?}",
+            f.imports
+        );
         assert!(
             f.imports
                 .iter()
                 .any(|i| i.local == "p" && i.module == "package:path/path.dart"),
             "an `as p` alias binds a namespace: {:?}",
             f.imports
+        );
+    }
+
+    #[test]
+    fn dart_import_combinators_keep_names_and_source_order() {
+        let f = facts(
+            Lang::Dart,
+            "import 'models.dart' show Post, User hide User;\nvoid use(Post post) {}\n",
+        );
+
+        let directive = f
+            .imports
+            .iter()
+            .find(|import| !import.combinators.is_empty())
+            .expect("the module-only row carries the narrowing chain");
+        assert_eq!(directive.combinators.len(), 2, "{:?}", f.imports);
+        assert_eq!(directive.combinators[0].kind, RawCombinatorKind::Show);
+        assert_eq!(directive.combinators[0].names, ["Post", "User"]);
+        assert_eq!(directive.combinators[1].kind, RawCombinatorKind::Hide);
+        assert_eq!(directive.combinators[1].names, ["User"]);
+
+        assert!(
+            f.imports
+                .iter()
+                .any(|import| import.imported == "Post" && import.local == "Post"),
+            "shown names are import wiring: {:?}",
+            f.imports
+        );
+        assert!(
+            f.refs.iter().all(|reference| reference.name != "User"),
+            "a hidden name in the directive is an exclusion, not a use: {:?}",
+            f.refs
+        );
+    }
+
+    #[test]
+    fn dart_parts_are_library_members_not_import_edges() {
+        let primary = facts(
+            Lang::Dart,
+            "library timeline.models;\npart 'post.dart';\nclass Timeline {}\n",
+        );
+        assert_eq!(primary.library_name.as_deref(), Some("timeline.models"));
+        assert_eq!(primary.parts, ["post.dart"]);
+        assert!(
+            primary.imports.is_empty(),
+            "a part is not a module dependency: {:?}",
+            primary.imports
+        );
+
+        let uri_part = facts(Lang::Dart, "part of 'timeline.dart';\nclass Post {}\n");
+        assert_eq!(
+            uri_part.part_of,
+            Some(RawPartOf::Uri("timeline.dart".to_string()))
+        );
+
+        let named_part = facts(Lang::Dart, "part of timeline.models;\nclass User {}\n");
+        assert_eq!(
+            named_part.part_of,
+            Some(RawPartOf::LibraryName("timeline.models".to_string()))
         );
     }
 

@@ -1422,6 +1422,24 @@ mod tests {
     }
 
     #[test]
+    fn a_supported_file_that_failed_to_read_is_named_in_the_tool_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.rs"), "pub fn visible() {}\n").unwrap();
+        std::fs::write(dir.path().join("broken.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let value = op_definition(&idx, "missing_from_broken_file", None);
+        assert_eq!(value["found"], 0);
+        let message = value["message"].as_str().unwrap();
+        assert!(message.contains("broken.rs"), "{message}");
+        assert!(message.contains("failed to read or parse"), "{message}");
+        assert!(
+            message.contains("grep"),
+            "the fallback must be named: {message}"
+        );
+    }
+
+    #[test]
     fn missing_usages_refuse_to_be_read_as_nothing_calls_it() {
         // This is the answer that ends "so there are no callers, the refactor
         // is safe". It has to say otherwise in words.

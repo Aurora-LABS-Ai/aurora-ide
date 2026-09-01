@@ -6,7 +6,7 @@
 //! defined", "who touches X") at a fraction of the cost, and it reports its own
 //! ambiguity instead of pretending to be exact — see `ResolutionStats`.
 
-use super::extract::{extract, RawImport, RawRef, RawSymbol};
+use super::extract::{extract, RawCombinatorKind, RawImport, RawPartOf, RawRef, RawSymbol};
 use super::lang::LangSet;
 use super::walk;
 use anyhow::Result;
@@ -28,6 +28,11 @@ pub struct FileEntry {
     /// no signal.
     #[serde(default)]
     pub churn: u32,
+    /// Legacy named Dart library declared by this file, when present. Modern
+    /// Dart uses URI-based `part of`, but named parts remain valid syntax and
+    /// need a unique owner to share library scope correctly.
+    #[serde(default)]
+    pub library_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +70,35 @@ pub struct Reference {
     pub from: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CombinatorKind {
+    Show,
+    Hide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCombinator {
+    pub kind: CombinatorKind,
+    pub names: Vec<String>,
+    pub position: u32,
+}
+
+impl ImportCombinator {
+    fn permits_all(combinators: &[Self], name: &str) -> bool {
+        let mut visible = true;
+        let mut ordered: Vec<&Self> = combinators.iter().collect();
+        ordered.sort_by_key(|combinator| combinator.position);
+        for combinator in ordered {
+            let contains = combinator.names.iter().any(|candidate| candidate == name);
+            visible = match combinator.kind {
+                CombinatorKind::Show => visible && contains,
+                CombinatorKind::Hide => visible && !contains,
+            };
+        }
+        visible
+    }
+}
+
 /// One `local -> imported -> module` binding, attributed to the file that
 /// wrote it. Empty names represent a module-only dependency such as a
 /// side-effect import or a re-export.
@@ -74,6 +108,17 @@ pub struct Import {
     pub local: String,
     pub imported: String,
     pub module: String,
+    pub directive: u32,
+    pub reexport: bool,
+    pub combinators: Vec<ImportCombinator>,
+}
+
+/// A Dart primary file and one file declared as its `part`. Parts share one
+/// namespace, import scope, and underscore-private boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryPart {
+    pub library: u32,
+    pub part: u32,
 }
 
 /// How a reference was tied to a definition, worst case first.
@@ -111,6 +156,12 @@ pub struct ResolutionStats {
 pub struct BuildStats {
     pub files: usize,
     pub files_with_parse_errors: usize,
+    /// Files in an indexed language that could not be read or whose parser
+    /// unwound. The count is complete; the path sample is bounded below.
+    #[serde(default)]
+    pub files_failed: usize,
+    #[serde(default)]
+    pub failed_files: Vec<String>,
     pub skipped_too_large: usize,
     /// Minified / bundled output, detected by line shape. Reported rather than
     /// silently dropped: a truncation that does not name itself reads as
@@ -144,6 +195,8 @@ pub struct CodeIndex {
     pub refs: Vec<Reference>,
     #[serde(default)]
     pub imports: Vec<Import>,
+    #[serde(default)]
+    pub library_parts: Vec<LibraryPart>,
     /// Workspace package name -> its directory (see [`walk::workspace_packages`]).
     #[serde(default)]
     pub workspace_packages: Vec<(String, String)>,
@@ -156,23 +209,53 @@ pub struct CodeIndex {
     by_name: HashMap<String, Vec<u32>>,
     #[serde(skip)]
     refs_by_name: HashMap<String, Vec<u32>>,
-    /// `(file, local name) -> (imported name, module specifier)`.
+    /// `(file, local name) -> (imported name, module specifier, directive)`.
     #[serde(skip)]
-    imports_by_file: HashMap<(u32, String), (String, String)>,
-    /// `file -> the files it imports`, resolved once.
-    ///
-    /// The counterpart to [`imports_by_file`](Self::imports_by_file) for
-    /// languages whose imports bind no names. A Dart `import 'post.dart';`
-    /// brings that library's whole public surface into scope without listing
-    /// anything, so the file's import list still answers "where did this name
-    /// come from" — it just answers with a FILE. Measured on a real Flutter
-    /// app: without this, the import arm of the cascade fired on 0.0% of
-    /// ambiguous names and half of them stayed unresolved.
+    imports_by_file: HashMap<(u32, String), (String, String, u32)>,
+    /// Direct, resolved import directives keyed by the file that wrote them.
+    /// Name visibility is evaluated later because Dart combinators narrow it
+    /// per name and re-export barrels can extend it transitively.
     #[serde(skip)]
-    imported_files: HashMap<u32, Vec<u32>>,
+    imported_modules: HashMap<u32, Vec<VisibleModule>>,
+    /// Resolved re-export directives, separate from local imports. A barrel's
+    /// exports are visible to its consumers without becoming local bindings in
+    /// the barrel itself.
+    #[serde(skip)]
+    reexported_modules: HashMap<u32, Vec<VisibleModule>>,
+    /// Every file id in a Dart library maps to the complete membership list,
+    /// primary file included. Files absent here are one-file libraries.
+    #[serde(skip)]
+    library_members: HashMap<u32, Vec<u32>>,
     /// Forward-slashed relative path -> file id, for module resolution.
     #[serde(skip)]
     file_ids: HashMap<String, u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VisibleModule {
+    target: u32,
+    directive: u32,
+    combinators: Vec<ImportCombinator>,
+    /// `(name exposed by this directive, name in the target module)`. Empty
+    /// means a whole-module export such as Dart `export 'x.dart'` or
+    /// TypeScript `export * from './x'`.
+    bindings: Vec<(String, String)>,
+}
+
+enum FileBuildOutcome {
+    Indexed(String, super::lang::Lang, u64, super::extract::FileFacts),
+    Generated,
+    Failed(String),
+}
+
+fn parse_without_taking_down_the_build<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    // A grammar is native code. Catch Rust unwinds so one pathological file
+    // becomes a coverage gap instead of aborting the whole parallel build.
+    // Native access violations/segfaults cannot be caught here; that requires
+    // a subprocess boundary, which this in-process index does not claim.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .ok()
+        .flatten()
 }
 
 /// Join a relative specifier onto a directory, collapsing `.` and `..`.
@@ -231,22 +314,29 @@ impl CodeIndex {
         // One parser per rayon worker: creating one per file is measurable at
         // repo scale, and `Parser` is Send but not Sync so it cannot simply be
         // shared. The compiled queries inside `LangSet` are shared by reference.
-        let per_file: Vec<_> = discovered
+        let per_file: Vec<FileBuildOutcome> = discovered
             .par_iter()
             .map_init(tree_sitter::Parser::new, |parser, d| {
-                let source = std::fs::read_to_string(&d.path).ok()?;
-                if walk::looks_generated(&source) {
-                    return Some(Err(d.path.clone()));
-                }
-                let bytes = source.len() as u64;
-                let facts = extract(langs.spec(d.lang), parser, &source)?;
                 let rel = d
                     .path
                     .strip_prefix(&root)
                     .unwrap_or(&d.path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                Some(Ok((rel, d.lang, bytes, facts)))
+                let source = match std::fs::read_to_string(&d.path) {
+                    Ok(source) => source,
+                    Err(_) => return FileBuildOutcome::Failed(rel),
+                };
+                if walk::looks_generated(&source) {
+                    return FileBuildOutcome::Generated;
+                }
+                let bytes = source.len() as u64;
+                let Some(facts) = parse_without_taking_down_the_build(|| {
+                    extract(langs.spec(d.lang), parser, &source)
+                }) else {
+                    return FileBuildOutcome::Failed(rel);
+                };
+                FileBuildOutcome::Indexed(rel, d.lang, bytes, facts)
             })
             .collect();
 
@@ -257,6 +347,7 @@ impl CodeIndex {
             symbols: Vec::new(),
             refs: Vec::new(),
             imports: Vec::new(),
+            library_parts: Vec::new(),
             workspace_packages,
             stats: BuildStats {
                 skipped_too_large: walk_stats.skipped_too_large,
@@ -267,15 +358,28 @@ impl CodeIndex {
             by_name: HashMap::new(),
             refs_by_name: HashMap::new(),
             imports_by_file: HashMap::new(),
-            imported_files: HashMap::new(),
+            imported_modules: HashMap::new(),
+            reexported_modules: HashMap::new(),
+            library_members: HashMap::new(),
             file_ids: HashMap::new(),
         };
 
-        for outcome in per_file.into_iter().flatten() {
+        let mut pending_parts: Vec<(u32, Vec<String>, Option<RawPartOf>)> = Vec::new();
+
+        for outcome in per_file {
             let (rel, lang, bytes, facts) = match outcome {
-                Ok(v) => v,
-                Err(_) => {
+                FileBuildOutcome::Indexed(rel, lang, bytes, facts) => (rel, lang, bytes, facts),
+                FileBuildOutcome::Generated => {
                     idx.stats.skipped_generated += 1;
+                    continue;
+                }
+                FileBuildOutcome::Failed(path) => {
+                    idx.stats.files_failed += 1;
+                    // A handful of concrete paths makes the failure actionable
+                    // without letting a bad generated tree bloat every cache.
+                    if idx.stats.failed_files.len() < 20 {
+                        idx.stats.failed_files.push(path);
+                    }
                     continue;
                 }
             };
@@ -284,11 +388,14 @@ impl CodeIndex {
                 idx.stats.files_with_parse_errors += 1;
             }
             idx.stats.bytes += bytes;
+            let library_name = facts.library_name.clone();
+            pending_parts.push((file_id, facts.parts.clone(), facts.part_of.clone()));
             idx.files.push(FileEntry {
                 churn: churn.get(&rel).copied().unwrap_or(0),
                 path: rel,
                 lang: lang.name().to_string(),
                 had_parse_error: facts.had_parse_error,
+                library_name,
             });
             idx.symbols.extend(facts.symbols.into_iter().map(
                 |RawSymbol {
@@ -333,11 +440,29 @@ impl CodeIndex {
                      local,
                      imported,
                      module,
-                 }| Import {
-                    file: file_id,
-                    local,
-                    imported,
-                    module,
+                     directive,
+                     reexport,
+                     combinators,
+                 }| {
+                    Import {
+                        file: file_id,
+                        local,
+                        imported,
+                        module,
+                        directive,
+                        reexport,
+                        combinators: combinators
+                            .into_iter()
+                            .map(|combinator| ImportCombinator {
+                                kind: match combinator.kind {
+                                    RawCombinatorKind::Show => CombinatorKind::Show,
+                                    RawCombinatorKind::Hide => CombinatorKind::Hide,
+                                },
+                                names: combinator.names,
+                                position: combinator.position,
+                            })
+                            .collect(),
+                    }
                 },
             ));
         }
@@ -345,6 +470,7 @@ impl CodeIndex {
         idx.stats.files = idx.files.len();
         idx.stats.symbols = idx.symbols.len();
         idx.stats.refs = idx.refs.len();
+        idx.resolve_library_parts(&pending_parts);
         idx.rebuild_lookups();
         idx.stats.resolution = idx.compute_resolution();
         idx.stats.signature = walk::signature(&idx.root);
@@ -352,10 +478,55 @@ impl CodeIndex {
         Ok(idx)
     }
 
+    fn resolve_library_parts(&mut self, pending: &[(u32, Vec<String>, Option<RawPartOf>)]) {
+        // `resolve_module` needs this map, while the full lookup rebuild runs
+        // only after part relations are known. Seed just the path map here.
+        self.file_ids.clear();
+        for (i, file) in self.files.iter().enumerate() {
+            self.file_ids.insert(file.path.clone(), i as u32);
+        }
+
+        let mut named_libraries: HashMap<&str, Vec<u32>> = HashMap::new();
+        for (file, entry) in self.files.iter().enumerate() {
+            if let Some(name) = entry.library_name.as_deref() {
+                named_libraries.entry(name).or_default().push(file as u32);
+            }
+        }
+
+        let mut relations = std::collections::BTreeSet::new();
+        for (file, parts, part_of) in pending {
+            for specifier in parts {
+                if let Some(part) = self.resolve_module(*file, specifier) {
+                    if part != *file {
+                        relations.insert((*file, part));
+                    }
+                }
+            }
+            let library = match part_of {
+                Some(RawPartOf::Uri(specifier)) => self.resolve_module(*file, specifier),
+                Some(RawPartOf::LibraryName(name)) => named_libraries
+                    .get(name.as_str())
+                    .filter(|files| files.len() == 1)
+                    .map(|files| files[0]),
+                None => None,
+            };
+            if let Some(library) = library.filter(|library| library != file) {
+                relations.insert((library, *file));
+            }
+        }
+        self.library_parts = relations
+            .into_iter()
+            .map(|(library, part)| LibraryPart { library, part })
+            .collect();
+    }
+
     fn rebuild_lookups(&mut self) {
         self.by_name.clear();
         self.refs_by_name.clear();
         self.imports_by_file.clear();
+        self.imported_modules.clear();
+        self.reexported_modules.clear();
+        self.library_members.clear();
         self.file_ids.clear();
         for (i, s) in self.symbols.iter().enumerate() {
             self.by_name
@@ -370,29 +541,97 @@ impl CodeIndex {
                 .push(i as u32);
         }
         for imp in &self.imports {
-            if imp.local.is_empty() {
+            if imp.reexport || imp.local.is_empty() {
                 continue;
             }
             self.imports_by_file.insert(
                 (imp.file, imp.local.clone()),
-                (imp.imported.clone(), imp.module.clone()),
+                (imp.imported.clone(), imp.module.clone(), imp.directive),
             );
         }
         for (i, f) in self.files.iter().enumerate() {
             self.file_ids.insert(f.path.clone(), i as u32);
         }
-        // Last, and deliberately: `resolve_module` reads `file_ids`, so this
-        // is the one lookup that depends on another being built first.
-        let mut imported_files: HashMap<u32, Vec<u32>> = HashMap::new();
+
+        // Connected components, not just direct pairs. A primary file may list
+        // many parts, and a malformed/in-progress tree may reveal the same
+        // membership from only the `part of` side. Either way every member
+        // must receive the complete library scope.
+        let mut adjacency: HashMap<u32, Vec<u32>> = HashMap::new();
+        for relation in &self.library_parts {
+            adjacency
+                .entry(relation.library)
+                .or_default()
+                .push(relation.part);
+            adjacency
+                .entry(relation.part)
+                .or_default()
+                .push(relation.library);
+        }
+        let mut visited = std::collections::HashSet::new();
+        for start in adjacency.keys().copied().collect::<Vec<_>>() {
+            if !visited.insert(start) {
+                continue;
+            }
+            let mut stack = vec![start];
+            let mut members = Vec::new();
+            while let Some(file) = stack.pop() {
+                members.push(file);
+                for neighbour in adjacency.get(&file).into_iter().flatten().copied() {
+                    if visited.insert(neighbour) {
+                        stack.push(neighbour);
+                    }
+                }
+            }
+            members.sort_unstable();
+            members.dedup();
+            for file in &members {
+                self.library_members.insert(*file, members.clone());
+            }
+        }
+
+        // Query patterns overlap on purpose, so merge rows belonging to one
+        // source directive before deriving visibility. Two distinct imports of
+        // the same module retain separate directives and their separate
+        // combinator chains.
+        let mut directives: HashMap<(u32, u32, bool), VisibleModule> = HashMap::new();
         for imp in &self.imports {
             if let Some(target) = self.resolve_module(imp.file, &imp.module) {
-                let seen = imported_files.entry(imp.file).or_default();
-                if !seen.contains(&target) {
-                    seen.push(target);
+                let visible = directives
+                    .entry((imp.file, imp.directive, imp.reexport))
+                    .or_insert_with(|| VisibleModule {
+                        target,
+                        directive: imp.directive,
+                        combinators: Vec::new(),
+                        bindings: Vec::new(),
+                    });
+                if visible.target != target {
+                    continue;
+                }
+                for combinator in &imp.combinators {
+                    if !visible.combinators.contains(combinator) {
+                        visible.combinators.push(combinator.clone());
+                    }
+                }
+                if imp.reexport && !imp.local.is_empty() && !imp.imported.is_empty() {
+                    let binding = (imp.local.clone(), imp.imported.clone());
+                    if !visible.bindings.contains(&binding) {
+                        visible.bindings.push(binding);
+                    }
                 }
             }
         }
-        self.imported_files = imported_files;
+        for ((file, _, reexport), mut visible) in directives {
+            visible
+                .combinators
+                .sort_by_key(|combinator| combinator.position);
+            let map = if reexport {
+                &mut self.reexported_modules
+            } else {
+                &mut self.imported_modules
+            };
+            map.entry(file).or_default().push(visible);
+        }
     }
 
     fn compute_resolution(&self) -> ResolutionStats {
@@ -597,6 +836,152 @@ impl CodeIndex {
         None
     }
 
+    fn library_files(&self, file: u32) -> Vec<u32> {
+        self.library_members
+            .get(&file)
+            .cloned()
+            .unwrap_or_else(|| vec![file])
+    }
+
+    fn directive_permits(&self, file: u32, directive: u32, name: &str) -> bool {
+        self.imported_modules
+            .get(&file)
+            .into_iter()
+            .flatten()
+            .find(|visible| visible.directive == directive)
+            .is_none_or(|visible| ImportCombinator::permits_all(&visible.combinators, name))
+    }
+
+    fn collect_exported_definitions<'a>(
+        &'a self,
+        target: u32,
+        name: &str,
+        visited: &mut std::collections::HashSet<(u32, String)>,
+        out: &mut Vec<&'a Symbol>,
+    ) {
+        for member in self.library_files(target) {
+            if !visited.insert((member, name.to_string())) {
+                continue;
+            }
+            out.extend(
+                self.definitions(name)
+                    .into_iter()
+                    .filter(|symbol| symbol.exported && symbol.file == member),
+            );
+            for reexport in self.reexported_modules.get(&member).into_iter().flatten() {
+                if reexport.bindings.is_empty() {
+                    if ImportCombinator::permits_all(&reexport.combinators, name) {
+                        self.collect_exported_definitions(reexport.target, name, visited, out);
+                    }
+                } else {
+                    for (_, imported) in reexport
+                        .bindings
+                        .iter()
+                        .filter(|(exposed, _)| exposed == name)
+                    {
+                        self.collect_exported_definitions(reexport.target, imported, visited, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn collect_reachable_export_files(
+        &self,
+        target: u32,
+        visited: &mut std::collections::HashSet<u32>,
+        files: &mut std::collections::HashSet<u32>,
+    ) {
+        for member in self.library_files(target) {
+            if !visited.insert(member) {
+                continue;
+            }
+            files.insert(member);
+            for reexport in self.reexported_modules.get(&member).into_iter().flatten() {
+                self.collect_reachable_export_files(reexport.target, visited, files);
+            }
+        }
+    }
+
+    /// Public definitions named `name` exposed by `target`, including every
+    /// Dart part and transitive re-export barrel. Re-export cycles terminate at
+    /// the visited-file set instead of turning a symbol lookup into recursion.
+    fn exported_definitions_from(&self, target: u32, name: &str) -> Vec<&Symbol> {
+        let mut out = Vec::new();
+        self.collect_exported_definitions(
+            target,
+            name,
+            &mut std::collections::HashSet::new(),
+            &mut out,
+        );
+        out.sort_by_key(|symbol| (symbol.file, symbol.line, symbol.col));
+        out.dedup_by_key(|symbol| (symbol.file, symbol.line, symbol.col));
+        out
+    }
+
+    fn imported_definitions(&self, from_file: u32, name: &str) -> Vec<&Symbol> {
+        let mut out = Vec::new();
+        for member in self.library_files(from_file) {
+            for import in self.imported_modules.get(&member).into_iter().flatten() {
+                if ImportCombinator::permits_all(&import.combinators, name) {
+                    out.extend(self.exported_definitions_from(import.target, name));
+                }
+            }
+        }
+        out.sort_by_key(|symbol| (symbol.file, symbol.line, symbol.col));
+        out.dedup_by_key(|symbol| (symbol.file, symbol.line, symbol.col));
+        out
+    }
+
+    /// True when the file explicitly imports the library that owns `target`,
+    /// but the target is absent from the resulting namespace. This is stronger
+    /// evidence than the global unique-name fallback: `hide Post` and a private
+    /// `_Post` must not be "resolved" merely because no other workspace file
+    /// happens to declare that spelling.
+    fn import_scope_excludes(&self, from_file: u32, target: &Symbol) -> bool {
+        if self
+            .imported_definitions(from_file, &target.name)
+            .iter()
+            .any(|candidate| {
+                candidate.file == target.file
+                    && candidate.line == target.line
+                    && candidate.col == target.col
+            })
+        {
+            return false;
+        }
+
+        for member in self.library_files(from_file) {
+            for import in self.imported_modules.get(&member).into_iter().flatten() {
+                let mut reachable = std::collections::HashSet::new();
+                self.collect_reachable_export_files(
+                    import.target,
+                    &mut std::collections::HashSet::new(),
+                    &mut reachable,
+                );
+                if reachable.contains(&target.file) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn import_exposes_target(&self, import: &Import, target: &Symbol) -> bool {
+        let Some(module) = self.resolve_module(import.file, &import.module) else {
+            return false;
+        };
+        ImportCombinator::permits_all(&import.combinators, &import.imported)
+            && self
+                .exported_definitions_from(module, &import.imported)
+                .iter()
+                .any(|candidate| {
+                    candidate.file == target.file
+                        && candidate.line == target.line
+                        && candidate.col == target.col
+                })
+    }
+
     /// Which definitions does `name`, written inside `from_file`, actually
     /// mean — and how sure are we?
     ///
@@ -619,14 +1004,15 @@ impl CodeIndex {
         // References use the local spelling. Resolve the imported spelling
         // before looking at same-file or unique-name candidates, otherwise
         // `formatTokens as fmtTokens` becomes an external `fmtTokens` lookup.
-        if let Some((imported, module)) = self.imports_by_file.get(&(from_file, bare.to_string())) {
-            let imported_defs = self.definitions(imported);
-            if let Some(target) = self.resolve_module(from_file, module) {
-                let hit: Vec<&Symbol> = imported_defs
-                    .iter()
-                    .copied()
-                    .filter(|s| s.file == target)
-                    .collect();
+        if let Some((imported, module, directive)) =
+            self.imports_by_file.get(&(from_file, bare.to_string()))
+        {
+            if self.directive_permits(from_file, *directive, imported) {
+                let hit = self
+                    .resolve_module(from_file, module)
+                    .map_or_else(Vec::new, |target| {
+                        self.exported_definitions_from(target, imported)
+                    });
                 if !hit.is_empty() {
                     return (hit, Confidence::Import);
                 }
@@ -634,37 +1020,38 @@ impl CodeIndex {
         }
 
         let defs = self.definitions(name);
-        if defs.len() <= 1 {
-            return (defs, Confidence::Unique);
-        }
-
+        let local_library = self.library_files(from_file);
         let same_file: Vec<&Symbol> = defs
             .iter()
             .copied()
-            .filter(|s| s.file == from_file)
+            .filter(|s| local_library.contains(&s.file))
             .collect();
         if !same_file.is_empty() {
             return (same_file, Confidence::SameFile);
         }
 
-        // The file's imports, answering with a FILE rather than a name — see
-        // `imported_files`. Ranked below same-file because a local definition
-        // shadows an imported one in every language here, and above same-dir
-        // because a file you actually import beats a sibling you do not.
+        if defs.len() <= 1 {
+            if defs
+                .first()
+                .is_some_and(|target| self.import_scope_excludes(from_file, target))
+            {
+                return (Vec::new(), Confidence::Unique);
+            }
+            return (defs, Confidence::Unique);
+        }
+
+        // The file's imports, answering with an exported namespace rather than
+        // a named binding. Ranked below same-library because a local definition
+        // shadows an imported one, and above same-dir because an actual import
+        // beats a sibling the file never named.
         //
         // Exactly ONE imported file may define the name. Two is a real
         // ambiguity, and resolving it by picking either would be the guess this
         // whole cascade exists to refuse.
-        if let Some(visible) = self.imported_files.get(&from_file) {
-            let hit: Vec<&Symbol> = defs
-                .iter()
-                .copied()
-                .filter(|s| visible.contains(&s.file))
-                .collect();
-            let distinct: std::collections::HashSet<u32> = hit.iter().map(|s| s.file).collect();
-            if distinct.len() == 1 {
-                return (hit, Confidence::Import);
-            }
+        let hit = self.imported_definitions(from_file, name);
+        let distinct: std::collections::HashSet<u32> = hit.iter().map(|s| s.file).collect();
+        if distinct.len() == 1 {
+            return (hit, Confidence::Import);
         }
 
         let dir = self
@@ -713,10 +1100,10 @@ impl CodeIndex {
         let mut unresolved = 0usize;
         let mut candidate_refs = self.references(&target.name);
         for imp in &self.imports {
-            if imp.local.is_empty()
-                || imp.local == imp.imported
-                || imp.imported != target.name
-                || self.resolve_module(imp.file, &imp.module) != Some(target.file)
+            if imp.reexport
+                || imp.local.is_empty()
+                || (imp.local == imp.imported && imp.imported == target.name)
+                || !self.import_exposes_target(imp, target)
             {
                 continue;
             }
@@ -734,8 +1121,9 @@ impl CodeIndex {
             if r.kind == "import" {
                 if self.imports.iter().any(|imp| {
                     imp.file == r.file
-                        && imp.imported == target.name
-                        && self.resolve_module(imp.file, &imp.module) == Some(target.file)
+                        && imp.imported == r.name
+                        && self.directive_permits(imp.file, imp.directive, &imp.imported)
+                        && self.import_exposes_target(imp, target)
                 }) {
                     hits.push(r);
                 }
@@ -795,25 +1183,44 @@ impl CodeIndex {
     /// the model reads, and a list of nine is a paragraph nobody acts on.
     pub fn coverage_gap(&self) -> Option<String> {
         let gaps = &self.stats.unindexed_extensions;
-        if gaps.is_empty() {
-            return None;
+        let mut reasons = Vec::new();
+        if !gaps.is_empty() {
+            let named: Vec<String> = gaps
+                .iter()
+                .take(2)
+                .map(|(ext, n)| format!("{n} .{ext}"))
+                .collect();
+            let more = gaps.len().saturating_sub(2);
+            let tail = if more > 0 {
+                format!(" (and {more} other unreadable file type(s))")
+            } else {
+                String::new()
+            };
+            reasons.push(format!(
+                "This workspace also holds {} file(s){tail} that this index cannot read — {}",
+                named.join(" and "),
+                super::lang::Lang::UNINDEXED_HINT
+            ));
         }
-        let named: Vec<String> = gaps
-            .iter()
-            .take(2)
-            .map(|(ext, n)| format!("{n} .{ext}"))
-            .collect();
-        let more = gaps.len().saturating_sub(2);
-        let tail = if more > 0 {
-            format!(" (and {more} other unreadable file type(s))")
-        } else {
-            String::new()
-        };
-        Some(format!(
-            "This workspace also holds {} file(s){tail} that this index cannot read — {}",
-            named.join(" and "),
-            super::lang::Lang::UNINDEXED_HINT
-        ))
+        if self.stats.files_failed > 0 {
+            let example = self
+                .stats
+                .failed_files
+                .first()
+                .map(|path| format!("; first failure: `{path}`"))
+                .unwrap_or_default();
+            reasons.push(format!(
+                "{} supported-language file(s) failed to read or parse{example}",
+                self.stats.files_failed
+            ));
+        }
+        if self.stats.files_with_parse_errors > 0 {
+            reasons.push(format!(
+                "{} file(s) contain syntax errors and were indexed through parser recovery",
+                self.stats.files_with_parse_errors
+            ));
+        }
+        (!reasons.is_empty()).then(|| reasons.join(". "))
     }
 
     pub fn outline(&self, file_substring: &str) -> Vec<(&str, &Symbol)> {
@@ -869,6 +1276,7 @@ impl CodeIndex {
         symbols: Vec<Symbol>,
         refs: Vec<Reference>,
         imports: Vec<Import>,
+        library_parts: Vec<LibraryPart>,
         workspace_packages: Vec<(String, String)>,
         stats: BuildStats,
     ) -> Self {
@@ -878,12 +1286,15 @@ impl CodeIndex {
             symbols,
             refs,
             imports,
+            library_parts,
             workspace_packages,
             stats,
             by_name: HashMap::new(),
             refs_by_name: HashMap::new(),
             imports_by_file: HashMap::new(),
-            imported_files: HashMap::new(),
+            imported_modules: HashMap::new(),
+            reexported_modules: HashMap::new(),
+            library_members: HashMap::new(),
             file_ids: HashMap::new(),
         };
         idx.rebuild_lookups();
@@ -986,6 +1397,29 @@ mod tests {
             idx.definitions("ghost").is_empty(),
             "gitignored file leaked into the index"
         );
+    }
+
+    #[test]
+    fn an_unreadable_supported_file_is_reported_as_a_coverage_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.rs"), "pub fn visible() {}\n").unwrap();
+        std::fs::write(dir.path().join("broken.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        assert_eq!(idx.stats.files_failed, 1);
+        assert_eq!(idx.stats.failed_files, ["broken.rs"]);
+        assert_eq!(idx.definitions("visible").len(), 1);
+        let gap = idx.coverage_gap().expect("the partial build must say so");
+        assert!(gap.contains("1 supported-language file"), "{gap}");
+        assert!(gap.contains("broken.rs"), "{gap}");
+    }
+
+    #[test]
+    fn a_parser_unwind_is_isolated_from_the_caller() {
+        let result: Option<()> = parse_without_taking_down_the_build(|| {
+            panic!("synthetic grammar failure");
+        });
+        assert!(result.is_none());
     }
 
     /// Build an index from an in-memory file list.
@@ -1188,6 +1622,194 @@ mod tests {
     }
 
     #[test]
+    fn dart_show_hide_combinators_narrow_resolution_in_source_order() {
+        let (_dir, idx) = index_of(&[
+            ("lib/a/models.dart", "class Post {}\nclass User {}\n"),
+            ("lib/b/models.dart", "class Post {}\nclass User {}\n"),
+            (
+                "lib/app/use.dart",
+                "import '../a/models.dart' show Post, User hide User;\nPost? post;\nUser? user;\n",
+            ),
+        ]);
+        let from = file_id(&idx, "lib/app/use.dart");
+
+        let (posts, post_confidence) = idx.resolve("Post", from);
+        assert_eq!(post_confidence, Confidence::Import);
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(idx.file_path(posts[0].file), "lib/a/models.dart");
+
+        let (users, user_confidence) = idx.resolve("User", from);
+        assert_eq!(user_confidence, Confidence::Ambiguous);
+        assert_eq!(users.len(), 2, "hide must not pick either User: {users:?}");
+    }
+
+    #[test]
+    fn an_explicitly_hidden_or_private_unique_name_does_not_use_the_global_fallback() {
+        let (_dir, idx) = index_of(&[
+            (
+                "lib/models.dart",
+                "class Post {}\nclass _LibraryPrivate {}\n",
+            ),
+            (
+                "app/use.dart",
+                "import '../lib/models.dart' hide Post;\nPost? post;\n_LibraryPrivate? hidden;\n",
+            ),
+        ]);
+        let from = file_id(&idx, "app/use.dart");
+
+        let (post, _) = idx.resolve("Post", from);
+        assert!(
+            post.is_empty(),
+            "hide is stronger than global uniqueness: {post:?}"
+        );
+        let (private, _) = idx.resolve("_LibraryPrivate", from);
+        assert!(
+            private.is_empty(),
+            "a Dart private name is not exported from its library: {private:?}"
+        );
+    }
+
+    #[test]
+    fn imports_follow_reexports_to_the_defining_file() {
+        let (_dir, idx) = index_of(&[
+            (
+                "src/core/model.ts",
+                "export class Post { archive() {} }\nexport class Hidden {}\n",
+            ),
+            (
+                "src/core/index.ts",
+                "export { Post } from './model';\n",
+            ),
+            (
+                "src/app/use.ts",
+                "import { Post } from '../core/index';\nexport function usePost(p: Post) { p.archive(); }\n",
+            ),
+        ]);
+        let from = file_id(&idx, "src/app/use.ts");
+        let (defs, confidence) = idx.resolve("Post", from);
+        assert_eq!(confidence, Confidence::Import);
+        assert_eq!(
+            defs.len(),
+            1,
+            "the barrel resolves to one definition: {defs:?}"
+        );
+        assert_eq!(idx.file_path(defs[0].file), "src/core/model.ts");
+
+        let target = idx.definitions("Post")[0];
+        let (references, unresolved) = idx.references_to(target);
+        assert_eq!(unresolved, 0);
+        assert!(
+            references
+                .iter()
+                .any(|reference| idx.file_path(reference.file) == "src/app/use.ts"),
+            "the consumer survives the barrel: {references:?}"
+        );
+
+        let (hidden, _) = idx.resolve("Hidden", from);
+        assert!(
+            hidden.is_empty(),
+            "a named re-export must not leak another target export: {hidden:?}"
+        );
+    }
+
+    #[test]
+    fn an_aliased_reexport_resolves_and_reports_its_consumers() {
+        let (_dir, idx) = index_of(&[
+            ("src/model.ts", "export class Post {}\n"),
+            (
+                "src/public.ts",
+                "export { Post as PublicPost } from './model';\n",
+            ),
+            (
+                "src/app.ts",
+                "import { PublicPost } from './public';\nexport function use(post: PublicPost) {}\n",
+            ),
+        ]);
+        let from = file_id(&idx, "src/app.ts");
+        let (definitions, confidence) = idx.resolve("PublicPost", from);
+        assert_eq!(confidence, Confidence::Import);
+        assert_eq!(definitions.len(), 1, "{definitions:?}");
+        assert_eq!(definitions[0].name, "Post");
+        assert_eq!(idx.file_path(definitions[0].file), "src/model.ts");
+
+        let post = idx.definitions("Post")[0];
+        let (references, unresolved) = idx.references_to(post);
+        assert_eq!(unresolved, 0);
+        assert!(
+            references
+                .iter()
+                .any(|reference| idx.file_path(reference.file) == "src/app.ts"),
+            "the consumer's aliased spelling must reach the original: {references:?}"
+        );
+    }
+
+    #[test]
+    fn dart_parts_share_library_scope_imports_and_exports() {
+        let (_dir, idx) = index_of(&[
+            (
+                "lib/timeline.dart",
+                "library timeline.models;\nimport 'external.dart' show External;\npart 'post.dart';\npart 'user.dart';\nclass Timeline {}\n",
+            ),
+            (
+                "lib/post.dart",
+                "part of 'timeline.dart';\nclass Post { User? friend; External? external; }\n",
+            ),
+            (
+                "lib/user.dart",
+                "part of timeline.models;\nclass User {}\nclass _Hidden {}\n",
+            ),
+            ("lib/external.dart", "class External {}\n"),
+            ("other/user.dart", "class User {}\n"),
+            ("other/post.dart", "class Post {}\n"),
+            ("other/external.dart", "class External {}\n"),
+            (
+                "app/use.dart",
+                "import '../lib/timeline.dart';\nPost? post;\n",
+            ),
+        ]);
+
+        let post_file = file_id(&idx, "lib/post.dart");
+        let (users, user_confidence) = idx.resolve("User", post_file);
+        assert_eq!(user_confidence, Confidence::SameFile);
+        assert_eq!(users.len(), 1, "parts are one library scope: {users:?}");
+        assert_eq!(idx.file_path(users[0].file), "lib/user.dart");
+
+        let (external, external_confidence) = idx.resolve("External", post_file);
+        assert_eq!(external_confidence, Confidence::Import);
+        assert_eq!(
+            external.len(),
+            1,
+            "parts inherit the library import: {external:?}"
+        );
+        assert_eq!(idx.file_path(external[0].file), "lib/external.dart");
+
+        let client = file_id(&idx, "app/use.dart");
+        let (posts, post_confidence) = idx.resolve("Post", client);
+        assert_eq!(post_confidence, Confidence::Import);
+        assert_eq!(
+            posts.len(),
+            1,
+            "an import exposes definitions from parts: {posts:?}"
+        );
+        assert_eq!(idx.file_path(posts[0].file), "lib/post.dart");
+
+        let (private_inside, inside_confidence) = idx.resolve("_Hidden", post_file);
+        assert_eq!(inside_confidence, Confidence::SameFile);
+        assert_eq!(
+            private_inside.len(),
+            1,
+            "parts share privacy: {private_inside:?}"
+        );
+        let (private_outside, _) = idx.resolve("_Hidden", client);
+        assert!(
+            private_outside.is_empty(),
+            "underscore-private definitions must not escape the library: {private_outside:?}"
+        );
+
+        assert_eq!(idx.library_parts.len(), 2, "{:?}", idx.library_parts);
+    }
+
+    #[test]
     fn module_specifiers_resolve_across_the_forms_each_language_writes() {
         let (_d, idx) = index_of(&[
             ("src/core/session.ts", "export class Session {}\n"),
@@ -1280,10 +1902,11 @@ mod tests {
         // dependency graph missing one language.
         const EXTS_IN_RESOLVER: &[&str] = &[
             "ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs", "rs", "py", "c", "h", "cpp",
-            "cc", "cxx", "hpp", "hh", "go", "java", "cs", "rb", "php", "kt", "swift",
+            "cc", "cxx", "hpp", "hh", "go", "java", "cs", "rb", "php", "kt", "swift", "dart",
         ];
         for ext in [
             "rs", "ts", "tsx", "py", "c", "cpp", "go", "java", "cs", "rb", "php", "kt", "swift",
+            "dart",
         ] {
             assert!(
                 super::super::lang::Lang::from_extension(ext).is_some(),

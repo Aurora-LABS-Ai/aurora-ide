@@ -106,7 +106,11 @@ impl ToolExecutor for GrepTool {
                 let candidate = if raw_path == "." {
                     root.to_path_buf()
                 } else {
-                    match super::resolve_path(&raw_path, Some(root)) {
+                    match super::resolve_path_with_access(
+                        &raw_path,
+                        Some(root),
+                        ctx.workspace_access,
+                    ) {
                         Ok(path) => path,
                         Err(err) => {
                             return Ok(serde_json::to_string(&json!({
@@ -250,7 +254,7 @@ mod tests {
                     "path": "../outside.txt",
                 }),
                 &ToolContext {
-                    allow_outside_workspace: false,
+                    workspace_access: Default::default(),
                     turn_id: "t".into(),
                     tool_call_id: "c".into(),
                     thread_id: "s".into(),

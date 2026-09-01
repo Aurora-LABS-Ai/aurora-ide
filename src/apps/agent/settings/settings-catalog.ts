@@ -99,7 +99,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     group: "Agent",
     eyebrow: "Agent",
     title: "Tools & Approvals",
-    description: "What the agent may run on its own, and what needs your sign-off.",
+    description:
+      "What the agent may run on its own, what it may reach on disk, and what needs your sign-off.",
     searchTerms: [
       "approval",
       "auto approve",
@@ -109,6 +110,11 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
       "browser",
       "file changes",
       "project file map",
+      "file access",
+      "read outside workspace",
+      "full access",
+      "outside the project",
+      "absolute path",
     ],
   },
   {
@@ -126,7 +132,6 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
       "instruction set",
       "execution mode",
       "plan mode",
-      "read outside workspace",
       "context compaction",
       "compact at",
       "summary detail",

@@ -495,7 +495,7 @@ mod tests {
 
     fn ctx(session: &str) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: session.into(),

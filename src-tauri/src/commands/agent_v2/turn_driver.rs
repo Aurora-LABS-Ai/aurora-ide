@@ -73,6 +73,46 @@ fn pinned_model(request: &AgentChatRequest) -> String {
     )
 }
 
+/// Attach a turn to the `aurora agent` task that asked for it.
+///
+/// The task's own file is the authority for the `--out` mirror path: the
+/// frontend never needs to carry it, and re-reading it here means the
+/// transcript is configured by what the user actually typed rather than by
+/// what survived a round trip through the window.
+///
+/// A task file that has gone missing is not fatal. The turn is the user's work
+/// and runs either way; all that is lost is the terminal's copy of it, and
+/// failing the turn over a missing transcript would be a far worse trade.
+fn bind_cli_task(task_id: &str, turn_id: &str, thread_id: &str, request: &AgentChatRequest) {
+    use crate::cli_delegate::inbox::Inbox;
+
+    let inbox = Inbox::open();
+    let claimed = inbox
+        .read_request(&inbox.claimed_path(task_id))
+        .or_else(|_| inbox.read_request(&inbox.task_path(task_id)))
+        .ok();
+
+    let workspace = claimed
+        .as_ref()
+        .map(|task| task.workspace_path.clone())
+        .or_else(|| request.workspace_path.clone())
+        .unwrap_or_default();
+
+    let model = claimed
+        .as_ref()
+        .and_then(|task| task.model_pin())
+        .or_else(|| Some(pinned_model(request)));
+
+    crate::cli_delegate::mirror::bind(
+        task_id,
+        turn_id,
+        thread_id,
+        &workspace,
+        model.as_deref(),
+        claimed.as_ref().and_then(|task| task.out_path.as_deref()),
+    );
+}
+
 /// [`pinned_model`] over plain strings, so the rule can be tested without
 /// standing up a whole request.
 fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &str) -> String {
@@ -196,6 +236,16 @@ impl<E: EventEmitter> TurnDriver<E> {
     ) -> Result<TurnCompletion, RuntimeError> {
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
+
+        // 0. Tee this turn into a CLI task's transcript, when it is running one.
+        //
+        //    Before anything that can fail, so a turn that dies during setup
+        //    still closes its transcript through the emitter's error path — a
+        //    terminal waiting on `--follow` needs the `result` line however the
+        //    turn ends, and a failure before the bind would leave it hanging.
+        if let Some(task_id) = request.cli_task_id.as_deref() {
+            bind_cli_task(task_id, &turn_id, &thread_id, &request);
+        }
 
         // 1. Resolve the session (cache → disk → fresh).
         let session_arc = self.registry.load_or_create_session(&thread_id)?;
@@ -592,7 +642,10 @@ pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig 
         compaction_summary_budget: request
             .compaction_summary_budget
             .unwrap_or(defaults.compaction_summary_budget),
-        allow_outside_workspace: request.allow_outside_workspace.unwrap_or(false),
+        workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::from_wire(
+            request.workspace_access.as_deref(),
+            request.allow_outside_workspace,
+        ),
         // Read from the SAME provider type the API factory dispatches on, so
         // the token estimate prices a stored reasoning block exactly as the
         // request builder will treat it: dropped, replayed as text, or

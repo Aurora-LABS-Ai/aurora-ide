@@ -155,6 +155,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.title_maker_model = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.title_maker_model.clone())
                 }
+                "workspaceAccess" => {
+                    settings.workspace_access = serde_json::from_str(&setting.value)
+                        .unwrap_or_else(|_| settings.workspace_access.clone())
+                }
                 "allowOutsideWorkspace" => {
                     settings.allow_outside_workspace = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.allow_outside_workspace)
@@ -376,6 +380,12 @@ impl<'a> SettingsRepository<'a> {
             "titleMakerModel",
             &serde_json::to_string(&settings.title_maker_model).unwrap_or_default(),
         )?;
+        self.set_setting(
+            "workspaceAccess",
+            &serde_json::to_string(&settings.workspace_access).unwrap_or_default(),
+        )?;
+        // Still written so a downgrade, or any reader that predates
+        // `workspaceAccess`, sees the nearest truthful boolean.
         self.set_setting(
             "allowOutsideWorkspace",
             &serde_json::to_string(&settings.allow_outside_workspace).unwrap_or_default(),

@@ -11,7 +11,10 @@
 //! table, which is both smaller and faster to parse than an array of objects.
 //! Nothing outside `save`/`load` ever sees it.
 
-use super::store::{BuildStats, CodeIndex, FileEntry, Import, Reference, Symbol};
+use super::store::{
+    BuildStats, CodeIndex, CombinatorKind, FileEntry, Import, ImportCombinator, LibraryPart,
+    Reference, Symbol,
+};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,7 +36,11 @@ use std::path::{Path, PathBuf};
 /// v12: Dart/Flutter is indexed. A v11 cache of a Flutter project holds no
 /// `.dart` files at all, so every answer about one would keep coming back
 /// empty from disk after the grammar was added.
-pub const FORMAT_VERSION: u32 = 12;
+///
+/// v13: ordered Dart import combinators, re-export identity, and Dart library
+/// part membership are persisted. A v12 cache can misattribute hidden names,
+/// stop at barrel files, and treat a multi-file library as separate modules.
+pub const FORMAT_VERSION: u32 = 13;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.
@@ -52,16 +59,33 @@ pub struct Packed {
     pub symbols: Vec<[u32; 9]>,
     /// `[name, kind, file, line, col, from]`
     pub refs: Vec<[u32; 6]>,
-    /// `[file, local, imported, module]`. Module specifiers repeat once per
-    /// imported name, so they ride the same table as everything else. Empty
-    /// name ids represent module-only dependencies.
+    /// Import/re-export facts. Module specifiers and combinator names ride the
+    /// shared table; empty local/imported ids represent module-only edges.
     #[serde(default)]
-    pub imports: Vec<[u32; 4]>,
+    pub imports: Vec<PackedImport>,
+    /// `[library, part]` Dart library membership.
+    #[serde(default)]
+    pub library_parts: Vec<[u32; 2]>,
     /// Workspace package name -> directory. A handful of entries at most, so
     /// they are stored plainly rather than interned.
     #[serde(default)]
     pub workspace_packages: Vec<(String, String)>,
     pub stats: BuildStats,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PackedImport {
+    /// `[file, local, imported, module, directive, reexport]`.
+    pub row: [u32; 6],
+    pub combinators: Vec<PackedCombinator>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PackedCombinator {
+    /// `0 = show`, `1 = hide`.
+    pub kind: u32,
+    pub position: u32,
+    pub names: Vec<u32>,
 }
 
 /// Assigns a stable id per distinct string, in first-seen order.
@@ -142,13 +166,34 @@ pub fn pack(idx: &CodeIndex) -> Packed {
     let imports = idx
         .imports
         .iter()
-        .map(|i| {
-            [
-                i.file,
-                names.put(&i.local),
-                names.put(&i.imported),
-                names.put(&i.module),
-            ]
+        .map(|import| {
+            let combinators = import
+                .combinators
+                .iter()
+                .map(|combinator| PackedCombinator {
+                    kind: match combinator.kind {
+                        CombinatorKind::Show => 0,
+                        CombinatorKind::Hide => 1,
+                    },
+                    position: combinator.position,
+                    names: combinator
+                        .names
+                        .iter()
+                        .map(|name| names.put(name))
+                        .collect(),
+                })
+                .collect();
+            PackedImport {
+                row: [
+                    import.file,
+                    names.put(&import.local),
+                    names.put(&import.imported),
+                    names.put(&import.module),
+                    import.directive,
+                    u32::from(import.reexport),
+                ],
+                combinators,
+            }
         })
         .collect();
 
@@ -161,6 +206,11 @@ pub fn pack(idx: &CodeIndex) -> Packed {
         symbols,
         refs,
         imports,
+        library_parts: idx
+            .library_parts
+            .iter()
+            .map(|relation| [relation.library, relation.part])
+            .collect(),
         workspace_packages: idx.workspace_packages.clone(),
         stats: idx.stats.clone(),
     }
@@ -209,15 +259,49 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
     let imports = p
         .imports
         .iter()
-        .map(|r| {
+        .map(|packed| {
+            let row = packed.row;
+            let combinators = packed
+                .combinators
+                .iter()
+                .map(|combinator| {
+                    let kind = match combinator.kind {
+                        0 => CombinatorKind::Show,
+                        1 => CombinatorKind::Hide,
+                        other => bail!("unknown import combinator kind {other}"),
+                    };
+                    let names = combinator
+                        .names
+                        .iter()
+                        .map(|id| get(&p.names, *id))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(ImportCombinator {
+                        kind,
+                        names,
+                        position: combinator.position,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
             Ok(Import {
-                file: r[0],
-                local: get(&p.names, r[1])?,
-                imported: get(&p.names, r[2])?,
-                module: get(&p.names, r[3])?,
+                file: row[0],
+                local: get(&p.names, row[1])?,
+                imported: get(&p.names, row[2])?,
+                module: get(&p.names, row[3])?,
+                directive: row[4],
+                reexport: row[5] != 0,
+                combinators,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+
+    let library_parts = p
+        .library_parts
+        .iter()
+        .map(|row| LibraryPart {
+            library: row[0],
+            part: row[1],
+        })
+        .collect();
 
     Ok(CodeIndex::from_parts(
         p.root,
@@ -225,6 +309,7 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
         symbols,
         refs,
         imports,
+        library_parts,
         p.workspace_packages,
         p.stats,
     ))
@@ -463,6 +548,92 @@ mod tests {
         // The derived lookups are rebuilt on unpack, not persisted — a load
         // that skipped that step would return empty rather than fail loudly.
         assert!(!back.references("flush").is_empty());
+    }
+
+    #[test]
+    fn dart_namespace_and_part_semantics_survive_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, source) in [
+            (
+                "lib/library.dart",
+                "library cached.parts;\npart 'model.dart';\n",
+            ),
+            (
+                "lib/model.dart",
+                "part of cached.parts;\nclass Post {}\nclass Hidden {}\n",
+            ),
+            ("other/model.dart", "class Post {}\nclass Hidden {}\n"),
+            (
+                "app/use.dart",
+                "import '../lib/library.dart' show Post, Hidden hide Hidden;\nPost? post;\nHidden? hidden;\n",
+            ),
+        ] {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, source).unwrap();
+        }
+        let before = CodeIndex::build(dir.path()).unwrap();
+        let cache = dir.path().join("index.json");
+        save(&before, &cache).unwrap();
+        let after = load(&cache).unwrap();
+
+        assert_eq!(after.library_parts, before.library_parts);
+        assert_eq!(after.imports.len(), before.imports.len());
+        let caller = after
+            .files
+            .iter()
+            .position(|file| file.path == "app/use.dart")
+            .unwrap() as u32;
+        let (posts, confidence) = after.resolve("Post", caller);
+        assert_eq!(confidence, super::super::store::Confidence::Import);
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(after.file_path(posts[0].file), "lib/model.dart");
+
+        let (_, hidden_confidence) = after.resolve("Hidden", caller);
+        assert_eq!(
+            hidden_confidence,
+            super::super::store::Confidence::Ambiguous,
+            "the cached hide combinator must still refuse a guess"
+        );
+    }
+
+    #[test]
+    fn a_named_reexport_alias_survives_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, source) in [
+            ("model.ts", "export class Post {}\nexport class Hidden {}\n"),
+            (
+                "public.ts",
+                "export { Post as PublicPost } from './model';\n",
+            ),
+            (
+                "app.ts",
+                "import { PublicPost } from './public';\nconst post: PublicPost | null = null;\n",
+            ),
+        ] {
+            std::fs::write(dir.path().join(path), source).unwrap();
+        }
+        let before = CodeIndex::build(dir.path()).unwrap();
+        let cache = dir.path().join("index.json");
+        save(&before, &cache).unwrap();
+        let after = load(&cache).unwrap();
+        let caller = after
+            .files
+            .iter()
+            .position(|file| file.path == "app.ts")
+            .unwrap() as u32;
+
+        let (public, confidence) = after.resolve("PublicPost", caller);
+        assert_eq!(confidence, super::super::store::Confidence::Import);
+        assert_eq!(public.len(), 1, "{public:?}");
+        assert_eq!(public[0].name, "Post");
+        assert_eq!(after.file_path(public[0].file), "model.ts");
+
+        let (hidden, _) = after.resolve("Hidden", caller);
+        assert!(
+            hidden.is_empty(),
+            "the cached named export must stay restricted: {hidden:?}"
+        );
     }
 
     #[test]

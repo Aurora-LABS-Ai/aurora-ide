@@ -126,7 +126,7 @@ impl ToolExecutor for MultiFileReadTool {
             let abs = match super::resolve_path_for_read_with_spill(
                 path,
                 ctx.workspace_root.as_deref(),
-                ctx.allow_outside_workspace,
+                ctx.workspace_access,
                 ctx.spill_dir.as_deref(),
             ) {
                 Ok(abs) => abs,
@@ -451,7 +451,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

@@ -28,7 +28,7 @@ import {
   type PromptOverhead,
   type ToolCallRequest,
 } from "@/apps/agent/services";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useSettingsStore, type WorkspaceAccess } from "@/kernel/store/useSettingsStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequest,
@@ -115,6 +115,16 @@ function timelineOf(m: DbMessage): TimelineEvent[] {
 // grep / multi_file_read / shell result by up to ~64x and the context ring
 // balloons far past what the model actually receives.
 const MODEL_TOOL_RESULT_CLAMP = 8_192;
+
+// What the model is told about the path boundary, per Settings → Tools → File
+// access. The Rust resolvers enforce it either way; this exists so the model
+// does not waste a turn refusing work it is allowed to do, or attempt work it
+// is not. Strict mode says nothing — the workspace line above it already does.
+const WORKSPACE_ACCESS_PROMPT: Record<WorkspaceAccess, string> = {
+  workspace: "",
+  read: "\nThe user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Searching, edits and new files still stay inside the workspace.",
+  full: "\nThe user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why.",
+};
 
 // Output cap used when neither the model nor the provider declares one.
 // On every provider except Anthropic, reasoning tokens bill against this same
@@ -254,11 +264,36 @@ export interface PendingApproval {
   args: string;
 }
 
+/** Per-send options that are not part of the message itself. */
+export interface SendOptions {
+  /**
+   * Execution mode for THIS turn only, overriding the window's setting.
+   *
+   * `aurora agent --plan` is the caller. Per-turn rather than through
+   * `setAgentExecutionMode` because that setter is global: it would leave the
+   * window in plan mode after a dispatched task finished, and two concurrent
+   * dispatches in different modes would each clobber the other's.
+   */
+  executionMode?: "agent" | "plan";
+  /**
+   * The `aurora agent` task this send fulfils, when a terminal dispatched it.
+   *
+   * Forwarded to Rust, which tees the turn's events into that task's
+   * transcript so `aurora agent --follow` watches the same work this window
+   * renders. Absent for every send a person makes.
+   */
+  cliTaskId?: string | null;
+}
+
 export interface AgentWindowSend {
   /** True while a turn is streaming. */
   sending: boolean;
   /** Send (or resend) a turn. No-op on empty text or while already sending. */
-  send: (text: string, fileChips?: AttachedPromptChip[]) => Promise<void>;
+  send: (
+    text: string,
+    fileChips?: AttachedPromptChip[],
+    options?: SendOptions,
+  ) => Promise<void>;
   /** Compact the open thread immediately. No-op when no idle thread is open. */
   compact: () => Promise<void>;
   /** Cancel the in-flight turn. */
@@ -540,6 +575,15 @@ interface BackgroundSendTarget {
    * the next thing the user types, not to a message they already sent.
    */
   interactive?: boolean;
+  /**
+   * The `aurora agent` task this send is fulfilling, when a terminal
+   * dispatched it.
+   *
+   * Forwarded to Rust, which tees the turn's events into that task's
+   * transcript so the terminal can follow the same work. Absent for every
+   * send a person makes, which is the overwhelming majority.
+   */
+  cliTaskId?: string | null;
 }
 
 /**
@@ -591,7 +635,13 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
   // Latest `send`, so the post-turn auto-flush can resubmit a queued injection
   // as a fresh turn without `send` having to depend on itself.
   const sendRef = useRef<
-    ((raw: string, target?: BackgroundSendTarget, fileChips?: AttachedPromptChip[]) => Promise<void>) | null
+    | ((
+        raw: string,
+        target?: BackgroundSendTarget,
+        fileChips?: AttachedPromptChip[],
+        options?: SendOptions,
+      ) => Promise<void>)
+    | null
   >(null);
 
   const resolveApproval = useCallback((ok: boolean) => {
@@ -683,7 +733,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // A manual `/compact` honours the pinned summarizer exactly as an
       // automatic one does — same call, same model.
       compactionProvider,
-      allowOutsideWorkspace: settings.allowOutsideWorkspace,
+      workspaceAccess: settings.workspaceAccess,
     });
 
     const completeMarker = (beforeTokens: number, afterTokens: number) => {
@@ -749,6 +799,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     raw: string,
     target?: BackgroundSendTarget,
     fileChips: AttachedPromptChip[] = [],
+    options?: SendOptions,
   ) => {
     const content = raw.trim();
     if (!content) return;
@@ -935,10 +986,14 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // Team in Settings is the whole opt-in: the model runs in Team mode (which is
     // what exposes the `team_*` tools + the Lead guidance so it can actually
     // dispatch a team), except in read-only Plan mode where mutations are off.
+    // A per-turn override outranks the window's setting, and is how
+    // `aurora agent --plan` gets read-only tools. It has to be per-turn: the
+    // global setter would leave the window in plan mode after the dispatch
+    // finished, and two concurrent dispatches in different modes would each
+    // overwrite the other's.
+    const requestedMode = options?.executionMode ?? settings.agentExecutionMode;
     const executionMode =
-      settings.teamEnabled && settings.agentExecutionMode !== "plan"
-        ? "team"
-        : settings.agentExecutionMode;
+      settings.teamEnabled && requestedMode !== "plan" ? "team" : requestedMode;
 
     // Bootstrap the thread (create-on-first-send) BEFORE touching the UI so a
     // failed creation doesn't leave a half-rendered turn. Only the main pane can
@@ -965,7 +1020,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // Open a LIVE turn keyed to this thread. Streaming targets `liveTurns[id]`,
     // so navigating away mid-turn doesn't drop the in-flight work — it keeps
     // running and re-attaches when the user opens this chat again.
-    store.beginTurn(threadId, target?.seed, projectRoot);
+    // The mode this turn ACTUALLY runs under, which is not always the
+    // window's setting — `aurora agent --plan` overrides it for one turn. The
+    // composer reads this so it shows what is running rather than what is
+    // configured.
+    store.beginTurn(threadId, target?.seed, projectRoot, executionMode);
 
     // Reset the turn's running cost. Every request this turn makes folds into
     // it, so a long tool-using turn shows a cost that climbs instead of one
@@ -1268,9 +1327,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // model just needs to KNOW the path so it can reason about / explore it.
     const baseContext = projectRoot
       ? `<workspace_root>${projectRoot}</workspace_root>\nYou are working inside this project directory. Use your tools (workspace_tree, file_read, grep, …) to explore and edit files here.${
-          settings.allowOutsideWorkspace
-            ? "\nThe user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Edits and new files still stay inside the workspace."
-            : ""
+          WORKSPACE_ACCESS_PROMPT[settings.workspaceAccess] ?? ""
         }`
       : null;
 
@@ -1452,7 +1509,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // `null` when nothing is pinned (or the pin points at a deleted
       // provider) → the runtime summarizes on the conversation's own model.
       compactionProvider,
-      allowOutsideWorkspace: settings.allowOutsideWorkspace,
+      workspaceAccess: settings.workspaceAccess,
       // Read once, here, for BOTH the tool roster and the prompt instruction —
       // this config field is what `AgentService` hands to
       // `composeAgentSystemPrompt` AND what the runtime client forwards to Rust,
@@ -1706,6 +1763,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           // session JSONL so they re-render above the bubble on reopen.
           attachedSelectedElements: selectionPills.length > 0 ? selectionPills : null,
           attachedPromptChips: promptChips.length > 0 ? promptChips : null,
+          // Set only when a terminal dispatched this turn (`aurora agent`).
+          // Rust uses it to tee the turn's events into the task's transcript
+          // so `--follow` watches the same work this window is rendering.
+          cliTaskId: options?.cliTaskId ?? target?.cliTaskId ?? null,
         },
       );
 
@@ -1871,8 +1932,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
   sendRef.current = sendTurn;
 
   const send = useCallback(
-    (text: string, fileChips?: AttachedPromptChip[]) => {
-      if (!bound) return sendTurn(text, undefined, fileChips);
+    (text: string, fileChips?: AttachedPromptChip[], options?: SendOptions) => {
+      // `options` rides alongside the target rather than inside it: a CLI
+      // dispatch sends into the OPEN chat (it selects its thread first), so it
+      // has no target to attach anything to.
+      if (!bound) return sendTurn(text, undefined, fileChips, options);
       // A docked chat addresses its own thread explicitly. The seed is read
       // NOW (not at mount) so the live turn opens on the transcript actually on
       // screen; a live turn already in flight is the newer one, so it wins.
@@ -1888,6 +1952,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           interactive: true,
         },
         fileChips,
+        options,
       );
     },
     [sendTurn, bound],

@@ -332,6 +332,9 @@ fn default_provider_config() -> crate::api::ProviderConfigSnapshot {
 
 fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
     AgentChatRequest {
+        // Not a CLI dispatch: these turns come from the window, so nothing is
+        // teed into a terminal transcript.
+        cli_task_id: None,
         turn_id: turn_id.into(),
         thread_id: thread_id.into(),
         user_message: msg.into(),
@@ -354,6 +357,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         compaction_threshold_pct: None,
         compaction_summary_budget: None,
         compaction_provider_config: None,
+        workspace_access: None,
         allow_outside_workspace: None,
         transcript_chapters: None,
         browser_tools: None,
@@ -640,7 +644,7 @@ async fn plan_shell_rejects_mutating_commands_before_execution() {
                 tool_call_id: "call-plan".into(),
                 thread_id: "session-plan".into(),
                 workspace_root: None,
-                allow_outside_workspace: false,
+                workspace_access: Default::default(),
                 cancel_token: CancellationToken::new(),
                 spill_dir: None,
             },
@@ -1922,7 +1926,7 @@ async fn a_deferred_tool_becomes_callable_after_it_is_loaded() {
     let search = registry.get("tool_search").expect("advertised");
 
     let ctx = ToolContext {
-        allow_outside_workspace: false,
+        workspace_access: Default::default(),
         turn_id: "turn-defer".into(),
         tool_call_id: "call-1".into(),
         thread_id: "thread".into(),

@@ -42,12 +42,107 @@ use tokio_util::sync::CancellationToken;
 
 use super::api_client::ToolSchema;
 
+/// How far outside the open project a turn's file tools may reach.
+///
+/// One setting, three states, because two booleans would admit a fourth that
+/// means nothing ("may write outside, may not read outside"). Chosen by the
+/// user in Settings → Agent and carried unchanged from the request to every
+/// [`ToolContext`]; it is read once per turn, so flipping it mid-turn affects
+/// the next one.
+///
+/// It governs the FILE tools only. `shell_execute` accepts an absolute `cwd`
+/// in every mode — its gate is command validation plus the approval modal, not
+/// this. A mode named for the file boundary should not quietly claim to be a
+/// sandbox.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceAccess {
+    /// The project and nothing else. Every path — read, search, or write —
+    /// resolves inside the workspace root or is refused.
+    #[default]
+    Workspace,
+    /// Reads may leave. `file_read`, `multi_file_read` and `workspace_tree`
+    /// take an absolute path anywhere on disk; searching still stops at the
+    /// project edge, and every write stays inside it.
+    Read,
+    /// No path boundary. Reads, searches, and writes all resolve anywhere the
+    /// OS allows — the state for working across two checkouts, a global config,
+    /// or a dependency's source.
+    ///
+    /// The approval gate is untouched and does the guarding here:
+    /// `file_write`, `delete_path` and `shell_execute` all return
+    /// `requires_permission() == true`, and a tool with no explicit setting is
+    /// `always_ask`. Someone who has ALSO set those to `auto` has turned off
+    /// both layers deliberately.
+    Full,
+}
+
+impl WorkspaceAccess {
+    /// Reading and mapping a path outside the workspace.
+    #[must_use]
+    pub fn reads_outside(self) -> bool {
+        matches!(self, Self::Read | Self::Full)
+    }
+
+    /// The path boundary is gone entirely. Only [`Self::Full`] does this, and
+    /// the two predicates below are named views of it so a call site reads as
+    /// what it is doing rather than as a mode comparison.
+    #[must_use]
+    pub fn lifts_boundary(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Searching outside the workspace — `grep`, `glob`, and any other tool
+    /// that walks a tree it was handed rather than opening one named file.
+    ///
+    /// Deliberately NOT granted by [`Self::Read`]. That mode exists for "read
+    /// this one file I am pointing at"; letting it walk arbitrary trees turns
+    /// a targeted allowance into a filesystem crawl.
+    #[must_use]
+    pub fn searches_outside(self) -> bool {
+        self.lifts_boundary()
+    }
+
+    /// Creating, writing, moving, or deleting outside the workspace.
+    ///
+    /// [`Self::Read`] does not grant it, and that is the whole point of having
+    /// a middle mode: pointing the agent at a file to read is a smaller
+    /// decision than letting it change one.
+    #[must_use]
+    pub fn writes_outside(self) -> bool {
+        self.lifts_boundary()
+    }
+
+    /// Resolve the wire's two spellings into one value.
+    ///
+    /// `mode` is what the app sends today. `legacy_allow` is the boolean this
+    /// setting used to be: an install that never opened Settings after
+    /// upgrading still has only `allowOutsideWorkspace` on disk, and dropping
+    /// it would silently re-fence an agent the user had already let out.
+    #[must_use]
+    pub fn from_wire(mode: Option<&str>, legacy_allow: Option<bool>) -> Self {
+        match mode.map(str::trim) {
+            Some("full") => Self::Full,
+            Some("read") => Self::Read,
+            Some("workspace") => Self::Workspace,
+            // An unknown mode is not a reason to widen access.
+            _ => {
+                if legacy_allow.unwrap_or(false) {
+                    Self::Read
+                } else {
+                    Self::Workspace
+                }
+            }
+        }
+    }
+}
+
 /// Per-execution context handed to a tool's `execute` call.
 ///
-/// Carries enough identity for logging/tracing (`turn_id`,
-/// `tool_call_id`, `thread_id`), the workspace root every file-touching
-/// tool resolves paths against, and the cancel token tied to the
-/// surrounding turn.
+/// Carries enough identity for logging/tracing (`turn_id`, `tool_call_id`,
+/// `thread_id`), the workspace root every file-touching tool resolves paths
+/// against, how far outside it they may reach, and the cancel token tied to
+/// the surrounding turn.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub turn_id: String,
@@ -66,9 +161,9 @@ pub struct ToolContext {
     /// misread the same way twice.
     pub thread_id: String,
     pub workspace_root: Option<PathBuf>,
-    /// When true, read-only file tools may resolve paths OUTSIDE the workspace
-    /// (the user opted in via Settings → Agent). Writes stay workspace-bound.
-    pub allow_outside_workspace: bool,
+    /// How far outside the workspace this turn's file tools may reach — the
+    /// user's choice in Settings → Agent. See [`WorkspaceAccess`].
+    pub workspace_access: WorkspaceAccess,
     /// This thread's `…/<thread_id>.tool-results` directory, when the runtime
     /// has a session store.
     ///
@@ -613,7 +708,7 @@ mod tests {
             tool_call_id: "call-1".into(),
             thread_id: "s-1".into(),
             workspace_root: None,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             spill_dir: None,
             cancel_token: CancellationToken::new(),
         }

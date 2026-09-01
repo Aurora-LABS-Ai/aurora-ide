@@ -3073,6 +3073,31 @@ pub async fn uninstall_aurora_context_menu() -> Result<String, String> {
 #[derive(Default)]
 pub struct PendingCliOpenState(pub Mutex<Option<crate::cli::CliOpenRequest>>);
 
+/// The presence guard advertising that an Aurora is running.
+///
+/// Held purely for its lifetime — nothing ever reads it. It lives in managed
+/// state because that is what keeps it alive for the process: dropped, the
+/// name is released and every `aurora agent` in every terminal starts
+/// launching a second Aurora on top of this one.
+///
+/// `None` when the OS refused the name. Not fatal — see
+/// [`crate::cli_delegate::presence::hold`].
+/// The `dead_code` allow is the point of the type, not a concession to it:
+/// this is an RAII handle whose only job is to exist. rustc is right that
+/// nothing reads the field and wrong that removing it would be harmless.
+#[allow(dead_code)]
+pub struct CliPresence(pub Option<single_instance::SingleInstance>);
+
+/// The filesystem watcher over the CLI task directory.
+///
+/// Same reason as [`CliPresence`]: `notify` stops watching the moment the
+/// watcher is dropped, so it has to be owned by something that outlives
+/// startup. Behind a `Mutex` only because managed state must be `Sync` and
+/// `RecommendedWatcher` is not.
+/// Held, never read — see the note on [`CliPresence`].
+#[allow(dead_code)]
+pub struct CliTaskWatcher(pub Mutex<Option<notify::RecommendedWatcher>>);
+
 /// Take (and clear) the pending CLI open request for this process.
 ///
 /// Returns `Some(request)` on the first call after the app was launched

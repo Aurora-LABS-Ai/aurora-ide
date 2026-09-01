@@ -20,6 +20,8 @@ use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::tools::shell_editor_todo::{FileChangedPayload, IdeEventSink};
 
+use crate::agent_runtime::tool_executor::WorkspaceAccess;
+
 use super::{resolve_path_for_create, resolve_path_for_read};
 
 pub struct MovePathTool {
@@ -78,10 +80,20 @@ impl ToolExecutor for MovePathTool {
         // Source may legitimately be missing (graceful success=false), so
         // resolve it with the read variant. Destination must not exist, so
         // resolve it with the create variant that validates the parent.
-        // A move is a write — keep it workspace-bound regardless of the
-        // out-of-workspace READ allowance.
-        let resolved_old = resolve_path_for_read(old_path, ctx.workspace_root.as_deref(), false)?;
-        let resolved_new = resolve_path_for_create(new_path, ctx.workspace_root.as_deref())?;
+        //
+        // BOTH ends are gated as writes. A move empties the source directory,
+        // so `WorkspaceAccess::Read` — which exists for "open this one file I
+        // am pointing at" — must not reach it; only Full does. That is why the
+        // source resolves against `write_access()` and not the ctx's own mode.
+        let write_access = if ctx.workspace_access.writes_outside() {
+            ctx.workspace_access
+        } else {
+            WorkspaceAccess::Workspace
+        };
+        let resolved_old =
+            resolve_path_for_read(old_path, ctx.workspace_root.as_deref(), write_access)?;
+        let resolved_new =
+            resolve_path_for_create(new_path, ctx.workspace_root.as_deref(), write_access)?;
         let old_str = resolved_old.to_string_lossy().to_string();
         let new_str = resolved_new.to_string_lossy().to_string();
         let raw_old = old_path.to_string();
@@ -184,7 +196,7 @@ mod tests {
             tool_call_id: "c".into(),
             thread_id: "s".into(),
             workspace_root: workspace,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             cancel_token: CancellationToken::new(),
             spill_dir: None,
         }

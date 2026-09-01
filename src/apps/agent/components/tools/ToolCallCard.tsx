@@ -42,6 +42,7 @@ import {
   type ToolCall,
   type ToolStatus,
 } from "@/apps/agent/components/tools/tool-call";
+import { DoctrineRule } from "@/apps/agent/components/tools/DoctrineRule";
 import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
 import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
@@ -1687,6 +1688,16 @@ export const ToolCallCard: React.FC<{
   }
   if (call.name === "plan_write") {
     return <PlanLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  }
+  // The doctrine is a boundary, not an act — it gets a rule across the pane
+  // instead of a row. A FAILED call keeps the standard card: an invalid
+  // `topic` has a message worth reading and a body worth opening, and a
+  // divider can carry neither.
+  if (
+    call.name === "design_guidelines" &&
+    toolStatus(call, isActivelyStreaming) !== "failed"
+  ) {
+    return <DoctrineRule call={call} isActivelyStreaming={isActivelyStreaming} />;
   }
   if (call.name === "plan_step_update") {
     return <PlanStepCard call={call} isActivelyStreaming={isActivelyStreaming} />;

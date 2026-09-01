@@ -144,6 +144,20 @@ export interface AgentChatRequest {
   modelSelection: string | null;
   workspacePath: string | null;
   executionMode: "agent" | "plan" | "team";
+  /**
+   * The `aurora agent` task this turn is running, when it came from one.
+   *
+   * Set only for a turn the Agent Window started on behalf of a terminal
+   * dispatch. Rust uses it to tee this turn's events into the task's
+   * transcript, so `aurora agent --follow` watches the same work the window
+   * is showing.
+   *
+   * Passed down rather than bound from here because binding needs the turn
+   * id, and the turn id is generated inside this client — reaching it from
+   * the window would mean threading it back out through every callback in
+   * the chain to serve one caller.
+   */
+  cliTaskId?: string | null;
   providerConfig: ProviderConfigSnapshot;
   systemPrompt: string | null;
   ideContext: string | null;
@@ -188,8 +202,9 @@ export interface AgentChatRequest {
    * the chat is not using at all.
    */
   compactionProviderConfig: ProviderConfigSnapshot | null;
-  /** Allow read-only file tools to read files outside the workspace. */
-  allowOutsideWorkspace: boolean | null;
+  /** How far outside the project the file tools may reach, as the wire spells
+   *  it: `workspace` | `read` | `full`. `null` keeps the strict boundary. */
+  workspaceAccess: string | null;
   /**
    * Advertise the `chapter` tool for this turn (Settings → Preferences →
    * Transcript). Sent from the same preference read that decides whether the
@@ -397,6 +412,11 @@ export interface AgentRuntimeChatInput {
   modelSelection?: string | null;
   attachedSelectedElements?: AttachedSelectedElement[] | null;
   attachedPromptChips?: AttachedPromptChip[] | null;
+  /**
+   * The `aurora agent` task this turn is running, when a terminal dispatched
+   * it. See the field of the same name on the request.
+   */
+  cliTaskId?: string | null;
 }
 
 export interface AgentRuntimeClientOptions {
@@ -570,6 +590,7 @@ export class AgentRuntimeClient {
       modelSelection: input.modelSelection ?? null,
       workspacePath: input.workspacePath ?? null,
       executionMode: config.executionMode ?? "agent",
+      cliTaskId: input.cliTaskId ?? null,
       providerConfig: AgentRuntimeClient.buildProviderConfigSnapshot(providerConfig),
       systemPrompt: input.systemPrompt && input.systemPrompt.length > 0
         ? input.systemPrompt
@@ -619,9 +640,11 @@ export class AgentRuntimeClient {
       compactionProviderConfig: config.compactionProvider
         ? AgentRuntimeClient.buildProviderConfigSnapshot(config.compactionProvider)
         : null,
-      allowOutsideWorkspace:
-        typeof config.allowOutsideWorkspace === "boolean"
-          ? config.allowOutsideWorkspace
+      workspaceAccess:
+        config.workspaceAccess === "workspace" ||
+        config.workspaceAccess === "read" ||
+        config.workspaceAccess === "full"
+          ? config.workspaceAccess
           : null,
       transcriptChapters:
         typeof config.transcriptChapters === "boolean"

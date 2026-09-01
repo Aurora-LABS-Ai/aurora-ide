@@ -763,3 +763,72 @@ describe("ToolCallCard streamed file targets", () => {
     expect(mountedContainer.textContent).toContain(error);
   });
 });
+
+describe("the design guideline rule", () => {
+  const call = (over: Partial<Parameters<typeof ToolCallCard>[0]["call"]> = {}) => ({
+    id: "doctrine-1",
+    name: "design_guidelines",
+    arguments: JSON.stringify({ topic: "build" }),
+    result: "# Surface doctrine\n\n## Authority order\n1. Existing product reality.",
+    ...over,
+  });
+
+  it("draws a rule across the pane, not a tool row", () => {
+    const html = renderToStaticMarkup(<ToolCallCard call={call()} />);
+
+    expect(html).toContain("agw-drule");
+    expect(html).toContain("Design guideline");
+    // Nothing completed, so no tick; nothing to reveal, so no dropdown.
+    expect(html).not.toContain("agw-tool-head");
+    expect(html).not.toContain("agw-tool-dot");
+    expect(html).not.toContain("aria-expanded");
+    expect(html).not.toContain("<button");
+  });
+
+  it("never shows the topic — which half was read is not the reader's business", () => {
+    const html = renderToStaticMarkup(
+      <ToolCallCard call={call({ arguments: JSON.stringify({ topic: "audit" }) })} />,
+    );
+
+    expect(html).toContain("agw-drule");
+    for (const topic of ["build", "writing", "audit", "redesign"]) {
+      expect(html).not.toContain(topic);
+    }
+  });
+
+  it("says what is happening while it loads, and rests on the plain label", () => {
+    const running = renderToStaticMarkup(
+      <ToolCallCard isActivelyStreaming call={call({ result: undefined })} />,
+    );
+    expect(running).toContain("Loading design guideline…");
+    expect(running).toContain("agw-shimmer");
+
+    const settled = renderToStaticMarkup(<ToolCallCard call={call()} />);
+    expect(settled).not.toContain("agw-shimmer");
+    expect(settled).not.toContain("Loading");
+  });
+
+  it("hands a failed call back to the standard card, which can show the reason", () => {
+    const error = "topic `everything` is not one of [build, writing, audit, redesign, all]";
+    const html = renderToStaticMarkup(
+      <ToolCallCard call={call({ result: JSON.stringify({ success: false, error }) })} />,
+    );
+
+    // A divider carries no message and opens onto nothing — an error needs both.
+    expect(html).not.toContain("agw-drule");
+    expect(html).toContain("agw-tool-head");
+    expect(html).toContain("aria-expanded");
+  });
+
+  it("inks the mark from CSS, never from the component", () => {
+    const html = renderToStaticMarkup(<ToolCallCard call={call()} />);
+
+    expect(html).toContain("agw-dg-mark");
+    for (const disc of ["agw-dg-a", "agw-dg-b", "agw-dg-c"]) {
+      expect(html).toContain(disc);
+    }
+    // A hardcoded hue here could not follow a custom theme, and a
+    // `fill-opacity` attribute would be outranked by the rule that sets it.
+    expect(html).not.toMatch(/fill="#|fill-opacity=/);
+  });
+});

@@ -254,7 +254,7 @@ mod tests {
 
     fn ctx(workspace: &PathBuf, session: &str) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "turn_1".into(),
             tool_call_id: "call_1".into(),
             thread_id: session.into(),

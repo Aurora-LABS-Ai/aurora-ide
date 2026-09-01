@@ -47,6 +47,17 @@ export interface AgentPromptContext {
   attachedSelectedElements?: AttachedSelectedElement[] | null;
   /** Exact file and directive pills retained for transcript replay. */
   attachedPromptChips?: AttachedPromptChip[] | null;
+  /**
+   * The `aurora agent` task this turn is running, when a terminal dispatched
+   * it rather than a person typing.
+   *
+   * Nothing about the prompt, and it does not reach the model. It rides here
+   * because this is already the per-turn bag `chat()` receives, and the
+   * alternative — a field on `AgentConfig` — is per-*conversation* state that
+   * two concurrent dispatches into the same window would overwrite for each
+   * other.
+   */
+  cliTaskId?: string | null;
 }
 
 export interface ComposedAgentPrompt {

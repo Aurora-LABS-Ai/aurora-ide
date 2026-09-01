@@ -60,11 +60,29 @@ pub(super) const MAX_TREE_RESULT_LENGTH: usize = 64 * 1024;
 /// page away.
 pub(super) const MAX_WEB_RESULT_LENGTH: usize = 512 * 1024;
 
+/// Model-history cap for the built-in surface doctrine.
+///
+/// `design_guidelines` returns a FIXED string compiled into the binary —
+/// `doctrine::VISUAL`, `doctrine::WRITING`, or both — so it carries none of the
+/// unbounded-growth risk the 8 KiB cap exists to contain. Under that cap the
+/// default `both` (10,185 chars) lost its last 2,121: the model was handed the
+/// doctrine with `**Errors**`, `**Warnings**`, the whole ethical-psychology
+/// section, every hard-fail pattern and the tone rules cut off mid-sentence,
+/// then spent a second round trip re-reading what it had just been sent. Half a
+/// standing instruction is worse than none: the model cannot tell that the
+/// rules it is about to break were the ones that did not arrive.
+///
+/// Sized well clear of the current payload so ordinary edits to the doctrine do
+/// not need to touch this number; `the_doctrine_reaches_the_model_whole` fails
+/// if it ever grows past it.
+pub(super) const MAX_DOCTRINE_RESULT_LENGTH: usize = 32 * 1024;
+
 pub(super) fn result_cap_for(tool: &str) -> usize {
     match tool {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
         "workspace_tree" => MAX_TREE_RESULT_LENGTH,
         "auroro_websearch" => MAX_WEB_RESULT_LENGTH,
+        "design_guidelines" => MAX_DOCTRINE_RESULT_LENGTH,
         _ => MAX_TOOL_RESULT_LENGTH,
     }
 }

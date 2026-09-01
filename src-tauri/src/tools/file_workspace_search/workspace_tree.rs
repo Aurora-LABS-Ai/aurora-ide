@@ -233,7 +233,7 @@ impl ToolExecutor for WorkspaceTreeTool {
             // below then turns a missing directory into a clear, recoverable
             // message rather than a raw OS error.
             (Some(p), Some(root)) if p != "." => {
-                super::resolve_path_for_read(p, Some(root), ctx.allow_outside_workspace)?
+                super::resolve_path_for_read(p, Some(root), ctx.workspace_access)?
             }
             (Some(p), None) => PathBuf::from(p),
             (None, Some(root)) | (Some(_), Some(root)) => root.to_path_buf(),
@@ -948,7 +948,7 @@ mod byte_budget {
 
     fn ctx_for(workspace: std::path::PathBuf) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),
@@ -1039,7 +1039,7 @@ mod repro {
         let outcomes = futures_util::future::join_all(calls.iter().map(|(path, depth, max)| {
             let tool = tool.clone();
             let ctx = ToolContext {
-                allow_outside_workspace: false,
+                workspace_access: Default::default(),
                 turn_id: "repro".into(),
                 tool_call_id: (*path).into(),
                 thread_id: "repro".into(),
@@ -1085,7 +1085,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

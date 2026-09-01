@@ -168,6 +168,40 @@ rand = "0.8"
 
 # Single instance detection (prevent multiple instances, pass args to existing)
 single-instance = "0.3"
+# ── `aurora` CLI presentation (src/cli_delegate) ─────────────────────────────
+#
+# The CLI is a real surface, not a debug affordance: `aurora agent` dispatches
+# work into a running Aurora and `--follow` watches it run. These four are what
+# make that readable.
+#
+# `crossterm` is the terminal backend — raw mode, key events, and the ANSI
+# support detection that makes styled output degrade correctly on a legacy
+# Windows console instead of printing escape codes at the user. Everything
+# below sits on it, so it is one backend in the build rather than three.
+crossterm = "0.29.0"
+# `ratatui` draws the live `--follow --tui` view: a running transcript, the
+# tool currently executing, and the token/cost counters, all redrawn in place.
+# A line-printing loop cannot do that without owning the whole scrollback.
+#
+# Deliberately NOT the default for `--follow`. Plain follow stays a line
+# stream, because its main consumer is another program tailing the file (see
+# `cli_delegate::task`), and an alt-screen TUI has no useful text form.
+ratatui = "0.30.2"
+# `inquire` is the interactive half: picking a model when a name like
+# `glm-5.2` exists under several providers, or picking a thread when
+# `--continue` names one that no longer exists. The alternative is making the
+# user re-run the command with an id copied from a list, which is the exact
+# friction this CLI is meant to remove.
+inquire = "0.9.4"
+# `indicatif` covers the non-TUI waits — dispatching, waiting for a cold
+# Aurora to come up — where a spinner and an elapsed clock are the whole
+# requirement and a full terminal takeover would be absurd.
+indicatif = "0.18.6"
+# `comfy-table` lays out `aurora models` / `aurora threads`. Column widths
+# have to be computed from the content (provider ids and model keys vary
+# wildly in length) and it handles the unicode width accounting that naive
+# `{:<20}` padding gets wrong.
+comfy-table = "8.0.0"
 
 # Note: Checkpoint system uses git CLI directly instead of git2
 # because git2's index operations don't properly work with external worktrees

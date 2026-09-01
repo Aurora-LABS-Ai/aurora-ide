@@ -62,7 +62,19 @@
 ; imports; the graph de-duplicates file pairs and the empty binding is ignored
 ; by name resolution.
 (import_statement source: (string) @import.module)
-(export_statement source: (string) @import.module)
+(export_statement
+  (export_clause
+    (export_specifier
+      name: (identifier) @ref.import
+      alias: (identifier) @import.local))
+  source: (string) @reexport.module)
+(export_statement
+  (export_clause
+    (export_specifier
+      name: (identifier) @ref.import
+      !alias))
+  source: (string) @reexport.module)
+(export_statement source: (string) @reexport.module)
 
 ; CommonJS. `require()` is a call, not syntax, so these need `#eq?` to tell it
 ; from any other one-string call — without that, every `console.log("./x")` in

@@ -375,6 +375,39 @@ mod tests {
     }
 
     #[test]
+    fn dart_parts_are_one_library_not_a_dependency_cycle() {
+        let (_dir, idx) = build_index(&[
+            (
+                "lib/library.dart",
+                "library model.library;\npart 'post.dart';\n",
+            ),
+            ("lib/post.dart", "part of model.library;\nclass Post {}\n"),
+            (
+                "app/use.dart",
+                "import '../lib/library.dart';\nPost? post;\n",
+            ),
+        ]);
+        let graph = build(&idx, Granularity::File);
+
+        assert!(
+            graph.edges.iter().any(|(from, to, count)| {
+                from == "app/use.dart" && to == "lib/library.dart" && *count == 1
+            }),
+            "the real library import remains visible: {:?}",
+            graph.edges
+        );
+        assert!(
+            graph.edges.iter().all(|(from, to, _)| {
+                !(from == "lib/library.dart" && to == "lib/post.dart")
+                    && !(from == "lib/post.dart" && to == "lib/library.dart")
+            }),
+            "part/part-of is membership, not a pair of module edges: {:?}",
+            graph.edges
+        );
+        assert!(graph.cycles.is_empty(), "{:?}", graph.cycles);
+    }
+
+    #[test]
     fn a_two_directory_loop_is_reported_in_full() {
         let (_d, idx) = build_index(&[
             (

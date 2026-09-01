@@ -317,6 +317,39 @@ fn persisted_multi_read_keeps_each_file_as_valid_json() {
         .is_some_and(|content| !content.is_empty())));
 }
 
+/// The built-in doctrine is a standing instruction, not a search result: it
+/// must arrive whole or the model follows rules it was never shown. Under the
+/// generic 8 KiB cap the default `both` lost its last 2,121 characters —
+/// errors, warnings, ethical psychology, every hard-fail pattern and the tone
+/// rules — and the cut landed mid-sentence with nothing but a byte count to
+/// say so. This fails the moment the payload outgrows its cap again.
+#[test]
+fn the_doctrine_reaches_the_model_whole() {
+    use crate::tools::design::doctrine::{AUDIT, CORE, PATTERNS, WRITING};
+
+    // The widest reading the tool will hand over (`topic: "all"`), composed the
+    // way `DesignGuidelinesTool` composes it.
+    let all = [CORE, PATTERNS, WRITING, AUDIT].join("\n\n---\n\n");
+
+    for payload in [CORE, PATTERNS, WRITING, AUDIT, all.as_str()] {
+        let kept = truncate_tool_content("design_guidelines", payload.to_string());
+        assert_eq!(
+            kept,
+            payload,
+            "the doctrine must reach the model verbatim: {} chars against a {} cap",
+            payload.len(),
+            result_cap_for("design_guidelines"),
+        );
+    }
+
+    // Sections that sit at the TAIL of their document, so a cap that clips
+    // again is caught by name rather than by a byte count.
+    assert!(all.contains("## 8. Ethical psychology"));
+    assert!(all.contains("## 10. Hard fails"));
+    assert!(all.contains("## 13. Report format"));
+    assert!(!all.contains("[truncated"));
+}
+
 #[test]
 fn persisted_structured_result_never_falls_back_to_broken_json() {
     // Well past even the tree's own cap, so the compactor is guaranteed to
@@ -487,7 +520,7 @@ async fn the_reported_fetch_reaches_the_model_with_the_page_in_it() {
     use std::sync::Arc;
 
     let ctx = ToolContext {
-        allow_outside_workspace: false,
+        workspace_access: Default::default(),
         turn_id: "t".into(),
         tool_call_id: "c".into(),
         thread_id: "s".into(),
@@ -3375,12 +3408,12 @@ fn the_resume_note_offers_the_transcript_when_it_is_readable() {
 #[tokio::test]
 async fn the_transcript_is_only_offered_when_the_model_could_open_it() {
     let session = Session::new("t-hint");
-    let with_tools = |allow: bool| {
+    let with_tools = |access: crate::agent_runtime::tool_executor::WorkspaceAccess| {
         ConversationRuntime::new(
             recording_api("ok"),
             Arc::new(ToolRegistry::new()),
             RuntimeConfig {
-                allow_outside_workspace: allow,
+                workspace_access: access,
                 ..RuntimeConfig::default()
             },
         )
@@ -3389,8 +3422,18 @@ async fn the_transcript_is_only_offered_when_the_model_could_open_it() {
     // The session store is outside the workspace: without the opt-in the
     // read is refused, and naming a path the model cannot open is worse
     // than saying nothing.
-    assert!(with_tools(false).transcript_hint(&session).is_none());
-    assert!(with_tools(true).transcript_hint(&session).is_some());
+    use crate::agent_runtime::tool_executor::WorkspaceAccess;
+    assert!(with_tools(WorkspaceAccess::Workspace)
+        .transcript_hint(&session)
+        .is_none());
+    assert!(with_tools(WorkspaceAccess::Read)
+        .transcript_hint(&session)
+        .is_some());
+    // Full reads outside too, so it must offer the transcript as well —
+    // the hint follows the capability, not one named mode.
+    assert!(with_tools(WorkspaceAccess::Full)
+        .transcript_hint(&session)
+        .is_some());
 }
 
 fn measured(input: u32, cache_write: u32, cache_read: u32, output: u32) -> TokenUsage {

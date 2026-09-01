@@ -13,11 +13,18 @@
 import React, { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useSettingsStore, type WorkspaceAccess } from "@/kernel/store/useSettingsStore";
 import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { ShellSettings } from "./ShellSettings";
-import { AgwPill, AgwSegmented, AgwSwitch, type SegmentOption } from "./primitives";
+import {
+  AgwPill,
+  AgwSegmented,
+  AgwSwitch,
+  SettingsRow,
+  SettingsSection,
+  type SegmentOption,
+} from "./primitives";
 
 type ApprovalMode = "auto" | "always_ask" | "deny";
 
@@ -26,6 +33,19 @@ const APPROVAL_OPTIONS: SegmentOption<ApprovalMode>[] = [
   { value: "always_ask", label: "Ask", tone: "warning" },
   { value: "deny", label: "Deny", tone: "danger" },
 ];
+
+const ACCESS_OPTIONS: SegmentOption<WorkspaceAccess>[] = [
+  { value: "workspace", label: "Project only" },
+  { value: "read", label: "Read anywhere", tone: "warning" },
+  { value: "full", label: "Full access", tone: "danger" },
+];
+
+/** What each mode actually permits, in the order someone widens it. */
+const ACCESS_HINT: Record<WorkspaceAccess, string> = {
+  workspace: "The agent reads, searches, and writes only inside the open project. Anything else is refused.",
+  read: "The agent can also open a file you point it to by absolute path. Searching and writing still stay inside the project.",
+  full: "No path limit. Reading, searching, and writing all work anywhere on this computer — for a second checkout, a dependency's source, or a config outside the project. Approval prompts still apply to writes, deletes, and shell commands.",
+};
 
 interface ToolCategory {
   label: string;
@@ -172,6 +192,8 @@ export const ToolsSettings: React.FC = () => {
   const setSyntaxValidationEnabled = useSettingsStore((s) => s.setSyntaxValidationEnabled);
   const projectLayoutEnabled = useSettingsStore((s) => s.projectLayoutEnabled);
   const setProjectLayoutEnabled = useSettingsStore((s) => s.setProjectLayoutEnabled);
+  const workspaceAccess = useSettingsStore((s) => s.workspaceAccess);
+  const setWorkspaceAccess = useSettingsStore((s) => s.setWorkspaceAccess);
   const toolApprovalSettings = useSettingsStore((s) => s.toolApprovalSettings) as Record<
     string,
     ApprovalMode
@@ -250,6 +272,38 @@ export const ToolsSettings: React.FC = () => {
           </span>
         </div>
       )}
+
+      {/* Where the file tools may reach. It sits above per-tool approval
+          because it decides WHAT a tool can touch, while approval decides
+          whether it runs — and the narrower question is the one to answer
+          first. */}
+      <SettingsSection
+        icon="folder"
+        title="File access"
+        description="How far outside the open project the file tools may reach. Shell commands are not limited by this in any mode — approval is what gates those."
+        badge={
+          workspaceAccess === "full" ? (
+            <AgwPill tone="danger">Whole computer</AgwPill>
+          ) : workspaceAccess === "read" ? (
+            <AgwPill tone="warning">Reads unrestricted</AgwPill>
+          ) : undefined
+        }
+      >
+        <SettingsRow
+          last
+          alignTop
+          label="Scope"
+          hint={ACCESS_HINT[workspaceAccess]}
+          searchTerms="workspace outside project boundary read write grep glob find absolute path full access"
+        >
+          <AgwSegmented
+            ariaLabel="How far outside the project the file tools may reach"
+            value={workspaceAccess}
+            options={ACCESS_OPTIONS}
+            onChange={setWorkspaceAccess}
+          />
+        </SettingsRow>
+      </SettingsSection>
 
       {/* Where shell commands run — decided before deciding who may run them. */}
       <ShellSettings />

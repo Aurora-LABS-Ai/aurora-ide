@@ -448,6 +448,7 @@ export class AgentService {
         modelSelection: this.config.modelSelection ?? null,
         attachedSelectedElements: promptContext?.attachedSelectedElements ?? null,
         attachedPromptChips: promptContext?.attachedPromptChips ?? null,
+        cliTaskId: promptContext?.cliTaskId ?? null,
       });
 
       // Best-effort: persist final usage to JSONL so per-turn token

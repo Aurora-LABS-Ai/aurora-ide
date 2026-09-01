@@ -276,6 +276,90 @@
   color: var(--agw-text);
 }
 
+/* ── The design-guideline rule ─────────────────────────────────────────────
+ * `design_guidelines` is the one call that changes nothing: it opens no file,
+ * runs no process, and returns a fixed instruction that governs everything
+ * BELOW it. So it is drawn as a boundary rather than an item — a hairline with
+ * the label inset, lines running to both edges.
+ *
+ * It is not a button and never becomes one, which is why there is no hover, no
+ * focus treatment and no ring anywhere in this block: the body is identical on
+ * every call, so there is nothing a click could reveal.
+ *
+ * See `components/tools/DoctrineRule.tsx` for why it is not a tool card. */
+.agw-drule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+/* The two halves of the rule. `flex: 1 1 auto` on both keeps the label
+ * optically centred while the pane resizes, without measuring anything. */
+.agw-drule::before,
+.agw-drule::after {
+  content: "";
+  height: 1px;
+  flex: 1 1 auto;
+  background: var(--agw-border);
+}
+.agw-drule-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+}
+
+/* The mark's palette. It lives here rather than in the theme tokens because
+ * only this one mark uses it, and it is the same arrangement the canvas
+ * miniature uses (`.agw-cm` takes its colour from the card, not from the
+ * component).
+ *
+ * The first disc is the theme's accent, so a custom theme flows through. The
+ * other two are hues nothing else in the window has claimed — green, red and
+ * amber all mean a tool state here, and a mark wearing one would announce a
+ * status it does not have. */
+.agw-drule {
+  --agw-dg-a: var(--agw-accent);
+  --agw-dg-b: #8b7ff0;
+  --agw-dg-c: #e07bb0;
+  --agw-dg-o: 0.55;
+}
+/* Light needs more ink, not the same ink: these hues at dark-scheme lightness
+ * wash out on paper, and a 0.55 overlap that reads as mixing on near-black
+ * reads as a stain on white. */
+.agw-root[data-appearance="light"] .agw-drule {
+  --agw-dg-b: #5b4bd6;
+  --agw-dg-c: #b8447f;
+  --agw-dg-o: 0.62;
+}
+
+.agw-dg-mark {
+  display: block;
+  flex: none;
+}
+/* Opacity is a DECLARATION, never a presentation attribute on the circle: a
+ * CSS rule outranks the attribute, so the two cannot coexist — the rule wins
+ * and every authored weight collapses to one value. */
+.agw-dg-a,
+.agw-dg-b,
+.agw-dg-c {
+  stroke: none;
+  fill-opacity: var(--agw-dg-o);
+}
+.agw-dg-a {
+  fill: var(--agw-dg-a);
+}
+.agw-dg-b {
+  fill: var(--agw-dg-b);
+}
+.agw-dg-c {
+  fill: var(--agw-dg-c);
+}
+
 /* NOTE: no blanket prefers-reduced-motion kill here. It zeroed out every
    transition under .agw-root (chevron rotate, hovers) and, together with the
    former <MotionConfig reducedMotion="user">, made the tool-card / reasoning

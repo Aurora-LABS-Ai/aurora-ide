@@ -36,6 +36,7 @@ mod agent_safety;
 mod api;
 mod checkpoints;
 pub mod cli;
+pub mod cli_delegate;
 mod code_index;
 mod commands;
 mod context;
@@ -797,6 +798,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::is_aurora_context_menu_installed,
             commands::uninstall_aurora_context_menu,
             commands::cli_take_pending_open_request,
+            // `aurora agent` — the Agent Window's side of running a task
+            // dispatched from a terminal.
+            cli_delegate::commands::cli_task_bind,
+            cli_delegate::commands::cli_task_fail,
+            cli_delegate::commands::cli_task_pending,
+            cli_delegate::commands::cli_task_claim,
             commands::aurora_websearch,
             commands::ripgrep_search,
             commands::validate_structured_document,
@@ -1376,6 +1383,25 @@ pub fn run_with_args(cli_args: CliArgs) {
                     }
                 }
             }
+
+            // ── `aurora agent` — presence, and the task inbox ────────────
+            //
+            // Two pieces, both cheap and both kept alive for the process's
+            // lifetime by handing them to Tauri's managed state.
+            //
+            // The presence guard is how a CLI in another terminal knows an
+            // Aurora is already up — without it every `aurora agent` would
+            // launch a second copy on top of a healthy one.
+            //
+            // The watcher claims dispatched tasks. It sweeps once at startup
+            // as well as watching, because the common case is a task written
+            // *before* this process existed: `aurora agent` writes the request
+            // and then launches us, so no filesystem event will ever fire for
+            // the very task that caused the launch.
+            app.manage(commands::CliPresence(cli_delegate::presence::hold()));
+            app.manage(commands::CliTaskWatcher(std::sync::Mutex::new(
+                cli_delegate::watcher::install(handle.clone()),
+            )));
 
             Ok(())
         })

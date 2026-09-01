@@ -55,7 +55,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::agent_runtime::tool_executor::{ToolError, ToolRegistry};
+use crate::agent_runtime::tool_executor::{ToolError, ToolRegistry, WorkspaceAccess};
 use crate::agent_safety::{resolve_within_workspace, PathSafetyError};
 
 pub mod auroro_websearch;
@@ -195,10 +195,34 @@ pub(crate) fn resolve_path(
     path: &str,
     workspace_root: Option<&Path>,
 ) -> Result<PathBuf, ToolError> {
+    resolve_path_with_access(path, workspace_root, WorkspaceAccess::Workspace)
+}
+
+/// [`resolve_path`], honouring the turn's access mode.
+///
+/// Used by the tools that walk a tree they were handed — `grep`, `glob`,
+/// `workspace_tree` — and by the mutating tools, all of which need the same
+/// answer: is this path in bounds for THIS mode? Only
+/// [`WorkspaceAccess::Full`] lifts the boundary; a path outside it under any
+/// other mode is refused exactly as before.
+pub(crate) fn resolve_path_with_access(
+    path: &str,
+    workspace_root: Option<&Path>,
+    access: WorkspaceAccess,
+) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
-    match workspace_root {
-        Some(root) => resolve_within_workspace(raw, root).map_err(map_path_error),
-        None => Ok(raw.to_path_buf()),
+    let Some(root) = workspace_root else {
+        return Ok(raw.to_path_buf());
+    };
+    match resolve_within_workspace(raw, root) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) => {
+            if access.lifts_boundary() {
+                Ok(resolve_outside_workspace(raw, root))
+            } else {
+                Err(map_path_error(error))
+            }
+        }
     }
 }
 
@@ -209,9 +233,9 @@ pub(crate) fn resolve_path(
 pub(crate) fn resolve_path_for_read(
     path: &str,
     workspace_root: Option<&Path>,
-    allow_outside: bool,
+    access: WorkspaceAccess,
 ) -> Result<PathBuf, ToolError> {
-    resolve_path_for_read_with_spill(path, workspace_root, allow_outside, None)
+    resolve_path_for_read_with_spill(path, workspace_root, access, None)
 }
 
 /// True when `path` lands inside `dir`, comparing them normalized.
@@ -244,7 +268,7 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
 pub(crate) fn resolve_path_for_read_with_spill(
     path: &str,
     workspace_root: Option<&Path>,
-    allow_outside: bool,
+    access: WorkspaceAccess,
     spill_dir: Option<&Path>,
 ) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
@@ -265,7 +289,7 @@ pub(crate) fn resolve_path_for_read_with_spill(
         // have, resolve the path on its own — absolute as-is, relative against
         // the workspace — so the reader can open it.
         Err(error) => {
-            if allow_outside {
+            if access.reads_outside() {
                 Ok(resolve_outside_workspace(raw, root))
             } else {
                 Err(map_path_error(error))
@@ -308,9 +332,15 @@ fn resolve_missing_path_inside_workspace(path: &Path, root: &Path) -> Result<Pat
 /// If `path` is absolute, the same parent-directory resolution
 /// applies; `Path::join` against an absolute right operand
 /// replaces the base, matching `std::path::Path::join`.
+///
+/// Under [`WorkspaceAccess::Full`] the boundary is lifted and the destination
+/// is taken as given. Under every other mode this function has no way to be
+/// told otherwise — which is what makes "writes stay in the project" a
+/// property of the code rather than a promise in a settings hint.
 pub(crate) fn resolve_path_for_create(
     path: &str,
     workspace_root: Option<&Path>,
+    access: WorkspaceAccess,
 ) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
@@ -322,6 +352,14 @@ pub(crate) fn resolve_path_for_create(
     // file).
     if let Ok(resolved) = resolve_within_workspace(raw, root) {
         return Ok(resolved);
+    }
+
+    // Allowed out: an absolute destination is taken as written, a relative one
+    // still anchors to the project. The parent must exist — a write is not a
+    // licence to conjure a directory tree somewhere arbitrary, and the tools
+    // that legitimately create one (`folder_create`) say so themselves.
+    if access.writes_outside() {
+        return Ok(resolve_outside_workspace(raw, root));
     }
 
     // Fall back to resolving the parent directory.
@@ -640,7 +678,9 @@ mod tests {
     fn resolve_path_for_read_allows_missing_inside_workspace() {
         let tmp = tempfile::tempdir().expect("tempdir");
 
-        let resolved = resolve_path_for_read("missing.txt", Some(tmp.path()), false).expect("ok");
+        let resolved =
+            resolve_path_for_read("missing.txt", Some(tmp.path()), WorkspaceAccess::Workspace)
+                .expect("ok");
         let expected_parent = dunce::canonicalize(tmp.path()).unwrap();
         assert_eq!(resolved.parent().unwrap(), expected_parent);
         assert_eq!(resolved.file_name().unwrap(), "missing.txt");
@@ -652,7 +692,11 @@ mod tests {
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
 
-        let result = resolve_path_for_read("../outside-missing.txt", Some(&workspace), false);
+        let result = resolve_path_for_read(
+            "../outside-missing.txt",
+            Some(&workspace),
+            WorkspaceAccess::Workspace,
+        );
         assert!(matches!(result, Err(ToolError::PolicyViolation(_))));
     }
 
@@ -670,7 +714,9 @@ mod tests {
     #[test]
     fn resolve_path_for_create_handles_missing_leaf() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let resolved = resolve_path_for_create("new-file.txt", Some(tmp.path())).expect("ok");
+        let resolved =
+            resolve_path_for_create("new-file.txt", Some(tmp.path()), WorkspaceAccess::Workspace)
+                .expect("ok");
         // Compare canonicalised parents.
         let expected_parent = dunce::canonicalize(tmp.path()).unwrap();
         assert_eq!(resolved.parent().unwrap(), expected_parent);
@@ -682,7 +728,11 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let result = resolve_path_for_create("../escape.txt", Some(&workspace));
+        let result = resolve_path_for_create(
+            "../escape.txt",
+            Some(&workspace),
+            WorkspaceAccess::Workspace,
+        );
         assert!(matches!(result, Err(ToolError::PolicyViolation(_))));
     }
 
@@ -703,7 +753,11 @@ mod tests {
 
         // Without the spill directory this is exactly the refusal.
         assert!(matches!(
-            resolve_path_for_read(&spilled.to_string_lossy(), Some(&workspace), false),
+            resolve_path_for_read(
+                &spilled.to_string_lossy(),
+                Some(&workspace),
+                WorkspaceAccess::Workspace
+            ),
             Err(_)
         ));
 
@@ -711,7 +765,7 @@ mod tests {
         let resolved = resolve_path_for_read_with_spill(
             &spilled.to_string_lossy(),
             Some(&workspace),
-            false,
+            WorkspaceAccess::Workspace,
             Some(&spill),
         )
         .expect("a spilled result must be readable");
@@ -731,7 +785,7 @@ mod tests {
         assert!(resolve_path_for_read_with_spill(
             &sibling.to_string_lossy(),
             Some(&workspace),
-            false,
+            WorkspaceAccess::Workspace,
             Some(&spill),
         )
         .is_err());
@@ -741,7 +795,7 @@ mod tests {
         assert!(resolve_path_for_read_with_spill(
             &escape.to_string_lossy(),
             Some(&workspace),
-            false,
+            WorkspaceAccess::Workspace,
             Some(&spill),
         )
         .is_err());
@@ -755,9 +809,114 @@ mod tests {
         assert!(resolve_path_for_read_with_spill(
             &lookalike.to_string_lossy(),
             Some(&workspace),
-            false,
+            WorkspaceAccess::Workspace,
             Some(&spill),
         )
         .is_err());
+    }
+
+    /// A workspace with a file beside it, the shape every mode is judged on.
+    fn workspace_with_a_neighbour() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "notes").unwrap();
+        let outside = outside.to_string_lossy().into_owned();
+        (tmp, workspace, outside)
+    }
+
+    /// The middle mode is a targeted allowance: open the file I am pointing
+    /// at. It must not become a licence to walk the disk or to change what it
+    /// finds there.
+    #[test]
+    fn read_access_opens_a_named_file_and_nothing_else() {
+        let (_tmp, workspace, outside) = workspace_with_a_neighbour();
+        let root = Some(workspace.as_path());
+
+        assert!(resolve_path_for_read(&outside, root, WorkspaceAccess::Read).is_ok());
+        assert!(
+            resolve_path_with_access(&outside, root, WorkspaceAccess::Read).is_err(),
+            "searching and editing outside stay closed in Read"
+        );
+        assert!(
+            resolve_path_for_create(&outside, root, WorkspaceAccess::Read).is_err(),
+            "a write outside stays closed in Read"
+        );
+    }
+
+    /// Full is the mode that exists because the strict one blocked real work:
+    /// a dependency's source, a second checkout, a config in the home
+    /// directory. Every resolver has to agree, or the agent hits the same wall
+    /// one tool later.
+    #[test]
+    fn full_access_lifts_the_boundary_for_every_resolver() {
+        let (_tmp, workspace, outside) = workspace_with_a_neighbour();
+        let root = Some(workspace.as_path());
+
+        assert!(resolve_path_for_read(&outside, root, WorkspaceAccess::Full).is_ok());
+        assert!(resolve_path_with_access(&outside, root, WorkspaceAccess::Full).is_ok());
+        assert!(resolve_path_for_create(&outside, root, WorkspaceAccess::Full).is_ok());
+    }
+
+    /// The strictest mode is unchanged by any of this — the whole point of a
+    /// default is that it did not quietly widen.
+    #[test]
+    fn the_strict_mode_still_refuses_all_three() {
+        let (_tmp, workspace, outside) = workspace_with_a_neighbour();
+        let root = Some(workspace.as_path());
+
+        for resolve in [
+            resolve_path_for_read(&outside, root, WorkspaceAccess::Workspace),
+            resolve_path_with_access(&outside, root, WorkspaceAccess::Workspace),
+            resolve_path_for_create(&outside, root, WorkspaceAccess::Workspace),
+        ] {
+            assert!(matches!(resolve, Err(ToolError::PolicyViolation(_))));
+        }
+    }
+
+    /// An in-workspace path resolves the same way in every mode. Widening the
+    /// boundary must not change where ordinary work lands.
+    #[test]
+    fn a_path_inside_the_project_resolves_identically_in_every_mode() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("in.txt"), "x").unwrap();
+        let root = Some(workspace.as_path());
+        let expected = dunce::canonicalize(workspace.join("in.txt")).unwrap();
+
+        for access in [
+            WorkspaceAccess::Workspace,
+            WorkspaceAccess::Read,
+            WorkspaceAccess::Full,
+        ] {
+            assert_eq!(
+                resolve_path_with_access("in.txt", root, access).expect("in-project"),
+                expected,
+                "{access:?} moved an in-project path"
+            );
+        }
+    }
+
+    /// The wire carries two spellings. An install that upgrades without
+    /// opening Settings sends only the old boolean, and it must keep the
+    /// access it already had — but must never be promoted to Full, which
+    /// nobody consented to.
+    #[test]
+    fn the_legacy_boolean_maps_to_read_and_never_to_full() {
+        use WorkspaceAccess as W;
+        assert_eq!(W::from_wire(None, Some(true)), W::Read);
+        assert_eq!(W::from_wire(None, Some(false)), W::Workspace);
+        assert_eq!(W::from_wire(None, None), W::Workspace);
+
+        // The mode wins wherever it is present.
+        assert_eq!(W::from_wire(Some("full"), Some(false)), W::Full);
+        assert_eq!(W::from_wire(Some("workspace"), Some(true)), W::Workspace);
+        assert_eq!(W::from_wire(Some("read"), None), W::Read);
+
+        // Anything unrecognised falls back — it never widens.
+        assert_eq!(W::from_wire(Some("everything"), None), W::Workspace);
+        assert_eq!(W::from_wire(Some(""), Some(true)), W::Read);
     }
 }

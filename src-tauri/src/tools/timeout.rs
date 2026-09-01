@@ -276,7 +276,7 @@ mod tests {
             tool_call_id: "c".into(),
             thread_id: "th".into(),
             workspace_root: None,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             spill_dir: None,
             cancel_token: CancellationToken::new(),
         }

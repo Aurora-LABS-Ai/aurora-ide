@@ -188,6 +188,22 @@ export const resolveGlobalInstructionState = (
 
 /** Chat-title source: derived first message, local llama.cpp, or a cloud endpoint. */
 export type TitleMakerMode = 'off' | 'local' | 'cloud';
+
+/** How far outside the open project the agent's file tools may reach.
+ *  Mirrors the Rust `WorkspaceAccess`; the strings are the wire format. */
+export type WorkspaceAccess = 'workspace' | 'read' | 'full';
+
+/** Read a stored access mode, falling back to the boolean it replaced.
+ *
+ *  An unrecognised string is treated as unset rather than trusted, so a
+ *  corrupt or future value narrows access instead of widening it. */
+export const normalizeWorkspaceAccess = (
+  mode: string | undefined,
+  legacyAllow: boolean | undefined,
+): WorkspaceAccess => {
+  if (mode === 'workspace' || mode === 'read' || mode === 'full') return mode;
+  return legacyAllow ? 'read' : 'workspace';
+};
 const clampCompactionThreshold = (value: number): number =>
   Math.min(
     COMPACTION_THRESHOLD_MAX,
@@ -314,10 +330,20 @@ interface SettingsState {
     }>,
   ) => void;
 
-  /** Allow read-only file tools to read files OUTSIDE the workspace. Off keeps
-   *  the agent strictly inside the project (the default, safe behavior). */
+  /** How far outside the open project the agent's file tools may reach.
+   *
+   *  - `workspace` — the project and nothing else (default).
+   *  - `read` — reads may leave; searches and writes stay inside.
+   *  - `full` — no path boundary; reads, searches and writes go anywhere.
+   *
+   *  Governs the file tools only. `shell_execute` accepts an absolute `cwd` in
+   *  every mode; its guard is command validation plus the approval prompt. */
+  workspaceAccess: WorkspaceAccess;
+  setWorkspaceAccess: (value: WorkspaceAccess) => void;
+  /** The boolean this setting used to be, kept only so an install that
+   *  upgrades without opening Settings keeps the access it already had. Derived
+   *  from `workspaceAccess` on every write; nothing should read it. */
   allowOutsideWorkspace: boolean;
-  setAllowOutsideWorkspace: (value: boolean) => void;
   /** Surface a header flash + rail "done" dot when a chat's turn finishes
    *  streaming (agent window). Off silences both cues. On by default. */
   notifyOnTurnComplete: boolean;
@@ -1279,7 +1305,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   titleMakerApiKey: '',
   titleMakerModel: '',
 
-  // Read access is workspace-bound by default (safe).
+  // The project and nothing else, until the user says otherwise.
+  workspaceAccess: 'workspace',
   allowOutsideWorkspace: false,
 
   // Turn-complete cues (header flash + rail dot) are on by default.
@@ -1630,6 +1657,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           titleMakerBaseUrl: appSettings.titleMakerBaseUrl ?? '',
           titleMakerApiKey: appSettings.titleMakerApiKey ?? '',
           titleMakerModel: appSettings.titleMakerModel ?? '',
+          // An install that upgrades without opening Settings has only the old
+          // boolean on disk. `true` becomes `read` — never `full`, which
+          // nobody has consented to.
+          workspaceAccess: normalizeWorkspaceAccess(
+            appSettings.workspaceAccess,
+            appSettings.allowOutsideWorkspace,
+          ),
           allowOutsideWorkspace: appSettings.allowOutsideWorkspace ?? false,
           notifyOnTurnComplete: appSettings.notifyOnTurnComplete ?? true,
           showActivityInTitle: appSettings.showActivityInTitle ?? true,
@@ -1737,6 +1771,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         titleMakerBaseUrl: state.titleMakerBaseUrl,
         titleMakerApiKey: state.titleMakerApiKey,
         titleMakerModel: state.titleMakerModel,
+        workspaceAccess: state.workspaceAccess,
         allowOutsideWorkspace: state.allowOutsideWorkspace,
         notifyOnTurnComplete: state.notifyOnTurnComplete,
         showActivityInTitle: state.showActivityInTitle,
@@ -2312,8 +2347,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
-  setAllowOutsideWorkspace: (value: boolean) => {
-    set({ allowOutsideWorkspace: value });
+  setWorkspaceAccess: (value: WorkspaceAccess) => {
+    // The legacy boolean is derived, never set by hand: the two can then only
+    // disagree if someone edits the database, and a reader that predates the
+    // mode still sees the nearest true answer.
+    set({ workspaceAccess: value, allowOutsideWorkspace: value !== 'workspace' });
     get().saveToDatabase();
   },
 

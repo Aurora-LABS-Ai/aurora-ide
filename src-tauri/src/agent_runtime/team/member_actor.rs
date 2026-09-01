@@ -1056,7 +1056,11 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
         context_window: Some(MEMBER_CONTEXT_WINDOW),
         compaction_threshold: Some(MEMBER_COMPACTION_THRESHOLD),
         compaction_summary_budget: 4096,
-        allow_outside_workspace: false,
+        // Members stay inside the project whatever the lead was granted.
+        // `MemberRun` carries no access mode — threading the user's choice
+        // through the dispatcher is the follow-up that makes a team run match
+        // its lead; until then the narrower answer is the safe one.
+        workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::Workspace,
         // Members run their own provider — price their stored reasoning by
         // what THAT provider replays, not the lead's.
         reasoning_replay: crate::api::reasoning_replay_for(
@@ -1281,7 +1285,7 @@ mod tests {
             tool_call_id: "c".into(),
             thread_id: "s".into(),
             workspace_root: None,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             cancel_token: CancellationToken::new(),
             spill_dir: None,
         }

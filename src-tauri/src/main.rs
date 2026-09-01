@@ -65,9 +65,13 @@ fn main() {
         }
     }
 
+    // Commands that need no window — `icon-pack`, and the delegate family
+    // (`agent`, `models`, `threads`, `watch`, `tasks`). Handled before the
+    // launch path below, because these talk to an Aurora that is already
+    // running rather than starting one.
     match args.execute_non_gui_command() {
-        Ok(true) => std::process::exit(0),
-        Ok(false) => {}
+        Ok(Some(code)) => std::process::exit(code),
+        Ok(None) => {}
         Err(error) => {
             eprintln!("Error: {}", error);
             std::process::exit(1);

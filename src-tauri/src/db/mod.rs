@@ -6,7 +6,10 @@ mod repositories;
 mod schema;
 
 pub use connection::DbConnection;
-pub use error::DbResult;
+// `DbError` rides along with `DbResult`: the alias already puts it in every
+// public signature, so leaving it unnameable meant a caller could receive the
+// error but not write its type in their own `#[from]`.
+pub use error::{DbError, DbResult};
 pub use models::{
     AppSettings, ContextUsage, CustomTheme, EditorState, ExplorerState, LLMProvider, Message,
     ProviderModel, ThreadState, TokenUsage, ToolCall, ToolSetting, WorkspaceState,
@@ -32,6 +35,25 @@ impl Database {
         migrations::run_migrations(conn.connection())?;
 
         Ok(Self { _conn: conn })
+    }
+
+    /// Open the database from a process with no Tauri app — the `aurora` CLI.
+    ///
+    /// **Migrations are deliberately not run here.** The app owns the schema:
+    /// it migrates on startup, under its own single-writer assumption. A CLI
+    /// invocation is short, concurrent with a possibly-running app, and may be
+    /// an *older* build than the one that last opened the file — letting it
+    /// migrate would mean a stray `aurora models` could rewrite the schema
+    /// under a live window, or downgrade it.
+    ///
+    /// The cost is that a CLI command run before Aurora has ever started sees
+    /// a database with no tables. That is a real state and the callers treat
+    /// it as one: [`crate::cli_delegate::catalog`] reports "no providers
+    /// configured yet" rather than failing with a SQL error.
+    pub fn open_headless() -> DbResult<Self> {
+        Ok(Self {
+            _conn: DbConnection::open_headless()?,
+        })
     }
 
     /// Get a workspace repository

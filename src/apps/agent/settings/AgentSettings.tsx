@@ -126,9 +126,6 @@ export const AgentSettings: React.FC = () => {
     e.preventDefault();
   };
 
-  const allowOutsideWorkspace = useSettingsStore((s) => s.allowOutsideWorkspace);
-  const setAllowOutsideWorkspace = useSettingsStore((s) => s.setAllowOutsideWorkspace);
-
   const compactionThresholdPct = useSettingsStore((s) => s.compactionThresholdPct);
   const setCompactionThresholdPct = useSettingsStore((s) => s.setCompactionThresholdPct);
   const compactionSummaryBudget = useSettingsStore((s) => s.compactionSummaryBudget);
@@ -302,7 +299,11 @@ export const AgentSettings: React.FC = () => {
         title="Execution mode"
         description="How the agent acts on your requests. Reasoning, temperature, and context window belong to the model — open a model under Providers to set them."
       >
+        {/* File access moved to Settings → Tools: it decides what the file
+            tools may touch, which is the same question that page already
+            answers for every other tool. */}
         <SettingsRow
+          last
           label="Mode"
           hint="Agent runs the full toolset. Plan is read-only — it explores and proposes, but won't modify files or run risky commands."
         >
@@ -311,18 +312,6 @@ export const AgentSettings: React.FC = () => {
             value={mode}
             options={MODE_OPTIONS}
             onChange={setExecutionMode}
-          />
-        </SettingsRow>
-
-        <SettingsRow
-          last
-          label="Read outside workspace"
-          hint="Off, the agent can only read files inside the open project. On, it can also read files you point it to elsewhere on your computer (by absolute path). Writing and creating files always stays inside the workspace."
-        >
-          <AgwSwitch
-            checked={allowOutsideWorkspace}
-            onChange={setAllowOutsideWorkspace}
-            ariaLabel="Allow reading files outside the workspace"
           />
         </SettingsRow>
       </SettingsSection>

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use rusqlite::Connection;
 
 use crate::db::error::DbResult;
@@ -17,7 +15,22 @@ impl DbConnection {
     ///   `<AuroraIDE>/data/aurora.db`
     /// (see `crate::paths` for the per-platform root resolution).
     pub fn new(_app: &tauri::AppHandle) -> DbResult<Self> {
-        let db_path = get_db_path(_app)?;
+        Self::open_headless()
+    }
+
+    /// Open the same database with no Tauri app in the process.
+    ///
+    /// This is what the `aurora` CLI uses: `aurora models` has to read the
+    /// provider catalogue from a terminal, where no `AppHandle` exists and
+    /// building one would mean starting a window to answer a list query.
+    ///
+    /// [`Self::new`] delegates here rather than the two paths each opening
+    /// their own connection — the PRAGMAs below are the contract the whole
+    /// app runs under (WAL above all, since the CLI reads this file while the
+    /// running app is writing it), and a second copy of them is a second
+    /// place for them to drift.
+    pub fn open_headless() -> DbResult<Self> {
+        let db_path = paths::db_file();
         // `paths::data_dir()` already ensures the parent exists, but be
         // defensive — a stale `<root>/data/` deletion shouldn't crash boot.
         if let Some(parent) = db_path.parent() {
@@ -44,16 +57,4 @@ impl DbConnection {
         &self.conn
     }
 
-    /// Get the database path for the app.
-    ///
-    /// The `_app` handle is unused — the AuroraIDE root is resolved
-    /// from the OS, not from Tauri's bundle-identifier-scoped paths.
-    /// Kept on the signature so callers don't need to change.
-    pub fn get_db_path(_app: &tauri::AppHandle) -> DbResult<PathBuf> {
-        Ok(paths::db_file())
-    }
-}
-
-fn get_db_path(app: &tauri::AppHandle) -> DbResult<PathBuf> {
-    DbConnection::get_db_path(app)
 }

@@ -117,7 +117,7 @@ mod tests {
 
     fn ctx() -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

@@ -34,7 +34,7 @@ use crate::commands::editor_ops::{
 };
 use crate::tools::shell_editor_todo::IdeEventSink;
 
-use super::resolve_path;
+use super::resolve_path_with_access;
 use super::search_replace::{
     describe_diagnosis, diff_side, emit_post_write, render_response, window_note,
 };
@@ -165,7 +165,8 @@ impl ToolExecutor for FileEditTool {
 
         // Single-edit form — requires a top-level `path`.
         let path = top_path.ok_or_else(|| ToolError::InvalidInput(missing_path_message(&input)))?;
-        let resolved = resolve_path(path, ctx.workspace_root.as_deref())?;
+        let resolved =
+            resolve_path_with_access(path, ctx.workspace_root.as_deref(), ctx.workspace_access)?;
         let resolved_str = resolved.to_string_lossy().to_string();
         let raw_path = path.to_string();
 
@@ -293,7 +294,11 @@ impl FileEditTool {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
 
-            let resolved = resolve_path(raw_path, ctx.workspace_root.as_deref())?;
+            let resolved = resolve_path_with_access(
+                raw_path,
+                ctx.workspace_root.as_deref(),
+                ctx.workspace_access,
+            )?;
             let resolved_str = resolved.to_string_lossy().to_string();
             let item = SearchReplaceItem {
                 old_string: old_string.to_string(),
@@ -796,7 +801,7 @@ mod tests {
             tool_call_id: "c".into(),
             thread_id: "s".into(),
             workspace_root: workspace,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             cancel_token: CancellationToken::new(),
             spill_dir: None,
         }

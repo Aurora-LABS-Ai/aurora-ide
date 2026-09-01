@@ -243,9 +243,10 @@ pub struct RuntimeConfig {
     /// richer, higher-fidelity summary. Clamped by the caller (2k–16k).
     pub compaction_summary_budget: u32,
 
-    /// When true, read-only file tools may resolve paths OUTSIDE the workspace
-    /// (user opt-in via Settings → Agent). Writes stay workspace-bound.
-    pub allow_outside_workspace: bool,
+    /// How far outside the project this turn's file tools may reach — the
+    /// user's choice in Settings → Tools. See
+    /// [`crate::agent_runtime::tool_executor::WorkspaceAccess`].
+    pub workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess,
 
     /// What this provider does with a stored reasoning block on replay, and
     /// therefore what one costs the next request. Set from the turn's provider
@@ -279,7 +280,7 @@ impl Default for RuntimeConfig {
             // `COMPACTION_SYSTEM_PROMPT`. Too small and the scratchpad starves
             // the note of its last, most important sections.
             compaction_summary_budget: 16_000,
-            allow_outside_workspace: false,
+            workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::Workspace,
             reasoning_replay: ReasoningReplay::Dropped,
         }
     }

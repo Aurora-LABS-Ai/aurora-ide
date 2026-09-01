@@ -92,6 +92,13 @@ pub struct CliArgs {
     #[arg(long, visible_alias = "agents")]
     pub agent: bool,
 
+    /// Open the interactive terminal view instead of the app.
+    ///
+    /// The same thing as `aurora tui`, as a flag — because "give me the CLI"
+    /// is how people reach for it, and a flag is what they try first.
+    #[arg(long = "cli")]
+    pub interactive: bool,
+
     /// Install the 'aurora' CLI command to system PATH (requires admin on Windows)
     #[arg(long)]
     pub install_cli: bool,
@@ -109,6 +116,17 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: IconPackCommand,
     },
+
+    /// Dispatch and inspect agent work — `agent`, `models`, `threads`,
+    /// `watch`, `tasks`.
+    ///
+    /// Flattened rather than nested under a group, so the commands read as
+    /// `aurora agent …` instead of `aurora delegate agent …`. They live in
+    /// their own module because they share nothing with the launcher above:
+    /// these talk to a *running* Aurora, where everything else in this file
+    /// starts one.
+    #[command(flatten)]
+    Delegate(crate::cli_delegate::command::DelegateCommand),
 }
 
 impl CliArgs {
@@ -192,14 +210,49 @@ impl CliArgs {
         }
     }
 
-    /// Execute a non-GUI CLI command and return whether one was handled.
-    pub fn execute_non_gui_command(&self) -> Result<bool, String> {
+    /// Execute a command that needs no window, and report how the process
+    /// should exit.
+    ///
+    /// `Ok(None)` means no such command was given and the caller should carry
+    /// on with the normal launch path. `Ok(Some(code))` means one ran and the
+    /// process should exit with `code`.
+    ///
+    /// An exit *code* rather than a bool because the delegate commands are
+    /// meant to be scripted: a caller needs to tell "the task failed" from
+    /// "the arguments were wrong" from "nothing picked it up" without parsing
+    /// output. See [`crate::cli_delegate::run::exit`].
+    pub fn execute_non_gui_command(&self) -> Result<Option<i32>, String> {
+        use crate::cli_delegate::command::DelegateCommand;
+        use crate::cli_delegate::run;
+
+        // These commands print for a person or a script to read, so the
+        // startup diagnostic `paths::root()` normally emits would be noise on
+        // top of the answer. Set before any path is resolved.
+        if self.command.is_some() || self.interactive {
+            std::env::set_var("AURORA_QUIET_PATHS", "1");
+        }
+
+        // `--cli` is the flag spelling of the `tui` subcommand. Handled before
+        // the match so it works with or without a path argument, the way the
+        // other launcher flags in this struct do.
+        if self.interactive {
+            return Ok(Some(run::run_interactive(self.path.clone())));
+        }
+
         match &self.command {
             Some(CliCommand::IconPack { command }) => {
                 execute_cli_command(command).map_err(|error| error.to_string())?;
-                Ok(true)
+                Ok(Some(run::exit::OK))
             }
-            None => Ok(false),
+            Some(CliCommand::Delegate(command)) => Ok(Some(match command.clone() {
+                DelegateCommand::Agent(args) => run::run_agent(args),
+                DelegateCommand::Models(args) => run::run_models(args),
+                DelegateCommand::Threads(args) => run::run_threads(args),
+                DelegateCommand::Watch(args) => run::run_watch(args),
+                DelegateCommand::Tasks(args) => run::run_tasks(args),
+                DelegateCommand::Tui(args) => run::run_interactive(args.path),
+            })),
+            None => Ok(None),
         }
     }
 }

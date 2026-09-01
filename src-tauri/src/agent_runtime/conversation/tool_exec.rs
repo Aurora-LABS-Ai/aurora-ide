@@ -192,7 +192,7 @@ impl ConversationRuntime {
                                 .workspace_root
                                 .as_ref()
                                 .map(std::path::PathBuf::from),
-                            allow_outside_workspace: self.config.allow_outside_workspace,
+                            workspace_access: self.config.workspace_access,
                             // The very directory `spill_tool_output` writes to, so a
                             // spilled result's path is readable by the agent that just
                             // produced it — see `ToolContext::spill_dir`.

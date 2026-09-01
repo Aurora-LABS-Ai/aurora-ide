@@ -394,7 +394,7 @@ mod tests {
             tool_call_id: tool_use_id.into(),
             thread_id: "session-1".into(),
             workspace_root: None,
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             cancel_token: CancellationToken::new(),
             spill_dir: None,
         }

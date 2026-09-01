@@ -656,6 +656,31 @@ describe("images in a result", () => {
     expect(parsed.summary).toBe("Captured localhost:3001");
   });
 
+  // The live path: a `file_read` that opened ONE picture is leaned to the same
+  // `{ screenshot: … }` envelope a capture is, and no marker survives it. While
+  // the branch was gated on the tool NAME, that envelope fell through to the
+  // code fallback and the card printed the JSON where the picture belonged.
+  it("renders a file_read image from its lean envelope, not as raw JSON", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["before.png"] },
+      JSON.stringify({
+        screenshot: {
+          path: "C:\\cache\\agent-images\\img-89ae2b9f.jpg",
+          width: 1024,
+          height: 625,
+          url: null,
+          name: "C:/tmp/aurora-profile-manager-ui/before.png",
+        },
+      }),
+    );
+
+    expect(parsed.image?.path).toBe("C:\\cache\\agent-images\\img-89ae2b9f.jpg");
+    expect(parsed.image?.width).toBe(1024);
+    expect(parsed.summary).toBe("before.png");
+    expect(parsed.code).toBeNull();
+  });
+
   // The bug this closes: a PNG named in file_read used to come back as
   // "stream did not contain valid UTF-8". It now returns a marker, and the card
   // has to label it with the file that was read — not with the cache file the

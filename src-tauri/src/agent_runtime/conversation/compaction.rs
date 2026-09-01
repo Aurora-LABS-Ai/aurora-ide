@@ -19,11 +19,12 @@ impl ConversationRuntime {
     /// Compaction is lossy but not destructive — Aurora only ever shrinks the
     /// API view; the JSONL keeps everything. Telling the model where that file
     /// is turns "the summary dropped the detail I need" from a dead end into a
-    /// `file_read`. Gated on `allow_outside_workspace` because the session
-    /// store sits outside the project: without it the read is refused, and
-    /// pointing the model at a path it cannot open is worse than staying quiet.
+    /// `file_read`. Gated on the turn being allowed to read outside the
+    /// project, because the session store sits outside it: without that the
+    /// read is refused, and pointing the model at a path it cannot open is
+    /// worse than staying quiet.
     pub(super) fn transcript_hint(&self, session: &Session) -> Option<String> {
-        if !self.config.allow_outside_workspace {
+        if !self.config.workspace_access.reads_outside() {
             return None;
         }
         let dir = self.store_dir.as_deref()?;

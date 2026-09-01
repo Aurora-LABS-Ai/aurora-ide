@@ -110,11 +110,37 @@
   alias: (identifier) @ref.import)
 
 ; Every other import, and the export barrels this ecosystem is built on. Both
-; bind no local name here but still make the file depend on that module; the
-; graph de-duplicates file pairs and an empty binding is ignored by name
-; resolution, exactly as for `import "./side-effect"` in TypeScript.
-(import_specification uri: (uri) @import.module)
-(import_specification uri: (configurable_uri (uri) @import.module))
-(library_export uri: (configurable_uri (uri) @import.module))
-(part_directive (uri) @import.module)
-(part_of_directive (uri) @import.module)
+; bind no local name here but still make the file depend on that module. Keep
+; exports distinct: a re-export extends this library's public namespace but
+; does not import the name into the exporting file's own scope.
+;
+; Combinators are captured whole because Dart applies every `show` / `hide`
+; clause from left to right. `show A, B hide B` cannot be represented by one
+; unordered allow/deny set.
+(import_specification
+  uri: (uri) @import.module
+  (combinator)* @import.combinator)
+(import_specification
+  uri: (configurable_uri (uri) @import.module)
+  (combinator)* @import.combinator)
+(library_export
+  uri: (configurable_uri (uri) @reexport.module)
+  (combinator)* @reexport.combinator)
+
+; Combinator identifiers describe namespace filters, not code references. The
+; extractor derives final `show` bindings from the complete ordered chain and
+; suppresses every identifier here from the broad reference catch-all.
+(import_specification
+  uri: (uri) @import.module
+  (combinator (identifier) @import.excluded))
+(import_specification
+  uri: (configurable_uri (uri) @import.module)
+  (combinator (identifier) @import.excluded))
+
+; A primary file and its parts are one library, not modules importing each
+; other. Keep these out of the dependency graph and let the store build one
+; library membership group from the paired directives.
+(library_name (dotted_identifier_list) @library.name)
+(part_directive uri: (uri) @part.uri)
+(part_of_directive (uri) @part.of_uri)
+(part_of_directive (dotted_identifier_list) @part.of_name)

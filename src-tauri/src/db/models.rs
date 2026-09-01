@@ -475,7 +475,15 @@ pub struct AppSettings {
     pub title_maker_api_key: String,
     #[serde(default)]
     pub title_maker_model: String,
-    /// When true, read-only file tools may read files outside the workspace.
+    /// How far outside the open project the agent's file tools may reach:
+    /// `"workspace"`, `"read"`, or `"full"`. Empty means "not chosen yet", in
+    /// which case [`Self::allow_outside_workspace`] below still decides.
+    #[serde(default)]
+    pub workspace_access: String,
+    /// The boolean this setting used to be, kept so an upgrade does not
+    /// silently re-fence an agent the user had already let out of the project.
+    /// Read only while `workspace_access` is empty; the first save through the
+    /// new control writes both.
     #[serde(default)]
     pub allow_outside_workspace: bool,
     /// When true, the agent is told to split long turns into named chapters and
@@ -567,6 +575,7 @@ impl Default for AppSettings {
             title_maker_base_url: String::new(),
             title_maker_api_key: String::new(),
             title_maker_model: String::new(),
+            workspace_access: String::new(),
             allow_outside_workspace: false,
             transcript_chapters: false,
             notify_on_turn_complete: true,

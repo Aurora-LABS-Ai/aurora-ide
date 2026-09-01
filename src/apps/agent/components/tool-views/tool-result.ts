@@ -766,7 +766,13 @@ export function parseToolResult(
   // picture, never as a dumped base64 blob. Covers both the lean JSON (live)
   // and raw (persisted) shapes, for a captured page and for a file that was
   // read alike.
-  if (name === "browser_screenshot" || hasImageMarker(result)) {
+  //
+  // The gate is the SHAPE of the result, not the tool that produced it. A
+  // `file_read` that opened ONE picture reaches the live UI as the same lean
+  // `{ screenshot: … }` envelope a capture does — no marker survives in it —
+  // so a name-only gate dropped it through to the code fallback and printed
+  // the envelope as raw JSON where the picture belonged.
+  if (name === "browser_screenshot" || hasImageMarker(result) || !!rec(parsed?.screenshot)) {
     const images = (parseImageResults(parsed, result) ?? []).filter(
       (image) => image.path || image.base64,
     );

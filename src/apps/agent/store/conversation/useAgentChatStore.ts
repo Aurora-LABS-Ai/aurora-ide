@@ -129,6 +129,20 @@ interface AgentChatState {
   liveTurns: Record<string, DbThread>;
   /** Project root each in-flight turn belongs to, keyed by thread id. */
   liveProjects: Record<string, string | null>;
+  /**
+   * Execution mode each in-flight turn is ACTUALLY running under, keyed by
+   * thread id. Absent when no turn is running on that thread.
+   *
+   * Needed because a turn's mode is not always the window's setting: a task
+   * dispatched with `aurora agent --plan` runs read-only for that turn alone,
+   * deliberately without repointing the composer (which would leave the window
+   * in plan mode afterwards, and would have two concurrent dispatches fight).
+   *
+   * Without this the composer showed "Agent" while a plan turn refused to
+   * write — the mode was real and invisible. The selector reads it to show
+   * what is running now, and falls back to the setting when nothing is.
+   */
+  liveModes: Record<string, "agent" | "plan" | "team">;
 
   // ── Completion signals ────────────────────────────────────────────
   // When a turn finishes streaming we surface two lightweight cues: a rail
@@ -240,7 +254,12 @@ interface AgentChatState {
    * just-created draft or an open chat being resent) so streaming has a target
    * that outlives navigation. Multiple turns may be open at once.
    */
-  beginTurn: (threadId: string, seed?: DbThread, projectRoot?: string | null) => void;
+  beginTurn: (
+    threadId: string,
+    seed?: DbThread,
+    projectRoot?: string | null,
+    executionMode?: "agent" | "plan" | "team",
+  ) => void;
   /** Append a message to a live turn (mirrors into the view when it's open). */
   appendTurnMessage: (threadId: string, message: DbMessage) => void;
   /** Patch a message in a live turn by id (mirrors into the view when open). */
@@ -289,6 +308,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   currentThread: null,
   liveTurns: {},
   liveProjects: {},
+  liveModes: {},
   unseenDone: {},
   justFinished: null,
   activityByThread: {},
@@ -599,7 +619,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   setSending: (sending) => set({ sending }),
 
-  beginTurn: (threadId, seed, projectRoot) => {
+  beginTurn: (threadId, seed, projectRoot, executionMode) => {
     set((state) => {
       const now = new Date().toISOString();
       // The OPEN thread's own view outranks a supplied seed when they are the
@@ -627,6 +647,12 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
           ...state.liveProjects,
           [threadId]: projectRoot === undefined ? state.projectRoot : projectRoot,
         },
+        // Recorded per thread so the composer can show what is actually
+        // running. Omitted by callers that don't override the mode, which
+        // leaves the entry absent and the selector on the window's setting.
+        liveModes: executionMode
+          ? { ...state.liveModes, [threadId]: executionMode }
+          : state.liveModes,
         sending: true,
         currentThread: state.currentThreadId === threadId ? base : state.currentThread,
       };
@@ -672,9 +698,16 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       // The narrator only lives for the duration of the turn.
       const activityByThread = { ...state.activityByThread };
       delete activityByThread[threadId];
+      // So does the mode override: once the turn is over the composer goes
+      // back to describing what YOUR next message will do, which is the
+      // window's own setting. Leaving it would strand the selector in a mode
+      // nothing is running.
+      const liveModes = { ...state.liveModes };
+      delete liveModes[threadId];
       return {
         liveTurns,
         liveProjects,
+        liveModes,
         activityByThread,
         sending: Object.keys(liveTurns).length > 0,
       };

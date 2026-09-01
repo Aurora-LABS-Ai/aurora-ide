@@ -289,7 +289,7 @@ impl ToolExecutor for FileReadTool {
                 let resolved = resolve_path_for_read_with_spill(
                     entry,
                     ctx.workspace_root.as_deref(),
-                    ctx.allow_outside_workspace,
+                    ctx.workspace_access,
                     ctx.spill_dir.as_deref(),
                 );
                 if let Ok(resolved) = resolved {
@@ -368,7 +368,7 @@ impl ToolExecutor for FileReadTool {
         let resolution = resolve_path_for_read_with_spill(
             path,
             ctx.workspace_root.as_deref(),
-            ctx.allow_outside_workspace,
+            ctx.workspace_access,
             ctx.spill_dir.as_deref(),
         );
         // A hard rejection (outside the workspace with the opt-in off) is a
@@ -920,7 +920,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

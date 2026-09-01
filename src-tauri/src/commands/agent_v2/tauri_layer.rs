@@ -14,10 +14,27 @@ impl EventEmitter for TauriEmitter {
         // matching literal in Phase 2.3, and we deliberately don't
         // share a `const` so the contract is explicit at both ends.
         let _ = self.app.emit("agent_event", envelope);
+
+        // A turn dispatched from `aurora agent` is also being watched in a
+        // terminal, so the same events are appended to its transcript. Guarded
+        // by `is_active` because this runs per streamed token and the common
+        // case — no CLI task anywhere — must cost one atomic check, not a hash
+        // lookup. See `cli_delegate::mirror`.
+        if crate::cli_delegate::mirror::is_active() {
+            crate::cli_delegate::mirror::record(&envelope.turn_id, &envelope.event);
+        }
     }
 
-    fn emit_turn_complete(&self, _turn_id: &str, summary: &TurnCompletion) {
+    fn emit_turn_complete(&self, turn_id: &str, summary: &TurnCompletion) {
         let _ = self.app.emit("agent_turn_complete", summary);
+        // Closes the transcript with its `result` line. A follower in a
+        // terminal stops on that line and nothing else, so a turn that ended
+        // without reaching here would leave `aurora agent --follow` waiting on
+        // a file that never grows again.
+        crate::cli_delegate::mirror::finish(
+            turn_id,
+            crate::cli_delegate::mirror::Outcome::Complete(summary),
+        );
     }
 
     fn emit_turn_error(&self, turn_id: &str, error: &str, recovery_hint: Option<RecoveryHint>) {
@@ -42,6 +59,13 @@ impl EventEmitter for TauriEmitter {
                 error,
                 recovery_hint,
             },
+        );
+        // The other way a turn can end. Cancellation arrives here too, as the
+        // literal "cancelled"; the transcript tells the two apart, because a
+        // task the user stopped did not fail.
+        crate::cli_delegate::mirror::finish(
+            turn_id,
+            crate::cli_delegate::mirror::Outcome::Failed(error),
         );
     }
 

@@ -48,7 +48,18 @@ pub fn root() -> PathBuf {
         });
     let root = base.join(ROOT_NAME);
     ensure(&root);
-    eprintln!("[paths] AuroraIDE root resolved to {}", root.display());
+    // Printed once per process, for the app's own logs — it is the answer to
+    // "where did my data go", and it has earned its place there.
+    //
+    // Silenced for the `aurora` CLI, which resolves this on the way to
+    // answering something else entirely. A command whose job is to print a
+    // table of models should print a table of models; a diagnostic line above
+    // it is noise the user did not ask for and, on stderr, noise a script has
+    // to filter. `AURORA_QUIET_PATHS` is set by the CLI entry point before
+    // anything touches this.
+    if std::env::var_os("AURORA_QUIET_PATHS").is_none() {
+        eprintln!("[paths] AuroraIDE root resolved to {}", root.display());
+    }
     let _ = RESOLVED_ROOT.set(root.clone());
     root
 }
@@ -71,6 +82,30 @@ pub fn checkpoints_dir() -> PathBuf {
 /// `<root>/sessions/` — agent_v2 session JSONL + meta sidecars.
 pub fn sessions_dir() -> PathBuf {
     ensure_subdir("sessions")
+}
+
+/// `<root>/cli-tasks/` — the hand-off point between an `aurora agent` command
+/// typed in a terminal and the running Aurora that executes it.
+///
+/// Two files per dispatch, both named by the task id:
+///
+/// - `<id>.task.json` — what the terminal asked for. The CLI writes it and
+///   exits; the running app claims it.
+/// - `<id>.jsonl` — what happened, one JSON object per line, appended live.
+///   This is the file `--out` names and `--follow` tails.
+///
+/// A directory rather than a socket because the command has to work when
+/// Aurora is NOT yet running: the request waits on disk until the app starts
+/// and sweeps the folder, so `aurora agent` never fails just for being early.
+/// It is also why the transcript is a file in the first place — a caller
+/// (another agent, a CI step, a second terminal) can read the run as it
+/// happens without holding a connection open.
+///
+/// Not under `cache/`: a dispatched task is a user's instruction and its
+/// transcript is the record of what was done with it. Deleting this folder
+/// loses work, so it does not live where "safe to delete" is the contract.
+pub fn cli_tasks_dir() -> PathBuf {
+    ensure_subdir("cli-tasks")
 }
 
 /// `<root>/code-index/` — one cached symbol index per workspace, named by the

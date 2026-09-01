@@ -96,7 +96,8 @@ impl ToolExecutor for FileWriteTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let resolved = resolve_path_for_create(path, ctx.workspace_root.as_deref())?;
+        let resolved =
+            resolve_path_for_create(path, ctx.workspace_root.as_deref(), ctx.workspace_access)?;
         let resolved_str = resolved.to_string_lossy().to_string();
         let raw_path = path.to_string();
         let bytes = content.len();
@@ -290,7 +291,7 @@ mod tests {
 
     fn ctx_for(workspace: Option<std::path::PathBuf>) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

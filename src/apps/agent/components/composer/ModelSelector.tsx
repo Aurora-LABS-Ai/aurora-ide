@@ -506,7 +506,22 @@ export const ModelSelector: React.FC<{
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const teamEnabled = useSettingsStore((s) => s.teamEnabled);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
-  const planned = executionMode === "plan";
+
+  // The mode of the turn RUNNING on this chat, when it differs from the
+  // setting. A task dispatched with `aurora agent --plan` runs read-only for
+  // that turn without repointing the window — so while it runs, the setting is
+  // not what is happening, and showing it would be a lie the user can watch
+  // being contradicted.
+  const liveMode = useAgentChatStore((s) =>
+    s.currentThreadId ? s.liveModes[s.currentThreadId] : undefined,
+  );
+
+  // What is happening now, falling back to what your next message will do.
+  const shownMode = liveMode ?? executionMode;
+  const planned = shownMode === "plan";
+  // A running turn's mode is already fixed; the toggle would silently apply to
+  // the NEXT message instead, which is exactly the confusion this fixes.
+  const modeLocked = liveMode !== undefined;
 
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<"up" | "down">("up");
@@ -990,7 +1005,12 @@ export const ModelSelector: React.FC<{
                   aria-checked={!planned}
                   data-active={!planned || undefined}
                   className="agw-model-mode-btn"
-                  title="Agent — full access: edits files and runs commands, gated by your approval settings."
+                  disabled={modeLocked}
+                  title={
+                    modeLocked
+                      ? "This turn's mode is fixed while it runs."
+                      : "Agent — full access: edits files and runs commands, gated by your approval settings."
+                  }
                   onClick={() => setExecutionMode("agent")}
                 >
                   <AgentIcon name="facet" size={12} />
@@ -1003,7 +1023,12 @@ export const ModelSelector: React.FC<{
                   data-active={planned || undefined}
                   data-mode="plan"
                   className="agw-model-mode-btn"
-                  title="Plan — read-only: explores and proposes changes without touching anything."
+                  disabled={modeLocked}
+                  title={
+                    modeLocked
+                      ? "This turn's mode is fixed while it runs."
+                      : "Plan — read-only: explores and proposes changes without touching anything."
+                  }
                   onClick={() => setExecutionMode("plan")}
                 >
                   <AgentIcon name="book-open" size={12} />

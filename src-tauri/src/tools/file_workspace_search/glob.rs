@@ -101,7 +101,9 @@ impl ToolExecutor for GlobTool {
         let raw_path = input.get("path").and_then(Value::as_str).unwrap_or(".");
         let search_root = match ctx.workspace_root.as_deref() {
             Some(root) if raw_path == "." => root.to_path_buf(),
-            Some(root) => super::resolve_path(raw_path, Some(root))?,
+            Some(root) => {
+                super::resolve_path_with_access(raw_path, Some(root), ctx.workspace_access)?
+            }
             None => std::path::PathBuf::from(raw_path),
         };
 
@@ -251,7 +253,7 @@ mod tests {
 
     fn ctx_for(root: &Path) -> ToolContext {
         ToolContext {
-            allow_outside_workspace: false,
+            workspace_access: Default::default(),
             turn_id: "t".into(),
             tool_call_id: "c".into(),
             thread_id: "s".into(),

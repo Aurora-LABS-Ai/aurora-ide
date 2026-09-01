@@ -104,8 +104,9 @@ export interface AgentConfig {
    * model). `undefined` summarizes on the conversation's own provider.
    */
   compactionProvider?: import("@/apps/agent/services/providers").ProviderConfig;
-  /** Allow read-only file tools to read files outside the workspace. */
-  allowOutsideWorkspace?: boolean;
+  /** How far outside the project the file tools may reach:
+   *  `workspace` | `read` | `full` (Settings → Tools → File access). */
+  workspaceAccess?: "workspace" | "read" | "full";
   /**
    * Advertise the `chapter` tool so the agent can name the parts of a long turn
    * (Settings → Preferences → Transcript). The same value gates the chapter

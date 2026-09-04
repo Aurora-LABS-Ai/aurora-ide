@@ -1,0 +1,131 @@
+/* ═══ Direct image — the reply IS the picture ═══════════════════════════════
+ *
+ * Card 01 of the placeholder probe (DOCS/PLAN/chat-mode-design.md): no frame,
+ * no label. The box takes the aspect the picture will have (`style` sets
+ * `aspect-ratio`), the silk placeholder fills it while the provider works,
+ * and the picture fades in over the silk when it lands. The shape never
+ * changes, so the transcript never jumps.
+ *
+ * See `components/conversation/DirectImage.tsx`.
+ */
+
+.agw-direct-image {
+  position: relative;
+  width: 100%;
+  /* Wide enough to read, never wider than a paragraph of the reply would be.
+     A landscape picture at full column width dominated the transcript; a
+     square at 420px sits like a figure in an article. */
+  max-width: min(100%, 420px);
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
+  /* The silk is black at its edges; under a rounded corner a surface colour
+     would rim the box. Black is the only truthful backing here. */
+  background: #000;
+}
+
+.agw-direct-image-silk {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.agw-direct-image-btn {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  line-height: 0;
+  cursor: zoom-in;
+  /* Hidden until painted; `data-ready` on the box flips it. The fade is the
+     crossfade: the silk is still drawn underneath for its duration. */
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+
+.agw-direct-image[data-ready] .agw-direct-image-btn {
+  opacity: 1;
+}
+
+.agw-direct-image-btn:focus-visible {
+  outline: none;
+}
+
+.agw-direct-image-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.12s ease;
+}
+
+/* Feedback on the picture itself — there is no frame to recolour. */
+.agw-direct-image-btn:hover .agw-direct-image-img,
+.agw-direct-image-btn:focus-visible .agw-direct-image-img {
+  filter: brightness(1.06);
+}
+
+/* Bottom-right, on the picture, only once there is a picture. Same words and
+   glyph as the tool card's link so the two paths read as one feature. */
+.agw-direct-image-canvas {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: rgba(0, 0, 0, 0.55);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.agw-direct-image:hover .agw-direct-image-canvas,
+.agw-direct-image-canvas:focus-visible {
+  opacity: 1;
+  outline: none;
+}
+
+.agw-direct-image-canvas:hover,
+.agw-direct-image-canvas:focus-visible {
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+}
+
+/* A failure keeps the hole's shape and says why in it. Not a frame, not a
+   broken-image glyph — the same words the Canvas uses for a picture it knows
+   the name of but cannot show. */
+.agw-direct-image-failed {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.agw-direct-image-failed strong {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}

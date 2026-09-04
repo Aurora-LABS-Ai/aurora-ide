@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aspectRatioOfSize,
   canEditWith,
   editUrl,
   generationUrl,
+  imageModelFromSelection,
+  imageModelSelection,
   imageProviderReady,
+  isImageModelSelection,
   normalizeImageProviders,
   type ImageModel,
   type ImageProvider,
@@ -128,5 +132,38 @@ describe("reading the stored list back", () => {
     expect(normalizeImageProviders(undefined)).toEqual([]);
     expect(normalizeImageProviders("[]")).toEqual([]);
     expect(normalizeImageProviders([null, 3, "x"])).toEqual([]);
+  });
+});
+
+describe("a conversation pinned to an image model", () => {
+  const imgProvider = provider({
+    id: "img-abc",
+    models: [model({ id: "img-abc:gpt-image-1", providerId: "img-abc", modelKey: "gpt-image-1" })],
+  });
+
+  it("is told apart from a language pin by the provider id alone", () => {
+    expect(isImageModelSelection("img-abc:gpt-image-1")).toBe(true);
+    expect(isImageModelSelection("openai:gpt-5")).toBe(false);
+    expect(isImageModelSelection(null)).toBe(false);
+  });
+
+  it("resolves to the provider and model the pin names", () => {
+    const hit = imageModelFromSelection("img-abc:gpt-image-1", [imgProvider]);
+    expect(hit?.provider.id).toBe("img-abc");
+    expect(hit?.model.modelKey).toBe("gpt-image-1");
+    expect(imageModelSelection(hit!.model)).toBe("img-abc:gpt-image-1");
+  });
+
+  it("is null when the provider or the model is gone", () => {
+    expect(imageModelFromSelection("img-abc:other", [imgProvider])).toBeNull();
+    expect(imageModelFromSelection("img-zzz:gpt-image-1", [imgProvider])).toBeNull();
+    expect(imageModelFromSelection("openai:gpt-image-1", [imgProvider])).toBeNull();
+  });
+
+  it("reserves the picture's shape from its size, square when unsaid", () => {
+    expect(aspectRatioOfSize("1536x1024")).toBe("1536 / 1024");
+    expect(aspectRatioOfSize("1024×1536")).toBe("1024 / 1536");
+    expect(aspectRatioOfSize(undefined)).toBe("1 / 1");
+    expect(aspectRatioOfSize("auto")).toBe("1 / 1");
   });
 });

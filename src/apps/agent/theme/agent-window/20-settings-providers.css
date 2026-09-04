@@ -773,3 +773,115 @@
   font-size: var(--agw-fs-label);
 }
 
+/* ── Test / Discover, and what they found ──────────────────────────────────
+   Inline under the fields: the card is already open, and the verdict is
+   something to act on (add the models it lists), not a readout to glance at. */
+.agw-img-probe {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0 14px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-img-probe-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.agw-img-probe-note {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-img-probe-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+}
+.agw-img-probe-verdict > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.agw-img-probe-verdict[data-tone="good"] > svg {
+  color: var(--agw-added);
+}
+.agw-img-probe-verdict[data-tone="bad"] {
+  color: var(--agw-removed);
+}
+.agw-img-probe-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.agw-img-probe-url {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  word-break: break-all;
+}
+
+/* One row per model the provider listed: id, how Aurora knows it is an image
+   model, and Add — or "Added" once it is. */
+.agw-img-probe-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+}
+.agw-img-probe-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+}
+.agw-img-probe-list li + li {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-img-probe-list .agw-prov-key {
+  color: var(--agw-text);
+}
+.agw-img-probe-how {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-img-probe-have {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+.agw-img-probe-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.agw-img-probe-add:hover,
+.agw-img-probe-add:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+  background: var(--agw-hover-paint);
+}
+

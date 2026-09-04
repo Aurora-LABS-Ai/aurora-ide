@@ -32,6 +32,7 @@ import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
+  applyBuildRoster,
   applyChatShortlist,
   normalizeThreadModelSelection,
   pinnedThreadModel,
@@ -49,6 +50,10 @@ import {
   type FastPreferences,
 } from "@/apps/agent/lib/model/cursor-fast";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import {
+  imageProviderReady,
+  isImageModelSelection,
+} from "@/apps/agent/services/providers/image-providers";
 import {
   cursorFastAvailable,
   resolveCursorFast,
@@ -69,6 +74,14 @@ interface RichOption {
   /** ms epoch for "recently added" sort (0 when unknown). */
   createdAt: number;
   sortOrder: number;
+  /**
+   * An IMAGE model (Aurora Chat only). Picking it makes the conversation a
+   * picture-making one: the reply to every message is a generated image, no
+   * language model in between. It has no reasoning, no tools, no vision, and
+   * reads no history — the row says so with one glyph rather than three
+   * missing ones.
+   */
+  image?: boolean;
 }
 
 const MENU_EST_HEIGHT = 420;
@@ -495,9 +508,15 @@ export const ModelSelector: React.FC<{
   // ways of working on a project and Aurora Chat has none.
   const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
   const chatShortlist = useSettingsStore((s) => s.chatModelShortlist);
+  const imageProviders = useSettingsStore((s) => s.imageProviders);
   const selectedModel = useMemo(() => {
     const normalized = normalizeThreadModelSelection(pinned ?? defaultModel, models);
-    return chatSurface ? applyChatShortlist(normalized, chatShortlist, models) : normalized;
+    // Build shows — and runs on — a language model even when the shared default
+    // is a picture-making one picked over in Chat. Same call the send path
+    // makes, so the pill cannot promise a model the turn will not use.
+    return chatSurface
+      ? applyChatShortlist(normalized, chatShortlist, models)
+      : applyBuildRoster(normalized, models);
   }, [pinned, defaultModel, models, chatSurface, chatShortlist]);
 
   // Threads created before Cursor's stable model rows can still carry a wire
@@ -506,7 +525,13 @@ export const ModelSelector: React.FC<{
   useEffect(() => {
     if (forThread && pinned && selectedModel !== pinned) {
       void setThreadModel(forThread, selectedModel);
-    } else if (!pinned && selectedModel !== defaultModel) {
+    } else if (
+      !pinned &&
+      selectedModel !== defaultModel &&
+      // Never persist Build's substitution for an image default — merely
+      // opening Build would otherwise throw away the model Chat is set to.
+      !isImageModelSelection(defaultModel)
+    ) {
       setSelectedModel(selectedModel);
     }
   }, [forThread, pinned, selectedModel, defaultModel, setThreadModel, setSelectedModel]);
@@ -582,7 +607,7 @@ export const ModelSelector: React.FC<{
       chatSurface && chatShortlist.length > 0
         ? canonical.filter((o) => chatShortlist.includes(`${o.providerId}:${o.model}`))
         : canonical;
-    return offered.map((o) => {
+    const language = offered.map((o): RichOption => {
       const m = models.find(
         (mm) => mm.providerId === o.providerId && mm.modelKey === o.model,
       );
@@ -604,7 +629,29 @@ export const ModelSelector: React.FC<{
         sortOrder: m?.sortOrder ?? 0,
       };
     });
-  }, [providers, models, chatSurface, chatShortlist]);
+    if (!chatSurface) return language;
+    // Aurora Chat also offers image models, from providers that are ready to
+    // be used. They are not on the shortlist — that is ticked on the language
+    // provider page — so they are appended whole, each provider its own group.
+    // Build never sees them: an agent turn cannot be run by an image model.
+    const pictures = imageProviders
+      .filter(imageProviderReady)
+      .flatMap((provider) =>
+        provider.models.map((m, index): RichOption => ({
+          providerId: provider.id,
+          providerName: provider.name,
+          model: m.modelKey,
+          label: m.label?.trim() || m.modelKey,
+          id: m.id,
+          vision: false,
+          tools: false,
+          createdAt: 0,
+          sortOrder: index,
+          image: true,
+        })),
+      );
+    return [...language, ...pictures];
+  }, [providers, models, chatSurface, chatShortlist, imageProviders]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -915,6 +962,14 @@ export const ModelSelector: React.FC<{
          * means. `shield` is the glyph the settings nav already uses for Tools,
          * so one concept keeps one icon. */}
         <span className="agw-model-controls">
+          {opt.image && (
+            <AgentIcon
+              name="image"
+              size={13}
+              title="Makes pictures. Replies with an image; reads no history."
+              className="agw-model-cap"
+            />
+          )}
           {opt.vision && (
             <AgentIcon
               name="eye"

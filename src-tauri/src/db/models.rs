@@ -225,6 +225,11 @@ pub struct LLMProvider {
     pub id: String,
     pub name: String,
     pub nickname: Option<String>,
+    /// A line the user wrote about this provider — what it is for, what the
+    /// account is, anything the name does not say. Shown under the title on
+    /// the provider card. Capped at 150 characters (v25). `None` shows nothing.
+    #[serde(default)]
+    pub description: Option<String>,
     pub base_url: String,
     pub api_key: String,
     pub model: String,

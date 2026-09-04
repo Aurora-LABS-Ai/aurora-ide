@@ -265,6 +265,16 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [24])?;
             Ok(())
         }
+        25 => {
+            // Migration from v24 to v25: add `description` to `llm_providers`
+            // — a line the user writes about a provider, shown under its
+            // title. Nullable; NULL shows nothing, so every existing row is
+            // unchanged.
+            migration_v25(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [25])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -318,6 +328,20 @@ fn migration_v24(conn: &Connection) -> DbResult<()> {
             "ALTER TABLE provider_models ADD COLUMN provider_type TEXT",
             [],
         )?;
+    }
+    Ok(())
+}
+
+/// v25: the provider description. Same PRAGMA sniff as its neighbours, so a
+/// database where a fresh install already created the column is a no-op.
+fn migration_v25(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(llm_providers)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "description") {
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN description TEXT", [])?;
     }
     Ok(())
 }

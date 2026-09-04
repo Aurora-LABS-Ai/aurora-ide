@@ -306,6 +306,41 @@
   border-top: 1px solid var(--agw-border);
 }
 
+/* "Add provider" asking which kind. Takes the button's place, at the button's
+   height, so the foot does not jump; two pills that read as one decision. */
+.agw-prov-kind {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+.agw-prov-kind-label {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-prov-kind-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.agw-prov-kind-btn:hover,
+.agw-prov-kind-btn:focus-visible {
+  outline: none;
+  border-color: var(--agw-border-strong);
+  background: var(--agw-hover-paint);
+}
+
 /* Remove-provider control (detail footer). */
 /* Footer, below both cards. `.agw-prov-detail` supplies the gap, so these add
    only their own rule — a margin here on top of the gap reads as a stray band
@@ -492,6 +527,90 @@
 .agw-prov-detail-sub {
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
+}
+
+/* The line under the title — what the provider is FOR. Read state, an
+   "add" affordance when empty, and an in-place editor, all the same height
+   so switching between them never moves the switch on the right.
+   See `settings/ProviderDescription.tsx`. */
+.agw-prov-desc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 20px;
+  margin-top: 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-prov-desc-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The pencil is there when you look for it, not before. */
+.agw-prov-desc-edit,
+.agw-prov-desc-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background-color 0.12s ease,
+    opacity 0.12s ease;
+}
+.agw-prov-desc-edit {
+  flex-shrink: 0;
+  opacity: 0;
+}
+.agw-prov-desc:hover .agw-prov-desc-edit,
+.agw-prov-desc-edit:focus-visible {
+  opacity: 1;
+}
+.agw-prov-desc-edit:hover,
+.agw-prov-desc-edit:focus-visible,
+.agw-prov-desc-add:hover,
+.agw-prov-desc-add:focus-visible {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+  outline: none;
+}
+.agw-prov-desc-input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-composer-surface);
+  color: var(--agw-text);
+  font: inherit;
+  line-height: 1.3;
+}
+.agw-prov-desc-input:focus {
+  border-color: var(--agw-accent);
+  outline: none;
+}
+.agw-prov-desc-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-prov-desc-count {
+  flex-shrink: 0;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-desc-count[data-full] {
+  color: var(--agw-warning);
 }
 .agw-prov-models-count {
   margin-left: 4px;

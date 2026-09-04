@@ -91,7 +91,34 @@ export type TimelineEvent =
    * `attempt` is the try that FAILED (1-based), so the one now running is
    * `attempt + 1`.
    */
-  | { kind: "reconnect"; id: string; attempt: number; maxAttempts: number };
+  | { kind: "reconnect"; id: string; attempt: number; maxAttempts: number }
+  /**
+   * A picture made DIRECTLY — the conversation's model is an image model, so
+   * the reply is the picture and nothing else. `pending` is the live hole the
+   * silk placeholder fills at the requested aspect; `ready` carries the stored
+   * asset (the reload path emits this from a persisted `ContentBlock::Image`);
+   * `failed` keeps the hole's shape and says why. Model-CALLED pictures are
+   * not this — they are tool calls, and render as tool cards.
+   */
+  | DirectImageEvent;
+
+export interface DirectImageEvent {
+  kind: "image";
+  id: string;
+  status: "pending" | "ready" | "failed";
+  /** Reserved shape while pending; the real one once ready. */
+  width: number;
+  height: number;
+  prompt?: string | null;
+  model?: string | null;
+  /** Set once `ready`. */
+  asset?: string;
+  path?: string;
+  mediaType?: string;
+  artifactId?: string | null;
+  /** Set once `failed`. */
+  error?: string;
+}
 
 export type TimelineRow =
   | { type: "thinking"; id: string; text: string; startedAt?: number; durationMs?: number }
@@ -110,6 +137,7 @@ export type TimelineRow =
     }
   | { type: "notice"; id: string; text: string }
   | { type: "reconnect"; id: string; attempt: number; maxAttempts: number }
+  | { type: "image"; id: string; image: DirectImageEvent }
   /** A `chapter` call — the agent naming the part of the work it is starting.
    *  `at` is when it was announced; the span it covers is closed by the next
    *  chapter, or by the end of the turn. */
@@ -412,6 +440,19 @@ export function textOf(tl: TimelineEvent[], kind: "content" | "thinking"): strin
   let out = "";
   for (const e of tl) if (e.kind === kind) out += e.text;
   return out;
+}
+
+/**
+ * Replace the direct-image event `id` in place. The hole the placeholder
+ * reserved is the same row the picture lands in, which is what makes the
+ * arrival a crossfade and not a layout jump.
+ */
+export function settleImageEvent(
+  tl: TimelineEvent[],
+  id: string,
+  patch: (event: DirectImageEvent) => DirectImageEvent,
+): TimelineEvent[] {
+  return tl.map((e) => (e.kind === "image" && e.id === id ? patch(e) : e));
 }
 
 export function upsertToolEvent(tl: TimelineEvent[], call: ToolCall): TimelineEvent[] {
@@ -881,6 +922,8 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
           startedAt: e.startedAt,
           durationMs: e.durationMs,
         });
+      } else if (e.kind === "image") {
+        rows.push({ type: "image", id: e.id, image: e });
       } else {
         rows.push({ type: "content", id: e.id, text: trimFillerEdges(e.text) });
       }

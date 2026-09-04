@@ -1425,6 +1425,14 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             // off"). Sending it would both waste tokens and teach the model to
             // imitate Aurora's own voice back at us.
             ContentBlock::Notice { .. } => {}
+            // A directly made picture: one line of text. Anthropic rejects
+            // image blocks in assistant turns, and the model needs the name,
+            // not the pixels, to refer to it.
+            ContentBlock::Image { .. } => {
+                if let Some(line) = block.image_as_text() {
+                    arr.push(json!({ "type": "text", "text": line }));
+                }
+            }
         }
     }
     Value::Array(arr)
@@ -2541,6 +2549,9 @@ pub(crate) fn collect_text(blocks: &[ContentBlock]) -> String {
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(text.clone()),
+            // A directly made picture is text to every provider: its one-line
+            // description, so the model can name it, never its pixels.
+            ContentBlock::Image { .. } => b.image_as_text(),
             _ => None,
         })
         .collect::<Vec<_>>()

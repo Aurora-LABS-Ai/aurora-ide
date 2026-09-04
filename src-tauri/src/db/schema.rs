@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 24;
+pub const SCHEMA_VERSION: i32 = 25;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -208,6 +208,7 @@ fn create_llm_providers_table(conn: &Connection) -> DbResult<()> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             nickname TEXT,
+            description TEXT,             -- a line the user wrote about the provider (<= 150 chars, v25)
             base_url TEXT NOT NULL,
             api_key TEXT NOT NULL DEFAULT '',
             model TEXT NOT NULL,

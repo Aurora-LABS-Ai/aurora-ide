@@ -32,6 +32,7 @@ import type {
 import type { ToolCallRequest, TokenUsage } from "@/kernel/services/providers/types";
 import type { AgentCallbacks, AgentConfig } from "@/apps/agent/services/runtime/agent-service.types";
 import type { AgentExecutionMode } from "@/apps/agent/services/runtime/agent-execution-mode";
+import type { ImageProvider } from "@/apps/agent/services/providers/image-providers";
 import type {
   AttachedPromptChip,
   AttachedSelectedElement,
@@ -234,6 +235,13 @@ export interface AgentChatRequest {
   attachedSelectedElements?: AttachedSelectedElement[] | null;
   /** Exact composer pills retained for transcript replay after reopening. */
   attachedPromptChips?: AttachedPromptChip[] | null;
+  /**
+   * The image providers `generate_image` may use this turn (Rust
+   * `image_providers`). The rows are sent as stored — the wire shape IS the
+   * settings shape, field for field — and only on Aurora Chat turns; the Rust
+   * driver ignores them in every other mode.
+   */
+  imageProviders: ImageProvider[];
 }
 
 /**
@@ -669,6 +677,13 @@ export class AgentRuntimeClient {
         input.attachedPromptChips && input.attachedPromptChips.length > 0
           ? input.attachedPromptChips
           : null,
+      // Only a chat turn carries them: the tool is not in the project modes'
+      // roster, and there is no reason to put API keys on a request that
+      // cannot use them.
+      imageProviders:
+        config.executionMode === "chat" && Array.isArray(config.imageProviders)
+          ? config.imageProviders
+          : [],
     };
   }
 

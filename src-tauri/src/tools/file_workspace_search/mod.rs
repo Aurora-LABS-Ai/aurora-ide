@@ -82,6 +82,10 @@ pub mod move_path;
 /// Internal: the parallel batch reader, reused by `file_read`'s array
 /// form. Not registered as a standalone tool.
 pub mod multi_file_read;
+/// Internal: reading the path argument out of a mutating tool's input, and
+/// naming what actually arrived when it isn't a usable string. Shared by every
+/// tool in this bucket that writes.
+pub mod path_argument;
 pub mod path_recovery;
 /// Internal: per-session read-before-edit guard state.
 pub mod read_tracker;

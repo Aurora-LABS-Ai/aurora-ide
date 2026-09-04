@@ -57,6 +57,8 @@ import {
 } from "@/apps/agent/services/runtime/token-service";
 import { runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
+import { imageModelFromSelection } from "@/apps/agent/services/providers/image-providers";
+import { runDirectImageTurn } from "./direct-image-turn";
 import {
   refinePathsConfigured,
   replySuggestionsReady,
@@ -70,6 +72,7 @@ import {
   parseSpawnResult,
   useAgentBackgroundStore,
 } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
+import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import {
   composerImages,
   composerKey,
@@ -459,6 +462,20 @@ Open in the user's Files panel right now. Filenames only — read one with file_
 
 ${rows.join("\n")}
 </open_files>`;
+}
+
+/**
+ * `/image` — the user has prioritised a picture. This goes to the SELECTED
+ * model, never around it: the model reads the request and runs
+ * `generate_image`, which lets it catch a prompt that would waste forty
+ * seconds and a paid call before the call is made. The design notes record
+ * that a direct-to-API `/image` was proposed and overruled for this reason.
+ */
+function buildImageRequest(requested: boolean): string | null {
+  if (!requested) return null;
+  return `<image_request>
+The user attached /image: they want a picture made of this message, and that comes before any other reply. Reply in a sentence at most, then call generate_image with a prompt written out from what they said. If what they wrote is too thin to draw from (a bare noun, no subject or setting), offer one fuller prompt in one or two lines and ask before spending the call. Otherwise do not ask; make it.
+</image_request>`;
 }
 
 /** Soft nudge toward the `/`-selected MCP servers (their tools are already available). */
@@ -967,6 +984,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         if (steeringRules) blocks.push(steeringRules);
         const steeringMcp = buildMcpDirective(steeringSelection.mcpServerNames);
         if (steeringMcp) blocks.push(steeringMcp);
+        const steeringImage = buildImageRequest(steeringSelection.imageRequested);
+        if (steeringImage) blocks.push(steeringImage);
         if (steeringSelection.explicitSkillKeys.length > 0) {
           try {
             const s = useSettingsStore.getState();
@@ -1103,6 +1122,27 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       executionMode,
       target?.projectRoot ?? store.projectRoot,
     );
+
+    // The conversation's model IS an image model: the reply is a picture, made
+    // by one call, with none of the language-model machinery below (no context
+    // blocks, no tools, no stream). Decided here, after the pin is resolved and
+    // before the live turn opens, so the two paths share everything up to the
+    // point they genuinely differ. The staged `/` chips were consumed above
+    // and are not forwarded — an image model cannot read a rule.
+    const directImage = imageModelFromSelection(modelSelection, settings.imageProviders);
+    if (directImage) {
+      await runDirectImageTurn({
+        threadId,
+        prompt: content,
+        provider: directImage.provider,
+        model: directImage.model,
+        modelSelection,
+        seed: target?.seed,
+        projectRoot,
+        executionMode,
+      });
+      return;
+    }
 
     // Open a LIVE turn keyed to this thread. Streaming targets `liveTurns[id]`,
     // so navigating away mid-turn doesn't drop the in-flight work — it keeps
@@ -1385,6 +1425,17 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       }
     };
 
+    // `generate_image` lands its picture on the Canvas from the Rust side, so
+    // the artifact store has not seen it. Re-read the bundle on success (an
+    // error result is a sentinel string, never a marker) so the card's "Open in
+    // Canvas" finds the entry and the dock's Canvas tab lists it without a
+    // reload. Fire-and-forget: the tool already succeeded.
+    const captureCanvasWrite = (tc: ToolCallRequest, result: string) => {
+      if (tc.function.name !== "generate_image") return;
+      if (result.trimStart().startsWith("[error]")) return;
+      void useAgentArtifactStore.getState().absorbRuntimeWrite(threadId);
+    };
+
     // The checklist is NOT mirrored from tool-call arguments any more. Rust
     // emits `agent_todo_write` after every todo tool call and
     // `useAgentTaskStore` subscribes to it, so `todo_update` and `todo_write`
@@ -1430,6 +1481,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       commandSelection.ruleFilenames,
     );
     const mcpBlock = buildMcpDirective(commandSelection.mcpServerNames);
+    const imageBlock = buildImageRequest(commandSelection.imageRequested);
 
     // Standing `.aurora/*.md` project rules — capped, with `/`-attached rules
     // excluded since they already ride verbatim above. They go to the SYSTEM
@@ -1486,7 +1538,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // team policy, the mode) are in the system prompt — putting them here
     // meant a copy of the project rules in every message's saved context.
     const ideContext =
-      [openFilesBlock, selectionBlock, ruleBlock, mcpBlock]
+      [openFilesBlock, selectionBlock, ruleBlock, mcpBlock, imageBlock]
         .filter(Boolean)
         .join("\n\n") || null;
 
@@ -1566,6 +1618,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       transcriptChapters: settings.transcriptChapters,
       browserTools: settings.browserTools,
       deferTools: settings.deferTools,
+      // Aurora Chat's `generate_image` reads these on the Rust side. Read per
+      // turn, like every other setting here, so a provider added or fixed in
+      // Settings is usable from the very next message.
+      imageProviders: executionMode === "chat" ? settings.imageProviders : undefined,
       // From the CONVERSATION, never from `deepResearchNext`. That setting only
       // decides what a new chat is born with; an open chat carries its own
       // answer, and reading the setting here would let flipping it change a
@@ -1695,6 +1751,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           },
           onToolExecutionComplete: (tc, result) => {
             captureBackgroundProcess(tc, result);
+            captureCanvasWrite(tc, result);
             setToolResult(tc, result, settleToolDuration(tc.id));
           },
           onToolExecutionError: (tc, error) =>

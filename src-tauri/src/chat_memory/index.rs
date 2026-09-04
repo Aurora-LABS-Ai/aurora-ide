@@ -61,12 +61,20 @@ fn clamp(text: &str, limit: usize) -> String {
 fn message_text(blocks: &[ContentBlock]) -> String {
     let mut out = String::new();
     for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(text);
+        // A directly made picture is worth finding again by its prompt ("the
+        // aurora picture we made"); its one-line description is prose.
+        let text = match block {
+            ContentBlock::Text { text } => text.clone(),
+            ContentBlock::Image { .. } => match block.image_as_text() {
+                Some(line) => line,
+                None => continue,
+            },
+            _ => continue,
+        };
+        if !out.is_empty() {
+            out.push('\n');
         }
+        out.push_str(&text);
     }
     out.trim().to_string()
 }

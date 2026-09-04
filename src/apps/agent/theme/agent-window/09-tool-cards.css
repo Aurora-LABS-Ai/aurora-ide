@@ -419,6 +419,32 @@
   /* Letterbox fill behind a `contain`-fitted shot — matches the button frame. */
   background: var(--agw-surface);
 }
+/* A picture the agent MADE also lives on the Canvas, so it stacks a way there
+   under the thumbnail. Same quiet treatment as `.agw-canvas-launch-open`: text
+   that takes the accent on hover, no second frame. */
+.agw-tool-shot[data-made="true"] {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.agw-tool-shot-canvas {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.agw-tool-shot-canvas:hover,
+.agw-tool-shot-canvas:focus-visible {
+  outline: none;
+  color: var(--agw-accent);
+}
 .agw-diff-added {
   background: var(--agw-added-surface);
   color: var(--agw-text);

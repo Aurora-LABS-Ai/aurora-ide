@@ -47,6 +47,10 @@ import {
   type PromptCommandKind,
 } from "@/apps/agent/adapters/prompt-commands";
 import { composerCommands, useAgentCommandStore } from "@/apps/agent/store/composer/useAgentCommandStore";
+import {
+  imageProviderReady,
+  isImageModelSelection,
+} from "@/apps/agent/services/providers/image-providers";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import {
@@ -111,11 +115,12 @@ const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
 /** `/` directive trigger: at line start or after whitespace, word/dash query. */
 const SLASH_RE = /(^|\s)\/([\w-]{0,48})$/;
 
-/** Lucide-ish glyph per command kind (skills / rules / MCP). */
-const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "refine"> = {
+/** Lucide-ish glyph per command kind (skills / rules / MCP / image). */
+const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "image" | "refine"> = {
   skill: "book",
   rule: "shield",
   mcp: "plug",
+  image: "image",
   action: "refine",
 };
 
@@ -129,6 +134,8 @@ const COMMAND_ICON_PATHS: Record<PromptCommandKind, string> = {
     '<path d="M12 3 19 5.7v5.5c0 4.55-3 7.6-7 8.9-4-1.3-7-4.35-7-8.9V5.7z"/><path d="M9.1 11.9l2.1 2.1 3.7-3.9"/>',
   mcp:
     '<path d="M9 2.75v3.75M15 2.75v3.75"/><path d="M6.75 6.5h10.5v3.25a5.25 5.25 0 0 1-10.5 0z"/><path d="M12 15v6.25"/>',
+  image:
+    '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M3.5 16.2l4.6-4.4 3.6 3.4 3.1-2.6 5.7 4.6"/><circle cx="15.6" cy="9.1" r="1.7"/>',
   action:
     '<path d="m12 3 1.55 4.7L18.5 9.25l-4.95 1.55L12 15.5l-1.55-4.7L5.5 9.25l4.95-1.55z"/><path d="m19 14 .7 2.1 2.1.7-2.1.7L19 19.6l-.7-2.1-2.1-.7 2.1-.7z"/><path d="m5 15 .55 1.65 1.65.55-1.65.55L5 19.4l-.55-1.65-1.65-.55 1.65-.55z"/>',
 };
@@ -352,9 +359,18 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // row (there are no browser tools on this side). The default placeholder goes
   // too — it advertised "@ for files" in a mode with no files to reach.
   const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  // An image model as the conversation's model turns the box into a prompt
+  // field: what you type IS the picture, and nothing before it is read. The
+  // placeholder is where that is said, because it is the one place you are
+  // looking when it matters.
+  const pictureModel = chatSurface && isImageModelSelection(composerModel);
   const placeholder =
     placeholderProp ??
-    (chatSurface ? "Message Aurora" : "Message Aurora — / for skills, @ for files");
+    (pictureModel
+      ? "Describe the picture — only this message is sent"
+      : chatSurface
+        ? "Message Aurora"
+        : "Message Aurora — / for skills, @ for files");
   // Everything this composer stages before send — images, `/` directives — is
   // filed under its own key, so a second composer in the side panel can't
   // consume what was staged here (or vice versa).
@@ -545,13 +561,22 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     [removeCommandAt, stageKey],
   );
 
+  // `/image` is offered only where it can do something: on the chat surface
+  // (Build mode registers no `generate_image`) with at least one image
+  // provider that is switched on, addressed and keyed. Otherwise the pill
+  // would send a request the model can only apologise for.
+  const canMakeImages = useSettingsStore(
+    (s) => chatSurface && s.imageProviders.some(imageProviderReady),
+  );
   const commandResults = useMemo(() => {
     if (!slash) return [];
-    const available = onActionCommand
-      ? commandIndex
-      : commandIndex.filter((command) => command.kind !== "action");
+    const available = commandIndex.filter(
+      (command) =>
+        (command.kind !== "action" || Boolean(onActionCommand)) &&
+        (command.kind !== "image" || canMakeImages),
+    );
     return rankCommands(available, slash.query, 8);
-  }, [slash, commandIndex, onActionCommand]);
+  }, [slash, commandIndex, onActionCommand, canMakeImages]);
 
   const syncEmpty = () => {
     const el = editorRef.current;
@@ -1114,7 +1139,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         {
           id: "actions",
           label: "Actions",
-          hint: chatSurface ? "Skills and MCP commands" : "Skills, rules and MCP commands",
+          hint: chatSurface
+            ? "Skills, MCP and /image"
+            : "Skills, rules and MCP commands",
           icon: "slash" as const,
           run: () => openPicker("/"),
         },

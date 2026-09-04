@@ -219,6 +219,13 @@ fn build_messages(messages: &[ConversationMessage], supports_vision: bool) -> Ve
                         "input": input,
                     }));
                 }
+                // A directly made picture is described in one line; the
+                // pixels never ride in an assistant turn.
+                ContentBlock::Image { .. } => {
+                    if let Some(line) = block.image_as_text() {
+                        content_parts.push(json!({ "type": "text", "text": line }));
+                    }
+                }
                 // Compaction markers and notices are Aurora's own transcript
                 // furniture and are never sent.
                 ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}

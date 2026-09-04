@@ -41,6 +41,7 @@ import {
 } from "@/apps/agent/services/providers/opencode";
 import { groupProviders, isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
 import { ImageProvidersSection } from "@/apps/agent/settings/ImageProvidersSection";
+import { AddProviderChooser, type ProviderKind } from "@/apps/agent/settings/AddProviderChooser";
 import {
   loadPinnedProviders,
   loadProviderGroupsOpen,
@@ -63,6 +64,7 @@ import {
 import { isModalProvider } from "@/apps/agent/services/providers/modal";
 import { ModalWorkspaceCard } from "./ModalWorkspaceCard";
 import { ProviderAvatar } from "./ProviderAvatar";
+import { ProviderDescription } from "./ProviderDescription";
 import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
@@ -1558,6 +1560,11 @@ const ProviderDetail: React.FC<{
           <div className="agw-prov-detail-titles">
             <div className="agw-prov-detail-name">{provider.nickname || provider.name}</div>
             <div className="agw-prov-detail-sub">{provider.providerType ?? "custom"}</div>
+            <ProviderDescription
+              providerName={provider.nickname || provider.name}
+              value={provider.description}
+              onChange={(description) => updateProvider(provider.id, { description })}
+            />
           </div>
           <AgwSwitch
             checked={provider.enabled}
@@ -1865,6 +1872,7 @@ export const ProvidersSettings: React.FC = () => {
   const models = useSettingsStore((s) => s.models);
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const addCustomProvider = useSettingsStore((s) => s.addCustomProvider);
+  const addImageProvider = useSettingsStore((s) => s.addImageProvider);
   const updateModel = useSettingsStore((s) => s.updateModel);
 
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -2008,6 +2016,32 @@ export const ProvidersSettings: React.FC = () => {
       enabled: true,
     });
     setActiveId(id);
+  };
+
+  // The image provider the user just added, so its card opens itself in the
+  // section below instead of landing as one more collapsed row.
+  const [revealImageProviderId, setRevealImageProviderId] = useState<string | null>(null);
+  const addByKind = (kind: ProviderKind) => {
+    switch (kind) {
+      case "language-model":
+        addProvider();
+        return;
+      case "image":
+        setRevealImageProviderId(
+          addImageProvider({
+            name: "New image provider",
+            baseUrl: "",
+            apiFormat: "openai-images",
+            responseShape: "url",
+            enabled: true,
+          }),
+        );
+        return;
+      default: {
+        const unhandled: never = kind;
+        throw new Error(`Unknown provider kind: ${String(unhandled)}`);
+      }
+    }
   };
 
   return (
@@ -2180,9 +2214,7 @@ export const ProvidersSettings: React.FC = () => {
           </LayoutGroup>
         )}
         <div className="agw-prov-list-foot">
-          <AgwButton variant="primary" icon="plus" onClick={addProvider}>
-            Add provider
-          </AgwButton>
+          <AddProviderChooser offersImage={chatSurface} onAdd={addByKind} />
         </div>
       </aside>
 
@@ -2202,9 +2234,7 @@ export const ProvidersSettings: React.FC = () => {
             <div className="agw-prov-detail agw-prov-detail-empty">
               <AgentIcon name="providers" size={24} style={{ color: "var(--agw-text-subtle)" }} />
               <div>No providers yet.</div>
-              <AgwButton variant="primary" icon="plus" onClick={addProvider}>
-                Add provider
-              </AgwButton>
+              <AddProviderChooser offersImage={chatSurface} onAdd={addByKind} />
             </div>
           )}
 
@@ -2213,7 +2243,7 @@ export const ProvidersSettings: React.FC = () => {
               came to this pane to see. Collapsed until there is one, so on the
               common path it is a single quiet row rather than a wall of empty
               fields. */}
-          {chatSurface && <ImageProvidersSection />}
+          {chatSurface && <ImageProvidersSection revealProviderId={revealImageProviderId} />}
         </div>
       </section>
     </div>

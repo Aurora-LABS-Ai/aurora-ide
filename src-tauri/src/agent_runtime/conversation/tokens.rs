@@ -162,6 +162,12 @@ pub(super) fn estimate_message_tokens(
                 // so counting them would inflate the context ring against
                 // tokens that are never sent.
             }
+            ContentBlock::Image { .. } => {
+                // The provider sees the one-line description, never the pixels.
+                if let Some(line) = block.image_as_text() {
+                    total = total.saturating_add(estimate_text_tokens(&line));
+                }
+            }
         }
     }
     total

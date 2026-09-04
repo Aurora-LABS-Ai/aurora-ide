@@ -102,7 +102,8 @@ export interface AttachedSelectedElement {
  * turn's ideContext.
  */
 export interface AttachedCommandChip {
-  kind: "skill" | "rule" | "mcp";
+  /** `image` is Aurora Chat's `/image` — "make a picture of this message". */
+  kind: "skill" | "rule" | "mcp" | "image";
   title: string;
 }
 
@@ -114,7 +115,7 @@ export interface AttachedPromptChip {
    *  `value` holds the CSS selector. (A fresh turn's picks travel as
    *  `attachedSelectedElements` instead — this kind exists because the queued
    *  path has exactly one chip channel through the Rust runtime.) */
-  kind: "file" | "folder" | "skill" | "rule" | "mcp" | "terminal" | "element";
+  kind: "file" | "folder" | "skill" | "rule" | "mcp" | "image" | "terminal" | "element";
   title: string;
   /** Serialized file reference (`rel` for @ picker, absolute for OS picks). */
   value?: string | null;

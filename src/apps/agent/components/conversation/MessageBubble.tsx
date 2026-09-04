@@ -30,6 +30,7 @@ import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal"
 import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
 import { ChapterHeading } from "@/apps/agent/components/conversation/ChapterHeading";
 import { CompactionCard } from "@/apps/agent/components/conversation/CompactionCard";
+import { DirectImage } from "@/apps/agent/components/conversation/DirectImage";
 import { NoticeCard } from "@/apps/agent/components/conversation/NoticeCard";
 import { ReconnectCard } from "@/apps/agent/components/conversation/ReconnectCard";
 import {
@@ -49,10 +50,14 @@ import type {
 } from "@/apps/agent/services/threads/thread-service";
 
 /** Glyph per `/`-directive kind, mirroring the composer's command chips. */
-const COMMAND_CHIP_ICON: Record<AttachedCommandChip["kind"], "book" | "shield" | "plug"> = {
+const COMMAND_CHIP_ICON: Record<
+  AttachedCommandChip["kind"],
+  "book" | "shield" | "plug" | "image"
+> = {
   skill: "book",
   rule: "shield",
   mcp: "plug",
+  image: "image",
 };
 
 /**
@@ -851,6 +856,11 @@ const AssistantTurn: React.FC<{
       // discarded half-reply was, and is removed when the retry starts — so a
       // recovered connection leaves the transcript looking untouched.
       return <ReconnectCard attempt={row.attempt} maxAttempts={row.maxAttempts} />;
+    }
+    if (row.type === "image") {
+      // The conversation's model is an image model: the reply is the picture.
+      // Frameless (placeholder probe card 01) — see `DirectImage`.
+      return <DirectImage image={row.image} />;
     }
     if (row.type === "compaction") {
       // Compaction fired here mid-turn — render inline so everything the

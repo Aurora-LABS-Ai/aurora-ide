@@ -55,6 +55,10 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   ask_question: "Ask the User",
   present_artifact: "Present on Canvas",
   read_artifact: "Read Canvas Source",
+  // Aurora Chat only. One name for the three ops (generate, edit, list): the
+  // card's own header says which happened, and "Generate Image" over an edit
+  // would contradict it.
+  generate_image: "Make an Image",
   // Browser tools — keep the names short and verb-led so the chat
   // card reads like a human action ("Click Element" instead of
   // "Browser Click"). The legacy auto-title-case produced "Browser

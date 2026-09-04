@@ -139,6 +139,13 @@ export interface AgentConfig {
   browserTools?: boolean;
   /** Hold `mcp_*` / `browser_*` / `team_*` back and advertise `tool_search`. */
   deferTools?: boolean;
+  /**
+   * Aurora Chat: the image providers `generate_image` may use this turn — the
+   * rows from Settings → Providers → Image providers, keys included. Sent per
+   * turn so a provider added mid-conversation works from the next message.
+   * Omitted in the project modes, where the tool is not offered.
+   */
+  imageProviders?: import("@/apps/agent/services/providers/image-providers").ImageProvider[];
   providerConfig?: import("@/apps/agent/services/providers").ProviderConfig;
   systemPrompt?: string;
   temperature?: number;

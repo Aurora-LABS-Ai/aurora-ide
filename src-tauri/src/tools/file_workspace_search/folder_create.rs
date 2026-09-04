@@ -56,10 +56,7 @@ impl ToolExecutor for FolderCreateTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`path` must be a string".into()))?;
+        let path = super::path_argument::require_string(&input, "path", "folder")?;
         let resolved =
             resolve_path_for_create(path, ctx.workspace_root.as_deref(), ctx.workspace_access)?;
         let resolved_str = resolved.to_string_lossy().to_string();

@@ -551,7 +551,8 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys,
+                    description
              FROM llm_providers
              ORDER BY sort_order ASC",
         )?;
@@ -565,6 +566,7 @@ impl<'a> SettingsRepository<'a> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 nickname: row.get(2)?,
+                description: row.get(21)?,
                 base_url: row.get(3)?,
                 api_key: row.get(4)?,
                 model: row.get(5)?,
@@ -603,7 +605,8 @@ impl<'a> SettingsRepository<'a> {
             "SELECT id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
-                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys
+                    default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys,
+                    description
              FROM llm_providers
              WHERE id = ?1",
         )?;
@@ -617,6 +620,7 @@ impl<'a> SettingsRepository<'a> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 nickname: row.get(2)?,
+                description: row.get(21)?,
                 base_url: row.get(3)?,
                 api_key: row.get(4)?,
                 model: row.get(5)?,
@@ -674,14 +678,14 @@ impl<'a> SettingsRepository<'a> {
                 id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                 supports_tool_stream, enabled, is_custom, custom_headers, custom_params,
                 provider_type, default_temperature, default_max_tokens, requires_api_key,
-                sort_order, created_at, updated_at, api_keys
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+                sort_order, created_at, updated_at, api_keys, description
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
             ON CONFLICT(id) DO UPDATE SET
                 name = ?2, nickname = ?3, base_url = ?4, api_key = ?5, model = ?6, context_window = ?7,
                 max_output_tokens = ?8, supports_tool_stream = ?9, enabled = ?10, is_custom = ?11,
                 custom_headers = ?12, custom_params = ?13, provider_type = ?14,
                 default_temperature = ?15, default_max_tokens = ?16, requires_api_key = ?17,
-                sort_order = ?18, updated_at = ?20, api_keys = ?21",
+                sort_order = ?18, updated_at = ?20, api_keys = ?21, description = ?22",
             params![
                 provider.id,
                 provider.name,
@@ -704,6 +708,7 @@ impl<'a> SettingsRepository<'a> {
                 if provider.created_at.is_empty() { &now } else { &provider.created_at },
                 now,
                 api_keys,
+                provider.description,
             ],
         )?;
 

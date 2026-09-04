@@ -63,12 +63,15 @@ export interface CommandSelection {
   explicitSkillKeys: string[];
   ruleFilenames: string[];
   mcpServerNames: string[];
+  /** `/image` was attached: the user wants a picture made of this message. */
+  imageRequested: boolean;
 }
 
 export function buildCommandSelection(commands: PromptCommand[]): CommandSelection {
   const explicitSkillKeys: string[] = [];
   const ruleFilenames: string[] = [];
   const mcpServerNames: string[] = [];
+  let imageRequested = false;
 
   for (const command of commands) {
     if (command.kind === "skill" && command.skillStorageKey) {
@@ -77,8 +80,10 @@ export function buildCommandSelection(commands: PromptCommand[]): CommandSelecti
       ruleFilenames.push(command.ruleFilename);
     } else if (command.kind === "mcp") {
       mcpServerNames.push(command.title);
+    } else if (command.kind === "image") {
+      imageRequested = true;
     }
   }
 
-  return { explicitSkillKeys, ruleFilenames, mcpServerNames };
+  return { explicitSkillKeys, ruleFilenames, mcpServerNames, imageRequested };
 }

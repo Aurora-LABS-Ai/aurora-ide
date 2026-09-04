@@ -205,6 +205,26 @@ const cases: Array<{
     args: '{"selector":"#app","format":',
     activity: { label: 'Capturing "#app"', verb: "Capturing" },
   },
+  // One tool, three acts. An edit's `source` is a conversation asset, not a
+  // file of the user's, so it must never come back as a file target.
+  {
+    tool: "generate_image",
+    args: '{"prompt":"An aurora over mountains","title":',
+    activity: {
+      label: "Making an image of “An aurora over mountains”",
+      verb: "Making an image of",
+    },
+  },
+  {
+    tool: "generate_image",
+    args: '{"op":"edit","source":"001-generated-an-aurora.png","prompt":"add',
+    activity: { label: "Editing 001-generated-an-aurora.png", verb: "Editing" },
+  },
+  {
+    tool: "generate_image",
+    args: '{"op":"list"',
+    activity: { label: "Checking which image models are available" },
+  },
   {
     tool: "browser_get_console_logs",
     args: '{"level":"error","sinceMs":',

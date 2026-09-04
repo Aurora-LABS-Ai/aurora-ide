@@ -141,6 +141,51 @@ export const imageProviderReady = (provider: ImageProvider): boolean =>
   provider.baseUrl.trim().length > 0 &&
   (provider.apiKey ?? "").trim().length > 0;
 
+/**
+ * Every image provider id carries this prefix (`useSettingsStore.addImageProvider`),
+ * so a conversation pin can be told apart from a language-model pin without
+ * consulting either list. `"img-…:gpt-image-1.5"` is a picture-making chat.
+ */
+export const IMAGE_PROVIDER_ID_PREFIX = "img-";
+
+/** Whether a `"providerId:modelKey"` pin names an image model. */
+export const isImageModelSelection = (selection: string | null | undefined): boolean =>
+  typeof selection === "string" && selection.startsWith(IMAGE_PROVIDER_ID_PREFIX);
+
+/** The provider and model a pin names, or `null` when either is gone. */
+export function imageModelFromSelection(
+  selection: string | null | undefined,
+  providers: readonly ImageProvider[],
+): { provider: ImageProvider; model: ImageModel } | null {
+  if (!isImageModelSelection(selection) || !selection) return null;
+  // Split on the FIRST colon only — a model key may carry its own (`name:tag`).
+  const cut = selection.indexOf(":");
+  if (cut < 1) return null;
+  const providerId = selection.slice(0, cut);
+  const modelKey = selection.slice(cut + 1);
+  const provider = providers.find((p) => p.id === providerId);
+  const model = provider?.models.find((m) => m.modelKey === modelKey);
+  return provider && model ? { provider, model } : null;
+}
+
+/** The pin for an image model — the same `"providerId:modelKey"` shape chats use. */
+export const imageModelSelection = (model: ImageModel): string =>
+  `${model.providerId}:${model.modelKey}`;
+
+/**
+ * A `WIDTHxHEIGHT` size as a CSS `aspect-ratio`, so the placeholder can hold
+ * exactly the shape the picture will arrive in. Anything unparseable is square:
+ * the shape most image models default to.
+ */
+export function aspectRatioOfSize(size: string | null | undefined): string {
+  const match = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(size ?? "");
+  if (!match) return "1 / 1";
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!(width > 0) || !(height > 0)) return "1 / 1";
+  return `${width} / ${height}`;
+}
+
 /** Join a base and a path without doubling or dropping the separator. */
 function joinUrl(base: string, path: string): string {
   const left = base.trim().replace(/\/+$/, "");

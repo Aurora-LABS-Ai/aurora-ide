@@ -15,6 +15,7 @@ import type { AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import { CanvasDiagram } from "@/apps/agent/components/canvas/CanvasDiagram";
+import { CanvasImage } from "@/apps/agent/components/canvas/CanvasImage";
 import { CanvasReact } from "@/apps/agent/components/canvas/CanvasReact";
 import { CanvasReport } from "@/apps/agent/components/canvas/CanvasReport";
 import { PlanCanvas } from "@/apps/agent/components/canvas/PlanCanvas";
@@ -26,6 +27,8 @@ const extensionFor = (kind: AgentArtifactKind): string => {
   if (kind === "markdown" || kind === "report") return "md";
   if (kind === "mermaid") return "mmd";
   if (kind === "react") return "tsx";
+  // The source of an image artifact is its record, not its pixels.
+  if (kind === "image") return "json";
   return kind;
 };
 
@@ -41,6 +44,7 @@ const KIND_LABELS: Record<AgentArtifactKind, string> = {
   mermaid: "Diagram",
   react: "Interactive",
   report: "Report",
+  image: "Image",
 };
 
 /** The index row's glyph. Same idea as `KIND_LABELS`: what it is, not what built it. */
@@ -51,6 +55,7 @@ const INDEX_ICONS: Record<AgentArtifactKind, AgentIconName> = {
   mermaid: "workspace-tree",
   react: "layers",
   report: "book-open",
+  image: "image",
 };
 
 interface CanvasPanelProps {
@@ -485,6 +490,13 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ artifactId }) => {
           />
         ) : artifact.kind === "react" ? (
           <CanvasReact
+            key={`${artifact.id}:${version.tag}`}
+            source={version.content}
+            title={artifact.title}
+            refreshKey={refresh}
+          />
+        ) : artifact.kind === "image" ? (
+          <CanvasImage
             key={`${artifact.id}:${version.tag}`}
             source={version.content}
             title={artifact.title}

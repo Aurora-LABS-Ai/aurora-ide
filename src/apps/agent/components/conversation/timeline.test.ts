@@ -14,6 +14,8 @@ import {
   turnWorkedMs,
   formatWorkedDuration,
   finishCompaction,
+  settleImageEvent,
+  type DirectImageEvent,
   type TimelineEvent,
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
@@ -878,5 +880,89 @@ describe("agent-window chapter sections", () => {
     expect(sections).toHaveLength(1);
     expect(sections[0].chapter?.title).toBe("Next");
     expect(sections[0].rows).toEqual([]);
+  });
+});
+
+describe("a picture made directly", () => {
+  const pending: DirectImageEvent = {
+    kind: "image",
+    id: "img-1",
+    status: "pending",
+    width: 1536,
+    height: 1024,
+    prompt: "a lighthouse at dusk",
+    model: "gpt-image-1.5",
+  };
+
+  it("is its own row, and breaks a tool run like any spoken content", () => {
+    const rows = buildRows([pending]);
+    expect(rows).toEqual([{ type: "image", id: "img-1", image: pending }]);
+  });
+
+  /** The hole the placeholder reserved is the row the picture lands in. */
+  it("settles in place, keeping its position and id", () => {
+    const tl: TimelineEvent[] = [
+      { kind: "content", id: "c", text: "before" },
+      pending,
+      { kind: "content", id: "d", text: "after" },
+    ];
+    const next = settleImageEvent(tl, "img-1", (e) => ({
+      ...e,
+      status: "ready",
+      asset: "lighthouse.png",
+      path: "C:/x/lighthouse.png",
+      mediaType: "image/png",
+      artifactId: "art-1",
+    }));
+    expect(next.map((e) => e.id)).toEqual(["c", "img-1", "d"]);
+    const settled = next[1];
+    expect(settled.kind).toBe("image");
+    if (settled.kind === "image") {
+      expect(settled.status).toBe("ready");
+      expect(settled.asset).toBe("lighthouse.png");
+      expect(settled.width).toBe(1536);
+    }
+  });
+
+  it("leaves every other event untouched", () => {
+    const other: TimelineEvent = { kind: "notice", id: "n", text: "x" };
+    const next = settleImageEvent([other, pending], "nope", (e) => ({ ...e, status: "failed" }));
+    expect(next[0]).toBe(other);
+    expect(next[1]).toBe(pending);
+  });
+
+  /** The reload path emits the same shape from a persisted `ContentBlock::Image`. */
+  it("renders a reopened chat's picture from its ordered timeline", () => {
+    const messages: DbMessage[] = [
+      { id: "u1", role: "user", content: "a lighthouse", timestamp: "2026-09-04T10:00:00Z" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "[image lighthouse.png 1536x1024]",
+        timestamp: "2026-09-04T10:00:20Z",
+        tool_calls: [],
+        timeline: [
+          {
+            kind: "image",
+            id: "a1-image-0",
+            status: "ready",
+            asset: "lighthouse.png",
+            path: "C:/x/lighthouse.png",
+            mediaType: "image/png",
+            width: 1536,
+            height: 1024,
+            prompt: "a lighthouse",
+            model: "gpt-image-1.5",
+            artifactId: "art-1",
+          },
+        ],
+      },
+    ];
+    const turns = buildTurns(messages);
+    const reply = turns.find((turn) => turn.role === "assistant");
+    expect(reply).toBeDefined();
+    const rows = buildRows(reply!.events);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type).toBe("image");
   });
 });

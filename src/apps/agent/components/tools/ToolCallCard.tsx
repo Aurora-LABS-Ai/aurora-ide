@@ -525,6 +525,9 @@ function toolIcon(name: string): AgentIconName {
   // else in the window — the dock tab, the rail, the command centre.
   if (lower === "read_artifact" || lower === "present_artifact") return "panel-right";
   if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
+  // Making a picture. Its own mark, because `palette` is a drawn graphic and
+  // `browser-screenshot` is a capture of something that already exists.
+  if (lower === "generate_image") return "image";
   if (lower === "ask_question") return "help";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
   return "diff";

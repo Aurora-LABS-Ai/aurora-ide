@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +48,16 @@ pub enum ArtifactKind {
     /// panel to give it a contents strip and a source list rather than
     /// rendering it as an ordinary document.
     Report,
+    /// One picture the conversation owns — generated, edited, or attached —
+    /// living in its `assets/` folder.
+    ///
+    /// The content is a small JSON record, not the pixels: the asset's file
+    /// name, its absolute path, its dimensions, and where it came from (see
+    /// `tools::image::assets::ImageArtifactContent`). Written by Rust's
+    /// `generate_image`, never by the model, so it has no engine gate and the
+    /// panel renders it from disk. A file that has gone missing is a named
+    /// absence in the panel, not a broken image.
+    Image,
 }
 
 impl ArtifactKind {
@@ -73,6 +82,7 @@ impl ArtifactKind {
             ArtifactKind::Mermaid => "Mermaid",
             ArtifactKind::React => "Canvas",
             ArtifactKind::Report => "Report",
+            ArtifactKind::Image => "Image",
         }
     }
 }
@@ -262,6 +272,21 @@ fn validate_kind_content(kind: ArtifactKind, content: &str) -> Result<(), String
             "Canvas source exceeds the {} KiB single-component limit; split it into several focused canvases",
             MAX_REACT_CONTENT_BYTES / 1024
         )),
+        // The record names a file; a record that does not is a panel with
+        // nothing to open and no way to say which file is missing.
+        ArtifactKind::Image => {
+            let parsed: serde_json::Value = serde_json::from_str(content)
+                .map_err(|error| format!("image artifact content must be JSON: {error}"))?;
+            let names_asset = parsed
+                .get("asset")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|asset| !asset.trim().is_empty());
+            if names_asset {
+                Ok(())
+            } else {
+                Err("image artifact content must name its `asset` file".to_string())
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -332,6 +357,13 @@ fn apply_patches(base: &str, patches: &[ArtifactTextPatch]) -> Result<String, St
     Ok(content)
 }
 
+/// Read a conversation's bundle from a test in another module. Test-only so the
+/// unlocked reader stays private everywhere the lock matters.
+#[cfg(test)]
+pub(crate) fn load_bundle_for_test(store: &SessionStore, thread_id: &str) -> ThreadArtifactBundle {
+    load_bundle_unlocked(store, thread_id).expect("artifact bundle loads")
+}
+
 fn load_bundle_unlocked(
     store: &SessionStore,
     thread_id: &str,
@@ -356,21 +388,27 @@ fn load_bundle_unlocked(
     Ok(bundle)
 }
 
-fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Write the bundle at `store.artifacts_path(thread_id)` through a staged
+/// temp file and a backup of the previous bundle, so a crash mid-write leaves
+/// either the old bundle or the new one, never a torn file.
+///
+/// The temp and backup paths come from the STORE, not from the target's file
+/// name. An earlier version re-derived them by stripping `.artifacts.json` off
+/// the file name and constructing a flat store around the parent directory —
+/// which only ever holds under [`StoreLayout::Flat`]. Under the folder layout
+/// Aurora Chat uses the file is plain `artifacts.json`, the strip failed, and
+/// every `present_artifact` in a chat died with "invalid file name". Phase 4
+/// shipped that and was never watched running; `generate_image`'s tests were.
+///
+/// [`StoreLayout::Flat`]: crate::agent_runtime::session_store::StoreLayout::Flat
+fn replace_file(store: &SessionStore, thread_id: &str, bytes: &[u8]) -> Result<(), String> {
+    let path = store.artifacts_path(thread_id);
     let parent = path
         .parent()
         .ok_or_else(|| "Artifact storage path has no parent directory".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create Artifact Canvas storage: {error}"))?;
 
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Artifact storage path has no valid file name".to_string())?;
-    let thread_id = file_name
-        .strip_suffix(".artifacts.json")
-        .ok_or_else(|| "Artifact storage path has an invalid file name".to_string())?;
-    let store = SessionStore::new(parent.to_path_buf());
     let temp = store.artifacts_temp_path(thread_id);
     let backup = store.artifacts_backup_path(thread_id);
     {
@@ -391,13 +429,13 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("Failed to prepare artifact backup: {error}")),
         }
-        fs::rename(path, &backup)
+        fs::rename(&path, &backup)
             .map_err(|error| format!("Failed to back up Artifact Canvas data: {error}"))?;
     }
 
-    if let Err(error) = fs::rename(&temp, path) {
+    if let Err(error) = fs::rename(&temp, &path) {
         if backup.exists() {
-            let _ = fs::rename(&backup, path);
+            let _ = fs::rename(&backup, &path);
         }
         return Err(format!("Failed to commit Artifact Canvas data: {error}"));
     }
@@ -410,7 +448,7 @@ fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn save_bundle(store: &SessionStore, bundle: &ThreadArtifactBundle) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(bundle)
         .map_err(|error| format!("Failed to encode Artifact Canvas data: {error}"))?;
-    replace_file(&store.artifacts_path(&bundle.thread_id), &bytes)
+    replace_file(store, &bundle.thread_id, &bytes)
 }
 
 /// Copy a conversation's optional Canvas bundle while holding the same lock as
@@ -434,7 +472,10 @@ pub(crate) fn duplicate_thread_artifacts(
     save_bundle(store, &bundle)
 }
 
-fn upsert(
+/// Create or version an artifact. `pub(crate)` for the one in-process writer
+/// besides the command — `generate_image`, which lands every picture it makes
+/// in the Canvas as an [`ArtifactKind::Image`].
+pub(crate) fn upsert(
     store: &SessionStore,
     request: ArtifactUpsertRequest,
 ) -> Result<ThreadArtifactBundle, String> {
@@ -620,13 +661,19 @@ fn select(
     Ok(bundle)
 }
 
+// Every command below routes by the conversation's OWN store. An Aurora Chat
+// conversation lives under `Chats/`, and reading its bundle from the Build
+// store finds nothing — worse, `upsert` refuses with "conversation not saved"
+// for a chat that is saved, just elsewhere. Phase 4 shipped this against
+// `registry.store()` and was never watched running.
+
 #[tauri::command]
 pub fn thread_artifact_list(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
     let _guard = lock_artifacts()?;
-    load_bundle_unlocked(registry.store(), &thread_id)
+    load_bundle_unlocked(registry.store_for_thread(&thread_id), &thread_id)
 }
 
 #[tauri::command]
@@ -634,7 +681,7 @@ pub fn thread_artifact_upsert(
     request: ArtifactUpsertRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
-    upsert(registry.store(), request)
+    upsert(registry.store_for_thread(&request.thread_id), request)
 }
 
 #[tauri::command]
@@ -642,7 +689,7 @@ pub fn thread_artifact_preview_patch(
     request: ArtifactUpsertRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<String, String> {
-    preview_patch(registry.store(), request)
+    preview_patch(registry.store_for_thread(&request.thread_id), request)
 }
 
 #[tauri::command]
@@ -650,7 +697,7 @@ pub fn thread_artifact_select(
     request: ArtifactSelectRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
-    select(registry.store(), request)
+    select(registry.store_for_thread(&request.thread_id), request)
 }
 
 #[cfg(test)]
@@ -750,6 +797,39 @@ mod tests {
         assert_eq!(selected.selected_version_tag.as_deref(), Some("v1"));
         let reloaded = load_bundle_unlocked(&store, "thread-1").unwrap();
         assert_eq!(reloaded.selected_version_tag.as_deref(), Some("v1"));
+    }
+
+    /// Aurora Chat keeps each conversation in its own folder, where the bundle
+    /// is plain `artifacts.json`. The writer used to re-derive its temp and
+    /// backup paths from the file name and refused that one, so no chat could
+    /// ever hold an artifact. Every write — first, second, and a reselect —
+    /// has to land, and the staging files have to be gone afterwards.
+    #[test]
+    fn a_folder_store_conversation_can_hold_artifacts() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_folder(directory.path().join("Chats"));
+        store.ensure_thread("thread-1", None, None).unwrap();
+
+        upsert(&store, request("<h1>First</h1>")).unwrap();
+        let second = upsert(&store, request("<h1>Second</h1>")).unwrap();
+        assert_eq!(second.selected_version_tag.as_deref(), Some("v2"));
+
+        let path = store.artifacts_path("thread-1");
+        assert_eq!(path, directory.path().join("Chats/thread-1/artifacts.json"));
+        assert!(path.exists());
+        assert!(!store.artifacts_temp_path("thread-1").exists());
+        assert!(!store.artifacts_backup_path("thread-1").exists());
+
+        let image = ArtifactUpsertRequest {
+            artifact_id: "image-001-generated-aurora".to_string(),
+            title: "Aurora".to_string(),
+            kind: ArtifactKind::Image,
+            content: Some(r#"{"asset":"001-generated-aurora.png","path":"x"}"#.to_string()),
+            ..request("")
+        };
+        let bundle = upsert(&store, image).unwrap();
+        assert_eq!(bundle.artifacts.len(), 2);
+        assert_eq!(bundle.selected_artifact_id.as_deref(), Some("image-001-generated-aurora"));
     }
 
     #[test]

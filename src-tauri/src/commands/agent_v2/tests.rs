@@ -77,13 +77,14 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         refused += 1;
     }
     // Everything registered was refused except the tools chat mode names.
-    // Three of its seven are native executors today — `auroro_websearch`,
-    // `recall` and `remember`. The rest are frontend-bridged or not built yet.
+    // Four of its seven are native executors today — `auroro_websearch`,
+    // `recall`, `remember` and `generate_image`. The rest are frontend-bridged.
     //
     // Stated as an equation rather than a floor so that giving chat mode
     // another native tool fails HERE and has to be acknowledged, instead of
-    // sliding under a threshold nobody revisits. It has already caught one:
-    // the memory bucket landing took this from 1 to 3.
+    // sliding under a threshold nobody revisits. It has already caught two:
+    // the memory bucket landing took this from 1 to 3, and `generate_image`
+    // took it to 4.
     let named_natives = registry
         .names()
         .iter()
@@ -92,8 +93,8 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         })
         .count();
     assert_eq!(
-        named_natives, 3,
-        "auroro_websearch, recall and remember are the native ones"
+        named_natives, 4,
+        "auroro_websearch, recall, remember and generate_image are the native ones"
     );
     assert_eq!(
         refused,
@@ -544,6 +545,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         context_window: None,
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        image_providers: Vec::new(),
         compaction_threshold_pct: None,
         compaction_summary_budget: None,
         compaction_provider_config: None,
@@ -910,6 +912,35 @@ async fn load_or_create_session_restores_sticky_workspace_scope() {
     );
 }
 
+/// A command handed only a thread id finds the store that owns it, and an
+/// unknown id is Build's — the answer every thread had before chat mode.
+#[test]
+fn store_for_thread_follows_the_conversation_to_its_own_store() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+    registry
+        .chat_store()
+        .ensure_thread("a-chat", Some("chat".into()), None)
+        .expect("chat metadata");
+    registry
+        .store()
+        .ensure_thread("a-build", Some("build".into()), None)
+        .expect("build metadata");
+
+    assert_eq!(
+        registry.store_for_thread("a-chat").dir(),
+        registry.chat_store().dir()
+    );
+    assert_eq!(
+        registry.store_for_thread("a-build").dir(),
+        registry.store().dir()
+    );
+    assert_eq!(
+        registry.store_for_thread("never-saved").dir(),
+        registry.store().dir()
+    );
+}
+
 #[tokio::test]
 async fn later_turn_cannot_move_live_session_to_another_workspace() {
     let api = Arc::new(MockApi::new(vec![
@@ -1107,6 +1138,61 @@ async fn happy_path_emits_events_persists_session_no_tools() {
     let arc = registry.load_or_create_session("thread-A").expect("cached");
     let in_mem = arc.lock().await;
     assert_eq!(in_mem.len(), 2);
+}
+
+/// An Aurora Chat turn hands `generate_image` this conversation's image
+/// providers and the CHAT store — the one whose `assets/` exists. A Build turn
+/// hands it nothing: the tool is not in that roster, and a Build store has
+/// nowhere to land a picture.
+#[tokio::test]
+async fn a_chat_turn_parks_the_image_providers_for_the_tool_and_a_build_turn_does_not() {
+    use crate::tools::image::config::{
+        clear_turn_config, turn_config, ImageApiFormat, ImageProviderConfig, ImageResponseShape,
+    };
+
+    let reply = || TurnScript::Reply {
+        events: vec![],
+        result: Ok(turn_usage(assistant_text_msg("ok"), "end_turn")),
+    };
+    let api = Arc::new(MockApi::new(vec![reply(), reply()]));
+    let factory = Arc::new(MockApiFactory::from_api(api));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+    let driver = TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default()));
+
+    let provider = ImageProviderConfig {
+        id: "p1".into(),
+        name: "a6api".into(),
+        base_url: "https://api.a6api.com/v1".into(),
+        api_key: Some("sk-x".into()),
+        api_format: ImageApiFormat::A6api,
+        generation_path: None,
+        edit_path: None,
+        response_shape: ImageResponseShape::Url,
+        enabled: true,
+        models: vec![],
+    };
+
+    let mut chat = make_request("t-chat", "img-chat-thread", "draw me something");
+    chat.execution_mode = AgentExecutionMode::Chat;
+    chat.image_providers = vec![provider.clone()];
+    driver.run_turn(chat).await.expect("chat turn");
+    let parked = turn_config("img-chat-thread").expect("a chat turn parks its image config");
+    assert_eq!(parked.providers, vec![provider.clone()]);
+    assert_eq!(parked.store.dir(), registry.chat_store().dir());
+    assert!(
+        parked.store.assets_dir("img-chat-thread").is_some(),
+        "the parked store can hold assets"
+    );
+    clear_turn_config("img-chat-thread");
+
+    let mut build = make_request("t-build", "img-build-thread", "hi");
+    build.image_providers = vec![provider];
+    driver.run_turn(build).await.expect("build turn");
+    assert!(
+        turn_config("img-build-thread").is_none(),
+        "a Build turn hands generate_image nothing"
+    );
 }
 
 // ── Test 8 ──────────────────────────────────────────────────────

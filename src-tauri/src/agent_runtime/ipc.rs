@@ -350,6 +350,17 @@ pub struct AgentChatRequest {
     /// persisted with the user message so thread reloads remain faithful.
     #[serde(default)]
     pub attached_prompt_chips: Option<Vec<AttachedPromptChip>>,
+
+    /// The image providers `generate_image` may use this turn — the rows from
+    /// Settings → Providers → Image providers, keys included, sent by the
+    /// frontend on every Aurora Chat turn and ignored in the project modes.
+    ///
+    /// Sent per turn rather than stored in Rust so a provider added
+    /// mid-conversation is usable from the next message, the same way the
+    /// conversation's own `provider_config` is. The turn driver parks them in
+    /// `tools::image::config` keyed by conversation before the turn runs.
+    #[serde(default)]
+    pub image_providers: Vec<crate::tools::image::config::ImageProviderConfig>,
 }
 
 /// One tool entry in [`AgentChatRequest::tools`].
@@ -436,6 +447,7 @@ mod tests {
             context_window: Some(200_000),
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            image_providers: Vec::new(),
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             compaction_provider_config: None,
@@ -601,6 +613,7 @@ mod tests {
             context_window: None,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            image_providers: Vec::new(),
             compaction_threshold_pct: None,
             compaction_summary_budget: None,
             compaction_provider_config: None,

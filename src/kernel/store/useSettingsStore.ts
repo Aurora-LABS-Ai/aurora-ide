@@ -132,6 +132,16 @@ export const GLOBAL_INSTRUCTION_NAME_MAX = 30;
 export const LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID = "default";
 export type { GlobalInstructionProfile };
 
+/** Longest provider description — one line under the title, not a paragraph. */
+export const PROVIDER_DESCRIPTION_MAX = 150;
+
+/** One line, whitespace collapsed, capped — or `undefined` when there is nothing to say. */
+export const normalizeProviderDescription = (value: string | null | undefined): string | undefined => {
+  const line = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!line) return undefined;
+  return Array.from(line).slice(0, PROVIDER_DESCRIPTION_MAX).join("");
+};
+
 const clampProfileName = (name: string): string =>
   name.trim().slice(0, GLOBAL_INSTRUCTION_NAME_MAX);
 
@@ -780,6 +790,12 @@ export interface LLMProvider {
   modelAliases?: Record<string, string>;
   name: string;
   nickname?: string;
+  /**
+   * A line the user wrote about this provider — the account, what it is for,
+   * whatever the name does not say. Shown under the title on its card.
+   * At most `PROVIDER_DESCRIPTION_MAX` characters; empty is "none".
+   */
+  description?: string;
   // `kenari` / `kenari-messages` / `kenari-responses` are ONE provider whose
   // wire format is switchable — kenari serves the same account over OpenAI
   // chat completions, the Anthropic Messages shape, and the Codex Responses
@@ -1092,6 +1108,7 @@ function dbToProvider(db: DbLLMProvider): LLMProvider {
     customHeaders: db.customHeaders || undefined,
     customParams: db.customParams || undefined,
     nickname: db.nickname || undefined,
+    description: normalizeProviderDescription(db.description),
     providerType: db.providerType as LLMProvider['providerType'],
     defaultTemperature: db.defaultTemperature || undefined,
     defaultMaxTokens: db.defaultMaxTokens || undefined,
@@ -1122,6 +1139,7 @@ function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMProvider {
     customHeaders: provider.customHeaders || null,
     customParams: provider.customParams || null,
     nickname: provider.nickname?.trim() || null,
+    description: normalizeProviderDescription(provider.description) ?? null,
     providerType: provider.providerType || null,
     defaultTemperature: provider.defaultTemperature || null,
     defaultMaxTokens: provider.defaultMaxTokens || null,
@@ -1650,6 +1668,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               name: presetProvider.name,
               supportsToolStream: presetProvider.supportsToolStream ?? dbProvider.supportsToolStream,
               nickname: dbProvider.nickname || presetProvider.nickname,
+              // The description is the user's alone — a preset never carries one.
+              description: dbProvider.description,
             };
           }
           return presetProvider;
@@ -2044,6 +2064,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         return {
           ...nextProvider,
           nickname: nextProvider.nickname?.trim() || undefined,
+          description: normalizeProviderDescription(nextProvider.description),
         };
       });
 
@@ -2142,6 +2163,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       id,
       isCustom: true,
       nickname: provider.nickname?.trim() || undefined,
+      description: normalizeProviderDescription(provider.description),
     };
 
     // Seed the models slice from the legacy fields the caller passed.

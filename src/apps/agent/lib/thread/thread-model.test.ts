@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyBuildRoster,
   applyChatShortlist,
   normalizeThreadModelSelection,
   pinnedThreadModel,
@@ -149,6 +150,13 @@ describe("applyChatShortlist", () => {
     expect(applyChatShortlist("other:gamma", [], models)).toBe("other:gamma");
   });
 
+  /** Image models are picked from their own list; the shortlist cannot hold one. */
+  it("leaves a picture-making chat on its image model", () => {
+    expect(
+      applyChatShortlist("img-abc:gpt-image-1.5", ["prov:alpha", "prov:beta"], models),
+    ).toBe("img-abc:gpt-image-1.5");
+  });
+
   /** A pinned model that still exists beats falling back to nothing. */
   it("changes nothing when every shortlisted model is gone", () => {
     expect(applyChatShortlist("other:gamma", ["prov:vanished"], models)).toBe("other:gamma");
@@ -164,5 +172,42 @@ describe("applyChatShortlist", () => {
     expect(applyChatShortlist("other:gamma", ["alpha", "prov:alpha"], models)).toBe(
       "prov:alpha",
     );
+  });
+});
+
+describe("applyBuildRoster", () => {
+  const models = [
+    { providerId: "prov", modelKey: "alpha" },
+    { providerId: "prov", modelKey: "beta" },
+  ];
+
+  /** The overwhelming case: Build's default is already a language model. */
+  it("leaves an ordinary model alone", () => {
+    expect(applyBuildRoster("prov:beta", models)).toBe("prov:beta");
+  });
+
+  /**
+   * The defect this closes. Picking an image model in Chat writes the shared
+   * default, and Build's picker never offers one — so a new Build chat used to
+   * inherit it and fail the turn with "model no longer available".
+   */
+  it("does not let Build inherit a picture-making model", () => {
+    expect(applyBuildRoster("img-abc:gpt-image-1.5", models)).toBe("prov:alpha");
+  });
+
+  /** Same rule as the chat shortlist: no model at all is the worse answer. */
+  it("changes nothing when there is no model to fall back to", () => {
+    expect(applyBuildRoster("img-abc:gpt-image-1.5", [])).toBe("img-abc:gpt-image-1.5");
+  });
+
+  /**
+   * The two surfaces disagree ON PURPOSE about the same string: Chat keeps the
+   * image model, Build substitutes. Pinned here so a later "simplification"
+   * that shares one path between them fails instead of quietly picking a side.
+   */
+  it("disagrees with the chat shortlist about the same selection", () => {
+    const selection = "img-abc:gpt-image-1.5";
+    expect(applyChatShortlist(selection, ["prov:alpha"], models)).toBe(selection);
+    expect(applyBuildRoster(selection, models)).not.toBe(selection);
   });
 });

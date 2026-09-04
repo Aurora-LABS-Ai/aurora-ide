@@ -389,6 +389,17 @@ fn responses_instructions_and_input(
                                 "arguments": input.to_string(),
                             }));
                         }
+                        // A directly made picture: one line, never the pixels
+                        // in an assistant item.
+                        ContentBlock::Image { .. } => {
+                            if let Some(line) = block.image_as_text() {
+                                items.push(json!({
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [{ "type": "output_text", "text": line }],
+                                }));
+                            }
+                        }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Compaction { .. }
                         | ContentBlock::Notice { .. } => {}

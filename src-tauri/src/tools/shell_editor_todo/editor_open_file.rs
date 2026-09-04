@@ -57,13 +57,12 @@ impl ToolExecutor for EditorOpenFileTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`path` must be a string".into()))?;
-        if path.is_empty() {
-            return Err(ToolError::InvalidInput("`path` must not be empty".into()));
-        }
+        // Shares the file bucket's reader so a bad `path` is described the same
+        // way here as it is on every write tool — the shape that arrived, not
+        // just the shape that was wanted. An empty string is caught in there
+        // too, so it reads as missing rather than as a path of length zero.
+        let path =
+            crate::tools::file_workspace_search::path_argument::require_string(&input, "path", "file")?;
 
         let line = input.get("line").and_then(Value::as_u64);
         let column = input.get("column").and_then(Value::as_u64);
@@ -140,6 +139,31 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(matches!(err, ToolError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("Missing required `path`"),
+            "got: {err}"
+        );
+    }
+
+    /// The refusal names what actually arrived. `file_read` takes a list of
+    /// paths, so a model carrying that habit here gets told which tool it is
+    /// talking to rather than a bare sentence about types.
+    #[tokio::test]
+    async fn a_wrong_shape_is_named_in_the_refusal() {
+        let tool = EditorOpenFileTool::new(Arc::new(NoopIdeEventSink));
+        for (input, expected) in [
+            (json!({"path": ["a.rs", "b.rs"]}), "a list of 2 paths"),
+            (json!({"path": 7}), "a number"),
+            // Blank, not absent: this tool has no `affected_paths` to fall back
+            // to, so naming what arrived beats calling it missing.
+            (json!({"path": "  "}), "an empty string"),
+        ] {
+            let err = tool.execute(input.clone(), &ctx()).await.expect_err("must fail");
+            assert!(
+                err.to_string().contains(expected),
+                "{input} should mention {expected}, got: {err}"
+            );
+        }
     }
 
     #[tokio::test]

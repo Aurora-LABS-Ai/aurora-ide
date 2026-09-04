@@ -246,6 +246,36 @@ fn session_to_db_messages_rich(
                             // Defensive — tool results live on Tool
                             // messages, not Assistant. Ignore.
                         }
+                        ContentBlock::Image {
+                            asset,
+                            path,
+                            media_type,
+                            width,
+                            height,
+                            prompt,
+                            model,
+                            artifact,
+                        } => {
+                            // A picture made directly. The transcript renders
+                            // it as the picture; `content` (the copy text)
+                            // gets the same one line a model would read.
+                            if let Some(line) = block.image_as_text() {
+                                push_with_newline(&mut content, &line);
+                            }
+                            timeline.push(serde_json::json!({
+                                "kind": "image",
+                                "id": format!("{message_id}-image-{}", timeline.len()),
+                                "asset": asset,
+                                "path": path,
+                                "mediaType": media_type,
+                                "width": width,
+                                "height": height,
+                                "prompt": prompt,
+                                "model": model,
+                                "artifactId": artifact,
+                                "status": "ready",
+                            }));
+                        }
                         ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {
                             // Compaction markers and runtime notices live on
                             // System messages and are surfaced as their own
@@ -442,6 +472,11 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                                 },
                             });
                         }
+                        ContentBlock::Image { .. } => {
+                            if let Some(line) = block.image_as_text() {
+                                push_with_newline(&mut content, &line);
+                            }
+                        }
                         ContentBlock::ToolResult { .. } => {}
                         ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
                     }
@@ -500,8 +535,16 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
 fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
     let mut out = String::new();
     for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            push_with_newline(&mut out, text);
+        match block {
+            ContentBlock::Text { text } => push_with_newline(&mut out, text),
+            // A directly made picture reads as its one-line description
+            // wherever the transcript is text (export, API view).
+            ContentBlock::Image { .. } => {
+                if let Some(line) = block.image_as_text() {
+                    push_with_newline(&mut out, &line);
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -707,11 +750,7 @@ struct ThreadUsageUpdatedPayload {
 /// is what every existing caller means. The two commands that genuinely cannot
 /// look it up — creating a conversation, and listing them — are told instead.
 fn store_for_thread(registry: &Arc<AgentRegistry>, thread_id: &str) -> Arc<SessionStore> {
-    let chat = registry.chat_store();
-    if chat.exists(thread_id) {
-        return chat.clone();
-    }
-    registry.store().clone()
+    registry.store_for_thread(thread_id).clone()
 }
 
 /// The store for a named surface. `"chat"` is Aurora Chat; anything else,

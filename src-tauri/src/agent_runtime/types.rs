@@ -125,6 +125,65 @@ pub enum ContentBlock {
         /// Unix epoch milliseconds when the notice was raised.
         created_at: i64,
     },
+
+    /// A picture Aurora Chat made DIRECTLY — the conversation's model is an
+    /// image model, so the user's message went to it as the prompt and this is
+    /// the reply. Carried on an [`MessageRole::Assistant`] message.
+    ///
+    /// The transcript renders it as the picture itself (bare, no tool card:
+    /// the user typed the prompt, so there is nothing to label). A language
+    /// model later given this conversation is told about it in ONE LINE of
+    /// text — the file name, the size, the prompt — never handed the pixels in
+    /// an assistant turn, which Anthropic rejects and which would re-upload
+    /// the picture on every request. The bytes live in the conversation's
+    /// `assets/`; `path` is where.
+    ///
+    /// `artifact` is the Canvas entry the picture also landed in, so the
+    /// transcript can offer "Open in Canvas" and the two stay one picture.
+    Image {
+        asset: String,
+        path: String,
+        media_type: String,
+        width: u32,
+        height: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        artifact: Option<String>,
+    },
+}
+
+impl ContentBlock {
+    /// The one line a language model reads for a directly made picture. Prose,
+    /// not a marker: the model learns the picture exists and how to name it in
+    /// a `generate_image` edit, and is never handed pixels in its own turn.
+    #[must_use]
+    pub fn image_as_text(&self) -> Option<String> {
+        let Self::Image {
+            asset,
+            width,
+            height,
+            prompt,
+            model,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut line = format!("[Aurora made the picture {asset} ({width}×{height} px)");
+        if let Some(model) = model.as_deref().filter(|m| !m.is_empty()) {
+            line.push_str(&format!(" with {model}"));
+        }
+        line.push_str(" directly from the user's message");
+        if let Some(prompt) = prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            line.push_str(&format!(": \"{prompt}\""));
+        }
+        line.push_str(". It is in this conversation's assets; to change it, call generate_image \
+with op \"edit\" and that file name as source.]");
+        Some(line)
+    }
 }
 
 /// Token usage attributed to a single assistant turn.

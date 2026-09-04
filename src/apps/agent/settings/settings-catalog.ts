@@ -89,6 +89,11 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
       "temperature",
       "context window",
       "connection test",
+      // Aurora Chat's image providers live on this page too.
+      "image provider",
+      "image model",
+      "generate image",
+      "discover models",
     ],
     fullBleed: true,
   },

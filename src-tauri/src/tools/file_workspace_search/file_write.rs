@@ -82,10 +82,12 @@ impl ToolExecutor for FileWriteTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let path = input
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`path` must be a string".into()))?;
+        // `path` and `affected_paths` name the same file, and the description
+        // orders the second one emitted FIRST — so a model that names the file
+        // once, there, is following the schema as written. `path_argument`
+        // decides what that call meant and says what it assumed.
+        let path_arg = super::path_argument::resolve(&input, "write")?;
+        let path = path_arg.path.as_str();
         let content = input
             .get("content")
             .and_then(Value::as_str)
@@ -222,6 +224,11 @@ impl ToolExecutor for FileWriteTool {
                 if let Some(note) = impact {
                     payload["impact"] = json!(note);
                 }
+                // A repaired path is never silent: the write succeeded, and the
+                // model is told what was assumed so the next call is right.
+                if let Some(note) = path_arg.note {
+                    payload["note"] = json!(note);
+                }
                 Ok(serde_json::to_string(&payload).unwrap())
             }
             Err(err) => Ok(serde_json::to_string(&json!({
@@ -337,6 +344,90 @@ mod tests {
         assert_eq!(keys.first(), Some(&streaming_targets::FIELD));
         assert_eq!(keys.get(1), Some(&"path"));
         assert_eq!(keys.get(2), Some(&"content"));
+    }
+
+    /// The exact call that sent this tool's refusal rate up, lifted verbatim
+    /// from a session on disk. `affected_paths` names the file — because the
+    /// description above orders it emitted FIRST for every call — and `path`
+    /// is simply not there. One file named once is not ambiguous, so the write
+    /// happens, and the result says what was assumed.
+    #[tokio::test]
+    async fn the_one_file_in_affected_paths_is_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let result = tool
+            .execute(
+                serde_json::json!({ "affected_paths": ["tests/__init__.py"], "content": "" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("one file named once is not ambiguous");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["success"], true, "got: {result}");
+        assert_eq!(parsed["path"], "tests/__init__.py");
+        assert!(tmp.path().join("tests/__init__.py").exists());
+        assert!(
+            parsed["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("`path` as a string")),
+            "a repaired call must teach the fix, not just apply it: {result}"
+        );
+    }
+
+    /// A well-formed call is not annotated. The note exists to correct a
+    /// mistake; adding one to 899 of 924 good calls would be noise the model
+    /// pays for on every write.
+    #[tokio::test]
+    async fn a_well_formed_call_carries_no_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let result = tool
+            .execute(
+                serde_json::json!({ "affected_paths": ["a.txt"], "path": "a.txt", "content": "x" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("note").is_none(), "got: {result}");
+    }
+
+    /// Two files named and no `path` is a choice between them, and a write to
+    /// the wrong file is not something a later turn can discover. The refusal
+    /// says what arrived and what to send instead.
+    #[tokio::test]
+    async fn two_files_in_affected_paths_is_refused_not_guessed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let err = tool
+            .execute(
+                serde_json::json!({ "affected_paths": ["a.txt", "b.txt"], "content": "x" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect_err("two candidates must never be chosen between");
+        let message = err.to_string();
+        assert!(message.contains("names 2 files"), "got: {message}");
+        assert!(message.contains("one file per call"), "got: {message}");
+        assert!(!tmp.path().join("a.txt").exists());
+        assert!(!tmp.path().join("b.txt").exists());
+    }
+
+    /// The old message for this was `` `path` must be a string ``, which is
+    /// true and useless: the model sent a list, checked the string it thought
+    /// it sent, and theorised. The shape has to be named.
+    #[tokio::test]
+    async fn a_wrong_shape_is_named_in_the_refusal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let err = tool
+            .execute(
+                serde_json::json!({ "path": 7, "content": "x" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect_err("a number is not a path");
+        assert!(err.to_string().contains("a number"), "got: {err}");
     }
 
     #[tokio::test]

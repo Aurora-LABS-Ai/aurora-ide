@@ -21,7 +21,8 @@
 import React, { useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared";
-import { AgwSelect, AgwSwitch, AgwTextInput } from "@/apps/agent/settings/primitives";
+import { AgwButton, AgwSelect, AgwSwitch, AgwTextInput } from "@/apps/agent/settings/primitives";
+import { ImageProviderProbe } from "@/apps/agent/settings/ImageProviderProbe";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   editUrl,
@@ -166,11 +167,14 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean }> =
   );
 };
 
-const ImageProviderCard: React.FC<{ provider: ImageProvider }> = ({ provider }) => {
+const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: boolean }> = ({
+  provider,
+  initiallyOpen,
+}) => {
   const updateImageProvider = useSettingsStore((s) => s.updateImageProvider);
   const deleteImageProvider = useSettingsStore((s) => s.deleteImageProvider);
   const addImageModel = useSettingsStore((s) => s.addImageModel);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [showKey, setShowKey] = useState(false);
   const [newModel, setNewModel] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -194,7 +198,7 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider }> = ({ provider }) 
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
         >
-          <AgentIcon name="palette" size={15} />
+          <AgentIcon name="image" size={15} />
           <span className="agw-img-card-name">{provider.name}</span>
           <span className="agw-img-card-meta">
             {IMAGE_API_FORMAT_LABELS[provider.apiFormat]}
@@ -313,6 +317,8 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider }> = ({ provider }) 
             </Field>
           </div>
 
+          <ImageProviderProbe provider={provider} />
+
           <div className="agw-prov-models-head">
             <span>Models</span>
           </div>
@@ -335,9 +341,9 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider }> = ({ provider }) 
                 if (e.key === "Enter") addModel();
               }}
             />
-            <button type="button" className="agw-prov-test-btn" onClick={addModel}>
+            <AgwButton icon="plus" disabled={!newModel.trim()} onClick={addModel}>
               Add model
-            </button>
+            </AgwButton>
           </div>
 
           <div className="agw-prov-detail-danger">
@@ -364,10 +370,40 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider }> = ({ provider }) 
   );
 };
 
-export const ImageProvidersSection: React.FC = () => {
+export const ImageProvidersSection: React.FC<{
+  /**
+   * A provider just added from the page's "Add provider" — the section opens
+   * and that card opens with it, so the new row is the thing on screen rather
+   * than one more collapsed line under a collapsed heading.
+   */
+  revealProviderId?: string | null;
+}> = ({ revealProviderId = null }) => {
   const imageProviders = useSettingsStore((s) => s.imageProviders);
   const addImageProvider = useSettingsStore((s) => s.addImageProvider);
   const [open, setOpen] = useState(imageProviders.length > 0);
+  // Adds from inside the section reveal their card the same way.
+  const [addedHere, setAddedHere] = useState<string | null>(null);
+  const reveal = addedHere ?? revealProviderId;
+
+  // Open on a reveal, during render — the documented way to react to a prop
+  // change without an effect and a second paint.
+  const [seenReveal, setSeenReveal] = useState(revealProviderId);
+  if (revealProviderId !== seenReveal) {
+    setSeenReveal(revealProviderId);
+    if (revealProviderId) setOpen(true);
+  }
+
+  const add = () => {
+    setAddedHere(
+      addImageProvider({
+        name: "New image provider",
+        baseUrl: "",
+        apiFormat: "openai-images",
+        responseShape: "url",
+        enabled: true,
+      }),
+    );
+  };
 
   return (
     <section className="agw-img-section">
@@ -398,24 +434,15 @@ export const ImageProvidersSection: React.FC = () => {
             </p>
           )}
           {imageProviders.map((provider) => (
-            <ImageProviderCard key={provider.id} provider={provider} />
+            <ImageProviderCard
+              key={provider.id}
+              provider={provider}
+              initiallyOpen={provider.id === reveal}
+            />
           ))}
-          <button
-            type="button"
-            className="agw-prov-test-btn"
-            onClick={() =>
-              addImageProvider({
-                name: "New image provider",
-                baseUrl: "",
-                apiFormat: "openai-images",
-                responseShape: "url",
-                enabled: true,
-              })
-            }
-          >
-            <AgentIcon name="plus" size={13} />
+          <AgwButton icon="plus" onClick={add}>
             Add image provider
-          </button>
+          </AgwButton>
         </div>
       )}
     </section>

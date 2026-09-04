@@ -62,6 +62,9 @@ pub mod code_intel;
 pub mod design;
 pub mod diagnostics;
 pub mod file_workspace_search;
+/// `generate_image` — Aurora Chat's picture maker. Same arrangement as
+/// [`memory`]: registered here, gated by the chat-mode allow-list.
+pub mod image;
 /// `recall` and `remember` — Aurora Chat's memory. Registered like any other
 /// bucket, and kept out of the project modes by the chat-mode allow-list in
 /// `commands::agent_v2::tool_policy` rather than by not registering it.
@@ -121,7 +124,9 @@ pub mod transcript;
 /// Aurora Chat's. They are registered unconditionally like every other bucket
 /// and kept out of the project modes by the chat-mode allow-list, so this count
 /// is the roster's SIZE and not its per-turn visibility.
-pub const BUILTIN_TOOL_COUNT: usize = 43;
+/// Raised 43 -> 44 by `generate_image`, Aurora Chat's picture maker — the same
+/// arrangement as the memory bucket: always registered, offered only in chat.
+pub const BUILTIN_TOOL_COUNT: usize = 44;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -172,6 +177,7 @@ pub fn register_builtin_tools(
     code_intel::register(&mut staging);
     diagnostics::register(&mut staging);
     memory::register(&mut staging);
+    image::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -250,11 +256,12 @@ mod tests {
             + code_intel::TOOL_NAMES.len()
             + diagnostics::TOOL_NAMES.len()
             + memory::TOOL_NAMES.len()
+            + image::TOOL_NAMES.len()
     }
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 43);
+        assert_eq!(BUILTIN_TOOL_COUNT, 44);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -265,6 +272,7 @@ mod tests {
                 + code_intel::TOOL_NAMES.len()
                 + diagnostics::TOOL_NAMES.len()
                 + memory::TOOL_NAMES.len()
+                + image::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );

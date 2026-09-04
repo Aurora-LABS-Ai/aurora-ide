@@ -92,6 +92,12 @@ export interface ToolImage {
   /** Inline fallback for when the on-disk copy is gone. */
   base64?: string;
   mediaType?: string;
+  /**
+   * The Canvas artifact this picture was placed in. Only `generate_image`
+   * sets it (the marker's `artifact` attribute); a capture or a read file has
+   * no Canvas entry and the card offers nothing to open.
+   */
+  artifactId?: string;
 }
 
 /**
@@ -377,6 +383,7 @@ function parseImageResults(
       name: marker.attrs.name ? unescapeAttr(marker.attrs.name) : undefined,
       base64: marker.body.trim() || undefined,
       mediaType: marker.attrs.media_type,
+      artifactId: marker.attrs.artifact ? unescapeAttr(marker.attrs.artifact) : undefined,
     });
   }
   return out.length > 0 ? out : null;
@@ -794,11 +801,18 @@ export function parseToolResult(
       const [image] = images;
       out.image = image;
       const host = hostOf(image.url);
-      out.summary = host
-        ? `Captured ${host}`
-        : image.name
-          ? baseName(image.name)
-          : "Captured screenshot";
+      // A made picture is not described by its file name — that is Aurora's
+      // sequence number plus a slug of the prompt, and the prompt is already
+      // on the card's header. Where it went is the news. (The marker's
+      // dimensions are the vision-sized copy's, so they are not quoted.)
+      out.summary =
+        name === "generate_image"
+          ? "Saved to Canvas"
+          : host
+            ? `Captured ${host}`
+            : image.name
+              ? baseName(image.name)
+              : "Captured screenshot";
       return out;
     }
   }

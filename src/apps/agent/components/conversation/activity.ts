@@ -91,6 +91,8 @@ const TOOL_GERUND: Record<string, string> = {
   plan_step_update: "Updating the plan",
   ask_question: "Waiting for your answer",
   present_artifact: "Presenting",
+  // The default op. `describeToolActivity` rewords an edit and a list.
+  generate_image: "Making an image of",
   browser_navigate: "Browsing to",
   browser_click: "Clicking",
   browser_fill: "Typing into",
@@ -348,6 +350,12 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
     const title = asStr(args.artifactTitle) || asStr(args.title);
     return title ? `“${clip(title, 40)}”` : null;
   }
+  if (name === "generate_image") {
+    // The title when the model gave one — it is the short form of the prompt —
+    // otherwise the prompt itself, clipped.
+    const subject = asStr(args.title) || asStr(args.prompt);
+    return subject ? `“${clip(subject, 40)}”` : null;
+  }
   return null;
 }
 
@@ -368,6 +376,10 @@ const STREAMED_STRING_KEYS = [
   "level",
   "action",
   "title",
+  // `generate_image`: which act, and what of. The prompt streams first and
+  // is long, so the row reads "Making an image of “…”" for most of the wait.
+  "op",
+  "prompt",
   "processId",
   "requestId",
   "pid",
@@ -484,6 +496,24 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
 
   if (name === "browser_screenshot" && !asStr(args.selector)) {
     return { label: "Capturing the page" };
+  }
+
+  // One tool, three acts, and none of them touches a file of the user's: the
+  // `source` of an edit is a conversation asset, so it must not fall through
+  // to `targetsOf` and wear a file chip. A list is a lookup that makes nothing.
+  if (name === "generate_image") {
+    const op = asStr(args.op);
+    if (op === "list") return { label: "Checking which image models are available" };
+    if (op === "edit") {
+      const source = asStr(args.source);
+      return {
+        label: source ? `Editing ${clip(source, 40)}` : "Editing an image",
+        verb: "Editing",
+      };
+    }
+    const verb = TOOL_GERUND[name];
+    const subject = labelArg(name, args);
+    return { label: subject ? `${verb} ${subject}` : "Making an image", verb };
   }
 
   if (name === "browser_scroll" && !asStr(args.selector) && !asStr(args.direction)) {

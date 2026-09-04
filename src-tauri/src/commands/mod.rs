@@ -29,6 +29,8 @@ pub mod browser;
 pub mod chat;
 /// The Memory page — reading and editing what Aurora remembers about the user.
 pub mod chat_memory;
+pub mod image_direct;
+pub mod image_providers;
 pub mod checkpoints;
 pub mod code_index;
 pub mod codex;

@@ -135,7 +135,8 @@ export type AgentIconName =
   | "refine"
   | "facet"
   | "bolt"
-  | "book-open";
+  | "book-open"
+  | "image";
 
 interface AgentIconProps {
   name: AgentIconName;
@@ -963,6 +964,20 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M5 4.5A1.5 1.5 0 0 0 3.5 6v13A1.5 1.5 0 0 1 5 17.5" />
       <path d="M8 8.5h5.5" pathLength={1} data-part="line" />
       <path d="M8 11.5h5.5" pathLength={1} data-part="line" />
+    </>
+  ),
+
+  // A picture — the frame, a horizon of two hills, and a sun. Used for the
+  // `generate_image` tool and the Canvas's image entries. The sun is the part
+  // that works: it swells while the picture is being made, the way the
+  // screenshot's shutter pupil does. Not `palette` (that is a hand-drawn
+  // graphic) and not `browser-screenshot` (that is a capture of something
+  // that already exists).
+  image: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
+      <path d="M3.5 16.2l4.6-4.4 3.6 3.4 3.1-2.6 5.7 4.6" />
+      <circle cx="15.6" cy="9.1" r="1.7" data-part="pulse" />
     </>
   ),
 

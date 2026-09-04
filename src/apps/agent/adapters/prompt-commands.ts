@@ -24,7 +24,15 @@ import { loadAllSkillCandidates, type SkillDefinition } from "@/apps/agent/servi
 import { loadProjectRules } from "@/apps/agent/services/runtime/context-builder";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 
-export type PromptCommandKind = "skill" | "rule" | "mcp" | "action";
+/**
+ * `image` is Aurora Chat's `/image` — a directive that rides the message as a
+ * chip and tells the SELECTED model the user wants a picture made of what
+ * follows. It never bypasses the model to call an image API directly: the
+ * model reads the request, runs `generate_image`, and can catch a weak prompt
+ * before forty seconds are spent on it. The composer offers it only when the
+ * conversation can actually make pictures (chat surface + an image provider).
+ */
+export type PromptCommandKind = "skill" | "rule" | "mcp" | "image" | "action";
 export type DirectiveCommand = PromptCommand & {
   kind: Exclude<PromptCommandKind, "action">;
 };
@@ -114,6 +122,17 @@ function mapMcpServers(): PromptCommand[] {
     });
 }
 
+/** The one `/image` directive. A constant: nothing about it depends on the project. */
+export const IMAGE_COMMAND: PromptCommand = {
+  key: "image:generate",
+  kind: "image",
+  title: "Image",
+  subtitle: "/image",
+  description: "Ask the model to make a picture of what you type next.",
+  sourceLabel: "Aurora Chat",
+  haystack: "image picture photo illustration generate draw render art img".toLowerCase(),
+};
+
 function mapActionCommands(): PromptCommand[] {
   const compact: PromptCommand = {
     key: "action:compact",
@@ -145,15 +164,25 @@ async function build(root: string | null): Promise<PromptCommand[]> {
     root ? loadProjectRules(root).catch(() => []) : Promise.resolve([]),
   ]);
 
+  // `/image` is in every catalog; the composer hides it where it cannot act
+  // (Build mode has no image tool). Keeping the catalog mode-blind keeps the
+  // per-root cache honest when the surface flips without a root change.
   const commands: PromptCommand[] = [
     ...mapActionCommands(),
+    IMAGE_COMMAND,
     ...rules.map((r) => mapRule(r.filename)),
     ...mapMcpServers(),
     ...skills.map(mapSkill),
   ];
 
-  // Stable order: actions, rules, MCP, then skills — each alphabetical within kind.
-  const order: Record<PromptCommandKind, number> = { action: 0, rule: 1, mcp: 2, skill: 3 };
+  // Stable order: actions, image, rules, MCP, then skills — each alphabetical within kind.
+  const order: Record<PromptCommandKind, number> = {
+    action: 0,
+    image: 1,
+    rule: 2,
+    mcp: 3,
+    skill: 4,
+  };
   commands.sort(
     (a, b) => order[a.kind] - order[b.kind] || a.title.localeCompare(b.title),
   );

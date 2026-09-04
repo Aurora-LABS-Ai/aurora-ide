@@ -194,6 +194,8 @@ export interface DbLLMProvider {
   model: string;
   name: string;
   nickname: string | null;
+  /** A line the user wrote about the provider, shown under its title (<= 150 chars, v25). */
+  description: string | null;
   providerType: string | null;
   requiresApiKey: boolean;
   sortOrder: number;

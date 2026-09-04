@@ -24,6 +24,14 @@ interface AgentArtifactState {
   canvasSource: "plan" | "artifact";
   setCanvasSource: (source: "plan" | "artifact") => void;
   loadThread: (threadId: string) => Promise<ThreadArtifactBundle>;
+  /**
+   * Rust put something on the Canvas without going through `present` — the
+   * `generate_image` tool writes its artifact server-side. Re-read the bundle
+   * and claim the canvas for artifacts, exactly as `present` would have.
+   * Never throws: the tool already succeeded, and a failed re-read is the
+   * panel's to report on its own next load.
+   */
+  absorbRuntimeWrite: (threadId: string) => Promise<void>;
   present: (threadId: string, input: PresentArtifactInput) => Promise<ThreadArtifactBundle>;
   select: (
     threadId: string,
@@ -63,6 +71,21 @@ export const useAgentArtifactStore = create<AgentArtifactState>((set) => ({
         errorsByThread: { ...state.errorsByThread, [threadId]: errorMessage(error) },
       }));
       throw error;
+    }
+  },
+
+  absorbRuntimeWrite: async (threadId) => {
+    try {
+      const bundle = await listThreadArtifacts(threadId);
+      set((state) => ({
+        bundles: { ...state.bundles, [threadId]: bundle },
+        errorsByThread: { ...state.errorsByThread, [threadId]: undefined },
+        canvasSource: "artifact",
+      }));
+    } catch (error) {
+      set((state) => ({
+        errorsByThread: { ...state.errorsByThread, [threadId]: errorMessage(error) },
+      }));
     }
   },
 

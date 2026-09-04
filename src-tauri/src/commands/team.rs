@@ -478,6 +478,16 @@ pub async fn team_get_agent_transcript(
                         is_error: is_error.unwrap_or(false),
                     });
                 }
+                // A directly made picture reads as the one line the model
+                // would see: a teammate's transcript is text.
+                ContentBlock::Image { .. } => {
+                    if let Some(line) = block.image_as_text() {
+                        if !text.is_empty() {
+                            text.push_str("\n\n");
+                        }
+                        text.push_str(&line);
+                    }
+                }
                 // Compaction markers and runtime notices carry no
                 // transcript-visible content for a teammate's turn.
                 ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}

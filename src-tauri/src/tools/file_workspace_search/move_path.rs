@@ -68,14 +68,8 @@ impl ToolExecutor for MovePathTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let old_path = input
-            .get("old_path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`old_path` must be a string".into()))?;
-        let new_path = input
-            .get("new_path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`new_path` must be a string".into()))?;
+        let old_path = super::path_argument::require_string(&input, "old_path", "file or folder")?;
+        let new_path = super::path_argument::require_string(&input, "new_path", "file or folder")?;
 
         // Source may legitimately be missing (graceful success=false), so
         // resolve it with the read variant. Destination must not exist, so

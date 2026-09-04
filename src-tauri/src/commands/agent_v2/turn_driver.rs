@@ -309,6 +309,20 @@ impl<E: EventEmitter> TurnDriver<E> {
             &request.thread_id,
         );
 
+        // 3b. Hand `generate_image` this conversation's image providers and
+        //     the store whose `assets/` its pictures land in. Aurora Chat
+        //     only: the tool is not in the project modes' roster, and a Build
+        //     store has no assets directory to land anything in.
+        if request.execution_mode.is_chat() {
+            crate::tools::image::config::set_turn_config(
+                &thread_id,
+                crate::tools::image::config::ImageTurnConfig {
+                    providers: request.image_providers.clone(),
+                    store: self.registry.store_for(request.execution_mode).clone(),
+                },
+            );
+        }
+
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
         //    every per-turn override the request carries.
         let runtime = with_compaction_model(

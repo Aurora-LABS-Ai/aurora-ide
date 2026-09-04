@@ -681,6 +681,41 @@ describe("images in a result", () => {
     expect(parsed.code).toBeNull();
   });
 
+  // `generate_image` answers with the same marker a capture does, plus the
+  // Canvas entry it landed in. The card reads that attribute for "Open in
+  // Canvas" and says where the picture went rather than what the file is
+  // called — the name is a sequence number and a slug of the prompt the user
+  // can already see on the row.
+  it("carries a made picture's Canvas entry and says it went there", () => {
+    const parsed = parseToolResult(
+      "generate_image",
+      { prompt: "An aurora over mountains" },
+      `${marker(
+        'media_type="image/jpeg" width="768" height="768" ' +
+          'src="C:\\Chats\\t1\\previews\\001-generated-an-aurora.jpg" ' +
+          'name="001-generated-an-aurora.png" artifact="image-001-generated-an-aurora"',
+        "",
+      )}\nGenerated 001-generated-an-aurora.png (1024×1024 px, image/png) with gpt-image-1.5 via a6api in 31s.`,
+    );
+
+    expect(parsed.image?.path).toBe("C:\\Chats\\t1\\previews\\001-generated-an-aurora.jpg");
+    expect(parsed.image?.artifactId).toBe("image-001-generated-an-aurora");
+    expect(parsed.summary).toBe("Saved to Canvas");
+    expect(parsed.code).toBeNull();
+  });
+
+  it("gives a capture no Canvas entry to open", () => {
+    const parsed = parseToolResult(
+      "browser_screenshot",
+      {},
+      `${marker(
+        'media_type="image/jpeg" width="1024" height="640" src="C:\\cache\\shot.jpg"',
+        "",
+      )}\nScreenshot of http://localhost:3001/pricing (1024×640).`,
+    );
+    expect(parsed.image?.artifactId).toBeUndefined();
+  });
+
   // The bug this closes: a PNG named in file_read used to come back as
   // "stream did not contain valid UTF-8". It now returns a marker, and the card
   // has to label it with the file that was read — not with the cache file the

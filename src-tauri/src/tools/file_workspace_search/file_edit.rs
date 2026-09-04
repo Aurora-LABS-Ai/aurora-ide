@@ -144,7 +144,12 @@ impl ToolExecutor for FileEditTool {
 
         // `path` is the DEFAULT file for every edit. It's optional now: a batch
         // whose items each carry their own `path` can omit it (multi-file form).
-        let top_path = input.get("path").and_then(Value::as_str);
+        //
+        // Resolved rather than read: a model that named the file only in
+        // `affected_paths` — which this tool's own description tells it to emit
+        // first, for every call — meant that file. See `path_argument`.
+        let resolved_arg = super::path_argument::resolve(&input, "edit").map_err(with_batch_hint);
+        let top_path = resolved_arg.as_ref().ok().map(|arg| arg.path.as_str());
 
         // Batch form takes priority when present. Accept `edits` (the canonical
         // key) or `replacements` (back-compat alias). Each item may name its own
@@ -163,8 +168,11 @@ impl ToolExecutor for FileEditTool {
             return self.run_batch(arr, top_path, ctx).await;
         }
 
-        // Single-edit form — requires a top-level `path`.
-        let path = top_path.ok_or_else(|| ToolError::InvalidInput(missing_path_message(&input)))?;
+        // Single-edit form — requires a top-level `path`. The batch form above
+        // is allowed to run without one, so the refusal lands here, carrying
+        // whichever sentence names what actually arrived.
+        let path_arg = resolved_arg?;
+        let path = path_arg.path.as_str();
         let resolved =
             resolve_path_with_access(path, ctx.workspace_root.as_deref(), ctx.workspace_access)?;
         let resolved_str = resolved.to_string_lossy().to_string();
@@ -781,11 +789,18 @@ fn render_multi_success(
 /// The batch form is handled in [`FileEditTool::run_batch`] (which accepts a
 /// per-item `path`), so this is only reached when the caller passed
 /// `old_string`/`new_string` at the top level without naming a file.
-fn missing_path_message(_input: &Value) -> String {
-    "Missing required `path` (string): the file to edit. For the single-edit form pass \
-     path + old_string + new_string; for a batch pass `edits` (each item may carry its own \
-     `path` to edit multiple files in one call)."
-        .into()
+/// `file_edit` is the one write tool that CAN touch several files in a single
+/// call — through `edits`, never through a list in `path`. "I meant to change
+/// three files" is the most common thing sitting behind a refused `path`, so
+/// every one of its refusals points at the form that does it.
+fn with_batch_hint(err: ToolError) -> ToolError {
+    match err {
+        ToolError::InvalidInput(message) => ToolError::InvalidInput(format!(
+            "{message} To change several files in one call, pass `edits` — an array whose items \
+             each carry their own `path`."
+        )),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -973,12 +988,76 @@ mod tests {
         assert_eq!(parsed["success"], true);
     }
 
-    #[test]
-    fn missing_path_single_form_is_helpful() {
-        let input = serde_json::json!({ "old_string": "x", "new_string": "y" });
-        let msg = missing_path_message(&input);
+    /// The single-edit form still refuses a call with no file in it, and the
+    /// refusal names both ways out: `path`, or the batch form.
+    #[tokio::test]
+    async fn missing_path_single_form_is_helpful() {
+        let ctx = ctx_for(None);
+        let err = FileEditTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        ))
+        .execute(
+            serde_json::json!({ "old_string": "x", "new_string": "y" }),
+            &ctx,
+        )
+        .await
+        .expect_err("a call naming no file must be refused");
+        let msg = err.to_string();
         assert!(msg.contains("the file to edit"), "got: {msg}");
-        assert!(msg.contains("edit multiple files"), "got: {msg}");
+        assert!(msg.contains("`edits`"), "got: {msg}");
+    }
+
+    /// The trap this tool sets for itself: its own description orders
+    /// `affected_paths` emitted FIRST for every call, so a model that names the
+    /// file there and stops has followed the schema as written. One file named
+    /// once is not ambiguous, so the edit runs.
+    #[tokio::test]
+    async fn the_one_file_in_affected_paths_is_the_file_to_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, "alpha\n").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        mark_read(&ctx, &file);
+
+        let out = FileEditTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        ))
+        .execute(
+            serde_json::json!({
+                "affected_paths": ["a.txt"],
+                "old_string": "alpha",
+                "new_string": "omega",
+            }),
+            &ctx,
+        )
+        .await
+        .expect("one file named once is not ambiguous");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "got: {out}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "omega\n");
+    }
+
+    /// Two files named and no `path` is a choice, and this tool does not make
+    /// it — it points at the form that expresses the intent properly.
+    #[tokio::test]
+    async fn two_files_in_affected_paths_is_refused_with_the_batch_form() {
+        let ctx = ctx_for(None);
+        let err = FileEditTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        ))
+        .execute(
+            serde_json::json!({
+                "affected_paths": ["a.txt", "b.txt"],
+                "old_string": "x",
+                "new_string": "y",
+            }),
+            &ctx,
+        )
+        .await
+        .expect_err("two candidates must never be chosen between");
+        let msg = err.to_string();
+        assert!(msg.contains("names 2 files"), "got: {msg}");
+        assert!(msg.contains("`edits`"), "got: {msg}");
     }
 
     #[tokio::test]

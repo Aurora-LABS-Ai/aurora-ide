@@ -24,6 +24,7 @@ import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
 import { splitCursorVariant } from "@/apps/agent/services/providers/cursor-variants";
+import { isImageModelSelection } from "@/apps/agent/services/providers/image-providers";
 import { endpointIdentity, isEndpointModelKey } from "@/apps/agent/services/providers/modal";
 
 /** The chat-store shape this module reads. Structural, so tests can pass a stub. */
@@ -107,6 +108,11 @@ export function applyChatShortlist(
   models: ModelRowIdentity[],
 ): string {
   if (shortlist.length === 0 || shortlist.includes(selection)) return selection;
+  // An image model is picked from its own list, not the shortlist — the
+  // shortlist is ticked on the LANGUAGE provider page and can never contain
+  // one. Filtering it here would silently turn a picture-making chat back into
+  // a talking one the moment a shortlist exists.
+  if (isImageModelSelection(selection)) return selection;
   const exists = (entry: string) => {
     const separator = entry.indexOf(":");
     if (separator < 1) return false;
@@ -115,6 +121,33 @@ export function applyChatShortlist(
     return models.some((m) => m.providerId === providerId && m.modelKey === modelKey);
   };
   return shortlist.find(exists) ?? selection;
+}
+
+/**
+ * Keep Aurora Build on a model that can actually write software.
+ *
+ * One field — `useSettingsStore.selectedModel` — is the default for both
+ * products, and picking a model anywhere writes it. That is what makes the
+ * picker work at all on a fresh conversation, which has no thread of its own to
+ * pin to yet. But Aurora Chat can be pointed at an image model, and Build
+ * cannot run one: its picker never offers them, and a turn that reached one
+ * would fail with "model no longer available" and no way to read why from the
+ * screen.
+ *
+ * So Build substitutes at READ time and the substitution is never written back
+ * (see `resolveThreadModel`). The picture-making default the user chose in Chat
+ * is still there when they go back to Chat; Build simply declines to inherit
+ * it. The alternative — a second stored default per product — is a bigger
+ * change than the problem, and would still have to answer this same question
+ * the first time the two disagree.
+ *
+ * An empty roster changes nothing, for the same reason an empty chat shortlist
+ * does: falling back to no model at all is worse than the model you cannot run.
+ */
+export function applyBuildRoster(selection: string, models: ModelRowIdentity[]): string {
+  if (!isImageModelSelection(selection)) return selection;
+  const first = models[0];
+  return first ? `${first.providerId}:${first.modelKey}` : selection;
 }
 
 /**
@@ -151,10 +184,18 @@ export function resolveThreadModel(threadId: string | null | undefined): string 
   const resolved =
     settings.auroraSurface === "chat"
       ? applyChatShortlist(normalized, settings.chatModelShortlist, settings.models)
-      : normalized;
+      : applyBuildRoster(normalized, settings.models);
   if (pinned && resolved !== pinned && threadId) {
     void chat.setThreadModel(threadId, resolved);
-  } else if (!pinned && resolved !== settings.selectedModel) {
+  } else if (
+    !pinned &&
+    resolved !== settings.selectedModel &&
+    // Build's image bypass is for THIS turn, not a correction to persist.
+    // Writing it back would erase the picture-making model the user chose in
+    // Chat the first time they opened Build — a setting undone by visiting
+    // another screen.
+    !isImageModelSelection(settings.selectedModel)
+  ) {
     settings.setSelectedModel(resolved);
   }
   return resolved;

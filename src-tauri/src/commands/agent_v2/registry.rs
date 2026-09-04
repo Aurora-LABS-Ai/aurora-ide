@@ -160,6 +160,22 @@ impl AgentRegistry {
         }
     }
 
+    /// Which store owns an EXISTING conversation, looked up from disk by id.
+    ///
+    /// For a command that is handed only a thread id — artifacts, rename,
+    /// archive, delete — there is no mode to route on, and asking every caller
+    /// to pass one is how the caller that forgets reads or deletes in the wrong
+    /// store without failing. A chat that is not on disk yet is nobody's; it
+    /// resolves to Build, exactly as every thread did before chat mode existed.
+    #[must_use]
+    pub fn store_for_thread(&self, thread_id: &str) -> &Arc<SessionStore> {
+        if self.chat_store.exists(thread_id) {
+            &self.chat_store
+        } else {
+            &self.store
+        }
+    }
+
     /// Borrow the bridge router so the `agent_post_tool_result`
     /// command can resolve oneshots.
     #[must_use]

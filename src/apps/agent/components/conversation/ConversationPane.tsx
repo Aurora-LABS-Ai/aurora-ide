@@ -191,6 +191,8 @@ export const ConversationPane: React.FC = () => {
   // then snaps back to the real title the instant streaming ends. Opt-out in
   // Settings → Preferences.
   const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
+  /** Aurora Chat: no workspace, so no project-shaped header controls. */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
   const activity = useAgentChatStore((s) =>
     currentThreadId ? s.activityByThread[currentThreadId] : undefined,
   );
@@ -474,8 +476,11 @@ export const ConversationPane: React.FC = () => {
             are absent on the empty screen, while this describes the PROJECT and
             must appear either way. Placing it after the conditional New-chat
             button keeps its distance from the right edge identical in both
-            states, so the glyph never moves under the cursor. */}
-        <CodeIndexStatus />
+            states, so the glyph never moves under the cursor.
+
+            Absent in Aurora Chat, which has no project to index — it was
+            offering to build a code index for a folder the chat cannot read. */}
+        {!chatSurface && <CodeIndexStatus />}
         <button
           type="button"
           className="agw-icon-btn"
@@ -572,9 +577,10 @@ export const ConversationPane: React.FC = () => {
                         <CompactionCard
                           beforeTokens={turn.compaction?.beforeTokens ?? 0}
                           afterTokens={turn.compaction?.afterTokens ?? 0}
-                          running={turn.compaction?.running ?? false}
+                          status={turn.compaction?.status ?? "completed"}
                           startedAt={turn.compaction?.startedAt}
                           durationMs={turn.compaction?.durationMs}
+                          reason={turn.compaction?.reason}
                         />
                       </div>
                     );

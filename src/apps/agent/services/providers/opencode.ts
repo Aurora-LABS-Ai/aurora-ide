@@ -22,10 +22,15 @@
  * ## Why this is a preset and not an integration
  *
  * Unlike Cursor, there was nothing to reverse-engineer. It is an ordinary
- * HTTPS API with a plain `sk-…` bearer key and **no other headers of any
- * kind** — the `x-opencode-*` headers OpenCode's own CLI sends are not
- * required — so an existing Rust adapter drives it and this feature adds no
- * Rust to the request path at all.
+ * HTTPS API with a plain `sk-…` key, so the existing Rust adapters drive it.
+ *
+ * One header of their own IS required: `x-opencode-session`, one stable id
+ * per conversation. This file used to say the `x-opencode-*` headers their CLI
+ * sends were optional, and they were, until OpenCode emailed on 2026-09-03 that
+ * requests from `Aurora/2.0.0` were missing it and would start erroring on
+ * 2026-09-06. The Rust adapters now add it (`apply_opencode_headers` in
+ * `api/provider_kernel_adapter.rs`) on all three wires, using the thread id the
+ * runtime already sends for cache affinity.
  *
  * ## Which surface, and why it is a per-MODEL setting
  *

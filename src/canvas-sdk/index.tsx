@@ -412,6 +412,149 @@ export function Code({ children }: { children: ReactNode }) {
   return <code className="ac-code">{children}</code>;
 }
 
+/* ------------------------------------------------------------- research */
+
+/**
+ * Open a link from inside the sandbox.
+ *
+ * The frame runs on `sandbox="allow-scripts"` — no `allow-popups`, no
+ * `allow-top-navigation` — so an ordinary `<a target="_blank">` is silently
+ * inert. A citation you can click and nothing happens is worse than a citation
+ * that is plainly not a link, so the href is handed to the host, which opens it
+ * in the user's real browser. Same channel the frame already uses to report a
+ * crash (`CanvasReact`'s message listener).
+ */
+function openFromSandbox(href: string): void {
+  try {
+    window.parent.postMessage({ source: "aurora-canvas", type: "open-url", href }, "*");
+  } catch {
+    // A frame with no parent (a test, a preview) simply does not navigate.
+  }
+}
+
+export interface ImageProps {
+  /** Where the picture is. A local asset path or an http(s) URL. */
+  src: string;
+  /**
+   * What the picture SHOWS. Required for the same reason `Stat` requires a
+   * label: a picture nobody can describe is decoration, and a reader who cannot
+   * see it gets nothing at all.
+   */
+  alt: string;
+  /** One line under the picture — what to notice in it. */
+  caption?: string;
+  /** Where it came from: a site, a dataset, the prompt that generated it. */
+  source?: string;
+}
+
+/**
+ * A picture, with its caption and its provenance.
+ *
+ * **A missing file says so.** An image whose source cannot be loaded renders a
+ * named absence carrying the path, never a broken-image glyph and never
+ * nothing: a generated asset can be deleted, and a report that quietly loses a
+ * figure is a report that lies about what it showed.
+ */
+export function Image({ src, alt, caption, source }: ImageProps) {
+  const [failed, setFailed] = useState(false);
+  if (!src) return null;
+  return (
+    <figure className="ac-figure">
+      {failed ? (
+        <div className="ac-figure-missing" role="img" aria-label={`${alt} — file not found`}>
+          <span className="ac-figure-missing-title">File not found</span>
+          <span className="ac-figure-missing-src">{src}</span>
+        </div>
+      ) : (
+        <img
+          className="ac-figure-img"
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {caption || source ? (
+        <figcaption className="ac-figure-cap">
+          {caption ? <span className="ac-figure-caption">{caption}</span> : null}
+          {source ? <span className="ac-figure-source">{source}</span> : null}
+        </figcaption>
+      ) : null}
+    </figure>
+  );
+}
+
+export interface CiteProps {
+  /**
+   * This source's number in this canvas. Supplied rather than counted: the SDK
+   * holds no state between components, and a number that silently renumbered
+   * itself on a re-render would make the same claim point at two sources.
+   */
+  n: number;
+  /** Where the claim came from. */
+  href: string;
+  /** The source's name. Becomes the tooltip and the link's accessible name. */
+  children?: ReactNode;
+}
+
+/**
+ * A numbered citation, inline after the claim it supports.
+ *
+ * `Canvas` and `BarChart` already take a `source` string, which says where a
+ * whole page or chart came from. This is the other half: one specific claim,
+ * one specific source, and a way to go and read it.
+ */
+export function Cite({ n, href, children }: CiteProps) {
+  const label = typeof children === "string" ? children : "";
+  return (
+    <sup className="ac-cite">
+      <button
+        type="button"
+        title={label || href}
+        aria-label={label ? `Source ${n}: ${label}` : `Source ${n}`}
+        onClick={() => openFromSandbox(href)}
+      >
+        [{n}]
+      </button>
+    </sup>
+  );
+}
+
+export interface QuoteProps {
+  /** The passage, in the source's own words. */
+  children: ReactNode;
+  /**
+   * Who or what said it. Required — an unattributed quotation is just text in
+   * a different typeface, and the whole point of pulling it out is that someone
+   * else is answerable for it.
+   */
+  from: string;
+  /** Exactly where: a page, a section, a timestamp. */
+  where?: string;
+  /** The source, if it can be reached. */
+  href?: string;
+}
+
+/** A passage from somewhere else, kept visibly separate from your own prose. */
+export function Quote({ children, from, where, href }: QuoteProps) {
+  if (isEmpty(children)) return null;
+  return (
+    <figure className="ac-quote">
+      <blockquote>{children}</blockquote>
+      <figcaption>
+        {href ? (
+          <button type="button" className="ac-quote-from" onClick={() => openFromSandbox(href)}>
+            {from}
+          </button>
+        ) : (
+          <span className="ac-quote-from">{from}</span>
+        )}
+        {where ? <span className="ac-quote-where">{where}</span> : null}
+      </figcaption>
+    </figure>
+  );
+}
+
 /* ---------------------------------------------------------------- measure */
 
 export interface BarProps {

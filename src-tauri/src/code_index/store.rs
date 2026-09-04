@@ -692,9 +692,10 @@ impl CodeIndex {
         } else if spec.starts_with("../") {
             join_rel(from_dir, spec)
         } else if let Some(rest) = spec.strip_prefix("@/") {
-            // The near-universal tsconfig alias. Aurora itself uses `@/* ->
-            // src/*`; so does most of the ecosystem. Tried as a candidate
-            // only, so a project that means something else simply misses.
+            // The near-universal tsconfig alias, tried as `src/*` first
+            // because that is Aurora's own layout and a common one. It is a
+            // GUESS, and the root-relative form is tried too — see the second
+            // attempt at the end of this function.
             format!("src/{rest}")
         } else if spec.starts_with("crate::") || spec.starts_with("self::") {
             // Rust: crate-root-relative. The crate root is not necessarily the
@@ -762,7 +763,35 @@ impl CodeIndex {
             return None;
         };
 
-        let joined = joined.trim_matches('/');
+        if let Some(id) = self.resolve_joined(joined.trim_matches('/')) {
+            return Some(id);
+        }
+
+        // `@/*` does not always mean `src/*`.
+        //
+        // The other half of the ecosystem maps it at the project ROOT —
+        // `"paths": { "@/*": ["./*"] }`, which is what `create-next-app`
+        // writes when there is no `src/` directory. Guessing `src/` for those
+        // drops EVERY edge in the project, and the failure is silent and total:
+        // `code op:modules` answers `dependencies: 0` across every directory,
+        // which reads as "this code is not wired together" rather than as a
+        // miss. Reported from a live run on a Next.js workspace on 2026-09-04,
+        // where `outline` and `usages` worked — they resolve symbols by name
+        // and never come through here — so only the module graph was wrong.
+        //
+        // Tried second, so a project that genuinely keeps its sources under
+        // `src/` is unaffected: that lookup already returned above.
+        if let Some(rest) = spec.strip_prefix("@/") {
+            return self.resolve_joined(rest.trim_matches('/'));
+        }
+        None
+    }
+
+    /// Match one already-resolved path stem against the indexed files.
+    ///
+    /// Split out so a specifier can offer more than one candidate stem — an
+    /// alias whose meaning depends on a `tsconfig` this index does not read.
+    fn resolve_joined(&self, joined: &str) -> Option<u32> {
         if joined.is_empty() {
             return None;
         }

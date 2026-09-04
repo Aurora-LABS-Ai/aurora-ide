@@ -31,8 +31,10 @@ export const BRAND_KEYS = [
   "codex",
   "cursor",
   "opencode",
+  "commandcode",
   "deepseek",
   "kenari",
+  "modal",
   "zai",
   "zhipu",
   "minimax",
@@ -87,8 +89,10 @@ const BY_ID: Readonly<Record<string, BrandKey>> = {
   codex: "codex",
   cursor: "cursor",
   "opencode-go": "opencode",
+  commandcode: "commandcode",
   deepseek: "deepseek",
   kenari: "kenari",
+  modal: "modal",
   glm: "zai",
   minimax: "minimax",
   fireworks: "fireworks",
@@ -108,6 +112,14 @@ const BY_ID: Readonly<Record<string, BrandKey>> = {
  */
 const DETECT: ReadonlyArray<readonly [BrandKey, readonly string[]]> = [
   ["kenari", ["kenari"]],
+  // Above the vendors for the same reason Modal is: a Command Code row serves
+  // Claude, GPT, GLM and Kimi, and the row belongs to Command Code rather than
+  // to whichever model it resells. Both spellings, because the product is
+  // written with a space and the package without one.
+  ["commandcode", ["commandcode", "command code"]],
+  // Above the vendors: a Modal workspace serves Kimi, GLM and DeepSeek
+  // endpoints, and the row belongs to Modal, not to whichever model it hosts.
+  ["modal", ["modal direct", "modal"]],
   ["openrouter", ["openrouter"]],
   ["azure", ["azure"]],
   ["bedrock", ["bedrock", "amazonaws"]],

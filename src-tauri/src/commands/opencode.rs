@@ -131,8 +131,9 @@ pub async fn opencode_auth_path() -> Result<Option<String>, String> {
 // leaves. That is true of the packaged app as much as the dev server — the
 // webview is still a browser and still enforces CORS.
 //
-// Rust has no such restriction. Note this is the ONLY Rust in the OpenCode
-// provider: the turn itself still runs through `openai_compat.rs` untouched.
+// Rust has no such restriction. The turn itself runs through the ordinary
+// adapters; the one OpenCode-specific piece on that path is the
+// `x-opencode-session` header (`api::provider_kernel_adapter::apply_opencode_headers`).
 
 const GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 

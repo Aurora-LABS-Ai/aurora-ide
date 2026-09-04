@@ -36,6 +36,16 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
    */
   onCompactionCompleted?: (beforeTokens: number, afterTokens: number) => void;
   /**
+   * A compaction request ended without changing context. This is a terminal
+   * state, not a zero-drop success; panels must stop their spinner and keep the
+   * existing context projection.
+   */
+  onCompactionFailed?: (info: {
+    beforeTokens: number;
+    reason: string;
+    cancelled: boolean;
+  }) => void;
+  /**
    * The runtime reported something the user needs to know that did NOT abort
    * the turn — most importantly, that the reply was cut off at the
    * output-token cap.
@@ -114,6 +124,14 @@ export interface AgentConfig {
    * switched together.
    */
   transcriptChapters?: boolean;
+  /**
+   * Aurora Chat: the CONVERSATION was started in deep research.
+   *
+   * Fixed at creation and read from the thread, never from a live setting —
+   * which is what keeps its prompt section byte-identical across every turn
+   * and therefore inside the cached prefix.
+   */
+  deepResearch?: boolean;
   /**
    * Advertise the browser toolset this turn. Sixteen schemas, ~2,800 tokens on
    * every request, so it is switchable — Settings → Agent → Browser control.

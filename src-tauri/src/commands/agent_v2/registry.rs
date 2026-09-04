@@ -62,6 +62,14 @@ pub struct AgentRegistry {
     /// `thread_update_title`) all delegate here so the runtime and
     /// the chat-list view stay byte-for-byte consistent.
     store: Arc<SessionStore>,
+    /// Aurora Chat's conversation store — folder per chat, under
+    /// `paths::chats_dir()`.
+    ///
+    /// A SECOND store rather than a second directory on the first one, because
+    /// the two layouts really are different on disk and every path the runtime
+    /// derives has to come from whichever store owns the conversation. Routed
+    /// per turn by [`AgentRegistry::store_for`].
+    chat_store: Arc<SessionStore>,
 }
 
 impl std::fmt::Debug for AgentRegistry {
@@ -82,6 +90,12 @@ impl AgentRegistry {
     /// first turn actually persists.
     #[must_use]
     pub fn new(api_factory: Arc<dyn ApiFactory>, sessions_dir: PathBuf) -> Self {
+        // The chat store defaults INSIDE `sessions_dir` so a caller that never
+        // names one (every test) still gets a real, self-contained store that
+        // a temp-dir teardown removes. Production overrides it with
+        // `paths::chats_dir()` via `with_chat_dir`, because `<root>/Chats` is
+        // the documented location and `<root>/sessions/Chats` is not.
+        let chat_dir = sessions_dir.join("Chats");
         Self {
             sessions: DashMap::new(),
             queue_slots: DashMap::new(),
@@ -90,7 +104,16 @@ impl AgentRegistry {
             tools: Arc::new(ToolRegistry::new()),
             bridge_router: Arc::new(BridgeRouter::new()),
             store: Arc::new(SessionStore::new(sessions_dir)),
+            chat_store: Arc::new(SessionStore::new_folder(chat_dir)),
         }
+    }
+
+    /// Point Aurora Chat's conversations at `dir`. Production wiring; see
+    /// [`Self::new`] for why the default is not this.
+    #[must_use]
+    pub fn with_chat_dir(mut self, dir: PathBuf) -> Self {
+        self.chat_store = Arc::new(SessionStore::new_folder(dir));
+        self
     }
 
     /// Get-or-create the queued-message slot for a thread. Returns an
@@ -114,6 +137,27 @@ impl AgentRegistry {
     #[must_use]
     pub fn store(&self) -> &Arc<SessionStore> {
         &self.store
+    }
+
+    /// Aurora Chat's conversation store.
+    #[must_use]
+    pub fn chat_store(&self) -> &Arc<SessionStore> {
+        &self.chat_store
+    }
+
+    /// Which store owns a conversation running in `mode`.
+    ///
+    /// This is the routing decision, in one place. Every path a turn touches —
+    /// the JSONL, the metadata, the artifacts, the spill directory — has to
+    /// come from the same store, and picking it per call site is how they end
+    /// up disagreeing.
+    #[must_use]
+    pub fn store_for(&self, mode: AgentExecutionMode) -> &Arc<SessionStore> {
+        if mode.is_chat() {
+            &self.chat_store
+        } else {
+            &self.store
+        }
     }
 
     /// Borrow the bridge router so the `agent_post_tool_result`
@@ -197,6 +241,16 @@ impl AgentRegistry {
         self.store.session_path(thread_id)
     }
 
+    /// [`Self::session_path`] for a conversation running in `mode`.
+    ///
+    /// The bare `session_path` above answers for the project store, which is
+    /// what every existing caller means. This one is for the paths that must
+    /// follow the conversation into `Chats/` instead.
+    #[must_use]
+    pub fn session_path_in(&self, mode: AgentExecutionMode, thread_id: &str) -> PathBuf {
+        self.store_for(mode).session_path(thread_id)
+    }
+
     /// Cache hit, on-disk hit, or fresh empty session — in that order.
     /// `NotFound` is NOT an error: a thread that has never persisted
     /// returns a fresh [`Session`] bound to the same `thread_id`.
@@ -204,11 +258,28 @@ impl AgentRegistry {
         &self,
         thread_id: &str,
     ) -> Result<Arc<Mutex<Session>>, RuntimeError> {
+        self.load_or_create_session_in(AgentExecutionMode::Agent, thread_id)
+    }
+
+    /// [`Self::load_or_create_session`], reading from the store that owns
+    /// conversations in `mode`.
+    ///
+    /// The in-memory `sessions` cache is shared across both stores and keyed by
+    /// thread id alone. That is safe because ids are UUIDs, so a chat and a
+    /// build thread cannot collide — and it is desirable, because the mutex
+    /// per conversation is what serialises its turns, and there must be exactly
+    /// one of those however the conversation is reached.
+    pub fn load_or_create_session_in(
+        &self,
+        mode: AgentExecutionMode,
+        thread_id: &str,
+    ) -> Result<Arc<Mutex<Session>>, RuntimeError> {
+        let store = self.store_for(mode);
         if let Some(existing) = self.sessions.get(thread_id) {
             return Ok(existing.value().clone());
         }
 
-        let path = self.session_path(thread_id);
+        let path = store.session_path(thread_id);
         let mut session = match Session::load_from_path(thread_id, &path) {
             Ok(s) => s,
             Err(RuntimeError::Io(io_err)) if io_err.kind() == std::io::ErrorKind::NotFound => {
@@ -221,7 +292,7 @@ impl AgentRegistry {
         // from its metadata sidecar so a restarted process cannot silently
         // re-home tool execution to whatever workspace the next request sends.
         if session.workspace_root.is_none() {
-            if let Ok(meta) = self.store.load_metadata(thread_id) {
+            if let Ok(meta) = store.load_metadata(thread_id) {
                 session.workspace_root = meta.workspace_root;
             }
         }

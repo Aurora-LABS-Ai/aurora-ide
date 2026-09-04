@@ -100,7 +100,9 @@ impl ToolExecutor for GrepTool {
             .to_string();
 
         // Resolve `path` against the workspace, but tolerate `.`
-        // (the default) by mapping it to the workspace root.
+        // (the default) by mapping it to the workspace root. With no
+        // workspace open there is nothing to resolve against, so the access
+        // setting decides — see the `None` arm.
         let search_path: String = match ctx.workspace_root.as_deref() {
             Some(root) => {
                 let candidate = if raw_path == "." {
@@ -131,7 +133,17 @@ impl ToolExecutor for GrepTool {
                 };
                 candidate.to_string_lossy().to_string()
             }
-            None => raw_path.clone(),
+            None => {
+                // No workspace means no boundary to resolve against, so the
+                // access setting decides alone. A search walks a whole tree,
+                // which the access lattice grants only under Full — the same
+                // predicate the resolver above applies — so `Read` must not
+                // be wider here than it is with a workspace open.
+                if !ctx.workspace_access.searches_outside() {
+                    return Err(super::no_workspace_refusal(&raw_path));
+                }
+                raw_path.clone()
+            }
         };
 
         let request = RipgrepSearchRequest {
@@ -271,5 +283,60 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Invalid search path"));
+    }
+
+    /// With no workspace the access setting decides — the same contract the
+    /// path resolvers enforce. Default access refuses with the one wording
+    /// every tool in the bucket shares, so the model cannot tell which of
+    /// them said no; Full takes the path as written and the search runs.
+    #[tokio::test]
+    async fn a_workspace_less_search_obeys_the_access_setting() {
+        use crate::agent_runtime::tool_executor::WorkspaceAccess;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("note.txt"), "needle\n").unwrap();
+        let dir = tmp.path().to_string_lossy().into_owned();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(GrepTool);
+
+        let refusal = ToolContext {
+            workspace_access: WorkspaceAccess::Workspace,
+            turn_id: "t".into(),
+            tool_call_id: "c".into(),
+            thread_id: "s".into(),
+            workspace_root: None,
+            cancel_token: CancellationToken::new(),
+            spill_dir: None,
+        };
+        let err = tool
+            .execute(json!({ "pattern": "needle", "path": dir }), &refusal)
+            .await
+            .expect_err("no workspace and default access must refuse a search");
+        let ToolError::InvalidInput(message) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(message.contains("No workspace is open"), "{message}");
+        assert!(
+            message.contains("Open a folder"),
+            "must name the first way out: {message}"
+        );
+        assert!(
+            message.contains("Settings"),
+            "must name the access setting: {message}"
+        );
+
+        let mut full = refusal;
+        full.workspace_access = WorkspaceAccess::Full;
+        let out = tool
+            .execute(json!({ "pattern": "needle", "path": dir }), &full)
+            .await
+            .expect("Full takes the search path as written");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{parsed}");
+        assert!(
+            out.contains("note.txt"),
+            "the search must actually have run: {out}"
+        );
     }
 }

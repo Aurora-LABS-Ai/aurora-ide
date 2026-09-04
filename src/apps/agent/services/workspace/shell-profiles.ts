@@ -82,6 +82,21 @@ export const setShellProfileEnabled = (id: string, enabled: boolean): Promise<Sh
 export const verifyShellProfile = (id: string): Promise<ShellProfiles> =>
   auroraInvoke<ShellProfiles>("shell_profiles_verify", { id });
 
+/** One command-line tool found on the PATH the agent's shells run with. */
+export interface FoundTool {
+  name: string;
+  /** Where it resolved. Shown here; the agent is told names only. */
+  path: string;
+}
+
+/**
+ * The well-known command-line tools present on this machine — the same list
+ * the agent receives at the start of every conversation, plus where each one
+ * resolved. Re-scanned on every call.
+ */
+export const getToolInventory = (): Promise<FoundTool[]> =>
+  auroraInvoke<FoundTool[]>("shell_tools_inventory");
+
 /**
  * The shell used when nothing names one — the terminal and diagnostics.
  *

@@ -62,6 +62,15 @@ interface AgentWorkspaceState {
   /** Open (or focus) the details tab for a project folder. */
   openProjectTab: (root: string, title: string) => void;
   /**
+   * Open (or refocus) one saved artifact in its own tab.
+   *
+   * Canvas is the INDEX of what a conversation made; this is one thing off that
+   * index. Keyed by artifact id alone rather than by conversation: an artifact
+   * id is already unique within the conversation that owns it, and the tab
+   * follows the open conversation the way every other dock surface does.
+   */
+  openArtifactTab: (artifactId: string, title: string) => void;
+  /**
    * Open (or refocus) a CONVERSATION in its own dock tab — a second, fully live
    * chat beside the main one, so two models can be watched answering at once
    * instead of switching back and forth between them.
@@ -149,6 +158,18 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           const tabs = exists
             ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
             : [...s.tabs, { id, kind: "project" as const, title, projectRoot: root }];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      openArtifactTab: (artifactId, title) =>
+        set((s) => {
+          const id = `artifact:${artifactId}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? // Re-titled on reopen: an artifact keeps its id across versions
+              // and the model renames one as the work changes shape.
+              s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+            : [...s.tabs, { id, kind: "artifact" as const, title, artifactId }];
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 

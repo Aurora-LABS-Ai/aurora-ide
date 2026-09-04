@@ -153,6 +153,30 @@ impl ReasoningRequest<'static> {
     }
 }
 
+/// Provider-neutral control over whether an advertised tool catalogue may be
+/// used for this invocation.
+///
+/// Compaction deliberately keeps the normal catalogue in its request so the
+/// conversation prefix can remain cache-compatible, but it must never execute
+/// a tool. Making that a wire-level constraint avoids turning one failed
+/// summary into a second full-context request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    None,
+}
+
+impl ToolChoice {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+        }
+    }
+}
+
 /// One model invocation: messages plus tool catalogue plus knobs.
 ///
 /// Borrowed so the runtime can keep ownership of its `Vec<…>`s during
@@ -174,6 +198,10 @@ pub struct ApiRequest<'a> {
     /// means tool-less; the impl decides whether to omit the `tools`
     /// key entirely or send `[]`.
     pub tools: &'a [ToolSchema],
+    /// Whether the model may select one of the advertised tools. Normal agent
+    /// calls use `Auto`; single-shot internal calls such as compaction use
+    /// `None` while retaining schemas for prompt-cache compatibility.
+    pub tool_choice: ToolChoice,
     /// Sampling temperature. `None` lets the impl pick its preset
     /// default (DeepSeek's reasoner, for example, ignores this).
     pub temperature: Option<f32>,
@@ -207,17 +235,6 @@ pub struct ApiRequest<'a> {
     /// requests, tests) simply sends no affinity hint; impls with no such
     /// concept ignore it entirely.
     pub session_key: Option<&'a str>,
-    /// How many messages at the END of `messages` are volatile — rebuilt
-    /// with different bytes on the next request (the IDE-context/checklist
-    /// tail the runtime appends). Zero for a fully stable history.
-    ///
-    /// Prefix-hash caches (OpenAI, DeepSeek) don't care: a changed tail
-    /// only misses its own region. Anthropic's explicit `cache_control`
-    /// breakpoints do: a breakpoint ON a volatile message caches a prefix
-    /// no later request can ever match, so the rolling breakpoint must
-    /// land on the last STABLE message instead. Impls without breakpoints
-    /// ignore this.
-    pub volatile_tail_messages: usize,
 }
 
 /// Schema entry for one tool the model may call.
@@ -494,6 +511,7 @@ mod tests {
                     timestamp: 0,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    aurora_context: None,
                     model: None,
                 },
             })
@@ -515,13 +533,12 @@ mod tests {
             system_prompt: None,
             messages: &[],
             tools: &[],
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 16,
             reasoning: ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
         let result = client.stream(request, tx, cancel).await.expect("ok");
         let event = rx.recv().await.expect("event");
         match event {

@@ -21,7 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::catalog::{Catalog, CatalogEntry, CatalogError};
-use super::command::{AgentArgs, Continuation, ModelsArgs, TasksArgs, ThreadsArgs, WatchArgs};
+use super::command::{
+    AgentArgs, CancelArgs, Continuation, ModelsArgs, TasksArgs, ThreadsArgs, WatchArgs,
+};
 use super::follow::{follow, FollowOutcome, Tail};
 use super::inbox::Inbox;
 use super::list;
@@ -355,6 +357,57 @@ pub fn run_tasks(args: TasksArgs) -> i32 {
 }
 
 // ── resolution ──────────────────────────────────────────────────────────────
+
+/// `aurora cancel`
+pub fn run_cancel(args: CancelArgs) -> i32 {
+    let term = Term::new(args.color.into());
+    let inbox = Inbox::open();
+
+    let id = match resolve_task_id(&inbox, &args.task) {
+        Ok(id) => id,
+        Err(message) => return fail(&term, &message),
+    };
+
+    // Already over. Writing a marker would be harmless — it expires — but
+    // telling the user their task finished is more useful than telling them a
+    // stop request was filed against something that had already stopped.
+    let status = task_status(&inbox, &id, inbox.task_path(&id).exists());
+    if matches!(status, "done" | "failed" | "stopped") {
+        println!(
+            "{} task {id} had already finished ({status})",
+            term.paint(Style::Muted, term.g(glyph::CHECK))
+        );
+        return exit::OK;
+    }
+
+    if let Err(error) = super::cancel::request(&inbox, &id) {
+        return fail(&term, &format!("could not ask for the stop: {error}"));
+    }
+
+    println!(
+        "{} asked Aurora to stop {id}",
+        term.paint(Style::Success, term.g(glyph::CHECK))
+    );
+    // Said plainly because it is the part people get wrong: Stop is not undo,
+    // and a turn inside a long tool call does not end the instant you ask.
+    println!(
+        "{}",
+        term.paint(
+            Style::Muted,
+            "  a turn part-way through a tool ends when that tool returns, and \
+             anything already written stays written"
+        )
+    );
+    exit::OK
+}
+
+/// `aurora mcp` — serve Aurora to another agent over stdio.
+///
+/// Everything this command does lives in [`super::mcp::serve`]; the wrapper is
+/// here so every subcommand is reached the same way.
+pub fn run_mcp() -> i32 {
+    super::mcp::serve::run()
+}
 
 /// Turn `--path` (or its absence) into an absolute directory that exists.
 fn resolve_workspace(path: Option<&Path>) -> Result<PathBuf, String> {

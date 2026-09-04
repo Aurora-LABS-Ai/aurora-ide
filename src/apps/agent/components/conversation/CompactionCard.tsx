@@ -19,6 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { Archive } from "lucide-react";
+import type { CompactionStatus } from "@/apps/agent/components/conversation/timeline";
 
 /** Compact a token count like the context ring does: 1234 → "1.2k". */
 function fmtTokens(n: number): string {
@@ -63,18 +64,22 @@ function useElapsed(startedAt: number | undefined, running: boolean): number | n
 export function CompactionCard({
   beforeTokens,
   afterTokens,
-  running,
+  status,
   startedAt,
   durationMs,
+  reason,
 }: {
   beforeTokens: number;
   afterTokens: number;
-  running: boolean;
+  status: CompactionStatus;
   /** When compaction began, for the live clock. Absent on a restored marker. */
   startedAt?: number;
   /** How long it took, once known. Absent on a restored marker. */
   durationMs?: number;
+  /** Stable diagnostic code; exposed as a title, never presented as success. */
+  reason?: string;
 }) {
+  const running = status === "running";
   const elapsed = useElapsed(startedAt, running);
 
   // A running compaction says how long it has been running. It is one model
@@ -82,24 +87,35 @@ export function CompactionCard({
   // number on screen the only difference between "working" and "hung" is how
   // patient you happen to be feeling. Measured 2026-08-27: 3m 22s of identical
   // shimmer, diagnosed by reading the session file off disk.
-  const label = running
-    ? elapsed === null
-      ? "Compacting context…"
-      : `Compacting context… ${fmtElapsed(elapsed)}`
-    : [
-        beforeTokens > 0 && afterTokens > 0
-          ? `Context compacted · ${fmtTokens(beforeTokens)} → ${fmtTokens(afterTokens)}`
-          : "Context compacted",
-        durationMs === undefined ? null : fmtElapsed(durationMs),
-      ]
-        .filter(Boolean)
-        .join(" · ");
+  const terminalDuration = durationMs === undefined ? null : fmtElapsed(durationMs);
+  const label =
+    status === "running"
+      ? elapsed === null
+        ? "Compacting context…"
+        : `Compacting context… ${fmtElapsed(elapsed)}`
+      : status === "completed"
+        ? [
+            beforeTokens > 0 && afterTokens > 0
+              ? `Context compacted · ${fmtTokens(beforeTokens)} → ${fmtTokens(afterTokens)}`
+              : "Context compacted",
+            terminalDuration,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : [
+            status === "cancelled" ? "Compaction stopped" : "Compaction failed",
+            beforeTokens > 0 ? `context unchanged at ${fmtTokens(beforeTokens)}` : "context unchanged",
+            terminalDuration,
+          ]
+            .filter(Boolean)
+            .join(" · ");
 
   return (
     <div
-      className={`agw-compaction${running ? " agw-compaction-running" : ""}`}
+      className={`agw-compaction agw-compaction-${status}`}
       role="status"
       aria-label={label}
+      title={reason ? `Compaction status: ${reason}` : undefined}
     >
       <span className="agw-compaction-line" aria-hidden />
       <span className="agw-compaction-chip">

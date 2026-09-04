@@ -50,3 +50,7 @@
 @import "./agent-window/37-settings-opencode.css";
 @import "./agent-window/38-settings-kenari.css";
 @import "./agent-window/39-scrolling-label.css";
+@import "./agent-window/40-settings-modal.css";
+@import "./agent-window/41-silk-placeholder.css";
+@import "./agent-window/42-surface-switcher.css";
+@import "./agent-window/43-memory.css";

@@ -1143,6 +1143,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
         let input = build_turn_input(
@@ -1215,6 +1216,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
         let input = build_turn_input(
@@ -1312,6 +1314,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
 

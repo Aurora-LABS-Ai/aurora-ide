@@ -206,6 +206,79 @@
   color: var(--agw-removed);
 }
 
+/* Command-line tools found on this machine — a quiet disclosure under the
+   shell rows. Same row rhythm as a shell row, no card: it is a readout of
+   what the agent already receives, not a control. */
+.agw-shell-tools {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-shell-tools-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 18px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.agw-shell-tools-head:hover,
+.agw-shell-tools-head:focus-visible {
+  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+  outline: none;
+}
+.agw-shell-tools-title {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-shell-tools-meta {
+  margin-left: auto;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-shell-tools-body {
+  padding: 0 18px 12px;
+}
+.agw-shell-tools-hint {
+  margin: 0 0 10px;
+  max-width: 62ch;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-shell-tools-list {
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  list-style: none;
+}
+.agw-shell-tool {
+  display: grid;
+  grid-template-columns: 9ch minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: var(--agw-fs-label);
+}
+.agw-shell-tool-name {
+  font-family: var(--agw-font-code);
+  color: var(--agw-text);
+}
+.agw-shell-tool .agw-shell-path {
+  color: var(--agw-text-subtle);
+}
+.agw-shell-tools-actions {
+  margin-top: 8px;
+}
+.agw-shell-tools-actions .agw-shell-action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .agw-shell-foot {
   padding: 12px 18px;
   border-top: 1px solid var(--agw-border);

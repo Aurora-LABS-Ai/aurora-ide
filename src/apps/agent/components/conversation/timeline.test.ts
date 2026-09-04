@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { DbMessage } from "@/apps/agent/services/threads/thread-service";
 import {
+  appendCompaction,
   appendNotice,
   appendThinking,
   beginReconnect,
@@ -12,9 +13,29 @@ import {
   textOf,
   turnWorkedMs,
   formatWorkedDuration,
+  finishCompaction,
   type TimelineEvent,
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
+
+describe("compaction terminal states", () => {
+  it("settles failure without inventing an after-token count", () => {
+    const started = appendCompaction([], "compact-1");
+    const settled = finishCompaction(started, "compact-1", {
+      status: "failed",
+      beforeTokens: 269_000,
+      reason: "empty_summary",
+    });
+
+    expect(settled[0]).toMatchObject({
+      kind: "compaction",
+      status: "failed",
+      beforeTokens: 269_000,
+      afterTokens: 0,
+      reason: "empty_summary",
+    });
+  });
+});
 
 describe("a dropped stream mid-turn", () => {
   const toolCall = (id: string, result: string | null) => ({

@@ -16,7 +16,27 @@ export interface GlobalInstructionProfile {
 }
 
 export interface AppSettings {
-  agentExecutionMode?: 'agent' | 'plan' | 'team';
+  agentExecutionMode?: 'agent' | 'plan' | 'team' | 'chat';
+  /** Which product the window is showing. `'chat'` is Aurora Chat. */
+  auroraSurface?: 'build' | 'chat';
+  /** Seed for the next chat, not the state of any conversation. */
+  deepResearchNext?: boolean;
+  /**
+   * The models Aurora Chat's picker offers, as `"providerId:modelKey"`.
+   *
+   * Its own list, not `provider_models.enabled` — curating a short pool for
+   * chatting must not shorten Build's roster. Empty means no shortlist yet,
+   * and the picker then offers everything.
+   */
+  chatModelShortlist?: string[];
+  /**
+   * Image providers the user configured, with their models nested inside.
+   *
+   * Kept here rather than in tables of their own: a handful of rows, read at
+   * startup, written when someone edits them, never joined against anything.
+   * See `services/providers/image-providers.ts`.
+   */
+  imageProviders?: unknown[];
   // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
   teamEnabled?: boolean;
   maxTeamSize?: number;
@@ -90,6 +110,11 @@ export interface AppSettings {
    * `tool_search`. Defaults off — it changes how the model reaches a tool.
    */
   deferTools?: boolean;
+  /**
+   * Whether other agents may send work to this Aurora over MCP (`aurora mcp`).
+   * Defaults off; only the user turns it on.
+   */
+  mcpBridgeEnabled?: boolean;
   autoAcceptChanges?: boolean;
   autoApproveTools: boolean;
   autoSave: string;

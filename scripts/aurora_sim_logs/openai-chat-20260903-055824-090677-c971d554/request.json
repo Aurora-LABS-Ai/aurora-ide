@@ -1,0 +1,56 @@
+{
+  "exchange_id": "openai-chat-20260903-055824-090677-c971d554",
+  "received_at": "2026-09-02T23:58:24.090989+00:00",
+  "protocol": "openai-chat",
+  "endpoint": "/v1/chat/completions",
+  "method": "POST",
+  "url": "http://127.0.0.1:8000/v1/chat/completions",
+  "client": {
+    "host": "127.0.0.1",
+    "port": 4645
+  },
+  "headers": {
+    "content-type": "application/json",
+    "accept": "text/event-stream",
+    "user-agent": "Aurora/2.0.0",
+    "authorization": "[REDACTED]",
+    "host": "127.0.0.1:8000",
+    "content-length": "361"
+  },
+  "query": {},
+  "prompt_snapshot": {
+    "model": "aurora-sim-openai",
+    "system": null,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Compare 17 × 19 with 18 × 18. If the first is smaller, reply exactly: Aurora connection OK. Otherwise reply exactly: Aurora connection failed. Do not show calculations in the final answer."
+      }
+    ],
+    "input": null,
+    "instructions": null,
+    "tools": null,
+    "tool_choice": null,
+    "thinking": null,
+    "reasoning": null,
+    "stream": true,
+    "max_tokens": 2048,
+    "max_completion_tokens": null,
+    "max_output_tokens": null
+  },
+  "body": {
+    "model": "aurora-sim-openai",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Compare 17 × 19 with 18 × 18. If the first is smaller, reply exactly: Aurora connection OK. Otherwise reply exactly: Aurora connection failed. Do not show calculations in the final answer."
+      }
+    ],
+    "stream": true,
+    "max_tokens": 2048,
+    "reasoning_effort": "medium",
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

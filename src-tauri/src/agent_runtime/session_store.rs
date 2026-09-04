@@ -122,6 +122,17 @@ pub struct SessionMetadata {
     /// next listing (see [`SessionStore::list_summaries_filtered`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Aurora Chat: was this conversation started in deep research?
+    ///
+    /// **Set once, at creation, and never changed.** Deep research is how a
+    /// conversation was framed rather than a switch you flip mid-way — and the
+    /// prompt section it injects rides in the cacheable prefix, so flipping it
+    /// would throw the conversation's whole cache away as well.
+    ///
+    /// `#[serde(default)]` so every conversation written before this shipped
+    /// reads as a normal chat rather than failing to load.
+    #[serde(default)]
+    pub deep_research: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -140,6 +151,7 @@ impl SessionMetadata {
             context_usage: None,
             pinned: false,
             archived_at: None,
+            deep_research: false,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -177,6 +189,10 @@ pub struct SessionSummary {
     /// routes archived chats into the "Archived" view instead of the tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Aurora Chat: the conversation was started in deep research. Fixed at
+    /// creation — see [`SessionMetadata::deep_research`].
+    #[serde(default)]
+    pub deep_research: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -202,22 +218,58 @@ fn archive_expired(archived_at: &str) -> bool {
 // Store
 // ============================================================================
 
-/// Stateless wrapper around the agent_v2 sessions directory.
+/// How a store arranges one conversation's files on disk.
+///
+/// Two layouts, because the two products want different things. Build-mode
+/// threads are files that happen to have sidecars, and a flat directory lists
+/// fast. A chat OWNS things — its images live with it — so it owns a directory,
+/// and deleting one is removing that directory rather than remembering to
+/// unlink six stem-matched files and hoping nobody adds a seventh.
+///
+/// Everything above the five path methods, the listing scan and `delete` is
+/// shared: journaling, metadata, archiving, retention, artifacts and loading
+/// all work the same either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StoreLayout {
+    /// `<dir>/<id>.jsonl` plus `<id>.meta.json`, `<id>.rich.jsonl`, and the
+    /// rest beside it, identified by filename stem.
+    #[default]
+    Flat,
+    /// `<dir>/<id>/conversation.jsonl` plus fixed filenames in that folder.
+    /// Used by Aurora Chat (`paths::chats_dir()`).
+    Folder,
+}
+
+/// Stateless wrapper around a conversation store directory.
 ///
 /// All methods are `&self` and re-resolve paths from `dir` on each
 /// call so the store can be cloned cheaply (it's just a `PathBuf`).
 #[derive(Debug, Clone)]
 pub struct SessionStore {
     dir: PathBuf,
+    layout: StoreLayout,
 }
 
 impl SessionStore {
-    /// Build a store rooted at `dir`. The directory is created lazily
-    /// on the first write — calling `new` on a non-existent directory
-    /// is fine.
+    /// Build a flat store rooted at `dir` — the Build-mode `sessions/` layout.
+    /// The directory is created lazily on the first write, so calling `new` on
+    /// a non-existent directory is fine.
     #[must_use]
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            layout: StoreLayout::Flat,
+        }
+    }
+
+    /// Build a folder-per-conversation store rooted at `dir` — Aurora Chat's
+    /// `Chats/` layout.
+    #[must_use]
+    pub fn new_folder(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            layout: StoreLayout::Folder,
+        }
     }
 
     /// Where the store lives on disk. Exposed for diagnostics and so
@@ -228,23 +280,84 @@ impl SessionStore {
         &self.dir
     }
 
+    /// How this store arranges files. Needed by the conversation runtime,
+    /// which derives the spill directory holding only the store's root.
+    #[must_use]
+    pub fn layout(&self) -> StoreLayout {
+        self.layout
+    }
+
+    /// The directory holding `thread_id`'s files.
+    ///
+    /// The store root under [`StoreLayout::Flat`], since a flat thread's files
+    /// sit directly in it. Its own subdirectory under
+    /// [`StoreLayout::Folder`].
+    #[must_use]
+    pub fn thread_dir(&self, thread_id: &str) -> PathBuf {
+        match self.layout {
+            StoreLayout::Flat => self.dir.clone(),
+            StoreLayout::Folder => self.dir.join(thread_id),
+        }
+    }
+
+    /// Directory holding `thread_id`'s images, under [`StoreLayout::Folder`].
+    ///
+    /// `None` for a flat store, which has no notion of assets: Build-mode
+    /// threads reference files in the user's workspace, they do not own copies.
+    ///
+    /// Every image the conversation holds lands here whatever door it came
+    /// through — generated, pasted, or attached — so the edit tool addresses
+    /// one namespace instead of guessing which of several it was handed.
+    #[must_use]
+    pub fn assets_dir(&self, thread_id: &str) -> Option<PathBuf> {
+        match self.layout {
+            StoreLayout::Flat => None,
+            StoreLayout::Folder => Some(self.dir.join(thread_id).join("assets")),
+        }
+    }
+
+    /// Create the directory `thread_id`'s files live in, if it is missing.
+    ///
+    /// Under [`StoreLayout::Flat`] that is the store root, which is what every
+    /// write already did. Under [`StoreLayout::Folder`] it is the
+    /// conversation's own directory, and without this every store-side write
+    /// fails with `NotFound` on a conversation that has never been saved —
+    /// which is all of them, once.
+    ///
+    /// `Session::append_to_path` and `Session::save_to_path` create their own
+    /// parents already, so the JSONL is not why this exists; the metadata
+    /// sidecar and the rich-results log are.
+    fn ensure_dir_for(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        fs::create_dir_all(self.thread_dir(thread_id))?;
+        Ok(())
+    }
+
     /// Path to the JSONL message log for `thread_id`.
     #[must_use]
     pub fn session_path(&self, thread_id: &str) -> PathBuf {
-        self.dir.join(format!("{thread_id}.jsonl"))
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.jsonl")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("conversation.jsonl"),
+        }
     }
 
     /// Path to the metadata sidecar for `thread_id`.
     #[must_use]
     pub fn meta_path(&self, thread_id: &str) -> PathBuf {
-        self.dir.join(format!("{thread_id}.meta.json"))
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.meta.json")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("meta.json"),
+        }
     }
 
     /// Path to the full-fidelity tool-result sidecar for `thread_id`.
     /// One JSON-serialized [`RichToolResult`] per line, append-only.
     #[must_use]
     pub fn rich_path(&self, thread_id: &str) -> PathBuf {
-        self.dir.join(format!("{thread_id}.rich.jsonl"))
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.rich.jsonl")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("rich.jsonl"),
+        }
     }
 
     /// Directory holding spilled tool output for `thread_id`.
@@ -259,13 +372,16 @@ impl SessionStore {
     /// Thread-scoped, so `delete` clears it with the rest of the thread.
     #[must_use]
     pub fn tool_results_dir(&self, thread_id: &str) -> PathBuf {
-        tool_results_dir_in(&self.dir, thread_id)
+        tool_results_dir_in(&self.dir, thread_id, self.layout)
     }
 
     /// Path to the optional Artifact Canvas sidecar for `thread_id`.
     #[must_use]
     pub fn artifacts_path(&self, thread_id: &str) -> PathBuf {
-        self.dir.join(format!("{thread_id}.artifacts.json"))
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.artifacts.json")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("artifacts.json"),
+        }
     }
 
     #[must_use]
@@ -329,6 +445,23 @@ impl SessionStore {
 
         for entry in read.flatten() {
             let path = entry.path();
+            // A folder store's conversations ARE the subdirectories, so the
+            // stem-matching below has nothing to do: one directory is one
+            // conversation, and its log has a fixed name. `chats.db` and any
+            // other loose file in the root are skipped by not being
+            // directories, which is also why the index can live beside them.
+            if self.layout == StoreLayout::Folder {
+                let Some(id) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let log = self.session_path(id);
+                if !log.is_file() {
+                    continue;
+                }
+                let id = id.to_string();
+                self.push_summary(&mut out, &id, &log, workspace_root)?;
+                continue;
+            }
             // Only `<thread_id>.jsonl` files are session logs. Skip
             // sidecars, tmp files, stray directories.
             if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
@@ -354,31 +487,8 @@ impl SessionStore {
                 continue;
             }
 
-            match self.summarize_thread(&stem, &path) {
-                Ok(summary) => {
-                    // Retention GC: an archived chat past its 15-day window is
-                    // purged here. Listing is the natural, frequent trigger, so
-                    // no background scheduler is needed. This runs before the
-                    // project filter so expired archives are reaped globally.
-                    if let Some(ts) = summary.archived_at.as_deref() {
-                        if archive_expired(ts) {
-                            if let Err(err) = self.delete(&stem) {
-                                eprintln!(
-                                    "[SessionStore] failed to purge expired archive {stem}: {err}"
-                                );
-                            }
-                            continue;
-                        }
-                    }
-                    // Project scoping: when a filter is set, drop threads
-                    // that don't belong to it (including unscoped ones).
-                    if let Some(want) = workspace_root {
-                        if summary.workspace_root.as_deref() != Some(want) {
-                            continue;
-                        }
-                    }
-                    out.push(summary);
-                }
+            match self.push_summary(&mut out, &stem, &path, workspace_root) {
+                Ok(()) => {}
                 Err(err) => {
                     eprintln!("[SessionStore] failed to summarize {stem}: {err}; skipping");
                 }
@@ -389,6 +499,45 @@ impl SessionStore {
         // RFC3339 is lexicographically ordered.
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
+    }
+
+    /// Summarize one thread and push it onto `out`, unless it is an expired
+    /// archive or belongs to another project.
+    ///
+    /// Shared by both layouts. The two scans disagree only about how a
+    /// conversation is IDENTIFIED on disk — a filename stem or a directory
+    /// name — and everything after that point is the same work. Keeping it in
+    /// one place is what stops the retention sweep or the project filter from
+    /// existing in one layout and quietly not the other.
+    fn push_summary(
+        &self,
+        out: &mut Vec<SessionSummary>,
+        thread_id: &str,
+        jsonl_path: &Path,
+        workspace_root: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        let summary = self.summarize_thread(thread_id, jsonl_path)?;
+        // Retention GC: an archived chat past its 15-day window is
+        // purged here. Listing is the natural, frequent trigger, so
+        // no background scheduler is needed. This runs before the
+        // project filter so expired archives are reaped globally.
+        if let Some(ts) = summary.archived_at.as_deref() {
+            if archive_expired(ts) {
+                if let Err(err) = self.delete(thread_id) {
+                    eprintln!("[SessionStore] failed to purge expired archive {thread_id}: {err}");
+                }
+                return Ok(());
+            }
+        }
+        // Project scoping: when a filter is set, drop threads
+        // that don't belong to it (including unscoped ones).
+        if let Some(want) = workspace_root {
+            if summary.workspace_root.as_deref() != Some(want) {
+                return Ok(());
+            }
+        }
+        out.push(summary);
+        Ok(())
     }
 
     /// Build one [`SessionSummary`] for `thread_id`. Reads the
@@ -427,6 +576,7 @@ impl SessionStore {
             model: meta.model,
             pinned: meta.pinned,
             archived_at: meta.archived_at,
+            deep_research: meta.deep_research,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
         })
@@ -514,7 +664,25 @@ impl SessionStore {
         title: Option<String>,
         workspace_root: Option<String>,
     ) -> Result<SessionMetadata, RuntimeError> {
-        fs::create_dir_all(&self.dir)?;
+        self.ensure_dir_for(thread_id)?;
+
+        // A folder conversation owns its images, so the directory exists from
+        // the moment the conversation does. Created eagerly rather than on the
+        // first write: every writer would otherwise have to remember, and the
+        // one that forgets fails at exactly the wrong moment — after a 36-second
+        // image generation, with the picture in hand and nowhere to put it.
+        //
+        // Best-effort. A conversation that cannot hold images is still a
+        // conversation, and failing to create it here would stop the chat
+        // existing at all.
+        if let Some(assets) = self.assets_dir(thread_id) {
+            if let Err(err) = fs::create_dir_all(&assets) {
+                eprintln!(
+                    "[SessionStore] could not create assets dir {}: {err}",
+                    assets.display()
+                );
+            }
+        }
 
         // Touch the JSONL so listings pick the thread up even before
         // any messages land.
@@ -703,6 +871,36 @@ impl SessionStore {
         Ok(meta)
     }
 
+    /// Mark a conversation as deep research, **once**.
+    ///
+    /// A no-op if it is already set, and it can never be unset. Deep research
+    /// is how a conversation was framed: the prompt section it adds rides in
+    /// the cacheable prefix, and turning it off mid-conversation would both
+    /// contradict a transcript full of thorough answers and throw the whole
+    /// conversation's prompt cache away.
+    ///
+    /// Returns whether this call was the one that set it.
+    pub fn mark_deep_research(&self, thread_id: &str) -> Result<bool, RuntimeError> {
+        let mut meta = self.load_metadata(thread_id)?;
+        if meta.deep_research {
+            return Ok(false);
+        }
+        meta.deep_research = true;
+        self.save_metadata(&meta)?;
+        Ok(true)
+    }
+
+    /// Is this conversation a deep-research one?
+    ///
+    /// Errors read as `false`: a missing sidecar means a conversation with no
+    /// framing, and failing a turn over it would be the wrong trade.
+    #[must_use]
+    pub fn is_deep_research(&self, thread_id: &str) -> bool {
+        self.load_metadata(thread_id)
+            .map(|meta| meta.deep_research)
+            .unwrap_or(false)
+    }
+
     /// Bump just the updated_at field. Called by `TurnDriver` after
     /// every successful turn so the chat list reflects activity even
     /// when the title and usage didn't change.
@@ -746,7 +944,7 @@ impl SessionStore {
             duplicate.append_message(message.clone());
         }
 
-        fs::create_dir_all(&self.dir)?;
+        self.ensure_dir_for(new_thread_id)?;
         if let Err(error) = duplicate.save_to_path(self.session_path(new_thread_id)) {
             let _ = self.delete(new_thread_id);
             return Err(error);
@@ -762,6 +960,11 @@ impl SessionStore {
             context_usage: loaded.metadata.context_usage,
             pinned: false,
             archived_at: None,
+            // Carried, not reset. A duplicate of a deep-research conversation
+            // holds a transcript of thorough, cited answers; opening it as an
+            // ordinary chat would make every reply after the copy read as a
+            // sudden drop in effort.
+            deep_research: loaded.metadata.deep_research,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -785,7 +988,7 @@ impl SessionStore {
     /// Atomically replace the metadata sidecar. The actual JSONL is
     /// owned by `Session::save_to_path` / `Session::append_to_path`.
     fn save_metadata(&self, meta: &SessionMetadata) -> Result<(), RuntimeError> {
-        fs::create_dir_all(&self.dir)?;
+        self.ensure_dir_for(&meta.thread_id)?;
         let path = self.meta_path(&meta.thread_id);
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(meta)?;
@@ -815,7 +1018,7 @@ impl SessionStore {
         if entries.is_empty() {
             return Ok(());
         }
-        fs::create_dir_all(&self.dir)?;
+        self.ensure_dir_for(thread_id)?;
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -851,6 +1054,16 @@ impl SessionStore {
     }
 
     pub fn delete(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        // A folder conversation is one directory, assets and all. Removing it
+        // is the whole deletion, and it cannot leave an orphan behind the way
+        // an unlink-six-files list can once somebody adds a seventh sidecar.
+        if self.layout == StoreLayout::Folder {
+            return match fs::remove_dir_all(self.thread_dir(thread_id)) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(RuntimeError::from(e)),
+            };
+        }
         for path in [
             self.session_path(thread_id),
             self.meta_path(thread_id),
@@ -879,10 +1092,16 @@ impl SessionStore {
 ///
 /// Free-standing because the conversation runtime writes into it while
 /// holding only the store's directory, not the store itself — and both must
-/// agree on the layout or `delete` would leave the files behind.
+/// agree on the layout or `delete` would leave the files behind. That is also
+/// why `layout` is a parameter rather than inferred: probing the filesystem to
+/// guess would answer differently before and after the directory exists, and
+/// the one caller that must never disagree is `delete`.
 #[must_use]
-pub fn tool_results_dir_in(root: &Path, thread_id: &str) -> PathBuf {
-    root.join(format!("{thread_id}.tool-results"))
+pub fn tool_results_dir_in(root: &Path, thread_id: &str, layout: StoreLayout) -> PathBuf {
+    match layout {
+        StoreLayout::Flat => root.join(format!("{thread_id}.tool-results")),
+        StoreLayout::Folder => root.join(thread_id).join("tool-results"),
+    }
 }
 
 /// Bundle returned by [`SessionStore::load`].
@@ -1341,5 +1560,218 @@ mod tests {
         // Unfiltered still returns everything (IDE global history).
         let all = store.list_summaries().unwrap();
         assert_eq!(all.len(), 3);
+    }
+
+    // ------------------------------------------------------------------
+    // Folder layout (Aurora Chat)
+    // ------------------------------------------------------------------
+
+    fn tmp_folder_store() -> (tempfile::TempDir, SessionStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new_folder(dir.path().to_path_buf());
+        (dir, store)
+    }
+
+    #[test]
+    fn folder_layout_puts_every_file_inside_the_conversations_own_directory() {
+        let (guard, store) = tmp_folder_store();
+        let root = guard.path();
+
+        assert_eq!(store.session_path("c1"), root.join("c1/conversation.jsonl"));
+        assert_eq!(store.meta_path("c1"), root.join("c1/meta.json"));
+        assert_eq!(store.rich_path("c1"), root.join("c1/rich.jsonl"));
+        assert_eq!(store.artifacts_path("c1"), root.join("c1/artifacts.json"));
+        assert_eq!(store.tool_results_dir("c1"), root.join("c1/tool-results"));
+        assert_eq!(store.assets_dir("c1"), Some(root.join("c1/assets")));
+    }
+
+    /// The flat store has no assets, and saying so is the point: a Build-mode
+    /// thread references files in the user's workspace rather than owning
+    /// copies of them, so there is no directory for it to answer with.
+    #[test]
+    fn flat_layout_has_no_assets_directory() {
+        let (_g, store) = tmp_store();
+        assert_eq!(store.assets_dir("t1"), None);
+    }
+
+    /// The two stores must not see each other's conversations even when they
+    /// are handed the same thread id, because the id is all they share.
+    #[test]
+    fn the_two_layouts_are_separate_stores() {
+        let (guard, flat) = tmp_store();
+        let folder = SessionStore::new_folder(guard.path().join("Chats"));
+
+        flat.ensure_thread("same-id", Some("a build thread".into()), None)
+            .unwrap();
+        folder
+            .ensure_thread("same-id", Some("a chat".into()), None)
+            .unwrap();
+
+        assert_eq!(flat.load_metadata("same-id").unwrap().title, "a build thread");
+        assert_eq!(folder.load_metadata("same-id").unwrap().title, "a chat");
+    }
+
+    #[test]
+    fn folder_layout_lists_conversations_and_ignores_loose_files() {
+        let (guard, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("first".into()), None).unwrap();
+        store.ensure_thread("c2", Some("second".into()), None).unwrap();
+
+        // `chats.db` lives in this same root. A listing that treated every
+        // entry as a conversation would report it as one, so it has to be
+        // skipped by not being a directory — not by being named.
+        std::fs::write(guard.path().join("chats.db"), b"not a conversation").unwrap();
+        // A directory with no log in it is not a conversation either. This is
+        // what a half-created chat looks like on disk.
+        std::fs::create_dir_all(guard.path().join("half-made")).unwrap();
+
+        let listed = store.list_summaries().unwrap();
+        let mut ids: Vec<&str> = listed.iter().map(|s| s.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["c1", "c2"]);
+    }
+
+    /// Deleting a chat takes its assets with it. This is the whole reason the
+    /// layout differs: the flat store's `delete` unlinks a fixed list of
+    /// sidecars, and an image written next to them would survive it.
+    #[test]
+    fn folder_delete_removes_the_conversation_and_its_assets() {
+        let (guard, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("chat".into()), None).unwrap();
+
+        let assets = store.assets_dir("c1").expect("folder store has assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("generated-1.png"), b"pretend png").unwrap();
+
+        store.delete("c1").unwrap();
+
+        assert!(!guard.path().join("c1").exists(), "the whole folder goes");
+        assert!(store.list_summaries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn folder_delete_of_a_missing_conversation_is_not_an_error() {
+        let (_g, store) = tmp_folder_store();
+        store.delete("never-existed").expect("delete is idempotent");
+    }
+
+    /// A chat owns its images from the moment it exists. Created eagerly so no
+    /// writer has to remember — and the one that would forget is the image
+    /// generator, which finds out 36 seconds in with a picture in hand.
+    #[test]
+    fn creating_a_chat_creates_its_assets_directory() {
+        let (guard, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("a chat".into()), None).unwrap();
+
+        let assets = guard.path().join("c1").join("assets");
+        assert!(assets.is_dir(), "assets/ exists with the conversation");
+    }
+
+    /// An empty `assets/` must not make the conversation folder look like a
+    /// conversation to the scanner, nor stop it being listed.
+    #[test]
+    fn an_assets_directory_does_not_confuse_the_listing() {
+        let (_g, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("a chat".into()), None).unwrap();
+
+        let listed = store.list_summaries().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "c1");
+    }
+
+    // ------------------------------------------------------------------
+    // Deep research — set once, at creation
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_conversation_is_not_deep_research_by_default() {
+        let (_g, store) = tmp_folder_store();
+        store.ensure_thread("c1", None, None).unwrap();
+        assert!(!store.is_deep_research("c1"));
+    }
+
+    #[test]
+    fn marking_deep_research_sticks_and_is_idempotent() {
+        let (_g, store) = tmp_folder_store();
+        store.ensure_thread("c1", None, None).unwrap();
+
+        assert!(store.mark_deep_research("c1").unwrap(), "the first call sets it");
+        assert!(store.is_deep_research("c1"));
+        assert!(
+            !store.mark_deep_research("c1").unwrap(),
+            "the second call is a no-op and says so"
+        );
+        assert!(store.is_deep_research("c1"));
+    }
+
+    /// It survives a reload, because the whole point is that the conversation
+    /// carries its own framing rather than reading a live setting.
+    #[test]
+    fn deep_research_survives_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = SessionStore::new_folder(dir.path().to_path_buf());
+            store.ensure_thread("c1", None, None).unwrap();
+            store.mark_deep_research("c1").unwrap();
+        }
+        let reopened = SessionStore::new_folder(dir.path().to_path_buf());
+        assert!(reopened.is_deep_research("c1"));
+    }
+
+    /// A sidecar written before this shipped has no such field. It must read as
+    /// a normal conversation rather than failing to load.
+    #[test]
+    fn a_sidecar_without_the_field_loads_as_a_normal_chat() {
+        let (guard, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("old".into()), None).unwrap();
+
+        // Rewrite the sidecar without the field, as an older build would.
+        // camelCase on purpose: that is the wire format the sidecar actually
+        // uses, and writing snake_case here made this test fail for the wrong
+        // reason the first time.
+        let meta_path = store.meta_path("c1");
+        let legacy = r#"{
+            "threadId": "c1",
+            "title": "old",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z"
+        }"#;
+        std::fs::write(&meta_path, legacy).unwrap();
+        assert!(guard.path().join("c1").exists());
+
+        assert!(!store.is_deep_research("c1"));
+        assert_eq!(store.load_metadata("c1").unwrap().title, "old");
+    }
+
+    /// A duplicate of a deep-research conversation keeps the framing. Its
+    /// transcript is full of thorough, cited answers, and opening the copy as
+    /// an ordinary chat would read as a sudden drop in effort.
+    #[test]
+    fn duplicating_a_deep_research_chat_keeps_it() {
+        let (_g, store) = tmp_folder_store();
+        store.ensure_thread("c1", Some("research".into()), None).unwrap();
+        store.mark_deep_research("c1").unwrap();
+
+        store.duplicate("c1", "c2", "research (copy)".into()).unwrap();
+
+        assert!(store.is_deep_research("c2"));
+    }
+
+    #[test]
+    fn marking_a_conversation_that_does_not_exist_does_not_panic() {
+        let (_g, store) = tmp_folder_store();
+        // `load_metadata` synthesises defaults for a missing sidecar, so this
+        // writes one rather than erroring. What matters is that it is not a
+        // panic and the answer is consistent afterwards.
+        let _ = store.mark_deep_research("never-existed");
+    }
+
+    /// The flat store has no assets, so it must not sprout an empty directory.
+    #[test]
+    fn creating_a_build_thread_makes_no_assets_directory() {
+        let (guard, store) = tmp_store();
+        store.ensure_thread("t1", Some("a thread".into()), None).unwrap();
+        assert!(!guard.path().join("assets").exists());
+        assert!(!guard.path().join("t1").exists());
     }
 }

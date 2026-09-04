@@ -1,6 +1,20 @@
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 
-export type AgentArtifactKind = "html" | "svg" | "markdown" | "mermaid" | "react";
+export type AgentArtifactKind =
+  | "html"
+  | "svg"
+  | "markdown"
+  | "mermaid"
+  | "react"
+  /**
+   * A research report: Markdown with the conventions a long document needs —
+   * `##` headings that become a contents strip, `[^1]` footnotes that become
+   * numbered sources you can open, block quotations with attribution.
+   *
+   * Deep-research conversations only. See `report-document.ts` for what the
+   * panel reads out of the source.
+   */
+  | "report";
 
 export interface AgentArtifactVersion {
   tag: string;

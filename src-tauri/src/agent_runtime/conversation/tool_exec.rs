@@ -200,6 +200,7 @@ impl ConversationRuntime {
                                 crate::agent_runtime::session_store::tool_results_dir_in(
                                     root,
                                     &session.thread_id,
+                                    self.store_layout,
                                 )
                             }),
                             cancel_token: cancel_token.clone(),
@@ -411,6 +412,33 @@ impl ConversationRuntime {
             );
         }
 
+        // ── The stale-checklist reminder, when it is due ──────────────
+        //
+        // The only thing Aurora ever writes into a tool result beyond the
+        // tool's own output, and it is rare by design: ten assistant messages
+        // without a `todo` call, and ten since the last reminder — Claude
+        // Code's cadence. Written into the message that gets persisted, so it
+        // is byte-stable for the rest of the conversation, exactly like the
+        // budget verdict above. It rides inside the last result rather than
+        // arriving as its own message because a user-role message with no user
+        // text in it reads as the human having just spoken.
+        //
+        // Only where the tool exists: Plan mode and Aurora Chat have no
+        // checklist to be reminded about.
+        if self.tools.get("todo").is_some() {
+            if let Some(reminder) = stale_checklist_reminder(session.messages(), &session.thread_id)
+            {
+                if let Some(ContentBlock::ToolResult { content, .. }) = result_blocks
+                    .iter_mut()
+                    .rev()
+                    .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
+                {
+                    content.push_str("\n\n");
+                    content.push_str(&reminder);
+                }
+            }
+        }
+
         Ok(ToolBatchOutcome {
             message: ConversationMessage {
                 role: MessageRole::Tool,
@@ -419,6 +447,7 @@ impl ConversationRuntime {
                 timestamp: Utc::now().timestamp_millis(),
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             },
             cancelled,
@@ -636,6 +665,7 @@ pub(super) async fn emit_truncation_notice(
         timestamp: now,
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        aurora_context: None,
         model: None,
     });
 }

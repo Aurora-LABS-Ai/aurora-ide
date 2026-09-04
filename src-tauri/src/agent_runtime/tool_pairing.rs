@@ -108,6 +108,7 @@ pub fn synthetic_tool_results(ids: &[String], text: &str) -> ConversationMessage
         timestamp: chrono::Utc::now().timestamp_millis(),
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        aurora_context: None,
         model: None,
     }
 }
@@ -234,6 +235,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -253,6 +255,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -272,6 +275,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }

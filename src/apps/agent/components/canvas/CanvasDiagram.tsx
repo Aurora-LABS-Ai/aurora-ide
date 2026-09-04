@@ -42,6 +42,24 @@ const clamp = (value: number, min: number, max: number) =>
 const isControl = (target: EventTarget | null) =>
   target instanceof Element && Boolean(target.closest(".agw-diagram-controls"));
 
+/**
+ * Whether a pointer landed on the diagram's TEXT rather than on its background.
+ *
+ * The stage is a pan surface and a document at the same time, and one drag
+ * gesture cannot mean both. Splitting it by what is under the pointer is the
+ * only version that needs no modifier to learn: drag the background and the
+ * canvas moves, drag a label and you select it, which is what both gestures
+ * already mean everywhere else. Panning from a label is still available on the
+ * middle button, and the whole background is one drag away.
+ *
+ * Mermaid renders labels as `<text>`/`<tspan>`, and its HTML label mode puts
+ * them in a `<foreignObject>` instead, so both shapes have to count.
+ */
+const isDiagramText = (target: EventTarget | null): boolean => {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("text, tspan, foreignObject"));
+};
+
 const readPalette = (element: HTMLElement): MermaidPalette => {
   const root = element.closest<HTMLElement>(".agw-root") ?? element;
   const styles = getComputedStyle(root);
@@ -221,6 +239,9 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
       }}
       onPointerDown={(event) => {
         if (isControl(event.target) || !svg || (event.button !== 0 && event.button !== 1)) return;
+        // A left-drag that starts on a label selects it. Middle-drag pans from
+        // anywhere, including from text, so nothing is ever unreachable.
+        if (event.button === 0 && isDiagramText(event.target)) return;
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
         dragRef.current = {

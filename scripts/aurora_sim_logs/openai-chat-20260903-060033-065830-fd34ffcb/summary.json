@@ -1,0 +1,9 @@
+{
+  "exchange_id": "openai-chat-20260903-060033-065830-fd34ffcb",
+  "completed_at": "2026-09-03T00:01:19.683905+00:00",
+  "elapsed_seconds": 46.617223,
+  "reasoning_tokens": 10000,
+  "output_tokens": 2000,
+  "tokens_per_second": 500.0,
+  "stream": true
+}

@@ -1,6 +1,6 @@
 import React from 'react';
 import clsx from 'clsx';
-import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import {
   settingsSectionPanelStyle,
   settingsRowDividerColor,
@@ -376,48 +376,10 @@ export const KeyValue: React.FC<KeyValueProps> = ({
   </div>
 );
 
-// ---------------------------------------------------------------------------
-// IntegrationBanner — inline status strip rendered inside a Section panel.
-// Used for Install/Uninstall feedback in System Integrations sections.
-// ---------------------------------------------------------------------------
-
-export type BannerStatus = 'idle' | 'installing' | 'uninstalling' | 'success' | 'error';
-
-interface IntegrationBannerProps {
-  status: BannerStatus;
-  message: string;
-}
-
-export const IntegrationBanner: React.FC<IntegrationBannerProps> = ({ status, message }) => {
-  if (!message) return null;
-  const variant: PillVariant =
-    status === 'success' ? 'success' : status === 'error' ? 'danger' : 'info';
-  const tokens = PILL_TOKENS[variant];
-  const Icon =
-    status === 'success'
-      ? CheckCircle2
-      : status === 'error'
-        ? AlertCircle
-        : Loader2;
-  return (
-    <div
-      className="flex items-start gap-2 px-4 py-3 text-[11.5px]"
-      style={{
-        backgroundColor: tokens.bg,
-        borderTop: `1px solid ${tokens.border}`,
-        color: tokens.fg,
-      }}
-    >
-      <Icon
-        className={clsx(
-          'mt-0.5 h-3.5 w-3.5 shrink-0',
-          (status === 'installing' || status === 'uninstalling') && 'animate-spin',
-        )}
-      />
-      <span style={{ color: 'var(--aurora-editor-foreground)' }}>{message}</span>
-    </div>
-  );
-};
+// `IntegrationBanner` and its `BannerStatus` lived here to report Install /
+// Uninstall progress for the System Integrations section. That section now
+// lives in the agent window (`SystemIntegrationSettings`), which reports the
+// same thing with agw primitives, so nothing in the IDE renders one.
 
 // ---------------------------------------------------------------------------
 // FieldLabel — small uppercase label, used inside FormBlock for sub-fields.

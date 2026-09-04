@@ -41,6 +41,14 @@ pub enum ArtifactKind {
     /// A live canvas: one React component file, compiled and run beside the
     /// conversation instead of displayed as text.
     React,
+    /// A long-form research document: Markdown, plus the conventions a report
+    /// needs — headings that become a contents strip, `[^n]` footnotes that
+    /// become numbered sources you can open, block quotations with attribution.
+    ///
+    /// Stored as Markdown and readable as Markdown; the kind is what tells the
+    /// panel to give it a contents strip and a source list rather than
+    /// rendering it as an ordinary document.
+    Report,
 }
 
 impl ArtifactKind {
@@ -64,6 +72,7 @@ impl ArtifactKind {
             ArtifactKind::Markdown => "Markdown",
             ArtifactKind::Mermaid => "Mermaid",
             ArtifactKind::React => "Canvas",
+            ArtifactKind::Report => "Report",
         }
     }
 }

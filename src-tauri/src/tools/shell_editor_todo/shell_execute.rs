@@ -122,8 +122,9 @@ impl ToolExecutor for ShellExecuteTool {
         ToolSchema {
             name: "shell_execute".into(),
             description: shell_tool_description(
-                "Execute a shell command in the workspace directory. Returns stdout, stderr, and \
-                 exit code. Use with caution as this can modify the system.",
+                "Run a command in a shell, exactly as if typed at its prompt, and return what it \
+                 printed with its exit code. Runs in the workspace root unless `cwd` says \
+                 otherwise. It can change files and the system, so use it with care.",
             ),
             input_schema: json!({
                 "type": "object",
@@ -379,12 +380,33 @@ pub(crate) fn shell_required_arguments(base: &[&str], has_shell_argument: bool) 
 
 /// Append the live shell inventory to a tool description, so the guidance the
 /// model reads always matches what is installed.
+/// The environment Aurora composes for a child shell, stated to the model.
+///
+/// The shell is NOT a plain inherited terminal, and a model that assumes it is
+/// will reach a wrong conclusion the first time something depends on the
+/// environment. On 2026-09-04 that happened concretely: a test asserting
+/// `PYTHONUNBUFFERED=1` is added to a child's overlay passed from an ordinary
+/// terminal and failed from here — because Aurora had already set it, so
+/// correctly there was nothing left to add. The agent had no way to know that
+/// and reported the failure as a pre-existing bug in the repository.
+///
+/// One sentence in the tool's description rather than a field on every result:
+/// it is true for the whole session and belongs in the cached prefix, and a
+/// per-call line about the environment would be noise on the hundreds of calls
+/// where nothing depends on it.
+const SHELL_ENVIRONMENT_NOTE: &str = " The shell is started by Aurora, not inherited from a \
+     terminal: PATH is merged with what the registry defines right now (so a tool installed after \
+     login is on PATH without a sign-out), and PYTHONUNBUFFERED=1 is set so a script's output \
+     streams instead of arriving all at once when it exits. If something you run reads the \
+     environment, read it here first rather than assuming a bare shell.";
+
 pub(crate) fn shell_tool_description(base: &str) -> String {
     match crate::shell::model_facing_summary() {
-        Some(summary) => format!("{base} {summary}"),
+        Some(summary) => format!("{base} {summary}{SHELL_ENVIRONMENT_NOTE}"),
         None => format!(
             "{base} Runs in a POSIX shell (bash) when one is available, otherwise the platform \
-             default — prefer POSIX commands (ls, cat, rm, &&, |, single-quote quoting)."
+             default — prefer POSIX commands (ls, cat, rm, &&, |, single-quote \
+             quoting).{SHELL_ENVIRONMENT_NOTE}"
         ),
     }
 }

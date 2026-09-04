@@ -28,7 +28,7 @@ import {
   type PromptOverhead,
   type ToolCallRequest,
 } from "@/apps/agent/services";
-import { useSettingsStore, type WorkspaceAccess } from "@/kernel/store/useSettingsStore";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequest,
@@ -42,9 +42,12 @@ import type {
 } from "@/apps/agent/services/threads/thread-service";
 import {
   BASE_AGENT_SYSTEM_PROMPT,
-  formatSkillCatalogForContext,
   formatSkillReferences,
 } from "@/apps/agent/services/runtime/agent-prompt";
+import {
+  effectiveExecutionMode,
+  effectiveProjectRoot,
+} from "@/apps/agent/services/runtime/agent-execution-mode";
 import { getWorkspaceSkillToggles, resolveSkillsForPrompt } from "@/apps/agent/services/skills/skills";
 import {
   tokenService,
@@ -93,9 +96,9 @@ import {
   appendUserInjection,
   beginReconnect,
   clearReconnect,
+  finishCompaction,
   nextEventId,
   textOf,
-  updateCompaction,
   upsertToolEvent,
   type TimelineEvent,
 } from "@/apps/agent/components/conversation/timeline";
@@ -116,15 +119,10 @@ function timelineOf(m: DbMessage): TimelineEvent[] {
 // balloons far past what the model actually receives.
 const MODEL_TOOL_RESULT_CLAMP = 8_192;
 
-// What the model is told about the path boundary, per Settings → Tools → File
-// access. The Rust resolvers enforce it either way; this exists so the model
-// does not waste a turn refusing work it is allowed to do, or attempt work it
-// is not. Strict mode says nothing — the workspace line above it already does.
-const WORKSPACE_ACCESS_PROMPT: Record<WorkspaceAccess, string> = {
-  workspace: "",
-  read: "\nThe user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Searching, edits and new files still stay inside the workspace.",
-  full: "\nThe user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why.",
-};
+// What the model is told about the path boundary now lives in the system
+// prompt (`agent-prompt.ts`, `WORKSPACE_ACCESS_RULES`). It is a setting, so it
+// is identical on every request of a conversation and belongs in the cached
+// half rather than beside the things that actually change.
 
 // Output cap used when neither the model nor the provider declares one.
 // On every provider except Anthropic, reasoning tokens bill against this same
@@ -283,6 +281,24 @@ export interface SendOptions {
    * renders. Absent for every send a person makes.
    */
   cliTaskId?: string | null;
+  /**
+   * The model for THIS turn only, as `providerId:modelKey`.
+   *
+   * `aurora agent --model` and the `aurora_agent_dispatch` tool are the
+   * callers. Per-turn for the same reason {@link SendOptions.executionMode} is,
+   * plus one specific to the model: a dispatch that starts a NEW conversation
+   * cannot express its choice through the thread at all.
+   *
+   * `setThreadModel` records a pin by mapping over `threads`/`allThreads`, and
+   * a freshly created thread is deliberately in neither — `refreshThreads`
+   * keeps 0-message threads out of the rail, so no row exists until the first
+   * message lands. The pin therefore no-opped in memory, `resolveThreadModel`
+   * found nothing, and the turn fell back to the user's default: a task
+   * dispatched with `--model luna` ran on whatever the window had selected,
+   * and only the transcript's echo of the *requested* model made it look
+   * right.
+   */
+  model?: string | null;
 }
 
 export interface AgentWindowSend {
@@ -309,6 +325,25 @@ export interface AgentWindowSend {
 }
 
 const genId = () => Math.random().toString(36).slice(2, 11);
+
+/**
+ * Was this conversation started in deep research?
+ *
+ * Read from the thread, not from `deepResearchNext`. The setting seeds a NEW
+ * chat and nothing else; a conversation's own answer is fixed at creation, and
+ * that is exactly what lets the instruction live in the cacheable prefix.
+ *
+ * A thread the store has not loaded yet reads as `false`, which is the safe
+ * direction: a missing instruction produces a normal answer, while a wrongly
+ * added one changes the prompt of a conversation that was framed differently.
+ */
+function threadIsDeepResearch(threadId: string | null): boolean {
+  if (!threadId) return false;
+  const { threads, allThreads } = useAgentChatStore.getState();
+  const found =
+    allThreads.find((t) => t.id === threadId) ?? threads.find((t) => t.id === threadId);
+  return found?.deepResearch === true;
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -705,15 +740,24 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionProvider = undefined;
     }
 
-    // A docked chat compacts against ITS project, not the window's current
-    // scope — the window may have been re-scoped since the tab was opened.
-    const projectRoot = bound ? bound.projectRoot : store.projectRoot;
-    const executionMode =
+    // Chat wins outright: Team is a Build-side feature, and a chat conversation
+    // must never be promoted into one because the team switch happens to be on.
+    const executionMode = effectiveExecutionMode(
+      settings.auroraSurface,
       settings.teamEnabled && settings.agentExecutionMode !== "plan"
         ? "team"
-        : settings.agentExecutionMode;
+        : settings.agentExecutionMode,
+    );
+    // A docked chat compacts against ITS project, not the window's current
+    // scope — the window may have been re-scoped since the tab was opened. A
+    // chat has no project at all, so the summarizer is not handed one either.
+    const projectRoot = effectiveProjectRoot(
+      executionMode,
+      bound ? bound.projectRoot : store.projectRoot,
+    );
     const markerId = genId();
     let markerStarted = false;
+    let markerSettled = false;
 
     store.beginTurn(threadId, seed, projectRoot);
     store.setThreadActivity(threadId, { label: "Compacting context…" });
@@ -737,18 +781,19 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     });
 
     const completeMarker = (beforeTokens: number, afterTokens: number) => {
+      markerSettled = true;
       if (!markerStarted) {
         markerStarted = true;
         store.appendTurnMessage(threadId, {
           id: markerId,
           role: "compaction",
-          content: JSON.stringify({ beforeTokens, afterTokens, running: false }),
+          content: JSON.stringify({ beforeTokens, afterTokens, status: "completed" }),
           timestamp: nowIso(),
         });
       } else {
         store.patchTurnMessage(threadId, markerId, (message) => ({
           ...message,
-          content: JSON.stringify({ beforeTokens, afterTokens, running: false }),
+          content: JSON.stringify({ beforeTokens, afterTokens, status: "completed" }),
         }));
       }
       // Drop the ring to the post-compaction size immediately; the next real
@@ -757,6 +802,27 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // card claim the provider had reported nothing and erased the cache-hit
       // row along with it.
       useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
+    };
+
+    const failMarker = (info: { beforeTokens: number; reason: string; cancelled: boolean }) => {
+      markerSettled = true;
+      const content = JSON.stringify({
+        beforeTokens: info.beforeTokens,
+        afterTokens: 0,
+        status: info.cancelled ? "cancelled" : "failed",
+        reason: info.reason,
+      });
+      if (!markerStarted) {
+        markerStarted = true;
+        store.appendTurnMessage(threadId, {
+          id: markerId,
+          role: "compaction",
+          content,
+          timestamp: nowIso(),
+        });
+      } else {
+        store.patchTurnMessage(threadId, markerId, (message) => ({ ...message, content }));
+      }
     };
 
     try {
@@ -769,18 +835,22 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             content: JSON.stringify({
               beforeTokens: 0,
               afterTokens: 0,
-              running: true,
+              status: "running",
             }),
             timestamp: nowIso(),
           });
         },
         onCompactionCompleted: completeMarker,
+        onCompactionFailed: failMarker,
       });
       if (result && !markerStarted) {
         completeMarker(result.beforeTokens, result.afterTokens);
       }
     } catch (error) {
       console.error("[agent-window] manual compaction failed:", error);
+      if (markerStarted && !markerSettled) {
+        failMarker({ beforeTokens: 0, reason: "runtime_error", cancelled: false });
+      }
     } finally {
       runningAgents.delete(threadId);
       // The summarization request carried the whole head of the conversation
@@ -992,8 +1062,13 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // finished, and two concurrent dispatches in different modes would each
     // overwrite the other's.
     const requestedMode = options?.executionMode ?? settings.agentExecutionMode;
-    const executionMode =
-      settings.teamEnabled && requestedMode !== "plan" ? "team" : requestedMode;
+    // `aurora agent --plan` can override the Build mode for one turn, but it
+    // cannot reach across into Chat: a CLI task addresses a project, and Chat
+    // has none. So the surface is applied AFTER the override, not before.
+    const executionMode = effectiveExecutionMode(
+      settings.auroraSurface,
+      settings.teamEnabled && requestedMode !== "plan" ? "team" : requestedMode,
+    );
 
     // Bootstrap the thread (create-on-first-send) BEFORE touching the UI so a
     // failed creation doesn't leave a half-rendered turn. Only the main pane can
@@ -1011,11 +1086,23 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // run on their own model; a chat you haven't given one falls back to the
     // user's default. Resolved at SEND time so a pick made while the composer
     // was focused counts toward this turn.
-    const modelSelection = resolveThreadModel(threadId);
+    //
+    // A dispatch that NAMED a model wins outright. It cannot go through the
+    // thread: a conversation created for this very send is not in the summary
+    // lists yet, so the pin has nowhere to live until the first message lands
+    // (see `SendOptions.model`). Reading the thread first would silently run
+    // the wrong model, which is exactly the bug this replaced.
+    const modelSelection =
+      options?.model?.trim() || resolveThreadModel(threadId);
 
     // Capture the project for THIS turn now — the user may navigate to another
     // project while it runs, and tools must stay rooted at the originating one.
-    const projectRoot = target?.projectRoot ?? store.projectRoot;
+    // A chat turn has none: the window keeps the project so Build can resume on
+    // it, and `effectiveProjectRoot` is where that memory stops.
+    const projectRoot = effectiveProjectRoot(
+      executionMode,
+      target?.projectRoot ?? store.projectRoot,
+    );
 
     // Open a LIVE turn keyed to this thread. Streaming targets `liveTurns[id]`,
     // so navigating away mid-turn doesn't drop the in-flight work — it keeps
@@ -1323,13 +1410,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       });
     };
 
-    // Minimal, authoritative context: the runtime roots tools at this path; the
-    // model just needs to KNOW the path so it can reason about / explore it.
-    const baseContext = projectRoot
-      ? `<workspace_root>${projectRoot}</workspace_root>\nYou are working inside this project directory. Use your tools (workspace_tree, file_read, grep, …) to explore and edit files here.${
-          WORKSPACE_ACCESS_PROMPT[settings.workspaceAccess] ?? ""
-        }`
-      : null;
+    // The workspace path and the access rules used to ride here, and they do
+    // not belong: neither changes while a conversation runs, so re-sending
+    // them every time the checklist or the open files moved was pure repeat.
+    // They are stated once in the cached system prompt now — see
+    // `formatEnvironment`, which follows OpenCode's split of session-fixed
+    // facts from per-turn state.
 
     // Full element context for the model (located by the snapshot taken above).
     // The block tells the agent to locate each element's source file.
@@ -1345,54 +1431,21 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     );
     const mcpBlock = buildMcpDirective(commandSelection.mcpServerNames);
 
-    // Standing `.aurora/*.md` project rules ride automatically on the FIRST
-    // message of a chat (IDE parity) — capped, with `/`-attached rules
-    // excluded since they already ride verbatim above.
-    const autoRulesBlock = wasDraft
-      ? await buildAutoRulesContext(projectRoot, commandSelection.ruleFilenames)
-      : null;
-
-    // Skills: the agent window runtime composes the system prompt but does NOT
-    // inject the equipped-skill catalog (`composeAgentSystemPrompt` resolves the
-    // skills then discards them). So we surface them here, exactly like the IDE's
-    // `useAgentSend` — without this, equipping a skill on the Skills page is a
-    // no-op and the agent only ever sees its 6 built-ins. The catalog (id +
-    // description + 5-line preview, capped at 10) rides on EVERY turn so toggling
-    // a skill mid-conversation takes effect immediately; `/`-attached skills ride
-    // as authoritative `required_skills`.
-    let skillCatalogBlock: string | null = null;
-    let skillReferencesBlock: string | null = null;
-    if (settings.skillsEnabled || commandSelection.explicitSkillKeys.length > 0) {
-      try {
-        const resolvedSkills = await resolveSkillsForPrompt({
-          enabledSkillToggles: getWorkspaceSkillToggles(
-            settings.skillToggles,
-            projectRoot,
-          ),
-          explicitSkillKeys:
-            commandSelection.explicitSkillKeys.length > 0
-              ? commandSelection.explicitSkillKeys
-              : undefined,
-          skillsEnabled: settings.skillsEnabled,
-          userMessage: contentForModel,
-          workspacePath: projectRoot ?? undefined,
-        });
-        if (resolvedSkills.enabledSkills.length > 0) {
-          skillCatalogBlock = formatSkillCatalogForContext({
-            enabledSkills: resolvedSkills.enabledSkills,
-            totalSkillCount: resolvedSkills.allSkills.length,
-          });
-        }
-        if (resolvedSkills.explicitSkills.length > 0) {
-          skillReferencesBlock = formatSkillReferences(
-            resolvedSkills.explicitSkills,
-            "required_skills",
-          );
-        }
-      } catch (err) {
-        console.warn("[agent-window] skill resolution failed:", err);
-      }
-    }
+    // Standing `.aurora/*.md` project rules — capped, with `/`-attached rules
+    // excluded since they already ride verbatim above. They go to the SYSTEM
+    // PROMPT (via `promptContext.projectRules`), where every reference agent
+    // keeps its instruction files: the same bytes on every request of the
+    // conversation, inside the cached prefix. They used to ride in the
+    // per-message context on the first message only, which put a standing
+    // rule where a one-off fact belongs and lost it after a compaction.
+    //
+    // The skill catalogue and `/`-attached skills are composed into the
+    // system prompt by `composeAgentSystemPrompt` from the same
+    // `explicitSkillKeys`; nothing about skills is built here any more.
+    const autoRulesBlock = await buildAutoRulesContext(
+      projectRoot,
+      commandSelection.ruleFilenames,
+    );
 
     // Team policy: when this turn runs in Team mode, the Lead (this model) must
     // KNOW its live worker ceiling — it can't read settings on its own, so
@@ -1426,18 +1479,14 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       activeFilePath,
     );
 
+    // What belongs to THIS message and nothing else: where the user's
+    // attention is and what they attached to it. The runtime saves it on the
+    // message as its `aurora_context`, the model reads it after the user's
+    // words, and it never changes again. Standing facts (rules, skills, the
+    // team policy, the mode) are in the system prompt — putting them here
+    // meant a copy of the project rules in every message's saved context.
     const ideContext =
-      [
-        baseContext,
-        openFilesBlock,
-        autoRulesBlock,
-        selectionBlock,
-        ruleBlock,
-        mcpBlock,
-        skillCatalogBlock,
-        skillReferencesBlock,
-        teamBlock,
-      ]
+      [openFilesBlock, selectionBlock, ruleBlock, mcpBlock]
         .filter(Boolean)
         .join("\n\n") || null;
 
@@ -1517,6 +1566,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       transcriptChapters: settings.transcriptChapters,
       browserTools: settings.browserTools,
       deferTools: settings.deferTools,
+      // From the CONVERSATION, never from `deepResearchNext`. That setting only
+      // decides what a new chat is born with; an open chat carries its own
+      // answer, and reading the setting here would let flipping it change a
+      // conversation that was framed the other way — and throw its prompt cache
+      // away in the bargain.
+      deepResearch: threadIsDeepResearch(threadId),
     });
 
     try {
@@ -1594,11 +1649,16 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             }));
           },
           onCompactionCompleted: (beforeTokens, afterTokens) => {
+            setActivity({ label: "Responding…" });
             if (compactionEventId) {
               const id = compactionEventId;
               patchMessage(assistantId, (m) => ({
                 ...m,
-                timeline: updateCompaction(timelineOf(m), id, beforeTokens, afterTokens),
+                timeline: finishCompaction(timelineOf(m), id, {
+                  status: "completed",
+                  beforeTokens,
+                  afterTokens,
+                }),
               }));
               compactionEventId = null;
             }
@@ -1606,6 +1666,20 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // real usage event replaces it with a measurement. Recorded as a
             // PROJECTION rather than as usage — see `setProjectedUsage`.
             useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
+          },
+          onCompactionFailed: ({ beforeTokens, reason, cancelled }) => {
+            setActivity({ label: cancelled ? "Stopped" : "Responding…" });
+            if (!compactionEventId) return;
+            const id = compactionEventId;
+            patchMessage(assistantId, (m) => ({
+              ...m,
+              timeline: finishCompaction(timelineOf(m), id, {
+                status: cancelled ? "cancelled" : "failed",
+                beforeTokens,
+                reason,
+              }),
+            }));
+            compactionEventId = null;
           },
           onToolCall: (tc) => {
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
@@ -1759,6 +1833,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             commandSelection.explicitSkillKeys.length > 0
               ? commandSelection.explicitSkillKeys
               : undefined,
+          // Standing facts for the system prompt: the project's rules and,
+          // in Team mode, the worker ceiling.
+          projectRules: autoRulesBlock,
+          teamPolicy: teamBlock,
           // Persist the inspector chips natively onto the user message in the
           // session JSONL so they re-render above the bubble on reopen.
           attachedSelectedElements: selectionPills.length > 0 ? selectionPills : null,

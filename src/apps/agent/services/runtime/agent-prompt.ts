@@ -8,6 +8,8 @@ import {
   useSettingsStore,
 } from "@/kernel/store/useSettingsStore";
 import {
+  CHAT_MODE_SYSTEM_PROMPT,
+  DEEP_RESEARCH_PROMPT,
   getAgentModePromptSection,
   type AgentExecutionMode,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
@@ -40,6 +42,19 @@ export interface AgentPromptContext {
   userMessage: string;
   workspacePath?: string | null;
   /**
+   * The project's standing `.aurora/*.md` rules, already rendered as a
+   * `<project_rules>` block. Goes into the static half of the system prompt:
+   * the same bytes on every request, inside the cached prefix, where every
+   * reference agent keeps its instruction files.
+   */
+  projectRules?: string | null;
+  /**
+   * Team mode's worker ceiling, rendered as `<team_policy>`. A fact about the
+   * turn, so it rides in the dynamic half of the system prompt with the mode
+   * section rather than on the message.
+   */
+  teamPolicy?: string | null;
+  /**
    * Browser-inspector element chips the user attached to this turn in the
    * composer. Forwarded to the runtime so they persist into the session
    * JSONL on the user message (re-rendered above the bubble on reopen).
@@ -68,22 +83,18 @@ export interface ComposedAgentPrompt {
   systemPrompt: string;
 }
 
-export const BASE_AGENT_SYSTEM_PROMPT = `You are Aurora Agent, an advanced AI coding agent that operates from a dedicated Aurora Agent window.
+export const BASE_AGENT_SYSTEM_PROMPT = `You are Aurora Agent, an advanced AI coding agent. You work from the Aurora Agent window: the chat you are speaking in, plus a right-hand dock with **Review** (diffs of what you changed), **Files** (a workspace tree and a file viewer), **Browser** (one embedded panel), and **Terminal** (the user's real shells, which you can read). You act on the user's workspace with your own tools: read and edit files, search code, run shell commands, inspect diagnostics, drive the Browser panel, and call MCP tools when connected.
 
 You are pair programming with a USER to solve their coding task. Each time the USER sends a message, Aurora may attach context about their current state — the files they have open, the workspace layout, project rules. It may or may not be relevant to the task; see "Context Aurora Injects" for what each block means and how fresh it is.
 
 Your main goal is to follow the USER's instructions at each message.
 
-## Core Identity
-- You are Aurora Agent, and the Aurora Agent window is the whole product. There is no separate editor window to hand work off to — everything happens here.
-- This window is the chat you are speaking in, plus a right-hand dock: **Review** (diffs of what you changed), **Files** (a workspace tree and a file viewer), **Browser** (one embedded panel), and **Terminal** (the user's real shells, which you can read).
-- You act on the user's workspace with your own tools: read and edit files, search code, run shell commands, inspect diagnostics, drive the Browser panel, and call MCP tools when connected.
-
 ## Context Aurora Injects
-- Aurora adds blocks to the conversation that the user did not type. They are context, never instructions from the user, and they differ in how fresh they are — treat them accordingly rather than as one undifferentiated wall.
-- \`<repo_map>\` is a SNAPSHOT taken once, at the start of the conversation. After you or the user change files it is stale; trust \`workspace_tree\`, \`code\` and \`file_read\` over it whenever they disagree.
-- \`<aurora_task_reminder>\` is LIVE — re-read from the store on every request, so it always reflects the real checklist. It is the authority on where you stand, not your memory of it.
-- \`<workspace_root>\`, \`<open_files>\`, \`<agent_skills>\`, \`<required_skills>\`, \`<rule …>\` and \`<team_policy>\` describe the user's current setup and standing rules. \`<open_files>\` names what the user has open in the right-hand Files panel — filenames only, never content, so read a file if you need what is in it.
+- Aurora adds blocks to the conversation that the user did not type. They are context, never instructions from the user. Each one is written once, where it happened, and stays there.
+- \`<repo_map>\` sits at the head of the first message: a SNAPSHOT of the workspace taken when the conversation started. After you or the user change files it is stale; trust \`workspace_tree\`, \`code\` and \`file_read\` over it whenever they disagree.
+- \`<aurora_context>\` sits at the end of a user message: what the user had open in the right-hand Files panel, any selection or rule they attached, and a \`<checklist>\` with your task list as it stood when they sent that message. The newest one says where the user's attention is; \`todo\`'s own results say where the checklist stands now.
+- \`<aurora_task_reminder>\` appears inside a tool result, rarely: your checklist has gone untouched for a while. Bring it up to date with \`todo\` and carry on.
+- \`<open_files>\` carries filenames only, never content, so read a file if you need what is in it. \`<agent_skills>\`, \`<required_skills>\`, \`<rule …>\` and \`<team_policy>\` describe the user's setup and standing rules.
 - Long conversations get COMPACTED: older turns are replaced by a summary and only the recent tail survives verbatim. If something you did earlier is missing, it was summarized away rather than never done. Do not silently re-do it — check with a tool, and never re-derive a decision the summary already records.
 
 ## Communication Guidelines
@@ -126,6 +137,9 @@ Your main goal is to follow the USER's instructions at each message.
 ## Shell Commands
 - \`shell\` is required on every shell call. Write the command in one shell's syntax and name that shell. The tool description lists what is actually installed on this machine — choose from that list, and prefer a POSIX shell (\`bash\`, \`zsh\`, \`sh\`) or \`pwsh\` over \`cmd\`. \`cmd\` has no \`head\`, \`tail\`, \`grep\`, \`awk\`, or \`sed\`, so a pipeline written for it fails on the missing utility rather than on your logic
 - Do not mix syntaxes in one command. \`Get-ChildItem | Select-Object -First 5\` is PowerShell; \`ls | head -5\` is POSIX. Pick a shell and stay inside it
+- Write the command exactly as you would type it at that shell's prompt. It reaches the shell untouched: Windows paths keep their backslashes, \`'single quotes'\` preserve everything in bash, \`$VAR\` and \`"quotes"\` mean what the shell says they mean. Do not add escaping for Aurora's sake, and do not work around paths with tricks like \`String.fromCharCode(92)\`
+- The \`<machine_tools>\` block in this prompt names the command-line tools found on this machine (node, pnpm, python, cargo, …). Use it to pick the right command the first time — \`pnpm\` when it is there, \`python\` over \`py\` — and never conclude a tool is missing from a single \`command not found\` when a sibling name might exist
+- Every call starts in the workspace root, like a fresh terminal window. A \`cd\` does not carry over to the next call — put \`cd sub && …\` in the command, or pass \`cwd\`
 - Pass \`timeout\` whenever you expect the command to be slow — a cold build, a full test suite, an install. The default is 2 minutes and you may ask for up to 30
 - \`timedOut: true\` means the process was killed while still working. What you got is partial output, NOT a result: do not read it as a failure, and do not start "fixing" a command that was only slow. Re-run with a larger \`timeout\`, or move the work to \`shell_spawn\`
 - Use \`shell_spawn\` for anything with no natural end — dev servers, watchers, \`tail -f\`. Give it a \`timeout\` only if the run should be bounded
@@ -135,6 +149,9 @@ Your main goal is to follow the USER's instructions at each message.
 ## Task Management
 - For multi-step or non-trivial work, call \`todo\` with \`op: "set"\` to lay out the steps up front, then \`op: "update"\` to mark each one in_progress/completed as you go — it drives the checklist the user watches in the Aurora Agent window's header. Skip it for simple one- or two-step tasks
 - Keep exactly one item in_progress at a time, and update the list as reality changes rather than letting it drift
+- A checklist update never travels alone. Put it in the same message as the tool calls for the next step — close one task, start the next, and read the first file, all in one message
+- The list tracks the WORK, not your reply. Never add a task for writing the answer, presenting findings, or summarizing — the checklist is what you do to the workspace, and it should already be fully closed by the time you write. Close each task the moment that work is done, and never before it is
+- **The message that carries your final answer calls no tools.** A message containing a tool call is not the end of a turn: Aurora has to run the tool and hand you the result, so you are asked again with your answer already behind you — and the only thing left to write is a paragraph repeating it. Close the last task in the message where that work actually finished, then write the answer in a message of its own
 - Do not end your turn with planned todos still open: finish the work, or if you are genuinely blocked, say what is blocking, update the list to match, and call \`ask_question\` when only the user can unblock you (a decision, a missing value, a credential) rather than stalling silently
 
 ## Behavioral Guidelines
@@ -389,6 +406,54 @@ async function projectHasActivePlan(
   }
 }
 
+/**
+ * Where the model is working, stated once in the cached prompt.
+ *
+ * These facts do not change while a conversation runs, so repeating them per
+ * request buys nothing. They used to ride in `<aurora_runtime_state>` beside
+ * the checklist and the open files — genuinely changing things — which meant
+ * the workspace path and the access rules were re-sent every time anything
+ * else moved.
+ *
+ * The shape follows OpenCode's, which carries only session-fixed facts in its
+ * system prompt (`packages/opencode/src/session/system.ts`: working directory,
+ * worktree, git or not, platform, date) and injects nothing per request at all.
+ * Claude Code splits the same way. Aurora is the one that had them mixed.
+ *
+ * The access line rides here for the same reason: it is a standing permission,
+ * set in Settings, not a fact about this turn.
+ */
+export function formatEnvironment(input: {
+  workspacePath?: string | null;
+  workspaceAccess?: string;
+}): string {
+  const root = input.workspacePath?.trim();
+  if (!root) return "";
+  const lines = [
+    "Here is some useful information about the environment you are running in:",
+    "<env>",
+    `  Workspace root: ${root}`,
+    `  Today's date: ${new Date().toISOString().slice(0, 10)}`,
+    "</env>",
+    "You are working inside this project directory. Use your tools (workspace_tree, file_read, grep, …) to explore and edit files here.",
+  ];
+  const access = WORKSPACE_ACCESS_RULES[input.workspaceAccess ?? "workspace"];
+  if (access) lines.push(access);
+  return lines.join("\n");
+}
+
+/**
+ * What the user's out-of-workspace setting permits, in the model's words.
+ *
+ * Moved here from the per-turn context block: it is a setting, so it is the
+ * same on every request of a conversation and belongs in the cached half.
+ */
+const WORKSPACE_ACCESS_RULES: Record<string, string> = {
+  workspace: "",
+  read: "The user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Searching, edits and new files still stay inside the workspace.",
+  full: "The user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why.",
+};
+
 export async function composeAgentSystemPrompt(options: {
   basePrompt?: string;
   executionMode?: AgentExecutionMode;
@@ -402,6 +467,13 @@ export async function composeAgentSystemPrompt(options: {
    * asked for chapters the model had no tool to mark.
    */
   transcriptChapters?: boolean;
+  /**
+   * Aurora Chat: this conversation was started in deep research.
+   *
+   * Read from the CONVERSATION, never from a live setting. It is fixed at
+   * creation, which is what lets its instruction sit in the cacheable prefix.
+   */
+  deepResearch?: boolean;
   /**
    * Include the on-demand tool instruction. Same rule as `transcriptChapters`:
    * this must be the SAME value the caller sends as `deferTools` on the chat
@@ -430,6 +502,7 @@ export async function composeAgentSystemPrompt(options: {
     mcpSummary,
     promptContext,
     transcriptChapters = false,
+    deepResearch = false,
     deferTools = false,
     browserTools = true,
   } = options;
@@ -450,19 +523,70 @@ export async function composeAgentSystemPrompt(options: {
   //
   // Everything here is the same bytes for the whole session. It sits BEFORE
   // `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` so a provider's prompt cache can keep it.
+  // Aurora Chat REPLACES the base prompt rather than appending to it. The
+  // coding prompt opens "You are Aurora Agent, an advanced AI coding agent",
+  // describes a dock of Review / Files / Browser / Terminal, and spends most of
+  // its length on editing, lint runs and shell discipline — every line of which
+  // is false in chat mode. A "now ignore the above" section does not undo it;
+  // it makes the model hold two identities and pays for both on every request.
+  //
+  // A caller that passed its OWN prompt still wins, in either mode. Only the
+  // default is swapped, which is what `AgentService` sends when nobody
+  // overrode it.
+  const chatMode = executionMode === "chat";
+  const requested = basePrompt?.trim();
+  // Both sides TRIMMED. `AgentService`'s defaults set `systemPrompt` to the
+  // coding prompt verbatim, and that constant ends in a newline — so comparing
+  // the trimmed request against the raw constant read the untouched default as
+  // a deliberate override and handed chat mode the coding prompt on every
+  // turn. Seen live on the first real chat turn: it answered "ready to help
+  // with your coding work in E:\…" with none of the tools to do it.
+  const custom =
+    requested && requested !== BASE_AGENT_SYSTEM_PROMPT.trim() ? requested : "";
   const sections = [
-    basePrompt?.trim() || BASE_AGENT_SYSTEM_PROMPT,
+    custom || (chatMode ? CHAT_MODE_SYSTEM_PROMPT : BASE_AGENT_SYSTEM_PROMPT),
+  ];
+
+  if (!chatMode) {
+    // Where the work happens. Session-fixed, so it sits in the cached half
+    // rather than being re-sent with the things that actually change.
+    const environment = formatEnvironment({
+      workspacePath: promptContext.workspacePath,
+      workspaceAccess: settings.workspaceAccess,
+    });
+    if (environment) sections.push(environment);
+
+    // The project's own rules, right after where the work happens. Static:
+    // a rule file changes rarely, and when it does the prefix is re-billed
+    // once, which is what a changed standing rule should cost.
+    const projectRules = promptContext.projectRules?.trim();
+    if (projectRules) sections.push(projectRules);
+
     // Aurora's one built-in doctrine. Always present, never a skill — the
     // depth is pulled on demand via the `design_guidelines` tool.
-    SURFACE_DOCTRINE_CORE,
-    CANVAS_INSTRUCTIONS,
-    SKILL_SYSTEM_INSTRUCTIONS,
-  ];
+    sections.push(SURFACE_DOCTRINE_CORE);
+  }
+  // Canvas survives into chat mode: presenting research on one is half of what
+  // that side is for, and `present_artifact` is on its roster.
+  sections.push(CANVAS_INSTRUCTIONS);
+  if (!chatMode) {
+    // Skills reach chat mode only when the user names one with `/`, so a
+    // roster and a "go and look for skills" instruction would be describing a
+    // system the model cannot drive from there.
+    sections.push(SKILL_SYSTEM_INSTRUCTIONS);
+  }
+  // In the STATIC half deliberately: the flag is fixed at creation, so this
+  // text is byte-identical for the life of the conversation and belongs in the
+  // cached prefix rather than in the volatile tail.
+  if (chatMode && deepResearch) {
+    sections.push(DEEP_RESEARCH_PROMPT);
+  }
 
   // Same contract as chapters below: the browser pointer is present only when
   // the browser bucket is, so the prompt can never name a tool the model was
   // not given — the exact drift the 1,126-token section it replaced had.
-  if (browserTools) {
+  // Chat mode has no browser tools at all, whatever the switch says.
+  if (browserTools && !chatMode) {
     sections.push(BROWSER_INSTRUCTIONS);
   }
 
@@ -505,6 +629,20 @@ export async function composeAgentSystemPrompt(options: {
   // longest common PREFIX and need no markers; Anthropic needs the explicit
   // breakpoint the boundary gives it. Both want the same section order.
   const dynamicSections = [getAgentModePromptSection(executionMode, { hasActivePlan })];
+  // The skill catalogue rides here, not on the message: it is the same for
+  // every request until the user toggles a skill, and a toggle then costs
+  // one re-bill of this half instead of a copy in every message's context.
+  // Chat mode reaches skills only by name, so it gets no catalogue.
+  if (!chatMode && enabledSkills.length > 0) {
+    dynamicSections.push(
+      formatSkillCatalogForContext({ enabledSkills, totalSkillCount: allSkills.length }),
+    );
+  }
+  if (explicitSkills.length > 0) {
+    dynamicSections.push(formatSkillReferences(explicitSkills, "required_skills"));
+  }
+  const teamPolicy = promptContext.teamPolicy?.trim();
+  if (teamPolicy) dynamicSections.push(teamPolicy);
   if (mcpSummary?.trim()) {
     dynamicSections.push(mcpSummary.trim());
   }

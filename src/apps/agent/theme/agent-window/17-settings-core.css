@@ -765,3 +765,98 @@
   background: color-mix(in srgb, var(--agw-info) 12%, transparent);
 }
 
+
+/* ── Connection block ───────────────────────────────────────────────────────
+ * The paste-this-elsewhere block: a config snippet plus the one thing that is
+ * true about it that JSON cannot say. Used by Settings → Agent → Other agents.
+ *
+ * A bordered block rather than a bare <pre>: the content is a self-contained
+ * thing the reader takes somewhere else, which is exactly when a container
+ * earns its place. */
+.agw-set-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agw-set-connect-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agw-set-connect-title {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-set-connect-code {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--agw-code-border);
+  border-radius: var(--agw-set-r-inner);
+  background: var(--agw-code-surface);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+  /* A Windows path is long and must not push the settings column sideways —
+   * the block scrolls, the page never does. */
+  overflow-x: auto;
+  white-space: pre;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.agw-set-connect-note {
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.6;
+  color: var(--agw-text-muted);
+}
+.agw-set-connect-note em {
+  font-style: normal;
+  color: var(--agw-text);
+}
+
+/* ── Command usage list ─────────────────────────────────────────────────────
+ * What installing the CLI actually gives you. A two-column list rather than a
+ * code block: these are five separate commands, and running them together as
+ * one block is the shape of a script, which they are not.
+ *
+ * Collapses to stacked rows under 420px, where a command and its explanation
+ * side by side leaves neither enough room to be read. */
+.agw-set-usage {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  align-items: baseline;
+  /* A long command must scroll here rather than widen the settings column. */
+  overflow-x: auto;
+}
+.agw-set-usage-row {
+  display: contents;
+}
+.agw-set-usage-cmd {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  letter-spacing: normal;
+  color: var(--agw-accent);
+  white-space: nowrap;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.agw-set-usage-what {
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+@media (max-width: 420px) {
+  .agw-set-usage {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .agw-set-usage-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 8px;
+  }
+}

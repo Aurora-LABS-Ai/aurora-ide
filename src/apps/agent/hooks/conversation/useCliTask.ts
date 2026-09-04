@@ -126,6 +126,14 @@ export function useCliTask(send: AgentWindowSend["send"]): void {
 
         await sendRef.current(task.prompt, undefined, {
           cliTaskId: task.id,
+          // The model the dispatch named, carried per-turn rather than left to
+          // the pin above. `setThreadModel` cannot reach a thread that is not
+          // in `threads`/`allThreads`, and one created for this send is in
+          // neither — so a `--model` dispatch into a NEW conversation resolved
+          // to nothing and ran on the window's default instead. The pin is
+          // still set: it persists to the sidecar and is what the conversation
+          // keeps afterwards. This is what makes the turn itself obey.
+          model: pin,
           // `--plan` means read-only, and it has to be enforced for the turn
           // rather than merely written into the request file. Reading this
           // field and not applying it is exactly how a `--plan` dispatch

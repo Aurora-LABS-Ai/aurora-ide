@@ -1,6 +1,11 @@
 /**
  * Shell Tools - Definitions
- * Tools for executing shell commands and terminal operations
+ *
+ * Display and approval metadata only. The model's real schema for every tool
+ * here is the Rust one (`src-tauri/src/tools/shell_editor_todo/`), which is
+ * what `nativeRustOwned` means — so this file mirrors that schema rather than
+ * describing a tool of its own. The `shell` argument is enumerated from the
+ * user's enabled shells at runtime and cannot be listed statically here.
  */
 import type { ToolDefinition } from "@/apps/agent/tools/types";
 
@@ -13,13 +18,18 @@ export const shellExecuteTool: ToolDefinition = {
   function: {
     name: "shell_execute",
     description:
-      'Execute a shell command in the workspace directory. By default this runs in the inline terminal and shows output inside the tool dropdown. Pass type: "terminal" to route output to the main IDE terminal instead. Returns stdout, stderr, and exit code. Use with caution as this can modify the system.',
+      "Run a command in a shell, exactly as if typed at its prompt, and return what it printed with its exit code. Runs in the workspace root unless cwd says otherwise. It can change files and the system, so use it with care.",
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
           description: "The shell command to execute",
+        },
+        shell: {
+          type: "string",
+          description:
+            "The shell this command is written for, chosen from the ones enabled in Settings → Tools → Shells. Required — command syntax is not portable between shells.",
         },
         cwd: {
           type: "string",
@@ -29,18 +39,11 @@ export const shellExecuteTool: ToolDefinition = {
         timeout: {
           type: "number",
           description:
-            "Timeout in milliseconds. Defaults to 30000 (30 seconds), maximum 300000 (5 minutes). Use shell_spawn for long-running commands.",
-          default: 30000,
-        },
-        type: {
-          type: "string",
-          description:
-            'Where to render command execution. Omit for the inline terminal in the tool dropdown, or set to "terminal" to use the main IDE terminal.',
-          enum: ["inline", "terminal"],
-          default: "inline",
+            "Timeout in milliseconds. Defaults to 120000 (2 minutes), maximum 1800000 (30 minutes). On timeout the process is killed and whatever it printed comes back with timedOut: true. Use shell_spawn for work with no natural end.",
+          default: 120000,
         },
       },
-      required: ["command"],
+      required: ["command", "shell"],
     },
   },
 };
@@ -108,13 +111,18 @@ export const shellSpawnTool: ToolDefinition = {
   function: {
     name: "shell_spawn",
     description:
-      "Spawn a long-running background process (e.g., dev server, watch process). Returns a process ID for later management.",
+      "Start a long-running process in the background (a dev server, a watcher) and return a process ID. Its output is written to a file you can follow with shell_read_output; stop it with shell_kill.",
     parameters: {
       type: "object",
       properties: {
         command: {
           type: "string",
           description: "The shell command to spawn",
+        },
+        shell: {
+          type: "string",
+          description:
+            "The shell this command is written for, chosen from the ones enabled in Settings → Tools → Shells. Required.",
         },
         cwd: {
           type: "string",
@@ -123,10 +131,16 @@ export const shellSpawnTool: ToolDefinition = {
         },
         name: {
           type: "string",
-          description: "A friendly name for this process for later reference",
+          description:
+            "One-line title shown to the user while the process runs, e.g. \"Vite dev server\". Describe what it is, not the command line.",
+        },
+        timeout: {
+          type: "number",
+          description:
+            "Hard lifetime cap in milliseconds. Omit for a server you will stop yourself with shell_kill.",
         },
       },
-      required: ["command"],
+      required: ["command", "name", "shell"],
     },
   },
 };

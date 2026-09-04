@@ -17,7 +17,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 
-import { useSettingsStore, type LLMModel, type LLMProvider } from "@/kernel/store/useSettingsStore";
+import {
+  CHAT_SHORTLIST_MAX,
+  useSettingsStore,
+  type LLMModel,
+  type LLMProvider,
+} from "@/kernel/store/useSettingsStore";
 import type {
   ReasoningReplayMode,
   ReasoningRequestMode,
@@ -35,6 +40,7 @@ import {
   type OpenCodeWire,
 } from "@/apps/agent/services/providers/opencode";
 import { groupProviders, isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
+import { ImageProvidersSection } from "@/apps/agent/settings/ImageProvidersSection";
 import {
   loadPinnedProviders,
   loadProviderGroupsOpen,
@@ -54,6 +60,8 @@ import {
   AGENT_ROUTER_WIRES,
   type AgentRouterWire,
 } from "@/apps/agent/services/providers/agentrouter";
+import { isModalProvider } from "@/apps/agent/services/providers/modal";
+import { ModalWorkspaceCard } from "./ModalWorkspaceCard";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
@@ -62,6 +70,8 @@ import { CodexUsageCard } from "./CodexUsageCard";
 import { KenariUsageCard } from "./KenariUsageCard";
 import { CursorProviderCard } from "./CursorProviderCard";
 import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
+import { CommandCodeProviderCard } from "./CommandCodeProviderCard";
+import { isCommandCodeProvider } from "@/apps/agent/services/providers/commandcode";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
 /**
@@ -143,10 +153,18 @@ const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = 
 
 function apiFormatForProviderType(type: string | undefined): Exclude<EditableApiFormat, "inherit"> {
   const normalized = (type ?? "").toLowerCase();
-  if (["anthropic", "minimax", "kenari-messages", "opencode-go-messages"].includes(normalized)) {
+  if (
+    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages", "modal-messages"].includes(
+      normalized,
+    )
+  ) {
     return "messages";
   }
-  if (["openai-responses", "kenari-responses", "opencode-go", "codex"].includes(normalized)) {
+  if (
+    ["openai-responses", "kenari-responses", "opencode-go", "codex", "modal-responses"].includes(
+      normalized,
+    )
+  ) {
     return "responses";
   }
   return "chat";
@@ -164,6 +182,13 @@ function providerTypeForApiFormat(
       : format === "messages"
         ? "kenari-messages"
         : "kenari";
+  }
+  if (owner.startsWith("modal")) {
+    return format === "responses"
+      ? "modal-responses"
+      : format === "messages"
+        ? "modal-messages"
+        : "modal";
   }
   if (owner.startsWith("opencode-go")) {
     return format === "responses"
@@ -646,6 +671,16 @@ const ModelRow: React.FC<{
 }> = ({ model, active, onActivate, providerTemperature, providerType }) => {
   const updateModel = useSettingsStore((s) => s.updateModel);
   const deleteModel = useSettingsStore((s) => s.deleteModel);
+  // Aurora Chat's shortlist. `selection` is the same `providerId:modelKey`
+  // string the composer and the thread sidecar use, so a ticked row and a
+  // pinned conversation are talking about the same thing.
+  const selection = `${model.providerId}:${model.modelKey}`;
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const shortlisted = useSettingsStore((s) => s.chatModelShortlist.includes(selection));
+  const shortlistFull = useSettingsStore(
+    (s) => s.chatModelShortlist.length >= CHAT_SHORTLIST_MAX,
+  );
+  const toggleChatShortlistModel = useSettingsStore((s) => s.toggleChatShortlistModel);
   const [editing, setEditing] = useState(false);
   const [limitsBusy, setLimitsBusy] = useState(false);
   const [limitsNote, setLimitsNote] = useState<string | null>(null);
@@ -670,9 +705,13 @@ const ModelRow: React.FC<{
   // control there would be a switch that does nothing.
   const effectiveWire = (isOpenCode ? ocWire : model.providerType ?? providerType ?? "").toLowerCase();
   const wireFormat: "chat" | "responses" | "messages" | "native" =
-    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages"].includes(effectiveWire)
+    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages", "modal-messages"].includes(
+      effectiveWire,
+    )
       ? "messages"
-      : ["openai-responses", "kenari-responses", "opencode-go"].includes(effectiveWire)
+      : ["openai-responses", "kenari-responses", "opencode-go", "modal-responses"].includes(
+            effectiveWire,
+          )
         ? "responses"
         : ["codex", "cursor"].includes(effectiveWire)
           ? "native"
@@ -749,6 +788,30 @@ const ModelRow: React.FC<{
           {active && <AgwPill tone="success">Active</AgwPill>}
         </button>
         <div className="agw-prov-model-actions">
+          {/* Aurora Chat's shortlist. Present only on that side: Build's roster
+              is long on purpose and has no shortlist, so the control would be a
+              switch with nothing behind it. */}
+          {chatSurface && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={shortlisted}
+              className="agw-prov-chat-pick"
+              data-on={shortlisted || undefined}
+              disabled={!shortlisted && shortlistFull}
+              title={
+                shortlisted
+                  ? "Offered in Aurora Chat's model picker. Click to remove."
+                  : shortlistFull
+                    ? `Aurora Chat holds ${CHAT_SHORTLIST_MAX} models. Remove one to add this.`
+                    : "Offer this model in Aurora Chat's model picker"
+              }
+              onClick={() => toggleChatShortlistModel(selection)}
+            >
+              <AgentIcon name={shortlisted ? "check" : "plus"} size={12} />
+              <span>Chat</span>
+            </button>
+          )}
           {reasoning?.type === "effort" && reasoning.levels?.length ? (
             <AgwSegmented
               ariaLabel="Reasoning level"
@@ -1388,7 +1451,9 @@ const ProviderDetail: React.FC<{
   models: LLMModel[];
   selectedModel: string;
   onDeleted: () => void;
-}> = ({ provider, models, selectedModel, onDeleted }) => {
+  /** Move the rail's selection — a card that creates a sibling row uses it. */
+  onSelectProvider?: (id: string) => void;
+}> = ({ provider, models, selectedModel, onDeleted, onSelectProvider }) => {
   const updateProvider = useSettingsStore((s) => s.updateProvider);
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
@@ -1398,8 +1463,10 @@ const ProviderDetail: React.FC<{
   const codex = isCodexProvider(provider);
   const cursor = isCursorProvider(provider);
   const opencode = isOpenCodeProvider(provider);
+  const commandcode = isCommandCodeProvider(provider);
   const builtIn = isBuiltInProvider(provider);
   const kenari = isKenariProvider(provider);
+  const modal = isModalProvider(provider);
   const wire = kenariWire(provider);
   const agentrouter = isAgentRouterProvider(provider);
   const arWire = agentRouterWire(provider);
@@ -1461,6 +1528,15 @@ const ProviderDetail: React.FC<{
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
           onKeyImported={(apiKey) => updateProvider(provider.id, { apiKey })}
         />
+      ) : commandcode ? (
+        /* Owns its head for the same reason the ones above do: which account
+           is paying is the first thing worth reading, and it has two possible
+           answers. The key field and the model list still render underneath. */
+        <CommandCodeProviderCard
+          apiKey={provider.apiKey}
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
       ) : kenari ? (
         /* kenari owns its head for the same reason the four above do: the plan
            bar is the first thing worth reading, and the generic name/type head
@@ -1471,6 +1547,11 @@ const ProviderDetail: React.FC<{
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
+      ) : modal ? (
+        /* Modal's card owns the whole connection — region, token, endpoint
+           list and wire — because on Modal they are one decision, so the
+           generic fields below are skipped for it the way Codex's are. */
+        <ModalWorkspaceCard provider={provider} models={models} onSelectProvider={onSelectProvider} />
       ) : (
         <div className="agw-prov-detail-head">
           <ProviderAvatar provider={provider} />
@@ -1490,7 +1571,7 @@ const ProviderDetail: React.FC<{
           are managed by the card above, and both Rust adapters pin the URL so
           a stale field could not reroute a turn anyway. Cursor also owns its
           own model list, which the generic model editor must not duplicate. */}
-      {!codex && !cursor && (
+      {!codex && !cursor && !modal && (
       <div className="agw-prov-conn">
         {/* kenari answers the same account on three different wires, and the
             choice changes real behaviour — not a preference. Offered here
@@ -1643,6 +1724,13 @@ const ProviderDetail: React.FC<{
               Each model answers on one API format, already set per model. Change a Format only
               when that model starts failing. The wrong one returns a server error, or a 401 that
               looks like a rejected key.
+            </p>
+          )}
+          {modal && (
+            <p className="agw-prov-models-hint">
+              These rows are the workspace's live endpoints, named by their hostname. Refresh
+              endpoints above after deploying or stopping one; a row added by hand needs the
+              endpoint's full hostname as its model id.
             </p>
           )}
           <div className="agw-prov-models-panel">
@@ -1856,6 +1944,9 @@ export const ProvidersSettings: React.FC = () => {
       alive = false;
     };
   }, [models, updateModel]);
+
+  /** Image providers are an Aurora Chat thing; Build makes software. */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
 
   // Shipped-with-Aurora rows first, then the user's own. Sorting is stable, so
   // providers the user added stay in the order they added them.
@@ -2105,6 +2196,7 @@ export const ProvidersSettings: React.FC = () => {
               models={modelsByProvider.get(selected.id) ?? []}
               selectedModel={selectedModel}
               onDeleted={() => setActiveId(null)}
+              onSelectProvider={setActiveId}
             />
           ) : (
             <div className="agw-prov-detail agw-prov-detail-empty">
@@ -2115,6 +2207,13 @@ export const ProvidersSettings: React.FC = () => {
               </AgwButton>
             </div>
           )}
+
+          {/* Image providers — Aurora Chat only. Below the language-model
+              detail rather than above it: the provider you clicked is what you
+              came to this pane to see. Collapsed until there is one, so on the
+              common path it is a single quiet row rather than a wall of empty
+              fields. */}
+          {chatSurface && <ImageProvidersSection />}
         </div>
       </section>
     </div>

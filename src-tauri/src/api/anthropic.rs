@@ -36,7 +36,8 @@ use crate::agent_runtime::types::TokenUsage;
 
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
-    build_anthropic_body, build_anthropic_headers, build_anthropic_url, encode_redacted_thinking,
+    apply_opencode_headers, build_anthropic_body, build_anthropic_headers, build_anthropic_url,
+    encode_redacted_thinking,
     finalize_assistant_message, frame_payloads, map_reqwest_error, map_status_error_with_headers,
     merge_usage, unprefix_model, AnthropicStreamEvent, BlockState, OpenAiStreamError,
     RequestOrigin, SseFrameBuffer,
@@ -96,7 +97,8 @@ impl StreamingApiClient for AnthropicAdapter {
         }
 
         let url = build_anthropic_url(&self.config.base_url);
-        let headers = build_anthropic_headers(&self.config)?;
+        let mut headers = build_anthropic_headers(&self.config)?;
+        apply_opencode_headers(&mut headers, &self.config, request.session_key)?;
         let body = build_anthropic_body(&request, &self.config);
 
         // Race the HTTP send against cancellation so a cancel during

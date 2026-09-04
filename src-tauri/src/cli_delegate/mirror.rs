@@ -33,6 +33,7 @@ use std::time::Instant;
 
 use crate::agent_runtime::events::{AssistantEvent, TurnCompletion};
 
+use super::cancel;
 use super::inbox::{Inbox, Transcript};
 use super::task::{cap_text, ResultKind, TaskEvent};
 
@@ -90,6 +91,25 @@ pub fn bind(
         return false;
     }
 
+    // A cancel that arrived while this task was claimed but had no turn yet.
+    // The watcher deliberately leaves that case alone (see
+    // [`super::cancel`]) because there is nothing there to cancel, and a
+    // result line written by anyone else would be overtaken by this turn
+    // starting a moment later. This is the choke point every dispatched turn
+    // passes through, so it is where that cancel is honoured: close the
+    // transcript and refuse the bind, which the frontend already reads as "do
+    // not start a turn for this task".
+    if cancel::take(&inbox, task_id) {
+        let _ = transcript.append(&TaskEvent::Result {
+            subtype: ResultKind::Cancelled,
+            result: None,
+            error: None,
+            duration_ms: 0,
+            num_turns: 0,
+        });
+        return false;
+    }
+
     let mut guard = match BOUND.lock() {
         Ok(guard) => guard,
         // A poisoned lock means a previous mirror panicked mid-write. The
@@ -124,6 +144,24 @@ pub fn is_active() -> bool {
         .lock()
         .map(|guard| guard.as_ref().is_some_and(|map| !map.is_empty()))
         .unwrap_or(false)
+}
+
+/// The turn currently running a given task, if one is.
+///
+/// The reverse of the binding, and the only way to cancel a dispatched task:
+/// the canceller knows a task id, the runtime registry only knows turn ids, and
+/// this map is the sole place the two are ever associated.
+///
+/// `None` means no turn is running for that task — it has finished, or has not
+/// started yet. Those are different situations to the caller, so this does not
+/// try to distinguish them; [`super::cancel`] does, from the files.
+pub fn turn_for_task(task_id: &str) -> Option<String> {
+    let guard = BOUND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.as_ref()?.iter().find_map(|(turn_id, binding)| {
+        (binding.task_id == task_id).then(|| turn_id.clone())
+    })
 }
 
 /// Mirror one streamed event, if its turn is bound.
@@ -185,8 +223,6 @@ pub fn finish(turn_id: &str, outcome: Outcome<'_>) {
         duration_ms: binding.started.elapsed().as_millis() as u64,
         num_turns: binding.turns,
     });
-
-    let _ = binding.task_id;
 }
 
 /// How a mirrored turn ended.
@@ -262,6 +298,17 @@ pub fn translate(event: &AssistantEvent) -> Option<TaskEvent> {
             after_tokens,
         } => Some(TaskEvent::Notice {
             message: format!("compacted {before_tokens} → {after_tokens} tokens"),
+        }),
+        AssistantEvent::CompactionFailed {
+            before_tokens,
+            reason,
+            cancelled,
+        } => Some(TaskEvent::Notice {
+            message: if *cancelled {
+                format!("compaction stopped; context unchanged at {before_tokens} tokens")
+            } else {
+                format!("compaction failed ({reason}); context unchanged at {before_tokens} tokens")
+            },
         }),
         AssistantEvent::QueuedMessageInjected { text, .. } => Some(TaskEvent::Notice {
             message: format!("queued message delivered: {text}"),

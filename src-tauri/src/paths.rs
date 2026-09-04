@@ -84,6 +84,30 @@ pub fn sessions_dir() -> PathBuf {
     ensure_subdir("sessions")
 }
 
+/// `<root>/Chats/` — Aurora Chat conversations, one FOLDER each.
+///
+/// Deliberately not `sessions/`, and deliberately not the same layout. A chat
+/// owns images, so it owns a directory:
+///
+/// ```text
+/// Chats/
+///   chats.db                  <- derived FTS5 index, rebuildable from the folders
+///   <conversation-id>/
+///     conversation.jsonl      <- canonical history
+///     meta.json
+///     rich.jsonl
+///     artifacts.json
+///     assets/                 <- this conversation's images
+/// ```
+///
+/// The folders are the truth and `chats.db` is an index built from them, so a
+/// corrupt or deleted database costs a rebuild rather than history. Deleting a
+/// conversation is deleting one directory, which is the whole reason the layout
+/// differs from `sessions/`'s flat files plus stem-matched sidecars.
+pub fn chats_dir() -> PathBuf {
+    ensure_subdir("Chats")
+}
+
 /// `<root>/cli-tasks/` — the hand-off point between an `aurora agent` command
 /// typed in a terminal and the running Aurora that executes it.
 ///
@@ -106,6 +130,26 @@ pub fn sessions_dir() -> PathBuf {
 /// loses work, so it does not live where "safe to delete" is the contract.
 pub fn cli_tasks_dir() -> PathBuf {
     ensure_subdir("cli-tasks")
+}
+
+/// `<root>/bridge.json` — what the running app publishes about itself for
+/// another process to read: whether the Agent Window is open, whether the user
+/// has allowed outside agents to drive it, and what it is working on.
+///
+/// A single file at the root rather than a directory, because there is exactly
+/// one of these per machine and it is rewritten whole every time.
+///
+/// Read by `aurora mcp` (see `cli_delegate::mcp`) to decide whether a tool call
+/// can be carried out. Deliberately NOT read by `aurora agent`: a dispatched
+/// task waits on disk for an Aurora that does not exist yet, and gating it on a
+/// window would break the one property that makes the CLI usable from a cold
+/// terminal.
+///
+/// The file is only ever a *hint*. It can outlive the process that wrote it —
+/// a crash leaves it claiming a window that is gone — so every reader pairs it
+/// with `cli_delegate::presence`, which the OS invalidates on process death.
+pub fn bridge_state_file() -> PathBuf {
+    root().join("bridge.json")
 }
 
 /// `<root>/code-index/` — one cached symbol index per workspace, named by the

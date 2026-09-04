@@ -210,21 +210,14 @@ pub struct Session {
     /// drained to the `.rich.jsonl` sidecar right after the session
     /// persists. Not serialized into the message JSONL.
     pub rich_results: RichResultsSlot,
-    /// Consecutive failed compaction attempts, reset on success.
+    /// Fail-closed latch for automatic compaction.
     ///
-    /// Compaction sends the entire head of the conversation to a model, so it
-    /// is routinely the most expensive request a long chat makes. When it
-    /// fails it does not fix the overrun that triggered it, so the next turn
-    /// crosses the same threshold and tries again — an unbounded retry loop
-    /// that bills full price every turn and shows the user nothing but a
-    /// spinner. Lives on the session (which the registry caches across turns)
-    /// rather than the per-turn runtime, because a per-turn counter can never
-    /// see the second attempt. Process-local: never persisted, so a restart is
-    /// a deliberate clean slate.
-    pub compaction_failures: u32,
-    /// Epoch millis before which compaction must not be retried. Set when
-    /// [`Self::compaction_failures`] hits the ceiling.
-    pub compaction_retry_after: Option<i64>,
+    /// One failed summary has already paid to send the full head and has not
+    /// changed the trigger condition. Retrying automatically would repeat the
+    /// same expensive request. The latch is cleared only by a successful
+    /// compaction (including an explicit manual `/compact`), never by time.
+    /// Process-local: a reload is a deliberate clean slate.
+    pub auto_compaction_blocked: bool,
     /// Streams each appended message to disk. See [`Journal`]. Absent by
     /// default: a session with no journal behaves exactly as it always did,
     /// which is what every test and every non-persisting caller wants.
@@ -246,8 +239,7 @@ impl Session {
             model: None,
             queued_message: empty_queue_slot(),
             rich_results: empty_rich_results_slot(),
-            compaction_failures: 0,
-            compaction_retry_after: None,
+            auto_compaction_blocked: false,
             journal: Journal::default(),
         }
     }
@@ -720,6 +712,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -732,6 +725,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -892,6 +886,7 @@ mod tests {
             timestamp: 1_700_000_000_000,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }

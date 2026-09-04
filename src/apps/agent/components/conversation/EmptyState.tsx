@@ -6,11 +6,15 @@
  * floats above the centered composer (not docked at the bottom), with a row of
  * suggestion starters underneath.
  *
- * The starters are PROJECT-AWARE — the same four opening moves the IDE chat
- * panel offers, built by the shared `buildStarterPrompts` and named after the
- * workspace this window is scoped to. They were previously four fixed generic
- * lines ("Find a bug", "Write tests"), which asked the user to supply the
- * context the product already had.
+ * On the Build side the starters are PROJECT-AWARE — the same four opening
+ * moves the IDE chat panel offers, built by the shared `buildStarterPrompts`
+ * and named after the workspace this window is scoped to. They were previously
+ * four fixed generic lines ("Find a bug", "Write tests"), which asked the user
+ * to supply the context the product already had.
+ *
+ * Aurora Chat has no workspace to name, so it gets its own four fixed lines
+ * (`chat-starter-prompts.ts`) rather than none — a composer with empty space
+ * under it and nothing to click was the first thing anyone noticed about it.
  *
  * Isolated by design — all colour comes from `--agw-*` tokens; the composer is
  * reused (controlled here so a suggestion can prefill the draft).
@@ -23,11 +27,16 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { newChatDraftKey, useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { AgentComposer } from "@/apps/agent/components/composer/AgentComposer";
 import { ProjectSwitcher } from "@/apps/agent/components/panels/ProjectSwitcher";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useWorkspaceSummary } from "@/apps/agent/hooks/useWorkspaceSummary";
 import {
   buildStarterPrompts,
   type StarterPromptKind,
 } from "@/apps/agent/services/workspace/workspace-starter-prompts";
+import {
+  CHAT_STARTER_PROMPTS,
+  type ChatStarterKind,
+} from "@/apps/agent/services/threads/chat-starter-prompts";
 import type { AttachedPromptChip } from "@/apps/agent/services/threads/thread-service";
 
 /**
@@ -47,6 +56,14 @@ const KIND_ICONS: Record<StarterPromptKind, AgentIconName> = {
   "read-first": "book-open",
 };
 
+/** The same mapping for Aurora Chat's own four. See `chat-starter-prompts.ts`. */
+const CHAT_KIND_ICONS: Record<ChatStarterKind, AgentIconName> = {
+  research: "search",
+  explain: "book",
+  compare: "diff",
+  recall: "database",
+};
+
 interface EmptyStateProps {
   /** Send the first message (materialises the thread). */
   onSubmit?: (text: string, fileChips?: AttachedPromptChip[]) => void;
@@ -61,7 +78,13 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   sending = false,
   onStop,
 }) => {
-  const projectRoot = useAgentChatStore((s) => s.projectRoot);
+  /** Aurora Chat has no workspace, so it has no project row and its own starters. */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  // The window KEEPS its project while you are in Chat, so Build resumes on it.
+  // This view must not see it: it would key the draft to a folder the chat has
+  // nothing to do with, and scan that folder to build starters nothing renders.
+  const windowProject = useAgentChatStore((s) => s.projectRoot);
+  const projectRoot = chatSurface ? null : windowProject;
   // The new-chat draft is scoped per project, so an unsent idea in project A
   // survives a dip into project B (and an app restart). The composer clears it
   // on send via `onValueChange("")`; a suggestion click prefills it.
@@ -136,7 +159,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
          *  It is also the CONTROL for changing project — see ProjectSwitcher,
          *  which hides itself when no workspace is open rather than showing a
          *  placeholder that raises the question it exists to answer. */}
-        <ProjectSwitcher />
+        {!chatSurface && <ProjectSwitcher />}
 
         {/* Composer (centered) */}
         <AgentComposer
@@ -146,27 +169,51 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           onSubmit={onSubmit}
           sending={sending}
           onStop={onStop}
-          placeholder="Describe a task — type @ for files, / for skills and rules"
+          placeholder={
+            chatSurface
+              ? "Ask anything"
+              : "Describe a task — type @ for files, / for skills and rules"
+          }
         />
 
         {/* Starters — plain rows with dividers (no boxes). Keyed by `kind`, not
-         *  by label: the label is rewritten in place when the workspace scan
+         *  by label: a Build label is rewritten in place when the workspace scan
          *  resolves, and a title key would remount every row (dropping hover and
-         *  keyboard focus) for what is only a wording refinement. */}
+         *  keyboard focus) for what is only a wording refinement.
+         *
+         *  Both sides get four. Build's are built from the workspace ("Review
+         *  the recent changes in <project>"); Chat's are fixed, because there is
+         *  no workspace to name — see `chat-starter-prompts.ts`. Chat shipped
+         *  with none at all, which left the composer sitting alone near the
+         *  bottom of the pane with nothing under it. */}
         <div className="mt-4">
-          {starters.map((starter) => (
-            <button
-              key={starter.kind}
-              type="button"
-              className="agw-suggestion"
-              onClick={() => setDraft(starter.prompt)}
-            >
-              <span className="agw-suggestion-icon">
-                <AgentIcon name={KIND_ICONS[starter.kind]} size={16} />
-              </span>
-              <span className="agw-suggestion-label">{starter.title}</span>
-            </button>
-          ))}
+          {chatSurface
+            ? CHAT_STARTER_PROMPTS.map((starter) => (
+                <button
+                  key={starter.kind}
+                  type="button"
+                  className="agw-suggestion"
+                  onClick={() => setDraft(starter.prompt)}
+                >
+                  <span className="agw-suggestion-icon">
+                    <AgentIcon name={CHAT_KIND_ICONS[starter.kind]} size={16} />
+                  </span>
+                  <span className="agw-suggestion-label">{starter.title}</span>
+                </button>
+              ))
+            : starters.map((starter) => (
+                <button
+                  key={starter.kind}
+                  type="button"
+                  className="agw-suggestion"
+                  onClick={() => setDraft(starter.prompt)}
+                >
+                  <span className="agw-suggestion-icon">
+                    <AgentIcon name={KIND_ICONS[starter.kind]} size={16} />
+                  </span>
+                  <span className="agw-suggestion-label">{starter.title}</span>
+                </button>
+              ))}
         </div>
       </div>
     </div>

@@ -32,6 +32,7 @@ import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
+  applyChatShortlist,
   normalizeThreadModelSelection,
   pinnedThreadModel,
 } from "@/apps/agent/lib/thread/thread-model";
@@ -485,10 +486,19 @@ export const ModelSelector: React.FC<{
   const providers = useSettingsStore((s) => s.providers);
   const models = useSettingsStore((s) => s.models);
   const pinned = useAgentChatStore((s) => pinnedThreadModel(s, forThread));
-  const selectedModel = useMemo(
-    () => normalizeThreadModelSelection(pinned ?? defaultModel, models),
-    [pinned, defaultModel, models],
-  );
+  // Aurora Chat offers a shortlist — up to ten models ticked on the provider
+  // page — and a conversation whose model leaves it falls to the next one
+  // rather than breaking. Read here as well as in `resolveThreadModel` so the
+  // pill shows the model the turn will actually run on.
+  //
+  // `chatSurface` also gates the Agent/Plan toggle further down — those are
+  // ways of working on a project and Aurora Chat has none.
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatShortlist = useSettingsStore((s) => s.chatModelShortlist);
+  const selectedModel = useMemo(() => {
+    const normalized = normalizeThreadModelSelection(pinned ?? defaultModel, models);
+    return chatSurface ? applyChatShortlist(normalized, chatShortlist, models) : normalized;
+  }, [pinned, defaultModel, models, chatSurface, chatShortlist]);
 
   // Threads created before Cursor's stable model rows can still carry a wire
   // variant such as `cursor-grok-4.6-high-fast`. Display the stable row now and
@@ -506,6 +516,31 @@ export const ModelSelector: React.FC<{
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const teamEnabled = useSettingsStore((s) => s.teamEnabled);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
+  /** The seed for the NEXT chat. Only meaningful when none is open. */
+  const deepResearchNext = useSettingsStore((s) => s.deepResearchNext);
+  const setDeepResearchNext = useSettingsStore((s) => s.setDeepResearchNext);
+  /**
+   * What the OPEN conversation is, which outranks the seed whenever there is
+   * one — and cannot be changed, because deep research is fixed at creation.
+   */
+  const threadDeepResearch = useAgentChatStore((s) => {
+    const id = s.currentThreadId;
+    if (!id) return false;
+    const found =
+      s.allThreads.find((t) => t.id === id) ?? s.threads.find((t) => t.id === id);
+    return found?.deepResearch === true;
+  });
+  const deepResearchLocked = useAgentChatStore((s) => s.currentThreadId !== null);
+  /**
+   * Deep research, as it stands right now — what the OPEN conversation is, or
+   * what the next one will be born as.
+   *
+   * On the composer pill, not only inside the menu. Deep research changes how
+   * a whole conversation behaves, the same way Plan mode does, and a state you
+   * have to open a menu to see is one you forget you are in.
+   */
+  const deepResearchActive =
+    chatSurface && (deepResearchLocked ? threadDeepResearch : deepResearchNext);
 
   // The mode of the turn RUNNING on this chat, when it differs from the
   // setting. A task dispatched with `aurora agent --plan` runs read-only for
@@ -539,7 +574,15 @@ export const ModelSelector: React.FC<{
   // with the models-slice row for capabilities + reasoning + recency.
   const options = useMemo<RichOption[]>(() => {
     const canonical = useSettingsStore.getState().getAvailableModels();
-    return canonical.map((o) => {
+    // In Aurora Chat the picker offers the shortlist and nothing else — that
+    // is what ticking a model on the provider page does. An empty shortlist is
+    // "not curated yet", not "no models", so it offers everything; the
+    // alternative is a fresh install opening onto a chat it cannot send from.
+    const offered =
+      chatSurface && chatShortlist.length > 0
+        ? canonical.filter((o) => chatShortlist.includes(`${o.providerId}:${o.model}`))
+        : canonical;
+    return offered.map((o) => {
       const m = models.find(
         (mm) => mm.providerId === o.providerId && mm.modelKey === o.model,
       );
@@ -561,7 +604,7 @@ export const ModelSelector: React.FC<{
         sortOrder: m?.sortOrder ?? 0,
       };
     });
-  }, [providers, models]);
+  }, [providers, models, chatSurface, chatShortlist]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -929,22 +972,30 @@ export const ModelSelector: React.FC<{
           selectedModel
             ? `Model: ${currentProviderName ? `${currentProviderName} ` : ""}${currentLabel}${
                 currentEffort ? `, reasoning ${currentEffort}` : ""
-              }${currentFast ? ", fast mode on" : ""}. Change model.`
+              }${currentFast ? ", fast mode on" : ""}${
+                deepResearchActive ? ", deep research" : ""
+              }. Change model.`
             : "Select a model"
         }
         aria-haspopup="listbox"
         aria-expanded={open}
         data-open={open || undefined}
         data-plan={planned || undefined}
+        data-deep={deepResearchActive || undefined}
         data-streaming={streaming || undefined}
         onClick={(e) => {
           e.stopPropagation();
           toggle();
         }}
       >
+        {/* The mode glyph. Plan mode wears the open book on the Build side; on
+            the Chat side the same glyph says deep research, which is the only
+            thing a chat conversation can be in besides ordinary. The two can
+            never both apply — Plan is a way of working on a project and Chat
+            has none — so one slot carries both without ambiguity. */}
         <span className="agw-model-trigger-modewrap">
           <AgentIcon
-            name={planned ? "book-open" : "facet"}
+            name={planned || deepResearchActive ? "book-open" : "facet"}
             size={13}
             className="agw-model-trigger-mode"
           />
@@ -992,8 +1043,52 @@ export const ModelSelector: React.FC<{
             }}
           >
             {/* Header — Agent/Plan mode toggle · sort. (Count lives only in the
-                footer, so it isn't shown twice.) */}
+                footer, so it isn't shown twice.)
+
+                The mode toggle is absent in Aurora Chat: Agent and Plan are
+                ways of working on a project, and there is none there. Leaving
+                it visible would offer a choice that changes nothing, and
+                picking one would move the window to the other product. */}
             <div className="agw-model-head">
+              {/* Deep research. Set when a conversation is CREATED and fixed
+                  after that, so the control has two quite different jobs:
+                  in an open chat it REPORTS what this conversation is, and on
+                  a fresh one it decides what the next will be. Showing it as
+                  a live switch on a conversation that cannot change would be
+                  a lie the user can watch not working. */}
+              {chatSurface &&
+                (deepResearchLocked ? (
+                  <span
+                    className="agw-model-deep"
+                    data-on={threadDeepResearch || undefined}
+                    data-locked=""
+                    title={
+                      threadDeepResearch
+                        ? "This conversation was started in deep research. That cannot be changed — start a new chat for a quick answer."
+                        : "This is an ordinary conversation. Start a new chat to use deep research."
+                    }
+                  >
+                    <AgentIcon name="book-open" size={12} />
+                    <span>{threadDeepResearch ? "Deep research" : "Normal"}</span>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="agw-model-deep"
+                    data-on={deepResearchNext || undefined}
+                    aria-pressed={deepResearchNext}
+                    title={
+                      deepResearchNext
+                        ? "The next chat will be a deep research one: slower, thorough, cited. Click to turn off."
+                        : "Start the next chat in deep research: it will take its time, read widely, and cite what it finds."
+                    }
+                    onClick={() => setDeepResearchNext(!deepResearchNext)}
+                  >
+                    <AgentIcon name="book-open" size={12} />
+                    <span>Deep research</span>
+                  </button>
+                ))}
+              {!chatSurface && (
               <div
                 className="agw-model-mode"
                 role="radiogroup"
@@ -1035,6 +1130,7 @@ export const ModelSelector: React.FC<{
                   <span>Plan</span>
                 </button>
               </div>
+              )}
             </div>
 
             {/* Search */}

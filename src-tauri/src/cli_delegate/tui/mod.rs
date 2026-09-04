@@ -680,6 +680,7 @@ mod tests {
                 model: None,
                 pinned: false,
                 archived_at: None,
+                deep_research: false,
                 created_at: "2026-09-01T10:00:00Z".to_string(),
                 updated_at: "2026-09-01T10:00:00Z".to_string(),
             })

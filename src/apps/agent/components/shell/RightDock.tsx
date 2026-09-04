@@ -25,6 +25,7 @@ import { BrowserPanel, closeAgentBrowser, hideAgentBrowser, showAgentBrowser } f
 import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
+import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
 import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
@@ -33,7 +34,7 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import { authorColor } from "@/apps/agent/components/team/team-ui";
 import type { DockSingletonKind, DockTabInstance } from "@/apps/agent/types";
-import { DOCK_TAB_LABELS } from "@/apps/agent/types";
+import { CHAT_DOCK_TABS, DOCK_TAB_LABELS } from "@/apps/agent/types";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 
 const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
@@ -43,6 +44,7 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   browser: "browser",
   terminal: "terminal",
   team: "users",
+  memory: "database",
 };
 
 /** Entries in the `+` menu. `enabled:false` = structurally present, not wired. */
@@ -53,6 +55,15 @@ const ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boo
   { kind: "browser", shortcut: "Ctrl+T", enabled: true },
   { kind: "terminal", enabled: true },
 ];
+
+/**
+ * Aurora Chat's dock, which is a different dock rather than a subset with rows
+ * greyed out. Memory is also reachable from the rail, so closing the tab is not
+ * a one-way door. The roster itself lives in `types.ts` — the command palette
+ * is a second door onto the same tabs and reads the same constant.
+ */
+const CHAT_ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boolean }> =
+  CHAT_DOCK_TABS.map((kind) => ({ kind, enabled: true }));
 
 /**
  * A chat tab's glyph — the streaming dot matrix while THAT conversation is
@@ -114,6 +125,8 @@ const TabPill: React.FC<{
         <ChatTabGlyph threadId={tab.threadId ?? ""} />
       ) : tab.kind === "browser" ? (
         <BrowserTabGlyph />
+      ) : tab.kind === "artifact" ? (
+        <AgentIcon name="panel-right" size={13} />
       ) : (
         <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />
       )}
@@ -144,7 +157,14 @@ const AddMenu: React.FC<{
   // menu at all — a greyed row can't explain itself, and Settings is where
   // you'd go looking anyway.
   const teamEnabled = useSettingsStore((s) => s.teamEnabled);
-  const entries = ADD_MENU.filter((e) => e.kind !== "team" || teamEnabled);
+  // Aurora Chat's dock is two surfaces, not five: Canvas, which is where it
+  // presents, and Memory, which is what it keeps. Files, Browser, Terminal and
+  // Team all address a project, and this side has none — a Files tab there
+  // opens a tree of a folder the chat cannot read.
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const entries = chatSurface
+    ? CHAT_ADD_MENU
+    : ADD_MENU.filter((e) => e.kind !== "team" || teamEnabled);
 
   // Single setter so visibility changes always notify the parent (which hides
   // the native browser webview so this menu isn't painted behind it).
@@ -306,8 +326,14 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <ReviewPanel />;
     case "canvas":
       return <CanvasPanel />;
+    case "artifact":
+      // The same panel, pinned to one artifact. Canvas without an id is the
+      // index of them all.
+      return <CanvasPanel artifactId={tab.artifactId ?? ""} />;
     case "team":
       return <TeamPanel />;
+    case "memory":
+      return <MemoryPanel />;
     case "member":
       return <MemberPanel agentId={tab.memberId ?? ""} />;
     case "chat":
@@ -337,6 +363,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
 };
 
 export const RightDock: React.FC = () => {
+  /** Aurora Chat's dock holds Canvas and Memory; see `CHAT_ADD_MENU`. */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
   const tabs = useAgentWorkspaceStore((s) => s.tabs);
   const activeTabId = useAgentWorkspaceStore((s) => s.activeTabId);
   const expanded = useAgentWorkspaceStore((s) => s.expanded);
@@ -433,10 +461,24 @@ export const RightDock: React.FC = () => {
         <TabBody key={active.id} tab={active} />
       ) : (
         <div className="agw-files-empty">
-          <AgentIcon name="files" size={22} style={{ color: "var(--agw-text-subtle)" }} />
+          <AgentIcon
+            name={chatSurface ? "panel-right" : "files"}
+            size={22}
+            style={{ color: "var(--agw-text-subtle)" }}
+          />
           <div style={{ fontSize: "var(--agw-fs-ui)", color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No tab open</div>
           <div style={{ fontSize: "var(--agw-fs-label)", color: "var(--agw-text-subtle)", maxWidth: 220 }}>
-            Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open Files, or review changes from a message.
+            {chatSurface ? (
+              <>
+                Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open the
+                Canvas, or Memory to see what Aurora remembers.
+              </>
+            ) : (
+              <>
+                Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open Files,
+                or review changes from a message.
+              </>
+            )}
           </div>
         </div>
       )}

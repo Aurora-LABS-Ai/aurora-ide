@@ -6,6 +6,7 @@ import {
   CanvasCompileError,
 } from "@/apps/agent/services/artifacts/canvas-react";
 import { AgentIcon } from "@/apps/agent/shared";
+import { openExternalUrl } from "@/apps/agent/adapters/open-external";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 
 interface CanvasReactProps {
@@ -138,9 +139,24 @@ export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refresh
    */
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      const data = event.data as { source?: string; type?: string; message?: string } | null;
-      if (!data || data.source !== "aurora-canvas" || data.type !== "error") return;
-      setRuntimeError(String(data.message ?? "").slice(0, 2000));
+      const data = event.data as {
+        source?: string;
+        type?: string;
+        message?: string;
+        href?: string;
+      } | null;
+      if (!data || data.source !== "aurora-canvas") return;
+      if (data.type === "error") {
+        setRuntimeError(String(data.message ?? "").slice(0, 2000));
+        return;
+      }
+      // A citation was clicked. The frame cannot navigate anywhere itself — no
+      // `allow-popups`, no `allow-top-navigation` — so the href comes here and
+      // goes to the user's browser. `openExternalUrl` is what refuses anything
+      // that is not http(s); this listener does not vet the string itself.
+      if (data.type === "open-url" && typeof data.href === "string") {
+        void openExternalUrl(data.href);
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

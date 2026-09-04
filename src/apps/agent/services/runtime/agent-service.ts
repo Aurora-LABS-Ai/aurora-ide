@@ -36,11 +36,11 @@ import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import { useTaskStore } from "@/apps/agent/store/tools/useTaskStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { getToolsForModel } from "@/apps/agent/tools";
+import { withReportKind } from "@/apps/agent/tools/definitions/artifact-tools";
 import type { ToolDefinition as LegacyToolDefinition } from "@/apps/agent/tools/types";
 import { threadService } from "@/apps/agent/services/threads/thread-service";
 import {
   filterToolsForExecutionMode,
-  formatAgentExecutionModeRuntimeContext,
   normalizeAgentExecutionMode,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
 import {
@@ -251,7 +251,6 @@ export class AgentService {
       // to call a tool this request does not carry.
       browserTools: false,
     });
-    const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
     const workspacePath =
       this.config.workspacePath !== undefined
         ? this.config.workspacePath
@@ -270,7 +269,9 @@ export class AgentService {
     try {
       return await client.compactThread({
         systemPrompt: composedPrompt.systemPrompt,
-        ideContext: executionModeBlock,
+        // A compaction sends no user message, so there is nothing to attach
+        // context to.
+        ideContext: null,
         tools: [],
         workspacePath,
         attachedSelectedElements: null,
@@ -315,6 +316,9 @@ export class AgentService {
         // switched by one value. A surface that doesn't set it (the IDE chat)
         // gets neither, instead of an instruction with no tool behind it.
         transcriptChapters: this.config.transcriptChapters,
+        // The conversation's own framing, set at creation. See
+        // `AgentConfig.deepResearch`.
+        deepResearch: this.config.deepResearch,
         deferTools: this.config.deferTools,
         // Same field the runtime client forwards as the request's
         // `browserTools`. `undefined` means "on" on both sides, matching the
@@ -335,16 +339,12 @@ export class AgentService {
         );
       }
 
-      // Execution-mode block always rides at the head of `ideContext`
-      // so the LLM treats it as authoritative IDE state, not user
-      // input. The legacy `prepareAgentContext` did the same thing —
-      // we keep that contract because the system prompt only describes
-      // *general* behaviour, not what mode this specific turn is in.
-      const executionModeBlock = formatAgentExecutionModeRuntimeContext(executionMode);
+      // `ideContext` is what belongs to THIS message: open files, a
+      // selection, a slash-attached rule. The mode is a fact about the turn
+      // and is stated once in the system prompt's mode section; it used to be
+      // repeated here as a second block, saved into every message's context.
       let composedIdeContext: string | null =
-        ideContext && ideContext.trim().length > 0
-          ? `${executionModeBlock}\n\n${ideContext}`
-          : executionModeBlock;
+        ideContext && ideContext.trim().length > 0 ? ideContext : null;
 
       const availableTools = this.buildAvailableTools(tools, providerConfig);
       // Per-turn workspace override (agent window runs concurrent turns across
@@ -642,14 +642,23 @@ export class AgentService {
       // prevents non-vision models from emitting tool_use blocks they
       // can't act on, AND saves the schema's tokens.
       .filter((tool) => supportsVision || !VISION_REQUIRED_TOOLS.has(tool.function.name))
-      .map((tool) => ({
+      .map<ToolDefinition>((tool) => ({
         type: "function",
         function: {
           name: tool.function.name,
           description: tool.function.description,
           parameters: tool.function.parameters,
         },
-      }));
+      }))
+      // Deep research is the only conversation that can produce a `report`, so
+      // it is the only one told the kind exists. Applied to the SCHEMA rather
+      // than to the prompt because the enum is what actually decides whether
+      // the model can emit it.
+      .map((tool) =>
+        this.config.deepResearch && tool.function.name === "present_artifact"
+          ? withReportKind(tool)
+          : tool,
+      );
 
     return filterToolsForExecutionMode(
       [...builtInTools, ...getMcpToolDefinitions()],

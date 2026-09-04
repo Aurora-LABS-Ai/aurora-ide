@@ -616,6 +616,49 @@ describe("AgentRuntimeClient.compactThread", () => {
     ]);
     expect(Array.from(listenUnsubs.values())[0]).toHaveBeenCalledTimes(1);
   });
+
+  it("routes a failed compaction as failure and never as completion", async () => {
+    invokeMock.mockImplementationOnce(async (command, args) => {
+      if (command !== AGENT_COMPACT_THREAD_COMMAND) return undefined;
+      const { turnId } = (args as { request: { turnId: string } }).request;
+      dispatch(AGENT_EVENT_CHANNEL, {
+        turnId,
+        seq: 1,
+        event: { type: "compaction_started" },
+      });
+      dispatch(AGENT_EVENT_CHANNEL, {
+        turnId,
+        seq: 2,
+        event: {
+          type: "compaction_failed",
+          before_tokens: 269_000,
+          reason: "empty_summary",
+          cancelled: false,
+        },
+      });
+      return null;
+    });
+    const onCompactionCompleted = vi.fn();
+    const onCompactionFailed = vi.fn();
+    const client = buildClient({ onCompactionCompleted, onCompactionFailed });
+
+    const result = await client.compactThread({
+      systemPrompt: sampleInput.systemPrompt,
+      ideContext: sampleInput.ideContext,
+      tools: [],
+      workspacePath: sampleInput.workspacePath,
+      attachedSelectedElements: null,
+      attachedPromptChips: null,
+    });
+
+    expect(result).toBeNull();
+    expect(onCompactionCompleted).not.toHaveBeenCalled();
+    expect(onCompactionFailed).toHaveBeenCalledWith({
+      beforeTokens: 269_000,
+      reason: "empty_summary",
+      cancelled: false,
+    });
+  });
 });
 
 describe("AgentRuntimeClient.chat — bridge round-trip", () => {

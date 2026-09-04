@@ -1,37 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { Terminal, FolderOpen } from 'lucide-react';
+import React from 'react';
+import { FolderOpen } from 'lucide-react';
 import { useWorkspaceStore } from '@/kernel/store/useWorkspaceStore';
 import { useCheckpointStore } from '@/kernel/store/useCheckpointStore';
-import {
-  isAuroraCliInstalled,
-  installAuroraCli,
-  isAuroraContextMenuInstalled,
-  isTauri,
-  installAuroraContextMenu,
-  uninstallAuroraCli,
-  uninstallAuroraContextMenu,
-} from '@/kernel/lib/ipc/tauri';
+import { isTauri } from '@/kernel/lib/ipc/tauri';
 import { IdeSwitch } from '@/kernel/ui/IdeSwitch';
 import { IdeSelect } from '@/kernel/ui/IdeSelect';
-import {
-  UI_FONT_OPTIONS,
-  settingsRowDividerColor,
-  settingsCodeBlockStyle,
-} from './settings-shared';
+import { UI_FONT_OPTIONS } from './settings-shared';
 import {
   Section,
   FormRow,
   FormRowLast,
   StatusPill,
-  ActionButton,
   KeyValue,
-  IntegrationBanner,
   IdeSlider,
-  type BannerStatus,
 } from './settings-primitives';
 
 type AutoSaveMode = 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange';
-type IntegrationStatus = BannerStatus;
 
 interface GeneralSettingsTabProps {
   autoSave: AutoSaveMode;
@@ -129,153 +113,6 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
   uiTextScale,
   wrapMode,
 }) => {
-  const [cliStatus, setCliStatus] = useState<IntegrationStatus>('idle');
-  const [cliMessage, setCliMessage] = useState('');
-  const [cliInstalled, setCliInstalled] = useState<boolean | null>(null);
-  const [isCheckingCli, setIsCheckingCli] = useState(() => isTauri());
-  const isWindowsDesktop =
-    isTauri() && typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
-  const [contextMenuStatus, setContextMenuStatus] = useState<IntegrationStatus>('idle');
-  const [contextMenuMessage, setContextMenuMessage] = useState('');
-  const [contextMenuInstalled, setContextMenuInstalled] = useState<boolean | null>(() =>
-    isWindowsDesktop ? null : false,
-  );
-  const [isCheckingContextMenu, setIsCheckingContextMenu] = useState(() => isWindowsDesktop);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    let active = true;
-    isAuroraCliInstalled()
-      .then((installed) => {
-        if (active) setCliInstalled(installed);
-      })
-      .catch(() => {
-        if (active) setCliInstalled(null);
-      })
-      .finally(() => {
-        if (active) setIsCheckingCli(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isWindowsDesktop) return;
-    let active = true;
-    isAuroraContextMenuInstalled()
-      .then((installed) => {
-        if (active) setContextMenuInstalled(installed);
-      })
-      .catch(() => {
-        if (active) setContextMenuInstalled(null);
-      })
-      .finally(() => {
-        if (active) setIsCheckingContextMenu(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [isWindowsDesktop]);
-
-  const handleInstallCli = async () => {
-    if (!isTauri()) {
-      setCliStatus('error');
-      setCliMessage('CLI installation requires the desktop app.');
-      return;
-    }
-    setCliStatus('installing');
-    setCliMessage('Installing Aurora CLI...');
-    try {
-      const result = await installAuroraCli();
-      setCliStatus('success');
-      setCliMessage(result || 'Aurora CLI installed. Restart the terminal to use `aurora .`.');
-      setCliInstalled(true);
-    } catch (error) {
-      setCliStatus('error');
-      setCliMessage(error instanceof Error ? error.message : 'Failed to install the CLI.');
-    }
-  };
-
-  const handleUninstallCli = async () => {
-    if (!isTauri()) return;
-    setCliStatus('uninstalling');
-    setCliMessage('Uninstalling Aurora CLI...');
-    try {
-      const result = await uninstallAuroraCli();
-      setCliStatus('success');
-      setCliMessage(result || 'Aurora CLI removed.');
-      setCliInstalled(false);
-    } catch (error) {
-      setCliStatus('error');
-      setCliMessage(error instanceof Error ? error.message : 'Failed to uninstall the CLI.');
-    }
-  };
-
-  const handleInstallContextMenu = async () => {
-    if (!isWindowsDesktop) {
-      setContextMenuStatus('error');
-      setContextMenuMessage(
-        'Windows Explorer context menu integration is only available on Windows desktop builds.',
-      );
-      return;
-    }
-    setContextMenuStatus('installing');
-    setContextMenuMessage('Adding Aurora to the Explorer context menu...');
-    try {
-      const result = await installAuroraContextMenu();
-      setContextMenuStatus('success');
-      setContextMenuMessage(result || 'Aurora added to the Explorer context menu.');
-      setContextMenuInstalled(true);
-    } catch (error) {
-      setContextMenuStatus('error');
-      setContextMenuMessage(
-        error instanceof Error
-          ? error.message
-          : 'Failed to add Aurora to the Explorer context menu.',
-      );
-    }
-  };
-
-  const handleUninstallContextMenu = async () => {
-    if (!isWindowsDesktop) return;
-    setContextMenuStatus('uninstalling');
-    setContextMenuMessage('Removing Aurora from the Explorer context menu...');
-    try {
-      const result = await uninstallAuroraContextMenu();
-      setContextMenuStatus('success');
-      setContextMenuMessage(result || 'Aurora removed from the Explorer context menu.');
-      setContextMenuInstalled(false);
-    } catch (error) {
-      setContextMenuStatus('error');
-      setContextMenuMessage(
-        error instanceof Error
-          ? error.message
-          : 'Failed to remove Aurora from the Explorer context menu.',
-      );
-    }
-  };
-
-  const cliBadge: React.ReactNode = isCheckingCli ? (
-    <StatusPill variant="neutral" dot={false}>
-      Checking…
-    </StatusPill>
-  ) : cliInstalled ? (
-    <StatusPill variant="success">Installed</StatusPill>
-  ) : (
-    <StatusPill variant="neutral">Not installed</StatusPill>
-  );
-
-  const ctxBadge: React.ReactNode = isCheckingContextMenu ? (
-    <StatusPill variant="neutral" dot={false}>
-      Checking…
-    </StatusPill>
-  ) : contextMenuInstalled ? (
-    <StatusPill variant="success">Registered</StatusPill>
-  ) : (
-    <StatusPill variant="neutral">Not registered</StatusPill>
-  );
-
   return (
     <div className="space-y-6 pb-2">
       {/* ============================================================ */}
@@ -376,122 +213,11 @@ export const GeneralSettingsTab: React.FC<GeneralSettingsTabProps> = ({
       {/* ============================================================ */}
       <CheckpointSection />
 
-      {/* ============================================================ */}
-      {/* System integrations                                          */}
-      {/* ============================================================ */}
-      <Section
-        title="System Integrations"
-        description="Surface Aurora in the operating system shell so users can launch into a workspace from anywhere."
-      >
-        {/* CLI block */}
-        <div className="px-4 py-3.5" style={{ borderBottom: `1px solid ${settingsRowDividerColor}` }}>
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0 max-w-[58%]">
-              <div className="flex items-center gap-2">
-                <Terminal className="h-3.5 w-3.5 text-text-secondary" />
-                <p className="text-[12.5px] font-medium text-text-primary">Aurora CLI</p>
-                {cliBadge}
-              </div>
-              <p className="mt-1.5 text-[11px] leading-snug text-text-secondary">
-                Launch Aurora directly from a terminal with a workspace path or file.
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center justify-end">
-              {cliInstalled ? (
-                <ActionButton
-                  variant="danger"
-                  onClick={handleUninstallCli}
-                  loading={cliStatus === 'uninstalling'}
-                  disabled={cliStatus === 'uninstalling'}
-                >
-                  {cliStatus === 'uninstalling' ? 'Removing' : 'Uninstall'}
-                </ActionButton>
-              ) : (
-                <ActionButton
-                  variant="primary"
-                  onClick={handleInstallCli}
-                  loading={cliStatus === 'installing' || isCheckingCli}
-                  disabled={cliStatus === 'installing' || isCheckingCli}
-                >
-                  {cliStatus === 'installing' || isCheckingCli ? 'Working' : 'Install CLI'}
-                </ActionButton>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-3 px-3 py-2 font-mono text-[11px]" style={settingsCodeBlockStyle}>
-            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-disabled">
-              Usage
-            </p>
-            <div className="space-y-0.5 text-text-secondary">
-              <p>
-                <span className="text-primary">aurora .</span>
-                <span className="ml-2">Open the current folder</span>
-              </p>
-              <p>
-                <span className="text-primary">aurora /path/to/project</span>
-                <span className="ml-2">Open a specific workspace</span>
-              </p>
-              <p>
-                <span className="text-primary">aurora file.ts</span>
-                <span className="ml-2">Open a file directly</span>
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {cliMessage && <IntegrationBanner status={cliStatus} message={cliMessage} />}
-
-        {/* Context menu (Windows only) */}
-        {isWindowsDesktop && (
-          <>
-            <div className="px-4 py-3.5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 max-w-[58%]">
-                  <div className="flex items-center gap-2">
-                    <FolderOpen className="h-3.5 w-3.5 text-text-secondary" />
-                    <p className="text-[12.5px] font-medium text-text-primary">
-                      Explorer context menu
-                    </p>
-                    {ctxBadge}
-                  </div>
-                  <p className="mt-1.5 text-[11px] leading-snug text-text-secondary">
-                    Right-click any folder or folder background and choose{' '}
-                    <span className="font-semibold text-text-primary">Open with Aurora</span>.
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center justify-end">
-                  {contextMenuInstalled ? (
-                    <ActionButton
-                      variant="danger"
-                      onClick={handleUninstallContextMenu}
-                      loading={contextMenuStatus === 'uninstalling'}
-                      disabled={contextMenuStatus === 'uninstalling'}
-                    >
-                      {contextMenuStatus === 'uninstalling' ? 'Removing' : 'Remove'}
-                    </ActionButton>
-                  ) : (
-                    <ActionButton
-                      variant="primary"
-                      onClick={handleInstallContextMenu}
-                      loading={contextMenuStatus === 'installing' || isCheckingContextMenu}
-                      disabled={contextMenuStatus === 'installing' || isCheckingContextMenu}
-                    >
-                      {contextMenuStatus === 'installing' || isCheckingContextMenu
-                        ? 'Working'
-                        : 'Add to context menu'}
-                    </ActionButton>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {contextMenuMessage && (
-              <IntegrationBanner status={contextMenuStatus} message={contextMenuMessage} />
-            )}
-          </>
-        )}
-      </Section>
+      {/* System integrations — the Aurora CLI and the Explorer right-click
+          menu — moved to the agent window's Settings › Preferences › General,
+          beside Startup. Both exist to LAUNCH Aurora, and what they launch you
+          into is the agent window; the reason to install the CLI now is
+          `aurora agent` and `aurora mcp`, neither of which the editor owns. */}
 
       {/* ============================================================ */}
       {/* About workspace details (read-only summary)                  */}

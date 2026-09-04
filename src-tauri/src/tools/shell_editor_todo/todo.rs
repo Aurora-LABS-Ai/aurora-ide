@@ -144,7 +144,12 @@ fn whats_next(list: &TodoList) -> String {
         return "No tasks are being tracked for this conversation.".to_string();
     }
     if cursor.complete {
-        return "Every task is closed.".to_string();
+        // Read right after the last task is closed — which is a tool call, so
+        // the answer the model meant to write next is still unwritten. Say
+        // what to do rather than leaving it to re-derive.
+        return "Every task is closed. If your written answer to the user is not on screen yet, \
+                write it now; if it is, you are done."
+            .to_string();
     }
     match (&cursor.active_id, &cursor.next_id) {
         (Some(active), _) => format!("Now working on {}.", titled(list, active)),

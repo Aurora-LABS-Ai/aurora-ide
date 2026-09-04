@@ -1411,7 +1411,7 @@ mod tests {
                     "start_line": 3,
                     "end_line": 5,
                 }),
-                &ctx_for(None),
+                &ctx_for(Some(tmp.path().to_path_buf())),
             )
             .await
             .expect("a one-file batch with a line window must be served, not rejected");
@@ -1438,7 +1438,7 @@ mod tests {
         let out = tool
             .execute(
                 serde_json::json!({ "paths": [file.to_string_lossy()] }),
-                &ctx_for(None),
+                &ctx_for(Some(tmp.path().to_path_buf())),
             )
             .await
             .expect("batch read of one file");
@@ -1482,9 +1482,12 @@ mod tests {
         path
     }
 
-    async fn read(input: serde_json::Value) -> Value {
+    async fn read(input: serde_json::Value, workspace: std::path::PathBuf) -> Value {
         let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
-        let out = tool.execute(input, &ctx_for(None)).await.expect("read ok");
+        let out = tool
+            .execute(input, &ctx_for(Some(workspace)))
+            .await
+            .expect("read ok");
         serde_json::from_str(&out).unwrap()
     }
 
@@ -1494,9 +1497,12 @@ mod tests {
     async fn explicit_range_is_returned_exactly() {
         let tmp = tempfile::tempdir().unwrap();
         let file = numbered_file(tmp.path(), "a.txt", 500);
-        let got = read(serde_json::json!({
-            "path": file.to_string_lossy(), "start_line": 120, "end_line": 300,
-        }))
+        let got = read(
+            serde_json::json!({
+                "path": file.to_string_lossy(), "start_line": 120, "end_line": 300,
+            }),
+            tmp.path().to_path_buf(),
+        )
         .await;
 
         assert_eq!(got["range"]["startLine"], 120);
@@ -1515,9 +1521,12 @@ mod tests {
     async fn over_wide_range_caps_and_says_how_to_continue() {
         let tmp = tempfile::tempdir().unwrap();
         let file = numbered_file(tmp.path(), "big.txt", 1_200);
-        let got = read(serde_json::json!({
-            "path": file.to_string_lossy(), "start_line": 1, "end_line": 12_000,
-        }))
+        let got = read(
+            serde_json::json!({
+                "path": file.to_string_lossy(), "start_line": 1, "end_line": 12_000,
+            }),
+            tmp.path().to_path_buf(),
+        )
         .await;
 
         assert_eq!(
@@ -1538,9 +1547,12 @@ mod tests {
     async fn force_full_content_returns_everything() {
         let tmp = tempfile::tempdir().unwrap();
         let file = numbered_file(tmp.path(), "huge.txt", 5_000);
-        let got = read(serde_json::json!({
-            "path": file.to_string_lossy(), "force_full_content": true,
-        }))
+        let got = read(
+            serde_json::json!({
+                "path": file.to_string_lossy(), "force_full_content": true,
+            }),
+            tmp.path().to_path_buf(),
+        )
         .await;
 
         assert_eq!(got["forcedFullContent"], serde_json::json!(true));
@@ -1556,7 +1568,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // 739 lines — the size that used to be gutted by the spill layer.
         let file = numbered_file(tmp.path(), "component.tsx", 739);
-        let got = read(serde_json::json!({ "path": file.to_string_lossy() })).await;
+        let got = read(
+            serde_json::json!({ "path": file.to_string_lossy() }),
+            tmp.path().to_path_buf(),
+        )
+        .await;
 
         assert_eq!(got["totalLines"], 739);
         assert_eq!(got["largeFile"], serde_json::json!(false));
@@ -1571,7 +1587,11 @@ mod tests {
     async fn oversized_default_read_returns_the_first_window() {
         let tmp = tempfile::tempdir().unwrap();
         let file = numbered_file(tmp.path(), "long.txt", 2_400);
-        let got = read(serde_json::json!({ "path": file.to_string_lossy() })).await;
+        let got = read(
+            serde_json::json!({ "path": file.to_string_lossy() }),
+            tmp.path().to_path_buf(),
+        )
+        .await;
 
         assert_eq!(got["range"]["startLine"], 1);
         assert_eq!(got["range"]["endLine"], 1_000);
@@ -1595,7 +1615,10 @@ mod tests {
             serde_json::json!({ "path": file.to_string_lossy(), "force_full_content": true }),
         ] {
             let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
-            let out = tool.execute(input.clone(), &ctx_for(None)).await.unwrap();
+            let out = tool
+                .execute(input.clone(), &ctx_for(Some(tmp.path().to_path_buf())))
+                .await
+                .unwrap();
             assert!(
                 out.contains(EXACT_READ_MARKER),
                 "missing marker for {input}: {}",

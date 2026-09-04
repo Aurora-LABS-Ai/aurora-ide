@@ -232,6 +232,7 @@ mod tests {
             model: None,
             pinned: false,
             archived_at: None,
+            deep_research: false,
             created_at: updated_at.to_string(),
             updated_at: updated_at.to_string(),
         }

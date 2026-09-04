@@ -53,6 +53,7 @@ pub mod anthropic;
 pub mod aurora_image;
 pub mod client;
 pub mod codex;
+pub mod commandcode;
 pub mod cursor;
 pub mod deepseek;
 pub mod openai_compat;

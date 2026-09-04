@@ -288,6 +288,18 @@ pub async fn shell_profiles_verify(
     })
 }
 
+/// The well-known command-line tools found on the PATH the agent's shells run
+/// with, with where each resolved — the settings-page view of the
+/// `<machine_tools>` block the agent receives. Re-scanned on every call: it is
+/// a handful of directory listings, and a stale answer here would contradict
+/// what the next conversation is told.
+#[tauri::command]
+pub async fn shell_tools_inventory() -> Vec<crate::shell::toolchain::FoundTool> {
+    tokio::task::spawn_blocking(crate::shell::toolchain::inventory)
+        .await
+        .unwrap_or_default()
+}
+
 /// Load the registry at startup and, on a first run, scan so the agent has a
 /// correctly configured shell before the user ever opens settings.
 ///

@@ -32,10 +32,12 @@
 //! settings change, because [`crate::commands::build_shell_command`] runs deep
 //! inside command execution where no database handle is available.
 
+pub mod delivery;
 pub mod discovery;
 pub mod env;
 pub mod kinds;
 pub mod text;
+pub mod toolchain;
 pub mod windows_terminal;
 
 use parking_lot::RwLock;
@@ -43,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::OnceLock;
 
+pub use delivery::CommandDelivery;
 pub use kinds::ShellKind;
 
 /// `app_settings` key holding the serialized [`ShellProfiles`].
@@ -272,14 +275,53 @@ pub struct ResolvedShell {
     pub kind: ShellKind,
     pub label: String,
     pub exe: String,
-    /// Flags preceding the command. The command itself is appended by the
-    /// caller as a single argument — never interpolated into a string.
+    /// Flags preceding the command. The command itself is never interpolated
+    /// into a string; [`ResolvedShell::apply_one_shot`] hands it over whole
+    /// through the channel this shell needs.
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// The channel a one-shot command travels through to this shell. See
+    /// [`delivery`] for why it is not always argv.
+    pub delivery: CommandDelivery,
     /// Set when the caller asked for a shell that was unavailable and a
     /// different one was used. Callers must report this rather than let the
     /// model believe its command ran under the shell it asked for.
     pub substituted_from: Option<String>,
+}
+
+impl ResolvedShell {
+    /// A shell Aurora found without the registry: the pre-registry fallback,
+    /// used only before the first scan has populated it.
+    #[must_use]
+    pub fn unregistered(kind: ShellKind, exe: String) -> Self {
+        let env = env::compose(kind, Path::new(&exe));
+        let delivery = CommandDelivery::for_shell(kind, Path::new(&exe));
+        Self {
+            profile_id: format!("unregistered-{}", kind.id()),
+            kind,
+            label: kind.default_label().to_string(),
+            args: kind
+                .command_args()
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect(),
+            exe,
+            env,
+            delivery,
+            substituted_from: None,
+        }
+    }
+
+    /// Configure a process builder to run `command` once in this shell: the
+    /// kind's flags, the command through the right channel, and the
+    /// environment overlay. The caller owns the working directory, stdio, and
+    /// platform creation flags.
+    pub fn apply_one_shot(&self, cmd: &mut tokio::process::Command, command: &str) {
+        self.delivery.apply(cmd, self.kind, command);
+        for (key, value) in &self.env {
+            cmd.env(key, value);
+        }
+    }
 }
 
 static REGISTRY: OnceLock<RwLock<ShellProfiles>> = OnceLock::new();
@@ -363,6 +405,7 @@ fn resolve_inner(requested: Option<&str>, interactive: bool) -> Option<ResolvedS
     let profile = profile?;
     let exe = profile.resolved_exe();
     let env = env::compose(profile.kind, Path::new(&exe));
+    let delivery = CommandDelivery::for_shell(profile.kind, Path::new(&exe));
 
     let args = if interactive {
         profile.kind.interactive_args()
@@ -377,6 +420,7 @@ fn resolve_inner(requested: Option<&str>, interactive: bool) -> Option<ResolvedS
         args: args.iter().map(|arg| (*arg).to_string()).collect(),
         exe,
         env,
+        delivery,
         // Only report a substitution when the kind actually changed.
         substituted_from: substituted_from
             .filter(|value| ShellKind::from_id(value).is_none_or(|kind| kind != profile.kind)),
@@ -453,7 +497,10 @@ pub fn model_facing_summary() -> Option<String> {
 
     Some(format!(
         "This machine has: {listed}.{default_hint} `shell` is REQUIRED — name the shell you wrote \
-         the command for, and write the command in that shell's syntax.{cmd_hint}",
+         the command for, and write the command in that shell's syntax. The text reaches the shell \
+         exactly as written, so type it the way you would at that shell's prompt: Windows paths \
+         keep their backslashes, quotes and $ mean what the shell says they mean, and nothing \
+         needs escaping for Aurora's sake.{cmd_hint}",
     ))
 }
 

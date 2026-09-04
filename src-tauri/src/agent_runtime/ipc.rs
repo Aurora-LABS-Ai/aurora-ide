@@ -8,9 +8,10 @@
 //! - Pre-rendered system prompt (the frontend's
 //!   `composeAgentSystemPrompt(...)` already does this composition; the
 //!   runtime never composes prompts itself).
-//! - Optional IDE context block — wrapped in `<ide_context>...
-//!   </ide_context>` and prepended to the user message at API-call time
-//!   while the persisted JSONL bubble keeps the clean `user_message`.
+//! - Optional context block for this message — saved on the user
+//!   message as its `aurora_context` and read by the model after the
+//!   user's words, while the persisted bubble keeps the clean
+//!   `user_message`.
 //! - Tool catalogue (each entry's JSON-Schema parameters) — every name
 //!   in this list resolves to a [`crate::agent_runtime::bridge::FrontendBridgeExecutor`]
 //!   in the per-turn registry.
@@ -38,6 +39,11 @@ use super::events::AssistantEvent;
 use super::types::{AttachedPromptChip, AttachedSelectedElement};
 
 /// Runtime-enforced tool authority for one turn.
+///
+/// The first three work on a project. [`Chat`](Self::Chat) does not: it is the
+/// separate product surface (Aurora Chat), with its own conversation store under
+/// `paths::chats_dir()`, its own system prompt, and a tool roster that is NAMED
+/// rather than subtracted — see `commands::agent_v2::tool_policy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentExecutionMode {
@@ -45,6 +51,60 @@ pub enum AgentExecutionMode {
     Agent,
     Plan,
     Team,
+    /// Aurora Chat. No files, no shell, no workspace.
+    ///
+    /// Deliberately a variant of THIS enum rather than a parallel flag: the
+    /// per-turn tool gate already keys on execution mode, and a second
+    /// dimension would mean every call site asking two questions where one
+    /// would do. What makes it different from its siblings is not enforced
+    /// here but at the two places that matter — the roster in
+    /// `is_tool_available_this_turn`, and which session store the turn writes
+    /// to.
+    Chat,
+}
+
+impl AgentExecutionMode {
+    /// Is this the chat product rather than one of the three project modes?
+    ///
+    /// Named rather than compared inline so a call site reads as what it is
+    /// asking. Every `== Chat` in the codebase should be this instead.
+    #[must_use]
+    pub fn is_chat(self) -> bool {
+        matches!(self, Self::Chat)
+    }
+
+    /// Does this mode operate on a workspace at all?
+    ///
+    /// The three project modes do. Chat does not, and a turn that answers
+    /// `false` here must never be handed a `workspace_root`, because the file
+    /// tools treat `None` as "no boundary" rather than "no access" — see the
+    /// note in `tools::file_workspace_search::resolve_path_with_access`.
+    #[must_use]
+    pub fn has_workspace(self) -> bool {
+        !self.is_chat()
+    }
+}
+
+impl AgentChatRequest {
+    /// Drop a workspace path a chat turn should never have carried.
+    ///
+    /// Applied ONCE, where the request enters the driver, rather than guarded
+    /// at each of the eleven places that read `workspace_path`. A guard per
+    /// call site is a guard somebody forgets to add to the twelfth.
+    ///
+    /// It matters for more than the file tools, which chat mode does not have
+    /// anyway. `workspace_root` is also what scopes a conversation to a
+    /// project: it is written to the thread's metadata sidecar, and
+    /// `SessionStore::list_summaries_filtered` uses it to decide which chats
+    /// are visible. A chat that acquired one would vanish from the chat list
+    /// the moment the rail asked for conversations belonging to no project.
+    #[must_use]
+    pub fn scoped_to_mode(mut self) -> Self {
+        if !self.execution_mode.has_workspace() {
+            self.workspace_path = None;
+        }
+        self
+    }
 }
 
 /// Frontend → backend request to start one agent turn.
@@ -67,8 +127,8 @@ pub struct AgentChatRequest {
     /// JSONL log under `<agent_root>/agent_v2/{thread_id}.jsonl`.
     pub thread_id: String,
     /// Raw user input. The runtime persists this verbatim into the
-    /// session JSONL; for the API request it is wrapped with
-    /// `ide_context` (see below) on the first iteration only.
+    /// session JSONL; `ide_context` (see below) is saved beside it and
+    /// folded in after it on every API request.
     pub user_message: String,
     /// LLM provider identifier. Used by the
     /// [`crate::commands::agent_v2::AgentRegistry`] for telemetry; the
@@ -133,11 +193,16 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub system_prompt: Option<String>,
 
-    /// IDE context block (from `getIDEContext` / `buildQueryContext`).
-    /// The runtime concatenates `<ide_context>...</ide_context>` ahead
-    /// of the user's clean text when assembling the API request, but
-    /// persists `user_message` verbatim so the JSONL bubble stays
-    /// clean. Match the existing TS behaviour in `agent-service.ts`.
+    /// What the frontend attached to THIS message for the model: the files
+    /// open in the dock, a selection, a slash-attached rule, an MCP
+    /// directive. Facts about the message, not about the conversation —
+    /// project rules, the skill catalogue and the execution mode belong in
+    /// `system_prompt`, where the frontend already composes them.
+    ///
+    /// Saved on the user message as `ConversationMessage::aurora_context`
+    /// (the runtime adds the checklist as it stands), and never rebuilt: the
+    /// model reads it after the user's words on every request, the bubble
+    /// shows the words alone.
     #[serde(default)]
     pub ide_context: Option<String>,
 

@@ -293,6 +293,18 @@
   cursor: grabbing;
 }
 
+/* The stage is a pan surface, so it turns selection off — but a diagram is
+   also a document, and a diagram you cannot copy a label out of is a picture
+   of information rather than information. The labels opt back in, and
+   `CanvasDiagram` refuses to start a left-drag pan on one, so the two gestures
+   no longer fight over the same drag. */
+.agw-diagram-artwork text,
+.agw-diagram-artwork tspan,
+.agw-diagram-artwork foreignObject {
+  cursor: text;
+  user-select: text;
+}
+
 /* The artwork box. Only PANNING rides the transform — zoom changes the box's
  * width/height (see `CanvasDiagram`), because `will-change: transform` makes
  * this a composited layer whose bitmap the GPU would otherwise stretch, turning
@@ -501,6 +513,245 @@
   width: 100%;
   overflow: auto;
   padding: 22px 24px 48px;
+}
+
+/* ── the index: what this conversation made ─────────────────────────────── */
+
+.agw-canvas-index {
+  width: 100%;
+  overflow: auto;
+  padding: 14px 12px 32px;
+}
+
+.agw-canvas-index-label {
+  display: block;
+  padding: 0 8px 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-canvas-index ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Rows separated by a hairline, not boxed — the same shape the rail and the
+   starter list use, so a list of things to open looks like one everywhere. */
+.agw-canvas-index li + li button {
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-canvas-index button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: none;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-canvas-index button:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+}
+
+.agw-canvas-index button:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-canvas-index-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agw-canvas-index-title {
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-canvas-index-meta {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+/* ── report ───────────────────────────────────────────────────────────────
+   A document you read down rather than a surface you look at, so it gets a
+   measure, a contents strip and a source list — and no pan gesture to fight
+   with the selection. */
+
+.agw-report {
+  width: 100%;
+  overflow: auto;
+  padding: 22px 24px 64px;
+}
+
+/* Long-form prose needs a line length, not the full width of a widened dock.
+   Left-aligned rather than centred: the contents strip and the body then share
+   one edge to scan down. */
+.agw-report-body,
+.agw-report-contents,
+.agw-report-sources {
+  max-width: 78ch;
+}
+
+.agw-report-contents {
+  margin-bottom: 26px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-report-contents-label,
+.agw-report-sources h2 {
+  display: block;
+  margin: 0 0 6px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agw-report-contents ol,
+.agw-report-sources ol {
+  margin: 0;
+  padding: 0 0 0 20px;
+}
+
+.agw-report-contents li[data-level="3"] {
+  padding-left: 14px;
+}
+
+.agw-report-contents button,
+.agw-report-sources button {
+  display: block;
+  width: 100%;
+  padding: 3px 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--agw-text-muted);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-report-contents button:hover,
+.agw-report-sources button:hover {
+  color: var(--agw-text);
+}
+
+.agw-report-contents button:focus-visible,
+.agw-report-sources button:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+/* The citation marker. Rendered by the Markdown pass as an ordinary link on
+   our own `aurora-cite:` scheme — the panel intercepts the click — so it is
+   styled here rather than in the component. */
+.agw-report-body a[href^="aurora-cite:"] {
+  padding: 0 1px;
+  color: var(--agw-accent);
+  font-size: 0.72em;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  vertical-align: super;
+}
+
+.agw-report-body a[href^="aurora-cite:"]:hover {
+  text-decoration: underline;
+}
+
+.agw-report-body blockquote {
+  margin: 16px 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--agw-border-strong);
+  color: var(--agw-text-muted);
+}
+
+.agw-report-sources {
+  margin-top: 34px;
+  padding-top: 16px;
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-report-sources li {
+  margin-bottom: 4px;
+}
+
+.agw-report-sources button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agw-report-source-label {
+  color: var(--agw-text-muted);
+}
+
+.agw-report-source-href {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--agw-text-subtle);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-canvas-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.agw-canvas-export > span {
+  margin-right: 4px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-canvas-export button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  outline: none;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+
+.agw-canvas-export button:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+
+.agw-canvas-export button:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-canvas-export button:disabled {
+  color: var(--agw-text-subtle);
+  cursor: default;
 }
 
 .agw-canvas-body > .agw-tool-result {

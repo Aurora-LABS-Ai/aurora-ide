@@ -93,21 +93,10 @@ use crate::api::ReasoningReplay;
 /// failure is an outage worth reporting, not a blip worth waiting out.
 const MAX_STREAM_ATTEMPTS: u32 = 6;
 
-/// Forced compactions a single turn may spend answering a provider's
-/// "your input exceeds the context window" rejection.
-///
-/// This path exists because the configured context window is a claim, not a
-/// measurement: a 1M-token window on a model the endpoint actually serves at a
-/// fraction of that means the usage threshold never fires and the turn dies at
-/// full context instead. The provider's rejection is the only reliable signal,
-/// so compaction reacts to it directly — see the branch in
-/// [`Conversation::run_turn`].
-///
-/// Two, because the first cut replaces a full window with its verbatim tail and
-/// the second covers a tail that was itself over the real limit. A third would
-/// be summarizing a summary, which costs a full-history request to learn
-/// nothing new.
-const MAX_OVERFLOW_COMPACTIONS: u32 = 2;
+/// One free request rebuild after an endpoint teaches Aurora a lower context
+/// ceiling. The rebuild uses deterministic API-view trimming; it never starts
+/// another paid summary request from the overflow error path.
+const MAX_OVERFLOW_REBUILDS: u32 = 1;
 
 /// Base backoff before re-issuing a failed model call, doubling per attempt:
 /// 1s, 2s, 4s, 8s, 16s. At [`MAX_STREAM_ATTEMPTS`] = 6 that is 31s of waiting
@@ -212,14 +201,6 @@ pub struct RuntimeConfig {
     /// per-turn `AgentChatRequest::temperature` override this.
     pub default_temperature: Option<f32>,
 
-    /// IDE-context blob (open files, selection, cursor, …) the
-    /// runtime wraps in `<ide_context>...</ide_context>` and
-    /// prepends to the LATEST user message **only when assembling
-    /// the API request**. The persisted JSONL keeps the user's
-    /// message verbatim. Empty/`None` means "no IDE context for
-    /// this turn".
-    pub ide_context: Option<String>,
-
     /// Provider's advertised context window for the chosen model.
     /// `None` disables budget-aware trimming entirely (legacy
     /// behaviour: send the whole session every iteration).
@@ -228,7 +209,7 @@ pub struct RuntimeConfig {
     /// API view before each call so the request stays under
     /// ~75% of `window - default_max_output_tokens * 1.1`. The
     /// persisted JSONL is untouched — trim is purely an API-view
-    /// concern, mirroring how `ide_context` injection works.
+    /// concern, mirroring how the repo map is injected.
     pub context_window: Option<u32>,
 
     /// Compaction trigger as a fraction of `context_window` (e.g. `0.80`).
@@ -247,6 +228,14 @@ pub struct RuntimeConfig {
     /// user's choice in Settings → Tools. See
     /// [`crate::agent_runtime::tool_executor::WorkspaceAccess`].
     pub workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess,
+    /// Is this turn running in Aurora Chat?
+    ///
+    /// The runtime needs the mode for exactly one decision — what goes in the
+    /// first message's head block: chat gets `<memory>`, the project modes get
+    /// `<machine_tools>` and `<repo_map>`. Carried as a bool rather than the
+    /// whole `AgentExecutionMode` so this crate's conversation layer does not
+    /// grow a dependency on the IPC enum for one branch.
+    pub execution_mode_is_chat: bool,
 
     /// What this provider does with a stored reasoning block on replay, and
     /// therefore what one costs the next request. Set from the turn's provider
@@ -273,7 +262,6 @@ impl Default for RuntimeConfig {
             default_max_output_tokens: 16_384,
             reasoning: ReasoningConfig::default(),
             default_temperature: None,
-            ide_context: None,
             context_window: None,
             compaction_threshold: None,
             // Covers the `<analysis>` drafting pass AND the note itself — see
@@ -281,6 +269,7 @@ impl Default for RuntimeConfig {
             // the note of its last, most important sections.
             compaction_summary_budget: 16_000,
             workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::Workspace,
+            execution_mode_is_chat: false,
             reasoning_replay: ReasoningReplay::Dropped,
         }
     }
@@ -302,6 +291,11 @@ pub struct ConversationRuntime {
     /// thread it belongs to. `None` disables spilling — results are then
     /// clamped as before, which is what tests and non-persisting callers get.
     store_dir: Option<std::path::PathBuf>,
+    /// How that store arranges a thread's files, which decides where the spill
+    /// directory sits. Carried rather than inferred: `delete` derives the same
+    /// path from the store itself, and a guess made here that disagreed would
+    /// leave spilled output behind after a conversation was removed.
+    store_layout: super::session_store::StoreLayout,
     /// Dedicated client + model for the summarization call, when the user
     /// pinned a compaction model. `None` summarizes on `api_client` with the
     /// session's own model.
@@ -322,6 +316,11 @@ pub struct ConversationRuntime {
     /// re-bill the entire conversation. A map that drifts slightly out of date
     /// costs nothing — `code` is the live source, this is only orientation.
     repo_map: Arc<std::sync::OnceLock<Option<String>>>,
+    /// Aurora Chat's `<memory>` block, memoized for the life of the
+    /// conversation for the same cache reason `repo_map` is: it rides in the
+    /// first user message, which is the head of every request's cacheable
+    /// prefix, so it must be byte-identical on every turn.
+    memory: Arc<std::sync::OnceLock<Option<String>>>,
 }
 
 impl std::fmt::Debug for ConversationRuntime {
@@ -346,9 +345,11 @@ impl ConversationRuntime {
             config,
             hook: Arc::new(NoopHook),
             store_dir: None,
+            store_layout: super::session_store::StoreLayout::Flat,
             compaction_client: None,
             tool_schema_tokens: Arc::new(std::sync::OnceLock::new()),
             repo_map: Arc::new(std::sync::OnceLock::new()),
+            memory: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -379,13 +380,26 @@ impl ConversationRuntime {
         self
     }
 
+    /// Point the runtime at a whole store, taking its directory AND its layout.
+    ///
+    /// Prefer this over [`Self::with_store_dir`] wherever the store itself is
+    /// in hand. The directory alone is not enough to place spilled output once
+    /// two layouts exist, and the flat default is only right by accident for a
+    /// chat conversation.
+    #[must_use]
+    pub fn with_store(mut self, store: &super::session_store::SessionStore) -> Self {
+        self.store_dir = Some(store.dir().to_path_buf());
+        self.store_layout = store.layout();
+        self
+    }
+
     /// Move oversized payloads in `raw` onto disk, returning the content with
     /// a head+tail preview and the file's path. A no-op without a store dir.
     fn spill_tool_output(&self, session: &Session, tool_call_id: &str, raw: String) -> String {
         let Some(root) = self.store_dir.as_deref() else {
             return raw;
         };
-        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id);
+        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id, self.store_layout);
         super::tool_spill::spill_oversized(&dir, tool_call_id, raw)
     }
 
@@ -399,7 +413,7 @@ impl ConversationRuntime {
         let Some(root) = self.store_dir.as_deref() else {
             return raw;
         };
-        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id);
+        let dir = super::session_store::tool_results_dir_in(root, &session.thread_id, self.store_layout);
         super::tool_spill::spill_for_budget(&dir, tool_call_id, raw)
     }
 
@@ -454,19 +468,30 @@ impl ConversationRuntime {
     ) -> Result<TurnCompletion, RuntimeError> {
         let mut seq: u64 = 0;
 
-        // 1. Record the user input in history.
+        // 1. Record the user input in history, with Aurora's context for it
+        //    attached ONCE, now. The caller put the frontend's part (open
+        //    files, selection, an attached rule) on the message; the checklist
+        //    as it stands is added here, where the store is. Whatever the
+        //    frontend sent is treated as the block's content, so a message
+        //    that arrives already carrying one is left alone.
+        let mut user_message = user_message;
+        if user_message.role == MessageRole::User {
+            user_message.aurora_context =
+                self.user_message_context(user_message.aurora_context.as_deref(), &session.thread_id);
+        }
         session.append_message(user_message);
 
         let mut iterations: u32 = 0;
         // One free re-issue when the provider hands back a response with no
         // content blocks at all. See the empty-reply branch below.
         let mut retried_empty_reply = false;
-        // Forced compactions spent answering a provider context-overflow
-        // rejection, capped so a model whose window we cannot predict cannot
-        // turn one turn into an unbounded summarize-and-retry loop. Two is
-        // enough for the real case: the first cut takes a full window down to
-        // its tail, and the second covers a tail that was itself oversized.
-        let mut overflow_compactions: u32 = 0;
+        // A provider overflow may teach us a smaller endpoint limit once. The
+        // next iteration rebuilds through deterministic trim; no paid summary
+        // is launched from the error path.
+        let mut overflow_rebuilds: u32 = 0;
+        // Automatic compaction may make at most one provider request in one
+        // user turn, even if many tool iterations grow past the threshold.
+        let mut auto_compaction_attempted = false;
         let mut total_usage = TokenUsage::default();
         let mut assistant_messages = Vec::<ConversationMessage>::new();
         let mut tool_results = Vec::<ConversationMessage>::new();
@@ -505,8 +530,11 @@ impl ConversationRuntime {
             // ahead of `trim` (the last-resort net) and shrinks the
             // model's working set across turns. Best-effort: any failure
             // leaves the session untouched and the turn proceeds.
-            self.maybe_compact(session, &turn_id, &mut seq, &event_sink, &cancel_token)
-                .await;
+            if !auto_compaction_attempted {
+                auto_compaction_attempted = self
+                    .maybe_compact(session, &turn_id, &mut seq, &event_sink, &cancel_token)
+                    .await;
+            }
 
             // ── Stream one assistant message ───────────────────────
             //
@@ -534,35 +562,48 @@ impl ConversationRuntime {
             // or older than the last compaction marker with its summary,
             // keeping the verbatim tail. The persisted JSONL keeps the full
             // history (the UI shows it); only this API view shrinks — the
-            // same contract `inject_ide_context`/`trim` follow. A no-marker
+            // same contract the repo map and `trim` follow. A no-marker
             // session round-trips unchanged.
-            let compacted = self.compacted_view(session);
-
-            // Orientation for the workspace: what exists and roughly where.
-            // Built from the same index the `code` tool reads, so the two can
-            // never describe different codebases. Byte-stable for the whole
-            // conversation (see `REPO_MAP_BY_THREAD`) because it rides in the
-            // FIRST user message — the start of the provider's cached prefix.
             //
-            // Failure here is silent by design — the map is a convenience, and
-            // an unindexable workspace must not cost the user their turn. The
-            // agent still has `code`, `grep` and `workspace_tree`.
-            let owned_messages: Option<Vec<ConversationMessage>> =
-                match self.repo_map_block(session.workspace_root.as_deref(), &session.thread_id) {
-                    Some(block) => Some(inject_repo_map(&compacted, &block)),
-                    None => None,
-                };
+            // Then put each user message's saved context after its text.
+            // Deterministic per message, so the same history always renders
+            // the same bytes — see `fold_message_context`.
+            let compacted = fold_message_context(&self.compacted_view(session));
 
-            // Budget-aware trim. Same API-view-only contract as
-            // `inject_ide_context`: persisted session stays whole, only
-            // the request body shrinks. Disabled (no-op) when
-            // `context_window` is `None`.
+            // Orientation: for the workspace, what exists and roughly where.
+            // The map is built from the same index the `code` tool reads, so
+            // the two can never describe different codebases. Byte-stable for
+            // the whole conversation (see `REPO_MAP_BY_THREAD`) because it
+            // rides in the FIRST user message — the start of the provider's
+            // cached prefix.
+            //
+            // Failure here is silent by design — it is a convenience, and an
+            // unindexable workspace must not cost the user their turn. The
+            // agent still has `code`, `grep`, `workspace_tree`, and the shell.
+            let owned_messages: Option<Vec<ConversationMessage>> = match self
+                .head_context_block(session.workspace_root.as_deref(), &session.thread_id)
+            {
+                Some(block) => Some(inject_repo_map(&compacted, &block)),
+                None => None,
+            };
+
+            // Budget-aware trim. Same API-view-only contract as the repo map:
+            // persisted session stays whole, only the request body shrinks.
+            // Disabled (no-op) when `context_window` is `None`.
             let trim_input: Vec<ConversationMessage> = owned_messages.unwrap_or(compacted);
+            let effective_context_window = crate::agent_runtime::context_limits::effective_window(
+                &model,
+                self.config.context_window,
+            );
+            // The system prompt every request carries: the composed prompt
+            // plus `<machine_tools>`. Built once per iteration and shared with
+            // the trim estimate below, so what is counted is what is sent.
+            let base_system_prompt = self.request_system_prompt(&session.thread_id);
             let trim_outcome = trim_to_budget(
                 trim_input,
-                self.config.context_window,
+                effective_context_window,
                 self.config.default_max_output_tokens,
-                self.config.system_prompt.as_deref().unwrap_or(""),
+                base_system_prompt.as_deref().unwrap_or(""),
                 self.config.reasoning_replay,
             );
 
@@ -584,40 +625,29 @@ impl ConversationRuntime {
                 );
             }
 
-            // Volatile, present-state context — the IDE context block, and the
-            // live checklist re-read from the store on EVERY request so a
-            // mid-turn update is reflected on the very next iteration. It rides
-            // as its own user message at the ABSOLUTE END of the API view:
-            // these blocks change mid-turn, and spliced into the turn's user
-            // message (which sits before the whole tool loop) every change
-            // invalidated the provider's cached prefix from that message on.
-            // API-view only, like everything above — the JSONL never sees it.
-            let mut final_messages = repair.messages;
-            let mut volatile_tail_messages = 0usize;
-            if let Some(context_tail) = trailing_context_message(
-                self.config.ide_context.as_deref(),
-                task_reminder_block(&session.thread_id).as_deref(),
-            ) {
-                final_messages.push(context_tail);
-                // Its bytes change between requests, so breakpoint-style
-                // caches (Anthropic) must not anchor on it.
-                volatile_tail_messages = 1;
-            }
+            // Nothing is appended past this point. Every request ends on a
+            // message that is already in the transcript exactly as sent, so
+            // there is no volatile tail and the provider's cache breakpoint
+            // sits on the last message. The state block that used to ride
+            // here — as its own user turn, then inside the newest tool result
+            // — is gone: what it carried is saved on the user's message
+            // (`aurora_context`) and, rarely, in a stale-checklist reminder
+            // written into a tool result once (`stale_checklist_reminder`).
+            let final_messages = repair.messages;
             let messages_for_api: &[ConversationMessage] = &final_messages;
 
             // When the trim dropped messages, append a small notice to
             // the system prompt so the model knows the early conversation
             // has been omitted (and won't hallucinate having seen it).
-            // The original `config.system_prompt` is left untouched.
             let trim_notice: String;
             let system_prompt: Option<&str> = if trim_outcome.dropped > 0 {
                 trim_notice = build_trim_notice(
-                    self.config.system_prompt.as_deref().unwrap_or(""),
+                    base_system_prompt.as_deref().unwrap_or(""),
                     trim_outcome.dropped,
                 );
                 Some(trim_notice.as_str())
             } else {
-                self.config.system_prompt.as_deref()
+                base_system_prompt.as_deref()
             };
 
             // ── The model call, with retry ─────────────────────────
@@ -670,6 +700,7 @@ impl ConversationRuntime {
                     system_prompt,
                     messages: messages_for_api,
                     tools: &tool_schemas,
+                    tool_choice: Default::default(),
                     temperature: self.config.default_temperature,
                     max_output_tokens: self.config.default_max_output_tokens,
                     reasoning: self.config.reasoning.as_request(),
@@ -678,7 +709,6 @@ impl ConversationRuntime {
                     // provider-side cache node (OpenAI `prompt_cache_key`,
                     // Codex `session_id`).
                     session_key: Some(&thread_key),
-                    volatile_tail_messages,
                 };
 
                 // Drive the stream and serve its tool requests in the same
@@ -836,40 +866,24 @@ impl ConversationRuntime {
                             self.projected_request_tokens(session),
                         );
                     }
-                    if api_err.is_context_overflow()
-                        && overflow_compactions < MAX_OVERFLOW_COMPACTIONS
-                    {
-                        overflow_compactions = overflow_compactions.saturating_add(1);
+                    if api_err.is_context_overflow() && overflow_rebuilds < MAX_OVERFLOW_REBUILDS {
+                        overflow_rebuilds = overflow_rebuilds.saturating_add(1);
+                        // Do not let the loop top turn the newly learned lower
+                        // ceiling into a paid auto-compaction. The rebuilt
+                        // request is bounded by deterministic trim instead.
+                        auto_compaction_attempted = true;
                         crate::logging::log_warn(
                             "agent_runtime.turn",
                             &format!(
                                 "provider rejected turn {turn_id} (thread {}, model {model}) as \
                                  over its context window — the configured window is larger than \
-                                 what this endpoint serves. Forcing compaction \
-                                 ({overflow_compactions}/{MAX_OVERFLOW_COMPACTIONS}) and \
-                                 re-issuing: {api_err}",
+                                 what this endpoint serves. Rebuilding once with deterministic \
+                                 trim ({overflow_rebuilds}/{MAX_OVERFLOW_REBUILDS}) and \
+                                 re-issuing without a paid compaction request: {api_err}",
                                 session.thread_id,
                             ),
                         );
-                        if self
-                            .compact_now(session, &turn_id, &mut seq, &event_sink, &cancel_token)
-                            .await
-                            .is_some()
-                        {
-                            continue;
-                        }
-                        // Nothing could be cut — a transcript too short to
-                        // compact that the provider still calls too long. Fall
-                        // through and report it; pretending otherwise would
-                        // spin here.
-                        crate::logging::log_error(
-                            "agent_runtime.turn",
-                            &format!(
-                                "turn {turn_id} overflowed the model's context window but there \
-                                 was nothing left to compact — the verbatim tail alone exceeds \
-                                 what this endpoint accepts",
-                            ),
-                        );
+                        continue;
                     }
 
                     // Every failed model call leaves a trace on disk. The UI
@@ -1095,6 +1109,7 @@ impl ConversationRuntime {
                         timestamp: now,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        aurora_context: None,
                         model: None,
                     });
                 }

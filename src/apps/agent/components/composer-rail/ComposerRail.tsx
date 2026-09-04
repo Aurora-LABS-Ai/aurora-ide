@@ -35,6 +35,7 @@ import {
   visibleProcesses,
 } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
 import { RailChip } from "@/apps/agent/components/composer-rail/RailChip";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 
 export interface RailNotice {
   text: string;
@@ -64,6 +65,7 @@ export const ComposerRail: React.FC<{
   const openThreadId = useAgentChatStore((s) => s.currentThreadId);
   const threadId = boundThreadId === undefined ? openThreadId : boundThreadId;
 
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
   const byThread = useAgentBackgroundStore((s) => s.byThread);
   const processes = visibleProcesses(byThread, threadId);
   const running = processes.filter((entry) => entry.status === "running").length;
@@ -71,7 +73,13 @@ export const ComposerRail: React.FC<{
   return (
     <div className="agw-crail">
       <p className="agw-crail-notice" style={{ color: NOTICE_COLOR[notice?.tone ?? "subtle"] }}>
-        {notice?.text ?? "AI can make mistakes. Review generated code."}
+        {/* "Review generated code" is Build's warning and is wrong in Aurora
+            Chat, which writes no code. The risk there is a confident wrong
+            answer, so the line names that instead of nothing. */}
+        {notice?.text ??
+          (chatSurface
+            ? "AI can make mistakes. Check anything that matters."
+            : "AI can make mistakes. Review generated code.")}
       </p>
 
       <div className="agw-crail-chips">

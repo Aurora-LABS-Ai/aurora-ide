@@ -24,6 +24,7 @@ import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
 import { splitCursorVariant } from "@/apps/agent/services/providers/cursor-variants";
+import { endpointIdentity, isEndpointModelKey } from "@/apps/agent/services/providers/modal";
 
 /** The chat-store shape this module reads. Structural, so tests can pass a stub. */
 interface ThreadModelSource {
@@ -52,10 +53,28 @@ export function normalizeThreadModelSelection(
   if (separator < 1) return selection;
   const providerId = selection.slice(0, separator);
   const modelKey = selection.slice(separator + 1);
-  if (providerId !== CURSOR_PROVIDER_ID || !modelKey) return selection;
+  if (!modelKey) return selection;
+  // An exact row always wins, for every provider. Only a pin naming a model
+  // that is genuinely gone is worth rewriting.
   if (models.some((model) => model.providerId === providerId && model.modelKey === modelKey)) {
     return selection;
   }
+
+  // Modal addresses an endpoint by a hostname that carries the gateway region,
+  // so changing region renames every model on the row. The endpoint is the
+  // same deployment — same workspace, same name — so a conversation pinned to
+  // its old hostname follows it instead of dying on `unknown inference model`.
+  if (isEndpointModelKey(modelKey)) {
+    const identity = endpointIdentity(modelKey);
+    const moved = models.find(
+      (model) =>
+        model.providerId === providerId && endpointIdentity(model.modelKey) === identity,
+    );
+    if (moved) return `${providerId}:${moved.modelKey}`;
+    return selection;
+  }
+
+  if (providerId !== CURSOR_PROVIDER_ID) return selection;
   const { stem } = splitCursorVariant(modelKey);
   if (
     stem !== modelKey &&
@@ -64,6 +83,38 @@ export function normalizeThreadModelSelection(
     return `${providerId}:${stem}`;
   }
   return selection;
+}
+
+/**
+ * Keep a chat on a model its picker still offers.
+ *
+ * Aurora Chat is given a shortlist — up to ten models, ticked on the provider
+ * page. A conversation pinned to a model that later leaves that shortlist is
+ * not thrown away and does not break: it falls to the next available one, and
+ * says so by simply showing that model in the composer.
+ *
+ * Three deliberate non-actions:
+ *   - An EMPTY shortlist changes nothing. Nothing ticked means "no shortlist
+ *     yet", not "no models" — a fresh install would otherwise open onto a chat
+ *     that cannot send.
+ *   - A shortlist whose every entry is gone changes nothing either. A pinned
+ *     model that still exists beats falling back to nothing.
+ *   - Build is untouched. Its roster is long on purpose and has no shortlist.
+ */
+export function applyChatShortlist(
+  selection: string,
+  shortlist: readonly string[],
+  models: ModelRowIdentity[],
+): string {
+  if (shortlist.length === 0 || shortlist.includes(selection)) return selection;
+  const exists = (entry: string) => {
+    const separator = entry.indexOf(":");
+    if (separator < 1) return false;
+    const providerId = entry.slice(0, separator);
+    const modelKey = entry.slice(separator + 1);
+    return models.some((m) => m.providerId === providerId && m.modelKey === modelKey);
+  };
+  return shortlist.find(exists) ?? selection;
 }
 
 /**
@@ -94,10 +145,17 @@ export function resolveThreadModel(threadId: string | null | undefined): string 
   const pinned = pinnedThreadModel(chat, threadId);
   const source = pinned ?? settings.selectedModel;
   const normalized = normalizeThreadModelSelection(source, settings.models);
-  if (pinned && normalized !== pinned && threadId) {
-    void chat.setThreadModel(threadId, normalized);
-  } else if (!pinned && normalized !== settings.selectedModel) {
-    settings.setSelectedModel(normalized);
+  // Applied HERE, not in the picker, so the model the turn runs on and the
+  // model the composer shows can never be two different things — which is the
+  // whole reason this module exists.
+  const resolved =
+    settings.auroraSurface === "chat"
+      ? applyChatShortlist(normalized, settings.chatModelShortlist, settings.models)
+      : normalized;
+  if (pinned && resolved !== pinned && threadId) {
+    void chat.setThreadModel(threadId, resolved);
+  } else if (!pinned && resolved !== settings.selectedModel) {
+    settings.setSelectedModel(resolved);
   }
-  return normalized;
+  return resolved;
 }

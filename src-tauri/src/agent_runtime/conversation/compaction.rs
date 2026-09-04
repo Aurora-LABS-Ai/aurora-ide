@@ -172,9 +172,9 @@ impl ConversationRuntime {
         seq: &mut u64,
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         cancel_token: &CancellationToken,
-    ) {
+    ) -> bool {
         let Some(threshold) = self.config.compaction_threshold else {
-            return;
+            return false;
         };
         // The window the ENDPOINT has proven it serves, which is not always
         // the one it was configured with. A model advertised at 1,050,000 and
@@ -187,10 +187,10 @@ impl ConversationRuntime {
             &model_key,
             self.config.context_window,
         ) else {
-            return;
+            return false;
         };
         if threshold <= 0.0 || window == 0 {
-            return;
+            return false;
         }
 
         // Projected size of the request we're about to build (after any prior
@@ -198,51 +198,41 @@ impl ConversationRuntime {
         let projected = self.projected_request_tokens(session);
         let limit = (window as f32 * threshold) as u32;
         if projected < limit {
-            return;
+            return false;
         }
 
-        // Circuit breaker. A failed compaction does not fix the overrun that
-        // called it, so without this the next turn crosses the same threshold
-        // and pays for the same doomed request again, forever — the single
-        // most expensive request in the chat, on repeat, behind a spinner.
-        let now = Utc::now().timestamp_millis();
-        if session.compaction_failures >= MAX_CONSECUTIVE_COMPACTION_FAILURES {
-            match session.compaction_retry_after {
-                Some(retry_at) if now < retry_at => return,
-                // Cooldown served: clear the strikes and allow one more try.
-                _ => {
-                    session.compaction_failures = 0;
-                    session.compaction_retry_after = None;
-                }
-            }
+        // Fail closed. The trigger condition is unchanged after a failed
+        // summary, so an automatic retry would resend the same full head and
+        // charge for it again. Only an explicit `/compact` (or reload) may try
+        // after this latch is armed.
+        if session.auto_compaction_blocked {
+            return false;
         }
 
-        match self
-            .compact_inner(session, turn_id, seq, event_sink, cancel_token)
-            .await
-        {
+        let outcome = self
+            .compact_inner(session, turn_id, seq, event_sink, cancel_token, Some(limit))
+            .await;
+        match outcome {
             CompactionOutcome::Compacted { .. } => {
-                session.compaction_failures = 0;
-                session.compaction_retry_after = None;
+                session.auto_compaction_blocked = false;
             }
-            CompactionOutcome::SummaryFailed => {
-                session.compaction_failures = session.compaction_failures.saturating_add(1);
-                if session.compaction_failures >= MAX_CONSECUTIVE_COMPACTION_FAILURES {
-                    session.compaction_retry_after = Some(now + COMPACTION_FAILURE_COOLDOWN_MS);
-                    eprintln!(
-                        "agent_runtime: compaction failed {} times for thread {}; \
-                         pausing auto-compaction for {} minutes (trim still bounds the request)",
-                        session.compaction_failures,
+            CompactionOutcome::Failed { .. } => {
+                session.auto_compaction_blocked = true;
+                crate::logging::log_warn(
+                    "agent_runtime.compaction",
+                    &format!(
+                        "automatic compaction is disabled for thread {} after one failed attempt; \
+                         deterministic trim remains active and only an explicit /compact may retry",
                         session.thread_id,
-                        COMPACTION_FAILURE_COOLDOWN_MS / 60_000,
-                    );
-                }
+                    ),
+                );
             }
             // Nothing was attempted and nothing was spent — a transcript too
             // short to cut is not a failure, and counting it as one would use
             // up the budget meant for real ones.
             CompactionOutcome::NothingToDo => {}
         }
+        !matches!(outcome, CompactionOutcome::NothingToDo)
     }
 
     /// Force a compaction pass immediately, bypassing the configured threshold.
@@ -258,12 +248,19 @@ impl ConversationRuntime {
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         cancel_token: &CancellationToken,
     ) -> Option<(u32, u32)> {
-        match self
-            .compact_inner(session, turn_id, seq, event_sink, cancel_token)
-            .await
-        {
-            CompactionOutcome::Compacted { before, after } => Some((before, after)),
-            _ => None,
+        let outcome = self
+            .compact_inner(session, turn_id, seq, event_sink, cancel_token, None)
+            .await;
+        match outcome {
+            CompactionOutcome::Compacted { before, after } => {
+                session.auto_compaction_blocked = false;
+                Some((before, after))
+            }
+            CompactionOutcome::Failed { .. } => {
+                session.auto_compaction_blocked = true;
+                None
+            }
+            CompactionOutcome::NothingToDo => None,
         }
     }
 
@@ -278,6 +275,7 @@ impl ConversationRuntime {
         seq: &mut u64,
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         cancel_token: &CancellationToken,
+        required_after_ceiling: Option<u32>,
     ) -> CompactionOutcome {
         // The window this endpoint has proven it serves, not the one it was
         // configured with — see `context_limits`.
@@ -314,15 +312,20 @@ impl ConversationRuntime {
         // No resume note on the head: this slice is being READ by the
         // summarizer, not resumed from. "Pick up where you left off"
         // would be an instruction aimed at the wrong request.
-        let head_view = apply_compaction(&session.messages()[..cut], None);
+        // Rendered exactly as the live requests render it — each user
+        // message's saved context folded after its text — so the summarizer
+        // reads the same bytes the model did and the shared prefix holds.
+        let head_view = fold_message_context(&apply_compaction(&session.messages()[..cut], None));
         let model = session.model.clone();
-        // The repo map the live requests carry in their first user message,
-        // from the same per-thread memo, so the summarizer can reproduce the
-        // conversation's prefix byte for byte. Without it the shared-cache
-        // request diverged at the very first message and the entire head was
-        // re-billed as fresh input — measured at a 6.9% cache-read rate on a
-        // 200k-token compaction whose premise was ~100%.
-        let repo_map = self.repo_map_block(session.workspace_root.as_deref(), &session.thread_id);
+        // The head context (the repo map) the live requests carry in their
+        // first user message, from the same per-thread memo, so the
+        // summarizer can reproduce the conversation's prefix byte for byte.
+        // Without it the shared-cache request diverged at the very first
+        // message and the entire head was re-billed as fresh input — measured
+        // at a 6.9% cache-read rate on a 200k-token compaction whose premise
+        // was ~100%.
+        let repo_map =
+            self.head_context_block(session.workspace_root.as_deref(), &session.thread_id);
         let summarized = self
             .summarize_head(
                 &head_view,
@@ -332,25 +335,13 @@ impl ConversationRuntime {
                 cancel_token,
             )
             .await;
-        let summary_usage = summarized.as_ref().map(|(_, usage)| usage.clone());
-
-        let summary = match summarized {
-            Some((s, _)) if !s.trim().is_empty() => s,
-            _ => {
-                // Failsafe: summary unavailable — leave history intact and
-                // clear the indicator with a no-drop completion. Trim still
-                // bounds the request body downstream.
-                emit_native_tool_event(
-                    event_sink,
-                    turn_id,
-                    seq,
-                    AssistantEvent::CompactionCompleted {
-                        before_tokens: projected,
-                        after_tokens: projected,
-                    },
-                )
-                .await;
-                return CompactionOutcome::SummaryFailed;
+        let (summary, summary_usage) = match summarized {
+            Ok(result) => result,
+            Err(failure) => {
+                emit_compaction_failed(event_sink, turn_id, seq, projected, failure).await;
+                return CompactionOutcome::Failed {
+                    cancelled: failure == CompactionFailure::Cancelled,
+                };
             }
         };
 
@@ -381,10 +372,11 @@ impl ConversationRuntime {
             // model that ran it. Carried on the marker because that is the
             // only message this request produces — without it the charge
             // exists on the bill and nowhere in Aurora.
-            usage: summary_usage,
+            usage: Some(summary_usage),
             timestamp: now,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             // The model that ran the SUMMARY, which is not the chat model once
             // a compaction model is pinned. The cost card groups by this field
             // to price a mixed-model chat at each model's own rates — naming
@@ -396,9 +388,11 @@ impl ConversationRuntime {
                 .map(|(_, m)| m.clone())
                 .or_else(|| model.clone()),
         };
-        // Insert at the boundary: `[head…][marker][tail…]`. The persisted
-        // JSONL keeps the head (UI history); only the model API view drops it.
-        session.messages.insert(cut, marker);
+        // Validate a candidate before mutating memory or the journal. Failed
+        // compaction is a no-op by contract: no marker, no fake success, no
+        // stale measured projection.
+        let mut candidate = session.messages.clone();
+        candidate.insert(cut, marker);
 
         // After-size, on the SAME scale as before-size.
         //
@@ -416,18 +410,43 @@ impl ConversationRuntime {
         // before` becomes structural: it holds exactly when the new view
         // estimates smaller than the old one, which is the only case where a
         // shrink actually happened.
-        let after_estimate = self.estimate_view_tokens(&self.compacted_view(session));
+        let candidate_hint = self.transcript_hint(session);
+        let candidate_view = apply_compaction(&candidate, candidate_hint.as_deref());
+        let after_estimate = self.estimate_view_tokens(&candidate_view);
         let after = if before_estimate > 0 {
             let scale = f64::from(projected) / f64::from(before_estimate);
             (f64::from(after_estimate) * scale) as u32
         } else {
             after_estimate
         };
+        let valid_reduction = after < projected;
+        let reaches_target = required_after_ceiling.is_none_or(|ceiling| after < ceiling);
+        if !valid_reduction || !reaches_target {
+            let failure = if !valid_reduction {
+                CompactionFailure::NoReduction
+            } else {
+                CompactionFailure::TargetNotReached
+            };
+            crate::logging::log_warn(
+                "agent_runtime.compaction",
+                &format!(
+                    "discarded compaction candidate for thread {}: projected {projected}, \
+                     candidate {after}, required ceiling {:?}; session left unchanged",
+                    session.thread_id, required_after_ceiling,
+                ),
+            );
+            emit_compaction_failed(event_sink, turn_id, seq, projected, failure).await;
+            return CompactionOutcome::Failed { cancelled: false };
+        }
+
         if let Some(ContentBlock::Compaction { after_tokens, .. }) =
-            session.messages[cut].blocks.first_mut()
+            candidate[cut].blocks.first_mut()
         {
             *after_tokens = after;
         }
+
+        // Commit only after every invariant passes.
+        session.messages = candidate;
 
         // The marker went in at `cut`, not at the end, which is an edit the
         // journal cannot express as one more line — so it has just gone silent
@@ -500,57 +519,22 @@ impl ConversationRuntime {
         repo_map: Option<&str>,
         session_key: &str,
         cancel_token: &CancellationToken,
-    ) -> Option<(String, TokenUsage)> {
-        // What a discarded first attempt cost. Kept, not dropped: it carried
-        // the whole head, so it is one of the largest single charges in the
-        // conversation, and the marker below is the only place it can be
-        // recorded. Reporting just the second attempt is what made a
-        // compaction that ran twice show the price of running once.
-        let mut discarded: Option<TokenUsage> = None;
-
-        // Only the conversation's own client can hit the conversation's cache.
-        if self.compaction_client.is_none() {
-            let shared = self
-                .summarize_with(head_view, model, repo_map, session_key, cancel_token, true)
-                .await;
-            // Advertising the tools is what preserves the cache key, and the
-            // price of that is a model that occasionally answers with a tool
-            // call instead of the note. Rather than let a formatting accident
-            // burn a compaction attempt, fall back to the standalone shape —
-            // which cannot be misread, only re-billed.
-            if shared.as_ref().is_some_and(|(s, _)| !s.trim().is_empty()) {
-                return shared;
-            }
-            discarded = shared.map(|(_, usage)| usage);
-            // `log_warn`, not `eprintln!`: this branch doubles what a
-            // compaction costs, and stderr is not readable in a release build,
-            // so the one line that explains a surprise charge was going
-            // nowhere. It belongs in `aurora.log` next to the request that
-            // caused it.
-            crate::logging::log_warn(
-                "agent_runtime.compaction",
-                &format!(
-                    "cache-sharing summary produced no note (the model answered the advertised \
-                     tool catalogue instead of writing one); retrying without tools, which \
-                     cannot share the conversation's prompt cache and therefore re-bills the \
-                     entire head as fresh input{}",
-                    discarded.as_ref().map_or(String::new(), |u| format!(
-                        " — the discarded attempt billed {} fresh + {} cached input and {} output",
-                        u.input_tokens,
-                        u.cache_read_input_tokens.unwrap_or(0),
-                        u.output_tokens,
-                    )),
-                ),
-            );
-        }
-
-        let fallback = self
-            .summarize_with(head_view, model, repo_map, session_key, cancel_token, false)
-            .await;
-        match (fallback, discarded) {
-            (Some((note, usage)), Some(wasted)) => Some((note, sum_usage(wasted, usage))),
-            (result, _) => result,
-        }
+    ) -> Result<(String, TokenUsage), CompactionFailure> {
+        // Exactly one provider request per compaction. The conversation client
+        // keeps its cache-compatible request shape; a pinned summarizer uses
+        // the standalone shape. There is intentionally no automatic fallback:
+        // the old fallback sent the entire head a second time at the fresh-input
+        // rate whenever the first response was empty or tool-shaped.
+        let share_cache = self.compaction_client.is_none();
+        self.summarize_with(
+            head_view,
+            model,
+            repo_map,
+            session_key,
+            cancel_token,
+            share_cache,
+        )
+        .await
     }
 
     /// One summarization attempt.
@@ -574,7 +558,7 @@ impl ConversationRuntime {
         session_key: &str,
         cancel_token: &CancellationToken,
         share_cache: bool,
-    ) -> Option<(String, TokenUsage)> {
+    ) -> Result<(String, TokenUsage), CompactionFailure> {
         // A pinned compaction model brings its own client; otherwise the
         // summary rides the conversation's provider and model.
         let (client, model) = match &self.compaction_client {
@@ -582,7 +566,7 @@ impl ConversationRuntime {
             None => (self.api_client.clone(), model.clone().unwrap_or_default()),
         };
         if model.is_empty() {
-            return None;
+            return Err(CompactionFailure::ProviderError);
         }
 
         // Reasoning is kept when sharing the cache — removing it would alter
@@ -613,8 +597,15 @@ impl ConversationRuntime {
         // whole prompt (the system slot belongs to the conversation and must
         // not change) plus the no-tools warning that the advertised catalogue
         // makes necessary.
+        // Which note to ask for. A research conversation and a coding one need
+        // different things preserved, and the list IS the prompt.
+        let summary_prompt = if self.config.execution_mode_is_chat {
+            CHAT_COMPACTION_SYSTEM_PROMPT
+        } else {
+            COMPACTION_SYSTEM_PROMPT
+        };
         let instruction = if share_cache {
-            format!("{COMPACTION_NO_TOOLS_PREAMBLE}\n\n{COMPACTION_SYSTEM_PROMPT}\n\n{COMPACTION_INSTRUCTION}")
+            format!("{COMPACTION_NO_TOOLS_PREAMBLE}\n\n{summary_prompt}\n\n{COMPACTION_INSTRUCTION}")
         } else {
             COMPACTION_INSTRUCTION.to_string()
         };
@@ -625,6 +616,7 @@ impl ConversationRuntime {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         });
 
@@ -642,15 +634,24 @@ impl ConversationRuntime {
         } else {
             standalone_reasoning.as_request()
         };
+        // When sharing the cache the system slot must be byte-identical to the
+        // live requests', `<machine_tools>` included — see
+        // `request_system_prompt`.
+        let shared_system_prompt = if share_cache {
+            self.request_system_prompt(session_key)
+        } else {
+            None
+        };
         let request = ApiRequest {
             model: &model,
             system_prompt: if share_cache {
-                self.config.system_prompt.as_deref()
+                shared_system_prompt.as_deref()
             } else {
-                Some(COMPACTION_SYSTEM_PROMPT)
+                Some(summary_prompt)
             },
             messages: &messages,
             tools: &schemas,
+            tool_choice: crate::agent_runtime::api_client::ToolChoice::None,
             // Temperature is not part of the cache key, so a low one is free
             // either way.
             temperature: Some(0.3),
@@ -665,22 +666,66 @@ impl ConversationRuntime {
             // Same conversation, same affinity key — this request exists to
             // read the conversation's cache.
             session_key: Some(session_key),
-            // The head is all-stable history; no context tail rides on it.
-            volatile_tail_messages: 0,
         };
-        let result = client.stream(request, tx, cancel_token.clone()).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(COMPACTION_TIMEOUT_SECS),
+            client.stream(request, tx, cancel_token.clone()),
+        )
+        .await;
         let _ = drain.await;
 
         match result {
             // Strip the `<analysis>` scratchpad here, at the boundary, so the
             // drafting pass costs output tokens once and never enters context.
-            Ok(turn) => Some((
-                format_compact_summary(&collect_assistant_text(&turn.assistant_message)),
-                turn.usage,
-            )),
-            Err(_) => None,
+            Ok(Ok(turn)) => {
+                let summary =
+                    format_compact_summary(&collect_assistant_text(&turn.assistant_message));
+                if summary.trim().is_empty() {
+                    Err(CompactionFailure::EmptySummary)
+                } else {
+                    Ok((summary, turn.usage))
+                }
+            }
+            Ok(Err(ApiError::Cancelled)) => Err(CompactionFailure::Cancelled),
+            Ok(Err(error)) => {
+                crate::logging::log_warn(
+                    "agent_runtime.compaction",
+                    &format!("single compaction request failed: {error}"),
+                );
+                Err(CompactionFailure::ProviderError)
+            }
+            Err(_) => {
+                crate::logging::log_warn(
+                    "agent_runtime.compaction",
+                    &format!(
+                        "single compaction request exceeded the {} second hard limit",
+                        COMPACTION_TIMEOUT_SECS,
+                    ),
+                );
+                Err(CompactionFailure::Timeout)
+            }
         }
     }
+}
+
+async fn emit_compaction_failed(
+    event_sink: &mpsc::Sender<AgentEventEnvelope>,
+    turn_id: &str,
+    seq: &mut u64,
+    before_tokens: u32,
+    failure: CompactionFailure,
+) {
+    emit_native_tool_event(
+        event_sink,
+        turn_id,
+        seq,
+        AssistantEvent::CompactionFailed {
+            before_tokens,
+            reason: failure.code().to_string(),
+            cancelled: failure == CompactionFailure::Cancelled,
+        },
+    )
+    .await;
 }
 /// How much recent conversation survives a compaction, word for word.
 /// Everything older is replaced by the summary.
@@ -702,6 +747,10 @@ impl ConversationRuntime {
 /// file restore at 50k, skills at 25k, the auto-compact buffer at 30k. Its
 /// standard `/compact` keeps no verbatim tail at all.
 pub(super) const COMPACT_TAIL_MAX_TOKENS: u32 = 40_000;
+
+/// Hard wall-clock ceiling for one compaction model request. Dropping the
+/// future closes the stream; there is no fallback or retry after this point.
+pub(super) const COMPACTION_TIMEOUT_SECS: u64 = 4 * 60;
 
 /// Ceiling on the tail as a share of the window, for models where
 /// [`COMPACT_TAIL_MAX_TOKENS`] would be most of the context (or more than all
@@ -767,6 +816,48 @@ Then, in <summary> tags, write the note itself under these headings:
 10. Next step — the single next action, and only if it follows directly from the most recent request. Quote the relevant part of the conversation verbatim so the task cannot drift. If the work was finished, say so instead of inventing a next step.
 
 Be specific. Exact names, exact paths, exact values. A detail you generalize away is a detail you will have to rediscover.
+
+Respond with text only. Do not call tools. Do not address the user."#;
+
+/// The same job for an Aurora Chat conversation.
+///
+/// Its own prompt rather than a tweak of the one above, because the LIST is the
+/// prompt. The coding version asks for file paths, function signatures and code
+/// snippets — a research conversation has none of those, and a summariser told
+/// to preserve them will pad the note with the nearest thing it can find while
+/// dropping what actually mattered.
+///
+/// What matters here is the opposite: the sources, what they said, what was
+/// established, and what was checked and ruled out. A research note that loses
+/// its citations has lost the research, because the answers stop being
+/// verifiable the moment the transcript behind them is gone.
+pub(super) const CHAT_COMPACTION_SYSTEM_PROMPT: &str = r#"You are writing the memory of this conversation.
+
+Everything above is about to be removed and replaced by exactly what you write now. The conversation continues immediately afterward, with a user who saw no interruption and expects you to still know what you found. Anything you leave out is gone for good.
+
+Write the note you would want to find.
+
+First, in <analysis> tags, work through the conversation in order. For each part, identify:
+- what the user actually wanted to know, in their words
+- what you looked up, and what each source said
+- what you concluded, and how confident you were
+- anything you checked and RULED OUT — a dead end you forget is a dead end you will walk down again
+- any point where the user corrected you, narrowed the question, or changed direction
+
+Then, in <summary> tags, write the note itself under these headings:
+
+1. The question — what the user is trying to find out, in detail and in their own framing.
+2. What has been established — the findings, each with the source that supports it. A claim without its source is not a finding, it is a memory.
+3. Sources — every page, paper or document you read that still matters. Title, URL, and what it was good for.
+4. Ruled out — what you checked that did not pan out, and why. This is the section that stops the work repeating itself.
+5. Disagreements — where sources conflicted, and which you found more credible.
+6. Every user message — list all of the user's own messages, in order. Their exact words are the requirements; do not compress them into themes.
+7. Standing instructions — preferences and constraints the user has stated that still apply.
+8. Open questions — what is still unresolved, and what you were going to do about it.
+9. What was presented — anything you built on the canvas, by title, and what it showed.
+10. Next step — the single next action, only if it follows directly from the most recent request. If the question was answered, say so instead of inventing one.
+
+Be specific. Exact figures, exact titles, exact URLs. A number you round or a source you describe instead of naming is one the user cannot check.
 
 Respond with text only. Do not call tools. Do not address the user."#;
 
@@ -963,6 +1054,7 @@ pub(super) fn apply_compaction(
                     timestamp: messages[mi].timestamp,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    aurora_context: None,
                     model: None,
                 },
             );
@@ -1176,29 +1268,38 @@ pub(super) enum CompactionOutcome {
     /// A marker was inserted. `before`/`after` are the projected request sizes
     /// either side of it.
     Compacted { before: u32, after: u32 },
-    /// The summarization request ran and came back empty or errored. History
-    /// is untouched and the overrun that triggered this is still there.
-    SummaryFailed,
+    /// The summarization request ran but no marker was committed. History is
+    /// untouched. `cancelled` is surfaced separately in the UI.
+    Failed { cancelled: bool },
     /// Compaction was disabled, or the transcript had no safe cut. No request
     /// was made.
     NothingToDo,
 }
 
-/// Failed compactions tolerated before auto-compaction pauses for
-/// [`COMPACTION_FAILURE_COOLDOWN_MS`].
-///
-/// Three, because the failures worth retrying are transient (a rate limit, a
-/// dropped connection) and clear in one or two turns; the ones that are not
-/// — a head too large for the summarizer's own window, a malformed history
-/// the provider rejects — will never clear, and each attempt re-sends the
-/// whole conversation.
-pub(super) const MAX_CONSECUTIVE_COMPACTION_FAILURES: u32 = 3;
+/// Terminal reasons for a compaction request that did not commit a marker.
+/// Codes are stable wire values; provider error details stay in the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CompactionFailure {
+    Cancelled,
+    EmptySummary,
+    ProviderError,
+    Timeout,
+    NoReduction,
+    TargetNotReached,
+}
 
-/// How long auto-compaction stays paused after hitting the failure ceiling.
-/// Long enough that a stuck conversation stops burning money, short enough
-/// that a transient outage recovers without the user restarting anything.
-/// Manual `/compact` is never blocked by this.
-pub(super) const COMPACTION_FAILURE_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+impl CompactionFailure {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::EmptySummary => "empty_summary",
+            Self::ProviderError => "provider_error",
+            Self::Timeout => "timeout",
+            Self::NoReduction => "no_reduction",
+            Self::TargetNotReached => "target_not_reached",
+        }
+    }
+}
 
 /// How much of the context window one measured request occupied.
 ///

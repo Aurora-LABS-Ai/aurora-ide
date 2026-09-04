@@ -504,6 +504,11 @@ pub struct AppSettings {
     /// Default off — it changes how the model reaches a tool.
     #[serde(default)]
     pub defer_tools: bool,
+    /// Whether other agents may send work to this Aurora over MCP.
+    /// Default off, and it stays off until the user turns it on: it lets
+    /// software outside Aurora start turns that edit files on this machine.
+    #[serde(default)]
+    pub mcp_bridge_enabled: bool,
     pub auto_approve_tools: bool,
     pub auto_accept_changes: bool,
     pub explorer_icon_pack: String,
@@ -582,6 +587,7 @@ impl Default for AppSettings {
             show_activity_in_title: true,
             browser_tools: true,
             defer_tools: false,
+            mcp_bridge_enabled: false,
             auto_approve_tools: false,
             auto_accept_changes: false,
             explorer_icon_pack: "material".to_string(),

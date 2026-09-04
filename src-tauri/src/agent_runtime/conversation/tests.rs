@@ -2132,9 +2132,15 @@ async fn run_turn_forwards_system_prompt_max_tokens_thinking_into_api_request() 
 
     let captured = captured.lock().expect("captured mutex");
     let captured = captured.as_ref().expect("api was called");
-    assert_eq!(
-        captured.system_prompt.as_deref(),
-        Some("YOU ARE THE AURORA SYSTEM PROMPT")
+    // The configured prompt leads; `<machine_tools>` follows it on a machine
+    // that has any (see `request_system_prompt`).
+    assert!(
+        captured
+            .system_prompt
+            .as_deref()
+            .is_some_and(|p| p.starts_with("YOU ARE THE AURORA SYSTEM PROMPT")),
+        "{:?}",
+        captured.system_prompt
     );
     assert_eq!(captured.max_output_tokens, 1234);
     assert!(captured.thinking_enabled);
@@ -2161,59 +2167,59 @@ impl StreamingApiClient for CapturingMessagesApi {
     }
 }
 
+/// The transcript keeps the user's words and Aurora's context in two fields;
+/// the model reads them as one message, words first.
+///
+/// Deterministic per message, which is the property everything else rests
+/// on: the same history renders the same bytes on every request, so the whole
+/// conversation stays a cacheable prefix and nothing ever needs a "volatile
+/// tail". The two reference shapes are the same thing — OpenCode's synthetic
+/// part on the user message, Claude Code's meta user message merged into the
+/// user turn.
 #[test]
-fn volatile_context_rides_as_its_own_message_at_the_tail() {
-    // The opposite placement from the repo map, for the opposite reason:
-    // the checklist and the IDE context change mid-turn, and spliced into
-    // any EXISTING message they rewrite bytes inside the provider's cached
-    // prefix — measured as the whole conversation re-billing as fresh
-    // input on every checklist update. As their own message at the end,
-    // a change touches nothing that was already cached.
-    let tail = trailing_context_message(
-        Some("OPEN_FILE: src/main.rs"),
-        Some("<aurora_task_reminder>\n- [ ] t1 Do it (pending)\n</aurora_task_reminder>"),
-    )
-    .expect("both blocks present produces a message");
+fn saved_context_is_folded_after_the_users_words_for_the_api_view_only() {
+    let mut with_context = user_msg("close the hole");
+    with_context.aurora_context = Some("<aurora_context>\n<open_files>a.rs</open_files>\n</aurora_context>".into());
+    let history = vec![with_context.clone(), assistant_text("on it"), user_msg("thanks")];
 
-    assert_eq!(tail.role, MessageRole::User);
-    let text = match &tail.blocks[0] {
+    let view = fold_message_context(&history);
+
+    let first = match &view[0].blocks[0] {
         ContentBlock::Text { text } => text.clone(),
         other => panic!("expected text, got {other:?}"),
     };
-    assert!(text.starts_with("<aurora_runtime_state>"), "{text}");
-    assert!(text.contains("<ide_context>"), "{text}");
-    assert!(text.contains("OPEN_FILE: src/main.rs"), "{text}");
-    assert!(text.contains("<aurora_task_reminder>"), "{text}");
+    assert!(first.starts_with("close the hole\n\n<aurora_context>"), "{first}");
+    assert!(first.ends_with("</aurora_context>"), "{first}");
+    // Folded, not carried twice: the field is spent once it is in the text.
+    assert!(view[0].aurora_context.is_none());
+    // Messages without context are untouched, and the persisted originals
+    // keep the two fields apart.
+    assert_eq!(view[2], history[2]);
+    assert!(matches!(&history[0].blocks[0], ContentBlock::Text { text } if text == "close the hole"));
+    assert!(history[0].aurora_context.is_some());
 
-    // The tail is the most recent USER message the model sees, and a user
-    // message carrying no request reads as the user having asked for nothing.
-    // Thread `d394396f` at 01:34:26 answered this block instead of the
-    // question above it ("No new task or question was included"), so the
-    // envelope has to disown itself in as many words.
-    assert!(text.contains("NOT from the user"), "{text}");
-    assert!(text.contains("NOT a new request"), "{text}");
-    assert!(text.contains("Do not reply to it"), "{text}");
-    assert!(
-        text.contains("user's most recent message above"),
-        "the block must point back at the real turn: {text}"
-    );
-
-    // Either block alone still produces a message; neither produces none.
-    assert!(trailing_context_message(Some("ctx"), None).is_some());
-    assert!(trailing_context_message(None, Some("reminder")).is_some());
-    assert!(trailing_context_message(None, None).is_none());
-    // Empty strings count as absent — an empty tail message is pure cost.
-    assert!(trailing_context_message(Some(""), Some("")).is_none());
+    // A user message with no text block (an image alone) gets the context
+    // as its own text block rather than losing it.
+    let mut image_only = user_msg("");
+    image_only.blocks.clear();
+    image_only.aurora_context = Some("<aurora_context>x</aurora_context>".into());
+    let view = fold_message_context(&[image_only]);
+    assert_eq!(view[0].blocks.len(), 1);
+    // Blank context is nothing to say.
+    let mut blank = user_msg("hi");
+    blank.aurora_context = Some("   ".into());
+    let view = fold_message_context(&[blank]);
+    assert!(matches!(&view[0].blocks[0], ContentBlock::Text { text } if text == "hi"));
 }
 
 #[test]
-fn the_task_reminder_states_every_status_and_where_the_agent_is() {
+fn the_checklist_block_states_every_status_once() {
     use crate::tools::shell_editor_todo::todo_store::{self, TodoItem, TodoList, TodoStatus};
 
-    let thread = format!("reminder-test-{}", std::process::id());
+    let thread = format!("checklist-test-{}", std::process::id());
     assert!(
-        task_reminder_block(&thread).is_none(),
-        "no list means no block — an empty reminder is pure cost"
+        checklist_block(&thread).is_none(),
+        "no list means no block — an empty block is pure cost"
     );
 
     let mut list = TodoList::default();
@@ -2232,31 +2238,130 @@ fn the_task_reminder_states_every_status_and_where_the_agent_is() {
     }
     todo_store::write(&thread, &list).expect("write");
 
-    let block = task_reminder_block(&thread).expect("a tracked list produces a block");
-    assert!(block.starts_with("<aurora_task_reminder>"));
-    assert!(block.ends_with("</aurora_task_reminder>"));
+    let block = checklist_block(&thread).expect("a tracked list produces a block");
+    assert!(block.starts_with("<checklist>\n"), "{block}");
+    assert!(block.ends_with("\n</checklist>"), "{block}");
     // Every task, with its status readable both as a mark and as a word.
-    assert!(
-        block.contains("- [x] t1 Read the code (completed)"),
-        "{block}"
-    );
-    assert!(
-        block.contains("- [>] t2 Fix the bug (in_progress)"),
-        "{block}"
-    );
-    assert!(
-        block.contains("- [ ] t3 Run the tests (pending)"),
-        "{block}"
-    );
-    assert!(
-        block.contains("- [-] t4 Update the docs (cancelled)"),
-        "{block}"
-    );
+    assert!(block.contains("- [x] t1 Read the code (completed)"), "{block}");
+    assert!(block.contains("- [>] t2 Fix the bug (in_progress)"), "{block}");
+    assert!(block.contains("- [ ] t3 Run the tests (pending)"), "{block}");
+    assert!(block.contains("- [-] t4 Update the docs (cancelled)"), "{block}");
     // Cancelled counts as closed, exactly like the user's checklist counts.
-    assert!(block.contains("2 closed of 4"), "{block}");
-    assert!(block.contains("Now working on t2."), "{block}");
+    assert!(block.contains("2 closed of 4."), "{block}");
+    // The block is the list and nothing else: no instructions ride here. What
+    // to do with a checklist is said once, in the system prompt.
+    assert!(!block.contains("todo"), "{block}");
 
     todo_store::clear(&thread).ok();
+}
+
+/// Claude Code's cadence, and the ONLY reminder Aurora sends about the
+/// checklist: ten assistant messages without a `todo` call, and ten since the
+/// last reminder. A model working its list normally never sees it.
+#[test]
+fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
+    use crate::tools::shell_editor_todo::todo_store::{self, TodoItem, TodoList, TodoStatus};
+
+    let thread = format!("stale-test-{}", std::process::id());
+    let mut list = TodoList::default();
+    list.items.push(TodoItem {
+        id: "t1".into(),
+        content: "Fix the bug".into(),
+        active_form: "Fixing the bug".into(),
+        status: TodoStatus::InProgress,
+    });
+    todo_store::write(&thread, &list).expect("write");
+
+    // One write, then nine tool calls: silent for nine, not yet ten. No
+    // reminder has ever been sent, so that count runs back to the start.
+    let mut history = vec![user_msg("go"), assistant_tool_uses(&[("w", "todo")]), tool_result_for("w", None)];
+    for i in 0..9 {
+        history.push(assistant_tool_uses(&[(&format!("c{i}"), "grep")]));
+        history.push(tool_result_for(&format!("c{i}"), None));
+    }
+    assert_eq!(checklist_silence(&history), (9, 10));
+    assert!(stale_checklist_reminder(&history, &thread).is_none());
+
+    // The tenth silent message is the one that gets the nudge, and the nudge
+    // carries the list as it stands and says what to do, never what not to.
+    history.push(assistant_tool_uses(&[("c9", "grep")]));
+    assert_eq!(checklist_silence(&history).0, 10);
+    let reminder = stale_checklist_reminder(&history, &thread).expect("due");
+    assert!(reminder.starts_with(CHECKLIST_REMINDER_TAG), "{reminder}");
+    assert!(reminder.contains("- [>] t1 Fix the bug (in_progress)"), "{reminder}");
+    assert!(reminder.contains("`todo`"), "{reminder}");
+    assert!(!reminder.to_lowercase().contains("do not"), "{reminder}");
+    assert!(!reminder.to_lowercase().contains("never"), "{reminder}");
+
+    // Once sent, it is quiet for another ten even though the list stays
+    // untouched — a reminder that repeats is a nag the model learns to skip.
+    let mut sent = tool_result_for("c9", None);
+    if let Some(ContentBlock::ToolResult { content, .. }) = sent.blocks.first_mut() {
+        content.push_str("\n\n");
+        content.push_str(&reminder);
+    }
+    history.push(sent);
+    for i in 10..19 {
+        history.push(assistant_tool_uses(&[(&format!("c{i}"), "grep")]));
+        history.push(tool_result_for(&format!("c{i}"), None));
+    }
+    assert_eq!(checklist_silence(&history), (19, 9));
+    assert!(stale_checklist_reminder(&history, &thread).is_none());
+    history.push(assistant_tool_uses(&[("c19", "grep")]));
+    assert!(stale_checklist_reminder(&history, &thread).is_some());
+
+    // A `todo` call anywhere in the run resets the silence — including one
+    // in the message being answered right now.
+    history.push(assistant_tool_uses(&[("w2", "todo")]));
+    assert_eq!(checklist_silence(&history).0, 0);
+    assert!(stale_checklist_reminder(&history, &thread).is_none());
+
+    // A conversation that never wrote a list is silent since its start, and
+    // the nudge says so instead of showing an empty list.
+    todo_store::clear(&thread).ok();
+    let mut never = vec![user_msg("go")];
+    for i in 0..10 {
+        never.push(assistant_tool_uses(&[(&format!("n{i}"), "grep")]));
+        never.push(tool_result_for(&format!("n{i}"), None));
+    }
+    assert_eq!(checklist_silence(&never), (10, 10));
+    let reminder = stale_checklist_reminder(&never, &thread).expect("due");
+    assert!(reminder.contains("have not used the `todo` checklist"), "{reminder}");
+    assert!(!reminder.contains("<checklist>"), "{reminder}");
+}
+
+/// A compaction marker is a wall for the count: the model's past before it
+/// is a summary now, and a list it wrote there was written in that summary's
+/// world.
+#[test]
+fn checklist_silence_stops_counting_at_a_compaction_marker() {
+    let marker = ConversationMessage {
+        role: MessageRole::System,
+        blocks: vec![ContentBlock::Compaction {
+            summary: "earlier work".into(),
+            before_tokens: 100,
+            after_tokens: 10,
+            created_at: 0,
+        }],
+        usage: None,
+        timestamp: 0,
+        attached_selected_elements: None,
+        attached_prompt_chips: None,
+        aurora_context: None,
+        model: None,
+    };
+    let history = vec![
+        user_msg("go"),
+        assistant_tool_uses(&[("w", "todo")]),
+        tool_result_for("w", None),
+        assistant_tool_uses(&[("a", "grep")]),
+        tool_result_for("a", None),
+        marker,
+        assistant_tool_uses(&[("b", "grep")]),
+        tool_result_for("b", None),
+        assistant_tool_uses(&[("c", "grep")]),
+    ];
+    assert_eq!(checklist_silence(&history), (2, 2));
 }
 
 #[test]
@@ -2296,6 +2401,53 @@ src/
     );
 }
 
+/// The machine's tools are a fact about the machine, so they sit in the
+/// system prompt beside `<env>` — the same slot every reference uses for
+/// platform facts — and never in a user message.
+#[test]
+fn machine_tools_ride_in_the_system_prompt_not_the_first_message() {
+    let runtime = ConversationRuntime::new(
+        Arc::new(MockApi::new(vec![])),
+        Arc::new(ToolRegistry::new()),
+        RuntimeConfig {
+            system_prompt: Some("You are Aurora Agent.".into()),
+            ..RuntimeConfig::default()
+        },
+    );
+    let prompt = runtime
+        .request_system_prompt("machine-tools-test")
+        .expect("a configured prompt is never lost");
+    assert!(prompt.starts_with("You are Aurora Agent."), "{prompt}");
+    // The block is present on any machine with a single well-known tool on
+    // its PATH and absent on a bare one; either way it is the prompt's tail,
+    // and the user message never carries it.
+    match machine_tools_block("machine-tools-test") {
+        Some(tools) => assert!(prompt.ends_with(&tools), "{prompt}"),
+        None => assert_eq!(prompt, "You are Aurora Agent."),
+    }
+    assert!(
+        runtime
+            .head_context_block(None, "machine-tools-test")
+            .is_none(),
+        "with no workspace there is no repo map, and nothing else belongs at the head"
+    );
+
+    // Aurora Chat describes no shell, so it gets no tool inventory.
+    let chat = ConversationRuntime::new(
+        Arc::new(MockApi::new(vec![])),
+        Arc::new(ToolRegistry::new()),
+        RuntimeConfig {
+            system_prompt: Some("You are Aurora.".into()),
+            execution_mode_is_chat: true,
+            ..RuntimeConfig::default()
+        },
+    );
+    assert_eq!(
+        chat.request_system_prompt("machine-tools-test").as_deref(),
+        Some("You are Aurora.")
+    );
+}
+
 #[test]
 fn repo_map_injection_leaves_the_persisted_messages_verbatim() {
     // Same contract as inject_ide_context: the JSONL on disk holds the
@@ -2313,125 +2465,188 @@ fn repo_map_injection_leaves_the_persisted_messages_verbatim() {
     }
 }
 
+/// What the frontend attached to the message is saved ON the message, once,
+/// and the model reads it after the user's words — in the SAME user turn.
+///
+/// The old shapes both failed the same way. As its own user message at the
+/// tail, the model received a user turn with no user text in it and spent the
+/// opening of every continuation working out what it was; frozen into tool
+/// results, the whole block — project rules and skill catalogue included —
+/// was re-copied into history every time the checklist moved. Saved here it
+/// has one home, is byte-stable forever, and the request never has a second
+/// user turn.
 #[tokio::test]
-async fn run_turn_wraps_user_message_with_ide_context_for_api_only() {
+async fn run_turn_saves_the_message_context_and_folds_it_after_the_users_words() {
     let captured = Arc::new(Mutex::new(None));
     let api = Arc::new(CapturingMessagesApi {
         captured: captured.clone(),
     });
-    let runtime = ConversationRuntime::new(
-        api,
-        Arc::new(ToolRegistry::new()),
-        RuntimeConfig {
-            ide_context: Some("OPEN_FILE: src/main.rs".into()),
-            ..RuntimeConfig::default()
-        },
-    );
+    let runtime =
+        ConversationRuntime::new(api, Arc::new(ToolRegistry::new()), RuntimeConfig::default());
+
+    // Exactly what the turn driver does with the request's `ideContext`.
+    let mut message = user_msg("hello, agent");
+    message.aurora_context = Some("<open_files count=\"1\">\n- src/main.rs\n</open_files>".into());
 
     let mut session = Session::new("t");
     let (tx, _rx) = mpsc::channel(32);
     runtime
-        .run_turn(
-            &mut session,
-            user_msg("hello, agent"),
-            tx,
-            CancellationToken::new(),
-        )
+        .run_turn(&mut session, message, tx, CancellationToken::new())
         .await
         .expect("ok");
 
-    // API saw the ide_context as its own trailing user message — at the
-    // absolute end, past everything the provider may have cached — and the
-    // user's own message stayed byte-identical.
+    // The API saw ONE user message: the words, then the context, wrapped.
     let captured = captured.lock().expect("captured mutex");
     let captured = captured.as_ref().expect("api was called");
-    let api_user = captured
-        .iter()
-        .find(|m| m.role == MessageRole::User)
-        .expect("api saw a user message");
-    match &api_user.blocks[0] {
+    let user_turns: Vec<&ConversationMessage> =
+        captured.iter().filter(|m| m.role == MessageRole::User).collect();
+    assert_eq!(user_turns.len(), 1, "never a second user turn: {captured:?}");
+    match &user_turns[0].blocks[0] {
         ContentBlock::Text { text } => {
-            assert_eq!(
-                text, "hello, agent",
-                "the user's message must not be rewritten — that is the cached prefix"
-            );
-        }
-        other => panic!("expected Text, got {other:?}"),
-    }
-    let tail = captured.last().expect("api saw messages");
-    assert_eq!(
-        tail.role,
-        MessageRole::User,
-        "context tail is a user message"
-    );
-    match &tail.blocks[0] {
-        ContentBlock::Text { text } => {
-            assert!(
-                text.contains("<ide_context>"),
-                "tail must carry the ide_context wrapper, got: {text}"
-            );
-            assert!(
-                text.contains("OPEN_FILE: src/main.rs"),
-                "tail must carry the ide_context body, got: {text}"
-            );
+            // The head context (a repo map) may sit in front on a machine
+            // with a workspace; nothing else does, and the words come first.
+            assert!(text.contains("hello, agent\n\n<aurora_context>\n<open_files"), "{text}");
+            assert!(text.ends_with("</open_files>\n</aurora_context>"), "{text}");
         }
         other => panic!("expected Text, got {other:?}"),
     }
 
-    // Persisted session keeps the user message clean.
+    // Persisted: the words alone in the text block, the context in its own
+    // field — so the bubble stays clean and the bytes never move.
     let session_user = session
         .messages()
         .iter()
         .find(|m| m.role == MessageRole::User)
         .expect("session has user");
-    match &session_user.blocks[0] {
-        ContentBlock::Text { text } => {
-            assert_eq!(
-                text, "hello, agent",
-                "session JSONL must remain verbatim — got: {text}"
-            );
-            assert!(
-                !text.contains("ide_context"),
-                "session must NOT contain the ide_context wrapper, got: {text}"
-            );
-        }
-        other => panic!("expected Text, got {other:?}"),
-    }
+    assert!(matches!(&session_user.blocks[0], ContentBlock::Text { text } if text == "hello, agent"));
+    let saved = session_user.aurora_context.as_deref().expect("context saved on the message");
+    assert!(saved.starts_with("<aurora_context>\n<open_files"), "{saved}");
 }
 
+/// The checklist as it stands joins the message context — but only where the
+/// `todo` tool exists. Plan mode and Aurora Chat have no checklist, and a list
+/// left behind by a Build turn must not follow the user into them.
 #[tokio::test]
-async fn run_turn_skips_ide_context_when_empty() {
-    let captured = Arc::new(Mutex::new(None));
-    let api = Arc::new(CapturingMessagesApi {
-        captured: captured.clone(),
-    });
-    let runtime = ConversationRuntime::new(
-        api,
-        Arc::new(ToolRegistry::new()),
-        RuntimeConfig {
-            ide_context: Some(String::new()),
-            ..RuntimeConfig::default()
-        },
-    );
+async fn run_turn_adds_the_checklist_to_the_message_context_where_todo_exists() {
+    use crate::tools::shell_editor_todo::todo_store::{self, TodoItem, TodoList, TodoStatus};
 
-    let mut session = Session::new("t");
+    let thread = format!("ctx-checklist-{}", std::process::id());
+    let mut list = TodoList::default();
+    list.items.push(TodoItem {
+        id: "t1".into(),
+        content: "Fix the bug".into(),
+        active_form: "Fixing the bug".into(),
+        status: TodoStatus::InProgress,
+    });
+    todo_store::write(&thread, &list).expect("write");
+
+    let with_todo = Arc::new(ToolRegistry::new());
+    with_todo.register(Arc::new(RecordingTool {
+        name: "todo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "{}".into(),
+    }));
+    let runtime = ConversationRuntime::new(
+        Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text("ok"), "end_turn")),
+        }])),
+        with_todo,
+        RuntimeConfig::default(),
+    );
+    let mut session = Session::new(thread.clone());
     let (tx, _rx) = mpsc::channel(32);
     runtime
-        .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+        .run_turn(&mut session, user_msg("continue"), tx, CancellationToken::new())
+        .await
+        .expect("ok");
+    let saved = session.messages()[0]
+        .aurora_context
+        .as_deref()
+        .expect("the checklist alone is enough to write a context");
+    assert!(saved.contains("<checklist>\n- [>] t1 Fix the bug (in_progress)"), "{saved}");
+
+    // Same list on disk, no `todo` tool: nothing is written.
+    let runtime = ConversationRuntime::new(
+        Arc::new(MockApi::new(vec![TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text("ok"), "end_turn")),
+        }])),
+        Arc::new(ToolRegistry::new()),
+        RuntimeConfig::default(),
+    );
+    let mut session = Session::new(thread.clone());
+    let (tx, _rx) = mpsc::channel(32);
+    runtime
+        .run_turn(&mut session, user_msg("continue"), tx, CancellationToken::new())
+        .await
+        .expect("ok");
+    assert!(session.messages()[0].aurora_context.is_none());
+
+    todo_store::clear(&thread).ok();
+}
+
+/// The stale-checklist reminder is written into the tenth silent tool result
+/// — once, persisted — and nowhere before it.
+#[tokio::test]
+async fn run_turn_writes_the_stale_checklist_reminder_into_the_tenth_silent_tool_result() {
+    let mut script = Vec::new();
+    for i in 0..10 {
+        let id = format!("c{i}");
+        script.push(TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_use(&id, "echo", serde_json::json!({})),
+                "tool_use",
+            )),
+        });
+    }
+    script.push(TurnScript {
+        events: vec![],
+        result: Ok(turn_usage(assistant_text("done"), "end_turn")),
+    });
+
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register(Arc::new(RecordingTool {
+        name: "echo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "hi".into(),
+    }));
+    // Registered so the reminder applies; never called, so the silence grows.
+    tools.register(Arc::new(RecordingTool {
+        name: "todo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "{}".into(),
+    }));
+
+    let runtime = ConversationRuntime::new(
+        Arc::new(MockApi::new(script)),
+        tools,
+        RuntimeConfig::default(),
+    );
+    let thread = format!("stale-turn-{}", std::process::id());
+    let mut session = Session::new(thread);
+    let (tx, _rx) = mpsc::channel(256);
+    runtime
+        .run_turn(&mut session, user_msg("go"), tx, CancellationToken::new())
         .await
         .expect("ok");
 
-    let captured = captured.lock().expect("captured mutex");
-    let captured = captured.as_ref().expect("api was called");
-    match &captured[0].blocks[0] {
-        ContentBlock::Text { text } => {
-            assert!(
-                !text.contains("ide_context"),
-                "empty ide_context must NOT wrap, got: {text}"
-            );
-        }
-        other => panic!("expected Text, got {other:?}"),
+    let results: Vec<&ConversationMessage> = session
+        .messages()
+        .iter()
+        .filter(|m| m.role == MessageRole::Tool)
+        .collect();
+    assert_eq!(results.len(), 10);
+    let carries = |m: &ConversationMessage| {
+        m.blocks.iter().any(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. } if content.contains(CHECKLIST_REMINDER_TAG))
+        })
+    };
+    for (i, result) in results.iter().enumerate().take(9) {
+        assert!(!carries(result), "result {i} must be the tool's output alone");
     }
+    assert!(carries(results[9]), "the tenth silent result carries the reminder");
 }
 
 #[tokio::test]
@@ -2461,7 +2676,10 @@ async fn run_turn_default_config_yields_none_temperature_and_no_thinking() {
     // has to leave room for a long think AND a full reply (was 8192, which
     // a high reasoning effort could consume entirely).
     assert_eq!(captured.max_output_tokens, 16_384);
-    assert!(captured.system_prompt.is_none());
+    // No prompt was configured, so the only thing that can be there is the
+    // machine's own tool inventory — present on a machine with tools on its
+    // PATH, absent on a bare one.
+    assert_eq!(captured.system_prompt, machine_tools_block("t"));
 }
 
 /// Hook recorder that captures every pre/post callback in order.
@@ -2912,6 +3130,7 @@ fn trim_keeps_tool_use_and_tool_result_paired() {
         timestamp: 11,
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        aurora_context: None,
         model: None,
     };
     let messages = vec![
@@ -3091,7 +3310,15 @@ fn opaque_replay_of_a_missing_signature_costs_nothing() {
 #[derive(Default)]
 struct CacheKeyRecordingApi {
     reply: String,
-    seen: Mutex<Vec<(Option<String>, usize, bool, usize)>>,
+    seen: Mutex<
+        Vec<(
+            Option<String>,
+            usize,
+            bool,
+            usize,
+            crate::agent_runtime::api_client::ToolChoice,
+        )>,
+    >,
 }
 
 #[async_trait]
@@ -3107,6 +3334,7 @@ impl StreamingApiClient for CacheKeyRecordingApi {
             request.tools.len(),
             request.reasoning.enabled,
             request.messages.len(),
+            request.tool_choice,
         ));
         Ok(turn_usage(assistant_text(&self.reply), "end_turn"))
     }
@@ -3162,14 +3390,19 @@ async fn summarizing_on_the_chat_model_reuses_its_prompt_prefix() {
         .is_some());
 
     let seen = chat.seen.lock().expect("seen");
-    let (system, tools, thinking, _) = seen.first().expect("summarizer ran");
+    let (system, tools, thinking, _, tool_choice) = seen.first().expect("summarizer ran");
     assert_eq!(
         system.as_deref(),
-        Some("you are aurora"),
+        runtime.request_system_prompt(&session.thread_id).as_deref(),
         "a different system prompt diverges the prefix at token zero",
     );
     assert_eq!(*tools, 1, "dropping the tools invalidates the cache key");
     assert!(*thinking, "thinking config is part of the cache key");
+    assert_eq!(
+        *tool_choice,
+        crate::agent_runtime::api_client::ToolChoice::None,
+        "the cache-compatible catalogue must be non-callable"
+    );
 }
 
 #[tokio::test]
@@ -3205,17 +3438,21 @@ async fn a_pinned_model_sends_the_lean_request_instead() {
         .is_some());
 
     let seen = summarizer.seen.lock().expect("seen");
-    let (system, tools, thinking, _) = seen.first().expect("summarizer ran");
+    let (system, tools, thinking, _, tool_choice) = seen.first().expect("summarizer ran");
     assert_ne!(system.as_deref(), Some("you are aurora"));
     assert_eq!(*tools, 0);
     assert!(!*thinking);
+    assert_eq!(
+        *tool_choice,
+        crate::agent_runtime::api_client::ToolChoice::None
+    );
 }
 
 #[tokio::test]
-async fn a_tool_call_instead_of_a_note_falls_back_rather_than_failing() {
-    // Advertising tools is the price of the cache, and the model will
-    // occasionally reach for one instead of answering. That must not burn
-    // a compaction attempt — it re-bills, it does not fail.
+async fn an_empty_cache_sharing_summary_is_never_rebilled_as_a_fallback() {
+    // Advertising tools preserves the cache prefix. If the provider still
+    // returns no note, the action fails closed after this one request; sending
+    // the full head again without tools was the production cost loop.
     let chat = cache_key_api(""); // empty text, as a tool call would leave
     let runtime = ConversationRuntime::new(
         chat.clone(),
@@ -3230,7 +3467,7 @@ async fn a_tool_call_instead_of_a_note_falls_back_rather_than_failing() {
     let mut session = compactable_session();
     let (tx, _rx) = mpsc::channel(64);
     let mut seq = 0;
-    let _ = runtime
+    let result = runtime
         .compact_now(
             &mut session,
             "turn",
@@ -3241,14 +3478,11 @@ async fn a_tool_call_instead_of_a_note_falls_back_rather_than_failing() {
         .await;
 
     let seen = chat.seen.lock().expect("seen");
-    assert_eq!(seen.len(), 2, "should retry once in the standalone shape");
+    assert!(result.is_none());
+    assert_eq!(seen.len(), 1, "one compaction action gets one request");
     assert_eq!(
         seen[0].1, 1,
-        "first attempt keeps the tools (for the cache)"
-    );
-    assert_eq!(
-        seen[1].1, 0,
-        "retry drops them so the note cannot be misread"
+        "the only attempt keeps the tools for the cache and disables their selection on the wire"
     );
 }
 
@@ -3337,6 +3571,7 @@ fn stripping_reasoning_leaves_tool_pairing_intact() {
             timestamp: 1,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         },
     ];
@@ -3937,6 +4172,7 @@ async fn a_measurement_taken_before_a_compaction_is_not_an_anchor() {
             timestamp: 10,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         },
     );
@@ -3974,6 +4210,7 @@ async fn a_measurement_taken_after_a_compaction_still_anchors() {
         timestamp: 10,
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        aurora_context: None,
         model: None,
     });
     session.append_message(user_with_text("carry on", 11));
@@ -4080,12 +4317,132 @@ async fn auto_compaction_stops_retrying_a_failure_that_never_clears() {
 
     let calls = *summarizer.calls.lock().expect("calls");
     assert_eq!(
-        calls, MAX_CONSECUTIVE_COMPACTION_FAILURES,
-        "breaker must stop after {MAX_CONSECUTIVE_COMPACTION_FAILURES} failures, made {calls}",
+        calls, 1,
+        "automatic compaction must fail closed after one full-head request, made {calls}",
     );
     assert!(
-        session.compaction_retry_after.is_some(),
-        "cooldown must be armed"
+        session.auto_compaction_blocked,
+        "automatic compaction must remain blocked until an explicit successful compact"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_compaction_emits_failure_not_false_completion_and_mutates_nothing() {
+    let summarizer = Arc::new(FailingSummarizer::default());
+    let runtime = ConversationRuntime::new(
+        summarizer.clone(),
+        Arc::new(ToolRegistry::new()),
+        RuntimeConfig {
+            context_window: Some(1_000),
+            ..RuntimeConfig::default()
+        },
+    );
+    let mut session = compactable_session();
+    let before = session.messages().to_vec();
+    let (tx, mut rx) = mpsc::channel(64);
+    let mut seq = 0;
+
+    let result = runtime
+        .compact_now(
+            &mut session,
+            "turn",
+            &mut seq,
+            &tx,
+            &CancellationToken::new(),
+        )
+        .await;
+
+    assert!(result.is_none());
+    assert_eq!(
+        *summarizer.calls.lock().expect("calls"),
+        1,
+        "one compaction action may issue exactly one provider request"
+    );
+    assert_eq!(session.messages(), before.as_slice());
+
+    let mut saw_started = false;
+    let mut saw_failed = false;
+    while let Ok(envelope) = rx.try_recv() {
+        match envelope.event {
+            AssistantEvent::CompactionStarted => saw_started = true,
+            AssistantEvent::CompactionFailed {
+                reason, cancelled, ..
+            } => {
+                saw_failed = true;
+                assert_eq!(reason, "empty_summary");
+                assert!(!cancelled);
+            }
+            AssistantEvent::CompactionCompleted { .. } => {
+                panic!("a failed summary must never be emitted as completed")
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_started && saw_failed);
+}
+
+#[tokio::test]
+async fn one_user_turn_can_never_start_a_second_automatic_compaction() {
+    let summarizer = recording_api("a concise summary");
+    let mut first = turn_usage(
+        assistant_tool_use("grow", "echo", serde_json::json!({})),
+        "tool_use",
+    );
+    // The next loop is unquestionably over the threshold. Without the
+    // per-turn guard this measurement starts another full-head summary in the
+    // same user response — the exact production regression.
+    first.usage.input_tokens = 100_000;
+    let chat = Arc::new(MockApi::new(vec![
+        TurnScript {
+            events: vec![],
+            result: Ok(first),
+        },
+        TurnScript {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text("done"), "end_turn")),
+        },
+    ]));
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register(Arc::new(RecordingTool {
+        name: "echo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "ok".into(),
+    }));
+    let runtime = ConversationRuntime::new(
+        chat,
+        tools,
+        RuntimeConfig {
+            context_window: Some(40_000),
+            compaction_threshold: Some(0.75),
+            ..RuntimeConfig::default()
+        },
+    )
+    .with_compaction_client(summarizer.clone(), "summarizer:model");
+    let mut session = compactable_session();
+    let large = FILLER_60.repeat(50);
+    for turn in 0..30 {
+        session.append_message(user_with_text(&large, 100 + turn * 2));
+        session.append_message(assistant_with_text(&large, 101 + turn * 2));
+    }
+    if let Some(last) = session.messages.last_mut() {
+        last.usage = Some(measured(35_000, 0, 0, 0));
+    }
+    let (tx, _rx) = mpsc::channel(64);
+
+    runtime
+        .run_turn(
+            &mut session,
+            user_msg("continue"),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+
+    assert_eq!(
+        summarizer.models.lock().expect("models").len(),
+        1,
+        "the same user turn must never pay for a second automatic compaction"
     );
 }
 
@@ -4104,9 +4461,8 @@ async fn a_manual_compact_is_not_blocked_by_the_breaker() {
     .with_compaction_client(summarizer.clone(), "summarizer:model");
 
     let mut session = compactable_session();
-    // Already tripped and cooling down.
-    session.compaction_failures = MAX_CONSECUTIVE_COMPACTION_FAILURES;
-    session.compaction_retry_after = Some(Utc::now().timestamp_millis() + 60_000);
+    // Already failed closed.
+    session.auto_compaction_blocked = true;
 
     let (tx, _rx) = mpsc::channel(64);
     let mut seq = 0;
@@ -4131,6 +4487,7 @@ async fn a_manual_compact_is_not_blocked_by_the_breaker() {
 struct ModelRecordingApi {
     reply: String,
     models: Mutex<Vec<String>>,
+    tool_choices: Mutex<Vec<crate::agent_runtime::api_client::ToolChoice>>,
 }
 
 #[async_trait]
@@ -4145,6 +4502,10 @@ impl StreamingApiClient for ModelRecordingApi {
             .lock()
             .expect("models")
             .push(request.model.to_string());
+        self.tool_choices
+            .lock()
+            .expect("tool choices")
+            .push(request.tool_choice);
         Ok(turn_usage(assistant_text(&self.reply), "end_turn"))
     }
 }
@@ -4153,6 +4514,7 @@ fn recording_api(reply: &str) -> Arc<ModelRecordingApi> {
     Arc::new(ModelRecordingApi {
         reply: reply.to_string(),
         models: Mutex::new(Vec::new()),
+        tool_choices: Mutex::new(Vec::new()),
     })
 }
 
@@ -4169,6 +4531,7 @@ fn tool_result_for(id: &str, is_error: Option<bool>) -> ConversationMessage {
         timestamp: 1_700_000_000_000,
         attached_selected_elements: None,
         attached_prompt_chips: None,
+        aurora_context: None,
         model: None,
     }
 }
@@ -4506,6 +4869,11 @@ async fn compaction_summarizes_on_the_chat_model_by_default() {
         &["chat-provider:chat-model".to_string()],
         "with nothing pinned the summary rides the conversation's own model",
     );
+    assert_eq!(
+        chat.tool_choices.lock().expect("tool choices").as_slice(),
+        &[crate::agent_runtime::api_client::ToolChoice::None],
+        "compaction must disable tool selection at the provider wire"
+    );
 }
 
 #[tokio::test]
@@ -4675,8 +5043,12 @@ async fn run_turn_does_not_trim_when_context_window_is_none() {
     let captured = api.captured.lock().expect("captured");
     let (sys, msgs) = captured.first().expect("api was called");
 
-    // System prompt unmodified.
-    assert_eq!(sys.as_deref(), Some("you are aurora"));
+    // System prompt unmodified: no trim notice, just what every request of
+    // this conversation carries.
+    assert_eq!(
+        sys.as_deref(),
+        runtime.request_system_prompt(&session.thread_id).as_deref()
+    );
     // All 5 messages (4 seeded + the new user) reach the API.
     assert_eq!(msgs.len(), 5, "no trim → full session sent");
 }
@@ -4735,7 +5107,7 @@ async fn compaction_rewrites_the_journal_so_the_rest_of_the_turn_is_recoverable(
     let (tx, _rx) = mpsc::channel(64);
     let mut seq = 0u64;
     runtime
-        .maybe_compact(
+        .compact_now(
             &mut session,
             "turn-1",
             &mut seq,

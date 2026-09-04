@@ -143,7 +143,11 @@ impl ToolExecutor for AuroroWebSearchTool {
             // A site being down is not a tool failure. Reported as a result,
             // the model can pick a different source; reported as an error it
             // only learns the call did not work.
-            Err(message) => Ok(refusal(&message)),
+            Err(message) => Ok(if resolved == "search" {
+                search_failure(&message)
+            } else {
+                refusal(&message)
+            }),
         }
     }
 }
@@ -151,6 +155,29 @@ impl ToolExecutor for AuroroWebSearchTool {
 fn refusal(message: &str) -> String {
     serde_json::to_string(&json!({ "success": false, "error": message }))
         .unwrap_or_else(|_| r#"{"success":false,"error":"web request failed"}"#.to_string())
+}
+
+/// A search that reached no engine at all.
+///
+/// The hazard here is specific and worse than the failure itself: a model that
+/// asked the web a question, got nothing, and answers anyway from memory —
+/// with the confidence of something that just looked it up. That is the single
+/// worst way this feature can fail, because it is invisible.
+///
+/// So the result says what to DO, not only what went wrong. `success: false`
+/// alone is a fact the model can read past; an instruction is one it has to
+/// act on.
+fn search_failure(message: &str) -> String {
+    serde_json::to_string(&json!({
+        "success": false,
+        "error": message,
+        "guidance": "No search engine could be reached, so nothing was found and nothing was \
+ruled out. Tell the user the search failed rather than answering from memory as though it had \
+succeeded. Do NOT cite sources, name articles, or state current facts you cannot check. If you \
+know something relevant from training, you may say so — but say plainly that you could not verify \
+it just now."
+    }))
+    .unwrap_or_else(|_| r#"{"success":false,"error":"web search failed"}"#.to_string())
 }
 
 /// Read a string argument under any of its accepted spellings.
@@ -274,5 +301,41 @@ mod tests {
             "{}",
             schema.description
         );
+    }
+
+    /// A failed SEARCH must tell the model what to do, not only that something
+    /// broke. The failure this guards is a model that asked the web a
+    /// question, got nothing, and answered from memory with the confidence of
+    /// something freshly looked up — which is invisible to the reader.
+    #[test]
+    fn a_failed_search_tells_the_model_not_to_answer_as_though_it_succeeded() {
+        let payload: serde_json::Value =
+            serde_json::from_str(&search_failure("everything was unreachable")).unwrap();
+
+        assert_eq!(payload["success"], false);
+        assert_eq!(payload["error"], "everything was unreachable");
+
+        let guidance = payload["guidance"].as_str().expect("guidance is present");
+        assert!(guidance.contains("failed"), "it must name the failure");
+        assert!(
+            guidance.contains("Do NOT cite sources"),
+            "the specific hazard is fabricated citations: {guidance}"
+        );
+        assert!(
+            guidance.contains("could not verify"),
+            "training knowledge is allowed, but only when labelled: {guidance}"
+        );
+    }
+
+    /// A failed FETCH is a different situation — one page is down, and trying
+    /// another source is the right move. It must not carry the search
+    /// instruction, which would tell the model to give up on a whole question
+    /// because one URL 404'd.
+    #[test]
+    fn a_failed_fetch_carries_no_search_guidance() {
+        let payload: serde_json::Value =
+            serde_json::from_str(&refusal("that page returned 404")).unwrap();
+        assert_eq!(payload["success"], false);
+        assert!(payload.get("guidance").is_none());
     }
 }

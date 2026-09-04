@@ -252,6 +252,25 @@ pub struct ConversationMessage {
     /// priced at a model that may not have produced them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// What Aurora attached to a USER message at the moment it was sent: the
+    /// files open in the dock, a selection, a slash-attached rule, and the
+    /// checklist as it stood. The model reads it as a second text block after
+    /// the user's own words (see `fold_message_context`); the UI never renders
+    /// it, so the bubble shows only what the person typed.
+    ///
+    /// Saved WITH the message, which is the whole design. Every reference
+    /// implementation vendored in `thirdparty/` writes context into the
+    /// transcript once, at the moment it becomes true — Claude Code as a meta
+    /// user message, OpenCode as a synthetic part on the user's message, pi as a
+    /// `custom_message` entry with a `display` flag — and none of them rebuilds
+    /// a block per request. Aurora used to, and then had to find somewhere to
+    /// put a block whose bytes changed every request: a second user turn, then
+    /// the tail of a tool result. Frozen here it has one home and never moves.
+    ///
+    /// `None` on every non-user message and on user messages sent before this
+    /// field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aurora_context: Option<String>,
 }
 
 impl ConversationMessage {
@@ -265,6 +284,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -280,6 +300,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -299,6 +320,7 @@ impl ConversationMessage {
             timestamp,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }

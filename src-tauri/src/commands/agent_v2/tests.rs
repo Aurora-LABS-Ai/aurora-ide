@@ -45,6 +45,196 @@ fn switching_the_browser_off_leaves_every_other_tool_alone() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Aurora Chat's tool roster
+//
+// These tests exist to hold ONE promise: chat mode cannot touch the machine.
+// They are written against the behaviour rather than the list, so adding a
+// tool to `CHAT_MODE_TOOLS` is a deliberate act with a test to answer to.
+// ---------------------------------------------------------------------------
+
+/// The load-bearing one. Every native tool Aurora has, except chat mode's own
+/// short list, must be refused — including every tool added after this was
+/// written, which is exactly what an allow-list buys and a deny-list does not.
+#[test]
+fn chat_mode_refuses_every_native_tool_it_does_not_name() {
+    let registry = ToolRegistry::new();
+    crate::tools::register_builtin_tools(
+        &registry,
+        std::sync::Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink),
+        None,
+    );
+
+    let mut refused = 0usize;
+    for name in registry.names() {
+        if crate::commands::agent_v2::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str()) {
+            continue;
+        }
+        assert!(
+            !is_tool_available_this_turn(&name, AgentExecutionMode::Chat, true, true, true),
+            "{name} is not on chat mode's list and must be refused, whatever the other switches say"
+        );
+        refused += 1;
+    }
+    // Everything registered was refused except the tools chat mode names.
+    // Three of its seven are native executors today — `auroro_websearch`,
+    // `recall` and `remember`. The rest are frontend-bridged or not built yet.
+    //
+    // Stated as an equation rather than a floor so that giving chat mode
+    // another native tool fails HERE and has to be acknowledged, instead of
+    // sliding under a threshold nobody revisits. It has already caught one:
+    // the memory bucket landing took this from 1 to 3.
+    let named_natives = registry
+        .names()
+        .iter()
+        .filter(|name| {
+            crate::commands::agent_v2::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str())
+        })
+        .count();
+    assert_eq!(
+        named_natives, 3,
+        "auroro_websearch, recall and remember are the native ones"
+    );
+    assert_eq!(
+        refused,
+        registry.len() - named_natives,
+        "every native tool chat mode does not name must have been refused"
+    );
+}
+
+/// Named individually as well, because these four are the promise itself and a
+/// future refactor that quietly re-enabled one should fail loudly here rather
+/// than only in the sweep above.
+#[test]
+fn chat_mode_refuses_files_and_shell_by_name() {
+    for name in [
+        "file_read",
+        "file_write",
+        "file_edit",
+        "delete_path",
+        "move_path",
+        "folder_create",
+        "glob",
+        "grep",
+        "workspace_tree",
+        "shell_execute",
+        "shell_spawn",
+        "shell_kill",
+        "read_lints",
+        "code",
+        "todo",
+    ] {
+        assert!(
+            !is_tool_available_this_turn(name, AgentExecutionMode::Chat, true, true, true),
+            "chat mode must never offer {name}"
+        );
+    }
+}
+
+#[test]
+fn chat_mode_offers_exactly_research_presentation_and_memory() {
+    for name in [
+        "auroro_websearch",
+        "present_artifact",
+        "read_artifact",
+        "recall",
+        "remember",
+        "generate_image",
+        "ask_question",
+    ] {
+        assert!(
+            is_tool_available_this_turn(name, AgentExecutionMode::Chat, false, false, false),
+            "{name} is chat mode's own tool and must be offered"
+        );
+    }
+}
+
+/// MCP is the one thing that can reach the machine from chat mode, and it is
+/// there because connecting a server IS the user's grant. Matched by prefix
+/// because the names are made from server ids nobody can enumerate ahead of
+/// time.
+#[test]
+fn chat_mode_allows_mcp_because_connecting_a_server_is_the_grant() {
+    for name in [
+        "mcp_filesystem_read_file",
+        "mcp_postgres_query",
+        "mcp_whatever_someone_connects",
+    ] {
+        assert!(
+            is_tool_available_this_turn(name, AgentExecutionMode::Chat, false, false, false),
+            "{name} must reach chat mode"
+        );
+    }
+}
+
+/// A tool whose name merely STARTS with an allowed one is a different tool.
+/// This is the failure mode that turns an allow-list back into a deny-list.
+#[test]
+fn chat_mode_matches_tool_names_exactly() {
+    for name in [
+        "recall_everything",
+        "rememberer",
+        "present_artifact_and_delete_the_repo",
+        "auroro_websearch2",
+    ] {
+        assert!(
+            !is_tool_available_this_turn(name, AgentExecutionMode::Chat, false, false, false),
+            "{name} is not on the list and a prefix must not admit it"
+        );
+    }
+}
+
+/// The switches that shape the project modes are irrelevant here. Chat mode
+/// answers before any of them, so no combination can widen it.
+#[test]
+fn chat_modes_roster_ignores_the_project_mode_switches() {
+    for has_plan in [false, true] {
+        for chapters in [false, true] {
+            for browser in [false, true] {
+                assert!(
+                    !is_tool_available_this_turn(
+                        "browser_navigate",
+                        AgentExecutionMode::Chat,
+                        has_plan,
+                        chapters,
+                        browser
+                    ),
+                    "browser stays out of chat mode even with its own switch on"
+                );
+                assert!(
+                    is_tool_available_this_turn(
+                        "auroro_websearch",
+                        AgentExecutionMode::Chat,
+                        has_plan,
+                        chapters,
+                        browser
+                    ),
+                    "chat mode's own tools do not depend on project switches"
+                );
+            }
+        }
+    }
+}
+
+/// Chat mode must not change what the three project modes offer.
+#[test]
+fn adding_chat_mode_left_the_project_modes_alone() {
+    for name in ["file_read", "shell_execute", "code"] {
+        for mode in [
+            AgentExecutionMode::Agent,
+            AgentExecutionMode::Team,
+            AgentExecutionMode::Plan,
+        ] {
+            let expected = mode != AgentExecutionMode::Plan || name != "shell_execute";
+            let _ = expected;
+            assert!(
+                is_tool_available_this_turn(name, mode, false, false, false),
+                "{name} must still be offered in {mode:?}"
+            );
+        }
+    }
+}
+
 use super::*;
 use crate::agent_runtime::api_client::{ApiError, ApiRequest, ToolSchema, TurnUsage};
 use crate::agent_runtime::events::AssistantEvent;
@@ -403,6 +593,7 @@ fn natives_lead_the_roster_and_mcp_connection_order_cannot_move_them() {
             false,
             true,
             false,
+            "",
         )
         .names()
     };
@@ -459,6 +650,7 @@ fn plan_registry_excludes_native_mutators_but_keeps_read_tools() {
         false,
         true,
         false,
+        "",
     );
 
     for name in PLAN_MUTATING_TOOLS {
@@ -581,6 +773,7 @@ fn a_project_with_a_plan_gets_the_plan_execution_tools() {
         false,
         true,
         false,
+        "",
     );
     assert!(registry.get("plan_step_update").is_some());
 
@@ -632,6 +825,7 @@ async fn plan_shell_rejects_mutating_commands_before_execution() {
         false,
         true,
         false,
+        "",
     );
     let tool = registry
         .get("shell_execute")
@@ -1744,14 +1938,12 @@ fn build_runtime_config_overlays_request_fields() {
     req.temperature = Some(0.9);
     req.max_output_tokens = Some(2048);
     req.thinking_enabled = Some(true);
-    req.ide_context = Some("ctx".into());
 
     let cfg = build_runtime_config(&req);
     assert_eq!(cfg.system_prompt.as_deref(), Some("system"));
     assert_eq!(cfg.default_temperature, Some(0.9));
     assert_eq!(cfg.default_max_output_tokens, 2048);
     assert!(cfg.reasoning.enabled);
-    assert_eq!(cfg.ide_context.as_deref(), Some("ctx"));
 }
 
 #[test]
@@ -1766,7 +1958,6 @@ fn build_runtime_config_falls_back_to_defaults_when_unset() {
         defaults.default_max_output_tokens
     );
     assert_eq!(cfg.reasoning.enabled, defaults.reasoning.enabled);
-    assert!(cfg.ide_context.is_none());
 }
 
 // ── Test 24 ─────────────────────────────────────────────────────
@@ -1873,6 +2064,13 @@ fn deferrable_bridge_tools() -> Vec<AllowedTool> {
 }
 
 fn registry_with_deferral(defer: bool) -> ToolRegistry {
+    registry_with_deferral_for(defer, "")
+}
+
+/// As [`registry_with_deferral`], for a named conversation — so a test can
+/// rebuild the registry the way a second user message does and see what
+/// `tool_search` left behind.
+fn registry_with_deferral_for(defer: bool, thread_id: &str) -> ToolRegistry {
     build_per_turn_tool_registry(
         native_test_registry(),
         &deferrable_bridge_tools(),
@@ -1886,7 +2084,70 @@ fn registry_with_deferral(defer: bool) -> ToolRegistry {
         false,
         true,
         defer,
+        thread_id,
     )
+}
+
+/// A tool `tool_search` loaded stays loaded after the user speaks again.
+///
+/// The registry is rebuilt for every USER message, and the load used to live
+/// only in that one registry. So a tool loaded mid-turn worked for the rest of
+/// that turn and vanished at the next message — while the transcript still read
+/// "loaded and callable from your next message", so the model called it and got
+/// `tool not found`, then retried. Observed in thread `9f41764f`, where a bare
+/// "?" between `browser_guidelines` (worked) and `browser_navigate` (not found)
+/// was the entire difference.
+#[tokio::test]
+async fn a_loaded_tool_survives_the_next_user_message() {
+    use crate::agent_runtime::tool_executor::ToolContext;
+
+    let thread = "thread-tool-search-persistence";
+    crate::tools::tool_search::forget_thread_for_test(thread);
+
+    // Turn 1: deferred, so the bridge tool is not on the roster.
+    let first = registry_with_deferral_for(true, thread);
+    assert!(
+        first.get("team_status").is_none(),
+        "a deferrable tool should start off the roster"
+    );
+
+    // The model loads it.
+    let search = first.get("tool_search").expect("tool_search is advertised");
+    let ctx = ToolContext {
+        turn_id: "turn-1".into(),
+        tool_call_id: "call-1".into(),
+        thread_id: thread.into(),
+        workspace_root: None,
+        workspace_access: Default::default(),
+        cancel_token: CancellationToken::new(),
+        spill_dir: None,
+    };
+    let result = search
+        .execute(serde_json::json!({ "query": "select:team_status" }), &ctx)
+        .await
+        .expect("load succeeds");
+    assert!(result.contains("team_status"), "{result}");
+    assert!(
+        first.get("team_status").is_some(),
+        "the load should be callable in the turn that made it"
+    );
+
+    // Turn 2: the user typed again, so the registry is built from scratch.
+    let second = registry_with_deferral_for(true, thread);
+    assert!(
+        second.get("team_status").is_some(),
+        "a tool loaded in an earlier turn must still be callable — this is the \
+         `tool not found: browser_navigate` bug"
+    );
+
+    // Another conversation is unaffected: reveals are per thread, not global.
+    let other = registry_with_deferral_for(true, "thread-somebody-else");
+    assert!(
+        other.get("team_status").is_none(),
+        "one conversation's load must not widen another's roster"
+    );
+
+    crate::tools::tool_search::forget_thread_for_test(thread);
 }
 
 #[test]
@@ -1971,6 +2232,7 @@ fn nothing_deferrable_means_no_search_tool_at_all() {
         false,
         false, // browser off, so the browser bucket is not even built
         true,
+        "",
     );
     assert!(registry.get("tool_search").is_none());
 }

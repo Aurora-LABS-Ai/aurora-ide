@@ -564,6 +564,127 @@
   border-top: 1px solid var(--agw-border);
 }
 
+/* ── research: pictures, citations, quotations ───────────────────────────── */
+
+.ac-figure {
+  margin: 16px 0;
+}
+
+.ac-figure-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+}
+
+/* A named absence, not a broken-image glyph. Sized like a picture so the page
+   does not reflow around the failure. */
+.ac-figure-missing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 140px;
+  padding: 16px;
+  border: 1px dashed var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  text-align: center;
+}
+
+.ac-figure-missing-title {
+  font-size: 12.5px;
+  color: var(--agw-text-muted);
+}
+
+.ac-figure-missing-src {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: var(--agw-font-code);
+  font-size: 11px;
+  color: var(--agw-text-subtle);
+}
+
+.ac-figure-cap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ac-figure-caption {
+  color: var(--agw-text-muted);
+}
+
+.ac-figure-source {
+  color: var(--agw-text-subtle);
+}
+
+/* The marker rides above the baseline like a footnote and carries no
+   underline, so a paragraph with six citations still reads as a paragraph. */
+.ac-cite {
+  font-size: 10px;
+  line-height: 0;
+}
+
+.ac-cite button {
+  padding: 0 1px;
+  border: 0;
+  background: none;
+  color: var(--agw-accent);
+  cursor: pointer;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-cite button:hover {
+  text-decoration: underline;
+}
+
+.ac-quote {
+  margin: 16px 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--agw-border-strong);
+}
+
+.ac-quote blockquote {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--agw-text);
+}
+
+.ac-quote figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.ac-quote-from {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--agw-text-muted);
+  font: inherit;
+}
+
+button.ac-quote-from {
+  cursor: pointer;
+}
+
+button.ac-quote-from:hover {
+  color: var(--agw-accent);
+}
+
+.ac-quote-where {
+  color: var(--agw-text-subtle);
+}
+
 .ac-detail {
   border-top: 1px solid var(--agw-border);
   border-bottom: 1px solid var(--agw-border);

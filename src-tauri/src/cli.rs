@@ -250,6 +250,8 @@ impl CliArgs {
                 DelegateCommand::Threads(args) => run::run_threads(args),
                 DelegateCommand::Watch(args) => run::run_watch(args),
                 DelegateCommand::Tasks(args) => run::run_tasks(args),
+                DelegateCommand::Cancel(args) => run::run_cancel(args),
+                DelegateCommand::Mcp(_) => run::run_mcp(),
                 DelegateCommand::Tui(args) => run::run_interactive(args.path),
             })),
             None => Ok(None),
@@ -553,14 +555,56 @@ pub mod install {
         }
         println!("\nAurora CLI installed successfully!");
         println!("Location: {}", install_dir.display());
+        // Agent commands first. `aurora .` is the oldest thing here and no
+        // longer the reason anybody installs this — a usage list that leads
+        // with it teaches the wrong tool.
         println!("\nUsage:");
-        println!("  aurora .                              Open current directory");
-        println!("  aurora /path/to/dir                   Open specific directory");
-        println!("  aurora file.txt                       Open a file");
-        println!("  agw                                   Open only the Aurora Agent window");
-        println!("  aurora icon-pack build --manifest ... Build a .aurora icon-pack bundle");
+        println!("  agw                                   Open the Agent Window here");
+        println!("  aurora agent \"fix the failing test\"   Send it a task and watch it run");
+        println!("  aurora --cli                          Browse models, chats and tasks");
+        println!("  aurora mcp                            Serve Aurora to another agent");
+        println!("  aurora .                              Open the editor on this folder");
+        println!("\nOpen a new terminal for `aurora` to be found.");
 
         Ok(())
+    }
+
+    /// Re-point an already-installed shim at this build, if it has drifted.
+    ///
+    /// `aurora.cmd` hard-codes the executable's absolute path, so it goes stale
+    /// the moment Aurora is installed somewhere else — an upgrade that changes
+    /// the install directory, a move, a second build. The symptom is the worst
+    /// kind: `aurora` still resolves, still runs, and runs the *old* binary, so
+    /// a fix that was just installed appears not to have shipped at all.
+    ///
+    /// Called once at startup. Deliberately does **nothing** when no shim
+    /// exists: putting an executable on someone's PATH is a change to their
+    /// machine and stays a decision they make, in Settings or in the installer.
+    /// This only keeps a promise already made.
+    pub fn refresh_cli_shim() {
+        let install_dir = get_cli_install_path();
+        let batch_path = install_dir.join("aurora.cmd");
+        if !batch_path.exists() {
+            return;
+        }
+
+        let Ok(current_exe) = std::env::current_exe() else {
+            return;
+        };
+        let expected = format!("@echo off\r\n\"{}\" %*", current_exe.display());
+
+        // Only rewrite on a real difference. This runs on every launch, and a
+        // write per start would churn a file antivirus watches.
+        if std::fs::read_to_string(&batch_path).is_ok_and(|existing| existing == expected) {
+            return;
+        }
+
+        if let Err(error) = std::fs::write(&batch_path, &expected) {
+            crate::logging::log_error(
+                "cli.shim",
+                &format!("could not re-point {}: {error}", batch_path.display()),
+            );
+        }
     }
 
     /// Check if the CLI command is installed
@@ -661,6 +705,11 @@ pub mod install {
 pub mod install {
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
+
+    /// Nothing to refresh: the Unix install is a symlink to the executable, and
+    /// a symlink cannot go stale the way a batch file with a baked-in path can.
+    /// Present so startup calls the same function on every platform.
+    pub fn refresh_cli_shim() {}
 
     /// Get the path where Aurora CLI symlink should be created
     pub fn get_cli_install_path() -> PathBuf {

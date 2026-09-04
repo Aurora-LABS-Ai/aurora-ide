@@ -14,8 +14,9 @@
 //! whole point of `aurora agent` is that you can *watch* the work. So the CLI
 //! delivers an instruction and the window does what it always does with one.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use super::bridge::{self, BridgeState, BRIDGE_FORMAT_VERSION};
 use super::inbox::Inbox;
 use super::mirror;
 
@@ -105,6 +106,111 @@ pub async fn cli_task_claim(task_id: String) -> Result<Option<super::task::TaskR
         }
         Err(error) => Err(error.to_string()),
     }
+}
+
+// ── The bridge: what the Agent Window publishes about itself ────────────────
+
+/// What the Agent Window reports about its own state.
+///
+/// Only the parts the window knows. Everything derivable here — the version,
+/// this process's id, the timestamp, and the fact that a window is open at all
+/// — is filled in by Rust, so the frontend cannot publish a state that says a
+/// window is open while claiming to be some other process.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgePublish {
+    /// The user's switch: may other agents send work to this Aurora.
+    pub enabled: bool,
+    /// The project the window is scoped to.
+    #[serde(default)]
+    pub workspace: Option<String>,
+    /// The conversation on screen.
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub thread_title: Option<String>,
+    /// `providerId:modelKey` that conversation runs on.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Whether a turn is running.
+    #[serde(default)]
+    pub busy: bool,
+}
+
+/// Publish the Agent Window's state for other processes to read.
+///
+/// Called by the window on mount, whenever any published field changes, and on
+/// teardown. Cheap enough to call freely: one small write-then-rename, and the
+/// frontend only calls it when the snapshot actually differs.
+#[tauri::command]
+pub async fn aurora_bridge_publish(state: BridgePublish) -> Result<(), String> {
+    bridge::publish(&BridgeState {
+        version: BRIDGE_FORMAT_VERSION,
+        enabled: state.enabled,
+        // Asserted here rather than taken from the caller: this command can
+        // only be invoked from a live webview, so a window demonstrably exists.
+        window_open: true,
+        pid: std::process::id(),
+        workspace: state.workspace,
+        thread_id: state.thread_id,
+        thread_title: state.thread_title,
+        model: state.model,
+        busy: state.busy,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    })
+    .map_err(|error| format!("could not publish the bridge state: {error}"))
+}
+
+/// Record that the Agent Window has gone.
+///
+/// The window calls this as it unloads. Rust also does it on window destroy,
+/// because a webview that crashes never gets to run its own teardown — see the
+/// `agent-window` handler in `lib.rs`.
+#[tauri::command]
+pub async fn aurora_bridge_clear() -> Result<(), String> {
+    bridge::clear();
+    Ok(())
+}
+
+/// What another agent needs in its config to reach this Aurora.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpClientConfig {
+    /// The command another agent should run.
+    pub command: String,
+    /// Its arguments.
+    pub args: Vec<String>,
+    /// The whole thing as a block to paste into an MCP config file.
+    pub snippet: String,
+}
+
+/// The config block for connecting another agent to this Aurora.
+///
+/// Built from this executable's own path rather than the bare name `aurora`.
+/// The short name only works once the CLI has been put on PATH, and an agent
+/// started by a launcher does not necessarily inherit the user's PATH anyway —
+/// an absolute path works in every case, including several Aurora builds
+/// installed side by side, where the bare name would reach whichever one won
+/// the PATH race rather than the one the user is looking at.
+#[tauri::command]
+pub async fn aurora_mcp_client_config() -> Result<McpClientConfig, String> {
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("could not find Aurora's own path: {error}"))?
+        .to_string_lossy()
+        .into_owned();
+
+    let snippet = serde_json::to_string_pretty(&serde_json::json!({
+        "mcpServers": {
+            "aurora": { "command": exe, "args": ["mcp"] }
+        }
+    }))
+    .map_err(|error| error.to_string())?;
+
+    Ok(McpClientConfig {
+        command: exe,
+        args: vec!["mcp".to_string()],
+        snippet,
+    })
 }
 
 #[cfg(test)]

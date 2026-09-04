@@ -79,8 +79,32 @@ pub(super) fn build_per_turn_tool_registry(
     // instead. `false` reproduces the previous behaviour exactly: every tool is
     // registered up front and no `tool_search` entry is added.
     defer_tools: bool,
+    // The conversation this registry is for. Only used to replay what
+    // `tool_search` has already loaded, below.
+    thread_id: &str,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
+    // Chat mode defers MCP whatever the user's preference says. In the project
+    // modes `defer_tools` is a setting (Settings → Agent → Tool loading, off by
+    // default); here it is the mechanism that lets a server connected MID
+    // conversation still be reachable, because the model finds it by searching
+    // rather than by reading a roster fixed when the turn began. Leaving it to
+    // a preference would mean the promise held or not depending on a switch
+    // the user set for a different reason.
+    let defer_tools = defer_tools || execution_mode.is_chat();
+    // Chat mode has no workspace, and the plan lookup below walks one.
+    let workspace_path = if execution_mode.has_workspace() {
+        workspace_path
+    } else {
+        None
+    };
+    // Tools this conversation has already loaded on demand. This registry is
+    // rebuilt for every USER message, so without replaying them a load lasted
+    // only until the user typed again — and the model, still reading
+    // "loaded and callable" in the transcript, kept calling a tool that had
+    // silently left the roster.
+    let revealed = crate::tools::tool_search::revealed_for_thread(thread_id);
+    let deferrable = |name: &str| is_deferrable(name) && !revealed.contains(name);
     // Deferrable tools, built exactly as if they were being registered — the
     // catalogue holds the real executor, so a tool loaded later keeps its
     // permission gate (native) or its bridge routing (MCP).
@@ -123,7 +147,7 @@ pub(super) fn build_per_turn_tool_registry(
                 } else {
                     existing
                 };
-            if defer_tools && is_deferrable(&name) {
+            if defer_tools && deferrable(&name) {
                 defer(&mut deferred, executor);
             } else {
                 registry.register(executor);
@@ -159,7 +183,7 @@ pub(super) fn build_per_turn_tool_registry(
                     cancel_token.clone(),
                 ),
             ));
-        if defer_tools && is_deferrable(&tool.name) {
+        if defer_tools && deferrable(&tool.name) {
             defer(&mut deferred, executor);
         } else {
             registry.register(executor);
@@ -241,6 +265,14 @@ pub(super) fn is_tool_available_this_turn(
     chapters_enabled: bool,
     browser_enabled: bool,
 ) -> bool {
+    // Chat mode answers first, and it answers by ALLOW-LIST. Everything below
+    // this point is a deny-list over the project roster, and a deny-list is the
+    // wrong instrument here: it is only correct for the tools that existed when
+    // it was written, so the next tool anyone adds is available in chat mode by
+    // default and nobody finds out until it runs.
+    if execution_mode.is_chat() {
+        return is_chat_mode_tool(name);
+    }
     let planning = execution_mode == AgentExecutionMode::Plan;
     if planning && is_plan_mutating_tool(name) {
         return false;
@@ -264,6 +296,43 @@ pub(super) fn is_tool_available_this_turn(
         _ if name.starts_with("browser_") => browser_enabled,
         _ => true,
     }
+}
+
+/// Aurora Chat's entire native tool roster, by name.
+///
+/// This list IS the promise. Chat mode has no files, no shell and no workspace,
+/// and the way that stays true as Aurora grows is that a tool is absent here
+/// until somebody adds it here on purpose. Subtracting from the project roster
+/// instead would mean every future tool ships into chat mode by accident.
+///
+/// MCP is not in this list and is not meant to be: it is matched by prefix in
+/// [`is_chat_mode_tool`] because the user connecting a server IS the grant, and
+/// its tools are deferred behind `tool_search` so a server connected halfway
+/// through a conversation is still reachable.
+pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
+    // Research.
+    "auroro_websearch",
+    // Presentation. Artifacts are compiled/rendered before they save, so a
+    // broken canvas is rejected at write time rather than at read time.
+    "present_artifact",
+    "read_artifact",
+    // Memory. `recall` reads, `remember` writes; both are scoped to chats and
+    // cannot reach `sessions/`.
+    "recall",
+    "remember",
+    // Images.
+    "generate_image",
+    // Asking the user a question is not a capability, it is a conversation.
+    "ask_question",
+];
+
+/// Is `name` callable in Aurora Chat?
+///
+/// Exact match against [`CHAT_MODE_TOOLS`], plus the `mcp_` prefix. Nothing
+/// else, and deliberately no `starts_with` conveniences: a prefix rule is how
+/// an allow-list quietly becomes a deny-list.
+pub(super) fn is_chat_mode_tool(name: &str) -> bool {
+    CHAT_MODE_TOOLS.contains(&name) || name.starts_with("mcp_")
 }
 
 /// Does this workspace have a plan to work against?

@@ -860,9 +860,10 @@ const AssistantTurn: React.FC<{
         <CompactionCard
           beforeTokens={row.beforeTokens}
           afterTokens={row.afterTokens}
-          running={row.running}
+          status={row.status}
           startedAt={row.startedAt}
           durationMs={row.durationMs}
+          reason={row.reason}
         />
       );
     }

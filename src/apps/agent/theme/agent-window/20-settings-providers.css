@@ -66,6 +66,47 @@
   align-items: center;
   gap: 8px;
 }
+/* Aurora Chat's shortlist tick. Built from the row's own icon-button shape
+   rather than a new control: it sits in the same action strip and has to read
+   as one of that family. Labelled, because a bare tick in a row of icon
+   buttons is a question rather than an answer. */
+.agw-prov-chat-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  outline: none;
+}
+.agw-prov-chat-pick:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text-muted);
+}
+.agw-prov-chat-pick[data-on] {
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
+  color: var(--agw-accent);
+}
+.agw-prov-chat-pick:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+/* At the cap. Disabled rather than hidden — the row still has to say that
+   this model COULD be offered, and the title says what is in the way. */
+.agw-prov-chat-pick:disabled {
+  color: var(--agw-text-subtle);
+  cursor: default;
+  opacity: 0.5;
+}
+
 .agw-prov-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -579,5 +620,156 @@
 }
 .agw-prov-add-input::placeholder {
   color: var(--agw-text-subtle);
+}
+
+/* ── Image providers (Aurora Chat only) ───────────────────────────────────
+   A third section under the language-model detail. Its own card shape rather
+   than the LLM provider row, because it is configured in place: there is no
+   sidebar entry to select and no second pane to open into. */
+
+.agw-img-section {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--agw-border);
+}
+
+.agw-img-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-img-section-head:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-img-section-count {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-regular);
+}
+
+.agw-img-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.agw-img-section-empty {
+  max-width: 62ch;
+  margin: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+}
+
+.agw-img-card {
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-surface);
+}
+
+.agw-img-card[data-open] {
+  border-color: var(--agw-border-strong);
+}
+
+.agw-img-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.agw-img-card-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--agw-text-subtle);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-img-card-main:focus-visible {
+  box-shadow: 0 0 0 2px var(--agw-ring);
+}
+
+.agw-img-card-name {
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-img-card-meta {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-img-card-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--agw-border);
+}
+
+/* Two columns on a wide settings pane, one when it narrows. Fields are short
+   and paired (path + what it resolves to), so a single column wastes the
+   width the pane already has. */
+.agw-img-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 12px 0;
+}
+
+.agw-img-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agw-img-field-label {
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+
+/* The resolved URL lives here, so a path field shows what it will actually
+   request rather than leaving the user to join two strings in their head. */
+.agw-img-field-hint {
+  overflow-wrap: anywhere;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+}
+
+.agw-img-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  grid-column: 1 / -1;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
 }
 

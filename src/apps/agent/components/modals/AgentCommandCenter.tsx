@@ -12,6 +12,7 @@ import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { settingsCommands } from "@/apps/agent/lib/command/settings-commands";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { CHAT_DOCK_TABS, type DockSingletonKind } from "@/apps/agent/types";
 
 type CommandGroup = "Actions" | "Navigate" | "Settings" | "Quick switches";
 
@@ -25,6 +26,28 @@ interface CommandItem {
   icon: AgentIconName;
   run: () => void | Promise<void>;
 }
+
+/**
+ * The glyph each dock surface carries in the dock's own tab strip. The palette
+ * is a second door onto the same tabs, so it must not show a different icon for
+ * the same thing.
+ */
+const DOCK_ICONS: Partial<Record<DockSingletonKind, AgentIconName>> = {
+  files: "files",
+  browser: "browser",
+  terminal: "terminal",
+  review: "diff",
+  canvas: "panel-right",
+  memory: "database",
+};
+
+/** Build's dock surfaces. Chat's roster is `CHAT_DOCK_TABS` in `types.ts`. */
+const BUILD_DOCK_TABS: readonly DockSingletonKind[] = [
+  "files",
+  "browser",
+  "terminal",
+  "review",
+];
 
 function folderName(path: string | null | undefined): string {
   if (!path) return "No project";
@@ -58,6 +81,8 @@ export const AgentCommandCenter: React.FC = () => {
   const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  /** Aurora Chat: no project, so none of the project-shaped commands. */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -138,7 +163,7 @@ export const AgentCommandCenter: React.FC = () => {
       },
       // Only while Agent Team is on — the palette must not list a way into a
       // feature that is switched off.
-      ...(teamEnabled
+      ...(teamEnabled && !chatSurface
         ? [
             {
               id: "open-team",
@@ -153,12 +178,15 @@ export const AgentCommandCenter: React.FC = () => {
             } satisfies CommandItem,
           ]
         : []),
-      ...(["files", "browser", "terminal", "review"] as const).map<CommandItem>((kind) => ({
+      // The dock holds different surfaces on each side of the app, and the
+      // palette is a way IN to them — offering "Open files" in Aurora Chat
+      // opens a tree of a folder the chat cannot read.
+      ...(chatSurface ? CHAT_DOCK_TABS : BUILD_DOCK_TABS).map<CommandItem>((kind) => ({
         id: `dock:${kind}`,
         title: `Open ${kind}`,
         keywords: `right dock panel ${kind}`,
         group: "Navigate" as const,
-        icon: kind === "review" ? "diff" : kind,
+        icon: DOCK_ICONS[kind] ?? "panel-right",
         run: () => {
           useAgentUiStore.getState().closeSettings();
           useAgentWorkspaceStore.getState().openTab(kind);
@@ -248,6 +276,7 @@ export const AgentCommandCenter: React.FC = () => {
     return [...actions, ...settings, ...projects, ...allThreads.map(chatCommand)];
   }, [
     allThreads,
+    chatSurface,
     dockOpen,
     executionMode,
     knownProjects,

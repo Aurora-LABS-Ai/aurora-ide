@@ -184,10 +184,23 @@ impl Inbox {
         // Read before renaming: if the rename wins but the read then fails we
         // would have consumed a task we cannot run, and it would be invisible
         // to the next sweep.
-        let request = self.read_request(&pending)?;
+        //
+        // A missing file here is the race, not a fault. Two Aurora instances
+        // sweep the same directory, and the loser arrives after the winner has
+        // renamed the request away — so the read, not the rename, is where it
+        // usually finds out. Reporting that as a plain IO error made a normal,
+        // designed-for outcome show up in the log as
+        // `[ERROR] [cli.watcher] could not claim task …: The system cannot
+        // find the file specified`, which reads like a broken inbox.
+        let request = self.read_request(&pending).map_err(|error| match &error {
+            InboxError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                InboxError::AlreadyClaimed(id.to_string())
+            }
+            _ => error,
+        })?;
 
         fs::rename(&pending, &claimed).map_err(|error| match error.kind() {
-            // Someone else got there first — the source no longer exists.
+            // Someone else got there between the read and here.
             std::io::ErrorKind::NotFound => InboxError::AlreadyClaimed(id.to_string()),
             _ => InboxError::Io(error),
         })?;
@@ -398,11 +411,18 @@ mod tests {
         let first = inbox.claim(&id);
         assert!(first.is_ok(), "first claim should win");
 
-        // The second Aurora window sweeping the same folder.
+        // The second Aurora window sweeping the same folder. It must lose, and
+        // it must lose *as a claim race* — not as an IO error.
+        //
+        // This assertion used to accept `Io` as well, which is how the real
+        // bug hid: the loser fails at the READ (the file is already renamed
+        // away), not at the rename, so it came back as a bare "cannot find the
+        // file specified" and the watcher logged a designed-for outcome as an
+        // ERROR. Accepting both outcomes made the test agree with either.
         let second = inbox.claim(&id);
         assert!(
-            matches!(second, Err(InboxError::AlreadyClaimed(_)) | Err(InboxError::Io(_))),
-            "a second claim must not succeed, got {second:?}"
+            matches!(second, Err(InboxError::AlreadyClaimed(_))),
+            "a second claim must report the race, got {second:?}"
         );
     }
 

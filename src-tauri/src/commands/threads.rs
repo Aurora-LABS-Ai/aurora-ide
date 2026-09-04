@@ -82,6 +82,9 @@ pub struct ThreadSummary {
     /// chats live in the rail's "Archived" view and are purged after 15 days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
+    /// Aurora Chat: started in deep research. Fixed at creation.
+    #[serde(default)]
+    pub deep_research: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -128,6 +131,7 @@ fn session_to_db_messages_rich(
                         content: serde_json::json!({
                             "beforeTokens": before,
                             "afterTokens": after,
+                            "status": "completed",
                         })
                         .to_string(),
                         // Cloned: a System message carries either a compaction
@@ -173,12 +177,11 @@ fn session_to_db_messages_rich(
                 out.push(Message {
                     id: synthetic_message_id("user", msg.timestamp, out.len()),
                     role: "user".to_string(),
-                    // The Rust runtime stores user-typed text only —
-                    // IDE-context enrichment (`<execution_mode_context>`,
-                    // attachments, …) is wrapped around the API view of
-                    // the message inside `RuntimeConfig::ide_context`,
-                    // never appended to the JSONL. So whatever we read
-                    // back is already display-clean.
+                    // The text blocks hold the user's own words only —
+                    // what Aurora attached for the model rides in the
+                    // message's separate `aurora_context` field, never in
+                    // the blocks. So whatever we read back is already
+                    // display-clean.
                     content,
                     timestamp,
                     tool_calls: None,
@@ -688,8 +691,37 @@ struct ThreadUsageUpdatedPayload {
 // Helpers — shared between commands
 // ============================================================================
 
-fn store_from_state(registry: &Arc<AgentRegistry>) -> Arc<SessionStore> {
+/// Which store owns `thread_id`, answered from disk.
+///
+/// Aurora has two conversation stores — `sessions/` for Build and `Chats/` for
+/// Aurora Chat — and almost every command here already names the conversation
+/// it is acting on. That name is enough: ids are UUIDs, a conversation exists
+/// in exactly one store, and asking the filesystem is one `stat`.
+///
+/// Deliberately a lookup rather than a parameter on fifteen commands. A
+/// parameter is a thing every caller has to remember, and the one that forgets
+/// does not fail loudly — it reads or deletes in the wrong store. The disk
+/// cannot forget.
+///
+/// An id in neither store (a brand-new conversation) resolves to Build, which
+/// is what every existing caller means. The two commands that genuinely cannot
+/// look it up — creating a conversation, and listing them — are told instead.
+fn store_for_thread(registry: &Arc<AgentRegistry>, thread_id: &str) -> Arc<SessionStore> {
+    let chat = registry.chat_store();
+    if chat.exists(thread_id) {
+        return chat.clone();
+    }
     registry.store().clone()
+}
+
+/// The store for a named surface. `"chat"` is Aurora Chat; anything else,
+/// including `None`, is Build.
+fn store_for_surface(registry: &Arc<AgentRegistry>, surface: Option<&str>) -> Arc<SessionStore> {
+    if surface == Some("chat") {
+        registry.chat_store().clone()
+    } else {
+        registry.store().clone()
+    }
 }
 
 fn build_thread_state(
@@ -732,6 +764,7 @@ fn build_thread_summary(
         model: summary.model,
         pinned: summary.pinned,
         archived_at: summary.archived_at,
+        deep_research: summary.deep_research,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
     }
@@ -753,7 +786,7 @@ pub fn thread_save(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread.id);
     store
         .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
         .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
@@ -781,14 +814,33 @@ pub fn thread_save(
 pub fn thread_create(
     title: Option<String>,
     workspace_root: Option<String>,
+    // `surface`: `"chat"` creates the conversation in Aurora Chat's store;
+    // anything else, including omitting it, creates a Build conversation. One
+    // of the two commands that cannot look the store up, because the
+    // conversation does not exist yet.
+    surface: Option<String>,
+    // `deep_research`: stamped ONCE, here, and never changed. This is the only
+    // place it can be set — see `SessionMetadata::deep_research`.
+    deep_research: Option<bool>,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadState, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_surface(registry.inner(), surface.as_deref());
     let thread_id = uuid::Uuid::new_v4().to_string();
     let meta = store
         .ensure_thread(&thread_id, title, workspace_root)
         .map_err(|e| format!("Failed to create thread: {e}"))?;
+
+    // Best-effort: a conversation that failed to record its framing is still a
+    // conversation, and refusing to create it would be the worse outcome.
+    if deep_research.unwrap_or(false) {
+        if let Err(err) = store.mark_deep_research(&thread_id) {
+            crate::logging::log_warn(
+                "threads",
+                &format!("could not mark {thread_id} as deep research: {err}"),
+            );
+        }
+    }
 
     let ws_root = meta.workspace_root.clone();
     let state = ThreadState {
@@ -816,6 +868,7 @@ pub fn thread_create(
                 model: None,
                 pinned: false,
                 archived_at: None,
+                deep_research: deep_research.unwrap_or(false),
                 created_at: state.created_at.clone(),
                 updated_at: state.updated_at.clone(),
             },
@@ -833,7 +886,7 @@ pub async fn thread_duplicate(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadSummary, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     let new_thread_id = uuid::Uuid::new_v4().to_string();
     let source_thread_id = thread_id.clone();
     let worker_store = store.clone();
@@ -890,7 +943,7 @@ pub async fn thread_copy_markdown(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     let markdown = tokio::task::spawn_blocking(move || {
         let loaded = store
             .load(&thread_id)
@@ -1079,7 +1132,7 @@ pub fn thread_usage_breakdown(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Option<ThreadUsageBreakdown>, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     let loaded = store
         .load(&thread_id)
         .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
@@ -1093,7 +1146,7 @@ pub fn thread_load(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<Option<ThreadState>, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     let state = build_thread_state(&store, &thread_id)?;
     if let Some(s) = state.as_ref() {
         emit(
@@ -1112,7 +1165,19 @@ pub fn thread_delete(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
+    // Drop it from the search index BEFORE the folder goes. Left behind, the
+    // index would keep returning hits for a conversation that can no longer be
+    // opened — a worse failure than a missing one, because it looks like a bug
+    // in `recall` rather than like a deleted chat.
+    //
+    // Its FACTS are deliberately untouched: a fact is about the user, not about
+    // the conversation that happened to teach it.
+    if store.dir() == registry.chat_store().dir() {
+        if let Some(memory) = crate::chat_memory::service() {
+            let _ = memory.forget_chat(&thread_id);
+        }
+    }
     store
         .delete(&thread_id)
         .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
@@ -1141,9 +1206,16 @@ pub fn thread_delete(
 #[tauri::command]
 pub async fn thread_list_summaries(
     workspace_root: Option<String>,
+    // `surface`: `"chat"` lists Aurora Chat's conversations instead of Build's.
+    // The other command that has to be told, because a listing has no
+    // conversation to look up.
+    //
+    // `workspace_root` is meaningless alongside it and callers should omit it:
+    // chat conversations carry no workspace, so a filter returns nothing.
+    surface: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ThreadSummary>, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_surface(registry.inner(), surface.as_deref());
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
         let entries = store
@@ -1172,7 +1244,7 @@ pub fn thread_update_title(
     title: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     store
         .set_title(&thread_id, title)
         .map(|_| ())
@@ -1188,7 +1260,7 @@ pub fn thread_set_pinned(
     pinned: bool,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     store
         .set_pinned(&thread_id, pinned)
         .map(|_| ())
@@ -1204,7 +1276,7 @@ pub fn thread_set_archived(
     archived: bool,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     store
         .set_archived(&thread_id, archived)
         .map(|_| ())
@@ -1225,7 +1297,7 @@ pub fn thread_set_model(
     model: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     store
         .set_model(&thread_id, model)
         .map(|_| ())
@@ -1248,7 +1320,7 @@ pub fn thread_update_usage(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &request.thread_id);
     store
         .set_usage(
             &request.thread_id,
@@ -1276,7 +1348,7 @@ pub fn thread_get_api_history(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ApiMessage>, String> {
-    let store = store_from_state(registry.inner());
+    let store = store_for_thread(registry.inner(), &thread_id);
     let loaded = store
         .load(&thread_id)
         .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
@@ -1354,6 +1426,7 @@ mod tests {
                 timestamp: 3,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             },
         ];
@@ -1442,6 +1515,7 @@ mod tests {
             timestamp: ts,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }
     }
@@ -1782,6 +1856,7 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: Some("openai:gpt-5.6".into()),
         };
         marker.model = Some("openai:gpt-5.6".into());
@@ -1922,6 +1997,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             },
         ];
@@ -1949,6 +2025,7 @@ mod tests {
             timestamp: 2,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         };
         let messages = vec![
@@ -2003,6 +2080,7 @@ mod tests {
                 path: Some("E:/proj/src/app.ts".into()),
             }]),
             model: None,
+            aurora_context: None,
         };
         let messages = vec![
             assistant_with_tool("c", "ping", serde_json::json!({}), 1),
@@ -2049,6 +2127,7 @@ mod tests {
             timestamp: 2,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         };
         let messages = vec![
@@ -2317,5 +2396,87 @@ mod tests {
         // handing it an empty array to render.
         let messages = vec![ConversationMessage::assistant(vec![], 1)];
         assert!(session_to_db_messages(&messages)[0].timeline.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Which store a command acts on
+    //
+    // Aurora has two conversation stores and almost every command here is
+    // handed only a thread id. Resolving the wrong one does not fail loudly —
+    // it reads, renames, or DELETES in the wrong place — so the resolution is
+    // pinned rather than trusted.
+    // ------------------------------------------------------------------
+
+    fn two_stores() -> (tempfile::TempDir, SessionStore, SessionStore) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let build = SessionStore::new(dir.path().join("sessions"));
+        let chat = SessionStore::new_folder(dir.path().join("Chats"));
+        (dir, build, chat)
+    }
+
+    /// Mirrors `store_for_thread`'s rule without needing a Tauri `State`.
+    fn resolve<'a>(
+        build: &'a SessionStore,
+        chat: &'a SessionStore,
+        thread_id: &str,
+    ) -> &'a SessionStore {
+        if chat.exists(thread_id) {
+            chat
+        } else {
+            build
+        }
+    }
+
+    #[test]
+    fn a_chat_conversation_resolves_to_the_chat_store() {
+        let (_g, build, chat) = two_stores();
+        chat.ensure_thread("c1", Some("a chat".into()), None).unwrap();
+
+        let resolved = resolve(&build, &chat, "c1");
+        assert_eq!(resolved.dir(), chat.dir());
+        assert_eq!(resolved.load_metadata("c1").unwrap().title, "a chat");
+    }
+
+    #[test]
+    fn a_build_conversation_resolves_to_the_build_store() {
+        let (_g, build, chat) = two_stores();
+        build
+            .ensure_thread("b1", Some("a build thread".into()), None)
+            .unwrap();
+
+        let resolved = resolve(&build, &chat, "b1");
+        assert_eq!(resolved.dir(), build.dir());
+        assert_eq!(
+            resolved.load_metadata("b1").unwrap().title,
+            "a build thread"
+        );
+    }
+
+    /// A conversation that exists in neither is a brand-new one, and every
+    /// existing caller means Build by it. Chat's own creation path is told
+    /// explicitly instead (`thread_create`'s `surface`).
+    #[test]
+    fn an_unknown_id_resolves_to_build() {
+        let (_g, build, chat) = two_stores();
+        assert_eq!(resolve(&build, &chat, "never-existed").dir(), build.dir());
+    }
+
+    /// The failure this whole design avoids: deleting a chat by id must not
+    /// reach into Build, and vice versa. Ids are UUIDs so a real collision
+    /// cannot happen — this proves the resolution, not the id space.
+    #[test]
+    fn resolving_never_crosses_between_the_two_stores() {
+        let (_g, build, chat) = two_stores();
+        build.ensure_thread("b1", Some("build".into()), None).unwrap();
+        chat.ensure_thread("c1", Some("chat".into()), None).unwrap();
+
+        resolve(&build, &chat, "c1").delete("c1").unwrap();
+
+        assert!(chat.list_summaries().unwrap().is_empty(), "the chat is gone");
+        assert_eq!(
+            build.list_summaries().unwrap().len(),
+            1,
+            "the build thread was not touched"
+        );
     }
 }

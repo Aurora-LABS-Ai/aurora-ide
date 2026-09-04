@@ -31,6 +31,7 @@ import type {
 } from "@/kernel/services/providers/types";
 import type { ToolCallRequest, TokenUsage } from "@/kernel/services/providers/types";
 import type { AgentCallbacks, AgentConfig } from "@/apps/agent/services/runtime/agent-service.types";
+import type { AgentExecutionMode } from "@/apps/agent/services/runtime/agent-execution-mode";
 import type {
   AttachedPromptChip,
   AttachedSelectedElement,
@@ -143,7 +144,7 @@ export interface AgentChatRequest {
   /** See {@link AgentRuntimeChatInput.modelSelection}. */
   modelSelection: string | null;
   workspacePath: string | null;
-  executionMode: "agent" | "plan" | "team";
+  executionMode: AgentExecutionMode;
   /**
    * The `aurora agent` task this turn is running, when it came from one.
    *
@@ -277,6 +278,12 @@ export type AssistantEvent =
     }
   | { type: "compaction_started" }
   | { type: "compaction_completed"; before_tokens: number; after_tokens: number }
+  | {
+      type: "compaction_failed";
+      before_tokens: number;
+      reason: string;
+      cancelled: boolean;
+    }
   | { type: "error"; message: string; recoverable: boolean }
   | {
       /** The stream died mid-reply and the runtime is re-requesting it. What
@@ -975,6 +982,13 @@ export class AgentRuntimeClient {
         break;
       case "compaction_completed":
         callbacks.onCompactionCompleted?.(event.before_tokens, event.after_tokens);
+        break;
+      case "compaction_failed":
+        callbacks.onCompactionFailed?.({
+          beforeTokens: event.before_tokens,
+          reason: event.reason,
+          cancelled: event.cancelled,
+        });
         break;
       case "partial_reply_discarded":
         callbacks.onPartialReplyDiscarded?.({

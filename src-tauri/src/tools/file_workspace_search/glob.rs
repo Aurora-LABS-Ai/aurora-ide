@@ -104,7 +104,17 @@ impl ToolExecutor for GlobTool {
             Some(root) => {
                 super::resolve_path_with_access(raw_path, Some(root), ctx.workspace_access)?
             }
-            None => std::path::PathBuf::from(raw_path),
+            None => {
+                // No workspace means no boundary to resolve against, so the
+                // access setting decides alone. A listing walks a whole tree,
+                // which the access lattice grants only under Full — the same
+                // predicate the resolver above applies — so `Read` must not
+                // be wider here than it is with a workspace open.
+                if !ctx.workspace_access.searches_outside() {
+                    return Err(super::no_workspace_refusal(raw_path));
+                }
+                std::path::PathBuf::from(raw_path)
+            },
         };
 
         let Some(rg) = crate::sidecar::ripgrep() else {
@@ -391,6 +401,60 @@ mod tests {
         let mut found = files(&parsed);
         found.sort();
         assert_eq!(found, vec!["lib.rs", "main.rs"]);
+    }
+
+    /// With no workspace the access setting decides — the same contract the
+    /// path resolvers enforce. Default access refuses with the one wording
+    /// every tool in the bucket shares, so the model cannot tell which of
+    /// them said no; Full takes the path as written and the listing runs.
+    #[tokio::test]
+    async fn a_workspace_less_glob_obeys_the_access_setting() {
+        use crate::agent_runtime::tool_executor::WorkspaceAccess;
+
+        let tmp = fixture();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(GlobTool);
+        let base = ToolContext {
+            workspace_access: WorkspaceAccess::Workspace,
+            turn_id: "t".into(),
+            tool_call_id: "c".into(),
+            thread_id: "s".into(),
+            workspace_root: None,
+            cancel_token: CancellationToken::new(),
+            spill_dir: None,
+        };
+
+        let err = tool
+            .execute(
+                json!({ "pattern": "**/*.rs", "path": tmp.path().to_string_lossy() }),
+                &base,
+            )
+            .await
+            .expect_err("no workspace and default access must refuse a listing");
+        let ToolError::InvalidInput(message) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(message.contains("No workspace is open"), "{message}");
+        assert!(
+            message.contains("Open a folder"),
+            "must name the first way out: {message}"
+        );
+        assert!(
+            message.contains("Settings"),
+            "must name the access setting: {message}"
+        );
+
+        let mut full = base;
+        full.workspace_access = WorkspaceAccess::Full;
+        let out = tool
+            .execute(
+                json!({ "pattern": "**/*.rs", "path": tmp.path().to_string_lossy() }),
+                &full,
+            )
+            .await
+            .expect("Full takes the listing path as written");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{parsed}");
+        assert_eq!(parsed["count"], 2, "the fixture holds two .rs files: {parsed}");
     }
 
     #[test]

@@ -41,6 +41,16 @@ fn main() {
         return;
     }
 
+    // Everything past this point can print, and a release build is compiled
+    // windowless — which means it starts with no console and every `println!`
+    // goes nowhere. Borrow the terminal that launched us before anything tries
+    // to write to it.
+    //
+    // Deliberately after the spawned-GUI branch above: that process was started
+    // detached with null stdio and has no terminal to borrow. See
+    // `aurora_lib::console` for why this is not a second binary.
+    aurora_lib::console::attach_to_parent_terminal();
+
     // Parse CLI arguments
     let args = CliArgs::parse_args();
 

@@ -181,45 +181,150 @@ fn msystem_for(root: &Path) -> &'static str {
 /// Environment overlay for a shell, as `(name, value)` pairs applied on top
 /// of the inherited environment.
 ///
-/// Returns an empty vector for shells that need nothing special — the vast
-/// majority. The overlay is intentionally minimal: `TERM` is left unset so
-/// piped output keeps the same shape it has today, and nothing is removed
-/// from the inherited environment.
+/// The overlay is intentionally minimal: `TERM` is left unset so piped output
+/// keeps the same shape it has today, and nothing is removed from the
+/// inherited environment. `PATH` is set only when it differs from what the
+/// process already has — see [`effective_path`] for why it usually does on
+/// Windows.
 #[must_use]
 pub fn compose(kind: ShellKind, exe: &Path) -> Vec<(String, String)> {
-    let mut overlay = streaming_env();
+    compose_with_inherited(kind, exe, std::env::var("PYTHONUNBUFFERED").ok().as_deref())
+}
 
-    if !kind.is_posix() {
-        return overlay;
-    }
-    let Some(root) = msys_root(exe) else {
-        return overlay;
-    };
-    let dirs = msys_path_dirs(&root);
-    if dirs.is_empty() {
-        return overlay;
-    }
+/// [`compose`] with the parent's `PYTHONUNBUFFERED` stated rather than read
+/// from the process environment.
+///
+/// The composer's one env-dependent decision is whether the parent already
+/// exported an opinion on python buffering, so that is the seam: a test
+/// states the inherited value instead of inheriting whatever happened to run
+/// it. Before the seam, this suite passed from an ordinary terminal and
+/// failed from a shell Aurora spawns — Aurora sets `PYTHONUNBUFFERED` for
+/// its own children, a test run inside one inherited it, and the overlay
+/// correctly added nothing.
+fn compose_with_inherited(
+    kind: ShellKind,
+    exe: &Path,
+    inherited_pythonunbuffered: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut overlay = streaming_env(inherited_pythonunbuffered);
 
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let prefix = std::env::join_paths(dirs.iter())
+    let merged = effective_path();
+
+    let root = if kind.is_posix() { msys_root(exe) } else { None };
+    let prefix_dirs = root.as_deref().map(msys_path_dirs).unwrap_or_default();
+    let prefix = std::env::join_paths(prefix_dirs.iter())
         .map(|joined| joined.to_string_lossy().to_string())
         .unwrap_or_default();
-    if !prefix.is_empty() {
-        let path = if inherited.is_empty() {
-            prefix
-        } else {
-            format!("{prefix}{}{inherited}", separator())
-        };
+
+    let path = match (prefix.is_empty(), merged.is_empty()) {
+        (true, _) => merged,
+        (false, true) => prefix,
+        (false, false) => format!("{prefix}{}{merged}", separator()),
+    };
+    if path != inherited {
         overlay.push(("PATH".to_string(), path));
     }
 
     // Respect an MSYSTEM the user has already exported (they may be driving a
     // specific MSYS2 subsystem); otherwise match what Git Bash would set.
-    if std::env::var("MSYSTEM").is_err() {
-        overlay.push(("MSYSTEM".to_string(), msystem_for(&root).to_string()));
+    if let Some(root) = root {
+        if !prefix_dirs.is_empty() && std::env::var("MSYSTEM").is_err() {
+            overlay.push(("MSYSTEM".to_string(), msystem_for(&root).to_string()));
+        }
     }
 
     overlay
+}
+
+/// The `PATH` a shell should get: the inherited one, plus every entry the
+/// registry defines that it lacks.
+///
+/// Measured on 2026-09-02: the Agent Window, launched from the Start menu,
+/// carried Explorer's PATH — 74 entries, exactly the machine half. The user
+/// half (92 entries, 3,601 characters, Python among them) was never merged in
+/// at logon, so `python` was `command not found` in every shell Aurora
+/// spawned while Windows Terminal, a packaged app whose environment is built
+/// fresh from the registry at launch, had all 105. Any classic app launched
+/// from Explorer inherits the same stale copy; this reads what the registry
+/// says right now, so a tool installed after logon is on PATH for the next
+/// command without a sign-out.
+///
+/// Inherited entries keep their order and come first; registry entries are
+/// appended in registry order (machine, then user), deduplicated
+/// case-insensitively. On non-Windows hosts this is the inherited PATH.
+#[must_use]
+pub fn effective_path() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    merge_path(&inherited, &registry_path_entries())
+}
+
+/// Append to `inherited` every entry of `extra` it does not already contain.
+#[must_use]
+pub fn merge_path(inherited: &str, extra: &[String]) -> String {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for entry in inherited.split(separator()).chain(extra.iter().map(String::as_str)) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if seen.insert(path_key(entry)) {
+            out.push(entry.to_string());
+        }
+    }
+    out.join(separator())
+}
+
+/// Comparison key for a PATH entry: case-insensitive on Windows, and blind to
+/// slash style and a trailing separator, so `C:\Go\bin\` and `c:/go/bin`
+/// count as one entry.
+fn path_key(entry: &str) -> String {
+    let trimmed = entry.trim_end_matches(['\\', '/']);
+    if cfg!(windows) {
+        trimmed.replace('/', "\\").to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// `Path` as the registry defines it — machine first, then user, each with
+/// `%VAR%` references expanded. Empty on non-Windows hosts.
+#[cfg(windows)]
+#[must_use]
+pub fn registry_path_entries() -> Vec<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    let mut out = Vec::new();
+    for (hive, key) in [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        (HKEY_CURRENT_USER, "Environment"),
+    ] {
+        let Ok(key) = RegKey::predef(hive).open_subkey_with_flags(key, KEY_READ) else {
+            continue;
+        };
+        let Ok(raw) = key.get_value::<String, _>("Path") else {
+            continue;
+        };
+        out.extend(
+            expand_vars(&raw)
+                .split(';')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string),
+        );
+    }
+    out
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn registry_path_entries() -> Vec<String> {
+    Vec::new()
 }
 
 /// Environment that keeps a child's output *arriving* rather than pooling.
@@ -236,8 +341,12 @@ pub fn compose(kind: ShellKind, exe: &Path) -> Vec<(String, String)> {
 ///
 /// This does not make a child *believe* it has a terminal — tools that check
 /// `isatty` still drop colour and progress bars. Only a real PTY does that.
-fn streaming_env() -> Vec<(String, String)> {
-    if std::env::var("PYTHONUNBUFFERED").is_ok() {
+///
+/// The parent's current value is passed in rather than read here — `None`
+/// means the parent has no opinion and the overlay adds one — so the one
+/// env-dependent decision is stated by the caller and testable as data.
+fn streaming_env(inherited_pythonunbuffered: Option<&str>) -> Vec<(String, String)> {
+    if inherited_pythonunbuffered.is_some() {
         return Vec::new();
     }
     vec![("PYTHONUNBUFFERED".to_string(), "1".to_string())]
@@ -302,23 +411,85 @@ mod tests {
     }
 
     #[test]
-    fn non_posix_kinds_get_no_path_repair() {
+    fn non_posix_kinds_get_no_userland_repair() {
         let overlay = compose(ShellKind::Cmd, Path::new(r"C:\Windows\System32\cmd.exe"));
         let map = overlay_map(&overlay);
-        assert!(!map.contains_key("PATH"), "cmd needs no userland repair");
         assert!(!map.contains_key("MSYSTEM"));
+        // cmd may still receive the registry-merged PATH, but exactly that:
+        // no Git userland in front of it.
+        if let Some(path) = map.get("PATH") {
+            assert_eq!(
+                *path,
+                effective_path().as_str(),
+                "cmd gets the merged PATH and nothing in front of it"
+            );
+        }
     }
 
     #[test]
-    fn every_shell_gets_unbuffered_python() {
-        // Without this a script printing one line a second renders nothing
-        // until it exits, because a piped stdout switches to block buffering.
+    fn merge_appends_only_what_is_missing_and_keeps_order() {
+        let merged = merge_path(
+            r"C:\a;C:\b\",
+            &[r"C:\B".to_string(), r"C:\c".to_string(), r"C:\c".to_string()],
+        );
+        if cfg!(windows) {
+            assert_eq!(merged, r"C:\a;C:\b\;C:\c");
+        } else {
+            // Case-sensitive filesystems: `C:\B` is a different entry.
+            assert_eq!(merged.split(':').count() >= 1, true);
+        }
+    }
+
+    #[test]
+    fn merge_drops_empty_entries_and_leaves_a_clean_inherited_path_alone() {
+        let sep = separator();
+        let inherited = format!("/usr/bin{sep}{sep}/bin");
+        assert_eq!(merge_path(&inherited, &[]), format!("/usr/bin{sep}/bin"));
+        assert_eq!(merge_path("", &["/opt/x".to_string()]), "/opt/x");
+    }
+
+    #[test]
+    fn the_effective_path_never_loses_an_inherited_entry() {
+        let inherited = std::env::var("PATH").unwrap_or_default();
+        let effective = effective_path();
+        for entry in inherited.split(separator()).filter(|e| !e.trim().is_empty()) {
+            assert!(
+                effective.split(separator()).any(|e| path_key(e) == path_key(entry)),
+                "lost {entry}"
+            );
+        }
+    }
+
+    /// Without this a script printing one line a second renders nothing
+    /// until it exits, because a piped stdout switches to block buffering.
+    ///
+    /// The parent's `PYTHONUNBUFFERED` is STATED (`None` = the parent has no
+    /// opinion), never inherited: Aurora sets it for its own children, so a
+    /// test that read the real environment passed from an ordinary terminal
+    /// and failed from a shell Aurora spawned. This suite must run green
+    /// both ways.
+    #[test]
+    fn every_shell_gets_unbuffered_python_when_the_parent_has_not_set_it() {
         for kind in [ShellKind::Cmd, ShellKind::Pwsh, ShellKind::Bash] {
-            let overlay = compose(kind, Path::new("bash"));
+            let overlay = compose_with_inherited(kind, Path::new("bash"), None);
             assert_eq!(
                 overlay_map(&overlay).get("PYTHONUNBUFFERED").copied(),
                 Some("1"),
                 "{kind:?} must stream python output"
+            );
+        }
+    }
+
+    /// The other side of the seam: a parent that already exported its own
+    /// `PYTHONUNBUFFERED` — Aurora's own shell delivery does — must not have
+    /// it restated, or the overlay would override the user's value.
+    #[test]
+    fn no_shell_restates_pythonunbuffered_when_the_parent_already_set_it() {
+        for kind in [ShellKind::Cmd, ShellKind::Pwsh, ShellKind::Bash] {
+            let overlay = compose_with_inherited(kind, Path::new("bash"), Some("1"));
+            assert!(
+                !overlay_map(&overlay).contains_key("PYTHONUNBUFFERED"),
+                "{kind:?} must leave the parent's PYTHONUNBUFFERED alone"
             );
         }
     }

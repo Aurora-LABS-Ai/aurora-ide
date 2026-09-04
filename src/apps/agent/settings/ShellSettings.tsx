@@ -18,12 +18,14 @@ import {
   addShellProfile,
   EMPTY_SHELL_PROFILES,
   getShellProfiles,
+  getToolInventory,
   removeShellProfile,
   resolveDefaultProfile,
   scanShellProfiles,
   setShellProfileEnabled,
   SHELL_KIND_LABELS,
   verifyShellProfile,
+  type FoundTool,
   type ShellHealthState,
   type ShellProfile,
   type ShellProfiles,
@@ -140,6 +142,97 @@ const ShellRow: React.FC<{
           ariaLabel={`Let the agent use ${profile.label}`}
         />
       </div>
+    </div>
+  );
+};
+
+// ── Command-line tools found on this machine ────────────────────────────────
+
+/**
+ * The names the agent is told at the start of every conversation, with the
+ * one fact it is not told: where each resolved. Checked fresh each time the
+ * list is opened, so it never disagrees with the next conversation.
+ */
+const ToolInventory: React.FC = () => {
+  const [open, setOpen] = useState(false);
+  const [tools, setTools] = useState<FoundTool[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      setTools(await getToolInventory());
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open && tools === null && !checking && !error) void check();
+  }, [open, tools, checking, error, check]);
+
+  const summary = (() => {
+    if (checking) return "Checking…";
+    if (error) return "Could not check";
+    if (tools === null) return "";
+    if (tools.length === 0) return "None of the usual ones found";
+    return `${tools.length} found`;
+  })();
+
+  return (
+    <div className="agw-shell-tools">
+      <button
+        type="button"
+        className="agw-shell-tools-head"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span className="agw-set-group-chev" data-open={open || undefined}>
+          <AgentIcon name="chevron-down" size={13} />
+        </span>
+        <span className="agw-shell-tools-title">Command-line tools</span>
+        {summary && <span className="agw-shell-tools-meta">{summary}</span>}
+      </button>
+
+      {open && (
+        <div className="agw-shell-tools-body">
+          <p className="agw-shell-tools-hint">
+            Found on the PATH the agent's shells run with. The agent gets these names at the start
+            of every conversation and runs a tool itself when it needs the version.
+          </p>
+          {error && (
+            <p className="agw-shell-add-error" role="alert">
+              {error}
+            </p>
+          )}
+          {tools && tools.length > 0 && (
+            <ul className="agw-shell-tools-list agw-scroll">
+              {tools.map((tool) => (
+                <li key={tool.name} className="agw-shell-tool">
+                  <span className="agw-shell-tool-name">{tool.name}</span>
+                  <span className="agw-shell-path" title={tool.path}>
+                    {tool.path}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="agw-shell-tools-actions">
+            <button
+              type="button"
+              className="agw-shell-action"
+              onClick={() => void check()}
+              disabled={checking}
+            >
+              {checking ? "Checking…" : "Check again"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -373,6 +466,8 @@ export const ShellSettings: React.FC = () => {
                     ))}
                   </div>
                 )}
+
+                {!loading && state.profiles.length > 0 && <ToolInventory />}
 
                 {activeDefault && (
                   <p className="agw-shell-foot">

@@ -27,11 +27,11 @@ use super::*;
 ///    Rust executors that may shadow specific bridge entries).
 /// 4. Construct a [`ConversationRuntime`] with the per-turn
 ///    [`RuntimeConfig`] overlaying `system_prompt`, `temperature`,
-///    `max_output_tokens`, `thinking_enabled`, and `ide_context` from
-///    the request.
+///    `max_output_tokens`, and `thinking_enabled` from the request.
 /// 5. Build the user [`ConversationMessage`] from `request.user_message`
-///    verbatim — IDE-context wrapping happens inside the runtime per
-///    API call, leaving the persisted JSONL bubble clean.
+///    verbatim, with the request's `ide_context` saved beside it as the
+///    message's `aurora_context` — the model reads it after the user's
+///    words, the UI never shows it, and the bytes never move again.
 /// 6. Generate a per-turn [`CancellationToken`] and register it in
 ///    `in_flight` keyed by `request.turn_id`.
 /// 7. Spawn a forwarder task that drains [`AgentEventEnvelope`]s out of
@@ -98,10 +98,21 @@ fn bind_cli_task(task_id: &str, turn_id: &str, thread_id: &str, request: &AgentC
         .or_else(|| request.workspace_path.clone())
         .unwrap_or_default();
 
-    let model = claimed
-        .as_ref()
-        .and_then(|task| task.model_pin())
-        .or_else(|| Some(pinned_model(request)));
+    // What this turn is ACTUALLY running on, not what the dispatch asked for.
+    //
+    // These were the other way round, and the difference is not cosmetic: the
+    // transcript is the record a caller trusts, and reporting the *requested*
+    // model meant a dispatch whose model never took effect still showed that
+    // model in its `dispatch` line. A `--model luna` task that ran on the
+    // window's default read as a luna run in every transcript, in
+    // `aurora watch`, and in the MCP tools — the one place the mismatch could
+    // have been seen was the one place it was hidden.
+    //
+    // The task's pin remains the fallback, for a turn whose own model cannot be
+    // established.
+    let model = Some(pinned_model(request))
+        .filter(|pin| !pin.trim().is_empty())
+        .or_else(|| claimed.as_ref().and_then(|task| task.model_pin()));
 
     crate::cli_delegate::mirror::bind(
         task_id,
@@ -141,10 +152,13 @@ impl<E: EventEmitter> TurnDriver<E> {
         &self,
         request: AgentChatRequest,
     ) -> Result<Option<(u32, u32)>, RuntimeError> {
+        let request = request.scoped_to_mode();
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
 
-        let session_arc = self.registry.load_or_create_session(&thread_id)?;
+        let session_arc = self
+            .registry
+            .load_or_create_session_in(request.execution_mode, &thread_id)?;
         let api_client = self
             .registry
             .api_factory()
@@ -169,12 +183,13 @@ impl<E: EventEmitter> TurnDriver<E> {
                     request.transcript_chapters.unwrap_or(false),
                     request.browser_tools.unwrap_or(true),
                     request.defer_tools.unwrap_or(false),
+                    &thread_id,
                 )),
                 build_runtime_config(&request),
             )
             // Oversized tool output lands beside the thread rather than being
             // clamped away, so the model can read the part it needs back.
-            .with_store_dir(self.registry.store().dir()),
+            .with_store(self.registry.store_for(request.execution_mode)),
             &self.registry,
             &request,
         )?;
@@ -187,7 +202,9 @@ impl<E: EventEmitter> TurnDriver<E> {
             }
         });
 
-        let session_path = self.registry.session_path(&thread_id);
+        let session_path = self
+            .registry
+            .session_path_in(request.execution_mode, &thread_id);
         let result = {
             let mut session = session_arc.lock().await;
             if session.workspace_root.is_none() {
@@ -214,7 +231,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             }
         }
 
-        let store = self.registry.store();
+        let store = self.registry.store_for(request.execution_mode);
         let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
         let _ = store.set_workspace_and_model(
             &thread_id,
@@ -234,6 +251,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         &self,
         request: AgentChatRequest,
     ) -> Result<TurnCompletion, RuntimeError> {
+        let request = request.scoped_to_mode();
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
 
@@ -248,7 +266,9 @@ impl<E: EventEmitter> TurnDriver<E> {
         }
 
         // 1. Resolve the session (cache → disk → fresh).
-        let session_arc = self.registry.load_or_create_session(&thread_id)?;
+        let session_arc = self
+            .registry
+            .load_or_create_session_in(request.execution_mode, &thread_id)?;
 
         // 2. Build the API client BEFORE registering the cancel token —
         //    if the factory fails we don't want a stale `in_flight`
@@ -286,6 +306,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             request.transcript_chapters.unwrap_or(false),
             request.browser_tools.unwrap_or(true),
             request.defer_tools.unwrap_or(false),
+            &request.thread_id,
         );
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -298,21 +319,28 @@ impl<E: EventEmitter> TurnDriver<E> {
             )
             // Oversized tool output lands beside the thread rather than being
             // clamped away, so the model can read the part it needs back.
-            .with_store_dir(self.registry.store().dir()),
+            .with_store(self.registry.store_for(request.execution_mode)),
             &self.registry,
             &request,
         )?;
 
         // 5. Wrap the raw user message string into a Text-block
         //    ConversationMessage. The runtime appends it to the session
-        //    itself, so we don't pre-append. The IDE context is wired
-        //    through RuntimeConfig::ide_context — the runtime wraps it
-        //    around the API view of the message only, leaving the
-        //    persisted JSONL clean.
+        //    itself, so we don't pre-append. What the frontend attached for
+        //    the model (open files, a selection, a slash-attached rule) is
+        //    saved ON the message as `aurora_context`, in its own field: the
+        //    bubble shows the user's words, the API view folds the context
+        //    in after them, and the runtime adds the checklist as it stands.
         let mut user_message = ConversationMessage::user_text(
             request.user_message.clone(),
             Utc::now().timestamp_millis(),
         );
+        user_message.aurora_context = request
+            .ide_context
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         // Attach browser-inspector element chips so they persist into the
         // session JSONL as a permanent part of this turn (re-rendered above
         // the user bubble on thread reopen). Empty vecs collapse to None so
@@ -344,7 +372,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     re-introduced a duplicate-message bug. One path owns the
         //     append now.
         {
-            let store = self.registry.store();
+            let store = self.registry.store_for(request.execution_mode);
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
         }
 
@@ -362,7 +390,9 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    chat calls on the same thread_id serialize. Different
         //    thread_ids get different Arcs and therefore different
         //    locks — they run in parallel.
-        let session_path = self.registry.session_path(&thread_id);
+        let session_path = self
+            .registry
+            .session_path_in(request.execution_mode, &thread_id);
         let (result, turn_appended) = {
             let mut session = session_arc.lock().await;
 
@@ -437,7 +467,9 @@ impl<E: EventEmitter> TurnDriver<E> {
                     let rich = session.drain_rich_results();
                     if !rich.is_empty() {
                         if let Err(rich_err) =
-                            self.registry.store().append_rich_results(&thread_id, &rich)
+                            self.registry
+                                .store_for(request.execution_mode)
+                                .append_rich_results(&thread_id, &rich)
                         {
                             crate::logging::log_error(
                                 "agent_v2.persist",
@@ -496,7 +528,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     an `updatedAt` bump for a turn the file does not contain
         //     advertises work the rail cannot open.
         if turn_appended && uncommitted.is_none() {
-            let store = self.registry.store();
+            let store = self.registry.store_for(request.execution_mode);
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
             let _ = store.set_workspace_and_model(
                 &thread_id,
@@ -520,6 +552,25 @@ impl<E: EventEmitter> TurnDriver<E> {
                 }
             }
             let _ = store.touch(&thread_id);
+
+            // Aurora Chat only: bring the searchable index up to date with the
+            // transcript this turn just wrote, so `recall` can find it.
+            //
+            // Deliberately AFTER the title and timestamp writes, because the
+            // index copies both. Deliberately best-effort: the folders are the
+            // truth, and `rebuild_from_folders` reconstructs anything missed
+            // here — failing a turn the user is watching over a search index
+            // would be the wrong trade in both directions.
+            if request.execution_mode.is_chat() {
+                if let Some(memory) = crate::chat_memory::service() {
+                    if let Err(err) = memory.index_chat(store, &thread_id) {
+                        crate::logging::log_warn(
+                            "chat_memory",
+                            &format!("could not index chat {thread_id}: {err}"),
+                        );
+                    }
+                }
+            }
         }
 
         // 10. Always unregister so a future cancel(same_turn_id) returns
@@ -627,7 +678,6 @@ pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig 
                 )
             }),
         default_temperature: request.temperature.or(defaults.default_temperature),
-        ide_context: request.ide_context.clone(),
         // Budget-aware trim engages only when the frontend supplies the
         // active provider's window. `None` keeps the legacy "send the
         // whole session every turn" behaviour, so callers that don't
@@ -642,6 +692,7 @@ pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig 
         compaction_summary_budget: request
             .compaction_summary_budget
             .unwrap_or(defaults.compaction_summary_budget),
+        execution_mode_is_chat: request.execution_mode.is_chat(),
         workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::from_wire(
             request.workspace_access.as_deref(),
             request.allow_outside_workspace,

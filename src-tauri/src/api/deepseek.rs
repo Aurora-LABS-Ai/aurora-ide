@@ -385,6 +385,7 @@ mod tests {
             system_prompt: None,
             messages: &[],
             tools: &[],
+            tool_choice: Default::default(),
             temperature: Some(0.7),
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest {
@@ -393,9 +394,7 @@ mod tests {
                 ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
             },
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        }
+            session_key: None,        }
     }
 
     #[test]
@@ -568,13 +567,12 @@ mod tests {
             system_prompt: None,
             messages: &[],
             tools: &request_tools,
+            tool_choice: Default::default(),
             temperature: Some(0.7),
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
 
         let body = adapter.build_body(&request);
         let tools = body

@@ -121,6 +121,44 @@ ones now."
     )]
     Tasks(TasksArgs),
 
+    /// Stop a dispatched task.
+    #[command(
+        visible_alias = "stop",
+        long_about = "\
+Stop a dispatched task.
+
+A task that has not started yet is dropped and never runs. One that is already
+running stops the same way the Stop button in the Agent Window does — the turn
+ends once the tool it is currently in returns, so a shell command already
+underway finishes first.
+
+Work already done is not undone. Files Aurora has written stay written.
+
+Ids come from `aurora tasks`; any unique prefix will do."
+    )]
+    Cancel(CancelArgs),
+
+    /// Serve Aurora to other agents over MCP.
+    #[command(
+        long_about = "\
+Serve Aurora to other agents over the Model Context Protocol.
+
+This does not open a window or run anything on its own. It speaks MCP on stdin
+and stdout, so it is started BY another agent — Claude Code, or anything else
+that reads an MCP config — rather than by you. Add it to that agent's config:
+
+  {\"mcpServers\": {\"aurora\": {\"command\": \"aurora\", \"args\": [\"mcp\"]}}}
+
+The connected agent can then send Aurora a task, watch it work, stop it, and
+list conversations and models.
+
+Off by default at the other end: sending work needs the Agent Window open AND
+the switch under Settings -> Agent -> \"Let other agents send work to Aurora\".
+Until that is on, the tools are visible but every one of them refuses and says
+why."
+    )]
+    Mcp(McpArgs),
+
     /// Open the interactive view — browse models, conversations and tasks.
     #[command(
         name = "tui",
@@ -382,6 +420,27 @@ pub struct TasksArgs {
     #[arg(long, value_enum, value_name = "WHEN", default_value_t = CliColor::Auto)]
     pub color: CliColor,
 }
+
+/// `aurora cancel`
+#[derive(Args, Debug, Clone)]
+pub struct CancelArgs {
+    /// The task to stop, by id or any unique prefix of one.
+    #[arg(value_name = "TASK")]
+    pub task: String,
+
+    /// When to colour the output.
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t = CliColor::Auto)]
+    pub color: CliColor,
+}
+
+/// `aurora mcp`
+///
+/// No arguments today. It exists as a struct rather than a bare variant because
+/// everything this could grow — a port for a future HTTP transport, a
+/// restricted tool set — belongs here, and adding the struct later would change
+/// the shape of the enum every match arm reads.
+#[derive(Args, Debug, Clone, Default)]
+pub struct McpArgs {}
 
 /// Which conversation a dispatched task joins.
 #[derive(Debug, Clone, PartialEq, Eq)]

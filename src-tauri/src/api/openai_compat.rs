@@ -40,7 +40,8 @@ use crate::agent_runtime::types::TokenUsage;
 
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
-    build_openai_body, build_openai_headers, build_openai_url, finalize_assistant_message,
+    apply_opencode_headers, build_openai_body, build_openai_headers, build_openai_url,
+    finalize_assistant_message,
     frame_has_done_marker, frame_payloads, map_reqwest_error, map_status_error_with_headers,
     parse_tool_input, unprefix_model, BlockState, OpenAiStreamError, OpenAiStreamingResponse,
     RequestOrigin, SseFrameBuffer,
@@ -93,7 +94,8 @@ impl StreamingApiClient for OpenAICompatAdapter {
         }
 
         let url = build_openai_url(&self.config.base_url);
-        let headers = build_openai_headers(&self.config)?;
+        let mut headers = build_openai_headers(&self.config)?;
+        apply_opencode_headers(&mut headers, &self.config, request.session_key)?;
         let body = build_openai_body(&request, &self.config);
 
         // Opt-in request tracing. Set AURORA_DEBUG_API=1 before launching

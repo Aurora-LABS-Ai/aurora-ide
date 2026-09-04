@@ -837,7 +837,7 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         // the current history means the NEXT iteration reads all of it from
         // cache and only writes the delta. Without this, a 25-iteration turn
         // re-pays full price for the whole conversation 25 times.
-        mark_last_content_block(&mut messages, request.volatile_tail_messages);
+        mark_last_content_block(&mut messages);
     }
 
     let mut body = Map::new();
@@ -892,6 +892,9 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
             }
         }
         body.insert("tools".to_string(), Value::Array(tools));
+        if request.tool_choice == crate::agent_runtime::api_client::ToolChoice::None {
+            body.insert("tool_choice".to_string(), json!({ "type": "none" }));
+        }
     }
 
     // One semantic request lands here. The adapter translates it; the
@@ -1228,14 +1231,13 @@ fn set_cache_control(block: &mut Value) {
     }
 }
 
-/// Put a cache breakpoint on the final content block of the last STABLE
-/// message — the final message minus any volatile tail the runtime
-/// declared (`ApiRequest::volatile_tail_messages`).
+/// Put a cache breakpoint on the final content block of the last message.
 ///
-/// The tail matters because a breakpoint caches the exact prefix up to
-/// itself: anchored on a message whose bytes change every request (the
-/// IDE-context/checklist tail), the cached prefix can never match again
-/// and the entire conversation body re-bills on every iteration.
+/// A breakpoint caches the exact prefix up to itself, so this only pays
+/// while the last message is one the next request will send unchanged. It
+/// always is: the runtime appends nothing to a request that is not already
+/// in the transcript exactly as sent (it used to end requests with a
+/// rebuilt state block, and the breakpoint had to step back over it).
 ///
 /// Handles both content shapes Anthropic accepts: a bare string (promoted
 /// to a one-element text block, since a string has nowhere to hang the
@@ -1243,14 +1245,8 @@ fn set_cache_control(block: &mut Value) {
 ///
 /// Anthropic allows at most 4 breakpoints per request; this is the third
 /// and last one Aurora sets, after tools and system.
-fn mark_last_content_block(messages: &mut [Value], volatile_tail: usize) {
-    // If everything is volatile there is nothing stable to anchor on —
-    // better no message breakpoint than one that can never hit.
-    let stable = messages.len().checked_sub(volatile_tail);
-    let Some(last_message) = stable
-        .filter(|n| *n > 0)
-        .and_then(|n| messages.get_mut(n - 1))
-    else {
+fn mark_last_content_block(messages: &mut [Value]) {
+    let Some(last_message) = messages.last_mut() else {
         return;
     };
     let Some(content) = last_message.get_mut("content") else {
@@ -1734,7 +1730,10 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
             })
             .collect();
         body.insert("tools".to_string(), Value::Array(tools));
-        body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
+        body.insert(
+            "tool_choice".to_string(),
+            Value::String(request.tool_choice.as_str().to_string()),
+        );
     }
 
     if request.reasoning.enabled && config.supports_thinking {
@@ -2312,7 +2311,7 @@ pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&
         // reasoning item, and Cursor speaks its own. Putting an OpenAI chat
         // field in any of those bodies would be malformed, not merely unwanted.
         "minimax" | "anthropic" | "openai-responses" | "codex" | "cursor"
-        | "kenari-messages" | "kenari-responses" => None,
+        | "kenari-messages" | "kenari-responses" | "modal-messages" | "modal-responses" => None,
         // Every other OpenAI-compatible provider — `"openai"`, `"custom"`,
         // Fireworks, Ollama, kenari, and anything Aurora has never heard of:
         // send it, whether or not that provider is known to want it.
@@ -2628,7 +2627,17 @@ pub fn build_anthropic_headers(
     headers.insert(USER_AGENT, HeaderValue::from_static(AURORA_USER_AGENT));
     insert_header(&mut headers, "anthropic-version", "2023-06-01")?;
     if !config.api_key.is_empty() {
-        insert_header(&mut headers, "x-api-key", &config.api_key)?;
+        if anthropic_wire_uses_bearer(&config.effective_provider_type()) {
+            // Modal's gateway takes the workspace proxy token ONLY as
+            // `Authorization: Bearer`; `x-api-key` is a 401 `proxy auth
+            // required` (measured 2026-09-02).
+            let value = format!("Bearer {}", config.api_key);
+            let header_value = HeaderValue::from_str(&value)
+                .map_err(|e| ApiError::InvalidRequest(format!("invalid api key header: {e}")))?;
+            headers.insert(reqwest::header::AUTHORIZATION, header_value);
+        } else {
+            insert_header(&mut headers, "x-api-key", &config.api_key)?;
+        }
     }
     if let Some(custom) = &config.custom_headers {
         for (key, value) in custom {
@@ -2637,6 +2646,13 @@ pub fn build_anthropic_headers(
     }
     let _ = HeaderName::from_static("accept"); // satisfy dead_code lint variants
     Ok(headers)
+}
+
+/// Anthropic-shaped wires that authenticate with a Bearer token rather than
+/// `x-api-key`. Anthropic itself, MiniMax and kenari all take `x-api-key`.
+#[must_use]
+pub fn anthropic_wire_uses_bearer(provider_type: &str) -> bool {
+    matches!(provider_type.trim().to_ascii_lowercase().as_str(), "modal-messages")
 }
 
 pub fn build_openai_headers(
@@ -2663,6 +2679,84 @@ pub fn build_openai_headers(
         }
     }
     Ok(headers)
+}
+
+/// The header OpenCode Go uses to tie a request to its conversation.
+///
+/// OpenCode's own client sends it on every inference call
+/// (`packages/opencode/src/session/llm/request.ts`), with the raw session id
+/// as the value, and their gateway logs it as a metric per request. On
+/// 2026-09-03 they emailed that requests from `Aurora/2.0.0` were arriving
+/// without it and that from 2026-09-06 such requests may error. Aurora had
+/// measured the header as unnecessary when the provider shipped; it was, and
+/// now it is not.
+pub const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
+
+/// Which client is calling — `cli`, `desktop`, and now `aurora`. Their gateway
+/// reads it beside the session header. Not demanded, but it costs nothing and
+/// is the honest answer to "we don't recognize this client".
+pub const OPENCODE_CLIENT_HEADER: &str = "x-opencode-client";
+
+/// Is this request bound for OpenCode Go?
+///
+/// The provider type is the normal signal — the frontend resolves one of
+/// `opencode-go`, `opencode-go-chat` or `opencode-go-messages` per model. The
+/// host is checked too so a hand-made row pointing at `opencode.ai` with a
+/// generic type does not silently go back to being an unrecognised client.
+#[must_use]
+pub fn is_opencode_go(config: &ProviderConfigSnapshot) -> bool {
+    config
+        .effective_provider_type()
+        .to_ascii_lowercase()
+        .starts_with("opencode-go")
+        || config
+            .base_url
+            .to_ascii_lowercase()
+            .contains("://opencode.ai/")
+}
+
+/// Add OpenCode's per-conversation headers when the request is bound there.
+///
+/// Called by every adapter an OpenCode Go model can resolve to, after the
+/// wire's own headers and the user's custom headers are in place. A value the
+/// user set explicitly in custom headers is kept, in line with the rest of the
+/// header builders.
+///
+/// `session_key` is the conversation identity the runtime already puts on
+/// every request (`ApiRequest::session_key`, the thread id), so every request
+/// of one chat — its tool iterations, retries, and compaction — names the same
+/// session, which is exactly what "one stable ID per conversation" asks for.
+/// A request with no conversation (the settings connection test) gets a fresh
+/// id, because the point is that the header is never missing.
+pub fn apply_opencode_headers(
+    headers: &mut reqwest::header::HeaderMap,
+    config: &ProviderConfigSnapshot,
+    session_key: Option<&str>,
+) -> Result<(), ApiError> {
+    use reqwest::header::{HeaderName, HeaderValue};
+
+    if !is_opencode_go(config) {
+        return Ok(());
+    }
+
+    let session_name = HeaderName::from_static(OPENCODE_SESSION_HEADER);
+    if !headers.contains_key(&session_name) {
+        let value = match session_key.map(str::trim).filter(|key| !key.is_empty()) {
+            Some(key) => key.to_string(),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        let header_value = HeaderValue::from_str(&value).map_err(|e| {
+            ApiError::InvalidRequest(format!("invalid {OPENCODE_SESSION_HEADER} header: {e}"))
+        })?;
+        headers.insert(session_name, header_value);
+    }
+
+    let client_name = HeaderName::from_static(OPENCODE_CLIENT_HEADER);
+    if !headers.contains_key(&client_name) {
+        headers.insert(client_name, HeaderValue::from_static("aurora"));
+    }
+
+    Ok(())
 }
 
 fn insert_header(
@@ -3527,6 +3621,29 @@ mod tests {
         assert_eq!(reasoning_field_for("kenari-responses", "glm-5.2"), None);
     }
 
+    /// Modal's chat wire renders a replayed `reasoning_content` into the
+    /// prompt (prompt_tokens rose by the reasoning's size, measured
+    /// 2026-09-02), so it keeps the default; its other two wires carry
+    /// thinking natively.
+    #[test]
+    fn modal_chat_replays_and_its_other_wires_do_not() {
+        assert_eq!(
+            reasoning_field_for("modal", "maya--ep-kimi-k3-server.us-west.modal.direct"),
+            Some("reasoning_content")
+        );
+        assert_eq!(reasoning_field_for("modal-messages", "x"), None);
+        assert_eq!(reasoning_field_for("modal-responses", "x"), None);
+    }
+
+    #[test]
+    fn only_modal_puts_a_bearer_token_on_the_anthropic_wire() {
+        assert!(anthropic_wire_uses_bearer("modal-messages"));
+        assert!(anthropic_wire_uses_bearer(" Modal-Messages "));
+        for other in ["anthropic", "minimax", "kenari-messages", "opencode-go-messages", ""] {
+            assert!(!anthropic_wire_uses_bearer(other), "{other:?}");
+        }
+    }
+
     /// The direct providers keep their existing answers.
     #[test]
     fn naming_the_vendor_outright_still_decides_it() {
@@ -3677,14 +3794,13 @@ mod tests {
             messages: &messages,
             system_prompt: None,
             tools: &[],
+            tool_choice: Default::default(),
             model: "glm-5.3",
             temperature: None,
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
         let mut config = ProviderConfigSnapshot {
             provider_id: "custom-gw".into(),
             provider_type: Some("openai".into()),
@@ -3959,20 +4075,20 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
         let request = ApiRequest {
             messages: &messages,
             system_prompt: None,
             tools: &[],
+            tool_choice: Default::default(),
             model: "claude-opus-5",
             temperature: None,
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
 
         let out = openai_messages(&request, true, "openai", "", None);
 
@@ -4023,20 +4139,20 @@ mod tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
         let request = ApiRequest {
             messages: &messages,
             system_prompt: None,
             tools: &[],
+            tool_choice: Default::default(),
             model: "claude-opus-5",
             temperature: None,
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
 
         let out = openai_messages(&request, true, "openai", "", None);
         assert_eq!(out.len(), 2, "one tool message + one user message");
@@ -4390,13 +4506,12 @@ mod tests {
             system_prompt: Some("You are Aurora Agent."),
             messages,
             tools,
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 8_000,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        }
+            session_key: None,        }
     }
 
     fn tool_schema(name: &str) -> ToolSchema {
@@ -4445,42 +4560,48 @@ mod tests {
     }
 
     #[test]
-    fn rolling_breakpoint_skips_the_volatile_tail_message() {
-        // The runtime appends an IDE-context/checklist message whose bytes
-        // change every request. A breakpoint anchored on it caches a prefix
-        // no later request can match — the conversation body would re-bill
-        // on every iteration. The breakpoint must land one message earlier.
+    fn anthropic_tools_can_be_cached_but_disabled_for_internal_calls() {
+        let mut config = thinking_config();
+        config.provider_id = "anthropic".into();
+        let messages = [ConversationMessage::user_text("compact", 0)];
+        let tools = [tool_schema("file_read")];
+        let mut request = caching_request(&messages, &tools);
+        request.tool_choice = crate::agent_runtime::api_client::ToolChoice::None;
+
+        let body = build_anthropic_body(&request, &config);
+
+        assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["tool_choice"], json!({ "type": "none" }));
+    }
+
+    #[test]
+    fn rolling_breakpoint_lands_on_the_last_message() {
+        // Every message in a request is already in the transcript exactly
+        // as sent, so the last one is stable and the breakpoint belongs on
+        // it: the next iteration then reads the whole history from cache and
+        // writes only its delta. (The runtime used to end requests with a
+        // rebuilt state block, and the breakpoint had to step back over it;
+        // there is no such tail any more.)
         let mut config = thinking_config();
         config.provider_id = "anthropic".into();
         let messages = [
             ConversationMessage::user_text("the question", 0),
-            ConversationMessage::user_text("<aurora_task_reminder>…</aurora_task_reminder>", 1),
+            ConversationMessage::user_text("a second question", 1),
         ];
-        let mut request = caching_request(&messages, &[]);
-        request.volatile_tail_messages = 1;
+        let request = caching_request(&messages, &[]);
 
         let body = build_anthropic_body(&request, &config);
-        assert_eq!(
-            body["messages"][0]["content"][0]["cache_control"],
-            json!({"type": "ephemeral"}),
-            "breakpoint anchors on the last STABLE message"
-        );
         assert!(
-            body["messages"][1]["content"][0]
+            body["messages"][0]["content"][0]
                 .get("cache_control")
                 .is_none(),
-            "the volatile tail must never carry the breakpoint"
+            "only the last message carries the rolling breakpoint"
         );
-
-        // Everything volatile → no message breakpoint at all, rather than
-        // one that can never hit.
-        let one = [ConversationMessage::user_text("tail-only", 0)];
-        let mut request = caching_request(&one, &[]);
-        request.volatile_tail_messages = 1;
-        let body = build_anthropic_body(&request, &config);
-        assert!(body["messages"][0]["content"][0]
-            .get("cache_control")
-            .is_none(),);
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "breakpoint anchors on the last message"
+        );
     }
 
     /// `reqwest` sends no `User-Agent` unless one is configured, and a request
@@ -4513,6 +4634,125 @@ mod tests {
         }
     }
 
+    /// OpenCode emailed on 2026-09-03: requests from `Aurora/2.0.0` carried no
+    /// `x-opencode-session`, and from 2026-09-06 such requests may error. Every
+    /// wire an OpenCode Go model can resolve to must name the conversation, and
+    /// the name must be the same on every request of that conversation.
+    #[test]
+    fn every_opencode_wire_names_its_conversation() {
+        for wire in ["opencode-go-chat", "opencode-go-messages", "opencode-go"] {
+            let mut config = thinking_config();
+            config.provider_type = Some(wire.into());
+            config.base_url = "https://opencode.ai/zen/go/v1".into();
+            config.api_key = "sk-k".into();
+
+            let mut headers = if wire == "opencode-go-messages" {
+                build_anthropic_headers(&config).expect("headers")
+            } else {
+                build_openai_headers(&config).expect("headers")
+            };
+            apply_opencode_headers(&mut headers, &config, Some("thread-42")).expect("apply");
+
+            assert_eq!(
+                headers
+                    .get(OPENCODE_SESSION_HEADER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("thread-42"),
+                "{wire}"
+            );
+            assert_eq!(
+                headers
+                    .get(OPENCODE_CLIENT_HEADER)
+                    .and_then(|v| v.to_str().ok()),
+                Some("aurora"),
+                "{wire}"
+            );
+        }
+    }
+
+    /// A row pointed at opencode.ai under a generic type is still their
+    /// client, and must still say which conversation it is.
+    #[test]
+    fn the_opencode_host_is_recognised_under_a_generic_type() {
+        let mut config = thinking_config();
+        config.provider_type = Some("openai".into());
+        config.base_url = "https://opencode.ai/zen/go/v1".into();
+        assert!(is_opencode_go(&config));
+
+        let mut headers = build_openai_headers(&config).expect("headers");
+        apply_opencode_headers(&mut headers, &config, Some("thread-7")).expect("apply");
+        assert!(headers.contains_key(OPENCODE_SESSION_HEADER));
+    }
+
+    /// The header is theirs alone: nothing else on an OpenAI-shaped or
+    /// Anthropic-shaped wire should start carrying it.
+    #[test]
+    fn other_providers_do_not_get_opencode_headers() {
+        for (wire, base) in [
+            ("openai", "https://api.openai.com/v1"),
+            ("anthropic", "https://api.anthropic.com/v1"),
+            ("kenari-messages", "https://kenari.id/v1"),
+            ("custom", "https://example.invalid/v1"),
+        ] {
+            let mut config = thinking_config();
+            config.provider_type = Some(wire.into());
+            config.base_url = base.into();
+            assert!(!is_opencode_go(&config), "{wire}");
+
+            let mut headers = build_openai_headers(&config).expect("headers");
+            apply_opencode_headers(&mut headers, &config, Some("thread-1")).expect("apply");
+            assert!(!headers.contains_key(OPENCODE_SESSION_HEADER), "{wire}");
+            assert!(!headers.contains_key(OPENCODE_CLIENT_HEADER), "{wire}");
+        }
+    }
+
+    /// A one-off request (the settings connection test) has no conversation,
+    /// and the header must still be present — that is the whole complaint.
+    #[test]
+    fn a_request_with_no_conversation_still_sends_a_session_id() {
+        let mut config = thinking_config();
+        config.provider_type = Some("opencode-go-chat".into());
+
+        let mut headers = build_openai_headers(&config).expect("headers");
+        apply_opencode_headers(&mut headers, &config, None).expect("apply");
+        let value = headers
+            .get(OPENCODE_SESSION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .expect("session header");
+        uuid::Uuid::parse_str(value).expect("a well-formed id");
+
+        // Blank is treated as absent, not sent as an empty header.
+        let mut headers = build_openai_headers(&config).expect("headers");
+        apply_opencode_headers(&mut headers, &config, Some("   ")).expect("apply");
+        assert!(!headers
+            .get(OPENCODE_SESSION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim()
+            .is_empty());
+    }
+
+    /// Custom headers keep winning, the same rule as `User-Agent`.
+    #[test]
+    fn a_custom_opencode_session_header_is_kept() {
+        let mut config = thinking_config();
+        config.provider_type = Some("opencode-go-chat".into());
+        config.custom_headers = Some(
+            [(OPENCODE_SESSION_HEADER.to_string(), "mine".to_string())]
+                .into_iter()
+                .collect(),
+        );
+
+        let mut headers = build_openai_headers(&config).expect("headers");
+        apply_opencode_headers(&mut headers, &config, Some("thread-1")).expect("apply");
+        assert_eq!(
+            headers
+                .get(OPENCODE_SESSION_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("mine")
+        );
+    }
+
     /// A user who sets their own `User-Agent` must keep it — custom headers are
     /// applied after ours precisely so they win.
     #[test]
@@ -4534,7 +4774,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// A gateway whose nodes disagree about the output ceiling must not end the
     /// turn on the node that says no.
     ///
@@ -4787,6 +5026,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             },
         ];
@@ -4817,6 +5057,7 @@ mod tests {
             system_prompt: None,
             messages: &messages,
             tools: &[],
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 32_000,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest {
@@ -4825,9 +5066,7 @@ mod tests {
                 ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
             },
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
         let body = build_openai_body(&request, &config);
         assert_eq!(body["thinking"], json!({ "type": "enabled" }));
 
@@ -4853,6 +5092,7 @@ mod tests {
             system_prompt: None,
             messages: &messages,
             tools: &[],
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 32_000,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest {
@@ -4863,9 +5103,7 @@ mod tests {
                 ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
             },
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
 
         let body = build_openai_body(&request, &config);
 

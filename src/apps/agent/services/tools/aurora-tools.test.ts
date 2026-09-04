@@ -7,6 +7,7 @@ const artifactMocks = vi.hoisted(() => ({
   validateMermaid: vi.fn(),
   currentThreadId: "thread-1" as string | null,
   openTab: vi.fn(),
+  openArtifactTab: vi.fn(),
   setExpanded: vi.fn(),
 }));
 
@@ -44,6 +45,7 @@ vi.mock("@/apps/agent/store/workspace/useAgentWorkspaceStore", () => ({
   useAgentWorkspaceStore: {
     getState: () => ({
       openTab: artifactMocks.openTab,
+      openArtifactTab: artifactMocks.openArtifactTab,
       setExpanded: artifactMocks.setExpanded,
     }),
   },
@@ -58,6 +60,7 @@ describe("Aurora skill tools", () => {
     vi.mocked(findSkillById).mockReset().mockResolvedValue(null);
     artifactMocks.currentThreadId = "thread-1";
     artifactMocks.openTab.mockReset();
+    artifactMocks.openArtifactTab.mockReset();
     artifactMocks.setExpanded.mockReset();
     artifactMocks.present.mockReset().mockResolvedValue({
       threadId: "thread-1",
@@ -119,6 +122,28 @@ describe("Aurora skill tools", () => {
     });
   });
 
+  it("tells the model to use file_read when handed a path instead of a skill id", async () => {
+    // The mistake this tool actually gets: a skill's own SKILL.md says to read
+    // `references/audit.md` next, and the nearest-looking tool is this one. A
+    // bare "Skill not found" left the model guessing at the id — seen in
+    // thread `cfa53da5`, which then abandoned the skill's audit step.
+    await expect(
+      executeAuroraFrontendTool(
+        "aurora_skill_load",
+        { id: "C:\\Users\\Alvan\\.claude\\skills\\surface-philosophy\\references\\audit.md" },
+        { workspacePath: "E:/pinned-project", threadId: "thread-1" },
+      ),
+    ).rejects.toThrow(/takes a skill id, not a path/);
+
+    await expect(
+      executeAuroraFrontendTool(
+        "aurora_skill_load",
+        { id: "surface-philosophy/references/audit.md" },
+        { workspacePath: "E:/pinned-project", threadId: "thread-1" },
+      ),
+    ).rejects.toThrow(/file_read/);
+  });
+
   it("pins artifact persistence to the dispatching turn and opens current Canvas", async () => {
     const result = await executeAuroraFrontendTool(
       "present_artifact",
@@ -137,7 +162,11 @@ describe("Aurora skill tools", () => {
       kind: "html",
       content: "<main>Ready</main>",
     });
-    expect(artifactMocks.openTab).toHaveBeenCalledWith("canvas");
+    // The artifact's OWN tab, not the Canvas index — Canvas is the list of
+    // everything this conversation made, and what you want on a present is the
+    // thing that was just presented.
+    expect(artifactMocks.openArtifactTab).toHaveBeenCalledWith("release-map", "Release map");
+    expect(artifactMocks.openTab).not.toHaveBeenCalled();
     expect(artifactMocks.setExpanded).not.toHaveBeenCalled();
     expect(JSON.parse(result)).toMatchObject({ versionTag: "v2", success: true });
   });
@@ -210,6 +239,7 @@ describe("Aurora skill tools", () => {
       expect.any(Object),
     );
     expect(artifactMocks.openTab).not.toHaveBeenCalled();
+    expect(artifactMocks.openArtifactTab).not.toHaveBeenCalled();
   });
 
   it("validates complete Mermaid source before creating v1", async () => {

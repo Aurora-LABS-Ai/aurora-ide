@@ -49,9 +49,14 @@
 //!   `ToolError::PolicyViolation`. Missing files (a legal input
 //!   for `file_create`/`file_write`) are handled by the
 //!   parent-directory variant [`resolve_path_for_create`].
-//! - When `ctx.workspace_root` is `None`: passes the path through
-//!   verbatim, on the contract's "absolute paths accepted as-is"
-//!   rule.
+//! - When `ctx.workspace_root` is `None`: the access mode decides, because
+//!   the setting exists precisely for this case and nothing else is
+//!   guarding it. Reads take any path when the mode reaches outside
+//!   (`Read`/`Full`); writes and creates only under `Full`. The read
+//!   family still honours the spill directory first — the one exception,
+//!   a directory Aurora itself wrote. Any other path is refused with
+//!   [`ToolError::InvalidInput`] naming both ways out, mirroring
+//!   `shell_execute`'s no-workspace guard.
 
 use std::path::{Path, PathBuf};
 
@@ -205,6 +210,12 @@ pub(crate) fn resolve_path(
 /// answer: is this path in bounds for THIS mode? Only
 /// [`WorkspaceAccess::Full`] lifts the boundary; a path outside it under any
 /// other mode is refused exactly as before.
+///
+/// With no workspace open there is no boundary to resolve against, so the
+/// access mode decides alone: `Full` takes the path as written, every
+/// narrower mode refuses via [`no_workspace_refusal`]. "No folder open" is
+/// the app's most common state on a fresh start — it must not also be the
+/// one state in which every path on disk is in bounds.
 pub(crate) fn resolve_path_with_access(
     path: &str,
     workspace_root: Option<&Path>,
@@ -212,7 +223,10 @@ pub(crate) fn resolve_path_with_access(
 ) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
-        return Ok(raw.to_path_buf());
+        if access.lifts_boundary() {
+            return Ok(raw.to_path_buf());
+        }
+        return Err(no_workspace_refusal(path));
     };
     match resolve_within_workspace(raw, root) {
         Ok(resolved) => Ok(resolved),
@@ -265,6 +279,11 @@ fn is_inside(path: &Path, dir: &Path) -> bool {
 /// with `file_read`. Refusing it made that instruction a dead end in the
 /// default configuration: the file lives under `%LOCALAPPDATA%`, so the
 /// boundary check rejected the very path Aurora had just handed over.
+///
+/// The spill check runs first, so it also holds with no workspace open — the
+/// directory is one Aurora itself wrote. Beyond it, the access mode decides:
+/// `Read` and `Full` take the path as written, `Workspace` refuses via
+/// [`no_workspace_refusal`].
 pub(crate) fn resolve_path_for_read_with_spill(
     path: &str,
     workspace_root: Option<&Path>,
@@ -278,11 +297,23 @@ pub(crate) fn resolve_path_for_read_with_spill(
         }
     }
     let Some(root) = workspace_root else {
-        return Ok(raw.to_path_buf());
+        if access.reads_outside() {
+            return Ok(raw.to_path_buf());
+        }
+        return Err(no_workspace_refusal(path));
     };
 
     match resolve_within_workspace(raw, root) {
         Ok(resolved) => Ok(resolved),
+        // A path that does not exist yet fails canonicalization, so it arrives
+        // as `Io` and NOT as a boundary rejection — whether or not it is inside
+        // the workspace. The access check therefore has to happen here too, and
+        // not only in the arm below: without it, a user who has switched reads
+        // on can open an outside file that exists and is refused for one that
+        // does not, which reads as the permission being ignored at random.
+        Err(PathSafetyError::Io(_)) if access.reads_outside() => {
+            Ok(resolve_outside_workspace(raw, root))
+        }
         Err(PathSafetyError::Io(_)) => resolve_missing_path_inside_workspace(raw, root),
         // A boundary rejection (path resolves OUTSIDE the workspace) is only
         // fatal when the user hasn't opted into out-of-workspace reads. When they
@@ -319,8 +350,19 @@ fn resolve_missing_path_inside_workspace(path: &Path, root: &Path) -> Result<Pat
     };
 
     let (existing_ancestor, tail) = closest_existing_ancestor(&absolute);
-    let resolved_ancestor =
-        resolve_within_workspace(&existing_ancestor, root).map_err(map_path_error)?;
+    let resolved_ancestor = resolve_within_workspace(&existing_ancestor, root).map_err(|error| {
+        // Report the path the caller actually asked for. The ancestor is an
+        // implementation detail of this walk, and naming it produced refusals
+        // that pointed at a directory nobody had mentioned — the reader could
+        // not tell which of a batch of paths was rejected, or why.
+        match error {
+            PathSafetyError::OutsideWorkspace(_) => ToolError::PolicyViolation(format!(
+                "path escapes workspace: {}",
+                absolute.display()
+            )),
+            other => map_path_error(other),
+        }
+    })?;
     Ok(resolved_ancestor.join(tail))
 }
 
@@ -337,6 +379,11 @@ fn resolve_missing_path_inside_workspace(path: &Path, root: &Path) -> Result<Pat
 /// is taken as given. Under every other mode this function has no way to be
 /// told otherwise — which is what makes "writes stay in the project" a
 /// property of the code rather than a promise in a settings hint.
+///
+/// With no workspace open there is no project for the write to stay in, so
+/// the access mode decides alone on the same terms as
+/// [`resolve_path_with_access`]: `Full` takes the destination as written,
+/// every narrower mode refuses via [`no_workspace_refusal`].
 pub(crate) fn resolve_path_for_create(
     path: &str,
     workspace_root: Option<&Path>,
@@ -344,7 +391,10 @@ pub(crate) fn resolve_path_for_create(
 ) -> Result<PathBuf, ToolError> {
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
-        return Ok(raw.to_path_buf());
+        if access.writes_outside() {
+            return Ok(raw.to_path_buf());
+        }
+        return Err(no_workspace_refusal(path));
     };
 
     // First try a straight resolution — handles the case where the
@@ -437,6 +487,20 @@ pub(crate) fn map_path_error(error: PathSafetyError) -> ToolError {
         )),
         PathSafetyError::Io(io) => ToolError::Execution(format!("io error: {}", io)),
     }
+}
+
+/// The refusal for a path that arrives with no workspace to resolve it
+/// against and an access mode that does not reach outside one.
+///
+/// Same contract as `shell_execute`'s no-workspace guard: say what is wrong
+/// and name both ways out, so the model can act instead of guessing. The
+/// path is named so a batch that resolves entry by entry can tell which
+/// one was refused.
+fn no_workspace_refusal(path: &str) -> ToolError {
+    ToolError::InvalidInput(format!(
+        "No workspace is open, so there is nothing to resolve '{path}' against. Open a folder \
+         in Aurora, or turn on out-of-workspace access in Settings → Agent."
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -656,10 +720,131 @@ mod tests {
         }
     }
 
+    /// Every no-workspace refusal must say what is wrong and name both ways
+    /// out — the contract `shell_execute`'s guard set — not merely fail.
+    fn assert_no_workspace_refusal(err: &ToolError) {
+        let ToolError::InvalidInput(message) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(message.contains("No workspace is open"), "{message}");
+        assert!(
+            message.contains("Open a folder"),
+            "must name the first way out: {message}"
+        );
+        assert!(
+            message.contains("Settings"),
+            "must name the access setting: {message}"
+        );
+    }
+
+    /// The hole this file had: with no workspace the resolvers handed the
+    /// caller's path straight back and the access setting was never
+    /// consulted — in the one state where nothing else was guarding. The
+    /// default access now refuses, and the refusal says what to do about it.
     #[test]
-    fn resolve_path_returns_path_verbatim_without_workspace() {
-        let resolved = resolve_path("/tmp/whatever", None).expect("ok");
-        assert_eq!(resolved, std::path::PathBuf::from("/tmp/whatever"));
+    fn the_write_resolver_refuses_with_no_workspace_and_default_access() {
+        let err = resolve_path_with_access("/tmp/whatever", None, WorkspaceAccess::Workspace)
+            .expect_err("must not resolve a path unchecked");
+        assert_no_workspace_refusal(&err);
+        assert!(
+            err.to_string().contains("whatever"),
+            "must name the refused path: {err}"
+        );
+
+        // The convenience wrapper hardcodes the default mode — it must not
+        // become a bypass around the guard its callee just grew.
+        let err = resolve_path("/tmp/whatever", None).expect_err("wrapper refuses too");
+        assert_no_workspace_refusal(&err);
+    }
+
+    #[test]
+    fn the_read_resolver_refuses_with_no_workspace_and_default_access() {
+        let err = resolve_path_for_read("/tmp/whatever", None, WorkspaceAccess::Workspace)
+            .expect_err("must not read a path unchecked");
+        assert_no_workspace_refusal(&err);
+    }
+
+    /// `file_write`, `folder_create`, and a move's destination all resolve
+    /// through the create variant — the same hole, closed on the same terms.
+    #[test]
+    fn the_create_resolver_refuses_with_no_workspace_and_default_access() {
+        let err = resolve_path_for_create("/tmp/whatever", None, WorkspaceAccess::Workspace)
+            .expect_err("must not create a path unchecked");
+        assert_no_workspace_refusal(&err);
+    }
+
+    /// The setting exists precisely to decide this. Where it permits
+    /// reaching outside, a workspace-less turn still works and the path
+    /// comes back verbatim, exactly as it always did.
+    #[test]
+    fn the_access_setting_decides_when_there_is_no_workspace() {
+        // Writes and searches: only Full lifts the boundary.
+        let err = resolve_path_with_access("/tmp/anywhere.md", None, WorkspaceAccess::Read)
+            .expect_err("Read opens one named file, not writes or searches");
+        assert_no_workspace_refusal(&err);
+        assert_eq!(
+            resolve_path_with_access("/tmp/anywhere.md", None, WorkspaceAccess::Full)
+                .expect("Full takes the path as written"),
+            std::path::PathBuf::from("/tmp/anywhere.md")
+        );
+
+        // Reads: Read and Full both reach outside.
+        for access in [WorkspaceAccess::Read, WorkspaceAccess::Full] {
+            assert_eq!(
+                resolve_path_for_read("/tmp/anywhere.md", None, access)
+                    .unwrap_or_else(|err| panic!("{access:?} must allow it: {err}")),
+                std::path::PathBuf::from("/tmp/anywhere.md")
+            );
+        }
+
+        // Creates: Full only.
+        let err = resolve_path_for_create("/tmp/anywhere.md", None, WorkspaceAccess::Read)
+            .expect_err("Read must not create outside");
+        assert_no_workspace_refusal(&err);
+        assert_eq!(
+            resolve_path_for_create("/tmp/anywhere.md", None, WorkspaceAccess::Full)
+                .expect("Full takes the destination as written"),
+            std::path::PathBuf::from("/tmp/anywhere.md")
+        );
+    }
+
+    /// The spill check runs before any of this and is untouched: the model
+    /// reads its own oversized tool output from a directory Aurora itself
+    /// wrote, with no workspace and in every access mode. Everything outside
+    /// that directory is subject to the new refusal, exactly as before.
+    #[test]
+    fn a_spilled_result_still_resolves_with_no_workspace_whatever_the_access() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let spill = tmp.path().join("t1.tool-results");
+        std::fs::create_dir_all(&spill).unwrap();
+        let spilled = spill.join("out-3f2a91c8.txt");
+        std::fs::write(&spilled, "full build log").unwrap();
+
+        for access in [
+            WorkspaceAccess::Workspace,
+            WorkspaceAccess::Read,
+            WorkspaceAccess::Full,
+        ] {
+            let resolved = resolve_path_for_read_with_spill(
+                &spilled.to_string_lossy(),
+                None,
+                access,
+                Some(&spill),
+            )
+            .unwrap_or_else(|err| panic!("{access:?} must reach the spill dir: {err}"));
+            assert_eq!(resolved, spilled);
+        }
+
+        // The exemption is still only the spill directory — a sibling of it
+        // gets the same refusal as everything else on disk.
+        let err = resolve_path_for_read_with_spill(
+            &tmp.path().join("elsewhere.txt").to_string_lossy(),
+            None,
+            WorkspaceAccess::Workspace,
+            Some(&spill),
+        )
+        .expect_err("the spill exemption must not open the rest of the disk");
+        assert_no_workspace_refusal(&err);
     }
 
     #[test]
@@ -896,6 +1081,69 @@ mod tests {
                 expected,
                 "{access:?} moved an in-project path"
             );
+        }
+    }
+
+    /// A MISSING file outside the workspace must be refused or allowed on the
+    /// same terms as one that exists.
+    ///
+    /// It was not. A missing path fails canonicalization, so it arrives as
+    /// `Io` rather than as a boundary rejection, and that arm never consulted
+    /// the access mode. With reads switched on, an outside file that existed
+    /// opened and one that did not was refused as a policy violation — so the
+    /// permission looked like it was being ignored at random, and the real
+    /// problem (the file is not there) never reached the caller.
+    #[test]
+    fn a_missing_file_outside_the_workspace_is_not_a_policy_violation_once_reads_are_allowed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let root = Some(workspace.as_path());
+
+        // Nothing was ever created at this path, and its parent directory does
+        // not exist either — the shape that walked up to an outside ancestor.
+        let missing = elsewhere.join("skills/dev-guide/references/structure.md");
+        let missing = missing.to_string_lossy().to_string();
+
+        for access in [WorkspaceAccess::Read, WorkspaceAccess::Full] {
+            let resolved = resolve_path_for_read(&missing, root, access)
+                .unwrap_or_else(|err| panic!("{access:?} refused a missing outside path: {err}"));
+            // Returned verbatim so the reader reports a normal "does not
+            // exist", which is the true fault.
+            assert!(!resolved.exists());
+        }
+
+        // Workspace-only mode still refuses it, and now names the path that
+        // was asked for rather than whichever ancestor happened to exist.
+        let err = resolve_path_for_read(&missing, root, WorkspaceAccess::Workspace)
+            .expect_err("workspace mode must still refuse an outside path");
+        let message = err.to_string();
+        assert!(message.contains("escapes workspace"), "{message}");
+        assert!(
+            message.contains("structure.md"),
+            "the refusal should name the requested file, got: {message}"
+        );
+    }
+
+    /// A missing file INSIDE the project keeps resolving in every mode, so the
+    /// reader can answer "does not exist" instead of failing the whole call.
+    #[test]
+    fn a_missing_file_inside_the_project_still_resolves_in_every_mode() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let root = Some(workspace.as_path());
+
+        for access in [
+            WorkspaceAccess::Workspace,
+            WorkspaceAccess::Read,
+            WorkspaceAccess::Full,
+        ] {
+            let resolved = resolve_path_for_read("src/nope.rs", root, access)
+                .unwrap_or_else(|err| panic!("{access:?} refused a missing in-project path: {err}"));
+            assert!(resolved.ends_with("nope.rs"), "{access:?}: {resolved:?}");
         }
     }
 

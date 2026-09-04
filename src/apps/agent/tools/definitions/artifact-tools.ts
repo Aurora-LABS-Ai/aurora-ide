@@ -144,4 +144,64 @@ Otherwise pass the artifactId and versionTag from an earlier present_artifact re
   },
 };
 
+/**
+ * What a `report` is, taught to the model that has to write one.
+ *
+ * Three conventions, and every one of them is read back out of the source by
+ * `report-document.ts` — nothing is stored beside the document, so a report
+ * revised by a patch cannot end up with a contents strip describing the version
+ * before it.
+ */
+const REPORT_KIND_INSTRUCTIONS = `
+
+Deep research also unlocks report. Use it for the long-form answer a research conversation actually produces — a document the user reads down, not a dashboard they look at. It is Markdown, plus three conventions Canvas reads back out of the source:
+- One \`# Title\` at the top, then \`##\` sections (and \`###\` where a section genuinely subdivides). Those headings become the contents strip, so they are the document's structure rather than decoration.
+- Cite with a \`[^key]\` marker immediately after the claim it supports, and define each source once at the end: \`[^key]: Source name — https://example.com/page\`. Keys can be words (\`[^nyt-2024]\`); Canvas numbers them in the order the reader meets them and turns each into a link that opens the real page. Never write a URL you did not actually reach — an unreachable source is worse than no citation, because it reads as verified.
+- Quote a source in its own words as a block quotation whose last line is an attribution opening with an em dash: \`— Author, Publication\`.
+Everything else is ordinary Markdown: lists, tables, and fenced code all render. Prefer report over markdown whenever the answer has sections and sources, and over react whenever it is prose rather than a dataset.`;
+
+/**
+ * `present_artifact` with the report kind available.
+ *
+ * A normal chat produces diagrams and canvases; deep research produces
+ * documents, and the kind is offered only there — see `chat-mode-design.md` §7.
+ * Offering it everywhere would invite a five-section report with a contents
+ * strip as the answer to a one-paragraph question.
+ */
+/**
+ * Structural, because the schema is carried by two different `ToolDefinition`
+ * types on its way to the model — the agent window's own, and the provider
+ * layer's wire shape — and this transform is applied after the conversion. It
+ * reads two fields both of them have.
+ */
+interface ArtifactKindedTool {
+  function: {
+    description: string;
+    parameters?: { properties?: Record<string, unknown> };
+  };
+}
+
+export function withReportKind<T extends ArtifactKindedTool>(tool: T): T {
+  const parameters = tool.function.parameters;
+  const kind = parameters?.properties?.artifactKind as
+    | { enum?: string[] }
+    | undefined;
+  if (!kind?.enum || kind.enum.includes("report")) return tool;
+
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: `${tool.function.description}${REPORT_KIND_INSTRUCTIONS}`,
+      parameters: {
+        ...parameters,
+        properties: {
+          ...parameters?.properties,
+          artifactKind: { ...kind, enum: [...kind.enum, "report"] },
+        },
+      },
+    },
+  };
+}
+
 export const artifactTools: ToolDefinition[] = [presentArtifactTool, readArtifactTool];

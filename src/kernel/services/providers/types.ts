@@ -314,6 +314,11 @@ export type ProviderType =
   | 'kenari'           // kenari over OpenAI Chat Completions (the default)
   | 'kenari-messages'  // kenari over the Anthropic Messages shape
   | 'kenari-responses' // kenari over the Responses shape (Codex wire)
+  // Modal — one workspace proxy token, one regional gateway, three wires. The
+  // models are the workspace's live endpoints, addressed by hostname.
+  | 'modal'            // Modal over OpenAI Chat Completions (the default)
+  | 'modal-messages'   // Modal over the Anthropic Messages shape (Bearer auth)
+  | 'modal-responses'  // Modal over the Responses shape
   // OpenCode Go — three wires on one account and one base URL, but unlike
   // kenari's three these are NOT interchangeable: each model accepts exactly
   // one and fails hard on the others (500, or a 401 that reads as a bad key).

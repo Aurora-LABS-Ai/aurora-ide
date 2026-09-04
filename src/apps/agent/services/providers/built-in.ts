@@ -31,8 +31,10 @@ export const BUILT_IN_PROVIDER_ORDER: readonly string[] = [
   "codex",
   "cursor",
   "opencode-go",
+  "commandcode",
   "deepseek",
   "kenari",
+  "modal",
 ];
 
 /** Whether this provider came with Aurora rather than being added by the user. */

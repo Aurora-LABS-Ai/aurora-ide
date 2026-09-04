@@ -21,6 +21,7 @@ import { registerTeamViewOpener } from "@/apps/agent/services/team/team-view-bri
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
+import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
 import { useTeamStore } from "@/apps/agent/store/team/useTeamStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
@@ -49,6 +50,10 @@ export const AgentWindow: React.FC = () => {
 
   // Track the open chat so an in-window reload can land back in it.
   useReloadRestore();
+
+  // Tell other processes this window is here and what it is doing, so an agent
+  // connected over MCP knows whether it can send work — and what happens to it.
+  useAuroraBridge();
 
   // Files open in this window's right rail, never in the IDE's editor.
   useAgentEditorOpen();

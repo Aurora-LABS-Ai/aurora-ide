@@ -40,6 +40,8 @@ import {
   type DbThread,
   type ThreadSummary,
 } from "@/apps/agent/services/threads/thread-service";
+import { SurfaceSwitcher } from "@/apps/agent/components/shell/SurfaceSwitcher";
+import { groupChatsByDay } from "@/apps/agent/lib/thread/chat-day-groups";
 import {
   folderName,
   loadPinnedProjects,
@@ -196,11 +198,24 @@ export const LeftRail: React.FC = () => {
   // not the rail entry, and not the "has team work" badges, which exist only to
   // point at a panel that can no longer be opened.
   const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  /**
+   * Aurora Chat has no projects, so the rail loses the Projects section, the
+   * project switcher, the add-project button and the Team entry — Team is a
+   * Build-side feature that acts on a workspace.
+   *
+   * What stays is the chat list, the search box, Pinned, Recent and Archived.
+   * A chat list is still a chat list.
+   */
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
 
   // The Team lives in the right dock now ("Team" tab beside Canvas/Files).
   // Active when the dock is open on that tab.
   const teamTabActive = useAgentWorkspaceStore(
     (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "team",
+  );
+  /** Same rule for Memory, which occupies the same slot on the Chat side. */
+  const memoryTabActive = useAgentWorkspaceStore(
+    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "memory",
   );
 
   // Live team run for the current project (kept warm in AgentWindow). Drives the
@@ -353,6 +368,18 @@ export const LeftRail: React.FC = () => {
     );
   }, [allWithLive, query]);
   const pinned = useMemo(() => filtered.filter((t) => t.pinned), [filtered]);
+
+  /**
+   * Chat mode's whole tree: every non-archived chat, bucketed by day.
+   *
+   * Pinned chats are EXCLUDED because they already have their own section above
+   * — listing a chat twice makes the rail look like it has more conversations
+   * than it does, and the second copy is the one you did not pin it for.
+   */
+  const chatDayGroups = useMemo(
+    () => (chatSurface ? groupChatsByDay(filtered.filter((t) => !t.pinned)) : []),
+    [chatSurface, filtered],
+  );
 
   // The chats you touched last, from every project (see `lib/thread/recent-chats`).
   // Absent during a search: the rail is then showing matches, and a shortcut
@@ -952,7 +979,11 @@ export const LeftRail: React.FC = () => {
         background: "var(--agw-rail)",
       }}
     >
-      {/* Header — add project + collapse rail. */}
+      {/* The product switcher sits above everything — it decides what the rest
+          of this rail even means. */}
+      <SurfaceSwitcher />
+
+      {/* Header — add project (Build only) + collapse rail. */}
       <div
         style={{
           display: "flex",
@@ -961,15 +992,20 @@ export const LeftRail: React.FC = () => {
           padding: "8px 8px 8px 10px",
         }}
       >
-        <button
-          type="button"
-          className="agw-icon-btn"
-          title="Add project"
-          aria-label="Add project"
-          onClick={() => void addProject()}
-        >
-          <AgentIcon name="plus" size={17} />
-        </button>
+        {/* Chat mode has no projects, so it has no way to add one. The button
+            is absent rather than disabled: a control that cannot do anything
+            here is not a control, it is a question the user has to answer. */}
+        {!chatSurface && (
+          <button
+            type="button"
+            className="agw-icon-btn"
+            title="Add project"
+            aria-label="Add project"
+            onClick={() => void addProject()}
+          >
+            <AgentIcon name="plus" size={17} />
+          </button>
+        )}
         <div style={{ flex: 1 }} />
         <button
           type="button"
@@ -1034,7 +1070,24 @@ export const LeftRail: React.FC = () => {
             here (above Pinned). Active state reflects the open team screen.
             Absent until Agent Team is switched on in Settings, so the rail never
             offers a door into a feature the agent isn't allowed to use. */}
-        {teamEnabled && (
+        {/* Memory — Aurora Chat's equivalent of the Team entry, in the same
+            slot and the same shape. It is the page that makes the memory
+            trustworthy: everything the model saved about you, visible and
+            editable. */}
+        {chatSurface && (
+          <button
+            type="button"
+            className="agw-rail-team"
+            data-active={memoryTabActive || undefined}
+            onClick={() => useAgentWorkspaceStore.getState().openTab("memory")}
+            title="What Aurora remembers about you"
+          >
+            <AgentIcon name="database" size={15} />
+            <span>Memory</span>
+          </button>
+        )}
+
+        {teamEnabled && !chatSurface && (
           <button
             type="button"
             className="agw-rail-team"
@@ -1111,7 +1164,33 @@ export const LeftRail: React.FC = () => {
           </>
         )}
 
-        {/* Projects (collapsible whole section) */}
+        {/* Aurora Chat: the same chats, grouped by WHEN instead of by project.
+            There is nothing to group by otherwise, and a flat newest-first list
+            stops being navigable somewhere around forty entries. Rows are the
+            same `renderChat` the tree uses, so a chat looks and behaves
+            identically on both sides of the switcher. */}
+        {chatSurface && (
+          <>
+            {chatDayGroups.length === 0 ? (
+              <div className="agw-rail-empty">
+                {q ? "No chats match." : "No chats yet."}
+              </div>
+            ) : (
+              chatDayGroups.map((group) => (
+                <React.Fragment key={group.id}>
+                  <div className="agw-rail-section" data-flat="">
+                    <div className="agw-rail-daygroup">{group.label}</div>
+                  </div>
+                  {group.threads.map((t) => renderChat(t))}
+                </React.Fragment>
+              ))
+            )}
+          </>
+        )}
+
+        {/* Projects (collapsible whole section) — Build only. */}
+        {!chatSurface && (
+        <>
         <div className="agw-rail-section">
           <button
             type="button"
@@ -1293,6 +1372,8 @@ export const LeftRail: React.FC = () => {
           )}
 
         </Collapse>
+        </>
+        )}
 
         {/* Archived — a collapsible section that expands/collapses inline,
             exactly like a project. Sits at the bottom of the tree; only appears
@@ -1364,7 +1445,15 @@ export const LeftRail: React.FC = () => {
       <AgentConfirm
         open={pendingDelete !== null}
         title="Delete chat permanently?"
-        message={`“${pendingDelete?.title || "New Chat"}” will be removed for good. This can't be undone.`}
+        message={
+          // A chat owns its images, and deleting it takes them. Someone about
+          // to lose a generated picture should be told before they click, not
+          // after. Facts are NOT mentioned because they survive — see
+          // `a_fact_survives_the_deletion_of_its_chat`.
+          chatSurface
+            ? `“${pendingDelete?.title || "New Chat"}” and any images in it will be removed for good. This can't be undone. What Aurora remembers about you is kept.`
+            : `“${pendingDelete?.title || "New Chat"}” will be removed for good. This can't be undone.`
+        }
         confirmLabel="Delete"
         destructive
         onConfirm={() => {

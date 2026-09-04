@@ -27,6 +27,13 @@
   color: var(--agw-warning);
 }
 
+/* Deep research wears the same open book on the Chat side. Accent, not the
+   amber Plan uses: Plan's colour says "this mode is holding something back",
+   and deep research is holding nothing back — it is the thorough one. */
+.agw-model-trigger[data-deep] .agw-model-trigger-mode {
+  color: var(--agw-accent);
+}
+
 /* ── Streaming state: the chip tells you the model is generating ──────────────
    While the open chat streams, the model name dims to muted and a bright light
    sweeps across it, and a diagonal shine travels UP the mode glyph (bottom
@@ -40,7 +47,8 @@
   /* Which glyph the shine is masked to (swaps with mode). */
   --agw-mode-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3l6.5 6-6.5 12-6.5-12z'/%3E%3Cpath d='M5.5 9h13'/%3E%3Cpath d='M12 3v18'/%3E%3C/svg%3E");
 }
-.agw-model-trigger[data-plan] .agw-model-trigger-modewrap {
+.agw-model-trigger[data-plan] .agw-model-trigger-modewrap,
+.agw-model-trigger[data-deep] .agw-model-trigger-modewrap {
   --agw-mode-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 5.5A2.5 2.5 0 0 1 6.5 3H12v16H6.5A2.5 2.5 0 0 0 4 21z'/%3E%3Cpath d='M20 5.5A2.5 2.5 0 0 0 17.5 3H12v16h5.5A2.5 2.5 0 0 1 20 21z'/%3E%3C/svg%3E");
 }
 .agw-model-trigger-shine {

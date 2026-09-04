@@ -117,8 +117,6 @@ export const settingsDangerActionStyle: React.CSSProperties = {
   borderRadius: 6,
 };
 
-export const settingsCodeBlockStyle: React.CSSProperties = {
-  backgroundColor: 'color-mix(in srgb, var(--aurora-editor-background) 70%, var(--aurora-title-bar-background) 30%)',
-  border: '1px solid color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
-  borderRadius: 6,
-};
+// `settingsCodeBlockStyle` framed the `aurora .` usage examples under System
+// Integrations. Both moved to the agent window, where the command list is a
+// two-column layout in `17-settings-core.css` rather than an inline style.

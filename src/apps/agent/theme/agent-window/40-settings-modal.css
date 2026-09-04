@@ -1,0 +1,153 @@
+/* ── Modal workspace card ──────────────────────────────────────────────────
+   The frame is `.agw-atlas`, shared with the other subscription cards; only
+   what is specific to Modal lives here.
+
+   This card owns the connection as well as the identity, because on Modal
+   region, token and endpoint list are one decision. Each row is label,
+   control, hint — the same rhythm as the generic connection fields it
+   replaces, so the pane does not change shape between providers. */
+
+.agw-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.agw-modal-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 6px 14px;
+  align-items: center;
+}
+.agw-modal-row-label {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-dim);
+}
+.agw-modal-row-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.agw-modal-token {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.agw-modal-hint,
+.agw-modal-note,
+.agw-modal-endpoints {
+  grid-column: 2;
+}
+.agw-modal-hint {
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-modal-hint code,
+.agw-modal-cli-text code {
+  font-family: var(--agw-font-code);
+  font-size: 0.95em;
+  color: var(--agw-text-dim);
+}
+.agw-modal-note {
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+}
+.agw-modal-note[data-tone="error"] {
+  color: var(--agw-danger, #e5484d);
+}
+
+/* The endpoints as chips: one per model row below, named the way the row is.
+   Chips rather than a list because there are rarely more than a handful and
+   the point is a glance, not a table. */
+.agw-modal-endpoints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agw-modal-endpoint {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 8px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Spend in the header, beside the name: the billed total as the figure, the
+   token line as its caption. Tabular numerals so a refresh does not shuffle
+   the actions next to it. Right-aligned so the amount sits against the
+   controls, where a plan badge would. */
+.agw-modal-spend {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
+  padding-right: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.agw-modal-spend-amount {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-modal-spend-caption {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-modal-spend[data-busy] {
+  opacity: 0.55;
+}
+
+/* Skeletons borrow the atlas shimmer; each one is sized inline to the thing
+   it stands in for, and drops the shared bottom margin because these sit in
+   flex rows, not a stacked list. */
+.agw-modal-skeleton {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+.agw-modal-endpoints[data-busy] {
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+
+/* The CLI strip: one sentence of status and the two actions it enables. */
+.agw-modal-cli {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 12px;
+  margin-top: 2px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-modal-cli-text {
+  flex: 1 1 260px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+}
+.agw-modal-cli-note {
+  color: var(--agw-text-dim);
+}
+
+@media (max-width: 720px) {
+  .agw-modal-row {
+    grid-template-columns: 1fr;
+  }
+  .agw-modal-hint,
+  .agw-modal-note,
+  .agw-modal-endpoints {
+    grid-column: 1;
+  }
+}

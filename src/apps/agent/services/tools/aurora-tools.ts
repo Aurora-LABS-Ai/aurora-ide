@@ -244,6 +244,17 @@ async function runSkillLoad(
   const skill = await findSkillById(id, { workspacePath });
 
   if (!skill) {
+    // A path is the mistake this tool actually gets, because a skill's own
+    // SKILL.md tells the model to go read `references/audit.md` next and the
+    // nearest-looking tool is this one. A bare "not found" leaves it guessing
+    // at the id; naming the real fix costs one sentence and saves a turn.
+    if (/[\\/]/.test(id)) {
+      throw new Error(
+        `aurora_skill_load takes a skill id, not a path — got '${id}'. ` +
+          `Load the skill by its id (the folder name, e.g. 'surface-philosophy'), ` +
+          `and read a file inside it with file_read.`,
+      );
+    }
     throw new Error(`Skill not found: '${id}'`);
   }
 
@@ -433,10 +444,10 @@ async function runPresentArtifact(
   if (
     !artifactId ||
     !title ||
-    !["html", "svg", "markdown", "mermaid", "react"].includes(String(kind))
+    !["html", "svg", "markdown", "mermaid", "react", "report"].includes(String(kind))
   ) {
     throw new Error(
-      "present_artifact: artifactId, artifactTitle, and artifactKind (html|svg|markdown|mermaid|react) are required",
+      "present_artifact: artifactId, artifactTitle, and artifactKind (html|svg|markdown|mermaid|react|report) are required",
     );
   }
 
@@ -538,7 +549,12 @@ async function runPresentArtifact(
   const versionTag = bundle.selectedVersionTag;
 
   if (useAgentChatStore.getState().currentThreadId === threadId) {
-    useAgentWorkspaceStore.getState().openTab("canvas");
+    // The artifact's OWN tab, not the Canvas index. What the user wants to see
+    // the moment something is presented is the thing itself; Canvas beside it
+    // stays the list of everything this conversation has made. Re-presenting
+    // the same id refocuses and re-titles that tab rather than stacking a
+    // second one.
+    useAgentWorkspaceStore.getState().openArtifactTab(artifactId, title);
   }
 
   return JSON.stringify({

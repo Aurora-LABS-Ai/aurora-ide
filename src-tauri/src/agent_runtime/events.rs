@@ -180,6 +180,16 @@ pub enum AssistantEvent {
         before_tokens: u32,
         after_tokens: u32,
     },
+
+    /// A compaction request ended without committing a marker. The session and
+    /// projected context are unchanged. `cancelled` distinguishes a user stop
+    /// from a provider/validation failure so the UI never reports either as a
+    /// successful `before → after` rewrite.
+    CompactionFailed {
+        before_tokens: u32,
+        reason: String,
+        cancelled: bool,
+    },
 }
 
 /// Per-turn summary written at the end of one full assistant turn —
@@ -353,6 +363,7 @@ mod tests {
                 timestamp: 0,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             }],
             tool_results: Vec::new(),

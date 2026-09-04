@@ -224,6 +224,11 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Storage_FileSystem",
+    # `AttachConsole` + `GetStdHandle`. Aurora ships as ONE windowless binary
+    # that is also its own CLI, and a windowless process starts with no console
+    # — so every `aurora --help` in a release build printed nothing at all.
+    # `crate::console` borrows the parent terminal back. See its module docs.
+    "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
     # `CreateToolhelp32Snapshot` + `Process32FirstW/NextW`, used by
     # `commands::terminal` to find what a shell has left running before its tab

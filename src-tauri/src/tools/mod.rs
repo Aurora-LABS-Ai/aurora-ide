@@ -62,6 +62,10 @@ pub mod code_intel;
 pub mod design;
 pub mod diagnostics;
 pub mod file_workspace_search;
+/// `recall` and `remember` — Aurora Chat's memory. Registered like any other
+/// bucket, and kept out of the project modes by the chat-mode allow-list in
+/// `commands::agent_v2::tool_policy` rather than by not registering it.
+pub mod memory;
 pub mod permissions;
 pub mod plan;
 pub mod shell_editor_todo;
@@ -113,7 +117,11 @@ pub mod transcript;
 /// Aurora used to be a paragraph of standing instructions asking it to remember
 /// and mention things at the end of a turn, which fired almost never. A tool
 /// call happens at the moment of noticing and lands on disk.
-pub const BUILTIN_TOOL_COUNT: usize = 41;
+/// Raised 41 -> 43 by the `memory` bucket's `recall` and `remember`, which are
+/// Aurora Chat's. They are registered unconditionally like every other bucket
+/// and kept out of the project modes by the chat-mode allow-list, so this count
+/// is the roster's SIZE and not its per-turn visibility.
+pub const BUILTIN_TOOL_COUNT: usize = 43;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -163,6 +171,7 @@ pub fn register_builtin_tools(
     transcript::register(&mut staging);
     code_intel::register(&mut staging);
     diagnostics::register(&mut staging);
+    memory::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -240,11 +249,12 @@ mod tests {
             + transcript::TOOL_NAMES.len()
             + code_intel::TOOL_NAMES.len()
             + diagnostics::TOOL_NAMES.len()
+            + memory::TOOL_NAMES.len()
     }
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 41);
+        assert_eq!(BUILTIN_TOOL_COUNT, 43);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -254,6 +264,7 @@ mod tests {
                 + transcript::TOOL_NAMES.len()
                 + code_intel::TOOL_NAMES.len()
                 + diagnostics::TOOL_NAMES.len()
+                + memory::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );

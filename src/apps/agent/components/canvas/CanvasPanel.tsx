@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AgentArtifactKind } from "@/apps/agent/services/artifacts/agent-artifacts";
 import type { PlanStepStatus } from "@/apps/agent/services/plans/agent-plans";
@@ -11,16 +11,19 @@ import {
   workspaceKey,
 } from "@/apps/agent/store/artifacts/useAgentPlanStore";
 import { AgentIcon, AgentSelect } from "@/apps/agent/shared";
+import type { AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import { CanvasDiagram } from "@/apps/agent/components/canvas/CanvasDiagram";
 import { CanvasReact } from "@/apps/agent/components/canvas/CanvasReact";
+import { CanvasReport } from "@/apps/agent/components/canvas/CanvasReport";
 import { PlanCanvas } from "@/apps/agent/components/canvas/PlanCanvas";
 import { ToolCode } from "@/apps/agent/components/tool-views/ToolCode";
 
 type CanvasMode = "preview" | "source";
 
 const extensionFor = (kind: AgentArtifactKind): string => {
-  if (kind === "markdown") return "md";
+  if (kind === "markdown" || kind === "report") return "md";
   if (kind === "mermaid") return "mmd";
   if (kind === "react") return "tsx";
   return kind;
@@ -37,9 +40,33 @@ const KIND_LABELS: Record<AgentArtifactKind, string> = {
   markdown: "Document",
   mermaid: "Diagram",
   react: "Interactive",
+  report: "Report",
 };
 
-export const CanvasPanel: React.FC = () => {
+/** The index row's glyph. Same idea as `KIND_LABELS`: what it is, not what built it. */
+const INDEX_ICONS: Record<AgentArtifactKind, AgentIconName> = {
+  html: "browser",
+  svg: "palette",
+  markdown: "book",
+  mermaid: "workspace-tree",
+  react: "layers",
+  report: "book-open",
+};
+
+interface CanvasPanelProps {
+  /**
+   * Show ONE artifact, in its own dock tab.
+   *
+   * Without it this is the Canvas tab: the index of everything the open
+   * conversation has made. A conversation that produced six reports and
+   * diagrams is browsed rather than paged through with a dropdown, and two of
+   * them are often wanted side by side — which a single Canvas surface cannot
+   * do however good its selector is.
+   */
+  artifactId?: string;
+}
+
+export const CanvasPanel: React.FC<CanvasPanelProps> = ({ artifactId }) => {
   const threadId = useAgentChatStore((state) => state.currentThreadId);
   const projectRoot = useAgentChatStore((state) => state.projectRoot);
   const liveTurns = useAgentChatStore((state) => state.liveTurns);
@@ -72,6 +99,10 @@ export const CanvasPanel: React.FC = () => {
   const [mode, setMode] = useState<CanvasMode>("preview");
   const [refresh, setRefresh] = useState(0);
   const [selecting, setSelecting] = useState(false);
+  // The rendered report body, for the PDF copy. See `CanvasReport.bodyRef`.
+  const reportBodyRef = useRef<HTMLDivElement>(null);
+  const [saving, setSaving] = useState<null | "md" | "pdf">(null);
+  const [saveNote, setSaveNote] = useState("");
 
   useEffect(() => {
     if (!threadId || bundle || loading) return;
@@ -113,11 +144,15 @@ export const CanvasPanel: React.FC = () => {
 
   const artifact = useMemo(() => {
     if (!bundle) return undefined;
+    // An artifact tab is pinned to ITS artifact and never falls back to
+    // another one: silently showing a different document under the same tab
+    // title is worse than saying the one you opened is gone.
+    if (artifactId) return bundle.artifacts.find((entry) => entry.id === artifactId);
     return (
       bundle.artifacts.find((entry) => entry.id === bundle.selectedArtifactId) ??
       bundle.artifacts[0]
     );
-  }, [bundle]);
+  }, [artifactId, bundle]);
   const version = useMemo(() => {
     if (!artifact) return undefined;
     return (
@@ -142,12 +177,57 @@ export const CanvasPanel: React.FC = () => {
     }
   };
 
-  const hasArtifact = Boolean(artifact && version);
-  // A plan belongs to the workspace, so it shows whether or not a conversation
-  // is open — and it outranks artifacts, because it is the active work.
-  const showPlan = Boolean(plan) && (source === "plan" || !hasArtifact);
+  /**
+   * Save the open report, as its own source or as a printed copy.
+   *
+   * Both go through the OS dialog, so the user picks the destination. The
+   * model is not involved and never learns the path — chat mode's
+   * no-filesystem rule is about the agent, not about the person using it.
+   */
+  const saveReport = async (format: "md" | "pdf") => {
+    if (!artifact || !version) return;
+    setSaving(format);
+    setSaveNote("");
+    try {
+      const [{ parseReportDocument }, exporter] = await Promise.all([
+        import("@/apps/agent/services/artifacts/report-document"),
+        import("@/apps/agent/services/artifacts/report-export"),
+      ]);
+      let outcome: "saved" | "cancelled" | "failed";
+      if (format === "md") {
+        outcome = await exporter.saveReportMarkdown(artifact.title, version.content);
+      } else {
+        const { headings, sources } = parseReportDocument(version.content);
+        outcome = await exporter.printReport({
+          // The artifact's title, not the document's own `#` heading: the
+          // filename should match what the user sees the report called.
+          title: artifact.title,
+          // What is on screen, so the page matches the panel rather than a
+          // second rendering of the same source.
+          bodyHtml: reportBodyRef.current?.innerHTML ?? "",
+          headings,
+          sources,
+        });
+      }
+      if (outcome === "failed") {
+        setSaveNote(
+          format === "md" ? "Could not write the file." : "Could not open the print dialog.",
+        );
+      }
+    } finally {
+      setSaving(null);
+    }
+  };
 
-  const sourceSwitch = plan && hasArtifact && (
+  /** The index — everything this conversation made — is what Canvas itself is. */
+  const isIndex = !artifactId;
+  const madeAnything = (bundle?.artifacts.length ?? 0) > 0;
+  // A plan belongs to the workspace, so it shows whether or not a conversation
+  // is open — and it outranks artifacts, because it is the active work. An
+  // artifact tab is never the plan: it was opened by name.
+  const showPlan = isIndex && Boolean(plan) && (source === "plan" || !madeAnything);
+
+  const sourceSwitch = isIndex && plan && madeAnything && (
     <div className="agw-canvas-mode" role="group" aria-label="Canvas document">
       <button
         type="button"
@@ -163,7 +243,7 @@ export const CanvasPanel: React.FC = () => {
         aria-pressed={!showPlan}
         onClick={() => setSource("artifact")}
       >
-        Artifact
+        Artifacts
       </button>
     </div>
   );
@@ -222,14 +302,68 @@ export const CanvasPanel: React.FC = () => {
     );
   }
 
+  // ── The index ──────────────────────────────────────────────────────────
+  //
+  // Reopening a conversation lands here, not inside whichever artifact was
+  // last selected: the useful first question about a chat that produced six
+  // things is "what did it make", and answering it with one of them and a
+  // dropdown makes the other five easy to miss.
+  if (isIndex && madeAnything) {
+    return (
+      <section className="agw-canvas" aria-label="Artifacts">
+        {sourceSwitch && <div className="agw-canvas-toolbar">{sourceSwitch}</div>}
+        {error && (
+          <div className="agw-canvas-error" role="alert">
+            {error}
+          </div>
+        )}
+        <div className="agw-canvas-index agw-scroll">
+          <span className="agw-canvas-index-label">
+            {bundle!.artifacts.length === 1
+              ? "1 artifact in this conversation"
+              : `${bundle!.artifacts.length} artifacts in this conversation`}
+          </span>
+          <ul>
+            {bundle!.artifacts.map((entry) => {
+              const latest = entry.versions[entry.versions.length - 1];
+              return (
+                <li key={entry.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      useAgentWorkspaceStore.getState().openArtifactTab(entry.id, entry.title)
+                    }
+                  >
+                    <AgentIcon name={INDEX_ICONS[entry.kind]} size={15} />
+                    <span className="agw-canvas-index-main">
+                      <span className="agw-canvas-index-title">{entry.title}</span>
+                      <span className="agw-canvas-index-meta">
+                        {KIND_LABELS[entry.kind]}
+                        {latest ? ` · ${latest.tag}` : ""}
+                        {entry.versions.length > 1
+                          ? ` · ${entry.versions.length} versions`
+                          : ""}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </section>
+    );
+  }
+
   if (!artifact || !version) {
     return (
       <div className="agw-canvas-empty">
         <AgentIcon name="panel-right" size={24} />
-        <strong>Nothing on Canvas yet</strong>
+        <strong>{artifactId ? "That artifact is gone" : "Nothing on Canvas yet"}</strong>
         <span>
-          Ask for a plan in Plan mode, or let the agent build a diagram or
-          prototype — either one opens here automatically.
+          {artifactId
+            ? "It was deleted with its conversation, or this is a different chat. Close this tab and pick another from Canvas."
+            : "Ask for a plan in Plan mode, or let the agent build a diagram or prototype — either one opens here automatically."}
         </span>
       </div>
     );
@@ -239,25 +373,8 @@ export const CanvasPanel: React.FC = () => {
     <section className="agw-canvas" aria-label="Artifact Canvas">
       <div className="agw-canvas-toolbar">
         {sourceSwitch}
-        <div className="agw-canvas-field">
-          <span>Artifact</span>
-          <AgentSelect
-            value={artifact.id}
-            disabled={selecting}
-            ariaLabel="Artifact"
-            minMenuWidth={180}
-            options={(bundle?.artifacts ?? []).map((entry) => ({
-              value: entry.id,
-              label: entry.title,
-            }))}
-            onChange={(artifactId) => {
-              const next = bundle?.artifacts.find((entry) => entry.id === artifactId);
-              const latest = next?.versions[next.versions.length - 1];
-              if (next && latest) void choose(next.id, latest.tag);
-            }}
-          />
-        </div>
-
+        {/* No artifact picker: this tab IS one artifact, named in its own tab
+            pill, and Canvas beside it is the list of the rest. */}
         <div className="agw-canvas-field agw-canvas-version">
           <span>Version</span>
           <AgentSelect
@@ -292,7 +409,22 @@ export const CanvasPanel: React.FC = () => {
           </button>
         </div>
 
-        {mode === "preview" && artifact.kind !== "markdown" && (
+        {/* A report is a document, so it is the one kind you take away with
+            you. Two formats because they are for two different afterwards:
+            Markdown stays editable, PDF is the copy you send someone. */}
+        {artifact.kind === "report" && mode === "preview" && (
+          <div className="agw-canvas-export" role="group" aria-label="Save report">
+            <span>Save as</span>
+            <button type="button" disabled={saving !== null} onClick={() => void saveReport("md")}>
+              {saving === "md" ? "Saving…" : "Markdown"}
+            </button>
+            <button type="button" disabled={saving !== null} onClick={() => void saveReport("pdf")}>
+              {saving === "pdf" ? "Printing…" : "PDF"}
+            </button>
+          </div>
+        )}
+
+        {mode === "preview" && artifact.kind !== "markdown" && artifact.kind !== "report" && (
           <button
             type="button"
             className="agw-canvas-refresh"
@@ -311,6 +443,12 @@ export const CanvasPanel: React.FC = () => {
         </div>
       )}
 
+      {saveNote && (
+        <div className="agw-canvas-error" role="alert">
+          {saveNote}
+        </div>
+      )}
+
       {/* The artifact's own name is already in the selector directly above, so
           repeating it here says nothing. What this strip is for is the state
           the selector does not show: what kind of thing it is, and that it is
@@ -326,6 +464,13 @@ export const CanvasPanel: React.FC = () => {
           <ToolCode
             code={version.content}
             path={`${artifact.id}.${extensionFor(artifact.kind)}`}
+          />
+        ) : artifact.kind === "report" ? (
+          <CanvasReport
+            key={`${artifact.id}:${version.tag}`}
+            source={version.content}
+            title={artifact.title}
+            bodyRef={reportBodyRef}
           />
         ) : artifact.kind === "markdown" ? (
           <div className="agw-canvas-markdown agw-scroll">

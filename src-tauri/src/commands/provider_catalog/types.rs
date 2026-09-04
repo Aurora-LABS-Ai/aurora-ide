@@ -461,6 +461,37 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             model_pricing: None,
         },
         ProviderCatalogPreset {
+            id: "modal".to_string(),
+            name: "Modal".to_string(),
+            nickname: None,
+            // One Modal WORKSPACE per row. The regional gateway lists every
+            // live endpoint in the workspace through `/v1/models` with the
+            // workspace's proxy token, and addresses each by its hostname as
+            // the model id — so the models are the endpoints, refreshed from
+            // the gateway, and the base URL only says which region routes the
+            // traffic. See `commands/modal.rs`.
+            base_url: crate::commands::modal::gateway_base_url("us-west"),
+            // No seeded model: the list is whatever the workspace has deployed
+            // right now, and a guessed hostname would 404 as
+            // `unknown inference model`.
+            model: String::new(),
+            context_window: 128_000,
+            max_output_tokens: 32_768,
+            supports_thinking: true,
+            supports_tool_stream: Some(true),
+            supports_vision: Some(true),
+            custom_models: Some(Vec::new()),
+            model_aliases: None,
+            provider_type: "modal".to_string(),
+            default_temperature: None,
+            default_max_tokens: None,
+            requires_api_key: true,
+            // Endpoints bill for GPU time, not tokens, so there is no per-token
+            // price to seed. The cost card stays blank unless the user enters
+            // an effective rate on the model row.
+            model_pricing: None,
+        },
+        ProviderCatalogPreset {
             id: "lmstudio".to_string(),
             name: "LM Studio".to_string(),
             nickname: None,
@@ -538,6 +569,23 @@ mod tests {
         assert!(kenari.requires_api_key);
         // Priced in Rupiah upstream, so the USD pricing helper would be wrong.
         assert!(kenari.model_pricing.is_none());
+    }
+
+    #[test]
+    fn modal_seeds_no_models_and_points_at_the_default_region_gateway() {
+        // The models are the workspace's live endpoints, addressed by hostname
+        // through the gateway; a seeded hostname is a guess that answers
+        // `unknown inference model`.
+        let modal = preset("modal");
+        assert!(modal.model.is_empty(), "a non-empty model seeds a row");
+        assert_eq!(modal.custom_models.as_deref(), Some(&[][..]));
+        assert_eq!(modal.provider_type, "modal");
+        assert_eq!(
+            modal.base_url,
+            crate::commands::modal::gateway_base_url("us-west")
+        );
+        assert!(modal.requires_api_key);
+        assert!(modal.model_pricing.is_none(), "endpoints bill GPU time, not tokens");
     }
 
     #[test]

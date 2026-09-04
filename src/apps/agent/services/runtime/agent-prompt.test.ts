@@ -1,9 +1,33 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   BASE_AGENT_SYSTEM_PROMPT,
   CANVAS_INSTRUCTIONS,
+  composeAgentSystemPrompt,
+  formatEnvironment,
 } from "@/apps/agent/services/runtime/agent-prompt";
+import { CHAT_MODE_SYSTEM_PROMPT } from "@/apps/agent/services/runtime/agent-execution-mode";
+
+vi.mock("@/apps/agent/services/skills/skills", () => ({
+  getWorkspaceSkillToggles: () => ({}),
+  resolveSkillsForPrompt: async () => ({
+    allSkills: [],
+    activeSkills: [],
+    enabledSkills: [],
+    explicitSkills: [],
+  }),
+}));
+
+vi.mock("@/apps/agent/services/plans/agent-plans", () => ({
+  getActivePlan: async () => null,
+}));
+
+vi.mock("@/kernel/store/useSettingsStore", () => ({
+  useSettingsStore: {
+    getState: () => ({ skillToggles: {}, skillsEnabled: false }),
+  },
+  selectActiveGlobalInstructions: () => "",
+}));
 
 /**
  * The base prompt ships on EVERY request of every conversation, so anything
@@ -46,6 +70,30 @@ describe("the base system prompt does not contradict the tools", () => {
     // the separate Aurora IDE window" offers a capability that is not there.
     expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/separate Aurora IDE window/);
     expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/two brains/);
+    // ...and does not deny one either. "There is no separate editor window to
+    // hand work off to" described a thing that is not there, which is the one
+    // shape this prompt has already learned to avoid: the tail preamble's
+    // prohibitions came back as 49 of 80 thinking blocks. Say what the window
+    // HAS and let the absence be something the model never thinks about.
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/no separate editor window/i);
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/hand work off/i);
+  });
+
+  it("states who it is once, and says what the window has", () => {
+    // The opening used to name Aurora Agent three times in its first 120
+    // words — the first line, again as the first bullet of a "Core Identity"
+    // heading that restated the line above it, and the window in all three.
+    // This is the start of every request's cached prefix, so it is what the
+    // model reads first every single time; spending it on one fact three times
+    // shapes what the model thinks the conversation is about.
+    const identity = BASE_AGENT_SYSTEM_PROMPT.match(/You are Aurora Agent/g) ?? [];
+    expect(identity).toHaveLength(1);
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/## Core Identity/);
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/whole product/);
+    // The dock is real information and stays: it is what the model can act on.
+    for (const panel of ["**Review**", "**Files**", "**Browser**", "**Terminal**"]) {
+      expect(BASE_AGENT_SYSTEM_PROMPT).toContain(panel);
+    }
   });
 
   it("tells the model the harness itself can be at fault", () => {
@@ -61,16 +109,95 @@ describe("the base system prompt does not contradict the tools", () => {
     for (const marker of [
       "## Context Aurora Injects",
       "<repo_map>",
+      "<aurora_context>",
+      "<checklist>",
       "<aurora_task_reminder>",
       "<open_files>",
+      "<machine_tools>",
     ]) {
       expect(BASE_AGENT_SYSTEM_PROMPT).toContain(marker);
     }
-    // The map is a snapshot and the reminder is live. Saying so is the whole
-    // point — an agent that trusts the map after sixty edits is reading a
-    // frozen picture as though it were the workspace.
-    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/`<repo_map>` is a SNAPSHOT/);
-    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/`<aurora_task_reminder>` is LIVE/);
+    // The map is a snapshot and must say so — an agent that trusts it after
+    // sixty edits is reading a frozen picture as though it were the workspace.
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/`<repo_map>` sits at the head of the first message: a SNAPSHOT/);
+    // The checklist in a message's context is the list as it stood THEN; the
+    // tool's own results are the present. Saying "live" of a saved block
+    // would be the one thing worse than saying nothing.
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toMatch(/<checklist>.*is LIVE/i);
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/as it stood when they sent that message/);
+  });
+
+  // Everything Aurora adds is written once and stays put: there is no state
+  // block rebuilt per request, no second user turn, no reminder frozen into
+  // every tool result. What each block means is said HERE, in the cached
+  // prefix, so the blocks themselves ship bare — the five-sentence preamble
+  // that used to ride at the tail was recited back in 49 of 80 thinking blocks.
+  it("describes the message context and the rare reminder, without prohibitions", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/`<aurora_context>` sits at the end of a user message/);
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/`<aurora_task_reminder>` appears inside a tool result, rarely/);
+    // The old shapes must not come back under their old names.
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toContain("<aurora_runtime_state>");
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toContain("<ide_context>");
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toContain("<execution_mode_context>");
+    // Describes, never forbids — a list of things not to do is a list of
+    // things to think about.
+    const section = BASE_AGENT_SYSTEM_PROMPT.split("## Context Aurora Injects")[1]?.split("\n## ")[0] ?? "";
+    expect(section).not.toMatch(/do not reply|do not acknowledge|not from the user/i);
+  });
+
+  // 741 of the checklist-only assistant messages on disk were followed by a
+  // message of real tool calls: a `todo` update sent by itself, then the work.
+  // One sentence about batching is the whole fix for that; it competes with
+  // no other rule because the update still comes BEFORE the step it starts.
+  it("tells the model a checklist update rides with the next step's tool calls", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/A checklist update never travels alone/);
+  });
+
+  // A checklist whose last item IS the written answer has no consistent
+  // closing move: "close it alongside your final tool call" wants it ticked
+  // before the writing, "never mark completed what is not" forbids exactly
+  // that. 16 of the 959 checklist items on disk are that item, and session
+  // `3da1e78d` spent 56,007 characters of thinking circling the conflict.
+  // Remove the collision at the source rather than arbitrating it.
+  it("keeps the checklist on work, and carries no round-trip economics", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/tracks the WORK, not your reply/);
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(
+      /Never add a task for writing the answer/,
+    );
+    // The exact guidance that created the conflict. (An unrelated line about
+    // carrying tool-result content forward legitimately mentions a round trip;
+    // ban the sentences, not the word.)
+    for (const banned of [
+      "wasted round-trip",
+      "close the last task in the same message",
+      "A tool call ends your message",
+      "only closes a task",
+    ]) {
+      expect(BASE_AGENT_SYSTEM_PROMPT).not.toContain(banned);
+    }
+  });
+
+  /**
+   * Read live on 2026-09-04, session `fccbc7a8`: the model wrote its entire
+   * 5,832-character architecture answer AND closed the last task in the same
+   * message. A message with a tool call in it cannot end a turn — Aurora has
+   * to run the tool and hand back the result — so it was asked again with the
+   * answer already behind it, and spent a whole extra request writing 567
+   * characters of "that's the full picture".
+   *
+   * The prompt already said the checklist should be "fully closed by the time
+   * you write". True, and not enough: it never said the mechanical fact that
+   * makes the ordering matter. This states it, in terms of what happens rather
+   * than as round-trip economics — the arithmetic version is banned above,
+   * because it collides with "never mark completed what is not".
+   */
+  it("says the final-answer message calls no tools, and why", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(
+      /message that carries your final answer calls no tools/i,
+    );
+    // The reason, not just the rule: a rule with no mechanism behind it is one
+    // the model weighs against the others instead of simply following.
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/is not the end of a turn/i);
   });
 
   it("warns that compaction can erase earlier work from view", () => {
@@ -101,5 +228,172 @@ describe("the canvas section decides the KIND before the guide is reachable", ()
     expect(CANVAS_INSTRUCTIONS).toMatch(/canvas_guidelines/);
     // The renamed field, not the pre-rename `kind:`.
     expect(CANVAS_INSTRUCTIONS).toMatch(/artifactKind: "react"/);
+  });
+});
+
+/**
+ * Aurora Chat replaces the base prompt rather than appending to it. These pin
+ * what must NOT reach it — every one of these lines is false in chat mode, and
+ * a model told them anyway holds two identities and pays for both on every
+ * request.
+ */
+describe("the chat-mode system prompt", () => {
+  it("is not the coding prompt", () => {
+    expect(CHAT_MODE_SYSTEM_PROMPT).not.toBe(BASE_AGENT_SYSTEM_PROMPT);
+    expect(CHAT_MODE_SYSTEM_PROMPT).not.toMatch(/advanced AI coding agent/);
+    expect(CHAT_MODE_SYSTEM_PROMPT).not.toMatch(/pair programming/);
+  });
+
+  it("names no tool chat mode does not have", () => {
+    for (const absent of [
+      "file_read",
+      "file_edit",
+      "file_write",
+      "shell_execute",
+      "read_lints",
+      "workspace_tree",
+      "todo",
+      "plan_write",
+      "team_dispatch",
+      "browser_navigate",
+      "repo_map",
+    ]) {
+      expect(CHAT_MODE_SYSTEM_PROMPT).not.toContain(absent);
+    }
+  });
+
+  it("says where the machine work lives instead of refusing outright", () => {
+    // The failure this prevents: a model that says "I can't do that" when the
+    // truth is "not here, and the other side of this app can".
+    expect(CHAT_MODE_SYSTEM_PROMPT).toMatch(/Aurora Build/);
+    expect(CHAT_MODE_SYSTEM_PROMPT).toMatch(/switch/i);
+    expect(CHAT_MODE_SYSTEM_PROMPT).toMatch(/no access to the user's files/i);
+  });
+
+  it("tells the model that connected tools are the one exception", () => {
+    // MCP runs with no approval prompt in chat mode, so the prompt has to be
+    // straight about what it CAN reach, or it will refuse work it can do.
+    expect(CHAT_MODE_SYSTEM_PROMPT).toMatch(/connected/i);
+  });
+
+  it("does not itself carry the deep-research instruction", () => {
+    // Deep research is a property of the CONVERSATION, added as its own
+    // section. Baking it into the base prompt would apply it to every chat.
+    expect(CHAT_MODE_SYSTEM_PROMPT).not.toContain("Deep research");
+  });
+
+  it("stays short, because it is the cached prefix of every request", () => {
+    // Not a style preference: chat mode is cache-driven, and this text is
+    // re-sent on every turn of every conversation. The coding prompt is the
+    // thing being avoided, so the bound is stated against it.
+    expect(CHAT_MODE_SYSTEM_PROMPT.length).toBeLessThan(
+      BASE_AGENT_SYSTEM_PROMPT.length / 2,
+    );
+  });
+});
+
+/**
+ * The constant being right is not the same as the model receiving it, and the
+ * gap between those two shipped: every chat turn ran on the coding prompt
+ * because `AgentService` always passes a `basePrompt` and the "is this an
+ * override?" check compared a trimmed string against an untrimmed constant.
+ * Nothing tested the COMPOSED output, so nothing caught it. These do.
+ */
+/**
+ * Session-fixed facts belong in the cached half, not beside the things that
+ * change. This is OpenCode's split — its system prompt carries the working
+ * directory, the worktree, git-or-not, the platform and the date, and it
+ * injects nothing per request at all — and Aurora was the one mixing them:
+ * the workspace path and the file-access rules rode in the per-turn context
+ * block, so they were re-sent every time the checklist or the open files moved.
+ */
+describe("the environment block", () => {
+  it("states where the work happens and when, once", () => {
+    const env = formatEnvironment({ workspacePath: "E:/project" });
+    expect(env).toContain("<env>");
+    expect(env).toContain("Workspace root: E:/project");
+    expect(env).toMatch(/Today's date: \d{4}-\d{2}-\d{2}/);
+  });
+
+  it("carries the standing file-access permission, which is a setting not a turn", () => {
+    expect(formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "full" })).toContain(
+      "FULL FILE ACCESS",
+    );
+    expect(formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "read" })).toContain(
+      "ALLOWED reading files outside this workspace",
+    );
+    // Strict says nothing: the workspace line above it already does.
+    expect(
+      formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "workspace" }),
+    ).not.toMatch(/ALLOWED|FULL FILE ACCESS/);
+  });
+
+  it("says nothing at all with no project open", () => {
+    expect(formatEnvironment({ workspacePath: null })).toBe("");
+    expect(formatEnvironment({ workspacePath: "   " })).toBe("");
+  });
+
+  it("reaches the composed prompt for a project, and never in chat", async () => {
+    const build = await composeAgentSystemPrompt({
+      executionMode: "agent",
+      promptContext: { userMessage: "hi", workspacePath: "E:/project" },
+    });
+    expect(build.systemPrompt).toContain("Workspace root: E:/project");
+
+    // Aurora Chat has no workspace, so it has no environment to describe.
+    const chat = await composeAgentSystemPrompt({
+      executionMode: "chat",
+      promptContext: { userMessage: "hi", workspacePath: "E:/project" },
+    });
+    expect(chat.systemPrompt).not.toContain("<env>");
+  });
+});
+
+describe("the composed chat prompt", () => {
+  const chatOpening = CHAT_MODE_SYSTEM_PROMPT.split("\n")[0];
+
+  it("is the chat prompt even though the caller always passes the coding one", async () => {
+    const composed = await composeAgentSystemPrompt({
+      // Exactly what `SENSIBLE_DEFAULTS` holds — the untouched default, not an
+      // override. Passed verbatim, trailing newline and all.
+      basePrompt: BASE_AGENT_SYSTEM_PROMPT,
+      executionMode: "chat",
+      promptContext: { userMessage: "hello" },
+    });
+
+    expect(composed.systemPrompt).toContain(chatOpening);
+    expect(composed.systemPrompt).not.toMatch(/advanced AI coding agent/);
+    expect(composed.systemPrompt).not.toMatch(/pair programming/);
+  });
+
+  it("is the chat prompt when no base prompt is passed at all", async () => {
+    const composed = await composeAgentSystemPrompt({
+      executionMode: "chat",
+      promptContext: { userMessage: "hello" },
+    });
+
+    expect(composed.systemPrompt).toContain(chatOpening);
+  });
+
+  it("still yields to a caller's own prompt", async () => {
+    const composed = await composeAgentSystemPrompt({
+      basePrompt: "You are a haiku bot.",
+      executionMode: "chat",
+      promptContext: { userMessage: "hello" },
+    });
+
+    expect(composed.systemPrompt).toContain("You are a haiku bot.");
+    expect(composed.systemPrompt).not.toContain(chatOpening);
+  });
+
+  it("leaves Build mode on the coding prompt", async () => {
+    const composed = await composeAgentSystemPrompt({
+      basePrompt: BASE_AGENT_SYSTEM_PROMPT,
+      executionMode: "agent",
+      promptContext: { userMessage: "hello" },
+    });
+
+    expect(composed.systemPrompt).toMatch(/advanced AI coding agent/);
+    expect(composed.systemPrompt).not.toContain(chatOpening);
   });
 });

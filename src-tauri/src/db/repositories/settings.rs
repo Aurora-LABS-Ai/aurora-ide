@@ -183,6 +183,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.defer_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.defer_tools)
                 }
+                "mcpBridgeEnabled" => {
+                    settings.mcp_bridge_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.mcp_bridge_enabled)
+                }
                 "autoApproveTools" => {
                     settings.auto_approve_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.auto_approve_tools)
@@ -409,6 +413,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "deferTools",
             &serde_json::to_string(&settings.defer_tools).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "mcpBridgeEnabled",
+            &serde_json::to_string(&settings.mcp_bridge_enabled).unwrap_or_default(),
         )?;
         self.set_setting(
             "autoApproveTools",

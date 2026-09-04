@@ -1,0 +1,323 @@
+/* ═══ Memory — what Aurora remembers about you ════════════════════════════
+ *
+ * A dock tab in Aurora Chat. See `components/panels/MemoryPanel.tsx`.
+ *
+ * The list is shown in the ORDER THE MODEL RECEIVES IT, which is the one thing
+ * a reader wants from this page: the first five are handed over at the start of
+ * every conversation, the rest are found by searching. That ordering is the
+ * layout's only real job, so nothing here re-sorts or groups.
+ */
+
+.agw-memory {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--agw-canvas);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.agw-memory-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-memory-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+}
+
+.agw-memory-title > svg {
+  flex: none;
+  color: var(--agw-accent);
+}
+
+.agw-memory-stats {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.agw-memory-rebuild {
+  margin-left: auto;
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chip-surface);
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+}
+
+.agw-memory-rebuild:hover:not(:disabled) {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-memory-rebuild:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* ── Add a fact by hand ─────────────────────────────────────────────────── */
+
+.agw-memory-add {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: none;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.agw-memory-add-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Grows with wrapped text rather than scrolling inside two lines: a fact is
+     a sentence, and a field that hides half of it while you write invites a
+     shorter, worse one. */
+  min-height: 32px;
+  max-height: 120px;
+  padding: 7px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+  resize: vertical;
+}
+
+/* Same treatment every other text field in this window uses: a crisp neutral
+   border, no glow. `--agw-ring` is the KEYBOARD focus ring — it is blue on
+   purpose, it is only ever painted as a `:focus-visible` box-shadow, and
+   borrowing it here put a coloured halo around the field on an ordinary
+   click. */
+.agw-memory-add-input:focus {
+  outline: none;
+  border-color: var(--agw-border-strong);
+}
+
+.agw-memory-add-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+
+.agw-memory-add-btn {
+  flex: none;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-accent);
+  color: #fff;
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+
+.agw-memory-add-btn:hover:not(:disabled) {
+  background: var(--agw-accent-hover);
+}
+
+.agw-memory-add-btn:disabled {
+  background: var(--agw-chip-surface);
+  color: var(--agw-text-subtle);
+  cursor: default;
+}
+
+/* ── The list ───────────────────────────────────────────────────────────── */
+
+.agw-memory-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+}
+
+.agw-memory-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 4px;
+  border-radius: var(--agw-radius-md);
+}
+
+.agw-memory-row:hover {
+  background: var(--agw-hover);
+}
+
+.agw-memory-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The fact is a button because clicking it edits. Styled as text, because it
+   IS text — a control that announced itself would make a list of sentences
+   look like a list of buttons. */
+.agw-memory-text {
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  text-align: left;
+  cursor: text;
+}
+
+.agw-memory-edit {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.agw-memory-edit:focus {
+  outline: none;
+}
+
+/* Marks the facts Aurora is told without being asked. The line between those
+   and the rest is the page's most useful piece of information. */
+.agw-memory-badge {
+  align-self: flex-start;
+  color: var(--agw-text-subtle);
+  font-size: 11px;
+}
+
+.agw-memory-pin,
+.agw-memory-forget {
+  flex: none;
+  margin-top: 2px;
+  padding: 4px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-subtle);
+  line-height: 0;
+  cursor: pointer;
+  /* Hidden until the row is approached: a list of sentences should read as
+     sentences, not as rows of icons. Pinned rows keep their pin visible
+     because it is state, not an action. */
+  opacity: 0;
+}
+
+.agw-memory-row:hover .agw-memory-pin,
+.agw-memory-row:hover .agw-memory-forget,
+.agw-memory-pin:focus-visible,
+.agw-memory-forget:focus-visible {
+  opacity: 1;
+}
+
+.agw-memory-row[data-pinned] .agw-memory-pin {
+  opacity: 1;
+  color: var(--agw-accent);
+}
+
+.agw-memory-pin:hover {
+  color: var(--agw-accent);
+  background: var(--agw-hover);
+}
+
+.agw-memory-forget:hover {
+  color: var(--agw-removed);
+  background: var(--agw-hover);
+}
+
+/* ── Empty, error, footnote ─────────────────────────────────────────────── */
+
+.agw-memory-empty {
+  padding: 24px 16px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  text-align: center;
+}
+
+.agw-memory-error {
+  flex: none;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--agw-removed) 45%, var(--agw-border));
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-removed) 10%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-micro);
+}
+
+/* ═══ Deep research, in the model menu's header ═══════════════════════════
+ *
+ * Two states that look alike on purpose: a BUTTON on a fresh chat (it decides
+ * what the next conversation will be) and a static PILL on an open one (it
+ * reports what this conversation already is, which cannot change). Same shape
+ * so the header does not reflow when a chat opens; different affordance so the
+ * locked one does not invite a click that would do nothing.
+ */
+
+.agw-model-deep {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chip-surface);
+  color: var(--agw-text-subtle);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agw-model-deep:hover:not([data-locked]) {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.agw-model-deep[data-on] {
+  border-color: var(--agw-accent);
+  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  color: var(--agw-text);
+}
+
+.agw-model-deep[data-on] > svg {
+  color: var(--agw-accent);
+}
+
+/* Locked: it is a label, so it neither highlights nor takes a pointer. */
+.agw-model-deep[data-locked] {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.agw-memory-foot {
+  flex: none;
+  padding: 8px 14px 12px;
+  border-top: 1px solid var(--agw-border);
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+}

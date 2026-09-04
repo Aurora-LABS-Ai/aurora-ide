@@ -93,7 +93,11 @@ pub fn install(app: AppHandle) -> Option<notify::RecommendedWatcher> {
         if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
             return;
         }
-        if !event.paths.iter().any(is_request_path) {
+        if !event
+            .paths
+            .iter()
+            .any(|path| is_request_path(path) || is_cancel_path(path))
+        {
             return;
         }
         let app = handler_app.clone();
@@ -134,9 +138,21 @@ fn is_request_path(path: &PathBuf) -> bool {
     path.to_string_lossy().ends_with(super::task::TASK_SUFFIX)
 }
 
+/// Whether a path is someone asking for a task to stop.
+fn is_cancel_path(path: &PathBuf) -> bool {
+    path.to_string_lossy()
+        .ends_with(super::cancel::CANCEL_SUFFIX)
+}
+
 /// Claim every pending task and deliver it to the window.
 pub fn sweep(app: &AppHandle) {
     let inbox = Inbox::open();
+
+    // Cancellations first. A task that was dispatched and cancelled before this
+    // sweep — the "wrong command, Ctrl-C, retype" sequence — should never be
+    // claimed at all, and doing this first is what makes that ordering hold
+    // rather than starting the turn and stopping it a moment later.
+    sweep_cancellations(app, &inbox);
     let pending = match inbox.pending() {
         Ok(pending) => pending,
         Err(error) => {
@@ -167,6 +183,127 @@ pub fn sweep(app: &AppHandle) {
         // thread (where blocking would stall every later notification).
         std::thread::spawn(move || deliver(&app, claimed));
     }
+}
+
+/// What stopping a given task means right now.
+///
+/// Three states, three different meanings of "stop", and the files are what
+/// tell them apart. Separated from the acting so the decision can be tested
+/// without an app: the ordering rules here are the whole of the design, and
+/// they are not something to verify by launching a window.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelAction {
+    /// A turn is running under this id. Stop it through the registry.
+    StopTurn(String),
+    /// Still queued. Delete the request and close the transcript.
+    DropQueued,
+    /// Claimed, no turn yet. Leave the marker for `mirror::bind`.
+    Wait,
+    /// Nothing to stop — it already ended, or the id never existed.
+    Expire,
+}
+
+/// Work out what a cancel means for one task.
+fn decide_cancel(inbox: &Inbox, id: &str) -> CancelAction {
+    // Running. The registry owns the turn, and cancelling it there ends the run
+    // exactly as the window's Stop button does — including the `result` line
+    // the terminal is waiting for, which the mirror writes when the turn
+    // reports back.
+    if let Some(turn_id) = super::mirror::turn_for_task(id) {
+        return CancelAction::StopTurn(turn_id);
+    }
+
+    // Queued. Deleting the request is the cancel: nothing has read it, so
+    // nothing will run.
+    if inbox.task_path(id).exists() {
+        return CancelAction::DropQueued;
+    }
+
+    // Claimed, with no turn yet: the app owns this task and is a moment away
+    // from starting it. `mirror::bind` consumes the marker, because a result
+    // line written here would be overtaken by the turn beginning straight
+    // afterwards. Leave it — unless it has waited longer than any start could
+    // plausibly take.
+    if super::cancel::is_expired(inbox, id) {
+        CancelAction::Expire
+    } else {
+        CancelAction::Wait
+    }
+}
+
+/// Act on every outstanding cancel request.
+fn sweep_cancellations(app: &AppHandle, inbox: &Inbox) {
+    for id in super::cancel::pending(inbox) {
+        match decide_cancel(inbox, &id) {
+            CancelAction::Wait => {}
+
+            CancelAction::Expire => {
+                super::cancel::take(inbox, &id);
+            }
+
+            CancelAction::StopTurn(turn_id) => {
+                // Taking the marker IS the claim. Losing it means another
+                // sweep, or `bind`, got there first and has already acted.
+                if super::cancel::take(inbox, &id) {
+                    cancel_turn(app, &turn_id);
+                }
+            }
+
+            CancelAction::DropQueued => {
+                if !super::cancel::take(inbox, &id) {
+                    continue;
+                }
+                // Read before deleting, for the `--out` path: a caller watching
+                // their own copy of the transcript should see it end too.
+                let out_path = inbox
+                    .read_request(&inbox.task_path(&id))
+                    .ok()
+                    .and_then(|request| request.out_path)
+                    .map(PathBuf::from);
+                let _ = std::fs::remove_file(inbox.task_path(&id));
+                close_as_cancelled(inbox, &id, out_path);
+            }
+        }
+    }
+}
+
+/// Stop a running turn through the runtime registry.
+fn cancel_turn(app: &AppHandle, turn_id: &str) {
+    use tauri::Manager;
+
+    let Some(registry) =
+        app.try_state::<std::sync::Arc<crate::commands::agent_v2::AgentRegistry>>()
+    else {
+        crate::logging::log_error(
+            "cli.cancel",
+            "the agent registry is not available; the turn keeps running",
+        );
+        return;
+    };
+    // `false` means the turn had already ended between the lookup and here.
+    // Not worth reporting: the caller asked for it to stop and it has.
+    registry.cancel(turn_id);
+}
+
+/// Write the closing `result` line for a task that was stopped before it ran.
+fn close_as_cancelled(inbox: &Inbox, id: &str, out_path: Option<PathBuf>) {
+    use super::task::{ResultKind, TaskEvent};
+
+    let Ok(mut transcript) =
+        super::inbox::Transcript::open(inbox.transcript_path(id), out_path)
+    else {
+        return;
+    };
+    let _ = transcript.append(&TaskEvent::Result {
+        subtype: ResultKind::Cancelled,
+        result: None,
+        error: None,
+        // Zero rather than the time since dispatch: nothing ran, and reporting
+        // a duration for work that never started would put a number in every
+        // caller's log that means nothing.
+        duration_ms: 0,
+        num_turns: 0,
+    });
 }
 
 /// Hand a claimed task to the Agent Window, retrying while it boots.
@@ -291,6 +428,84 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let inbox = Inbox::at(dir.path());
         release(&inbox, &request("never-claimed")).expect("release is idempotent");
+    }
+
+    #[test]
+    fn a_cancel_before_the_claim_drops_the_task() {
+        // The common case, and the one that must never run: you dispatched the
+        // wrong thing and stopped it before Aurora picked it up.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inbox = Inbox::at(dir.path());
+        let request = request("20260901T100000-aaa");
+        inbox.write_request(&request).expect("write");
+        super::super::cancel::request(&inbox, &request.id).expect("cancel");
+
+        assert_eq!(decide_cancel(&inbox, &request.id), CancelAction::DropQueued);
+    }
+
+    #[test]
+    fn a_cancel_between_claim_and_start_waits_for_bind() {
+        // The ordering that forces the whole design. Writing a result line here
+        // would be overtaken by the turn starting a moment later, leaving a
+        // transcript that ends and then keeps going.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inbox = Inbox::at(dir.path());
+        let request = request("20260901T100000-bbb");
+        inbox.write_request(&request).expect("write");
+        inbox.claim(&request.id).expect("claim");
+        super::super::cancel::request(&inbox, &request.id).expect("cancel");
+
+        assert_eq!(decide_cancel(&inbox, &request.id), CancelAction::Wait);
+        // And the marker survives, so `bind` can consume it.
+        assert!(super::super::cancel::is_requested(&inbox, &request.id));
+    }
+
+    #[test]
+    fn a_cancel_for_a_task_that_never_existed_expires() {
+        // Otherwise it is reconsidered on every sweep for the life of the app.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inbox = Inbox::at(dir.path());
+        std::fs::create_dir_all(inbox.dir()).expect("create");
+        assert_eq!(decide_cancel(&inbox, "never-existed"), CancelAction::Expire);
+    }
+
+    #[test]
+    fn dropping_a_queued_task_closes_its_transcript() {
+        // A terminal is already following this file. Deleting the request
+        // without closing it leaves that follower waiting on a file that will
+        // never grow again.
+        use super::super::task::{ResultKind, TaskEvent};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inbox = Inbox::at(dir.path());
+        let request = request("20260901T100000-ccc");
+        inbox.write_request(&request).expect("write");
+
+        close_as_cancelled(&inbox, &request.id, None);
+
+        let body = std::fs::read_to_string(inbox.transcript_path(&request.id)).expect("read");
+        let last: TaskEvent = serde_json::from_str(body.lines().last().expect("a line"))
+            .expect("the last line parses");
+        assert!(matches!(
+            last,
+            TaskEvent::Result {
+                subtype: ResultKind::Cancelled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_cancel_marker_is_noticed_by_the_watcher() {
+        // The event filter decides whether a cancel ever reaches a sweep. A
+        // marker that does not match is a stop request that silently does
+        // nothing until the next unrelated dispatch.
+        assert!(is_cancel_path(&PathBuf::from(
+            r"C:\tasks\20260901T100000-aaa.cancel"
+        )));
+        assert!(!is_cancel_path(&PathBuf::from(
+            r"C:\tasks\20260901T100000-aaa.task.json"
+        )));
     }
 
     #[test]

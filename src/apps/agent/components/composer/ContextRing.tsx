@@ -61,6 +61,14 @@ import {
   type OpenCodeUsage,
 } from "@/apps/agent/services/providers/opencode";
 import {
+  commandCodeMoney,
+  commandCodeResetLabel,
+  commandCodeWindowRatio,
+  fetchCommandCodeUsage,
+  COMMANDCODE_PROVIDER_ID,
+  type CommandCodeUsageSnapshot,
+} from "@/apps/agent/services/providers/commandcode";
+import {
   fetchKenariUsage,
   isKenariProvider,
   kenariResetLabel,
@@ -144,6 +152,40 @@ async function getOpenCodeUsageCached(apiKey: string): Promise<OpenCodeUsage | n
     return usage;
   } catch {
     // No key yet, revoked, or offline — the section is omitted rather than
+    // shown empty. The provider page is where a broken key gets explained.
+    return null;
+  }
+}
+
+/**
+ * Command Code plan headroom, cached the same way and for the same reason.
+ *
+ * Keyed by the API key like OpenCode's, and an empty key is a real value here
+ * rather than a reason to skip: with nothing pasted, Rust falls back to the
+ * key the Command Code CLI stored, so the ring still has an account to ask.
+ */
+let commandCodeUsageCache: {
+  at: number;
+  key: string;
+  usage: CommandCodeUsageSnapshot;
+} | null = null;
+
+async function getCommandCodeUsageCached(
+  apiKey: string,
+): Promise<CommandCodeUsageSnapshot | null> {
+  if (
+    commandCodeUsageCache &&
+    commandCodeUsageCache.key === apiKey &&
+    Date.now() - commandCodeUsageCache.at < PLAN_USAGE_TTL_MS
+  ) {
+    return commandCodeUsageCache.usage;
+  }
+  try {
+    const usage = await fetchCommandCodeUsage(apiKey);
+    commandCodeUsageCache = { at: Date.now(), key: apiKey, usage };
+    return usage;
+  } catch {
+    // Not connected, revoked, or offline — the section is omitted rather than
     // shown empty. The provider page is where a broken key gets explained.
     return null;
   }
@@ -484,6 +526,15 @@ export const ContextRing: React.FC = () => {
   const openCodeKey = useSettingsStore(
     (s) => s.providers.find((p) => p.id === OPENCODE_PROVIDER_ID)?.apiKey ?? "",
   );
+  // And the fourth: Command Code meters spend against two rolling dollar caps,
+  // so the per-token cost lines above are the wrong reading for the same
+  // reason they are on the other three.
+  const isCommandCode = selectedModel.startsWith(`${COMMANDCODE_PROVIDER_ID}:`);
+  // Empty is a legitimate value, unlike OpenCode's: with no key pasted, Rust
+  // reads the one the Command Code CLI stored. So this is not gated on.
+  const commandCodeKey = useSettingsStore(
+    (s) => s.providers.find((p) => p.id === COMMANDCODE_PROVIDER_ID)?.apiKey ?? "",
+  );
   // kenari is asked the same question, but it cannot be recognised by an id
   // prefix the way the other two are: the built-in row is `kenari`, while a row
   // someone added themselves carries a UUID and declares itself through
@@ -593,6 +644,9 @@ export const ContextRing: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
+  const [commandCodeUsage, setCommandCodeUsage] = useState<CommandCodeUsageSnapshot | null>(
+    null,
+  );
   const [kenariPlan, setKenariPlan] = useState<KenariPlanState>(null);
   const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
 
@@ -615,6 +669,14 @@ export const ContextRing: React.FC = () => {
       });
       return;
     }
+    // No key gate, unlike OpenCode's: an empty key means "use the one the CLI
+    // stored", which is a working account, not a missing one.
+    if (isCommandCode) {
+      void getCommandCodeUsageCached(commandCodeKey).then((usage) => {
+        if (usage) setCommandCodeUsage(usage);
+      });
+      return;
+    }
     // No key to gate on, unlike the other two: kenari's plan data comes from a
     // stored sign-in, and whether there is one is exactly what this asks.
     if (isKenari) {
@@ -628,7 +690,7 @@ export const ContextRing: React.FC = () => {
         if (snap) setCursorUsage(snap);
       });
     }
-  }, [isCodex, isOpenCode, isKenari, isCursor, openCodeKey]);
+  }, [isCodex, isOpenCode, isCommandCode, isKenari, isCursor, openCodeKey, commandCodeKey]);
 
   /**
    * Read the conversation's cost basis when the card opens.
@@ -959,6 +1021,68 @@ export const ContextRing: React.FC = () => {
                     />
                   );
                 })}
+              </>
+            )}
+
+            {/* Command Code, for the same reason as the two above. Its caps are
+              * in DOLLARS rather than percent, which is the one number the
+              * cost lines above cannot give you here: they price the
+              * conversation, this prices what the plan has left.
+              *
+              * Both windows, not the tighter one — running out for the next
+              * forty minutes and running out for the week are different
+              * problems. Credits come last because they only matter once a
+              * window is spent, but they are what says whether work can
+              * continue at all. */}
+            {isCommandCode && commandCodeUsage && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-card-head">
+                  <AgentIcon name="chat" size={11} />
+                  <span>
+                    Command Code
+                    {commandCodeUsage.planLabel ? ` ${commandCodeUsage.planLabel}` : " plan"}
+                  </span>
+                </div>
+                {commandCodeUsage.limited ? (
+                  <>
+                    {commandCodeUsage.fiveHour && (
+                      <QuotaRow
+                        label="Right now"
+                        usedPercent={commandCodeWindowRatio(commandCodeUsage.fiveHour) * 100}
+                        caption={[
+                          `${commandCodeMoney(commandCodeUsage.fiveHour.used)} of ${commandCodeMoney(commandCodeUsage.fiveHour.cap)}`,
+                          commandCodeResetLabel(commandCodeUsage.fiveHour),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      />
+                    )}
+                    {commandCodeUsage.weekly && (
+                      <QuotaRow
+                        label="This week"
+                        usedPercent={commandCodeWindowRatio(commandCodeUsage.weekly) * 100}
+                        caption={[
+                          `${commandCodeMoney(commandCodeUsage.weekly.used)} of ${commandCodeMoney(commandCodeUsage.weekly.cap)}`,
+                          commandCodeResetLabel(commandCodeUsage.weekly),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      />
+                    )}
+                  </>
+                ) : null}
+                <div className="agw-ctx-row">
+                  <span className="agw-ctx-label">Credits</span>
+                  <span className="agw-ctx-val">
+                    {commandCodeMoney(
+                      commandCodeUsage.credits.monthly +
+                        commandCodeUsage.credits.purchased +
+                        commandCodeUsage.credits.free,
+                    )}{" "}
+                    left
+                  </span>
+                </div>
               </>
             )}
 

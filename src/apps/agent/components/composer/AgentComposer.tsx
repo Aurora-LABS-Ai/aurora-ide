@@ -324,7 +324,7 @@ function placeCaretAtEnd(el: HTMLElement): void {
 }
 
 export const AgentComposer: React.FC<AgentComposerProps> = ({
-  placeholder = "Message Aurora — / for skills, @ for files",
+  placeholder: placeholderProp,
   autoFocus = false,
   value,
   onValueChange,
@@ -347,6 +347,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   );
   const defaultModel = useSettingsStore((s) => s.selectedModel);
   const composerModel = pinnedModel ?? defaultModel;
+  // Aurora Chat has no workspace, so the composer's offer of one has to go with
+  // it: no `@` (it searches workspace files and open terminals) and no Browser
+  // row (there are no browser tools on this side). The default placeholder goes
+  // too — it advertised "@ for files" in a mode with no files to reach.
+  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const placeholder =
+    placeholderProp ??
+    (chatSurface ? "Message Aurora" : "Message Aurora — / for skills, @ for files");
   // Everything this composer stages before send — images, `/` directives — is
   // filed under its own key, so a second composer in the side panel can't
   // consume what was staged here (or vice versa).
@@ -1080,41 +1088,55 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   };
 
   const plusItems = useMemo<PlusMenuItem[]>(
-    () => [
-      {
-        id: "files",
-        label: "Files & images",
-        hint: "Pick from this computer",
-        icon: "upload",
-        run: () => void openFilePicker(),
-      },
-      {
-        id: "mention",
-        label: "Mention",
-        hint: "A workspace file or an open terminal",
-        icon: "at",
-        run: () => openPicker("@"),
-      },
-      {
-        id: "actions",
-        label: "Actions",
-        hint: "Skills, rules and MCP commands",
-        icon: "slash",
-        run: () => openPicker("/"),
-      },
-      {
-        id: "browser",
-        label: "Browser",
-        hint: "Open the browser panel to pick an element",
-        icon: "browser",
-        run: () => openTab("browser"),
-      },
-    ],
+    () =>
+      [
+        {
+          // Attaching from this computer is an UPLOAD, not a workspace read, so
+          // it survives into chat — and it is how a picture reaches a chat.
+          id: "files",
+          label: "Files & images",
+          hint: "Pick from this computer",
+          icon: "upload" as const,
+          run: () => void openFilePicker(),
+        },
+        // `@` searches the workspace and the open terminals. Chat has neither.
+        ...(chatSurface
+          ? []
+          : [
+              {
+                id: "mention",
+                label: "Mention",
+                hint: "A workspace file or an open terminal",
+                icon: "at" as const,
+                run: () => openPicker("@"),
+              },
+            ]),
+        {
+          id: "actions",
+          label: "Actions",
+          hint: chatSurface ? "Skills and MCP commands" : "Skills, rules and MCP commands",
+          icon: "slash" as const,
+          run: () => openPicker("/"),
+        },
+        // Chat mode registers no browser tools, so the panel would open onto a
+        // page nothing can act on.
+        ...(chatSurface
+          ? []
+          : [
+              {
+                id: "browser",
+                label: "Browser",
+                hint: "Open the browser panel to pick an element",
+                icon: "browser" as const,
+                run: () => openTab("browser"),
+              },
+            ]),
+      ] satisfies PlusMenuItem[],
     // openFilePicker / openPicker close over refs and stable store actions, and
     // are redefined every render; listing them would rebuild this list on each
     // keystroke for no behavioural difference.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [openTab],
+    [openTab, chatSurface],
   );
   const {
     speechEnabled,

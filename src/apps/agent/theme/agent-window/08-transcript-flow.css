@@ -96,6 +96,14 @@
   color: transparent;
   animation: agw-shimmer 30s linear infinite;
 }
+.agw-compaction-failed .agw-compaction-chip,
+.agw-compaction-cancelled .agw-compaction-chip {
+  color: var(--agw-warning);
+}
+.agw-compaction-failed .agw-compaction-line,
+.agw-compaction-cancelled .agw-compaction-line {
+  background: color-mix(in srgb, var(--agw-warning) 45%, var(--agw-border));
+}
 
 /* ── Settings range control (compaction threshold / budget) ─────────────── */
 .agw-agent-range {

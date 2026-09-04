@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyChatShortlist,
   normalizeThreadModelSelection,
   pinnedThreadModel,
 } from "@/apps/agent/lib/thread/thread-model";
@@ -80,6 +81,88 @@ describe("normalizeThreadModelSelection", () => {
     );
     expect(normalizeThreadModelSelection("other:alpha-high", models)).toBe(
       "other:alpha-high",
+    );
+  });
+
+  describe("a Modal endpoint that moved gateway", () => {
+    const US = "maya--ep-kimi-k3-server.us-west.modal.direct";
+    const EU = "maya--ep-kimi-k3-server.eu-west.modal.direct";
+    const modal = [{ providerId: "modal", modelKey: EU }];
+
+    /** Changing region renames every model on the row. The endpoint is the
+     *  same deployment, so the conversation follows it rather than dying on
+     *  `unknown inference model`. */
+    it("follows the endpoint to its new hostname", () => {
+      expect(normalizeThreadModelSelection(`modal:${US}`, modal)).toBe(`modal:${EU}`);
+    });
+
+    it("prefers the exact row when both regions are configured", () => {
+      const both = [...modal, { providerId: "modal", modelKey: US }];
+      expect(normalizeThreadModelSelection(`modal:${US}`, both)).toBe(`modal:${US}`);
+    });
+
+    it("leaves a pin alone when that endpoint is genuinely gone", () => {
+      const gone = [{ providerId: "modal", modelKey: "maya--ep-glm-5-3-server.eu-west.modal.direct" }];
+      expect(normalizeThreadModelSelection(`modal:${US}`, gone)).toBe(`modal:${US}`);
+    });
+
+    /** Another workspace's endpoint of the same name is a different machine
+     *  behind a different token, so it is never a substitute. */
+    it("never crosses workspaces", () => {
+      const other = [{ providerId: "modal", modelKey: "canyaman6879--ep-kimi-k3-server.eu-west.modal.direct" }];
+      expect(normalizeThreadModelSelection(`modal:${US}`, other)).toBe(`modal:${US}`);
+    });
+
+    /** The rule keys on a Modal hostname, so a `--` in another provider's
+     *  model id cannot trigger it. */
+    it("does not fire on a non-Modal model id containing a double dash", () => {
+      const odd = [{ providerId: "other", modelKey: "vendor--model-b" }];
+      expect(normalizeThreadModelSelection("other:vendor--model-a", odd)).toBe(
+        "other:vendor--model-a",
+      );
+    });
+  });
+});
+
+describe("applyChatShortlist", () => {
+  const models = [
+    { providerId: "prov", modelKey: "alpha" },
+    { providerId: "prov", modelKey: "beta" },
+    { providerId: "other", modelKey: "gamma" },
+  ];
+
+  it("leaves a model that is on the shortlist alone", () => {
+    expect(applyChatShortlist("prov:beta", ["prov:alpha", "prov:beta"], models)).toBe(
+      "prov:beta",
+    );
+  });
+
+  /** The rule Alvan asked for: it is not thrown away and it does not break. */
+  it("falls to the next available model when this one leaves the shortlist", () => {
+    expect(applyChatShortlist("other:gamma", ["prov:alpha", "prov:beta"], models)).toBe(
+      "prov:alpha",
+    );
+  });
+
+  /** Nothing ticked means "not curated yet", never "no models". */
+  it("changes nothing when the shortlist is empty", () => {
+    expect(applyChatShortlist("other:gamma", [], models)).toBe("other:gamma");
+  });
+
+  /** A pinned model that still exists beats falling back to nothing. */
+  it("changes nothing when every shortlisted model is gone", () => {
+    expect(applyChatShortlist("other:gamma", ["prov:vanished"], models)).toBe("other:gamma");
+  });
+
+  it("skips shortlist entries whose model no longer exists", () => {
+    expect(
+      applyChatShortlist("other:gamma", ["prov:vanished", "prov:beta"], models),
+    ).toBe("prov:beta");
+  });
+
+  it("ignores a malformed entry rather than resolving it", () => {
+    expect(applyChatShortlist("other:gamma", ["alpha", "prov:alpha"], models)).toBe(
+      "prov:alpha",
     );
   });
 });

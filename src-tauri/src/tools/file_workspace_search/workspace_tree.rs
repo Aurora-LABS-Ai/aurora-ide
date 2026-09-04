@@ -235,7 +235,17 @@ impl ToolExecutor for WorkspaceTreeTool {
             (Some(p), Some(root)) if p != "." => {
                 super::resolve_path_for_read(p, Some(root), ctx.workspace_access)?
             }
-            (Some(p), None) => PathBuf::from(p),
+            (Some(p), None) => {
+                // No workspace means no boundary to resolve against, so the
+                // access setting decides alone — on the same terms the read
+                // resolver above applies when there is one: `Read` and `Full`
+                // take the path as written, the default mode refuses with the
+                // one wording every tool in the bucket shares.
+                if !ctx.workspace_access.reads_outside() {
+                    return Err(super::no_workspace_refusal(p));
+                }
+                PathBuf::from(p)
+            }
             (None, Some(root)) | (Some(_), Some(root)) => root.to_path_buf(),
             (None, None) => {
                 return Err(ToolError::InvalidInput(
@@ -1527,5 +1537,55 @@ mod tests {
         content.push(b'y');
         std::fs::write(&path, &content).unwrap();
         assert_eq!(count_lines_in_file(&path).unwrap(), 2);
+    }
+
+    /// With no workspace the access setting decides — the same contract the
+    /// read resolver in the `Some`-workspace arm above enforces: `Read` and
+    /// `Full` take the path as written, the default mode refuses with the one
+    /// wording every tool in the bucket shares, so the model cannot tell
+    /// which of them said no.
+    #[tokio::test]
+    async fn a_workspace_less_tree_obeys_the_access_setting() {
+        use crate::agent_runtime::tool_executor::WorkspaceAccess;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.md"), "notes\n").unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(WorkspaceTreeTool);
+
+        let err = tool
+            .execute(
+                json!({ "path": tmp.path().to_string_lossy(), "depth": 1 }),
+                &ctx_for(None),
+            )
+            .await
+            .expect_err("no workspace and default access must refuse a tree");
+        let ToolError::InvalidInput(message) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(message.contains("No workspace is open"), "{message}");
+        assert!(
+            message.contains("Open a folder"),
+            "must name the first way out: {message}"
+        );
+        assert!(
+            message.contains("Settings"),
+            "must name the access setting: {message}"
+        );
+
+        let mut read = ctx_for(None);
+        read.workspace_access = WorkspaceAccess::Read;
+        let out = tool
+            .execute(
+                json!({ "path": tmp.path().to_string_lossy(), "depth": 1 }),
+                &read,
+            )
+            .await
+            .expect("Read takes the tree path as written");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{parsed}");
+        assert!(
+            names(&parsed["tree"]).contains(&"readme.md"),
+            "the tree must actually have been walked: {parsed}"
+        );
     }
 }

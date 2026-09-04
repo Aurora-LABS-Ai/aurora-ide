@@ -27,9 +27,12 @@ pub mod agent_v2_permissions;
 pub mod artifacts;
 pub mod browser;
 pub mod chat;
+/// The Memory page — reading and editing what Aurora remembers about the user.
+pub mod chat_memory;
 pub mod checkpoints;
 pub mod code_index;
 pub mod codex;
+pub mod commandcode;
 /// Test-only: fails the build if a main-thread command waits on the database.
 #[cfg(test)]
 mod command_thread_safety;
@@ -41,6 +44,7 @@ pub mod git;
 pub mod icon_themes;
 pub mod kenari;
 pub mod local_providers;
+pub mod modal;
 pub mod opencode;
 pub mod plans;
 pub mod process_tracking;
@@ -475,79 +479,25 @@ pub fn find_git_bash() -> Option<String> {
 /// Build the child process for a command.
 ///
 /// `shell` is a profile id or kind id (`"bash"`, `"pwsh"`, `"cmd"`), or `None`
-/// for the registry default. Executable, flags, and environment all come from
-/// [`crate::shell`] — nothing about a shell is hardcoded here anymore.
+/// for the registry default. Executable, flags, environment, and the channel
+/// the command travels through all come from [`crate::shell`] — nothing about
+/// a shell is decided here. The command is never quoted, escaped, or
+/// interpolated: see [`crate::shell::delivery`] for how it reaches each shell
+/// whole.
 ///
-/// The legacy branch below only runs before the registry has been populated
-/// (very early startup, or a database that could not be read). It still
-/// applies the MSYS environment repair, because a bash spawned without it
-/// cannot reach `ls`, `sed`, or `uname`.
+/// The unregistered branch only runs before the registry has been populated
+/// (very early startup, or a database that could not be read). It goes
+/// through the same [`crate::shell::ResolvedShell`], so it gets the MSYS
+/// environment repair and the delivery rules the registry path gets.
 fn build_shell_command(
     shell: Option<&str>,
     command: &str,
     cwd: &Option<String>,
-) -> (String, TokioCommand) {
-    let (shell_exe, shell_args, overlay, kind) = match crate::shell::resolve(shell) {
-        Some(resolved) => (
-            resolved.exe,
-            resolved.args,
-            resolved.env,
-            Some(resolved.kind),
-        ),
-        None => {
-            let (exe, args, overlay) = legacy_shell_invocation(shell);
-            (exe, args, overlay, None)
-        }
-    };
+) -> (crate::shell::ResolvedShell, TokioCommand) {
+    let resolved = crate::shell::resolve(shell).unwrap_or_else(|| unregistered_shell(shell));
 
-    let mut cmd = TokioCommand::new(&shell_exe);
-    for arg in &shell_args {
-        cmd.arg(arg);
-    }
-
-    // The command is one whole argument — never interpolated into a string —
-    // so no quoting or escaping is applied to model output.
-    //
-    // EXCEPT for `cmd.exe`, which needs the opposite treatment. Windows has no
-    // real argv: a process receives one command-line string and parses it
-    // itself. Rust's `Command::arg` encodes arguments with the MSVCRT rules
-    // (`"` becomes `\"`), which every normal Win32 program understands —
-    // and which `cmd.exe` does not, because it has its own parser.
-    //
-    // Measured, with the command `dir /b | find /c /v ""`:
-    //   Command::arg  →  exit 1, stderr `Access denied - \`
-    //   raw_arg       →  exit 0, stdout `2`
-    // and `node -e "console.log(1+1)"` silently produced NO output under
-    // `arg` while printing `2` under `raw_arg`. Every quoted cmd command was
-    // being corrupted, which read as "cmd is bad at quoting" rather than as a
-    // harness bug.
-    //
-    // `/s` (already in `ShellKind::Cmd::command_args`) tells cmd to strip the
-    // first and last quote of the remainder and treat everything between them
-    // literally — no escape processing at all — so wrapping the command in one
-    // quote pair and appending it verbatim is exactly right, and needs no
-    // escaping of the model's own quotes.
-    #[cfg(target_os = "windows")]
-    {
-        let is_cmd = kind.map_or_else(
-            || shell_exe.to_ascii_lowercase().ends_with("cmd.exe"),
-            |kind| kind == crate::shell::ShellKind::Cmd,
-        );
-        if is_cmd {
-            cmd.as_std_mut().raw_arg(format!("\"{command}\""));
-        } else {
-            cmd.arg(command);
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = kind;
-        cmd.arg(command);
-    }
-
-    for (key, value) in &overlay {
-        cmd.env(key, value);
-    }
+    let mut cmd = TokioCommand::new(&resolved.exe);
+    resolved.apply_one_shot(&mut cmd, command);
 
     if let Some(ref working_dir) = cwd {
         cmd.current_dir(working_dir);
@@ -556,12 +506,15 @@ fn build_shell_command(
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
 
-    (shell_exe, cmd)
+    (resolved, cmd)
 }
 
-/// Pre-registry fallback: the behaviour Aurora had before shell profiles,
-/// plus the environment repair.
-fn legacy_shell_invocation(shell: Option<&str>) -> (String, Vec<String>, Vec<(String, String)>) {
+/// Pre-registry fallback: the shell Aurora reached for before profiles
+/// existed — Git Bash on Windows, the system shell elsewhere, PowerShell 7
+/// when something other than bash was asked for on Windows.
+fn unregistered_shell(shell: Option<&str>) -> crate::shell::ResolvedShell {
+    use crate::shell::{ResolvedShell, ShellKind};
+
     let posix = matches!(shell, Some("bash")) || cfg!(not(target_os = "windows"));
 
     if posix {
@@ -573,21 +526,10 @@ fn legacy_shell_invocation(shell: Option<&str>) -> (String, Vec<String>, Vec<(St
         } else {
             "sh".to_string()
         };
-
-        let overlay =
-            crate::shell::env::compose(crate::shell::ShellKind::Bash, std::path::Path::new(&exe));
-        return (exe, vec!["-c".to_string()], overlay);
+        return ResolvedShell::unregistered(ShellKind::Bash, exe);
     }
 
-    (
-        "pwsh".to_string(),
-        vec![
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-Command".to_string(),
-        ],
-        Vec::new(),
-    )
+    ResolvedShell::unregistered(ShellKind::Pwsh, "pwsh".to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1996,7 +1938,8 @@ pub(crate) async fn run_command_lifecycle(
 
     let shell_profile = shell.as_deref();
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
-    let (shell_exe, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
+    let (resolved, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
+    let shell_exe = resolved.exe.clone();
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     // Never inherit Aurora's own stdin: a GUI process's stdin is a dead
@@ -2012,19 +1955,24 @@ pub(crate) async fn run_command_lifecycle(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            // Windows fallback, ported from the old duplicate runner: `pwsh`
-            // is an install, `powershell` is the OS. A machine without pwsh
-            // still gets its command run rather than a spawn error.
+            // One substitution only: `pwsh` is an install, `powershell` is
+            // the OS, and the two read the same syntax — so a machine without
+            // PowerShell 7 still gets its PowerShell command run.
+            //
+            // Nothing else falls back. This used to retry ANY failed spawn
+            // except the literal `"bash"` kind id in Windows PowerShell, which
+            // meant a registered bash profile (whose id is `sh-…`, not
+            // `bash`) that failed to start silently ran its POSIX command in
+            // PowerShell and returned that shell's confusion as the result.
+            // A spawn error that names the shell is the honest answer.
             #[cfg(target_os = "windows")]
-            let fallback_child = if shell_profile != Some("bash")
-                && !shell_exe.to_ascii_lowercase().contains("powershell")
-            {
-                let mut fallback = TokioCommand::new("powershell");
-                fallback
-                    .arg("-NoProfile")
-                    .arg("-NonInteractive")
-                    .arg("-Command")
-                    .arg(&command);
+            let fallback_child = if resolved.kind == crate::shell::ShellKind::Pwsh {
+                let stand_in = crate::shell::ResolvedShell::unregistered(
+                    crate::shell::ShellKind::PowerShell,
+                    "powershell".to_string(),
+                );
+                let mut fallback = TokioCommand::new(&stand_in.exe);
+                stand_in.apply_one_shot(&mut fallback, &command);
                 if let Some(ref working_dir) = cwd {
                     fallback.current_dir(working_dir);
                 }
@@ -2050,7 +1998,11 @@ pub(crate) async fn run_command_lifecycle(
                     if tracked {
                         cleanup_command_stream(&request_id);
                     }
-                    return Err(format!("Failed to spawn command with {}: {}", shell_exe, e));
+                    return Err(format!(
+                        "Could not start {} ({shell_exe}): {e}. Check the shell under Settings → \
+                         Tools → Shells, or name a different one with `shell`.",
+                        resolved.label
+                    ));
                 }
             }
         }
@@ -3592,6 +3544,101 @@ mod command_lifecycle_tests {
         assert!(output.success);
         assert!(!output.left_running, "{output:?}");
         assert!(output.stdout.contains("hi"));
+    }
+
+    /// The `aurora-tool-findings.md` bug (2026-09-01): Git Bash re-parses its
+    /// own command line and eats one layer of backslashes, so
+    /// `'C:\Users\x'` — inside single quotes, which bash promises to leave
+    /// alone — reached the command as `C:Usersx`. Every Windows path carried
+    /// through bash was silently corrupted. The command must arrive verbatim.
+    #[tokio::test]
+    async fn backslashes_survive_the_trip_into_bash() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let cases: &[(&str, &str)] = &[
+            // The report's shape: a Windows path inside single quotes.
+            (r"printf '%s\n' 'C:\Users\Alvan\x'", r"C:\Users\Alvan\x"),
+            // Unquoted, bash's own escape rule: `\\` is one backslash.
+            (r"printf '%s\n' C:\\temp", r"C:\temp"),
+            // Escaped quotes inside double quotes.
+            (r#"printf '%s\n' "say \"hi\"""#, r#"say "hi""#),
+            // A `$` that bash must still expand — the fix must not turn
+            // bash into a literal-only shell.
+            (r#"X=1; printf '%s\n' "$X-${X}""#, "1-1"),
+            // Multi-line, with a quoted heredoc carrying a backslash.
+            ("cat <<'EOF'\nline1 \\back\nEOF", "line1 \\back"),
+        ];
+        for (command, expected) in cases {
+            let output = execute_command(
+                (*command).to_string(),
+                None,
+                Some("bash".to_string()),
+                Some(30_000),
+            )
+            .await
+            .expect("the command runs");
+            assert_eq!(
+                output.stdout.trim_end(),
+                *expected,
+                "command {command:?} — stderr: {}",
+                output.stderr
+            );
+        }
+    }
+
+    /// The command travels through the environment on Windows; the bootstrap
+    /// must drop it before the command runs, so a child never inherits its
+    /// own source text (and a 100 KB heredoc never lands in every grandchild's
+    /// environment block).
+    #[tokio::test]
+    async fn the_command_text_is_not_inherited_by_children() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let output = execute_command(
+            format!(
+                "printf '%s\\n' \"${{{}:-absent}}\"",
+                crate::shell::delivery::COMMAND_ENV_VAR
+            ),
+            None,
+            Some("bash".to_string()),
+            Some(30_000),
+        )
+        .await
+        .expect("the command runs");
+        assert_eq!(output.stdout.trim_end(), "absent", "{output:?}");
+    }
+
+    /// Error text must read like a terminal's — `bash: line 2: …` — with the
+    /// line numbers of the command the model wrote, not of any bootstrap.
+    #[tokio::test]
+    async fn errors_carry_the_commands_own_line_numbers() {
+        if !bash_available() {
+            eprintln!("skipped: no bash on this machine");
+            return;
+        }
+        let output = execute_command(
+            "echo before\nno_such_command_xyz\necho after".to_string(),
+            None,
+            Some("bash".to_string()),
+            Some(30_000),
+        )
+        .await
+        .expect("the command runs");
+        assert!(output.stderr.contains("line 2"), "{output:?}");
+        assert!(
+            output.stderr.contains("no_such_command_xyz: command not found"),
+            "{output:?}"
+        );
+        assert!(
+            !output.stderr.contains("__aurora_cmd"),
+            "the bootstrap must stay invisible: {}",
+            output.stderr
+        );
+        assert!(output.stdout.contains("before") && output.stdout.contains("after"));
     }
 
     /// A timeout still means what it says: the SHELL was still running at the

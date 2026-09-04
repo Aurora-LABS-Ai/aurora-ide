@@ -90,8 +90,9 @@ impl ShellKind {
     }
 
     /// Flags that precede a **one-shot** command string. The command itself
-    /// is always appended as the final argument, never interpolated — no
-    /// quoting or escaping is applied anywhere in Aurora.
+    /// is never interpolated, quoted, or escaped anywhere in Aurora; how it
+    /// is handed over — argv, a raw argument, or the environment — is
+    /// [`super::delivery`]'s decision.
     #[must_use]
     pub const fn command_args(self) -> &'static [&'static str] {
         match self {

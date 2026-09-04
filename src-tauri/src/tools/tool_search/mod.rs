@@ -46,6 +46,74 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, 
 /// Names this bucket registers, in roster order.
 pub const TOOL_NAMES: &[&str] = &["tool_search"];
 
+/// Tools loaded by `tool_search`, per conversation.
+///
+/// The registry this executor writes into is built fresh for every USER
+/// message, so a load survived the rest of its own turn and then vanished. The
+/// transcript did not vanish with it: the model still read "loaded and callable
+/// from your next message", called the tool after the user typed anything at
+/// all, and got `tool not found` — then retried, because nothing in the
+/// conversation said otherwise. Observed with `browser_navigate` in thread
+/// `9f41764f`, where a bare "?" between two calls was enough.
+///
+/// So the reveal is remembered per thread and replayed when the next turn's
+/// registry is built. Process-local on purpose: it is a roster decision, not
+/// user data, and a restart should return the model to the small default
+/// roster rather than to whatever some conversation opened up last week.
+mod revealed {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Mutex, OnceLock};
+
+    fn store() -> &'static Mutex<HashMap<String, HashSet<String>>> {
+        static STORE: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
+        STORE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// Remember that `names` are loaded for `thread_id`.
+    pub fn remember(thread_id: &str, names: impl IntoIterator<Item = String>) {
+        if thread_id.is_empty() {
+            return;
+        }
+        let mut guard = store().lock().unwrap_or_else(|p| p.into_inner());
+        guard
+            .entry(thread_id.to_string())
+            .or_default()
+            .extend(names);
+    }
+
+    /// The tools this conversation has already loaded.
+    #[must_use]
+    pub fn for_thread(thread_id: &str) -> HashSet<String> {
+        if thread_id.is_empty() {
+            return HashSet::new();
+        }
+        store()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Drop one conversation's reveals. Tests only; a thread that is gone
+    /// costs one small set until the process exits, which is not worth a
+    /// lifecycle hook.
+    pub fn forget(thread_id: &str) {
+        store()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(thread_id);
+    }
+}
+
+pub use revealed::for_thread as revealed_for_thread;
+
+/// Clear one conversation's loaded set. Test seam: the store is process-wide,
+/// so a test that does not reset leaks its reveals into the next one.
+pub fn forget_thread_for_test(thread_id: &str) {
+    revealed::forget(thread_id);
+}
+
 /// Default number of tools returned for a keyword query.
 const DEFAULT_MAX_RESULTS: usize = 5;
 
@@ -278,8 +346,13 @@ try one broad word, or `select:` with an exact name from the list in this tool's
 
         let mut loaded = Vec::new();
         let mut already = Vec::new();
+        let mut names = Vec::new();
         for tool in matched {
             let schema = tool.schema();
+            // Remembered either way. "Already loaded" in THIS turn's registry
+            // says nothing about the next one, and forgetting it there is the
+            // whole defect.
+            names.push(schema.name.clone());
             if self.live.get(tool.name()).is_some() {
                 already.push(schema.name.clone());
                 continue;
@@ -291,6 +364,8 @@ try one broad word, or `select:` with an exact name from the list in this tool's
                 "parameters": schema.input_schema,
             }));
         }
+        // Survives the turn boundary; see the `revealed` module.
+        revealed::remember(&ctx.thread_id, names);
 
         let note = if loaded.is_empty() {
             "Already loaded — call them directly.".to_string()

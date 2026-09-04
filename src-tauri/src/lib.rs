@@ -36,7 +36,12 @@ mod agent_safety;
 mod api;
 mod checkpoints;
 pub mod cli;
+pub mod console;
 pub mod cli_delegate;
+/// Aurora Chat's searchable index over its own conversations, plus the facts
+/// it was asked to remember. Derived from `paths::chats_dir()` and rebuildable
+/// from it — see the module docs for why that matters.
+mod chat_memory;
 mod code_index;
 mod commands;
 mod context;
@@ -118,8 +123,11 @@ impl ProductionIdeEventSink {
         let registry = self
             .app
             .try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()?;
-        let dir =
-            agent_runtime::session_store::tool_results_dir_in(registry.store().dir(), thread_id);
+        let dir = agent_runtime::session_store::tool_results_dir_in(
+            registry.store().dir(),
+            thread_id,
+            registry.store().layout(),
+        );
         std::fs::create_dir_all(&dir).ok()?;
 
         // Process ids are Aurora-generated (`bg-<hex>-<epoch>`), but keep the
@@ -494,6 +502,19 @@ pub fn run_with_args(cli_args: CliArgs) {
             if !matches!(event, tauri::WindowEvent::Destroyed) {
                 return;
             }
+
+            // The Agent Window is what runs work sent from outside, so its
+            // going away has to be published — another process reading a stale
+            // "window open" would dispatch a task nobody can claim and wait out
+            // its timeout.
+            //
+            // Done here rather than only in the frontend's own teardown because
+            // a crashed webview never gets to run that. This handler fires
+            // either way.
+            if window.label() == "agent-window" {
+                cli_delegate::bridge::clear();
+            }
+
             let app = window.app_handle();
             let remaining: Vec<_> = app.webview_windows().into_values().collect();
             // An un-queryable window cannot be shown to the user either, so a
@@ -562,6 +583,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::shell_profiles::shell_profiles_set_enabled,
             commands::shell_profiles::shell_profiles_verify,
             commands::shell_profiles::shell_interactive_config,
+            commands::shell_profiles::shell_tools_inventory,
             commands::shell_background_processes,
             commands::create_file,
             commands::create_folder,
@@ -651,6 +673,15 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_update_title,
             commands::title_maker::generate_thread_title,
             commands::threads::thread_set_pinned,
+            // Aurora Chat's memory page.
+            commands::chat_memory::chat_memory_list_facts,
+            commands::chat_memory::chat_memory_add_fact,
+            commands::chat_memory::chat_memory_update_fact,
+            commands::chat_memory::chat_memory_set_fact_pinned,
+            commands::chat_memory::chat_memory_forget_fact,
+            commands::chat_memory::chat_memory_search_facts,
+            commands::chat_memory::chat_memory_stats,
+            commands::chat_memory::chat_memory_rebuild_index,
             commands::threads::thread_set_archived,
             commands::threads::thread_set_model,
             commands::threads::thread_cancel_current_turn,
@@ -688,6 +719,13 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::codex::codex_account_remove,
             commands::codex::codex_account_clear_limit,
             commands::codex::codex_account_import_cli,
+            commands::commandcode::commandcode_auth_status,
+            commands::commandcode::commandcode_auth_login,
+            commands::commandcode::commandcode_auth_cancel_login,
+            commands::commandcode::commandcode_auth_logout,
+            commands::commandcode::commandcode_auth_store_key,
+            commands::commandcode::commandcode_usage_get,
+            commands::commandcode::commandcode_list_models,
             // Cursor (subscription) provider
             commands::cursor::cursor_auth_status,
             commands::cursor::cursor_usage_get,
@@ -707,6 +745,15 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::kenari::kenari_disconnect,
             commands::kenari::kenari_session_status,
             commands::kenari::kenari_usage,
+            commands::modal::modal_workspace_models,
+            commands::modal::modal_cli_status,
+            commands::modal::modal_cli_create_proxy_token,
+            commands::modal::modal_cli_sign_in,
+            commands::modal::modal_cli_billing_summary,
+            commands::modal::modal_workspaces,
+            commands::modal::modal_use_workspace,
+            commands::modal::modal_save_workspace,
+            commands::modal::modal_forget_workspace,
             commands::local_providers::commands::local_provider_detect,
             commands::local_providers::commands::local_provider_probe_custom,
             commands::local_providers::commands::local_provider_show_ollama_model,
@@ -804,6 +851,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             cli_delegate::commands::cli_task_fail,
             cli_delegate::commands::cli_task_pending,
             cli_delegate::commands::cli_task_claim,
+            cli_delegate::commands::aurora_bridge_publish,
+            cli_delegate::commands::aurora_bridge_clear,
+            cli_delegate::commands::aurora_mcp_client_config,
             commands::aurora_websearch,
             commands::ripgrep_search,
             commands::validate_structured_document,
@@ -1040,10 +1090,16 @@ pub fn run_with_args(cli_args: CliArgs) {
             // live LLM traffic; the registry's internal `BridgeRouter`
             // powers the `agent_post_tool_result` round trip with the
             // frontend tool runner.
-            let agent_registry = std::sync::Arc::new(commands::agent_v2::AgentRegistry::new(
-                std::sync::Arc::new(RealApiFactory),
-                paths::sessions_dir(),
-            ));
+            let agent_registry = std::sync::Arc::new(
+                commands::agent_v2::AgentRegistry::new(
+                    std::sync::Arc::new(RealApiFactory),
+                    paths::sessions_dir(),
+                )
+                // Aurora Chat's conversations, folder per chat. A sibling of
+                // `sessions/`, never inside it — the two products' histories
+                // are separate stores and deleting one must not reach the other.
+                .with_chat_dir(paths::chats_dir()),
+            );
 
             // Phase 3 — pre-populate the AgentRegistry's ToolRegistry
             // with all 22 native tools (Sub-C: file/workspace/search,
@@ -1398,6 +1454,21 @@ pub fn run_with_args(cli_args: CliArgs) {
             // *before* this process existed: `aurora agent` writes the request
             // and then launches us, so no filesystem event will ever fire for
             // the very task that caused the launch.
+            // Keep `aurora` on PATH pointing at THIS build. An upgrade that
+            // lands in a different directory leaves the shim aimed at a binary
+            // that may no longer exist — and when it does exist, the CLI
+            // silently runs the old one. Only ever re-points a shim the user
+            // already installed; it never creates one.
+            cli::install::refresh_cli_shim();
+
+            // Start from "no window". The bridge file survives a restart, and a
+            // previous run's "the Agent Window is open" would otherwise be true
+            // again the moment this process takes the presence guard — telling
+            // another agent to send work to a window that has not been opened
+            // yet. The Agent Window republishes as it mounts, so this costs
+            // nothing when one is on the way.
+            cli_delegate::bridge::clear();
+
             app.manage(commands::CliPresence(cli_delegate::presence::hold()));
             app.manage(commands::CliTaskWatcher(std::sync::Mutex::new(
                 cli_delegate::watcher::install(handle.clone()),

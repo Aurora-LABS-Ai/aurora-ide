@@ -54,6 +54,7 @@ import { useSettingsQuery } from "./settings-search";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentUiStore, type PreferencesTab } from "@/apps/agent/store/ui/useAgentUiStore";
 import { SpeechSettings } from "./SpeechSettings";
+import { SystemIntegrationSettings } from "./SystemIntegrationSettings";
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
@@ -321,6 +322,11 @@ export const PreferencesSettings: React.FC = () => {
         </SettingsRow>
       </SettingsSection>
       )}
+
+      {/* Beside Startup on purpose: "which window opens" and "how you open it
+          from outside" are the same question. Moved here from the IDE window's
+          General tab, which is two windows away from everything it launches. */}
+      {shows("general") && <SystemIntegrationSettings />}
 
       {shows("general") && (
       <SettingsSection

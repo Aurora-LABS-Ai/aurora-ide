@@ -894,6 +894,7 @@ impl MemberEventMirror {
                 timestamp: Utc::now().timestamp_millis(),
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             };
             self.push_line(&msg);
@@ -951,6 +952,7 @@ impl MemberEventMirror {
                     timestamp: Utc::now().timestamp_millis(),
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    aurora_context: None,
                     model: None,
                 };
                 self.push_line(&msg);
@@ -1043,6 +1045,9 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
         // Empty: a member's model is whatever its session is pinned to, and
         // nothing composes an id for it. See `RuntimeConfig::wire_model`.
         wire_model: String::new(),
+        // A team member works a project. Team is a Build-side feature and has
+        // no reachable path from Aurora Chat.
+        execution_mode_is_chat: false,
         max_iterations: Some(MEMBER_MAX_ITERATIONS),
         system_prompt: Some(member_system_prompt(&ctx.role, &run.owned, &run.roster)),
         default_max_output_tokens: resolved_max_tokens(&run.provider),
@@ -1052,7 +1057,6 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
             .clone()
             .unwrap_or_else(|| ReasoningConfig::legacy(run.provider.supports_thinking, None)),
         default_temperature: run.provider.default_temperature,
-        ide_context: None,
         context_window: Some(MEMBER_CONTEXT_WINDOW),
         compaction_threshold: Some(MEMBER_COMPACTION_THRESHOLD),
         compaction_summary_budget: 4096,

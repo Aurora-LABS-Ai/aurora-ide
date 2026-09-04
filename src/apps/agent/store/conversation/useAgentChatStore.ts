@@ -25,6 +25,10 @@ import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
+import {
+  recentSurfaceThread,
+  rememberSurfaceThread,
+} from "@/apps/agent/lib/thread/surface-resume";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { databaseService } from "@/kernel/services/database";
@@ -37,6 +41,10 @@ import {
   type ThreadSummary,
 } from "@/apps/agent/services/threads/thread-service";
 import type { AgentActivity } from "@/apps/agent/components/conversation/activity";
+import type {
+  AgentExecutionMode,
+  AuroraSurface,
+} from "@/apps/agent/services/runtime/agent-execution-mode";
 
 /**
  * The agent window never mounts the IDE explorer, but the agent runtime reads
@@ -46,6 +54,18 @@ import type { AgentActivity } from "@/apps/agent/components/conversation/activit
  * scoped project so tools operate on the right directory — without touching the
  * IDE window's workspace.
  */
+/**
+ * Which product the window is on, read at call time rather than subscribed to.
+ *
+ * This store is not a component and has no render to re-run; every caller here
+ * is an action that already knows it is happening now. Reading the settings
+ * store directly is also what keeps a stale closure from listing the wrong
+ * store's conversations after a switch.
+ */
+function currentSurface(): AuroraSurface {
+  return useSettingsStore.getState().auroraSurface;
+}
+
 function bindRuntimeWorkspace(projectRoot: string | null): void {
   if (!isTauri()) return;
   try {
@@ -142,7 +162,7 @@ interface AgentChatState {
    * write — the mode was real and invisible. The selector reads it to show
    * what is running now, and falls back to the setting when nothing is.
    */
-  liveModes: Record<string, "agent" | "plan" | "team">;
+  liveModes: Record<string, AgentExecutionMode>;
 
   // ── Completion signals ────────────────────────────────────────────
   // When a turn finishes streaming we surface two lightweight cues: a rail
@@ -222,6 +242,14 @@ interface AgentChatState {
    * right directory — this is how opening a chat from another project works.
    */
   selectThread: (id: string, workspaceRoot?: string | null) => Promise<void>;
+  /**
+   * Move the window to the other product.
+   *
+   * Clears the view, flips the setting, reloads the rail from the other store,
+   * and reopens the conversation that side was left on — but only if it was
+   * touched within the last two hours. Otherwise you land on the empty state.
+   */
+  enterSurface: (surface: AuroraSurface) => Promise<void>;
   /** Delete a chat; clears the view if it was open. */
   deleteThread: (id: string) => Promise<void>;
   /** Rename a chat (persisted); reflects everywhere it renders optimistically. */
@@ -258,7 +286,7 @@ interface AgentChatState {
     threadId: string,
     seed?: DbThread,
     projectRoot?: string | null,
-    executionMode?: "agent" | "plan" | "team",
+    executionMode?: AgentExecutionMode,
   ) => void;
   /** Append a message to a live turn (mirrors into the view when it's open). */
   appendTurnMessage: (threadId: string, message: DbMessage) => void;
@@ -428,11 +456,16 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       // Only surface chats that actually have a message — a 0-message thread is
       // an abandoned draft (lazily created on first send) or a legacy empty
       // "New Chat" and must never show in the rail.
-      const all = await threadService.listThreads(null);
+      // Aurora Chat's conversations live in their own store and carry no
+      // workspace, so the project filter below is skipped rather than applied:
+      // filtering them by project would match none of them and empty the rail.
+      const surface = currentSurface();
+      const all = await threadService.listThreads(null, surface);
       const withMessages = all.filter((t) => (t.messageCount ?? 0) > 0);
-      const scoped = projectRoot
-        ? withMessages.filter((t) => t.workspaceRoot === projectRoot)
-        : withMessages;
+      const scoped =
+        surface === "chat" || !projectRoot
+          ? withMessages
+          : withMessages.filter((t) => t.workspaceRoot === projectRoot);
       set({ threads: scoped, allThreads: withMessages, listLoading: false });
     } catch (err) {
       console.error("[agent-chat] failed to list threads:", err);
@@ -444,6 +477,34 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // Draft only — no thread, no rail row, no persistence. The empty state's
     // composer materialises the thread when the first message is sent.
     set({ currentThreadId: null, currentThread: null, error: null });
+  },
+
+  enterSurface: async (surface) => {
+    if (!isTauri()) return;
+    // Remember where THIS side was before leaving it, so coming back lands on
+    // the conversation you left rather than on whatever the other side did.
+    const leaving = get().currentThreadId;
+    if (leaving) rememberSurfaceThread(currentSurface(), leaving);
+
+    // Nothing is carried across: the two sides have different conversations in
+    // different stores, and a half-cleared view flashing the wrong transcript
+    // is worse than a beat of empty.
+    set({
+      currentThreadId: null,
+      currentThread: null,
+      threads: [],
+      allThreads: [],
+      error: null,
+    });
+
+    useSettingsStore.getState().setAuroraSurface(surface);
+    await get().refreshThreads();
+
+    // Resume, but only if it is still RECENT. Alvan's rule: a conversation you
+    // left more than two hours ago is not what you came back for, and dropping
+    // into it is more disorienting than an empty composer.
+    const resume = recentSurfaceThread(surface, get().allThreads);
+    if (resume) await get().selectThread(resume);
   },
 
   selectThread: async (id, workspaceRoot) => {
@@ -772,7 +833,19 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
     const { projectRoot } = get();
     const title = deriveThreadTitle(firstUserText);
-    const thread = await threadService.createThread(title, projectRoot);
+    // A chat conversation is created in `Chats/` and given NO workspace. Both
+    // matter: the workspace is what would project-scope it out of its own list,
+    // and the runtime treats a workspace root as permission to reach the disk.
+    const surface = currentSurface();
+    const thread = await threadService.createThread(
+      title,
+      surface === "chat" ? null : projectRoot,
+      surface,
+      // The seed, read at the moment of creation. From here on the
+      // conversation carries its own answer and this setting is irrelevant to
+      // it — which is what lets the instruction sit in the cached prefix.
+      surface === "chat" && useSettingsStore.getState().deepResearchNext,
+    );
     set({ currentThreadId: thread.id, currentThread: thread });
     return thread.id;
   },

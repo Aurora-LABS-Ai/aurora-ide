@@ -167,6 +167,18 @@ export default function Report() {
   `<Tabs tabs={[{ id: "a", label: "Errors", content: <…/> }]} />`.
 - `Detail` — progressive disclosure: `<Detail summary="Full trace">…</Detail>`.
   Put the long evidence behind a short claim here rather than dropping it.
+- `Image` — a picture, with what it shows and where it came from:
+  `<Image src="…" alt="Requests per second, rising after the 14:02 deploy" caption="…" source="…" />`.
+  `alt` is required for the same reason `Stat` requires a label. A file that
+  cannot be loaded renders a named absence carrying the path, so a figure never
+  goes silently missing.
+- `Cite` — a numbered citation, straight after the claim it supports:
+  `…rose by a third.<Cite n={1} href="https://example.com/report">Example, 2026</Cite>`
+  You supply the number; the SDK holds no state between components. Clicking one
+  opens the page in the user's browser.
+- `Quote` — a passage in the source's own words, with attribution:
+  `<Quote from="Fred Brooks" where="The Mythical Man-Month, ch. 2">…</Quote>`.
+  `from` is required — an unattributed quotation is just text in italics.
 - `Columns` — side by side on a wide panel, stacked when narrow.
 - `Divider` — a rule between unrelated groups. Rarely needed; whitespace first.
 - `Badge` — short qualifier. `tone`: `neutral | info | good | warn | bad`.

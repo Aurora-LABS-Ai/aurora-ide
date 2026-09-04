@@ -27,6 +27,7 @@ import {
   GLOBAL_INSTRUCTION_NAME_MAX,
 } from "@/kernel/store/useSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
+import { AgentBridgeCard } from "./AgentBridgeCard";
 import { CodeIndexCard } from "./CodeIndexCard";
 import {
   AgwPill,
@@ -53,6 +54,8 @@ export const AgentSettings: React.FC = () => {
   const browserTools = useSettingsStore((s) => s.browserTools);
   const deferTools = useSettingsStore((s) => s.deferTools);
   const setDeferTools = useSettingsStore((s) => s.setDeferTools);
+  const mcpBridgeEnabled = useSettingsStore((s) => s.mcpBridgeEnabled);
+  const setMcpBridgeEnabled = useSettingsStore((s) => s.setMcpBridgeEnabled);
   const setBrowserTools = useSettingsStore((s) => s.setBrowserTools);
   const executionMode = useSettingsStore((s) => s.agentExecutionMode);
   const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
@@ -420,6 +423,32 @@ export const AgentSettings: React.FC = () => {
         description="A structural map of this project — every definition, and what uses it. It is how the agent answers “where is this defined” and “what calls this” without searching text, and it is what the repository overview at the start of a conversation is built from."
       >
         <CodeIndexCard />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Other agents"
+        icon="plug"
+        description="Aurora connecting the other way round. You already connect Aurora to other apps' tools; this is another agent connecting to Aurora's."
+      >
+        <SettingsRow
+          alignTop
+          last={!mcpBridgeEnabled}
+          label="Let other agents send work to Aurora"
+          searchTerms="mcp server expose share bridge outside external claude code connect drive headless remote api integrate incoming"
+          hint="Off, nothing outside Aurora can reach it. On, an agent you have connected can start conversations here, send messages into ones already going, and stop them — real turns with the full toolset, editing files in whatever project this window has open. It works only while this window is open, and only you can switch it on."
+        >
+          <AgwSwitch
+            checked={mcpBridgeEnabled}
+            onChange={setMcpBridgeEnabled}
+            ariaLabel="Let other agents send work to Aurora"
+          />
+        </SettingsRow>
+
+        {mcpBridgeEnabled && (
+          <SettingsBlock last searchTerms="mcp config json snippet command copy connect aurora mcp server path">
+            <AgentBridgeCard />
+          </SettingsBlock>
+        )}
       </SettingsSection>
     </div>
   );

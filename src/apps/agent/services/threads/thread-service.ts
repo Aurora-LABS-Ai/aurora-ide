@@ -19,6 +19,7 @@ import {
   auroraListen as listen,
   type AuroraUnlistenFn as UnlistenFn,
 } from '@/kernel/lib/ipc/runtime';
+import type { AuroraSurface } from '@/apps/agent/services/runtime/agent-execution-mode';
 
 // ============================================================
 // Types — wire shapes returned by the Rust commands
@@ -45,6 +46,8 @@ export interface ThreadSummary {
    * 15 days after this timestamp.
    */
   archivedAt?: string | null;
+  /** Aurora Chat: started in deep research. Fixed at creation, never changed. */
+  deepResearch?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -236,13 +239,28 @@ class ThreadServiceClass {
   // Thread Operations
   // ============================================================
 
+  /**
+   * `surface` decides WHICH conversation store the new chat is written to:
+   * `'chat'` puts it in Aurora Chat's `Chats/`, anything else in Build's
+   * `sessions/`.
+   *
+   * It has to be passed here and on `listThreads`, and nowhere else. Every
+   * other command names a conversation that already exists, and Rust looks the
+   * store up from the id rather than trusting a caller to remember.
+   */
   async createThread(
     title?: string,
     workspaceRoot?: string | null,
+    surface?: AuroraSurface,
+    deepResearch?: boolean,
   ): Promise<DbThread> {
     return await invoke<DbThread>('thread_create', {
       title: title ?? null,
       workspaceRoot: workspaceRoot ?? null,
+      surface: surface ?? null,
+      // The ONLY place deep research can be set. It is fixed on the
+      // conversation from here on, so there is no setter to call later.
+      deepResearch: deepResearch ?? false,
     });
   }
 
@@ -268,10 +286,18 @@ class ThreadServiceClass {
    * List threads. Pass `workspaceRoot` to get only that project's
    * chats (the agent window's project-scoped list); omit it for the
    * IDE's global history.
+   *
+   * `surface: 'chat'` lists Aurora Chat's conversations instead. Pass no
+   * `workspaceRoot` with it — chat conversations have no workspace, so a
+   * project filter matches none of them.
    */
-  async listThreads(workspaceRoot?: string | null): Promise<ThreadSummary[]> {
+  async listThreads(
+    workspaceRoot?: string | null,
+    surface?: AuroraSurface,
+  ): Promise<ThreadSummary[]> {
     return await invoke<ThreadSummary[]>('thread_list_summaries', {
-      workspaceRoot: workspaceRoot ?? null,
+      workspaceRoot: surface === 'chat' ? null : (workspaceRoot ?? null),
+      surface: surface ?? null,
     });
   }
 

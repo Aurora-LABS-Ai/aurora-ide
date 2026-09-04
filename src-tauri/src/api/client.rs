@@ -32,6 +32,7 @@ use crate::agent_runtime::api_client::{ReasoningConfig, StreamingApiClient};
 
 use super::anthropic::AnthropicAdapter;
 use super::codex::adapter::CodexAdapter;
+use super::commandcode::adapter::CommandCodeAdapter;
 use super::cursor::adapter::CursorAdapter;
 use super::deepseek::DeepSeekAdapter;
 use super::openai_compat::OpenAICompatAdapter;
@@ -173,6 +174,12 @@ pub enum ProviderKind {
     /// Cursor subscription (no API key). Not an OpenAI-shaped wire at all —
     /// Connect-RPC over HTTP/2, protobuf framed. See [`super::cursor`].
     Cursor,
+    /// Command Code's `/alpha/generate`, one subscription reselling ~70
+    /// models. Its own body shape (model parameters nested under `params`,
+    /// beside a mandatory `config` block) and its own newline-delimited
+    /// JSON response, so it shares no builder with the OpenAI or Anthropic
+    /// wires. See [`super::commandcode`].
+    CommandCode,
     OpenAICompat,
 }
 
@@ -183,9 +190,8 @@ impl ProviderKind {
     #[must_use]
     pub fn detect(provider_type: &str) -> Self {
         match provider_type.trim() {
-            "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages" => {
-                ProviderKind::Anthropic
-            }
+            "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages"
+            | "modal-messages" => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
             // On OpenCode Go the wire belongs to the MODEL, not the row: the
             // same key and base URL answer all three formats and each model
@@ -196,11 +202,13 @@ impl ProviderKind {
             // `applyOpenCodeWire`; these arms only say which adapter each of
             // the three names means. `opencode-go-chat` falls through to OpenAI
             // Chat Completions below.
-            "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go" => {
-                ProviderKind::OpenAIResponses
-            }
+            "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go"
+            | "modal-responses" => ProviderKind::OpenAIResponses,
             "codex" => ProviderKind::Codex,
             "cursor" => ProviderKind::Cursor,
+            super::commandcode::COMMANDCODE_PROVIDER_TYPE | "command-code" => {
+                ProviderKind::CommandCode
+            }
             _ => ProviderKind::OpenAICompat,
         }
     }
@@ -267,6 +275,10 @@ pub fn reasoning_replay_for(
         // extended thinking is on.
         ProviderKind::Anthropic => ReasoningReplay::Text,
         ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
+        // Command Code replays reasoning as a plain `{type:"reasoning",
+        // text}` part: no signature to echo, nothing encrypted. It costs
+        // its own text and must be counted, not dropped.
+        ProviderKind::CommandCode => ReasoningReplay::Text,
         // The SAME resolution the builder runs — learned demand, then the
         // user's `reasoning_replay` directive, then the vendor table. Any
         // half missing here puts the estimate out of step with the wire —
@@ -323,6 +335,7 @@ pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn Strea
         ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
         ProviderKind::Codex => Arc::new(CodexAdapter::new(config.clone())),
         ProviderKind::Cursor => Arc::new(CursorAdapter::new(config.clone())),
+        ProviderKind::CommandCode => Arc::new(CommandCodeAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
     }
 }
@@ -382,6 +395,53 @@ mod tests {
     #[test]
     fn detect_codex_routes_to_dedicated_adapter() {
         assert_eq!(ProviderKind::detect("codex"), ProviderKind::Codex);
+    }
+
+    /// One base URL, one key, three wires — and each OpenCode Go model accepts
+    /// exactly one of them. The frontend resolves the wire per model
+    /// (`applyOpenCodeWire`) and this match is the only thing that turns the
+    /// resolved name into an adapter, so a wrong arm here sends a MiniMax model
+    /// to `/chat/completions` with a bearer token and gets a 401 that reads as
+    /// a bad key. The auth header follows from the adapter: Messages goes out
+    /// as `x-api-key`, the other two as `Authorization: Bearer`.
+    #[test]
+    fn detect_maps_each_opencode_wire_to_its_own_adapter() {
+        assert_eq!(
+            ProviderKind::detect("opencode-go-chat"),
+            ProviderKind::OpenAICompat
+        );
+        assert_eq!(
+            ProviderKind::detect("opencode-go-messages"),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::detect("opencode-go"),
+            ProviderKind::OpenAIResponses
+        );
+    }
+
+    /// kenari and Modal follow the same "wire in the type name" convention;
+    /// keep their arms pinned alongside OpenCode's.
+    #[test]
+    fn detect_maps_kenari_and_modal_wires() {
+        assert_eq!(ProviderKind::detect("kenari"), ProviderKind::OpenAICompat);
+        assert_eq!(
+            ProviderKind::detect("kenari-messages"),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::detect("kenari-responses"),
+            ProviderKind::OpenAIResponses
+        );
+        assert_eq!(ProviderKind::detect("modal"), ProviderKind::OpenAICompat);
+        assert_eq!(
+            ProviderKind::detect("modal-messages"),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::detect("modal-responses"),
+            ProviderKind::OpenAIResponses
+        );
     }
 
     #[test]

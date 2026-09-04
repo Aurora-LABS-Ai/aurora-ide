@@ -38,6 +38,8 @@ import { streamedToolStringArguments, toolStatus, type ToolCall } from "@/apps/a
  */
 export const TOOL_GROUP_MIN = 3;
 
+export type CompactionStatus = "running" | "completed" | "failed" | "cancelled";
+
 export type TimelineEvent =
   /**
    * A reasoning segment. `startedAt` (epoch ms) exists only on a LIVE segment
@@ -74,7 +76,8 @@ export type TimelineEvent =
       id: string;
       beforeTokens: number;
       afterTokens: number;
-      running: boolean;
+      status: CompactionStatus;
+      reason?: string;
       startedAt?: number;
       durationMs?: number;
     }
@@ -100,7 +103,8 @@ export type TimelineRow =
       id: string;
       beforeTokens: number;
       afterTokens: number;
-      running: boolean;
+      status: CompactionStatus;
+      reason?: string;
       startedAt?: number;
       durationMs?: number;
     }
@@ -134,7 +138,8 @@ export interface AgwTurn {
   compaction?: {
     beforeTokens: number;
     afterTokens: number;
-    running: boolean;
+    status: CompactionStatus;
+    reason?: string;
     startedAt?: number;
     durationMs?: number;
   };
@@ -296,7 +301,7 @@ export function appendCompaction(tl: TimelineEvent[], id: string): TimelineEvent
       id,
       beforeTokens: 0,
       afterTokens: 0,
-      running: true,
+      status: "running",
       // Stamped here rather than in the card, so the clock survives the card
       // unmounting and remounting — which is exactly what happens when someone
       // leaves for Settings to check whether the thing has hung.
@@ -305,21 +310,26 @@ export function appendCompaction(tl: TimelineEvent[], id: string): TimelineEvent
   ];
 }
 
-/** Mark a compaction event done with its before→after counts. */
-export function updateCompaction(
+/** Settle a live compaction exactly once with an explicit terminal status. */
+export function finishCompaction(
   tl: TimelineEvent[],
   id: string,
-  beforeTokens: number,
-  afterTokens: number,
+  result: {
+    status: Exclude<CompactionStatus, "running">;
+    beforeTokens: number;
+    afterTokens?: number;
+    reason?: string;
+  },
 ): TimelineEvent[] {
   return tl.map((e) =>
     e.kind === "compaction" && e.id === id
       ? {
           kind: "compaction",
           id,
-          beforeTokens,
-          afterTokens,
-          running: false,
+          beforeTokens: result.beforeTokens,
+          afterTokens: result.status === "completed" ? (result.afterTokens ?? 0) : 0,
+          status: result.status,
+          reason: result.reason,
           startedAt: e.startedAt,
           // Kept after the fact: how long a compaction took is the number that
           // says whether the next one is worth pinning a cheaper summarizer for.
@@ -507,12 +517,19 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       // own card and breaks the assistant-merge run so later turns stay split.
       let beforeTokens = 0;
       let afterTokens = 0;
-      let running = false;
+      let status: CompactionStatus = "completed";
+      let reason: string | undefined;
       try {
         const p = JSON.parse(m.content || "{}");
         beforeTokens = Number(p.beforeTokens) || 0;
         afterTokens = Number(p.afterTokens) || 0;
-        running = p.running === true;
+        status =
+          p.status === "failed" || p.status === "cancelled" || p.status === "completed"
+            ? p.status
+            : p.running === true
+              ? "running"
+              : "completed";
+        reason = typeof p.reason === "string" ? p.reason : undefined;
       } catch {
         /* malformed marker — render an empty (done) card */
       }
@@ -522,7 +539,7 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         content: "",
         events: [],
         isThinking: false,
-        compaction: { beforeTokens, afterTokens, running },
+        compaction: { beforeTokens, afterTokens, status, reason },
       });
       continue;
     }
@@ -859,7 +876,8 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
           id: e.id,
           beforeTokens: e.beforeTokens,
           afterTokens: e.afterTokens,
-          running: e.running,
+          status: e.status,
+          reason: e.reason,
           startedAt: e.startedAt,
           durationMs: e.durationMs,
         });

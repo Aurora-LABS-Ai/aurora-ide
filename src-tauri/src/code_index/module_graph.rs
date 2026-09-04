@@ -355,6 +355,75 @@ mod tests {
         );
     }
 
+    /// A Next.js workspace with no `src/` directory is wired like any other.
+    ///
+    /// `create-next-app` writes `"paths": { "@/*": ["./*"] }` when the sources
+    /// sit at the project root, and the resolver guessed `src/*` — Aurora's own
+    /// layout. Every import in such a project is `@/…`, so every edge was
+    /// dropped and `code op:modules` answered `dependencies: 0` across all
+    /// eight directories. That reads as "this code is not wired together"
+    /// rather than as a miss, which is why it went unnoticed until a live run
+    /// on 2026-09-04 questioned it out loud.
+    ///
+    /// The file shapes are that workspace's: `app/page.tsx` pulls in sections
+    /// and the data layer, a section pulls in `lib` and `types`.
+    #[test]
+    fn a_next_project_rooted_without_src_is_wired_through_its_alias() {
+        let (_d, idx) = build_index(&[
+            ("types/index.ts", "export type Product = { id: string };\n"),
+            ("lib/data.ts", "export const products = [];\n"),
+            (
+                "lib/data-access.ts",
+                "import { products } from '@/lib/data';\nexport const all = () => products;\n",
+            ),
+            (
+                "components/sections/hero.tsx",
+                "import type { Product } from '@/types';\nexport const Hero = () => null;\n",
+            ),
+            (
+                "app/page.tsx",
+                "import { Hero } from '@/components/sections/hero';\n\
+                 import { all } from '@/lib/data-access';\n\
+                 export default function Page() { return null; }\n",
+            ),
+        ]);
+        let g = build(&idx, Granularity::Dir);
+
+        for (from, to) in [
+            ("app", "components/sections"),
+            ("app", "lib"),
+            ("components/sections", "types"),
+        ] {
+            assert!(
+                g.edges.iter().any(|(f, t, _)| f == from && t == to),
+                "{from} -> {to} is missing; the `@/` alias resolved nowhere: {:?}",
+                g.edges
+            );
+        }
+    }
+
+    /// The `src/*` reading still works — it is tried first, and a project that
+    /// keeps its sources there must not start matching root-relative paths that
+    /// happen to share a tail.
+    #[test]
+    fn an_alias_rooted_at_src_still_resolves_there() {
+        let (_d, idx) = build_index(&[
+            ("src/lib/data.ts", "export const products = [];\n"),
+            (
+                "src/app/page.tsx",
+                "import { products } from '@/lib/data';\nexport default function P() { return null; }\n",
+            ),
+        ]);
+        let g = build(&idx, Granularity::Dir);
+        assert!(
+            g.edges
+                .iter()
+                .any(|(f, t, _)| f == "src/app" && t == "src/lib"),
+            "the src-rooted alias regressed: {:?}",
+            g.edges
+        );
+    }
+
     #[test]
     fn side_effect_imports_are_dependencies_even_without_a_local_binding() {
         let (_d, idx) = build_index(&[

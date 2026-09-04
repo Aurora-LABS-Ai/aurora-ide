@@ -16,13 +16,21 @@ import { resolveThinkingModelPair } from "@/kernel/lib/llm/thinking-models";
 import { databaseService } from "@/kernel/services/database";
 import {
   normalizeAgentExecutionMode,
+  normalizeAuroraSurface,
   type AgentExecutionMode,
+  type AuroraSurface,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
 import { providerCatalogService, type ProviderCatalogPreset } from "@/apps/agent/services/providers/provider-catalog";
 import { ATLAS_CLOUD_PRESET } from "@/apps/agent/services/providers/atlascloud";
+import {
+  normalizeImageProviders,
+  type ImageModel,
+  type ImageProvider,
+} from "@/apps/agent/services/providers/image-providers";
 import { CODEX_PRESET } from "@/apps/agent/services/providers/codex";
 import { CURSOR_PRESET } from "@/apps/agent/services/providers/cursor";
 import { OPENCODE_PRESET } from "@/apps/agent/services/providers/opencode";
+import { COMMANDCODE_PRESET } from "@/apps/agent/services/providers/commandcode";
 import { AGENT_ROUTER_PRESET, isAgentRouterWireChoice } from "@/apps/agent/services/providers/agentrouter";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
 import { MAX_ENABLED_SKILLS } from "@/apps/agent/services/skills/skills";
@@ -235,6 +243,40 @@ const normalizeSpeechRuntimePath = (value?: string | null): string => {
   return trimmed === "__bundled__" ? "" : trimmed;
 };
 
+/**
+ * How many models Aurora Chat's picker may offer.
+ *
+ * Ten is the number Alvan set. The point of a cap is that choosing is
+ * deliberate — a list you scroll is the thing this replaces — so it is enforced
+ * on the way in rather than trimmed on the way out, and the control that would
+ * exceed it goes disabled and says why.
+ */
+export const CHAT_SHORTLIST_MAX = 10;
+
+/**
+ * The stored shortlist, made safe to render.
+ *
+ * It comes back from SQLite, so it may be anything: a shape from an older
+ * build, a hand-edited row, or a list that grew past the cap when the cap was
+ * different. Duplicates are dropped and the cap is applied, because the two
+ * things that go wrong downstream are a picker with the same model twice and a
+ * picker with fifteen entries.
+ */
+const normalizeChatShortlist = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const key = entry.trim();
+    // A selection is `providerId:modelKey`; anything without the separator
+    // cannot resolve and would render as a row that does nothing.
+    if (!key.includes(":")) continue;
+    seen.add(key);
+    if (seen.size >= CHAT_SHORTLIST_MAX) break;
+  }
+  return [...seen];
+};
+
 // ============================================
 // SETTINGS STATE TYPES
 // ============================================
@@ -247,6 +289,66 @@ interface SettingsState {
   // Tool Approval
   autoApproveTools: boolean;
   agentExecutionMode: AgentExecutionMode;
+
+  /**
+   * Which of Aurora's two products the window is showing.
+   *
+   * Held SEPARATELY from `agentExecutionMode`, which keeps meaning
+   * agent/plan/team — the mode you were working in on the Build side. Two
+   * reasons, both learned by trying the single-field version first:
+   *
+   * 1. Switching to Chat and back must return you to the mode you left. One
+   *    field would forget it, and every trip through Chat would drop a Plan-mode
+   *    conversation back to Agent.
+   * 2. The composer's Agent↔Plan cycle writes `agentExecutionMode`. With one
+   *    field, pressing that shortcut while in Chat would silently move the
+   *    window to another product with another tool roster and another store.
+   *
+   * The mode the RUNTIME is told is the combination — see
+   * `effectiveExecutionMode`.
+   */
+  auroraSurface: AuroraSurface;
+
+  /**
+   * Start the NEXT Aurora Chat conversation in deep research.
+   *
+   * A seed, not the state — exactly like `selectedModel`. Deep research is
+   * fixed on the conversation at creation and can never be changed after, so
+   * this only decides what a new chat is born with. An open conversation reads
+   * its own flag, and the composer shows that rather than this.
+   */
+  deepResearchNext: boolean;
+
+  /**
+   * The models offered in Aurora Chat's picker, as `"providerId:modelKey"`.
+   *
+   * Its OWN list rather than a reuse of `provider_models.enabled`, which was
+   * the first proposal and is wrong: curating a short pool to chat with would
+   * then remove those models from Build, where the roster is long on purpose.
+   *
+   * Ticking a model makes it AVAILABLE, not selected — you still choose one per
+   * conversation. Capped at {@link CHAT_SHORTLIST_MAX}: a picker you scroll is
+   * the thing this exists to avoid, and a cap you can feel is what makes the
+   * choice deliberate.
+   *
+   * Empty means "no shortlist yet", and the picker then offers everything —
+   * a fresh install must not open onto a chat with no models in it.
+   */
+  chatModelShortlist: string[];
+
+  /**
+   * Image providers, configured by the user. Aurora Chat only.
+   *
+   * Separate from `providers` because they are a different kind of thing: an
+   * image provider has a generation path, an edit path, a response shape and
+   * a wire format of its own, and no context window, temperature or reasoning
+   * profile. Mixing them into one list would give every LLM row a set of
+   * fields that mean nothing to it.
+   *
+   * See `services/providers/image-providers.ts` for the shape and for why the
+   * wire format has to be per provider.
+   */
+  imageProviders: ImageProvider[];
 
   // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
   teamEnabled: boolean;
@@ -389,6 +491,20 @@ interface SettingsState {
   deferTools: boolean;
   setDeferTools: (value: boolean) => void;
   /**
+   * Whether other agents may send work to this Aurora over MCP.
+   *
+   * `aurora mcp` is a Model Context Protocol server another agent connects to.
+   * Its tools are always listed, but every one that DOES anything checks this
+   * switch and the Agent Window being open before it acts — see
+   * `cli_delegate::bridge` on the Rust side.
+   *
+   * Defaults OFF and is never turned on by anything but the user. It lets
+   * software outside Aurora start turns that edit files on this machine, which
+   * is not a default anybody should arrive at by accident.
+   */
+  mcpBridgeEnabled: boolean;
+  setMcpBridgeEnabled: (value: boolean) => void;
+  /**
    * Resolve the {@link ProviderConfig} the Lead should run on — the
    * `teamLeadModel` override when set and valid, otherwise the active chat
    * config (`getLLMConfig`).
@@ -502,6 +618,22 @@ interface SettingsState {
   setAutoAcceptChanges: (value: boolean) => void;
   setAutoApproveTools: (value: boolean) => void;
   setAgentExecutionMode: (mode: AgentExecutionMode) => void;
+  setAuroraSurface: (surface: AuroraSurface) => void;
+  setDeepResearchNext: (enabled: boolean) => void;
+  /** Add or remove a model from Aurora Chat's picker. Ignored at the cap. */
+  toggleChatShortlistModel: (selection: string) => void;
+
+  /** Add an image provider. Returns its new id. */
+  addImageProvider: (provider: Omit<ImageProvider, "id" | "models">) => string;
+  /** Change one image provider's fields. */
+  updateImageProvider: (id: string, patch: Partial<Omit<ImageProvider, "id">>) => void;
+  /** Remove an image provider and every model under it. */
+  deleteImageProvider: (id: string) => void;
+  /** Add a model to an image provider. Returns its new id. */
+  addImageModel: (providerId: string, model: Omit<ImageModel, "id" | "providerId">) => string;
+  /** Change one image model's fields. */
+  updateImageModel: (id: string, patch: Partial<Omit<ImageModel, "id" | "providerId">>) => void;
+  deleteImageModel: (id: string) => void;
   setAutoSave: (mode: 'off' | 'afterDelay' | 'onFocusChange' | 'onWindowChange') => void;
   setAutoSaveDelay: (delay: number) => void;
   setExplorerIconPack: (packId: ExplorerIconPackId) => void;
@@ -584,9 +716,20 @@ interface SettingsState {
   updateModel: (id: string, updates: Partial<Omit<LLMModel, "id" | "providerId">>) => void;
   deleteModel: (id: string) => void;
   /** Bulk replace the model list for a provider in one transaction. */
+  /**
+   * Swap a provider's whole model list for a freshly fetched one.
+   *
+   * `renamedKeys` maps an old model key to the key that replaced it, for
+   * providers whose ids can move without the model changing (a Modal endpoint
+   * carries its gateway region in its hostname). The active selection follows
+   * the rename instead of being orphaned. Whatever is left dangling afterwards
+   * is reconciled, so this call can never leave `selectedModel` naming a model
+   * that no longer exists.
+   */
   replaceModelsForProvider: (
     providerId: string,
     models: Array<Omit<LLMModel, "id" | "providerId" | "sortOrder">>,
+    renamedKeys?: Record<string, string>,
   ) => void;
 
   wrapMode: boolean;
@@ -643,7 +786,9 @@ export interface LLMProvider {
   // shape. The choice rides here rather than in a separate field so everything
   // downstream (URL builder, streaming client, reasoning replay) follows from
   // one value that cannot disagree with itself.
-  providerType?: "openai" | "openai-responses" | "codex" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
+  // `modal` / `modal-messages` / `modal-responses` follow the same rule: one
+  // workspace token, three wires on one gateway, the wire stored as the type.
+  providerType?: "openai" | "openai-responses" | "codex" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "modal" | "modal-messages" | "modal-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -1276,6 +1421,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   // Tool Approval
   autoApproveTools: false,
   agentExecutionMode: "agent",
+  // Aurora opens on the side that writes software. Chat is the deliberate trip.
+  auroraSurface: "build",
+  deepResearchNext: false,
+  chatModelShortlist: [],
+  imageProviders: [],
 
   // Agent Team (disabled by default; user opts in from the Agent Window's Settings → Team)
   teamEnabled: false,
@@ -1319,6 +1469,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   transcriptChapters: false,
   browserTools: true,
   deferTools: false,
+  mcpBridgeEnabled: false,
 
   // File Changes Approval
   autoAcceptChanges: false,
@@ -1421,6 +1572,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       // reason as Cursor's.
       if (!presetProviders.some((p) => p.id === OPENCODE_PRESET.id)) {
         presetProviders.push(OPENCODE_PRESET);
+      }
+
+      // Command Code (subscription). Frontend preset, but unlike OpenCode Go
+      // it is backed by a real Rust adapter: the body nests its model
+      // parameters under `params` beside a mandatory `config` block, and the
+      // response is newline-delimited JSON rather than SSE, so no existing
+      // wire could carry it. Models are pulled from the account rather than
+      // seeded, for the same reason as Cursor's.
+      if (!presetProviders.some((p) => p.id === COMMANDCODE_PRESET.id)) {
+        presetProviders.push(COMMANDCODE_PRESET);
       }
 
       // AgentRouter (OpenAI-compatible proxy). Frontend preset — seeds the
@@ -1613,9 +1774,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           appSettings.selectedModel || DEFAULT_SELECTED_MODEL,
           get().providers,
         );
-        const persistedExecutionMode = normalizeAgentExecutionMode(
-          appSettings.agentExecutionMode,
-        );
+        // A row written before the surface existed can hold `"chat"` here.
+        // Read it as the surface it now is, and leave the Build mode at its
+        // default rather than persisting a value this field can no longer mean.
+        const storedMode = normalizeAgentExecutionMode(appSettings.agentExecutionMode);
+        const persistedExecutionMode: AgentExecutionMode =
+          storedMode === "chat" ? "agent" : storedMode;
+        const persistedSurface: AuroraSurface =
+          storedMode === "chat"
+            ? "chat"
+            : normalizeAuroraSurface(appSettings.auroraSurface);
         const persistedThinkingEnabled = appSettings.thinkingEnabled ?? true;
         const syncedThinkingEnabled = syncThinkingForSelectedModel(
           selectedModel,
@@ -1633,6 +1801,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           selectedModel,
           autoApproveTools: appSettings.autoApproveTools ?? false,
           agentExecutionMode: persistedExecutionMode,
+          auroraSurface: persistedSurface,
+          deepResearchNext: appSettings.deepResearchNext ?? false,
+          chatModelShortlist: normalizeChatShortlist(appSettings.chatModelShortlist),
+          imageProviders: normalizeImageProviders(appSettings.imageProviders),
           teamEnabled: appSettings.teamEnabled ?? false,
           maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
           teamLeadModel: appSettings.teamLeadModel ?? '',
@@ -1670,6 +1842,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           transcriptChapters: appSettings.transcriptChapters ?? false,
           browserTools: appSettings.browserTools ?? true,
           deferTools: appSettings.deferTools ?? false,
+          mcpBridgeEnabled: appSettings.mcpBridgeEnabled ?? false,
           autoAcceptChanges: appSettings.autoAcceptChanges ?? false,
           explorerIconPack,
           syntaxValidationEnabled: appSettings.syntaxValidationEnabled ?? true,
@@ -1754,6 +1927,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       const appSettings: DbAppSettings = {
         selectedModel: state.selectedModel,
         agentExecutionMode: state.agentExecutionMode,
+        auroraSurface: state.auroraSurface,
+        deepResearchNext: state.deepResearchNext,
+        chatModelShortlist: state.chatModelShortlist,
+        imageProviders: state.imageProviders,
         teamEnabled: state.teamEnabled,
         maxTeamSize: state.maxTeamSize,
         teamLeadModel: state.teamLeadModel,
@@ -1778,6 +1955,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         transcriptChapters: state.transcriptChapters,
         browserTools: state.browserTools,
         deferTools: state.deferTools,
+        mcpBridgeEnabled: state.mcpBridgeEnabled,
         autoApproveTools: state.autoApproveTools,
         autoAcceptChanges: state.autoAcceptChanges,
         explorerIconPack: state.explorerIconPack,
@@ -2264,7 +2442,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     get().saveToDatabase();
   },
 
-  replaceModelsForProvider: (providerId, init) => {
+  replaceModelsForProvider: (providerId, init, renamedKeys) => {
     const reconciled: LLMModel[] = init.map((m, idx) => ({
       ...m,
       id: `${providerId}::${m.modelKey}`,
@@ -2277,13 +2455,33 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     set((state) => {
       const others = state.models.filter((m) => m.providerId !== providerId);
       const nextModels = [...others, ...reconciled];
+
+      // Follow a rename before reconciling. Without this the old key is simply
+      // gone, `resolveSelectedModel` bounces the selection to whichever model
+      // happens to sort first — often another provider entirely — and the
+      // person's chosen model changes because they changed a gateway region.
+      let selectedModel = state.selectedModel;
+      const separator = selectedModel.indexOf(":");
+      if (renamedKeys && separator > 0 && selectedModel.slice(0, separator) === providerId) {
+        const renamed = renamedKeys[selectedModel.slice(separator + 1)];
+        if (renamed) selectedModel = `${providerId}:${renamed}`;
+      }
+      selectedModel = resolveSelectedModel(
+        selectedModel,
+        synthesizeLegacyProviderFields(state.providers, nextModels, selectedModel),
+      );
+
       const synthesized = synthesizeLegacyProviderFields(
         state.providers,
         nextModels,
-        state.selectedModel,
+        selectedModel,
       );
-      return { models: nextModels, providers: synthesized };
+      return { models: nextModels, providers: synthesized, selectedModel };
     });
+    // The models themselves went to the database above; `selectedModel` lives
+    // in app settings and has to be written too, or a restart reads the old
+    // key back and reconciles it away.
+    get().saveToDatabase();
   },
 
   getAvailableModels: () => {
@@ -2307,7 +2505,105 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setAgentExecutionMode: (mode: AgentExecutionMode) => {
     const nextMode = normalizeAgentExecutionMode(mode);
+    // `chat` is a SURFACE, not a Build mode. Routing it here would let the
+    // composer's Agent↔Plan cycle move the window to another product, and
+    // would overwrite the Build mode this field exists to remember.
+    if (nextMode === "chat") {
+      get().setAuroraSurface("chat");
+      return;
+    }
     set({ agentExecutionMode: nextMode });
+    get().saveToDatabase();
+  },
+
+  setAuroraSurface: (surface: AuroraSurface) => {
+    set({ auroraSurface: normalizeAuroraSurface(surface) });
+    get().saveToDatabase();
+  },
+
+  setDeepResearchNext: (enabled: boolean) => {
+    set({ deepResearchNext: enabled });
+    get().saveToDatabase();
+  },
+
+  addImageProvider: (provider) => {
+    const id = `img-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    set({ imageProviders: [...get().imageProviders, { ...provider, id, models: [] }] });
+    get().saveToDatabase();
+    return id;
+  },
+
+  updateImageProvider: (id, patch) => {
+    set({
+      imageProviders: get().imageProviders.map((provider) =>
+        provider.id === id ? { ...provider, ...patch } : provider,
+      ),
+    });
+    get().saveToDatabase();
+  },
+
+  deleteImageProvider: (id) => {
+    // The models go with it. They live inside the row, so there is nothing to
+    // orphan — which is the reason they live inside the row.
+    set({ imageProviders: get().imageProviders.filter((provider) => provider.id !== id) });
+    get().saveToDatabase();
+  },
+
+  addImageModel: (providerId, model) => {
+    // Keyed on provider AND model name, so the same model offered by two
+    // providers is two rows rather than one that silently overwrites the other.
+    const id = `${providerId}:${model.modelKey}`;
+    set({
+      imageProviders: get().imageProviders.map((provider) =>
+        provider.id === providerId
+          ? {
+              ...provider,
+              models: provider.models.some((existing) => existing.id === id)
+                ? provider.models
+                : [...provider.models, { ...model, id, providerId }],
+            }
+          : provider,
+      ),
+    });
+    get().saveToDatabase();
+    return id;
+  },
+
+  updateImageModel: (id, patch) => {
+    set({
+      imageProviders: get().imageProviders.map((provider) => ({
+        ...provider,
+        models: provider.models.map((model) =>
+          model.id === id ? { ...model, ...patch } : model,
+        ),
+      })),
+    });
+    get().saveToDatabase();
+  },
+
+  deleteImageModel: (id) => {
+    set({
+      imageProviders: get().imageProviders.map((provider) => ({
+        ...provider,
+        models: provider.models.filter((model) => model.id !== id),
+      })),
+    });
+    get().saveToDatabase();
+  },
+
+  toggleChatShortlistModel: (selection: string) => {
+    const key = selection.trim();
+    if (!key) return;
+    const current = get().chatModelShortlist;
+    if (current.includes(key)) {
+      set({ chatModelShortlist: current.filter((entry) => entry !== key) });
+    } else {
+      // Silently at the cap rather than throwing: the control that calls this
+      // is already disabled at ten and says why, so reaching here means two
+      // rapid clicks, not a user who needs telling twice.
+      if (current.length >= CHAT_SHORTLIST_MAX) return;
+      set({ chatModelShortlist: [...current, key] });
+    }
     get().saveToDatabase();
   },
 
@@ -2377,6 +2673,11 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setDeferTools: (value: boolean) => {
     set({ deferTools: value });
+    get().saveToDatabase();
+  },
+
+  setMcpBridgeEnabled: (value: boolean) => {
+    set({ mcpBridgeEnabled: value });
     get().saveToDatabase();
   },
 

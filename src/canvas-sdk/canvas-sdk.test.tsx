@@ -36,10 +36,10 @@ describe("the exported surface", () => {
     // list fails in the other.
     expect(Object.keys(sdk).sort()).toEqual(
       [
-        "Badge", "Bar", "BarChart", "Canvas", "Code", "Columns", "Detail",
-        "Divider", "Event", "Fact", "Facts", "List", "Note", "Row", "Section",
-        "Sparkline", "Stat", "Stats", "Table", "Tabs", "Text", "Timeline",
-        "useHostTheme",
+        "Badge", "Bar", "BarChart", "Canvas", "Cite", "Code", "Columns",
+        "Detail", "Divider", "Event", "Fact", "Facts", "Image", "List", "Note",
+        "Quote", "Row", "Section", "Sparkline", "Stat", "Stats", "Table",
+        "Tabs", "Text", "Timeline", "useHostTheme",
       ].sort(),
     );
   });

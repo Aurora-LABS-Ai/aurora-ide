@@ -25,6 +25,7 @@ use crate::agent_runtime::events::AssistantEvent;
 use crate::agent_runtime::types::{ContentBlock, ConversationMessage};
 use crate::api::client::{ProviderConfigSnapshot, ProviderKind};
 use crate::api::codex::CODEX_RESPONSES_URL;
+use crate::api::commandcode::COMMANDCODE_GENERATE_URL;
 use crate::api::cursor::CURSOR_API_BASE;
 use crate::api::provider_kernel_adapter::{build_anthropic_url, build_openai_url};
 use crate::api::responses::build_responses_url;
@@ -139,6 +140,7 @@ pub async fn provider_test_model(
         system_prompt: None,
         messages: &messages,
         tools: &[],
+        tool_choice: Default::default(),
         temperature: None,
         max_output_tokens: if reasoning_requested {
             REASONING_PROBE_MAX_TOKENS
@@ -149,9 +151,7 @@ pub async fn provider_test_model(
         // A connectivity probe sends no tools.
         tool_bridge: None,
         // …and belongs to no conversation, so no cache-affinity key.
-        session_key: None,
-        volatile_tail_messages: 0,
-    };
+        session_key: None,    };
 
     // Drain the sink concurrently. The adapters `.send().await` into this
     // channel, so nothing may block on a full buffer or the stream
@@ -264,6 +264,9 @@ fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'sta
             "Cursor Agent",
             format!("{CURSOR_API_BASE}/agent.v1.AgentService/Run"),
         ),
+        // Fixed endpoint too, for the same reason: the base URL on the row
+        // is not what a request goes to.
+        ProviderKind::CommandCode => ("Command Code", COMMANDCODE_GENERATE_URL.to_string()),
         ProviderKind::DeepSeek | ProviderKind::OpenAICompat => {
             ("Chat Completions", build_openai_url(&config.base_url))
         }
@@ -371,6 +374,25 @@ mod tests {
         let c = config("anthropic", "https://api.anthropic.com/v1");
         let (shape, _) = describe_route(ProviderKind::detect(c.effective_provider_type()), &c);
         assert_eq!(shape, "Anthropic Messages");
+    }
+
+    /// OpenCode Go: three wires behind one base URL, chosen per model. The
+    /// report must name the endpoint each resolved type actually posts to,
+    /// or a model test could pass on one route while a turn takes another.
+    #[test]
+    fn opencode_wires_share_a_base_url_and_route_to_three_endpoints() {
+        let base = "https://opencode.ai/zen/go/v1";
+        for (wire, shape, path) in [
+            ("opencode-go-chat", "Chat Completions", "/chat/completions"),
+            ("opencode-go-messages", "Anthropic Messages", "/messages"),
+            ("opencode-go", "Responses", "/responses"),
+        ] {
+            let c = config(wire, base);
+            let (got_shape, url) =
+                describe_route(ProviderKind::detect(c.effective_provider_type()), &c);
+            assert_eq!(got_shape, shape, "{wire}");
+            assert_eq!(url, format!("{base}{path}"), "{wire}");
+        }
     }
 
     #[tokio::test]

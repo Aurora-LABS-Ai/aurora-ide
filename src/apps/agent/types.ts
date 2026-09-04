@@ -119,16 +119,23 @@ export type DockTabKind =
   | "browser"
   | "terminal"
   | "team"
+  // Aurora Chat's own surface: what Aurora remembers about the user. Opened
+  // from the rail, like Team.
+  | "memory"
   | "file"
   | "member"
   | "project"
-  | "chat";
+  | "chat"
+  // One saved artifact, opened from the Canvas index. Its own tab rather than
+  // a selection inside Canvas: a conversation that produced six reports and
+  // diagrams is browsed, and two of them are often read side by side.
+  | "artifact";
 
 /** The singleton (one-instance) tab kinds — everything except the per-file,
- *  per-team-member, per-project and per-conversation tabs. */
+ *  per-team-member, per-project, per-conversation and per-artifact tabs. */
 export type DockSingletonKind = Exclude<
   DockTabKind,
-  "file" | "member" | "project" | "chat"
+  "file" | "member" | "project" | "chat" | "artifact"
 >;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
@@ -138,7 +145,20 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   browser: "Browser",
   terminal: "Terminal",
   team: "Team",
+  memory: "Memory",
 };
+
+/**
+ * The dock surfaces Aurora Chat offers: Canvas, where it presents, and Memory,
+ * what it keeps.
+ *
+ * Everything else on this list addresses a project — Files opens a tree, Review
+ * shows diffs, Terminal reads the user's shells, Browser and Team drive tools
+ * chat mode does not register. There are two doors onto these tabs (the dock's
+ * `+` menu and the command palette), which is exactly why the roster is one
+ * constant rather than a list written out twice.
+ */
+export const CHAT_DOCK_TABS: readonly DockSingletonKind[] = ["canvas", "memory"];
 
 /** A live tab in the dock's strip. Singletons use their kind as the id; file
  *  tabs use `file:<absolutePath>`, team-member tabs `member:<agentId>` and
@@ -156,6 +176,8 @@ export interface DockTabInstance {
   projectRoot?: string;
   /** Conversation id — only for `kind === "chat"`. */
   threadId?: string;
+  /** Saved artifact id — only for `kind === "artifact"`. */
+  artifactId?: string;
   /**
    * The project that conversation belongs to — only for `kind === "chat"`.
    *

@@ -121,9 +121,10 @@ impl ToolExecutor for ShellSpawnTool {
         ToolSchema {
             name: "shell_spawn".into(),
             description: shell_tool_description(
-                "Spawn a long-running background process (e.g. dev server, watch process). \
-                 Returns a process ID for later management with shell_list_processes and \
-                 shell_kill.",
+                "Start a long-running process in the background (a dev server, a watcher), typed \
+                 exactly as you would at the shell's prompt, and return a process ID. Its output \
+                 is written to a file you can follow with shell_read_output; list it with \
+                 shell_list_processes and stop it with shell_kill.",
             ),
             input_schema: json!({
                 "type": "object",

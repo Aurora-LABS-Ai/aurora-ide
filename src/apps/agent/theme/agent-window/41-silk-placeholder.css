@@ -1,0 +1,89 @@
+/* ═══ Image-generation placeholder ════════════════════════════════════════
+ *
+ * The hole an image occupies while it is being made. See
+ * `components/theme/SilkPlaceholder.tsx`; the shader and these gradients are
+ * Alvan's, from `public/image-placeholder-loop.html`.
+ *
+ * Only the contents of that file's `.box` live here. Its outer halo — a blurred
+ * spinning conic gradient overscanned to 144% — is deliberately absent: it sat
+ * outside the box, and a transcript full of glowing rectangles is not what a
+ * picture loading looks like.
+ */
+
+.agw-silk {
+  position: relative;
+  width: 100%;
+  border-radius: var(--agw-radius-md);
+  overflow: hidden;
+  /* Black, not a token. The shader paints every pixel, so this shows only for
+     the frame before the first draw and behind a `border-radius` corner —
+     a surface colour there would rim the box in a lighter edge. */
+  background: #000;
+}
+
+.agw-silk-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.agw-silk-vignette {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  /* Longhands, never the `animation` shorthand: a `var()` inside the shorthand
+     resolves invalid-at-computed-value-time if the custom property is missing,
+     which silently computes `animation-name: none` while the rule still reads
+     correctly in DevTools. See `.knowledge/lesson.md` 2026-08-21. */
+  animation-name: agw-silk-vignette-in;
+  animation-duration: 3s;
+  animation-timing-function: ease;
+  animation-fill-mode: forwards;
+}
+
+/* Ends at a VISIBLE value and does not loop, so there is no frame where the
+   box blanks. */
+@keyframes agw-silk-vignette-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.agw-silk-vignette-radial,
+.agw-silk-vignette-linear {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.agw-silk-vignette-radial {
+  background: radial-gradient(
+    ellipse at center,
+    transparent 20%,
+    rgba(0, 0, 0, 0.4) 65%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+.agw-silk-vignette-linear {
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.2) 0%,
+    transparent 30%,
+    transparent 70%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+}
+
+/* The shader itself already renders a still frame when reduced motion is
+   asked for (the component checks `matchMedia`). This handles the fade, which
+   is CSS and therefore not the component's to stop. */
+@media (prefers-reduced-motion: reduce) {
+  .agw-silk-vignette {
+    animation: none;
+    opacity: 1;
+  }
+}

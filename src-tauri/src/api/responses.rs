@@ -55,7 +55,8 @@ use crate::agent_runtime::types::{ContentBlock, MessageRole, TokenUsage};
 
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
-    build_openai_headers, collect_text, finalize_assistant_message, frame_payloads,
+    apply_opencode_headers, build_openai_headers, collect_text, finalize_assistant_message,
+    frame_payloads,
     map_reqwest_error, map_status_error, parse_tool_input, split_aurora_images,
     strip_aurora_images_for_text, unprefix_model, AuroraImagePiece, BlockState, SseFrameBuffer,
 };
@@ -107,7 +108,8 @@ impl StreamingApiClient for OpenAIResponsesAdapter {
         }
 
         let url = build_responses_url(&self.config.base_url);
-        let headers = build_openai_headers(&self.config)?;
+        let mut headers = build_openai_headers(&self.config)?;
+        apply_opencode_headers(&mut headers, &self.config, request.session_key)?;
         let body = build_responses_body(&request, &self.config);
 
         // Opt-in request tracing, same switch the Chat Completions adapter
@@ -261,7 +263,10 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
             })
             .collect();
         body.insert("tools".to_string(), Value::Array(tools));
-        body.insert("tool_choice".to_string(), Value::String("auto".to_string()));
+        body.insert(
+            "tool_choice".to_string(),
+            Value::String(request.tool_choice.as_str().to_string()),
+        );
     }
 
     if model_supports_temperature(model) {
@@ -1289,6 +1294,7 @@ mod tests {
             system_prompt: Some("You are Aurora."),
             messages,
             tools,
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 4096,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest {
@@ -1297,9 +1303,7 @@ mod tests {
                 ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
             },
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        }
+            session_key: None,        }
     }
 
     #[test]
@@ -1343,6 +1347,23 @@ mod tests {
         assert!(body.get("temperature").is_none());
         // No conversation identity on this request → no cache key.
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn tools_can_remain_in_the_cache_prefix_while_selection_is_disabled() {
+        let messages = vec![ConversationMessage::user_text("compact", 0)];
+        let tools = vec![ToolSchema {
+            name: "file_read".into(),
+            description: "Read a file".into(),
+            input_schema: json!({"type":"object","properties":{}}),
+        }];
+        let mut req = request(&messages, &tools);
+        req.tool_choice = crate::agent_runtime::api_client::ToolChoice::None;
+
+        let body = build_responses_body(&req, &config());
+
+        assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["tool_choice"], "none");
     }
 
     #[test]
@@ -1476,6 +1497,7 @@ mod tests {
                 timestamp: 2,
                 attached_selected_elements: None,
                 attached_prompt_chips: None,
+                aurora_context: None,
                 model: None,
             },
         ];
@@ -1810,13 +1832,12 @@ mod rejection_tests {
             messages: &messages,
             system_prompt: None,
             tools: &[],
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
         let (_, items) = responses_instructions_and_input(&request, false);
         assert!(!items.is_empty());
         for item in &items {
@@ -1854,6 +1875,7 @@ mod rejection_tests {
             timestamp: 0,
             attached_selected_elements: None,
             attached_prompt_chips: None,
+            aurora_context: None,
             model: None,
         }];
         let request = ApiRequest {
@@ -1861,13 +1883,12 @@ mod rejection_tests {
             messages: &messages,
             system_prompt: None,
             tools: &[],
+            tool_choice: Default::default(),
             temperature: None,
             max_output_tokens: 1024,
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
-            session_key: None,
-            volatile_tail_messages: 0,
-        };
+            session_key: None,        };
 
         let (_, items) = responses_instructions_and_input(&request, true);
         let trailing = items.last().expect("trailing user item");

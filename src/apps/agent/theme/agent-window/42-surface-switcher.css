@@ -1,0 +1,137 @@
+/* ═══ Product switcher — Aurora Chat / Aurora Build ═══════════════════════
+ *
+ * The control at the top of the left rail. See
+ * `components/shell/SurfaceSwitcher.tsx`.
+ *
+ * The MENU reuses `.agw-projmenu` wholesale (07-rail-home.css) and this file
+ * only adds what two-line rows need. The TRIGGER is its own thing: the project
+ * switcher's trigger is a ghost row on the home screen that reveals its chip on
+ * hover, and this one sits permanently at the top of the rail naming the
+ * product, so it is legible at rest rather than on approach.
+ */
+
+.agw-surfacesw-wrap {
+  padding: 10px 8px 4px 10px;
+}
+
+.agw-surfacesw {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px 0 9px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agw-surfacesw:hover,
+.agw-surfacesw:focus-visible {
+  background: var(--agw-state-quiet);
+  border-color: var(--agw-border);
+}
+
+.agw-surfacesw:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--agw-ring) 45%, transparent);
+}
+
+.agw-surfacesw[data-open] {
+  background: var(--agw-state-quiet);
+  border-color: var(--agw-border-strong);
+}
+
+/* The glyph carries the accent so the two products are distinguishable at a
+   glance from the rail's edge, before the name is read. */
+.agw-surfacesw > svg {
+  flex: none;
+  color: var(--agw-accent);
+}
+
+.agw-surfacesw-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agw-surfacesw-chev {
+  display: inline-flex;
+  flex: none;
+  color: var(--agw-text-subtle);
+}
+
+.agw-surfacesw:hover .agw-surfacesw-chev,
+.agw-surfacesw[data-open] .agw-surfacesw-chev {
+  color: var(--agw-text-muted);
+}
+
+/* ── The menu ─────────────────────────────────────────────────────────────
+ * Two rows, no filter field. `.agw-projmenu`'s own `max-height` and scroller
+ * are inherited and simply never reached.
+ */
+
+/* Rows are taller than a project row because each carries a name AND a
+   tagline, and the glyph should sit against the name rather than float
+   between the two lines. */
+.agw-surfacemenu-row {
+  align-items: flex-start;
+  padding: 9px 8px;
+}
+
+.agw-surfacemenu-row > svg {
+  /* Optical alignment with the name's cap height, not the row's box. */
+  margin-top: 2px;
+}
+
+.agw-surfacemenu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* The tagline is what tells someone which room they are walking into, so it is
+   readable rather than a whisper — one step down from the name, not two. */
+.agw-surfacemenu-tagline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: 400;
+}
+
+.agw-surfacemenu-row[data-current] .agw-surfacemenu-tagline {
+  color: var(--agw-text-subtle);
+}
+
+.agw-surfacemenu .agw-projmenu-check {
+  margin-top: 2px;
+}
+
+/* ── Chat rail: day-group headers ─────────────────────────────────────────
+ *
+ * "Today", "Yesterday", "Previous 7 days". Deliberately NOT the collapsible
+ * `.agw-rail-section-toggle` a project header uses: a day is not a container
+ * you shut, it is a divider you read past. No caret, no hit target, nothing to
+ * click — which is also why it is a div rather than a button.
+ */
+.agw-rail-daygroup {
+  padding: 2px 8px 2px 10px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.02em;
+  user-select: none;
+}

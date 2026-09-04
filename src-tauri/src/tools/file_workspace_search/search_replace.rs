@@ -306,12 +306,30 @@ pub(crate) fn render_response(
                     if count == 1 { "" } else { "s" }
                 )
             });
+            // Said as a SENTENCE, not only as a flag, and it says what was
+            // preserved rather than what was normalized.
+            //
+            // This used to be `"lineEndingNormalized": true` and nothing else.
+            // It means "both sides were folded to LF so the match could
+            // succeed" — a statement about the MATCH — and the file's own
+            // endings are restored before the write (`restore_line_endings`,
+            // `commands/editor_ops.rs`). But the name reads as "your file was
+            // rewritten", and on 2026-09-04 an agent read it exactly that way:
+            // it concluded a two-region edit had flipped a 402-line CRLF file
+            // to LF, filed a bug, and wrote the finding up. The file was
+            // CRLF the whole time. A field that reads as damage will keep
+            // producing reports of damage that did not happen.
+            let crlf_note = line_ending_normalized.then_some(
+                " (this file uses CRLF: the text was matched with line endings \
+                 folded to LF, and the file's own CRLF endings were preserved on write)",
+            );
             let mut payload = json!({
                 "success": true,
                 "pending": false,
                 "message": format!(
-                    "Replaced {total_replacements} occurrence(s) in {raw_path}{}",
-                    repair_note.as_deref().unwrap_or("")
+                    "Replaced {total_replacements} occurrence(s) in {raw_path}{}{}",
+                    repair_note.as_deref().unwrap_or(""),
+                    crlf_note.unwrap_or("")
                 ),
                 "path": raw_path,
                 "fullPath": full_path,
@@ -319,7 +337,9 @@ pub(crate) fn render_response(
                 "totalReplacements": total_replacements,
                 "linesAdded": lines_added,
                 "linesRemoved": lines_removed,
-                "lineEndingNormalized": line_ending_normalized,
+                // Named for what it describes — the match — so it cannot be
+                // read as a claim about the file on disk.
+                "matchedAcrossCrlf": line_ending_normalized,
                 // Full before/after for the Review panel's diff. Capped per side;
                 // `null` past the cap (Review falls back to the stats summary).
                 "oldContent": diff_side(&original_content),
@@ -518,6 +538,79 @@ mod tests {
         assert_eq!(parsed["success"], true);
         let on_disk = std::fs::read_to_string(tmp.path().join("a.txt")).unwrap();
         assert_eq!(on_disk, "hello universe\n");
+    }
+
+    /// A CRLF file stays CRLF, and the result says so in words.
+    ///
+    /// The bug this pins is not in the writing — `restore_line_endings` has
+    /// always put the file's own endings back. It is in the REPORTING: the
+    /// result used to carry a bare `lineEndingNormalized: true`, which reads
+    /// as "your file was rewritten". On 2026-09-04 an agent read it that way,
+    /// concluded a two-region edit had flipped a 402-line CRLF file to LF, and
+    /// filed a bug about damage that never happened. So this asserts both
+    /// halves: the bytes on disk, and that the sentence tells the truth about
+    /// them.
+    #[tokio::test]
+    async fn a_crlf_file_keeps_its_crlf_and_the_result_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "alpha\r\nbeta\r\ngamma\r\n").unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    // Written with LF, as a model writes it, against a CRLF file.
+                    "path": "a.txt",
+                    "old_string": "alpha\nbeta",
+                    "new_string": "alpha\nBETA",
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["success"], true);
+
+        // The file is untouched apart from the edit itself.
+        let on_disk = std::fs::read_to_string(tmp.path().join("a.txt")).unwrap();
+        assert_eq!(on_disk, "alpha\r\nBETA\r\ngamma\r\n");
+
+        // And the report names the match, not the file — and says the file's
+        // own endings survived, which is the sentence that stops the wrong
+        // reading before it starts.
+        assert_eq!(parsed["matchedAcrossCrlf"], true);
+        assert!(
+            parsed["lineEndingNormalized"].is_null(),
+            "the old name reads as damage and must not come back"
+        );
+        let message = parsed["message"].as_str().unwrap_or_default();
+        assert!(message.contains("preserved"), "{message}");
+        assert!(message.contains("CRLF"), "{message}");
+    }
+
+    /// The note is absent on an LF file — there is nothing to explain.
+    #[tokio::test]
+    async fn an_lf_file_gets_no_line_ending_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": "a.txt",
+                    "old_string": "beta",
+                    "new_string": "BETA",
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["matchedAcrossCrlf"], false);
+        assert!(!parsed["message"].as_str().unwrap_or_default().contains("CRLF"));
     }
 
     #[tokio::test]

@@ -113,6 +113,41 @@ pub(crate) fn provider_preset(config: &AuroraProviderConfig) -> ProviderPreset {
             required_headers: &[],
             thinking_mode: ThinkingMode::None,
         },
+        // Modal — one workspace, three wires, one `wk-….ws-…` proxy token.
+        // The regional gateway answers all three paths and takes ONLY the
+        // Bearer form: `x-api-key` on `/messages` is a 401 `proxy auth
+        // required` (measured 2026-09-02), which is why the Messages wire here
+        // differs from kenari's.
+        "modal" => ProviderPreset {
+            auth_header: "Authorization",
+            auth_type: AuthType::Bearer,
+            chat_endpoint: "/chat/completions",
+            default_params: &[],
+            format: ProviderFormat::OpenAi,
+            include_stream_options: true,
+            required_headers: &[],
+            thinking_mode: ThinkingMode::None,
+        },
+        "modal-messages" => ProviderPreset {
+            auth_header: "Authorization",
+            auth_type: AuthType::Bearer,
+            chat_endpoint: "/messages",
+            default_params: &[],
+            format: ProviderFormat::Anthropic,
+            include_stream_options: false,
+            required_headers: &[("anthropic-version", "2023-06-01")],
+            thinking_mode: ThinkingMode::None,
+        },
+        "modal-responses" => ProviderPreset {
+            auth_header: "Authorization",
+            auth_type: AuthType::Bearer,
+            chat_endpoint: "/responses",
+            default_params: &[],
+            format: ProviderFormat::OpenAi,
+            include_stream_options: false,
+            required_headers: &[],
+            thinking_mode: ThinkingMode::None,
+        },
         "glm" => ProviderPreset {
             auth_header: "Authorization",
             auth_type: AuthType::Bearer,
@@ -204,6 +239,12 @@ pub(crate) fn normalize_provider_type(provider_type: &str, base_url: &str, model
     // the provider rather than guessed here.
     if lower_url.contains("kenari.id") {
         return "kenari".to_string();
+    }
+    // Modal's gateway serves Kimi, GLM, DeepSeek and Qwen endpoints by
+    // hostname; a vendor guess from the model id would route the workspace
+    // token at the vendor's own API.
+    if lower_url.contains("modal.direct") {
+        return "modal".to_string();
     }
     if lower_url.contains("anthropic.com") || lower_model.contains("claude") {
         return "anthropic".to_string();
@@ -319,6 +360,33 @@ mod tests {
 
         let responses = provider_preset(&config("kenari-responses", "https://kenari.id/v1", ""));
         assert_eq!(responses.chat_endpoint, "/responses");
+    }
+
+    #[test]
+    fn modal_is_detected_from_its_gateway_and_every_wire_is_bearer() {
+        // A blank type on a gateway URL must resolve to modal, whatever model
+        // hostname the row carries — the workspace token is not a Kimi key.
+        assert_eq!(
+            normalize_provider_type(
+                "",
+                "https://inference.us-west.modal.direct/v1",
+                "maya--ep-kimi-k3-server.us-west.modal.direct"
+            ),
+            "modal"
+        );
+        let base = "https://inference.us-west.modal.direct/v1";
+        for (wire, path, format) in [
+            ("modal", "/chat/completions", ProviderFormat::OpenAi),
+            ("modal-messages", "/messages", ProviderFormat::Anthropic),
+            ("modal-responses", "/responses", ProviderFormat::OpenAi),
+        ] {
+            let preset = provider_preset(&config(wire, base, ""));
+            assert_eq!(preset.chat_endpoint, path);
+            assert!(preset.format == format, "{wire}");
+            // Measured: `x-api-key` on the gateway's /messages is a 401.
+            assert!(matches!(preset.auth_type, AuthType::Bearer), "{wire} must be Bearer");
+            assert_eq!(get_chat_url(base, &preset), format!("{base}{path}"));
+        }
     }
 
     #[test]

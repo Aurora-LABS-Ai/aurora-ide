@@ -365,6 +365,25 @@ describe("AgentRuntimeClient.chat — event routing", () => {
     listenUnsubs.clear();
   });
 
+  it("shows the wrapped target across streaming and execution events with one call id", async () => {
+    const onToolCall = vi.fn();
+    const onToolExecutionComplete = vi.fn();
+    const client = buildClient({ onToolCall, onToolExecutionComplete });
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+    const input = { name: "browser_navigate", arguments: { url: "https://example.test" } };
+    dispatch(AGENT_EVENT_CHANNEL, { turnId, seq: 1, event: { type: "tool_use_delta", id: "wrapped-id", name: "call_tool", arguments: JSON.stringify(input) } });
+    dispatch(AGENT_EVENT_CHANNEL, { turnId, seq: 2, event: { type: "tool_use", id: "wrapped-id", name: "call_tool", input } });
+    dispatch(AGENT_EVENT_CHANNEL, { turnId, seq: 3, event: { type: "tool_execution_start", id: "wrapped-id", name: "browser_navigate", input: input.arguments } });
+    dispatch(AGENT_EVENT_CHANNEL, { turnId, seq: 4, event: { type: "tool_execution_result", id: "wrapped-id", name: "browser_navigate", input: input.arguments, content: "opened", is_error: false } });
+    const expected = { id: "wrapped-id", type: "function", function: { name: "browser_navigate", arguments: JSON.stringify(input.arguments) } };
+    expect(onToolCall).toHaveBeenCalledTimes(3);
+    for (const [call] of onToolCall.mock.calls) expect(call).toEqual(expected);
+    expect(onToolExecutionComplete).toHaveBeenCalledWith(expected, "opened");
+    dispatch(AGENT_TURN_COMPLETE_CHANNEL, { turnId, finalText: "done" });
+    await promise;
+  });
+
   it("subscribes to all five channels and invokes agent_chat_v2 with the request", async () => {
     const client = buildClient();
     const chatPromise = client.chat(sampleInput);

@@ -58,7 +58,7 @@ import {
   type AgentRuntimeCallbacks,
   type RuntimeToolDefinitionLike,
 } from "@/apps/agent/services/runtime/agent-runtime-client";
-import { getMcpToolDefinitions, getMcpToolsSummary } from "@/apps/agent/services/tools/mcp-tools";
+import { getMcpToolDefinitions } from "@/apps/agent/services/tools/mcp-tools";
 import { getTeamState, getRunStatus } from "@/apps/agent/services/team/team-client";
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import type { TeamProjectState, TeamRunStatus } from "@/kernel/types/team";
@@ -243,7 +243,6 @@ export class AgentService {
     const composedPrompt = await composeAgentSystemPrompt({
       basePrompt: this.config.systemPrompt,
       executionMode,
-      mcpSummary: getMcpToolsSummary(),
       promptContext: { userMessage: "" },
       // A compaction runs with `tools: []` (see the call below), so every
       // tool-gated section is switched OFF here. The default for browser is
@@ -309,7 +308,6 @@ export class AgentService {
       const composedPrompt = await composeAgentSystemPrompt({
         basePrompt: this.config.systemPrompt,
         executionMode,
-        mcpSummary: getMcpToolsSummary(),
         promptContext: promptContext ?? { userMessage },
         // The same config field the runtime client forwards as the request's
         // `transcriptChapters`, so the instruction and the tool roster are

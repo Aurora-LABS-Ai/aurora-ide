@@ -605,7 +605,9 @@ impl ConversationRuntime {
             COMPACTION_SYSTEM_PROMPT
         };
         let instruction = if share_cache {
-            format!("{COMPACTION_NO_TOOLS_PREAMBLE}\n\n{summary_prompt}\n\n{COMPACTION_INSTRUCTION}")
+            format!(
+                "{COMPACTION_NO_TOOLS_PREAMBLE}\n\n{summary_prompt}\n\n{COMPACTION_INSTRUCTION}"
+            )
         } else {
             COMPACTION_INSTRUCTION.to_string()
         };
@@ -1133,9 +1135,12 @@ pub(super) fn tool_usage_recap(messages: &[ConversationMessage]) -> Option<Strin
                 args = format!("{cut}…");
             }
             let line = format!("{name}({args})");
-            match latest.iter_mut().find(|(tool, _)| tool == name) {
+            // Retain one example per optional operation, while preserving the
+            // actual call_tool envelope in the recap's executable example.
+            let (identity, _) = crate::tools::tool_search::call_identity(name, input);
+            match latest.iter_mut().find(|(tool, _)| tool == identity) {
                 Some(slot) => slot.1 = line,
-                None => latest.push((name.clone(), line)),
+                None => latest.push((identity.to_owned(), line)),
             }
         }
     }

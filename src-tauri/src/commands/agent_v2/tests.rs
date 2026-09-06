@@ -657,7 +657,10 @@ fn natives_lead_the_roster_and_mcp_connection_order_cannot_move_them() {
 
     // And the bridged partition is sorted, so adding a server shifts only
     // what follows it rather than everything.
-    let tail: Vec<&String> = forward[last_native + 1..].iter().collect();
+    let tail: Vec<&String> = forward[last_native + 1..]
+        .iter()
+        .filter(|name| !crate::tools::tool_search::TOOL_NAMES.contains(&name.as_str()))
+        .collect();
     let mut sorted = tail.clone();
     sorted.sort();
     assert_eq!(tail, sorted, "bridged partition is not name-sorted");
@@ -2201,144 +2204,73 @@ fn registry_with_deferral_for(defer: bool, thread_id: &str) -> ToolRegistry {
     )
 }
 
-/// A tool `tool_search` loaded stays loaded after the user speaks again.
-///
-/// The registry is rebuilt for every USER message, and the load used to live
-/// only in that one registry. So a tool loaded mid-turn worked for the rest of
-/// that turn and vanished at the next message — while the transcript still read
-/// "loaded and callable from your next message", so the model called it and got
-/// `tool not found`, then retried. Observed in thread `9f41764f`, where a bare
-/// "?" between `browser_guidelines` (worked) and `browser_navigate` (not found)
-/// was the entire difference.
 #[tokio::test]
-async fn a_loaded_tool_survives_the_next_user_message() {
-    use crate::agent_runtime::tool_executor::ToolContext;
-
-    let thread = "thread-tool-search-persistence";
-    crate::tools::tool_search::forget_thread_for_test(thread);
-
-    // Turn 1: deferred, so the bridge tool is not on the roster.
-    let first = registry_with_deferral_for(true, thread);
-    assert!(
-        first.get("team_status").is_none(),
-        "a deferrable tool should start off the roster"
-    );
-
-    // The model loads it.
-    let search = first.get("tool_search").expect("tool_search is advertised");
+async fn discovered_tools_survive_rebuild_without_changing_the_roster() {
+    let first = registry_with_deferral_for(true, "discovery-thread");
+    let before = serde_json::to_vec(&first.schemas()).unwrap();
     let ctx = ToolContext {
         turn_id: "turn-1".into(),
         tool_call_id: "call-1".into(),
-        thread_id: thread.into(),
+        thread_id: "discovery-thread".into(),
         workspace_root: None,
         workspace_access: Default::default(),
         cancel_token: CancellationToken::new(),
         spill_dir: None,
     };
-    let result = search
-        .execute(serde_json::json!({ "query": "select:team_status" }), &ctx)
+    let result = first
+        .get("tool_search")
+        .unwrap()
+        .execute(serde_json::json!({"query":"select:team_status"}), &ctx)
         .await
-        .expect("load succeeds");
-    assert!(result.contains("team_status"), "{result}");
-    assert!(
-        first.get("team_status").is_some(),
-        "the load should be callable in the turn that made it"
-    );
-
-    // Turn 2: the user typed again, so the registry is built from scratch.
-    let second = registry_with_deferral_for(true, thread);
-    assert!(
-        second.get("team_status").is_some(),
-        "a tool loaded in an earlier turn must still be callable — this is the \
-         `tool not found: browser_navigate` bug"
-    );
-
-    // Another conversation is unaffected: reveals are per thread, not global.
-    let other = registry_with_deferral_for(true, "thread-somebody-else");
-    assert!(
-        other.get("team_status").is_none(),
-        "one conversation's load must not widen another's roster"
-    );
-
-    crate::tools::tool_search::forget_thread_for_test(thread);
-}
-
-#[test]
-fn deferral_off_advertises_everything_and_adds_no_search_tool() {
-    let registry = registry_with_deferral(false);
-    assert!(registry.get("mcp_drive_search_files").is_some());
-    assert!(registry.get("team_status").is_some());
-    assert!(
-        registry.get("tool_search").is_none(),
-        "the switch must be a true no-op when off — no extra schema"
-    );
-}
-
-#[test]
-fn deferral_on_withholds_the_deferrable_buckets_but_keeps_the_core() {
-    let registry = registry_with_deferral(true);
-
-    for withheld in ["mcp_drive_search_files", "team_status"] {
-        assert!(
-            registry.get(withheld).is_none(),
-            "{withheld} must not be advertised while deferred"
-        );
-    }
-    assert!(
-        registry.get("tool_search").is_some(),
-        "something must tell the model the withheld tools exist"
-    );
-    // The tools a turn cannot start without are never deferred.
-    for core in ["file_read", "file_edit", "grep", "shell_execute"] {
-        assert!(registry.get(core).is_some(), "{core} must stay advertised");
+        .unwrap();
+    assert!(result.contains("team_status"));
+    assert!(first.get("team_status").is_none());
+    assert_eq!(before, serde_json::to_vec(&first.schemas()).unwrap());
+    for registry in [
+        first,
+        registry_with_deferral_for(false, "discovery-thread"),
+        registry_with_deferral_for(true, "other-thread"),
+    ] {
+        assert_eq!(before, serde_json::to_vec(&registry.schemas()).unwrap());
+        let resolved = registry
+            .resolve_call(
+                "call_tool",
+                &serde_json::json!({"name":"team_status","arguments":{}}),
+            )
+            .unwrap();
+        assert_eq!(resolved.executor.name(), "team_status");
+        assert!(resolved.executor.uses_frontend_lifecycle());
     }
 }
 
-#[tokio::test]
-async fn a_deferred_tool_becomes_callable_after_it_is_loaded() {
-    let registry = registry_with_deferral(true);
-    let search = registry.get("tool_search").expect("advertised");
-
-    let ctx = ToolContext {
-        workspace_access: Default::default(),
-        turn_id: "turn-defer".into(),
-        tool_call_id: "call-1".into(),
-        thread_id: "thread".into(),
-        workspace_root: None,
-        cancel_token: CancellationToken::new(),
-        spill_dir: None,
-    };
-    search
-        .execute(
-            serde_json::json!({ "query": "select:mcp_drive_search_files" }),
-            &ctx,
-        )
-        .await
-        .expect("loaded");
-
-    // This is the whole feature: the registry the NEXT request is built from
-    // now contains the tool, without the turn restarting.
-    assert!(
-        registry.get("mcp_drive_search_files").is_some(),
-        "loading must mutate the live per-turn roster, not a copy of it"
-    );
-    // And its neighbours come with it, on purpose. Revealing anything changes
-    // the tool schema array, which sits at the FRONT of the provider's cached
-    // prefix — so one reveal re-bills the whole conversation as a cache write,
-    // whether it brought in one tool or forty. Measured on thread `99029a6b`
-    // (2026-09-06): three searches, three full-prefix rebuilds, 851,083
-    // cache-write tokens, $5.32 of a $36.56 chat. The cost is per REVEAL, so
-    // the roster is completed in one. See `tools::tool_search`.
-    assert!(
-        registry.get("team_status").is_some(),
-        "one reveal costs a whole cache rebuild, so it must be the only one"
-    );
+#[test]
+fn optional_tools_always_use_wrappers_and_core_tools_stay_direct() {
+    for legacy_flag in [false, true] {
+        let registry = registry_with_deferral(legacy_flag);
+        for hidden in ["mcp_drive_search_files", "team_status"] {
+            assert!(registry.get(hidden).is_none(), "{hidden}");
+        }
+        for direct in [
+            "tool_search",
+            "call_tool",
+            "file_read",
+            "file_edit",
+            "grep",
+            "shell_execute",
+            "TaskCreate",
+            "TaskUpdate",
+            "TaskList",
+        ] {
+            assert!(
+                registry.get(direct).is_some(),
+                "{direct} must stay advertised"
+            );
+        }
+    }
 }
 
 #[test]
-fn nothing_deferrable_means_no_search_tool_at_all() {
-    // Core-only turn: an empty catalogue would leave `tool_search` advertising
-    // nothing, which the model can only waste a call on.
+fn empty_catalog_still_advertises_the_same_wrappers() {
     let registry = build_per_turn_tool_registry(
         native_test_registry(),
         &[],
@@ -2350,27 +2282,158 @@ fn nothing_deferrable_means_no_search_tool_at_all() {
         AgentExecutionMode::Agent,
         None,
         false,
-        false, // browser off, so the browser bucket is not even built
+        false,
         true,
         "",
     );
-    assert!(registry.get("tool_search").is_none());
+    assert!(registry.get("tool_search").is_some());
+    assert!(registry.get("call_tool").is_some());
+    assert_eq!(
+        serde_json::to_vec(&registry.schemas()).unwrap(),
+        serde_json::to_vec(&registry_with_deferral(true).schemas()).unwrap()
+    );
 }
 
 #[test]
 fn the_deferrable_rule_names_buckets_not_individual_tools() {
-    for deferrable in ["mcp_x_y", "browser_navigate", "team_status"] {
-        assert!(is_deferrable(deferrable), "{deferrable}");
+    for optional in ["mcp_x_y", "browser_navigate", "team_status"] {
+        assert!(is_deferrable(optional), "{optional}");
     }
     for core in [
         "file_read",
+        "file_edit",
+        "file_write",
         "shell_execute",
         "grep",
-        "todo",
+        "glob",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
         "chapter",
         "code",
+        "aurora_skill_search",
+        "aurora_skill_load",
+        "ask_question",
     ] {
         assert!(!is_deferrable(core), "{core} must never be deferred");
+    }
+}
+
+#[tokio::test]
+async fn wrapped_mcp_call_uses_the_existing_bridge_once() {
+    let input = serde_json::json!({"name":"mcp_docs_search","arguments":{"query":"release"}});
+    let api = Arc::new(MockApi::new(vec![
+        TurnScript::Reply {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_use_msg("wrapped-id", "call_tool", input),
+                "tool_use",
+            )),
+        },
+        TurnScript::Reply {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text_msg("done"), "end_turn")),
+        },
+    ]));
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(MockApiFactory::from_api(api)),
+        dir.path().to_path_buf(),
+    ));
+    let emitter = Arc::new(MockEmitter::default());
+    let driver = TurnDriver::new(registry.clone(), emitter.clone());
+    let mut req = make_request("wrapped-turn", "wrapped-thread", "find it");
+    req.tools = vec![allowed_tool("mcp_docs_search")];
+    let task = tokio::spawn(async move { driver.run_turn(req).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while registry.bridge_router().pending_count() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let pending = emitter.snapshot_tool_pendings();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].name, "mcp_docs_search");
+    assert_eq!(pending[0].tool_use_id, "wrapped-id");
+    assert_eq!(pending[0].input, serde_json::json!({"query":"release"}));
+    registry
+        .post_tool_result("wrapped-turn", "wrapped-id", "found".into(), false)
+        .unwrap();
+    task.await.unwrap().unwrap();
+    assert_eq!(registry.bridge_router().pending_count(), 0);
+    // The frontend bridge owns its card lifecycle; native wrapping must not
+    // send a second start/result pair around the same operation.
+    assert!(!emitter.snapshot_events().iter().any(|event| matches!(&event.event,
+        AssistantEvent::ToolExecutionStart{id,..}|AssistantEvent::ToolExecutionResult{id,..} if id=="wrapped-id")));
+}
+
+#[test]
+fn wrapper_lookup_cannot_bypass_mode_vision_or_browser_gates() {
+    let tools = vec![
+        allowed_tool("browser_navigate"),
+        allowed_tool("browser_screenshot"),
+        allowed_tool("mcp_docs_search"),
+        allowed_tool("file_write"),
+    ];
+    for (mode, vision, browser, target, allowed) in [
+        (
+            AgentExecutionMode::Agent,
+            true,
+            true,
+            "browser_navigate",
+            true,
+        ),
+        (
+            AgentExecutionMode::Agent,
+            true,
+            false,
+            "browser_navigate",
+            false,
+        ),
+        (
+            AgentExecutionMode::Agent,
+            false,
+            true,
+            "browser_screenshot",
+            false,
+        ),
+        (
+            AgentExecutionMode::Chat,
+            true,
+            true,
+            "browser_navigate",
+            false,
+        ),
+        (
+            AgentExecutionMode::Chat,
+            false,
+            false,
+            "mcp_docs_search",
+            true,
+        ),
+        (AgentExecutionMode::Plan, true, true, "file_write", false),
+    ] {
+        let registry = build_per_turn_tool_registry(
+            Arc::new(ToolRegistry::new()),
+            &tools,
+            "turn".into(),
+            Arc::new(BridgeRouter::new()),
+            Arc::new(MockEmitter::default()),
+            CancellationToken::new(),
+            vision,
+            mode,
+            None,
+            false,
+            browser,
+            false,
+            "",
+        );
+        let result = registry.resolve_call(
+            "call_tool",
+            &serde_json::json!({"name":target,"arguments":{}}),
+        );
+        assert_eq!(result.is_ok(), allowed, "{mode:?} {target}");
     }
 }
 

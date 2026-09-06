@@ -81,6 +81,9 @@ pub(super) fn result_cap_for(tool: &str) -> usize {
     match tool {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
         "workspace_tree" => MAX_TREE_RESULT_LENGTH,
+        // Discovery bounds its own output and pages oversized schemas. The
+        // generic JSON shrinker must not delete required schema properties.
+        "tool_search" => 96 * 1024,
         "auroro_websearch" => MAX_WEB_RESULT_LENGTH,
         // Every `*_guidelines` tool, not just design's. The reasoning above
         // is about doctrine, and doctrine is a family: `browser_guidelines`

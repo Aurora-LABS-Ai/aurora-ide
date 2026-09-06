@@ -25,6 +25,7 @@
  */
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { parseToolArguments } from "@/kernel/lib/llm/tool-arguments";
+import { toolCallForDisplay } from "@/apps/agent/services/tools/tool-invocation";
 import type {
   ProviderConfig,
   ReasoningRequestConfig,
@@ -220,11 +221,7 @@ export interface AgentChatRequest {
    * older caller and resolves to ON in Rust — see `browser_tools` in `ipc.rs`.
    */
   browserTools: boolean | null;
-  /**
-   * Whether the deferrable buckets (`mcp_*`, `browser_*`, `team_*`) are held
-   * back this turn and reached through `tool_search`. `null` means an older
-   * caller and resolves to OFF in Rust — see `defer_tools` in `ipc.rs`.
-   */
+  /** Legacy wire field; Rust always uses the static discovery wrappers. */
   deferTools: boolean | null;
   /**
    * Browser-inspector element chips attached to this user turn. Persisted
@@ -954,14 +951,14 @@ export class AgentRuntimeClient {
         // path), and `liveFilePreviewService.updateFromToolCall`
         // partial-parses the buffer to extract `path` / `content`
         // for the in-editor live write.
-        callbacks.onToolCall?.({
+        callbacks.onToolCall?.(toolCallForDisplay({
           id: event.id,
           type: "function",
           function: {
             name: event.name,
             arguments: event.arguments,
           },
-        });
+        }));
         break;
       }
       case "tool_execution_start": {
@@ -1361,7 +1358,7 @@ const toToolCallRequest = (event: {
   id: string;
   name: string;
   input: Record<string, unknown>;
-}): ToolCallRequest => ({
+}): ToolCallRequest => toolCallForDisplay({
   id: event.id,
   type: "function",
   function: {

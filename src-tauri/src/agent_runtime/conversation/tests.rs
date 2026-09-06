@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
+#[path = "discovery_tests.rs"]
+mod discovery;
+
 /// An edit result's before/after echo is content the model itself sent —
 /// it must never reach model history, whatever its size. Counts and the
 /// message stay; the elision names itself and the recovery.

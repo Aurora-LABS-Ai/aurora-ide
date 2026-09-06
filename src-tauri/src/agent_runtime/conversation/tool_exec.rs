@@ -19,28 +19,13 @@ impl ConversationRuntime {
     /// relative order between a read and a write the model deliberately
     /// sequenced — `[read a, read b, write a, read c]` runs `{a,b}`
     /// concurrently, then the write, then `c`.
+    #[cfg(test)]
     pub(super) fn concurrent_batch_len(&self, calls: &[PendingToolCall]) -> usize {
-        if calls.first().is_none_or(|call| !self.is_batchable(call)) {
-            return 1;
-        }
-        calls
+        let prepared: Vec<_> = calls
             .iter()
-            .take_while(|call| self.is_batchable(call))
-            .count()
-    }
-
-    /// Whether a call can share a batch with its neighbours.
-    ///
-    /// Calls that never reach an executor — malformed arguments, unknown
-    /// tool names — are trivially safe: they produce an error string with
-    /// no side effect at all.
-    pub(super) fn is_batchable(&self, call: &PendingToolCall) -> bool {
-        if crate::api::provider_kernel_adapter::malformed_tool_input(&call.input).is_some() {
-            return true;
-        }
-        self.tools
-            .get(&call.name)
-            .is_none_or(|tool| tool.concurrency_safe())
+            .map(|call| self.prepare_tool_call(call))
+            .collect();
+        super::tool_dispatch::PreparedToolCall::batch_len(&prepared)
     }
 
     /// Independent read-only calls in the batch run **concurrently**;
@@ -108,6 +93,12 @@ impl ConversationRuntime {
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
         event_seq: &AtomicU64,
     ) -> Result<ToolBatchOutcome, RuntimeError> {
+        // Resolve once before lifecycle events. The session still contains the
+        // original call_tool envelope and result ids remain provider-issued.
+        let prepared: Vec<_> = calls
+            .iter()
+            .map(|call| self.prepare_tool_call(call))
+            .collect();
         let mut result_blocks = Vec::with_capacity(calls.len());
         // Set when a tool reports `ToolError::Cancelled`. The batch is not
         // abandoned at that point: results that already landed are real work
@@ -121,8 +112,8 @@ impl ConversationRuntime {
 
         let mut cursor = 0usize;
         while cursor < calls.len() {
-            let batch_len = self.concurrent_batch_len(&calls[cursor..]);
-            let batch = &calls[cursor..cursor + batch_len];
+            let batch_len = super::tool_dispatch::PreparedToolCall::batch_len(&prepared[cursor..]);
+            let batch = &prepared[cursor..cursor + batch_len];
             cursor += batch_len;
 
             // ── Announce ──────────────────────────────────────────────
@@ -135,10 +126,10 @@ impl ConversationRuntime {
                 // trails capture even tools that resolve to NotFound.
                 self.hook.pre_tool_use(&call.name, &call.input).await;
 
-                let uses_frontend_lifecycle = self
-                    .tools
-                    .get(&call.name)
-                    .is_some_and(|executor| executor.uses_frontend_lifecycle());
+                let uses_frontend_lifecycle = call
+                    .tool
+                    .as_ref()
+                    .is_ok_and(|executor| executor.uses_frontend_lifecycle());
                 lifecycles.push(uses_frontend_lifecycle);
 
                 if !uses_frontend_lifecycle {
@@ -211,26 +202,10 @@ impl ConversationRuntime {
                             // model look erratic: it retries, rephrases, and
                             // switches tools because the error it got back does
                             // not describe what it actually did.
-                            let outcome =
-                                match crate::api::provider_kernel_adapter::malformed_tool_input(
-                                    &call.input,
-                                ) {
-                                    // The arguments never survived the stream. Do NOT
-                                    // dispatch: the executor would report a missing
-                                    // field to a model that sent it. Quote back what
-                                    // arrived so the model can see the truncation
-                                    // point and re-emit.
-                                    Some(raw) => Err(malformed_input_error(&call.name, raw)),
-                                    None => match self.tools.get(&call.name) {
-                                        Some(tool) => {
-                                            tool.execute(call.input.clone(), &context).await
-                                        }
-                                        // Unknown name — hand back the nearest match and
-                                        // the real roster so this costs one iteration,
-                                        // not five.
-                                        None => Err(self.tools.unknown_tool_error(&call.name)),
-                                    },
-                                };
+                            let outcome = match &call.tool {
+                                Ok(tool) => tool.execute(call.input.clone(), &context).await,
+                                Err(error) => Err(error.clone()),
+                            };
 
                             // This call is done — say so now. See the note on this
                             // function: the fold below is ordered because the model's
@@ -342,7 +317,8 @@ impl ConversationRuntime {
                 // once the process has exited. The UI keeps the untouched payload
                 // and applies its own display clamp, so a tool card never shows the
                 // model's "read this file" instruction.
-                let history_source = self.spill_tool_output(session, &name, &id, raw_content.clone());
+                let history_source =
+                    self.spill_tool_output(session, &name, &id, raw_content.clone());
                 let history_content = truncate_tool_content(&name, history_source);
 
                 // Edit results whose history copy was clamped get a full-fidelity
@@ -479,18 +455,8 @@ impl ConversationRuntime {
         seq: &mut u64,
         event_sink: &mpsc::Sender<AgentEventEnvelope>,
     ) -> ConversationMessage {
-        for call in calls {
-            let uses_frontend_lifecycle = self
-                .tools
-                .get(&call.name)
-                .is_some_and(|executor| executor.uses_frontend_lifecycle());
-            if uses_frontend_lifecycle {
-                continue;
-            }
-            // `tool_execution_start` is what guarantees the card exists — the
-            // frontend treats its `onToolCall` as idempotent precisely so a
-            // native tool can announce itself late. Skipping straight to the
-            // result would leave nothing to resolve.
+        for raw_call in calls {
+            let call = self.prepare_tool_call(raw_call);
             emit_native_tool_event(
                 event_sink,
                 turn_id,

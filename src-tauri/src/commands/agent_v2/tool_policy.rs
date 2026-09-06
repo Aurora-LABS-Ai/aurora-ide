@@ -5,35 +5,14 @@
 
 use super::*;
 
-use crate::tools::tool_search::ToolSearchExecutor;
-
-/// Tools that may be held back from the roster and loaded on demand.
-///
-/// The rule is "would a turn stall without it?". Reading, editing, searching
-/// and running things are how a turn starts, so they are always advertised —
-/// deferring them would buy a few hundred tokens and pay a round trip for it on
-/// every single turn.
-///
-/// What IS deferrable is everything whose cost is unbounded or conditional:
-/// - `mcp_*` — unbounded by definition. Several connected servers can push the
-///   roster past a hundred tools, and their schemas are the largest single
-///   block Aurora sends on behalf of tools most conversations never touch.
-/// - `browser_*` — 16 schemas, ~2,800 tokens, on turns that mostly never open a
-///   page. This is strictly better than the existing on/off switch: the tokens
-///   are not spent, and the capability is still reachable.
-/// - `team_*` — a whole coordination vocabulary that only matters once the user
-///   is actually running a team.
+/// Optional capabilities use discovery; core tools remain directly advertised.
+/// Files, search, shell, tasks, and skills are needed frequently enough that
+/// requiring an extra discovery round trip would slow ordinary coding work.
 pub(super) fn is_deferrable(name: &str) -> bool {
     name.starts_with("mcp_") || name.starts_with("browser_") || name.starts_with("team_")
 }
 
-/// Add `executor` to the deferred catalogue, mirroring
-/// [`ToolRegistry::register`]'s overwrite-in-place rule.
-///
-/// The native pass runs after the bridge pass and must shadow it by name — the
-/// same precedence the registry itself applies — while keeping the entry's
-/// original position, because that position is part of the description the
-/// model reads and therefore part of the cacheable prefix.
+/// Add an already-guarded executor with registry-compatible name precedence.
 fn defer(catalog: &mut Vec<Arc<dyn ToolExecutor>>, executor: Arc<dyn ToolExecutor>) {
     if let Some(slot) = catalog
         .iter_mut()
@@ -45,10 +24,9 @@ fn defer(catalog: &mut Vec<Arc<dyn ToolExecutor>>, executor: Arc<dyn ToolExecuto
     }
 }
 
-/// Build a per-turn [`ToolRegistry`] starting with [`FrontendBridgeExecutor`]
-/// entries for every [`AllowedTool`] the model is allowed to call,
-/// then overlaying the registry-level catalogue (Phase 3 native Rust
-/// executors) so they shadow any bridge entry with the same name.
+/// Build a per-turn registry from native executors, then add frontend bridge
+/// fallbacks for names Rust does not own. Partition only after availability
+/// filtering, so direct calls and discovered calls obey the same policy.
 ///
 /// Phase 3 makes Rust the source of truth: when a tool name has both
 /// a native executor and a frontend bridge fallback, the native
@@ -75,36 +53,17 @@ pub(super) fn build_per_turn_tool_registry(
     workspace_path: Option<&str>,
     chapters_enabled: bool,
     browser_enabled: bool,
-    // Hold deferrable tools out of the roster and advertise `tool_search`
-    // instead. `false` reproduces the previous behaviour exactly: every tool is
-    // registered up front and no `tool_search` entry is added.
-    defer_tools: bool,
-    // The conversation this registry is for. Only used to replay what
-    // `tool_search` has already loaded, below.
-    thread_id: &str,
+    // Accepted for older clients; optional tools now always use static wrappers.
+    _defer_tools: bool,
+    _thread_id: &str,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
-    // Chat mode defers MCP whatever the user's preference says. In the project
-    // modes `defer_tools` is a setting (Settings → Agent → Tool loading, off by
-    // default); here it is the mechanism that lets a server connected MID
-    // conversation still be reachable, because the model finds it by searching
-    // rather than by reading a roster fixed when the turn began. Leaving it to
-    // a preference would mean the promise held or not depending on a switch
-    // the user set for a different reason.
-    let defer_tools = defer_tools || execution_mode.is_chat();
     // Chat mode has no workspace, and the plan lookup below walks one.
     let workspace_path = if execution_mode.has_workspace() {
         workspace_path
     } else {
         None
     };
-    // Tools this conversation has already loaded on demand. This registry is
-    // rebuilt for every USER message, so without replaying them a load lasted
-    // only until the user typed again — and the model, still reading
-    // "loaded and callable" in the transcript, kept calling a tool that had
-    // silently left the roster.
-    let revealed = crate::tools::tool_search::revealed_for_thread(thread_id);
-    let deferrable = |name: &str| is_deferrable(name) && !revealed.contains(name);
     // Deferrable tools, built exactly as if they were being registered — the
     // catalogue holds the real executor, so a tool loaded later keeps its
     // permission gate (native) or its bridge routing (MCP).
@@ -147,7 +106,7 @@ pub(super) fn build_per_turn_tool_registry(
                 } else {
                     existing
                 };
-            if defer_tools && deferrable(&name) {
+            if is_deferrable(&name) {
                 defer(&mut deferred, executor);
             } else {
                 registry.register(executor);
@@ -183,26 +142,15 @@ pub(super) fn build_per_turn_tool_registry(
                     cancel_token.clone(),
                 ),
             ));
-        if defer_tools && deferrable(&tool.name) {
+        if is_deferrable(&tool.name) {
             defer(&mut deferred, executor);
         } else {
             registry.register(executor);
         }
     }
-    // 3. One entry standing in for the whole deferred catalogue. Registered
-    //    LAST so it never displaces a real tool's roster position, and only
-    //    when something was actually held back — a `tool_search` advertising an
-    //    empty catalogue is a schema the model can only waste a call on.
-    //
-    //    The executor holds a CLONE of this registry, which shares the same
-    //    map: loading a tool mutates the roster the next request is built from,
-    //    because `ConversationRuntime` re-reads `schemas()` every iteration.
-    if !deferred.is_empty() {
-        registry.register(Arc::new(ToolSearchExecutor::new(
-            deferred,
-            registry.clone(),
-        )));
-    }
+    // These definitions stay present even when no optional tools are connected.
+    // Catalog changes on later turns affect search results, never this prefix.
+    crate::tools::tool_search::install(&registry, deferred);
     registry
 }
 
@@ -214,7 +162,7 @@ pub(super) fn build_per_turn_tool_registry(
 ///
 /// `editor_open_file` was withdrawn when file opening moved to the Agent
 /// Window's right rail — the model no longer drives the IDE's editor.
-pub(super) const WITHDRAWN_TOOLS: &[&str] = &["editor_open_file"];
+pub(super) const WITHDRAWN_TOOLS: &[&str] = &["editor_open_file", "tool_search", "call_tool"];
 
 pub(super) fn is_withdrawn_tool(name: &str) -> bool {
     WITHDRAWN_TOOLS.contains(&name)
@@ -304,10 +252,7 @@ pub(super) fn is_tool_available_this_turn(
         // read, so the model is never told to announce chapters without the tool
         // to do it — or handed the tool with nothing telling it when to call.
         "chapter" => chapters_enabled,
-        // The whole browser bucket rides one switch. 16 schemas, ~2,800
-        // tokens on every request, and only Anthropic gets a `cache_control`
-        // marker from Aurora — so on every other provider that is paid in
-        // full on turns that never open a page.
+        // Disabling browser access removes the whole optional bucket.
         _ if name.starts_with("browser_") => browser_enabled,
         _ => true,
     }

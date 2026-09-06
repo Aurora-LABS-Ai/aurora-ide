@@ -29,6 +29,24 @@ vi.mock("@/kernel/store/useSettingsStore", () => ({
   selectActiveGlobalInstructions: () => "",
 }));
 
+describe("stable optional tool discovery instructions", () => {
+  it("keeps the complete system prompt identical across MCP connection changes and legacy flags", async () => {
+    const common = { promptContext: { workspacePath: "E:/project", userMessage: "help" } };
+    const before = await composeAgentSystemPrompt({ ...common, mcpSummary: "No servers connected", deferTools: false });
+    const after = await composeAgentSystemPrompt({ ...common, mcpSummary: "Connected: drive, github; 100 tools", deferTools: true });
+    expect(after.systemPrompt).toBe(before.systemPrompt);
+    expect(after.systemPrompt).toContain("call_tool(");
+    expect(after.systemPrompt).toContain("Call the core tools in your tool list directly");
+    expect(after.systemPrompt).not.toContain("Connected: drive");
+    expect(after.systemPrompt).not.toContain("stays loaded for the rest");
+  });
+  it("teaches the same wrapper contract in chat mode", async () => {
+    const result = await composeAgentSystemPrompt({ executionMode: "chat", promptContext: { userMessage: "help" } });
+    expect(result.systemPrompt).toContain("call_tool(");
+    expect(result.systemPrompt).toContain("Search again after compaction");
+  });
+});
+
 /**
  * The base prompt ships on EVERY request of every conversation, so anything
  * that drifts here is paid for thousands of times and believed by the model

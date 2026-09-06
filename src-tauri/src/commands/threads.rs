@@ -228,11 +228,13 @@ fn session_to_db_messages_rich(
                             );
                         }
                         ContentBlock::ToolUse { id, name, input } => {
+                            let (name, input) =
+                                crate::tools::tool_search::call_identity(name, input);
                             let arguments =
                                 serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
                             tool_calls.push(DbToolCall {
                                 id: id.clone(),
-                                name: name.clone(),
+                                name: name.to_owned(),
                                 arguments,
                                 result: None,
                             });
@@ -2048,6 +2050,29 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("[truncated 4923 bytes in persisted history]"));
+    }
+
+    #[test]
+    fn wrapped_tool_displays_its_target_but_replays_the_original_envelope() {
+        let input = serde_json::json!({"name":"browser_navigate","arguments":{"url":"https://example.test"}});
+        let messages = vec![
+            assistant_with_tool("original-id", "call_tool", input.clone(), 1),
+            tool_result("original-id", "opened", 2),
+        ];
+        let db = session_to_db_messages(&messages);
+        let call = &db[0].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.id, "original-id");
+        assert_eq!(call.name, "browser_navigate");
+        assert_eq!(call.arguments, input["arguments"].to_string());
+        assert_eq!(call.result.as_deref(), Some("opened"));
+        let api = serde_json::to_value(session_to_api_messages(&messages)).unwrap();
+        let text = api.to_string();
+        assert!(text.contains("call_tool"));
+        assert!(text.contains("original-id"));
+        assert!(text.contains("browser_navigate"));
+        // The in-memory source is unchanged too, so JSONL retains the schema
+        // the provider actually called regardless of the UI projection.
+        assert!(messages[0].blocks.iter().any(|block| matches!(block,ContentBlock::ToolUse{name,input:stored,..} if name == "call_tool" && stored == &input)));
     }
 
     #[test]

@@ -216,15 +216,6 @@ const CHAPTER_INSTRUCTIONS = `## Chapters
 - Skip chapters entirely when the answer is a single step or a direct reply — one chapter over a short turn is noise.`;
 
 /**
- * Three lines, gated on the same flag Rust reads.
- *
- * Without them the model sees `tool_search` in its roster and no reason to
- * reach for it: the tools it fronts are absent, so nothing in the conversation
- * suggests they exist. The tool's own description carries the name list and the
- * query syntax — this is only the part the model has to know BEFORE it goes
- * looking, which is that a missing tool is missing on purpose and reachable.
- */
-/**
  * Two lines, gated on the same flag Rust reads.
  *
  * This replaced a 1,126-token `## Browser Tools` section that shipped on EVERY
@@ -246,10 +237,11 @@ const BROWSER_INSTRUCTIONS = `## Browser
 - Aurora's browser is one panel in this window's right-hand dock, not a separate window; calling any \`browser_*\` tool reveals it.
 - Call \`browser_guidelines\` before your first browser tool call in a conversation. It covers the mistakes the tools cannot prevent on their own — every one of which fails SILENTLY, so you will not notice you made it.`;
 
-const DEFERRED_TOOL_INSTRUCTIONS = `## Tools loaded on demand
-- Some tools are not loaded yet. You can see their names in \`tool_search\`'s description but not their parameters, and calling one before loading it will fail.
-- When a step needs one, call \`tool_search\` first — \`select:exact_name\` when you know the name, keywords when you do not — then call the tool itself on your next message. It stays loaded for the rest of the conversation.
-- Load only what the step actually needs; each loaded tool is paid for on every later request of this conversation.`;
+const DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
+- Call the core tools in your tool list directly. File operations, code search, shell, tasks, and skills do not need discovery.
+- Browser, connected MCP apps, and team tools are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn's mode.
+- Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
+- Reuse a schema while it remains in context. Search again after compaction removes it, when you need a different capability, or when a tool becomes unavailable. An empty result means no matching optional tool is currently available.`;
 
 /**
  * The canvas pointer — two lines, on purpose.
@@ -459,6 +451,7 @@ const WORKSPACE_ACCESS_RULES: Record<string, string> = {
 export async function composeAgentSystemPrompt(options: {
   basePrompt?: string;
   executionMode?: AgentExecutionMode;
+  /** Legacy caller field; catalog metadata now travels only in discovery results. */
   mcpSummary?: string;
   promptContext: AgentPromptContext;
   /**
@@ -476,36 +469,26 @@ export async function composeAgentSystemPrompt(options: {
    * creation, which is what lets its instruction sit in the cacheable prefix.
    */
   deepResearch?: boolean;
-  /**
-   * Include the on-demand tool instruction. Same rule as `transcriptChapters`:
-   * this must be the SAME value the caller sends as `deferTools` on the chat
-   * request, because that flag is what makes Rust withhold the buckets and
-   * advertise `tool_search`. Read the store here instead and a surface that
-   * never forwards the flag would tell the model to load tools that are all
-   * already loaded.
-   */
+  /** Legacy caller field; optional tools always use the discovery wrappers. */
   deferTools?: boolean;
   /**
-   * Include the browser pointer. Same rule as `transcriptChapters` and
-   * `deferTools`: this must be the SAME value the caller sends as
+   * Include the browser pointer. Same rule as `transcriptChapters`: this must be the SAME value the caller sends as
    * `browserTools` on the chat request, because that flag is what makes Rust
    * register the browser bucket. Read the store here instead and a surface
    * that never forwards the flag would point the model at a tool it was
    * never given.
    *
    * Note the DEFAULT is true, matching the wire contract — `None` means "on"
-   * for browser tools, unlike `deferTools` where `None` means "off".
+   * for browser tools.
    */
   browserTools?: boolean;
 }): Promise<ComposedAgentPrompt> {
   const {
     basePrompt,
     executionMode = "agent",
-    mcpSummary,
     promptContext,
     transcriptChapters = false,
     deepResearch = false,
-    deferTools = false,
     browserTools = true,
   } = options;
   const settings = useSettingsStore.getState();
@@ -599,11 +582,8 @@ export async function composeAgentSystemPrompt(options: {
     sections.push(CHAPTER_INSTRUCTIONS);
   }
 
-  // Same contract as chapters above: the caller passes the value it sends on
-  // the chat request, so the instruction and the roster can never disagree.
-  if (deferTools) {
-    sections.push(DEFERRED_TOOL_INSTRUCTIONS);
-  }
+  // The wrappers are always advertised, including with an empty catalog.
+  sections.push(DEFERRED_TOOL_INSTRUCTIONS);
 
   // Global user instructions: the ACTIVE one of the user's named instruction
   // sets (Settings → Agent — up to three, at most one active). Applies to
@@ -617,19 +597,9 @@ export async function composeAgentSystemPrompt(options: {
 
   // ── Dynamic half ───────────────────────────────────────────────────────
   //
-  // These two change WHILE a conversation is open: the mode section flips on
-  // /plan and when a plan document appears, and the MCP summary changes every
-  // time a server connects or drops. Anything before them in the prompt is a
-  // cache prefix, so keeping them at the front cost the whole system prompt on
-  // every flip. Measured on two providers with a 7.2k-token prompt, on the
-  // turn where the volatile text changed:
-  //
-  //   kenari/minimax-m3  front: 7,280 billed / 1.5% hit   back: 96 / 98.7%
-  //   ark/glm-5.2        front: 7,251 billed / 0.0% hit   back: 1,106 / 84.7%
-  //
-  // Providers that cache automatically (kenari, ark, DeepSeek) key on the
-  // longest common PREFIX and need no markers; Anthropic needs the explicit
-  // breakpoint the boundary gives it. Both want the same section order.
+  // Mode, active skills, and team policy follow the stable prompt. MCP
+  // connection state is deliberately absent: search results carry it without
+  // rewriting the system prefix.
   const dynamicSections = [getAgentModePromptSection(executionMode, { hasActivePlan })];
   // The skill catalogue rides here, not on the message: it is the same for
   // every request until the user toggles a skill, and a toggle then costs
@@ -645,9 +615,8 @@ export async function composeAgentSystemPrompt(options: {
   }
   const teamPolicy = promptContext.teamPolicy?.trim();
   if (teamPolicy) dynamicSections.push(teamPolicy);
-  if (mcpSummary?.trim()) {
-    dynamicSections.push(mcpSummary.trim());
-  }
+  // Connected app metadata belongs in discovery results. Putting a live MCP
+  // catalog here would invalidate the system prefix when a server changes.
 
   const staticText = sections.filter(Boolean).join("\n\n");
   const dynamicText = dynamicSections.filter(Boolean).join("\n\n");

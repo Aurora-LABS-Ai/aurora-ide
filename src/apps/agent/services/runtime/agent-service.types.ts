@@ -137,7 +137,7 @@ export interface AgentConfig {
    * every request, so it is switchable — Settings → Agent → Browser control.
    */
   browserTools?: boolean;
-  /** Hold `mcp_*` / `browser_*` / `team_*` back and advertise `tool_search`. */
+  /** Legacy preference; optional tools always use tool_search and call_tool. */
   deferTools?: boolean;
   /**
    * Aurora Chat: the image providers `generate_image` may use this turn — the

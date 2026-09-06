@@ -305,35 +305,14 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub transcript_chapters: Option<bool>,
 
-    /// Whether the browser toolset is advertised this turn (user opt-in,
-    /// Settings → Agent → Browser control).
-    ///
-    /// The bucket is 16 schemas and roughly 2,800 tokens on EVERY request,
-    /// paid in full by every provider Aurora does not send `cache_control` to —
-    /// which is all of them except Anthropic. That is a standing tax on turns
-    /// that never open a browser, so it is switchable.
-    ///
-    /// `None` means an older client that does not know about the switch, and
-    /// resolves to ON: silently removing a capability someone is mid-task with
-    /// is worse than the tokens.
+    /// Browser access this turn (Settings → Agent → Browser control).
+    /// Available browser tools use discovery; false removes the whole bucket.
+    /// `None` preserves the enabled default for older clients.
     #[serde(default)]
     pub browser_tools: Option<bool>,
 
-    /// Hold the deferrable buckets (`mcp_*`, `browser_*`, `team_*`) out of the
-    /// advertised roster and give the model `tool_search` to load them by name
-    /// (user opt-in, Settings → Agent → Load tools on demand).
-    ///
-    /// The saving is the whole point: those schemas are sent on EVERY request
-    /// of every turn, and only Anthropic receives a `cache_control` marker from
-    /// Aurora, so on every other provider they are paid in full each time. A
-    /// workspace with several MCP servers connected can carry a hundred-plus
-    /// tools the conversation never touches.
-    ///
-    /// `None` means an older client that does not know about the switch, and
-    /// resolves to OFF — every tool advertised up front, exactly as before.
-    /// Unlike [`Self::browser_tools`], the safe default here is the old
-    /// behaviour: this one changes how the model must REACH a tool, and a
-    /// client that cannot say what it wants should not have that changed for it.
+    /// Legacy preference, accepted for saved settings and older clients.
+    /// Optional tools always use tool_search and call_tool; this value is inert.
     #[serde(default)]
     pub defer_tools: Option<bool>,
 

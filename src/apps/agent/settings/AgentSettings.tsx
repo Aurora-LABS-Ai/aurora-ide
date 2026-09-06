@@ -52,8 +52,6 @@ const GLOBAL_INSTRUCTIONS_MAX = 4000;
 
 export const AgentSettings: React.FC = () => {
   const browserTools = useSettingsStore((s) => s.browserTools);
-  const deferTools = useSettingsStore((s) => s.deferTools);
-  const setDeferTools = useSettingsStore((s) => s.setDeferTools);
   const mcpBridgeEnabled = useSettingsStore((s) => s.mcpBridgeEnabled);
   const setMcpBridgeEnabled = useSettingsStore((s) => s.setMcpBridgeEnabled);
   const setBrowserTools = useSettingsStore((s) => s.setBrowserTools);
@@ -387,7 +385,7 @@ export const AgentSettings: React.FC = () => {
           alignTop
           label="Give the agent the browser toolset"
           searchTerms="browser tools toolset disable enable tokens schemas cost web preview devtools"
-          hint="Sixteen tools, and their descriptions are sent on every single request — about 2,800 tokens whether or not the turn ever opens a page. Only Anthropic gets a caching marker from Aurora, so on every other provider you pay that in full, every time. Switch it off and the whole set is unregistered: the agent is not told a browser exists, and will not offer to check one. Leave it on if you build for the web."
+          hint="Let the agent open pages, inspect them, and interact with the embedded browser. It finds the tools it needs on demand. Switch this off to remove browser access from future turns."
         >
           <AgwSwitch
             checked={browserTools}
@@ -400,20 +398,16 @@ export const AgentSettings: React.FC = () => {
       <SettingsSection
         title="Tool loading"
         icon="layers"
-        description="How many tools the agent carries at once. Every tool it is offered costs its full description on every request of every turn, whether or not it is ever used."
+        description="Core tools are always ready. Optional tool details are fetched when the agent needs them."
       >
         <SettingsRow
           last
           alignTop
-          label="Load optional tools only when needed"
-          searchTerms="defer deferred tools on demand load lazy mcp browser team tokens cost roster tool_search search"
-          hint="The agent normally carries every tool at once. Turn this on and the optional ones — connected apps, the browser, team work — are listed by name only; the agent loads a tool's details the moment it needs it, and keeps it for the rest of the chat. Nothing becomes unavailable, it just costs one extra step the first time. Worth it when you have several apps connected: those alone can add a hundred tools you never use in a given chat."
+          label="Optional tools load on demand"
+          searchTerms="tool loading optional defer deferred tools on demand load lazy mcp browser team tokens cost roster tool_search search"
+          hint="Files, search, shell, tasks, and skills stay directly available. The agent finds tools for connected apps, browser control, and team work as needed. Finding a tool adds one discovery step; the agent can reuse its details while they remain in the conversation."
         >
-          <AgwSwitch
-            checked={deferTools}
-            onChange={setDeferTools}
-            ariaLabel="Load optional tools only when needed"
-          />
+          <span>Always on</span>
         </SettingsRow>
       </SettingsSection>
 

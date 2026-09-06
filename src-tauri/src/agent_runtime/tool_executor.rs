@@ -278,6 +278,15 @@ pub enum ToolError {
 /// concurrently across distinct turns.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Resolve a native forwarding envelope before runtime hooks, scheduling,
+    /// permissions and UI events. Ordinary tools execute themselves.
+    fn resolve_call(
+        &self,
+        _input: &serde_json::Value,
+    ) -> Option<Result<ToolInvocation, ToolError>> {
+        None
+    }
+
     /// Tool name as the model sees it. Must match the `name` field of
     /// the [`ToolSchema`] returned by `schema()`. Conventional kebab/
     /// snake-case (`"shell_execute"`, `"file_read"`).
@@ -427,6 +436,12 @@ pub trait Permitter: Send + Sync + 'static {
 /// 100-name list costs more context than it recovers.
 const MAX_LISTED_TOOLS: usize = 60;
 
+/// An invocation resolved to the executor that owns the actual operation.
+pub struct ToolInvocation {
+    pub executor: Arc<dyn ToolExecutor>,
+    pub input: serde_json::Value,
+}
+
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     /// Name → (registration index, executor).
@@ -456,6 +471,25 @@ impl std::fmt::Debug for ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Resolve at most one forwarding envelope. The original provider call is
+    /// retained in the session; only execution uses this resolved identity.
+    pub fn resolve_call(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<ToolInvocation, ToolError> {
+        let executor = self
+            .get(name)
+            .ok_or_else(|| self.unknown_tool_error(name))?;
+        if let Some(resolved) = executor.resolve_call(input) {
+            return resolved;
+        }
+        Ok(ToolInvocation {
+            executor,
+            input: input.clone(),
+        })
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()

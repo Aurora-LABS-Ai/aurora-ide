@@ -1317,6 +1317,7 @@ pub(crate) mod context_injection;
 #[cfg(test)]
 mod tests;
 mod tokens;
+mod tool_dispatch;
 mod tool_exec;
 mod tool_result_budget;
 mod tool_results;

@@ -488,7 +488,8 @@ Use 2-space indentation.`;
     expect(composed.systemPrompt).toContain("## Skill System");
     expect(composed.systemPrompt).toContain("aurora_skill_search");
     expect(composed.systemPrompt).toContain("aurora_skill_load");
-    expect(composed.systemPrompt).toContain("Connected server summary");
+    expect(composed.systemPrompt).not.toContain("Connected server summary");
+    expect(composed.systemPrompt).toContain("call_tool(");
     // Default-off: no skill is auto-active.
     expect(composed.enabledSkills).toHaveLength(0);
     expect(composed.activeSkills).toHaveLength(0);
@@ -514,8 +515,9 @@ Use 2-space indentation.`;
 
     // The identity and the doctrine are the cacheable prefix.
     expect(staticHalf).toContain("## Skill System");
-    // Both volatile sections landed after the marker.
-    expect(dynamicHalf).toContain("Connected server summary");
+    // Mode remains behind the boundary; live app catalogs stay out of the
+    // system prompt entirely so reconnecting cannot invalidate its prefix.
+    expect(dynamicHalf).not.toContain("Connected server summary");
     expect(staticHalf).not.toContain("Connected server summary");
   });
 

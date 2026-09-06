@@ -483,31 +483,11 @@ interface SettingsState {
    */
   transcriptChapters: boolean;
   setTranscriptChapters: (value: boolean) => void;
-  /**
-   * Whether the browser toolset is advertised to the model.
-   *
-   * Sixteen schemas, roughly 2,800 tokens, sent on EVERY request — and Aurora
-   * attaches `cache_control` for Anthropic only, so on any other provider that
-   * is paid in full on turns that never open a page. Switching it off
-   * unregisters the whole bucket: the model is not told the browser exists.
-   *
-   * Defaults ON. Removing a capability someone is mid-task with, to save
-   * tokens they did not ask to save, is the wrong default.
-   */
+  /** Browser access for new turns, enabled by default. Available browser
+   * tools are discovered on demand; switching this off removes the bucket. */
   browserTools: boolean;
   setBrowserTools: (value: boolean) => void;
-  /**
-   * Load the optional tool buckets on demand instead of advertising them.
-   *
-   * When on, `mcp_*`, `browser_*` and `team_*` are held out of the roster and
-   * the model reaches them through `tool_search`, which lists their NAMES. The
-   * saving is per request, not per turn: those schemas ride in every single
-   * request of every turn, and only Anthropic receives a `cache_control` marker
-   * from Aurora.
-   *
-   * Defaults OFF. It changes how the model must REACH a tool, so it is the
-   * user's call rather than something switched on underneath them.
-   */
+  /** Legacy persisted preference. Optional discovery is always enabled. */
   deferTools: boolean;
   setDeferTools: (value: boolean) => void;
   /**

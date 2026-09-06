@@ -28,6 +28,9 @@ const entries: SettingsSearchEntry[] = [
 ];
 
 describe("settings search", () => {
+  it("finds the tool-loading explanation in Agent settings", () => {
+    expect(filterSettingsSearch(SETTINGS_CATALOG, "tool loading").map((entry) => entry.id)).toContain("execution");
+  });
   it("finds controls that are indexed under their owning settings section", () => {
     expect(filterSettingsSearch(entries, "chapter").map((entry) => entry.id)).toEqual([
       "preferences",

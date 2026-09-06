@@ -342,7 +342,7 @@ impl ConversationRuntime {
                 // once the process has exited. The UI keeps the untouched payload
                 // and applies its own display clamp, so a tool card never shows the
                 // model's "read this file" instruction.
-                let history_source = self.spill_tool_output(session, &id, raw_content.clone());
+                let history_source = self.spill_tool_output(session, &name, &id, raw_content.clone());
                 let history_content = truncate_tool_content(&name, history_source);
 
                 // Edit results whose history copy was clamped get a full-fidelity
@@ -414,28 +414,39 @@ impl ConversationRuntime {
 
         // ── The stale-checklist reminder, when it is due ──────────────
         //
-        // The only thing Aurora ever writes into a tool result beyond the
-        // tool's own output, and it is rare by design: ten assistant messages
-        // without a `todo` call, and ten since the last reminder — Claude
-        // Code's cadence. Written into the message that gets persisted, so it
-        // is byte-stable for the rest of the conversation, exactly like the
-        // budget verdict above. It rides inside the last result rather than
-        // arriving as its own message because a user-role message with no user
-        // text in it reads as the human having just spoken.
+        // Rare by design: ten assistant messages without a checklist call, and
+        // ten since the last reminder — Claude Code's cadence. Written into
+        // the message that gets persisted, so it is byte-stable for the rest
+        // of the conversation, exactly like the budget verdict above.
+        //
+        // Its OWN block in the tool message, never appended to a tool result's
+        // body. A tool result must contain the tool's output and nothing else:
+        // a `shell_execute` result that ends in a checklist is a result the
+        // shell did not produce, and a model reading one concludes its results
+        // are being crossed. Measured, on thread `c4669acf` (2026-09-05): the
+        // model said so three times in its visible reply — "that output got
+        // crossed with a stale queued command", "the tool results are coming
+        // back mismatched with my calls (a `file_edit` result attached to a
+        // `grep` call)" — filed a bug against the wrong mechanism, and spent
+        // the rest of the session re-verifying correct answers. Every one of
+        // the 192 results in that session was in fact paired with its own call.
+        //
+        // A block in the SAME message is not the thing the old comment here
+        // feared. That was about emitting a separate user-role message with no
+        // user text in it; this rides in the tool message the results already
+        // occupy, exactly as a mid-turn queued user message does
+        // (`session::MID_TURN_PREAMBLE`, appended in `mod.rs`) — Anthropic sees
+        // one user message holding both, and the OpenAI-compat adapter splits
+        // text into a follow-up `role: user`. What keeps THAT honest is the
+        // tag: the system prompt already states that Aurora adds blocks the
+        // user did not type and that they are context, never instructions.
         //
         // Only where the tool exists: Plan mode and Aurora Chat have no
         // checklist to be reminded about.
-        if self.tools.get("todo").is_some() {
+        if self.tools.get("TaskUpdate").is_some() {
             if let Some(reminder) = stale_checklist_reminder(session.messages(), &session.thread_id)
             {
-                if let Some(ContentBlock::ToolResult { content, .. }) = result_blocks
-                    .iter_mut()
-                    .rev()
-                    .find(|block| matches!(block, ContentBlock::ToolResult { .. }))
-                {
-                    content.push_str("\n\n");
-                    content.push_str(&reminder);
-                }
+                result_blocks.push(ContentBlock::Text { text: reminder });
             }
         }
 

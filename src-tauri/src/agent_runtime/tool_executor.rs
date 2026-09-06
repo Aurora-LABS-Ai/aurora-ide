@@ -816,7 +816,7 @@ mod tests {
         // The schema list rides in every request's cacheable prefix. A
         // DashMap-iteration order re-randomizes per process, which defeats
         // prompt caching outright and shifts tool selection.
-        let names = ["file_read", "grep", "shell_execute", "todo"];
+        let names = ["file_read", "grep", "shell_execute", "TaskUpdate"];
         let reg = registry_of(&names);
 
         let ordered: Vec<String> = reg.schemas().into_iter().map(|s| s.name).collect();

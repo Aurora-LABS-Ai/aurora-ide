@@ -49,6 +49,7 @@ import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
+import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
 import { useShellStream } from "@/apps/agent/hooks/useShellStream";
 import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
 
@@ -507,7 +508,8 @@ function toolIcon(name: string): AgentIconName {
   // before the `browser_` prefix rule claims it.)
   if (lower === "design_guidelines" || lower === "canvas_guidelines")
     return "design-guidelines";
-  if (lower === "todo") return "checklist";
+  if (lower === "taskcreate" || lower === "taskupdate" || lower === "tasklist")
+    return "checklist";
   // The plan. `plan_write` and `plan_step_update` never reach here (they have
   // their own cards); reading it is the one that does, and it takes the task
   // family's mark rather than `checklist`, which belongs to the todo list.
@@ -961,6 +963,28 @@ const StandardToolCallCard: React.FC<{
   // Every file view already carrying its own range makes the requested range a
   // second, weaker copy of the same fact.
   const resultStatesRange = parsed.multiFile?.some((file) => file.window) ?? false;
+
+  /**
+   * Whether to hold the picture's box open while it is being made.
+   *
+   * No aspect is derived from the requested size: the finished picture is
+   * letterboxed into a fixed box (`.agw-tool-shot-img`), so the placeholder is
+   * that same box and the swap moves nothing. `list` is excluded — it has no
+   * picture coming — and so is any call that is no longer running.
+   */
+  const showImagePlaceholder = useMemo(() => {
+    if (call.name !== "generate_image") return false;
+    if (toolStatus(call, isActivelyStreaming) !== "running") return false;
+    let op: string | undefined;
+    try {
+      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+      if (typeof args.op === "string") op = args.op;
+    } catch {
+      // Arguments still streaming — read what has arrived so far.
+      op = partialString(call.arguments, "op") || undefined;
+    }
+    return op !== "list";
+  }, [call, isActivelyStreaming]);
   const argChips = useMemo(
     () =>
       Object.entries(parsedArgs).filter(
@@ -1370,7 +1394,17 @@ const StandardToolCallCard: React.FC<{
                 </div>
               )}
 
-              {showLiveShell ? (
+              {/* Card 05, from the placeholder probe: a picture the MODEL asked
+                  for is a tool call, so it keeps the card that already exists
+                  and "the only new thing is the body". While the provider is
+                  working — thirty to seventy seconds, measured — that body is
+                  the same silk placeholder direct generation uses, at the size
+                  the picture will be, so the card shows the wait instead of two
+                  argument chips. The finished picture renders through the
+                  ordinary result view below, unchanged. */}
+              {showImagePlaceholder ? (
+                <SilkPlaceholder className="agw-tool-silk" />
+              ) : showLiveShell ? (
                 <ShellStreamView
                   command={liveShellCommand}
                   cwd={liveShellCwd}
@@ -1553,7 +1587,7 @@ const TODO_STATUS_WORD: Record<string, string> = {
 };
 
 /**
- * `todo` — a progress beat, like `plan_step_update`, and for the same reason:
+ * `TaskCreate` / `TaskUpdate` — a progress beat, like `plan_step_update`, and for the same reason:
  * laying out a checklist or flipping one item is not a tool result worth
  * unfolding, but it IS an event, and a checklist that moves with no trace in
  * the reply reads as if nothing happened.
@@ -1569,115 +1603,103 @@ const TODO_STATUS_WORD: Record<string, string> = {
  * Static, not a button: the full checklist is one hover away in the header, so
  * a second click target here would lead somewhere the user can already reach.
  */
-const TodoBeatCard: React.FC<{
-  call: ToolCall;
-  isActivelyStreaming: boolean;
-}> = ({ call, isActivelyStreaming }) => {
-  const status = toolStatus(call, isActivelyStreaming);
-  let args: Record<string, unknown> = {};
-  let result: Record<string, unknown> = {};
+const parseJson = (raw: string | null | undefined): Record<string, unknown> => {
   try {
-    args = JSON.parse(call.arguments || "{}") as Record<string, unknown>;
+    return JSON.parse(raw || "{}") as Record<string, unknown>;
   } catch {
-    args = {};
+    return {};
   }
-  try {
-    result = JSON.parse(call.result || "{}") as Record<string, unknown>;
-  } catch {
-    result = {};
-  }
+};
 
-  const op =
-    (typeof result.op === "string" ? result.op : undefined) ??
-    (typeof args.op === "string" ? args.op : "");
-  const cursor = (result.cursor ?? {}) as Record<string, unknown>;
-  const total =
-    typeof cursor.total === "number"
-      ? cursor.total
-      : Array.isArray(args.todos)
-        ? args.todos.length
-        : undefined;
+export const ChecklistBeatCard: React.FC<{
+  /** One consecutive run of `TaskCreate` / `TaskUpdate` calls, in order. */
+  calls: ToolCall[];
+  isActivelyStreaming: boolean;
+}> = ({ calls, isActivelyStreaming }) => {
+  const last = calls[calls.length - 1];
+  const status = calls.some((c) => toolStatus(c, isActivelyStreaming) === "running")
+    ? "running"
+    : calls.some((c) => toolStatus(c, isActivelyStreaming) === "failed")
+      ? "failed"
+      : "done";
+
+  const created = calls.filter((c) => c.name === "TaskCreate").length;
+  const updates = calls.filter((c) => c.name === "TaskUpdate");
+
+  // The newest result carries the list as it now stands, so the count is read
+  // from it alone rather than accumulated across the run.
+  const cursor = (parseJson(last?.result).cursor ?? {}) as Record<string, unknown>;
+  const total = typeof cursor.total === "number" ? cursor.total : undefined;
   // Closed, matching the header indicator and the checklist panel exactly.
   const done =
     typeof cursor.completed === "number"
       ? cursor.completed + (typeof cursor.cancelled === "number" ? cursor.cancelled : 0)
       : undefined;
 
-  let verb: string;
-  let title: string;
-  if (op === "set") {
-    // Laying out the list. The count IS the news here, so it leads.
-    verb = "Planned";
-    title = total === 1 ? "1 task" : `${total ?? 0} tasks`;
-  } else {
-    const newStatus =
-      (typeof result.status === "string" ? result.status : undefined) ??
-      (typeof args.status === "string" ? args.status : "");
-    verb = TODO_STATUS_WORD[newStatus] ?? "Updated";
-    // The id is the fallback, never the headline: it means nothing to a reader.
-    title =
-      (typeof result.title === "string" && result.title) ||
-      (typeof args.id === "string" ? args.id : "task");
-  }
+  let verb = "Updated";
+  let title = "tasks";
+  let showCount = true;
 
-  // What CHANGED — never the whole list. The full checklist has one home, the
-  // header indicator, which is live and one hover away; drawing it again in
-  // every card would say the same thing twice and age badly, since a card is a
-  // record of a moment and the header is the current state.
-  //
-  // One line per change, because `updates` can now carry several: "Finished A"
-  // then "Started B" is one call, and a single line could only name one of
-  // them.
-  const changes: Array<{ key: string; verb: string; title: string }> = [];
   if (status === "running") {
     // In flight. The result carries what actually changed, and until it lands
     // naming a task would be a guess — so say what is happening, not to what.
-    changes.push({ key: "running", verb: "Updating", title: "tasks" });
-  } else if (op === "set") {
-    changes.push({ key: "set", verb, title });
+    verb = "Updating";
+    title = "tasks";
+    showCount = false;
+  } else if (created > 0) {
+    // Making the plan. The tasks themselves are NOT named here: the header
+    // indicator flashes open with the whole list the moment it changes, so
+    // spelling five subjects into the transcript says the same thing twice and
+    // ages badly — the card is a record of a moment, the header is the present.
+    // The count is left off too: `0/5` beside a plan nobody has started reads
+    // as progress and is not.
+    verb = "Created";
+    title = created === 1 ? "1 task" : `${created} tasks`;
+    showCount = false;
   } else {
-    const applied = Array.isArray(result.updates)
-      ? (result.updates as Array<Record<string, unknown>>)
-      : [];
-    const items = Array.isArray(result.items)
-      ? (result.items as Array<Record<string, unknown>>)
-      : [];
-    const titleOf = (id: unknown): string => {
-      const match = items.find((item) => item.id === id);
-      return typeof match?.content === "string" ? match.content : String(id ?? "task");
-    };
-    if (applied.length > 0) {
-      for (const change of applied) {
-        const changeStatus = typeof change.status === "string" ? change.status : "";
-        changes.push({
-          key: String(change.id),
-          verb: TODO_STATUS_WORD[changeStatus] ?? "Updated",
-          title: titleOf(change.id),
-        });
-      }
-    } else {
-      // Single-item form, or a result from before `updates` existed.
-      changes.push({ key: "single", verb, title });
+    // A run of status changes. The one worth naming is what is running now —
+    // that is the fact the header's resting state does not carry. Failing that,
+    // the last thing closed.
+    const applied = updates.map((call) => {
+      const result = parseJson(call.result);
+      const args = parseJson(call.arguments);
+      return {
+        status:
+          (typeof result.status === "string" ? result.status : undefined) ??
+          (typeof args.status === "string" ? args.status : ""),
+        title:
+          (typeof result.title === "string" && result.title) ||
+          (typeof args.taskId === "string" ? args.taskId : "task"),
+      };
+    });
+    const started = applied.filter((change) => change.status === "in_progress").pop();
+    const closed = applied.filter((change) => change.status !== "in_progress");
+    const named = started ?? closed[closed.length - 1];
+    if (named) {
+      verb = TODO_STATUS_WORD[named.status] ?? "Updated";
+      // Several closed at once and none started: the count is the news, not any
+      // one of their titles.
+      title =
+        !started && closed.length > 1 ? `${closed.length} tasks` : named.title;
     }
   }
 
   return (
-    <div className="agw-task-beat" data-status={status} data-task-op={op || undefined}>
-      {changes.map((change, index) => (
-        <div className="agw-task-beat-head" key={change.key}>
-          <span className="agw-task-beat-dot" aria-hidden />
-          <span className="agw-task-beat-verb">{change.verb}</span>
-          <span className="agw-task-beat-title">{change.title}</span>
-          {/* The count is the state AFTER the whole call, so it belongs to the
-            * last line only — repeating it per line would show the same
-            * number beside changes it does not describe yet. */}
-          {index === changes.length - 1 && done !== undefined && total !== undefined && (
-            <span className="agw-task-beat-count">
-              {done}/{total}
-            </span>
-          )}
-        </div>
-      ))}
+    <div
+      className="agw-task-beat"
+      data-status={status}
+      data-task-op={created > 0 ? "set" : "update"}
+    >
+      <div className="agw-task-beat-head">
+        <span className="agw-task-beat-dot" aria-hidden />
+        <span className="agw-task-beat-verb">{verb}</span>
+        <span className="agw-task-beat-title">{title}</span>
+        {showCount && done !== undefined && total !== undefined && (
+          <span className="agw-task-beat-count">
+            {done}/{total}
+          </span>
+        )}
+      </div>
     </div>
   );
 };
@@ -1705,10 +1727,13 @@ export const ToolCallCard: React.FC<{
   if (call.name === "plan_step_update") {
     return <PlanStepCard call={call} isActivelyStreaming={isActivelyStreaming} />;
   }
-  // `op: "read"` never reaches here — `buildRows` drops it (see
+  // `TaskList` never reaches here — `buildRows` drops it (see
   // `isSilentToolCall`), because a lookup that changes nothing is not an event.
-  if (call.name === "todo") {
-    return <TodoBeatCard call={call} isActivelyStreaming={isActivelyStreaming} />;
+  //
+  // A run of checklist calls normally arrives merged, through `ToolGroup`. This
+  // branch is the single-call path (and what a test rendering one card gets).
+  if (call.name === "TaskCreate" || call.name === "TaskUpdate") {
+    return <ChecklistBeatCard calls={[call]} isActivelyStreaming={isActivelyStreaming} />;
   }
   return <StandardToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />;
 };

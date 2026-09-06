@@ -30,7 +30,7 @@ import {
   rememberSurfaceThread,
 } from "@/apps/agent/lib/thread/surface-resume";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useSettingsStore, whenSettingsReady } from "@/kernel/store/useSettingsStore";
 import { databaseService } from "@/kernel/services/database";
 import { AGENT_LAST_WORKSPACE_KEY } from "@/apps/agent/adapters/window";
 import {
@@ -413,6 +413,13 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     set({ projectRoot: normalized });
     bindRuntimeWorkspace(normalized);
     rememberAgentWorkspace(normalized);
+    // Which product this window reopens on is a SAVED setting, and it has not
+    // been read yet: React runs this window's effect before the app shell's,
+    // and the shell's is what starts the settings load. Listing conversations
+    // without waiting asked the default — Build — so a window reopening on
+    // Aurora Chat filled its rail with Build's conversations and kept them,
+    // because nothing lists them again when the real answer arrives.
+    await whenSettingsReady();
     await Promise.all([get().refreshThreads(), get().loadKnownProjects()]);
   },
 

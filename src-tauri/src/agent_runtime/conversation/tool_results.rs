@@ -82,7 +82,14 @@ pub(super) fn result_cap_for(tool: &str) -> usize {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
         "workspace_tree" => MAX_TREE_RESULT_LENGTH,
         "auroro_websearch" => MAX_WEB_RESULT_LENGTH,
-        "design_guidelines" => MAX_DOCTRINE_RESULT_LENGTH,
+        // Every `*_guidelines` tool, not just design's. The reasoning above
+        // is about doctrine, and doctrine is a family: `browser_guidelines`
+        // and `canvas_guidelines` are the same kind of standing instruction
+        // and were the same kind of wrong to cut. An agent reported
+        // `browser_guidelines` arriving 1,080 bytes short of its 9,144 —
+        // mandatory browser rules ending mid-sentence at "Check it " — while
+        // `design_guidelines`, one arm away, was never touched.
+        t if t.ends_with("_guidelines") => MAX_DOCTRINE_RESULT_LENGTH,
         _ => MAX_TOOL_RESULT_LENGTH,
     }
 }

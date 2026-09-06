@@ -38,6 +38,8 @@ export interface ProviderGroupsOpen {
   pinned: boolean;
   builtIn: boolean;
   custom: boolean;
+  /** Picture-making providers. Aurora Chat only, so absent on the Build side. */
+  images: boolean;
 }
 
 export const PROVIDER_GROUPS_OPEN_KEY = "agw-prov-groups-open";
@@ -46,6 +48,7 @@ const GROUPS_ALL_OPEN: ProviderGroupsOpen = {
   pinned: true,
   builtIn: true,
   custom: true,
+  images: true,
 };
 
 export function loadProviderGroupsOpen(): ProviderGroupsOpen {
@@ -59,6 +62,7 @@ export function loadProviderGroupsOpen(): ProviderGroupsOpen {
       pinned: record.pinned !== false,
       builtIn: record.builtIn !== false,
       custom: record.custom !== false,
+      images: record.images !== false,
     };
   } catch {
     return { ...GROUPS_ALL_OPEN };

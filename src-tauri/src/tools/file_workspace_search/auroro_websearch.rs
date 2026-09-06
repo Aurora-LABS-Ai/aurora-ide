@@ -22,10 +22,25 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::{aurora_websearch, AuroraWebSearchRequest};
+use crate::commands::{aurora_websearch_with, AuroraWebSearchRequest};
+use crate::services::browser_runtime::BrowserManager;
+use crate::services::browser_search::BrowserPageSource;
 use crate::websearch::{DEFAULT_MAX_CHARS, MAX_MAX_CHARS};
 
-pub struct AuroroWebSearchTool;
+pub struct AuroroWebSearchTool {
+    /// The search ladder's last rung, when this build has a browser.
+    ///
+    /// `None` in the IDE window and in tests, and the ladder says so rather
+    /// than silently having one rung fewer — see
+    /// [`crate::services::browser_search`].
+    browser: Option<std::sync::Arc<BrowserManager>>,
+}
+
+impl AuroroWebSearchTool {
+    pub fn new(browser: Option<std::sync::Arc<BrowserManager>>) -> Self {
+        Self { browser }
+    }
+}
 
 #[async_trait]
 impl ToolExecutor for AuroroWebSearchTool {
@@ -67,6 +82,17 @@ impl ToolExecutor for AuroroWebSearchTool {
                     },
                     "query": { "type": "string", "description": "Required for action='search'." },
                     "url": { "type": "string", "description": "Required for action='fetch'." },
+                    "source": {
+                        "type": "string",
+                        "enum": ["web", "scholar"],
+                        "default": "web",
+                        "description": "Which catalogue to ask. 'web' is the open web. 'scholar' \
+                                        asks arXiv, OpenAlex, Semantic Scholar and PubMed Central \
+                                        together and returns papers — titles, venues, abstracts \
+                                        and links you can fetch. Use it for research questions, \
+                                        evidence and citations; it has nothing to say about \
+                                        software documentation or current events. Search only."
+                    },
                     "numResults": {
                         "type": "number",
                         "default": 10,
@@ -132,11 +158,20 @@ impl ToolExecutor for AuroroWebSearchTool {
             num_results: number_arg(&input, &["numResults", "num_results"]),
             region: string_arg(&input, &["region"]),
             safe_search: string_arg(&input, &["safeSearch", "safe_search"]),
+            source: string_arg(&input, &["source"]),
             max_chars: number_arg(&input, &["maxChars", "max_chars"]),
             offset: number_arg(&input, &["offset"]),
         };
 
-        match aurora_websearch(request).await {
+        // Built per call rather than held: it is a thin handle over the
+        // manager, and building it here keeps the tool's own state to the one
+        // `Arc` it was given.
+        let page_source = self.browser.clone().map(BrowserPageSource::new);
+        let browser = page_source
+            .as_ref()
+            .map(|s| s as &dyn crate::websearch::PageSource);
+
+        match aurora_websearch_with(request, browser).await {
             Ok(response) => serde_json::to_string(&response).map_err(|e| {
                 ToolError::Execution(format!("failed to serialize the web result: {e}"))
             }),
@@ -223,7 +258,7 @@ mod tests {
     }
 
     async fn run(input: Value) -> Value {
-        let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool);
+        let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool::new(None));
         let out = tool.execute(input, &ctx_for()).await.expect("ok");
         serde_json::from_str(&out).unwrap()
     }
@@ -290,7 +325,7 @@ mod tests {
     /// so the description has to teach it.
     #[test]
     fn the_description_explains_how_to_read_a_long_page() {
-        let schema = AuroroWebSearchTool.schema();
+        let schema = AuroroWebSearchTool::new(None).schema();
         assert!(
             schema.description.contains("nextOffset"),
             "{}",

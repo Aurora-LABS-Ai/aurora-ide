@@ -9,8 +9,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
-import { formatToolDuration } from "@/apps/agent/components/tools/tool-call";
+import {
+  ChecklistBeatCard,
+  ToolCallCard,
+} from "@/apps/agent/components/tools/ToolCallCard";
+import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
+import {
+  formatToolDuration,
+  groupChecklistRuns,
+  type ToolCall,
+} from "@/apps/agent/components/tools/tool-call";
 
 vi.mock("@/kernel/store/useSettingsStore", () => ({
   useSettingsStore: (
@@ -24,7 +32,7 @@ vi.mock("@/kernel/store/useSettingsStore", () => ({
  * the ref, which the reel uses to measure the cell it is widening to.
  */
 vi.mock("framer-motion", () => {
-  const passthrough = (tag: "div" | "span") =>
+  const passthrough = (tag: "div" | "span" | "button") =>
     forwardRef<HTMLElement, Record<string, unknown>>(function Motion(props, ref) {
       const { children, initial, animate, exit, transition, layout, ...rest } = props;
       void initial;
@@ -36,7 +44,12 @@ vi.mock("framer-motion", () => {
     });
   return {
     AnimatePresence: ({ children }: PropsWithChildren) => children,
-    motion: { div: passthrough("div"), span: passthrough("span") },
+    motion: {
+      div: passthrough("div"),
+      span: passthrough("span"),
+      // `ToolGroup`'s collapsible header is a motion.button.
+      button: passthrough("button"),
+    },
   };
 });
 
@@ -830,5 +843,221 @@ describe("the design guideline rule", () => {
     // A hardcoded hue here could not follow a custom theme, and a
     // `fill-opacity` attribute would be outranked by the rule that sets it.
     expect(html).not.toMatch(/fill="#|fill-opacity=/);
+  });
+});
+
+/**
+ * The checklist beat.
+ *
+ * A five-task plan is five `TaskCreate` calls in ONE message — the tool shape
+ * working — and it used to draw five near-identical rows with a counter
+ * climbing `0/1 … 0/5` while nothing had been done. The list is not the
+ * transcript's to show: the header indicator holds it, live, and flashes open
+ * when it changes.
+ */
+describe("checklist beat", () => {
+  const create = (id: string, subject: string, total: number): ToolCall => ({
+    id,
+    name: "TaskCreate",
+    arguments: JSON.stringify({ subject, description: `Do ${subject}` }),
+    result: JSON.stringify({
+      success: true,
+      task: { id, subject, status: "pending" },
+      cursor: { total, completed: 0, cancelled: 0 },
+    }),
+  });
+
+  const update = (
+    id: string,
+    status: string,
+    title: string,
+    cursor: { total: number; completed: number },
+  ): ToolCall => ({
+    id,
+    name: "TaskUpdate",
+    arguments: JSON.stringify({ taskId: id, status }),
+    result: JSON.stringify({
+      success: true,
+      taskId: id,
+      status,
+      title,
+      cursor: { ...cursor, cancelled: 0 },
+    }),
+  });
+
+  it("says only how many tasks were created — the header carries the list", () => {
+    const html = renderToStaticMarkup(
+      <ChecklistBeatCard
+        isActivelyStreaming={false}
+        calls={[
+          create("1", "Scaffold the notebox package", 5),
+          create("2", "Build the CLI commands", 5),
+          create("3", "Write tests for storage and CLI", 5),
+          create("4", "Run tests and fix failures", 5),
+          create("5", "Write README and smoke-test", 5),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("Created");
+    expect(html).toContain("5 tasks");
+    // One row, and not one subject in it.
+    expect(html.match(/agw-task-beat-head/g)).toHaveLength(1);
+    expect(html).not.toContain("Scaffold");
+    // `0/5` beside a plan nobody has started reads as progress and is not.
+    expect(html).not.toContain("agw-task-beat-count");
+  });
+
+  it("names what is running now when a run closes one task and starts the next", () => {
+    const html = renderToStaticMarkup(
+      <ChecklistBeatCard
+        isActivelyStreaming={false}
+        calls={[
+          update("1", "completed", "Scaffold the notebox package", { total: 5, completed: 1 }),
+          update("2", "completed", "Build the CLI commands", { total: 5, completed: 2 }),
+          update("3", "in_progress", "Write tests for storage and CLI", {
+            total: 5,
+            completed: 2,
+          }),
+        ]}
+      />,
+    );
+
+    expect(html.match(/agw-task-beat-head/g)).toHaveLength(1);
+    expect(html).toContain("Started");
+    expect(html).toContain("Write tests for storage and CLI");
+    expect(html).toContain("2/5");
+  });
+
+  /**
+   * Three calls, one row. The group header exists to warn a reader that a wall
+   * of cards follows; above a single line it only raises the question it was
+   * meant to answer — "what were the other two?" — when the answer is that
+   * line.
+   */
+  it("does not put a group header above a checklist run that is one row", () => {
+    const html = renderToStaticMarkup(
+      <ToolGroup
+        isActivelyStreaming={false}
+        tools={[
+          update("1", "completed", "Scaffold the notebox package", { total: 5, completed: 1 }),
+          update("2", "completed", "Build the CLI commands", { total: 5, completed: 2 }),
+          update("3", "in_progress", "Write tests for storage and CLI", {
+            total: 5,
+            completed: 2,
+          }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("agw-task-beat");
+    expect(html).not.toContain("3 calls");
+  });
+
+  /** A run whose rows are still rows keeps its header. */
+  it("still groups when the run holds other tools beside the checklist", () => {
+    const write = (id: string): ToolCall => ({
+      id,
+      name: "file_write",
+      arguments: JSON.stringify({ path: `notebox/${id}.py`, content: "x = 1" }),
+      result: JSON.stringify({ success: true }),
+    });
+    const html = renderToStaticMarkup(
+      <ToolGroup
+        isActivelyStreaming={false}
+        tools={[
+          write("a"),
+          write("b"),
+          update("3", "in_progress", "Write tests for storage and CLI", {
+            total: 5,
+            completed: 2,
+          }),
+        ]}
+      />,
+    );
+
+    // Three rows, and the header keeps counting real calls.
+    expect(html).toContain("3 calls");
+  });
+
+  it("counts the closes when a run closes several and starts nothing", () => {
+    const html = renderToStaticMarkup(
+      <ChecklistBeatCard
+        isActivelyStreaming={false}
+        calls={[
+          update("4", "completed", "Run tests and fix failures", { total: 5, completed: 4 }),
+          update("5", "completed", "Write README and smoke-test", { total: 5, completed: 5 }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("Finished");
+    expect(html).toContain("2 tasks");
+    expect(html).toContain("5/5");
+  });
+
+  it("names the single task a lone update moved", () => {
+    const html = renderToStaticMarkup(
+      <ChecklistBeatCard
+        isActivelyStreaming={false}
+        calls={[update("1", "completed", "Scaffold the notebox package", {
+          total: 5,
+          completed: 1,
+        })]}
+      />,
+    );
+
+    expect(html).toContain("Finished");
+    expect(html).toContain("Scaffold the notebox package");
+    expect(html).toContain("1/5");
+  });
+
+  it("says what is happening, not to what, while the call is in flight", () => {
+    const html = renderToStaticMarkup(
+      <ChecklistBeatCard
+        isActivelyStreaming
+        calls={[{ id: "1", name: "TaskCreate", arguments: '{"subject":' }]}
+      />,
+    );
+
+    expect(html).toContain("Updating");
+    expect(html).not.toContain("agw-task-beat-count");
+  });
+
+  it("routes a single checklist call through the same beat", () => {
+    const html = renderToStaticMarkup(<ToolCallCard call={create("1", "Only task", 1)} />);
+
+    expect(html).toContain("agw-task-beat");
+    expect(html).toContain("1 task");
+  });
+});
+
+describe("grouping checklist runs", () => {
+  const call = (id: string, name: string): ToolCall => ({ id, name, arguments: "{}" });
+
+  it("merges only CONSECUTIVE checklist calls", () => {
+    const runs = groupChecklistRuns([
+      call("a", "TaskCreate"),
+      call("b", "TaskCreate"),
+      call("c", "file_write"),
+      call("d", "TaskUpdate"),
+      call("e", "TaskUpdate"),
+    ]);
+
+    expect(runs.map((run) => run.map((c) => c.id))).toEqual([
+      ["a", "b"],
+      ["c"],
+      ["d", "e"],
+    ]);
+  });
+
+  it("leaves every other tool as a step of its own", () => {
+    const runs = groupChecklistRuns([
+      call("a", "file_read"),
+      call("b", "file_read"),
+      call("c", "grep"),
+    ]);
+
+    expect(runs).toHaveLength(3);
   });
 });

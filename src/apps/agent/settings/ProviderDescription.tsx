@@ -5,8 +5,8 @@
  * account, the plan, the team it belongs to, whatever you would otherwise
  * have to remember. It sits inline under the title, edits in place behind a
  * pencil, and is capped at `PROVIDER_DESCRIPTION_MAX` characters because it
- * is a line, not a note. Nothing written shows a quiet "Add a description"
- * affordance and no empty box.
+ * is a line, not a note. Nothing written shows the pencil on its own — no
+ * label, no empty box.
  *
  * Enter saves, Escape restores what was there, leaving the field saves too —
  * the same three rules every inline rename in the window follows.
@@ -99,16 +99,23 @@ export const ProviderDescription: React.FC<ProviderDescriptionProps> = ({
     );
   }
 
+  // Nothing written: the pencil alone, in the place the description will
+  // appear. A labelled button would be a sentence of chrome on every provider
+  // card that has no description, which is most of them — the icon is the whole
+  // affordance, and the tooltip carries the words for anyone who needs them.
   if (!value) {
     return (
-      <button
-        type="button"
-        className="agw-prov-desc agw-prov-desc-add"
-        onClick={begin}
-      >
-        <AgentIcon name="pencil" size={11} />
-        <span>Add a description</span>
-      </button>
+      <div className="agw-prov-desc">
+        <button
+          type="button"
+          className="agw-prov-desc-add"
+          onClick={begin}
+          aria-label={`Add a description for ${providerName}`}
+          title="Add a description"
+        >
+          <AgentIcon name="pencil" size={11} />
+        </button>
+      </div>
     );
   }
 

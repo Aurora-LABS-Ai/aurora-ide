@@ -77,14 +77,16 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         refused += 1;
     }
     // Everything registered was refused except the tools chat mode names.
-    // Four of its seven are native executors today — `auroro_websearch`,
-    // `recall`, `remember` and `generate_image`. The rest are frontend-bridged.
+    // Five of its eight are native executors today — `auroro_websearch`,
+    // `recall`, `remember`, `generate_image` and `canvas_guidelines`. The rest
+    // are frontend-bridged.
     //
     // Stated as an equation rather than a floor so that giving chat mode
     // another native tool fails HERE and has to be acknowledged, instead of
-    // sliding under a threshold nobody revisits. It has already caught two:
-    // the memory bucket landing took this from 1 to 3, and `generate_image`
-    // took it to 4.
+    // sliding under a threshold nobody revisits. It has already caught three:
+    // the memory bucket landing took this from 1 to 3, `generate_image` took it
+    // to 4, and `canvas_guidelines` to 5 — chat could build a live canvas and
+    // could not read the contract for one.
     let named_natives = registry
         .names()
         .iter()
@@ -93,8 +95,8 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         })
         .count();
     assert_eq!(
-        named_natives, 4,
-        "auroro_websearch, recall, remember and generate_image are the native ones"
+        named_natives, 5,
+        "auroro_websearch, recall, remember, generate_image and canvas_guidelines are the native ones"
     );
     assert_eq!(
         refused,
@@ -138,6 +140,7 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
         "auroro_websearch",
         "present_artifact",
         "read_artifact",
+        "canvas_guidelines",
         "recall",
         "remember",
         "generate_image",
@@ -147,6 +150,30 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
             is_tool_available_this_turn(name, AgentExecutionMode::Chat, false, false, false),
             "{name} is chat mode's own tool and must be offered"
         );
+    }
+}
+
+/// The memory tools travel in one direction only.
+///
+/// `recall` and `remember` read and write an index that holds Aurora Chat
+/// conversations and nothing else, so in Build they are a memory of everything
+/// the user did somewhere else. This shipped: a Build turn called `recall`
+/// beside `shell_execute`, was told `found: 0`, and reported to the user that
+/// it had no record of the previous session — which was true of the index and
+/// false of the work.
+#[test]
+fn build_modes_never_offer_chat_memory() {
+    for mode in [
+        AgentExecutionMode::Agent,
+        AgentExecutionMode::Plan,
+        AgentExecutionMode::Team,
+    ] {
+        for name in ["recall", "remember"] {
+            assert!(
+                !is_tool_available_this_turn(name, mode, true, true, true),
+                "{name} is Aurora Chat's memory and must never be offered in {mode:?}"
+            );
+        }
     }
 }
 
@@ -560,7 +587,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
 fn native_test_registry() -> Arc<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     let sink = Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink);
-    crate::tools::file_workspace_search::register(&mut registry, sink.clone());
+    crate::tools::file_workspace_search::register(&mut registry, sink.clone(), None);
     crate::tools::shell_editor_todo::register(&mut registry, sink);
     Arc::new(registry)
 }
@@ -1147,7 +1174,7 @@ async fn happy_path_emits_events_persists_session_no_tools() {
 #[tokio::test]
 async fn a_chat_turn_parks_the_image_providers_for_the_tool_and_a_build_turn_does_not() {
     use crate::tools::image::config::{
-        clear_turn_config, turn_config, ImageApiFormat, ImageProviderConfig, ImageResponseShape,
+        clear_turn_config, turn_config, ImageApiFormat, ImageProviderConfig,
     };
 
     let reply = || TurnScript::Reply {
@@ -1168,7 +1195,7 @@ async fn a_chat_turn_parks_the_image_providers_for_the_tool_and_a_build_turn_doe
         api_format: ImageApiFormat::A6api,
         generation_path: None,
         edit_path: None,
-        response_shape: ImageResponseShape::Url,
+        request_format: None,
         enabled: true,
         models: vec![],
     };
@@ -2295,9 +2322,16 @@ async fn a_deferred_tool_becomes_callable_after_it_is_loaded() {
         registry.get("mcp_drive_search_files").is_some(),
         "loading must mutate the live per-turn roster, not a copy of it"
     );
+    // And its neighbours come with it, on purpose. Revealing anything changes
+    // the tool schema array, which sits at the FRONT of the provider's cached
+    // prefix — so one reveal re-bills the whole conversation as a cache write,
+    // whether it brought in one tool or forty. Measured on thread `99029a6b`
+    // (2026-09-06): three searches, three full-prefix rebuilds, 851,083
+    // cache-write tokens, $5.32 of a $36.56 chat. The cost is per REVEAL, so
+    // the roster is completed in one. See `tools::tool_search`.
     assert!(
-        registry.get("team_status").is_none(),
-        "loading one tool must not drag its neighbours in"
+        registry.get("team_status").is_some(),
+        "one reveal costs a whole cache rebuild, so it must be the only one"
     );
 }
 

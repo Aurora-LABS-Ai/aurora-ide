@@ -204,6 +204,50 @@ fn from_affected(input: &Value, verb: &str) -> Result<PathArgument, ToolError> {
     }
 }
 
+/// Why one item of a BATCH has no file, said in terms of what the call sent.
+///
+/// The single-edit form gets [`from_affected`], which uses a lone
+/// `affected_paths` entry and explains a list of several. The batch form had
+/// neither: with `affected_paths` naming two files and no `path` on any edit,
+/// it answered "Edit 1: no `path`. Set `path` on this edit item, or provide a
+/// top-level `path` that all edits share." — true about the tool, silent about
+/// the call, and it never mentions the field the model actually filled. A
+/// model reading it looks at its own payload, sees the files listed right
+/// there, and re-sends. Measured three times in one session (thread
+/// `c4669acf`, 2026-09-05), three whole requests against the full
+/// conversation.
+///
+/// Same rule as everywhere else in this module: where the call says one thing,
+/// serve it; where it genuinely says two, refuse and name what arrived.
+pub(crate) fn batch_item_without_path(input: &Value, n: usize) -> String {
+    let field = streaming_targets::FIELD;
+    let listed = input
+        .get(field)
+        .and_then(Value::as_array)
+        .map(|v| listed_paths(v));
+
+    match listed {
+        // Can't happen through `resolve` — one file becomes the top-level path
+        // before the batch runs — but stated rather than left to a fallback
+        // that would describe the call wrongly if that ever changes.
+        Some(Listed::One(path)) => format!(
+            "Edit {n}: no `path`. `{field}` names {path}; set `path` on this edit item, or send a \
+             top-level `path` that every edit shares."
+        ),
+        Some(Listed::Many(count)) => format!(
+            "Edit {n}: no `path`. `{field}` names {count} files, which does not say which of them \
+             THIS edit belongs to — that field only labels the row in the interface while your \
+             arguments are still streaming. Give every edit item its own `path` (the batch form \
+             is built for exactly this: several files in one call), or send a top-level `path` \
+             when they all share one."
+        ),
+        _ => format!(
+            "Edit {n}: no `path`. Set `path` on this edit item, or send a top-level `path` that \
+             every edit shares."
+        ),
+    }
+}
+
 /// Read a required path field for a mutating tool with no `affected_paths` to
 /// fall back on. Repairs nothing; names what arrived.
 ///

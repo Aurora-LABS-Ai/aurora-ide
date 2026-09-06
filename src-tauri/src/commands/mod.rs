@@ -54,6 +54,7 @@ pub mod project_stats;
 pub mod prompt_refine;
 pub mod provider_catalog;
 pub mod provider_kernel;
+pub mod provider_models;
 pub mod provider_test;
 pub mod settings;
 pub mod shell_profiles;
@@ -389,6 +390,36 @@ fn cleanup_command_stream(request_id: &str) {
     streams.remove(request_id);
 }
 
+/// Is this pid still a running process?
+///
+/// The question `taskkill`'s exit code cannot answer. Asked immediately after
+/// a kill, so pid reuse is not a practical concern.
+#[cfg(target_os = "windows")]
+fn process_is_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: `OpenProcess` takes no pointers; the handle it returns is closed
+    // on every path below, and `GetExitCodeProcess` writes to a local we own.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // No such process, or one we may not even ask about. Either way it
+            // is not something this kill left running.
+            return false;
+        }
+        let mut code: u32 = 0;
+        let queried = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        // A process that has exited reports its real exit code; only a live one
+        // reports STILL_ACTIVE. If the query itself failed, say "gone" rather
+        // than report a failure we cannot substantiate.
+        queried != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
 /// Kill a pid and its whole tree. Shared with `commands::terminal`, which
 /// needs the same reap when a terminal tab is closed.
 pub(crate) fn try_kill_pid(pid: u32) -> Result<(), String> {
@@ -401,19 +432,41 @@ pub(crate) fn try_kill_pid(pid: u32) -> Result<(), String> {
             .output()
             .map_err(|error| format!("failed to start taskkill for pid {pid}: {error}"))?;
         if output.status.success() {
-            Ok(())
-        } else {
-            let detail = String::from_utf8_lossy(&output.stderr);
-            let detail = if detail.trim().is_empty() {
-                String::from_utf8_lossy(&output.stdout)
-            } else {
-                detail
-            };
-            Err(format!(
-                "taskkill could not stop pid {pid}: {}",
-                detail.trim()
-            ))
+            return Ok(());
         }
+
+        // `taskkill /T` walks the whole tree and exits non-zero if ANY member
+        // of it resisted — including members that are not ours to kill and
+        // members that had already exited, whose slot a system process now
+        // holds. So its exit code answers "was the sweep perfect", and the
+        // only question worth asking is "is the process I named gone".
+        //
+        // Measured on thread `c4669acf` (2026-09-05), killing a `go run`
+        // spawn — which wraps the real server binary as a child:
+        //
+        // ```text
+        // taskkill could not stop pid 26488: ERROR: The process with PID 35888
+        // (child process of PID 1196) could not be terminated.
+        // Reason: The operation attempted is not supported.
+        // ```
+        //
+        // …repeated for about ten pids, reported as an outright failure. The
+        // agent then had no way to tell a dead server from a live one and let
+        // a ten-minute timeout reap it instead.
+        if !process_is_alive(pid) {
+            return Ok(());
+        }
+
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = if detail.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout)
+        } else {
+            detail
+        };
+        Err(format!(
+            "taskkill could not stop pid {pid}, and it is still running: {}",
+            detail.trim()
+        ))
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -552,6 +605,8 @@ pub struct AuroraWebSearchRequest {
     pub num_results: Option<u32>,
     pub region: Option<String>,
     pub safe_search: Option<String>,
+    /// Which catalogue to ask: `web` (the default) or `scholar`.
+    pub source: Option<String>,
     /// Characters of page text to return from a fetch.
     pub max_chars: Option<u32>,
     /// Where in the page to start reading, for paging through a long one.
@@ -1300,7 +1355,23 @@ fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
 pub async fn aurora_websearch(
     request: AuroraWebSearchRequest,
 ) -> Result<AuroraWebSearchResponse, String> {
-    use crate::websearch::{self, FetchOptions, SafeSearch, SearchOptions};
+    // No browser rung on the IPC edge. The search webview belongs to the agent
+    // window, and a frontend call is already running inside one — it can drive
+    // a browser itself. The rung exists for the agent's tool, which cannot.
+    aurora_websearch_with(request, None).await
+}
+
+/// The work behind [`aurora_websearch`], with the browser rung as a parameter.
+///
+/// Split out so the agent's tool can hand in a real browser while the IPC
+/// command above stays a plain `#[tauri::command]` — every argument of one of
+/// those is deserialized from the frontend's payload, so a `&dyn` cannot be a
+/// parameter of it.
+pub async fn aurora_websearch_with(
+    request: AuroraWebSearchRequest,
+    browser: Option<&dyn crate::websearch::PageSource>,
+) -> Result<AuroraWebSearchResponse, String> {
+    use crate::websearch::{self, FetchOptions, SafeSearch, SearchOptions, SearchSource};
 
     // A caller that names a URL means "read it" even when it forgot to say so.
     let action = request.action.clone().unwrap_or_else(|| {
@@ -1353,9 +1424,14 @@ pub async fn aurora_websearch(
             .as_deref()
             .map(SafeSearch::parse)
             .unwrap_or_default(),
+        source: request
+            .source
+            .as_deref()
+            .map(SearchSource::parse)
+            .unwrap_or_default(),
     };
 
-    let outcome = websearch::search(&query, &opts)
+    let outcome = websearch::search(&query, &opts, browser)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -3072,6 +3148,48 @@ mod tests {
 
     fn globs(value: &str) -> Vec<String> {
         parse_glob_patterns(&Some(value.to_string()))
+    }
+
+    /// `process_is_alive` is what lets a kill report the truth when
+    /// `taskkill /T` exits non-zero over a tree member it could not touch. It
+    /// is only worth anything if it actually distinguishes the two states, so
+    /// this drives a real process through both.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_killed_process_reads_as_gone_and_a_live_one_does_not() {
+        // `pause` is a cmd BUILT-IN blocking on stdin, and the pipe stays open
+        // for as long as the `Child` owns it. No external binary, so the test
+        // cannot pass vacuously on a runner with a thin PATH — the first
+        // version of it used `ping`, which was not on PATH here, exited
+        // immediately, and made every assertion below true for the wrong
+        // reason.
+        let mut child = Command::new("cmd")
+            .args(["/c", "pause"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn a process to kill");
+        let pid = child.id();
+
+        // Long enough that a process which failed to start has already gone,
+        // so "alive" below is a real observation rather than a head start.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            process_is_alive(pid),
+            "a blocked process must read as alive — if this fails the test is proving nothing"
+        );
+        try_kill_pid(pid).expect("killing a plain child must succeed");
+        assert!(
+            !process_is_alive(pid),
+            "the process must be gone once taskkill has run"
+        );
+        // Reaped so the test leaves no zombie behind on the runner.
+        let _ = child.wait();
+
+        // And the case the fix is FOR: a pid that no longer exists is not
+        // something a kill left running, so it must never read as alive.
+        assert!(!process_is_alive(pid), "a reaped pid must read as gone");
     }
 
     /// The regression this whole function exists for: a comma inside `{…}` is

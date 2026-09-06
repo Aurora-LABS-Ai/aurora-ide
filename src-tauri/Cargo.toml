@@ -82,6 +82,12 @@ similar = "2"
 dom_query = "0.28"
 dom_smoothie = "0.18"
 htmd = "0.5"
+# arXiv answers in Atom and nothing else, so the scholarly back ends need a
+# real XML reader. `dom_query` is an HTML engine: html5ever gives `<title>` its
+# own RAWTEXT parsing rules and relocates it, which is fine for a results page
+# and wrong for a feed whose every entry carries one. Already in the tree as a
+# transitive dependency, so naming it here costs no extra build.
+quick-xml = "0.38"
 # Pages still ship Shift_JIS, windows-1251 and friends. `encoding_rs` decodes
 # by the label the server (or the page's own <meta charset>) declares; assuming
 # UTF-8 turns every such page into replacement characters.

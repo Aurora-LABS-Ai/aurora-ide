@@ -23,6 +23,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { openFileDialog, openInTerminal, revealInExplorer } from "@/kernel/lib/ipc/tauri";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
+import { describeThreadTime } from "@/apps/agent/lib/time/thread-time";
 import { recentChats } from "@/apps/agent/lib/thread/recent-chats";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ScrollingLabel } from "@/apps/agent/shared/ScrollingLabel";
@@ -69,6 +70,17 @@ const PROJECTS_PREVIEW_LIMIT = 8;
  *  other rail preferences — a section you shut should stay shut. */
 const RECENT_COLLAPSED_KEY = "agw-rail-recent-collapsed";
 const PINNED_COLLAPSED_KEY = "agw-rail-pinned-collapsed";
+/** Aurora Chat's folded day groups, by bucket id. */
+const DAYS_COLLAPSED_KEY = "agw-rail-days-collapsed";
+
+function loadCollapsedDays(): ReadonlySet<string> {
+  try {
+    const raw = localStorage.getItem(DAYS_COLLAPSED_KEY);
+    return new Set(raw ? raw.split(",").filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
 
 /** Flip a shortcut section's collapse and remember it. */
 function flipCollapsed(
@@ -339,6 +351,12 @@ export const LeftRail: React.FC = () => {
       typeof localStorage !== "undefined" &&
       localStorage.getItem(PINNED_COLLAPSED_KEY) === "1",
   );
+  // Which of Aurora Chat's day groups are folded. A set of ids rather than one
+  // flag: the buckets are a fixed, small vocabulary (`today` … `older`), so a
+  // fold survives a restart and still means the same thing next week.
+  const [collapsedDays, setCollapsedDays] = useState<ReadonlySet<string>>(
+    loadCollapsedDays,
+  );
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [pinnedProjects, setPinnedProjects] = useState<string[]>(loadPinnedProjects);
   const pinnedProjectSet = useMemo(() => new Set(pinnedProjects), [pinnedProjects]);
@@ -384,7 +402,12 @@ export const LeftRail: React.FC = () => {
   // The chats you touched last, from every project (see `lib/thread/recent-chats`).
   // Absent during a search: the rail is then showing matches, and a shortcut
   // back to what you already had is not what you asked it for.
-  const recent = useMemo(() => (q ? [] : recentChats(filtered)), [filtered, q]);
+  // Build only — Aurora Chat's day groups already lead with the newest chats,
+  // so the section would list the same rows twice. Not computed there at all.
+  const recent = useMemo(
+    () => (q || chatSurface ? [] : recentChats(filtered)),
+    [chatSurface, filtered, q],
+  );
 
   // Archived chats (every project), newest-archived first — powers the Archived
   // view + its footer count. Honours the same search box as the tree.
@@ -519,6 +542,17 @@ export const LeftRail: React.FC = () => {
 
   const toggleRecent = () => flipCollapsed(setRecentCollapsed, RECENT_COLLAPSED_KEY);
   const togglePinned = () => flipCollapsed(setPinnedCollapsed, PINNED_COLLAPSED_KEY);
+  const toggleDay = (id: string) =>
+    setCollapsedDays((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      try {
+        localStorage.setItem(DAYS_COLLAPSED_KEY, [...next].join(","));
+      } catch {
+        /* ignore quota / privacy-mode failures */
+      }
+      return next;
+    });
 
   const toggleProjectPin = (root: string) => {
     setPinnedProjects((prev) => {
@@ -782,17 +816,31 @@ export const LeftRail: React.FC = () => {
         // outrun the rail.
         data-slide-host=""
         data-active={active}
+        // Must match the subtitle's render condition exactly: this attribute is
+        // what buys the row its second line (`height: auto; min-height: 44px`
+        // in `04-left-rail.css`). Setting one without the other draws a
+        // subtitle into a fixed 34px row, where it lands on the NEXT row's
+        // title — which reads as the time belonging to the wrong chat.
         data-sub={subtitle ? true : undefined}
         data-running={running || undefined}
         role="button"
         tabIndex={0}
-        title={
+        // The title, then when it last moved. Titles are generated from the
+        // first message, so a project worked on for a week gives ten rows
+        // reading "Architecture of account-managemen…" and the clock is the
+        // only thing that tells them apart — and it was nowhere on the row or
+        // in this tooltip. `describeThreadTime` returns null rather than a
+        // fabricated date, so a thread with no timestamp keeps today's tooltip.
+        title={[
           running
             ? `${thread.title} — working…`
             : unseen
               ? `${thread.title} — finished`
-              : thread.title
-        }
+              : thread.title,
+          describeThreadTime(thread.updatedAt, thread.createdAt),
+        ]
+          .filter(Boolean)
+          .join("\n")}
         onClick={() => {
           if (renaming) return;
           openChat(thread.id, thread.workspaceRoot);
@@ -992,20 +1040,24 @@ export const LeftRail: React.FC = () => {
           padding: "8px 8px 8px 10px",
         }}
       >
-        {/* Chat mode has no projects, so it has no way to add one. The button
-            is absent rather than disabled: a control that cannot do anything
-            here is not a control, it is a question the user has to answer. */}
-        {!chatSurface && (
-          <button
-            type="button"
-            className="agw-icon-btn"
-            title="Add project"
-            aria-label="Add project"
-            onClick={() => void addProject()}
-          >
-            <AgentIcon name="plus" size={17} />
-          </button>
-        )}
+        {/* One slot, two products. Build adds a PROJECT here, because that is
+            what its rail lists. Chat lists conversations, so the same slot
+            starts one — and it has to, or the rail that holds every chat offers
+            no way to begin another. Hiding the project button and putting
+            nothing back left the most common action in Aurora Chat reachable
+            only from a header glyph, once a chat was already open. */}
+        <button
+          type="button"
+          className="agw-icon-btn"
+          title={chatSurface ? "New chat" : "Add project"}
+          aria-label={chatSurface ? "Start a new chat" : "Add project"}
+          onClick={() => {
+            if (chatSurface) newChat();
+            else void addProject();
+          }}
+        >
+          <AgentIcon name="plus" size={17} />
+        </button>
         <div style={{ flex: 1 }} />
         <button
           type="button"
@@ -1135,8 +1187,14 @@ export const LeftRail: React.FC = () => {
         {/* Recent — the flat way back to the last few chats, across every
             project. Same header, caret and collapse as Projects; `data-flat`
             because two sticky headers in one scroller would pin to the same
-            edge and overlap, and a five-row section never needs to pin. */}
-        {recent.length > 0 && (
+            edge and overlap, and a five-row section never needs to pin.
+
+            Build only. Build's rail is a project tree, so the last few chats
+            are genuinely hard to reach and a flat shortcut earns its rows.
+            Aurora Chat is already a list ordered by when — "Today" IS recent,
+            and the section repeated those same chats a few pixels above
+            themselves. Two rows for one conversation is not a shortcut. */}
+        {!chatSurface && recent.length > 0 && (
           <>
             <div className="agw-rail-section" data-flat="">
               <button
@@ -1176,14 +1234,41 @@ export const LeftRail: React.FC = () => {
                 {q ? "No chats match." : "No chats yet."}
               </div>
             ) : (
-              chatDayGroups.map((group) => (
-                <React.Fragment key={group.id}>
-                  <div className="agw-rail-section" data-flat="">
-                    <div className="agw-rail-daygroup">{group.label}</div>
-                  </div>
-                  {group.threads.map((t) => renderChat(t))}
-                </React.Fragment>
-              ))
+              chatDayGroups.map((group) => {
+                // Forced open while searching, the same rule Pinned and
+                // Projects follow: a chat that matches must not stay hidden
+                // behind a fold you shut yesterday.
+                const open = q ? true : !collapsedDays.has(group.id);
+                return (
+                  <React.Fragment key={group.id}>
+                    <div className="agw-rail-section" data-flat="">
+                      {/* The same header, caret and collapse as Pinned and
+                          Recent directly above. A day group used to be the one
+                          section in this rail you could not fold — two
+                          behaviours in one list, and the older buckets are
+                          exactly the ones worth folding away. */}
+                      <button
+                        type="button"
+                        className="agw-rail-section-toggle"
+                        aria-expanded={open}
+                        onClick={() => toggleDay(group.id)}
+                        title={open ? `Collapse ${group.label}` : `Expand ${group.label}`}
+                      >
+                        <AgentIcon
+                          name="chevron-down"
+                          size={12}
+                          className="agw-rail-project-caret"
+                          style={{ transform: open ? "none" : "rotate(-90deg)" }}
+                        />
+                        <span>{group.label}</span>
+                      </button>
+                    </div>
+                    <Collapse open={open}>
+                      {group.threads.map((t) => renderChat(t))}
+                    </Collapse>
+                  </React.Fragment>
+                );
+              })
             )}
           </>
         )}
@@ -1362,7 +1447,60 @@ export const LeftRail: React.FC = () => {
                           {q ? "No chats match." : "No chats yet."}
                         </div>
                       ) : (
-                        chats.map((t) => renderChat(t))
+                        /* Grouped by WHEN, with the same folding header Aurora
+                           Chat's list has used all along — one pattern, both
+                           surfaces.
+
+                           A project accumulates conversations whose titles are
+                           all generated from a first message, so twenty rows
+                           read "Architecture of account-managemen…" and there
+                           is nothing to pick between them. A date on each row
+                           does not fix that: a hundred chats from one afternoon
+                           put the same string on a hundred rows, which is a
+                           column of noise. The date belongs on the BOUNDARY,
+                           once, where it also earns a chevron — the older
+                           buckets are exactly the ones worth folding away.
+
+                           Fold state is keyed by project AND bucket, so
+                           collapsing "Aug 29" in one project does not collapse
+                           it in another. */
+                        groupChatsByDay(chats).map((group) => {
+                          const dayKey = `${root}::${group.id}`;
+                          // Forced open while searching — the same rule Pinned,
+                          // Recent and Projects follow: a chat that matches must
+                          // not stay hidden behind a fold you shut yesterday.
+                          const dayOpen = q ? true : !collapsedDays.has(dayKey);
+                          return (
+                            <React.Fragment key={dayKey}>
+                              <div className="agw-rail-section" data-flat="">
+                                <button
+                                  type="button"
+                                  className="agw-rail-section-toggle"
+                                  aria-expanded={dayOpen}
+                                  onClick={() => toggleDay(dayKey)}
+                                  title={
+                                    dayOpen
+                                      ? `Collapse ${group.label}`
+                                      : `Expand ${group.label}`
+                                  }
+                                >
+                                  <AgentIcon
+                                    name="chevron-down"
+                                    size={12}
+                                    className="agw-rail-project-caret"
+                                    style={{
+                                      transform: dayOpen ? "none" : "rotate(-90deg)",
+                                    }}
+                                  />
+                                  <span>{group.label}</span>
+                                </button>
+                              </div>
+                              <Collapse open={dayOpen}>
+                                {group.threads.map((t) => renderChat(t))}
+                              </Collapse>
+                            </React.Fragment>
+                          );
+                        })
                       )}
                     </div>
                   </Collapse>

@@ -505,8 +505,12 @@ export const ContextRing: React.FC = () => {
   // Primitive (string) selector — safe to derive from on every render.
   const defaultModel = useSettingsStore((s) => s.selectedModel);
   const selectedModel = pinnedModel ?? defaultModel;
+  // Primitive selector: the tokens, not the `{model, tokens}` record — reading
+  // the object would hand zustand a fresh reference every render. The model
+  // inside it is the store's business (it decides when the floor survives a
+  // model switch); the ring only ever needs the number.
   const contextFloor = useAgentContextStore((s) =>
-    currentThreadId ? (s.contextFloorByThread[currentThreadId] ?? 0) : 0,
+    currentThreadId ? (s.contextFloorByThread[currentThreadId]?.tokens ?? 0) : 0,
   );
 
   const contextWindow = useSettingsStore(

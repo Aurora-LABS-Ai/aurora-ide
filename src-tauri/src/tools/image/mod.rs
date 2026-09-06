@@ -29,6 +29,7 @@
 pub mod assets;
 pub mod client;
 pub mod config;
+pub mod ingest;
 pub mod wire;
 
 use std::path::{Path, PathBuf};
@@ -56,6 +57,14 @@ pub const TOOL_NAMES: &[&str] = &["generate_image"];
 const MAX_PROMPT_CHARS: usize = 4_000;
 /// Longest artifact title, mirroring `commands::artifacts::MAX_TITLE_LEN`.
 const MAX_TITLE_CHARS: usize = 120;
+/// Longest title for a picture in the Canvas index.
+///
+/// Much shorter than [`MAX_TITLE_CHARS`], because it is a NAME in a list and
+/// not a caption. A model that passes no `title` falls back to the prompt, and
+/// a prompt is a paragraph — one arrived reading "Change the woman's hair
+/// colour from light brown to very dark — nearly black with dark chocolate
+/// tones. Keep everything e…" and ran the whole width of the dock.
+const MAX_IMAGE_TITLE_CHARS: usize = 48;
 
 pub struct GenerateImageTool {
     client: ImageClient,
@@ -271,6 +280,7 @@ generate_image is an Aurora Chat tool."
                     model: &resolved.model.model_key,
                     prompt: &prompt,
                     size: size.as_deref(),
+                    format: resolved.provider.request_format,
                 },
             )
             .await
@@ -390,6 +400,7 @@ have been deleted from the conversation's folder.",
                     model: &resolved.model.model_key,
                     prompt: &prompt,
                     size: size.as_deref(),
+                    format: resolved.provider.request_format,
                 },
                 EditSource {
                     bytes: &source_bytes,
@@ -666,11 +677,31 @@ fn title_of(input: &Value, prompt: &str) -> String {
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .unwrap_or(prompt);
-    let mut title: String = given.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.chars().count() > MAX_TITLE_CHARS {
-        title = title.chars().take(MAX_TITLE_CHARS - 1).collect();
-        title.push('…');
+    let collapsed: String = given.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= MAX_IMAGE_TITLE_CHARS {
+        return collapsed;
     }
+    // Cut on a word, not mid-syllable: a name ending "dark choc…" reads as a
+    // truncation, one ending "dark…" reads as a name.
+    let mut title = String::new();
+    for word in collapsed.split(' ') {
+        let next = if title.is_empty() {
+            word.chars().count()
+        } else {
+            title.chars().count() + 1 + word.chars().count()
+        };
+        if next > MAX_IMAGE_TITLE_CHARS - 1 {
+            break;
+        }
+        if !title.is_empty() {
+            title.push(' ');
+        }
+        title.push_str(word);
+    }
+    if title.is_empty() {
+        title = collapsed.chars().take(MAX_IMAGE_TITLE_CHARS - 1).collect();
+    }
+    title.push('…');
     title
 }
 
@@ -690,7 +721,6 @@ mod tests {
     use super::client::fake_server::{serve, Canned};
     use super::config::{
         clear_turn_config, set_turn_config, ImageApiFormat, ImageModelConfig, ImageProviderConfig,
-        ImageResponseShape,
     };
     use super::*;
     use crate::agent_runtime::session_store::SessionStore;
@@ -714,7 +744,7 @@ mod tests {
             api_format: format,
             generation_path: None,
             edit_path: None,
-            response_shape: ImageResponseShape::Url,
+            request_format: None,
             enabled: true,
             models: vec![
                 ImageModelConfig {
@@ -1024,9 +1054,31 @@ mod tests {
     fn titles_default_to_the_prompt_and_are_bounded() {
         assert_eq!(title_of(&json!({}), "an  aurora\nover mountains"), "an aurora over mountains");
         assert_eq!(title_of(&json!({"title": " Aurora "}), "ignored"), "Aurora");
+        // A title is a NAME in the Canvas index, so it is held far shorter than
+        // an artifact title generally is — a model that passes no `title` falls
+        // back to the prompt, and a prompt is a paragraph.
         let long = title_of(&json!({}), &"word ".repeat(100));
-        assert_eq!(long.chars().count(), MAX_TITLE_CHARS);
+        assert!(long.chars().count() <= MAX_IMAGE_TITLE_CHARS, "got {long:?}");
         assert!(long.ends_with('…'));
+        // Cut on a word boundary: "dark…" reads as a name, "dark choc…" reads
+        // as a truncation.
+        let sentence = title_of(
+            &json!({}),
+            "Change the woman's hair colour from light brown to very dark, nearly black",
+        );
+        assert!(sentence.ends_with('…'));
+        assert!(!sentence.contains("  "));
+        assert!(
+            sentence.trim_end_matches('…').split(' ').last().is_some_and(|w| {
+                "Change the woman's hair colour from light brown to very dark, nearly black"
+                    .split(' ')
+                    .any(|original| original == w)
+            }),
+            "the last word should be a whole word: {sentence:?}"
+        );
+        // A single word longer than the cap still has to end somewhere.
+        let one_word = title_of(&json!({}), &"x".repeat(200));
+        assert_eq!(one_word.chars().count(), MAX_IMAGE_TITLE_CHARS);
     }
 
     #[test]

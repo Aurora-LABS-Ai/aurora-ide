@@ -13,7 +13,7 @@
  * Themed entirely with `--agw-*`.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { FileIcon } from "@/kernel/ui/FileIcons";
@@ -365,8 +365,29 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
 export const RightDock: React.FC = () => {
   /** Aurora Chat's dock holds Canvas and Memory; see `CHAT_ADD_MENU`. */
   const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
-  const tabs = useAgentWorkspaceStore((s) => s.tabs);
+  const allTabs = useAgentWorkspaceStore((s) => s.tabs);
   const activeTabId = useAgentWorkspaceStore((s) => s.activeTabId);
+  /**
+   * The tabs THIS product has.
+   *
+   * Tabs are persisted, so a Files or Terminal tab opened while working on a
+   * project stayed in the strip after switching to Aurora Chat — a surface with
+   * no files and no terminal, whose own `+` menu cannot even offer them.
+   * Filtered rather than closed: going back to Build should find the dock
+   * exactly as it was left, not emptied by a visit next door.
+   */
+  const tabs: DockTabInstance[] = useMemo(
+    () =>
+      chatSurface
+        ? allTabs.filter(
+            (tab) =>
+              CHAT_DOCK_TABS.includes(tab.kind as (typeof CHAT_DOCK_TABS)[number]) ||
+              tab.kind === "artifact" ||
+              tab.kind === "chat",
+          )
+        : allTabs,
+    [allTabs, chatSurface],
+  );
   const expanded = useAgentWorkspaceStore((s) => s.expanded);
   const openTab = useAgentWorkspaceStore((s) => s.openTab);
   const setActiveTab = useAgentWorkspaceStore((s) => s.setActiveTab);

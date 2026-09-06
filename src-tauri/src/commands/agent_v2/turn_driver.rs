@@ -345,16 +345,67 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    saved ON the message as `aurora_context`, in its own field: the
         //    bubble shows the user's words, the API view folds the context
         //    in after them, and the runtime adds the checklist as it stands.
-        let mut user_message = ConversationMessage::user_text(
-            request.user_message.clone(),
-            Utc::now().timestamp_millis(),
-        );
-        user_message.aurora_context = request
-            .ide_context
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+        // A picture the user pasted rides inside that string as an
+        // `<aurora_image>` marker carrying its own bytes. Land it in the
+        // conversation's `assets/` FIRST, so it is a picture this conversation
+        // owns before any tool can be asked about it: without this the folder
+        // held only what `generate_image` had made, and an edit asked to start
+        // from "the first picture in this conversation" silently started from
+        // an unrelated one. Chat only — Build conversations have no assets dir.
+        let landed = match self.registry.store_for(request.execution_mode).assets_dir(&request.thread_id) {
+            Some(dir) => {
+                crate::tools::image::ingest::ingest_user_images_into(
+                    &dir,
+                    &request.user_message,
+                    Some((
+                        self.registry.store_for(request.execution_mode),
+                        &request.thread_id,
+                    )),
+                )
+            }
+            None => crate::tools::image::ingest::Ingested {
+                text: request.user_message.clone(),
+                stored: Vec::new(),
+            },
+        };
+        let mut user_message =
+            ConversationMessage::user_text(landed.text, Utc::now().timestamp_millis());
+        // The names the pasted pictures were stored under, in the order they
+        // appear in the message.
+        //
+        // Necessary, not decorative: the marker becomes a raw image block on
+        // the wire, so its `name` never reaches the model. Two pasted pictures
+        // and "do this with that one, that with the other" is unanswerable
+        // without handles — the model can SEE both and name neither. Stated in
+        // `aurora_context` rather than in the message text so the user's bubble
+        // still shows only the words they typed.
+        let attached_note = (!landed.stored.is_empty()).then(|| {
+            let names = landed
+                .stored
+                .iter()
+                .enumerate()
+                .map(|(i, a)| format!("{} ({})", a.name, i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "<attached_images>\nSaved to this conversation, in the order shown: {names}.\n\
+                 Use a name — or its position — as `source` when calling generate_image with \
+                 op \"edit\".\n</attached_images>"
+            )
+        });
+        user_message.aurora_context = match (
+            request
+                .ide_context
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            attached_note,
+        ) {
+            (Some(ide), Some(note)) => Some(format!("{ide}\n{note}")),
+            (Some(ide), None) => Some(ide.to_string()),
+            (None, Some(note)) => Some(note),
+            (None, None) => None,
+        };
         // Attach browser-inspector element chips so they persist into the
         // session JSONL as a permanent part of this turn (re-rendered above
         // the user bubble on thread reopen). Empty vecs collapse to None so

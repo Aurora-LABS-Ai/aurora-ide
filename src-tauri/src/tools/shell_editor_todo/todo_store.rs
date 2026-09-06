@@ -51,9 +51,12 @@ fn lock() -> Result<MutexGuard<'static, ()>, String> {
 
 /// Mirrors the frontend `Task` union so the existing task panel renders these
 /// without translation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
+    /// Every task starts here — `TaskCreate` has no status field at all, which
+    /// is the reference's shape and one fewer thing to get wrong.
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -89,12 +92,22 @@ impl TodoStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoItem {
     pub id: String,
-    /// Imperative form — "Fix the bug".
+    /// Imperative form — "Fix the bug". This is `TaskCreate`'s `subject`; the
+    /// field keeps its storage name because the checklist on disk, the Tauri
+    /// event and the frontend `Task` type have all called it `content` since
+    /// before the tools were split, and renaming it would break every
+    /// conversation already saved.
     pub content: String,
+    /// What the task actually involves — `TaskCreate`'s `description`.
+    ///
+    /// Optional on disk: every checklist written before the split has no such
+    /// field, and a missing description is an empty one, never a parse error.
+    #[serde(default)]
+    pub description: String,
     /// Present continuous — "Fixing the bug".
     pub active_form: String,
     pub status: TodoStatus,
@@ -183,15 +196,22 @@ impl TodoList {
     }
 
     #[must_use]
+    /// The id the next task gets: one past the highest number in use.
+    ///
+    /// Plain numbers — `"1"`, `"2"` — matching what `TaskCreate` hands back and
+    /// what the model then quotes as `taskId`. Checklists written before the
+    /// split used `"t1"`, so both spellings are read when working out the
+    /// highest; only the new spelling is written. A thread carrying both is
+    /// fine: ids are looked up by string, and neither form can collide with the
+    /// other's number.
     pub fn next_id(&self) -> String {
         let max = self
             .items
             .iter()
-            .filter_map(|i| i.id.strip_prefix('t'))
-            .filter_map(|n| n.parse::<u32>().ok())
+            .filter_map(|i| i.id.strip_prefix('t').unwrap_or(&i.id).parse::<u32>().ok())
             .max()
             .unwrap_or(0);
-        format!("t{}", max + 1)
+        format!("{}", max + 1)
     }
 
     /// The Tauri event payload, shaped exactly like the frontend `Task` type.
@@ -203,6 +223,7 @@ impl TodoList {
             .map(|i| json!({
                 "id": i.id,
                 "content": i.content,
+                "description": i.description,
                 "activeForm": i.active_form,
                 "status": i.status.as_str(),
             }))
@@ -321,6 +342,7 @@ mod tests {
         TodoItem {
             id: id.into(),
             content: format!("Task {id}"),
+            description: format!("What task {id} involves"),
             active_form: format!("Doing task {id}"),
             status,
         }
@@ -376,11 +398,23 @@ mod tests {
     #[test]
     fn next_id_walks_past_the_maximum_so_ids_are_never_reused() {
         let l = list(vec![
-            item("t1", TodoStatus::Pending),
-            item("t7", TodoStatus::Pending),
+            item("1", TodoStatus::Pending),
+            item("7", TodoStatus::Pending),
         ]);
-        assert_eq!(l.next_id(), "t8");
-        assert_eq!(list(vec![]).next_id(), "t1");
+        assert_eq!(l.next_id(), "8");
+        assert_eq!(list(vec![]).next_id(), "1");
+    }
+
+    /// A checklist written before the tools were split numbers its tasks `t1`,
+    /// `t2`. Those threads keep working, and the next id must continue past
+    /// them rather than land on a number the list is already using.
+    #[test]
+    fn next_id_reads_the_old_t_prefixed_ids_too() {
+        let l = list(vec![
+            item("t1", TodoStatus::Pending),
+            item("t4", TodoStatus::Pending),
+        ]);
+        assert_eq!(l.next_id(), "5");
     }
 
     #[test]

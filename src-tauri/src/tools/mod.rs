@@ -126,7 +126,12 @@ pub mod transcript;
 /// is the roster's SIZE and not its per-turn visibility.
 /// Raised 43 -> 44 by `generate_image`, Aurora Chat's picture maker — the same
 /// arrangement as the memory bucket: always registered, offered only in chat.
-pub const BUILTIN_TOOL_COUNT: usize = 44;
+/// Raised 44 -> 46 by splitting the checklist: one `todo` tool with a typed
+/// `op` became `TaskCreate` / `TaskUpdate` / `TaskList`. Two more names on the
+/// roster, and one fewer required field to forget — a measured build lost a
+/// whole request to `todo` called without its `op`. See
+/// `shell_editor_todo::tasks` for why the reference's shape won.
+pub const BUILTIN_TOOL_COUNT: usize = 46;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -168,7 +173,7 @@ pub fn register_builtin_tools(
     // only through a cloned Arc). `ToolRegistry::register` takes
     // `&self`, so the transfer is a normal interior-mutating insert.
     let mut staging = ToolRegistry::new();
-    file_workspace_search::register(&mut staging, sink.clone());
+    file_workspace_search::register(&mut staging, sink.clone(), browser_manager.clone());
     shell_editor_todo::register(&mut staging, sink.clone());
     plan::register(&mut staging, sink);
     design::register(&mut staging);
@@ -261,7 +266,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 44);
+        assert_eq!(BUILTIN_TOOL_COUNT, 46);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -276,6 +281,89 @@ mod tests {
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );
+    }
+
+    /// What `tool_search` is actually holding back, in tools and in tokens.
+    ///
+    /// The number matters because deferral is not free: revealing anything
+    /// changes the schema array, which sits at the FRONT of the provider's
+    /// cached prefix, so one reveal re-bills the whole conversation as a cache
+    /// write. Measured on thread `99029a6b` (2026-09-06), three reveals cost
+    /// 851,083 cache-write tokens — $5.32 — to defer the schemas counted here.
+    ///
+    /// So this test exists to keep the trade honest: if what is deferred is
+    /// small and what a reveal costs is large, deferral only pays for
+    /// conversations that never reveal at all. Prints rather than asserts a
+    /// tight bound, because the point is the ratio, not a fixed number.
+    #[test]
+    fn what_deferral_actually_holds_back() {
+        // No `BrowserManager`, so no `browser_*` here. `BrowserManager::new`
+        // takes a Wry-typed `AppHandle` and `tauri::test::mock_app()` hands
+        // back a `MockRuntime` one, so the browser bucket cannot be weighed in
+        // a unit test without making the manager generic over its runtime —
+        // a refactor this measurement does not justify. What IS measured is
+        // the number that decides the trade: the roster every turn carries no
+        // matter what, against which a deferred bucket has to look worth the
+        // rebuild it costs to reveal.
+        let registry = crate::agent_runtime::tool_executor::ToolRegistry::new();
+        register_builtin_tools(
+            &registry,
+            std::sync::Arc::new(shell_editor_todo::NoopIdeEventSink),
+            None,
+        );
+
+        let mut deferred_tokens = 0usize;
+        let mut kept_tokens = 0usize;
+        let mut deferred_names: Vec<String> = Vec::new();
+
+        for schema in registry.schemas() {
+            // What the wire actually carries for one tool.
+            let wire = serde_json::json!({
+                "name": schema.name,
+                "description": schema.description,
+                "input_schema": schema.input_schema,
+            })
+            .to_string();
+            let tokens = crate::services::token_service::TokenService::count_tokens_for_model(
+                &wire,
+                "claude-opus-5",
+            )
+            .map(|count| count.tokens)
+            .unwrap_or(wire.len() / 4);
+
+            // Same rule as `tool_policy::is_deferrable`, restated because that
+            // module is private to `agent_v2`. Three prefixes, and a test that
+            // drifts from them fails loudly on the count assertion below.
+            let deferrable = schema.name.starts_with("mcp_")
+                || schema.name.starts_with("browser_")
+                || schema.name.starts_with("team_");
+            if deferrable {
+                deferred_tokens += tokens;
+                deferred_names.push(schema.name);
+            } else {
+                kept_tokens += tokens;
+            }
+        }
+
+        println!("always-loaded native tools : {}", registry.len());
+        println!("always-loaded schema tokens: {kept_tokens}");
+        println!("deferrable here            : {} {deferred_names:?}", deferred_names.len());
+        println!("deferred schema tokens     : {deferred_tokens}");
+
+        // The roster a turn always carries has to stay small enough that a
+        // deferred bucket looks like a rounding error next to what revealing
+        // one costs. 851,083 cache-write tokens bought three reveals on thread
+        // `99029a6b`; if the whole always-loaded roster is a hundredth of that,
+        // deferral is not buying anything worth the risk.
+        assert!(
+            kept_tokens < 20_000,
+            "the always-loaded roster is {kept_tokens} tokens — if it has grown \
+             this far, re-run the deferral trade before assuming it still holds"
+        );
+        // Nothing deferrable can register without a browser manager, and the
+        // frontend buckets (`mcp_*`, `team_*`) never reach this registry at
+        // all. Stated so the zero above reads as the setup, not a finding.
+        assert_eq!(deferred_names.len(), 0);
     }
 
     /// Every declared tool parameter names exactly ONE JSON type.

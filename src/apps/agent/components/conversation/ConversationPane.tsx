@@ -711,7 +711,20 @@ export const ConversationPane: React.FC = () => {
                 }}
               />
             )}
+            {/* `autoFocus` because this composer is not the one the first
+                message was typed into. The home screen owns its own
+                `AgentComposer` (`EmptyState`), and the moment a thread exists
+                the branch above swaps that whole subtree for this one — React
+                unmounts the element holding focus and focus falls to
+                `<body>`. Everything typed while the first answer streams then
+                reaches nothing, which is exactly what it looks like: the reply
+                is flowing, the keys make no letters, and there is nothing on
+                screen to explain it.
+
+                On every later mount this is the ordinary thing a chat window
+                does — open a conversation, the cursor is in the box. */}
             <AgentComposer
+              autoFocus
               value={draft}
               onValueChange={(text) => setDraft(draftKey, text)}
               onSubmit={send.send}

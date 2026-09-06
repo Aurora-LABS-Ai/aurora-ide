@@ -77,10 +77,18 @@ fn tolerance(name: &str) -> usize {
 /// A row only fires when its target is actually registered, so this table
 /// can never resurrect a name that is itself gone.
 const RETIRED_NAMES: &[(&str, &str)] = &[
-    ("todo_write", "todo"),
-    ("todowrite", "todo"),
-    ("todo_update", "todo"),
-    ("todo_read", "todo"),
+    // The checklist's own history: three names, then one `todo` with a typed
+    // `op`, now the reference's three again. A model reaching for any of the
+    // dead spellings is answered with the one that does that job.
+    ("todo_write", "TaskCreate"),
+    ("todowrite", "TaskCreate"),
+    ("todo", "TaskCreate"),
+    ("todos", "TaskCreate"),
+    ("todo_update", "TaskUpdate"),
+    ("todo_read", "TaskList"),
+    // `TaskGet` reads one task in the reference. Aurora has no per-task read —
+    // the list is short enough that reading all of it is the same answer.
+    ("taskget", "TaskList"),
 ];
 
 /// Best registered name for a name the model got wrong, if one is close
@@ -147,7 +155,9 @@ mod tests {
         "workspace_tree",
         "shell_execute",
         "shell_spawn",
-        "todo",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskList",
         "read_lints",
         "browser_navigate",
         "browser_click",
@@ -175,7 +185,7 @@ mod tests {
     fn catches_typos() {
         assert_eq!(suggest_in_roster("file_reed"), Some("file_read"));
         assert_eq!(suggest_in_roster("browser_clik"), Some("browser_click"));
-        assert_eq!(suggest_in_roster("todos"), Some("todo"));
+        assert_eq!(suggest_in_roster("TaskCreat"), Some("TaskCreate"));
     }
 
     #[test]
@@ -184,13 +194,16 @@ mod tests {
     }
 
     #[test]
-    fn retired_todo_names_resolve_to_the_consolidated_tool() {
-        // `TodoWrite` is in every agent model's training data and is six edits
-        // from `todo` — pure edit distance can never bridge it, so without the
-        // retirement table the first turn of a conversation is a guaranteed
-        // dead end.
-        for old in ["todo_write", "TodoWrite", "todo_update", "todo_read"] {
-            assert_eq!(suggest_in_roster(old), Some("todo"), "{old}");
+    fn retired_todo_names_resolve_to_the_task_tool_that_does_that_job() {
+        // `TodoWrite` is in every agent model's training data and is nowhere
+        // near `TaskCreate` by edit distance, so without the retirement table
+        // the first turn of a conversation is a guaranteed dead end.
+        for old in ["todo_write", "TodoWrite", "todo", "todos"] {
+            assert_eq!(suggest_in_roster(old), Some("TaskCreate"), "{old}");
+        }
+        assert_eq!(suggest_in_roster("todo_update"), Some("TaskUpdate"));
+        for old in ["todo_read", "TaskGet"] {
+            assert_eq!(suggest_in_roster(old), Some("TaskList"), "{old}");
         }
     }
 

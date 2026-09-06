@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import type { AgentArtifactKind } from "@/apps/agent/services/artifacts/agent-artifacts";
+import {
+  parseImageArtifactContent,
+  type AgentArtifactKind,
+} from "@/apps/agent/services/artifacts/agent-artifacts";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { isTauri } from "@/kernel/lib/ipc/tauri";
 import type { PlanStepStatus } from "@/apps/agent/services/plans/agent-plans";
 import { buildArtifactDocument } from "@/apps/agent/lib/render/artifact-render";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
@@ -70,6 +75,84 @@ interface CanvasPanelProps {
    */
   artifactId?: string;
 }
+
+/**
+ * The picture itself, as an image row's icon in the Canvas index.
+ *
+ * A list of pictures identified by their titles is a list you have to read;
+ * with thumbnails it is a list you can scan. Falls back to the kind glyph when
+ * the record names no file or the file has gone — a broken image icon in a
+ * 22px box says less than the glyph it replaced.
+ */
+const CanvasIndexThumb: React.FC<{ content: string }> = ({ content }) => {
+  const record = parseImageArtifactContent(content);
+  const [broken, setBroken] = useState(false);
+  if (!record || broken) {
+    return <AgentIcon name="image" size={15} />;
+  }
+  const src = isTauri() ? convertFileSrc(record.path) : record.path;
+  return (
+    <img
+      className="agw-canvas-index-thumb"
+      src={src}
+      alt=""
+      draggable={false}
+      onError={() => setBroken(true)}
+    />
+  );
+};
+
+/**
+ * What is known about a picture, for the Source view.
+ *
+ * A picture has no source to read — its artifact record is bookkeeping, and
+ * showing it as a JSON dump asks a person to parse braces for four facts. The
+ * facts themselves are worth having: what was asked for, which model answered,
+ * how big it came back, and whether it started from another picture. So Source
+ * on an image is those, in order, and the record stays behind Copy for anyone
+ * who genuinely wants it.
+ */
+const CanvasImageFacts: React.FC<{ content: string }> = ({ content }) => {
+  const record = parseImageArtifactContent(content);
+  if (!record) {
+    return (
+      <ToolCode code={content} path="image.json" />
+    );
+  }
+  const SOURCE_WORDS: Record<string, string> = {
+    generated: "Generated from a prompt",
+    edited: "Edited from another picture",
+    attached: "Attached by you",
+  };
+  const rows: Array<[string, string]> = [
+    ["How it got here", SOURCE_WORDS[record.source] ?? record.source],
+    ["Size", `${record.width} × ${record.height}`],
+    ["Format", record.mediaType],
+    ["File", record.asset],
+  ];
+  if (record.parent) rows.splice(1, 0, ["Started from", record.parent]);
+  if (record.model) rows.push(["Model", record.model]);
+  if (record.provider) rows.push(["Provider", record.provider]);
+
+  return (
+    <div className="agw-canvas-facts agw-scroll">
+      {record.prompt && (
+        <div className="agw-canvas-facts-prompt">
+          <span className="agw-canvas-facts-key">Prompt</span>
+          <p>{record.prompt}</p>
+        </div>
+      )}
+      <dl>
+        {rows.map(([key, value]) => (
+          <div key={key}>
+            <dt className="agw-canvas-facts-key">{key}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+};
 
 export const CanvasPanel: React.FC<CanvasPanelProps> = ({ artifactId }) => {
   const threadId = useAgentChatStore((state) => state.currentThreadId);
@@ -339,7 +422,15 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ artifactId }) => {
                       useAgentWorkspaceStore.getState().openArtifactTab(entry.id, entry.title)
                     }
                   >
-                    <AgentIcon name={INDEX_ICONS[entry.kind]} size={15} />
+                    {/* A picture is recognised by looking at it, not by
+                        reading a filename — so an image row shows the picture
+                        where every other row shows its kind glyph. Falls back
+                        to the glyph when the file is gone or unreadable. */}
+                    {entry.kind === "image" && latest ? (
+                      <CanvasIndexThumb content={latest.content} />
+                    ) : (
+                      <AgentIcon name={INDEX_ICONS[entry.kind]} size={15} />
+                    )}
                     <span className="agw-canvas-index-main">
                       <span className="agw-canvas-index-title">{entry.title}</span>
                       <span className="agw-canvas-index-meta">
@@ -465,7 +556,9 @@ export const CanvasPanel: React.FC<CanvasPanelProps> = ({ artifactId }) => {
       </div>
 
       <div className="agw-canvas-body">
-        {mode === "source" ? (
+        {mode === "source" && artifact.kind === "image" ? (
+          <CanvasImageFacts content={version.content} />
+        ) : mode === "source" ? (
           <ToolCode
             code={version.content}
             path={`${artifact.id}.${extensionFor(artifact.kind)}`}

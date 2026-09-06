@@ -642,7 +642,12 @@ pub(crate) fn member_registry(ctx: &Arc<MemberCtx>) -> ToolRegistry {
     use crate::tools::shell_editor_todo::shell_execute::ShellExecuteTool;
 
     let mut staging = ToolRegistry::new();
-    crate::tools::file_workspace_search::register(&mut staging, Arc::new(NoopIdeEventSink));
+    // No browser rung for a team member's web search. There is one browser and
+    // one search webview in the process, and members run in parallel — several
+    // of them driving it at once would have each reading whichever page the
+    // others had just navigated to. Members get the two HTTP back ends; the
+    // Lead, which runs alone, gets the browser as well.
+    crate::tools::file_workspace_search::register(&mut staging, Arc::new(NoopIdeEventSink), None);
 
     let guarded: HashSet<&str> = PATH_GUARDED_TOOLS.iter().copied().collect();
     let reg = ToolRegistry::new();

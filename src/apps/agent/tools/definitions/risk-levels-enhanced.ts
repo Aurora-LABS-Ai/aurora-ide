@@ -99,8 +99,11 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   // ============================================
   // TODO TOOLS - AUTO-APPROVED
   // ============================================
-  todo: 'low',                     // UI operation - the agent's own checklist
-  todo_write: 'low',               // retired name, kept so a stale roster can't escalate
+  TaskCreate: 'low',               // UI operation - the agent's own checklist
+  TaskUpdate: 'low',
+  TaskList: 'low',                 // read-only
+  todo: 'low',                     // retired names, kept so a stale roster can't escalate
+  todo_write: 'low',
 
   // ============================================
   // TRANSCRIPT ANNOTATION - AUTO-APPROVED

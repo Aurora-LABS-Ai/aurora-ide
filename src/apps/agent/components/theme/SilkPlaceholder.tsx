@@ -100,12 +100,24 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
   className,
 }) => {
   const hostRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const host = hostRef.current;
-    const canvas = canvasRef.current;
-    if (!host || !canvas) return;
+    if (!host) return;
+
+    // The canvas is created HERE, not rendered by React, and thrown away with
+    // the effect. React reuses a rendered element across a remount, and the
+    // cleanup below deliberately destroys the WebGL context — so on the second
+    // mount `getContext` handed back the SAME dead context and every shader
+    // failed to compile with `CONTEXT_LOST_WEBGL`. Nothing drew, and the
+    // vignette over the empty canvas read as a soft glow that looked
+    // intentional. React's StrictMode does exactly that mount → cleanup →
+    // mount cycle in development, so the placeholder never once worked in the
+    // app while working perfectly in the standalone probe it was ported from.
+    // One canvas per mount means the context it owns is only ever its own.
+    const canvas = document.createElement("canvas");
+    canvas.className = "agw-silk-canvas";
+    host.prepend(canvas);
 
     const gl = canvas.getContext("webgl", { antialias: false, alpha: false });
     if (!gl) {
@@ -115,16 +127,34 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
         getComputedStyle(host).getPropertyValue("--agw-accent"),
       );
       host.style.background = `rgb(${Math.round(r * 255)} ${Math.round(g * 255)} ${Math.round(b * 255)})`;
+      canvas.remove();
       return;
     }
 
     const compile = (type: number, source: string): WebGLShader | null => {
+      const stage = type === gl.VERTEX_SHADER ? "vertex" : "fragment";
       const shader = gl.createShader(type);
-      if (!shader) return null;
+      if (!shader) {
+        console.warn(`[SilkPlaceholder] could not create the ${stage} shader`);
+        return null;
+      }
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.warn("[SilkPlaceholder] shader failed:", gl.getShaderInfoLog(shader));
+        // Name the STAGE and quote the source. The first version of this logged
+        // only `getShaderInfoLog`, which some drivers return as `null` — a
+        // failure that says nothing about which of the two shaders failed or
+        // why, and cost a round trip on a real machine to narrow down.
+        const log = gl.getShaderInfoLog(shader);
+        console.warn(
+          `[SilkPlaceholder] ${stage} shader did not compile:`,
+          log && log.trim() ? log : `(driver gave no reason; gl.getError=${gl.getError()})`,
+          "\n--- source ---\n" +
+            source
+              .split("\n")
+              .map((line, index) => `${String(index + 1).padStart(2)} | ${line}`)
+              .join("\n"),
+        );
         gl.deleteShader(shader);
         return null;
       }
@@ -134,13 +164,17 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
     const vertex = compile(gl.VERTEX_SHADER, VERTEX_SHADER);
     const fragment = compile(gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
     const program = vertex && fragment ? gl.createProgram() : null;
-    if (!vertex || !fragment || !program) return;
+    if (!vertex || !fragment || !program) {
+      canvas.remove();
+      return;
+    }
 
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       console.warn("[SilkPlaceholder] link failed:", gl.getProgramInfoLog(program));
+      canvas.remove();
       return;
     }
     gl.useProgram(program);
@@ -230,6 +264,9 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
       // one per card until GC got round to it — at which point the OLDEST
       // context is dropped, blanking a placeholder that is still running.
       gl.getExtension("WEBGL_lose_context")?.loseContext();
+      // Safe to lose it now: this canvas dies with the effect, so no remount
+      // can be handed the context it just destroyed.
+      canvas.remove();
     };
   }, []);
 
@@ -242,7 +279,7 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
       aria-label={label}
       aria-hidden={label ? undefined : true}
     >
-      <canvas ref={canvasRef} className="agw-silk-canvas" />
+      {/* The canvas is inserted here by the effect — see the note above. */}
       {/* Vignette gradients, verbatim from the reference file. Two layers: a
           radial that darkens the edges and a linear that weights top and
           bottom. They fade in over 3s so the box does not start at full

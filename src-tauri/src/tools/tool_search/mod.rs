@@ -260,8 +260,11 @@ fn describe(catalog: &[Arc<dyn ToolExecutor>]) -> String {
         "Load the full definition of a tool that is not loaded yet.
 
 The tools below are available but NOT currently callable — you can see their names, not their \
-parameters. Call `tool_search` to load the ones you need, then call them normally on your next \
-message. A tool stays loaded for the rest of the conversation.
+parameters. Call `tool_search` ONCE to load the ones you need, then call them normally on your \
+next message. They stay loaded for the rest of the conversation.
+
+One call loads ALL of them, not only what your query matched: loading is one fixed cost however \
+many arrive, so after your first search there is nothing left to find.
 
 Query forms:
 - `select:name_one,name_two` — load these exact tools by name.
@@ -346,13 +349,8 @@ try one broad word, or `select:` with an exact name from the list in this tool's
 
         let mut loaded = Vec::new();
         let mut already = Vec::new();
-        let mut names = Vec::new();
         for tool in matched {
             let schema = tool.schema();
-            // Remembered either way. "Already loaded" in THIS turn's registry
-            // says nothing about the next one, and forgetting it there is the
-            // whole defect.
-            names.push(schema.name.clone());
             if self.live.get(tool.name()).is_some() {
                 already.push(schema.name.clone());
                 continue;
@@ -364,15 +362,69 @@ try one broad word, or `select:` with an exact name from the list in this tool's
                 "parameters": schema.input_schema,
             }));
         }
-        // Survives the turn boundary; see the `revealed` module.
-        revealed::remember(&ctx.thread_id, names);
 
-        let note = if loaded.is_empty() {
+        // ── One search reveals the WHOLE catalog ──────────────────────────
+        //
+        // Revealing a tool changes the schema array, and the schema array is
+        // the first thing in the provider's cached prefix — Anthropic's
+        // breakpoints run tools → system → last stable message. So every
+        // reveal throws away the cache for the ENTIRE conversation: the system
+        // prompt, the repo map, every message, all of it re-billed as a cache
+        // write.
+        //
+        // Measured on thread `99029a6b` (2026-09-06, Opus 5, 42 minutes).
+        // Three `tool_search` calls, three total cache misses:
+        //
+        // ```text
+        // msg  77  select:browser_guidelines,browser_navigate,…  191,938 rewritten
+        // msg 171  select:browser_scroll,browser_view            256,151 rewritten
+        // msg 261  select:browser_get_console_logs               402,994 rewritten
+        // ```
+        //
+        // 851,083 cache-write tokens — $5.32 of that chat's $36.556, and 55% of
+        // its entire cache-write bill — to defer schemas worth a fraction of
+        // that. A tool this tool exists to save tokens cannot be the largest
+        // single line on the bill.
+        //
+        // The rebuild is per REVEAL, not per tool, so the fix is to stop
+        // paying it more than once: the first search that matches anything
+        // loads everything deferred. Deferral still does its job for the
+        // conversations that never search — which is the case it was built for
+        // — and a conversation that needs one browser tool almost always needs
+        // the rest of them anyway.
+        //
+        // It also makes the roster deterministic. Before this, two sessions
+        // that searched for different things ended up with different schema
+        // ORDERS, and order is part of the cached bytes. After any search the
+        // roster is the whole catalog in catalog order, always.
+        let mut extra = 0usize;
+        for tool in &self.catalog {
+            if self.live.get(tool.name()).is_some() {
+                continue;
+            }
+            self.live.register(tool.clone());
+            extra += 1;
+        }
+
+        // Every name in the catalog, so the next turn's registry rebuilds the
+        // same full roster. Survives the turn boundary; see `revealed`.
+        revealed::remember(
+            &ctx.thread_id,
+            self.catalog.iter().map(|tool| tool.name().to_string()),
+        );
+
+        // The note tells the model the roster is now whole, because otherwise
+        // it searches again for the next browser tool — a second call that
+        // would now do nothing but cost a round trip. Says what IS true rather
+        // than forbidding a call: a prohibition is a thing to reason about, a
+        // fact is not.
+        let note = if loaded.is_empty() && extra == 0 {
             "Already loaded — call them directly.".to_string()
         } else {
             format!(
-                "{} tool(s) loaded and callable from your next message. Do not call `tool_search` \
-again for them.",
+                "{} tool(s) matched your query; every other on-demand tool was loaded alongside \
+them ({extra} more). All of them are in your tool list from your next message onward, so there is \
+nothing left for `tool_search` to find.",
                 loaded.len()
             )
         };
@@ -381,6 +433,7 @@ again for them.",
             "success": true,
             "loaded": loaded,
             "already_loaded": already,
+            "also_loaded_count": extra,
             "note": note,
         })
         .to_string())
@@ -467,30 +520,80 @@ mod tests {
             .expect("searched");
         let parsed: Value = serde_json::from_str(&out).expect("json");
 
+        // The ANSWER is still the query's answer — the model asked about
+        // screenshots and gets the screenshot tool's schema back, not a wall
+        // of forty it did not ask about.
         assert_eq!(parsed["loaded"][0]["name"], "browser_screenshot");
         assert!(
             live.get("browser_screenshot").is_some(),
             "the point of the call is that the tool is now callable"
         );
+        // …but the ROSTER is now whole. Revealing anything invalidates the
+        // whole conversation's prompt cache (the schema array is the first
+        // thing in the cached prefix), so the rebuild is paid per REVEAL, not
+        // per tool. Having paid it once, deferring the rest only buys a second
+        // bill. See the reveal-everything block in `execute`.
         assert!(
-            live.get("browser_navigate").is_none(),
-            "a search must load what was asked for, not the whole bucket"
+            live.get("browser_navigate").is_some(),
+            "one reveal costs a full cache rebuild, so it loads everything"
+        );
+        assert_eq!(live.len(), tool.catalog.len(), "the whole catalog is live");
+    }
+
+    /// The measurement behind the rule, as a test: three searches used to mean
+    /// three full-prefix rebuilds (851,083 cache-write tokens on thread
+    /// `99029a6b`). Now the second and third have nothing left to reveal.
+    #[tokio::test]
+    async fn a_second_search_reveals_nothing_and_so_costs_no_rebuild() {
+        let (tool, live) = executor();
+        tool.execute(json!({ "query": "select:browser_navigate" }), &ctx())
+            .await
+            .expect("first");
+        let count_after_first = live.len();
+
+        // A query that MATCHES, so this exercises the reveal path rather than
+        // the empty-search early return.
+        let out = tool
+            .execute(json!({ "query": "screenshot" }), &ctx())
+            .await
+            .expect("second");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+
+        assert_eq!(
+            live.len(),
+            count_after_first,
+            "a second search must not change the schema array"
+        );
+        assert_eq!(
+            parsed["also_loaded_count"], 0,
+            "there is nothing left to reveal"
         );
     }
 
     #[tokio::test]
     async fn select_loads_exact_names_and_ignores_ranking() {
         let (tool, live) = executor();
-        tool.execute(
-            json!({ "query": "select:browser_navigate,mcp_drive_search_files" }),
-            &ctx(),
-        )
-        .await
-        .expect("searched");
+        let out = tool
+            .execute(
+                json!({ "query": "select:browser_navigate,mcp_drive_search_files" }),
+                &ctx(),
+            )
+            .await
+            .expect("searched");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
 
+        // Exactly the two named ones are reported back…
+        let reported: Vec<&str> = parsed["loaded"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|entry| entry["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(reported, ["browser_navigate", "mcp_drive_search_files"]);
+        // …and everything is callable.
         assert!(live.get("browser_navigate").is_some());
         assert!(live.get("mcp_drive_search_files").is_some());
-        assert_eq!(live.len(), 2);
+        assert_eq!(live.len(), tool.catalog.len());
     }
 
     #[tokio::test]
@@ -519,7 +622,11 @@ mod tests {
 
         assert_eq!(parsed["loaded"].as_array().expect("array").len(), 0);
         assert_eq!(parsed["already_loaded"][0], "browser_navigate");
-        assert_eq!(live.len(), 1, "no duplicate registration");
+        assert_eq!(
+            live.len(),
+            tool.catalog.len(),
+            "no duplicate registration — the roster is the catalog, once"
+        );
     }
 
     #[tokio::test]

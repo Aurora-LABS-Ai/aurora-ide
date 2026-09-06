@@ -317,6 +317,38 @@ fn persisted_multi_read_keeps_each_file_as_valid_json() {
         .is_some_and(|content| !content.is_empty())));
 }
 
+/// Doctrine is a family, not one tool.
+///
+/// `result_cap_for` named `design_guidelines` alone, so every sibling fell to
+/// the generic 8 KiB cap. An agent reported `browser_guidelines` arriving 1,080
+/// bytes short of its 9,144 — the mandatory browser rules ending mid-sentence
+/// at "Check it " — while `design_guidelines`, one match arm away, was never
+/// touched. Half a standing instruction is worse than none, and that reasoning
+/// was never specific to design.
+#[test]
+fn every_guidelines_tool_gets_the_doctrine_cap() {
+    let doctrine = result_cap_for("design_guidelines");
+    for tool in ["browser_guidelines", "canvas_guidelines"] {
+        assert_eq!(
+            result_cap_for(tool),
+            doctrine,
+            "{tool} is doctrine and must share design's cap"
+        );
+    }
+
+    // The exact size the report saw cut, now passed through whole.
+    let payload = "x".repeat(9_144);
+    assert_eq!(
+        truncate_tool_content("browser_guidelines", payload.clone()),
+        payload,
+        "the browser rules must reach the model verbatim"
+    );
+
+    // The widening is scoped to the suffix — an ordinary tool keeps the
+    // generic cap, or this arm would hand 32 KiB to everything.
+    assert_ne!(result_cap_for("shell_execute"), doctrine);
+}
+
 /// The built-in doctrine is a standing instruction, not a search result: it
 /// must arrive whole or the model follows rules it was never shown. Under the
 /// generic 8 KiB cap the default `both` lost its last 2,121 characters —
@@ -529,7 +561,7 @@ async fn the_reported_fetch_reaches_the_model_with_the_page_in_it() {
         spill_dir: None,
     };
 
-    let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool);
+    let tool: Arc<dyn ToolExecutor> = Arc::new(AuroroWebSearchTool::new(None));
     let raw = tool
         .execute(
             serde_json::json!({ "action": "fetch", "url": "https://aurorahelix.com/docs" }),
@@ -2232,6 +2264,7 @@ fn the_checklist_block_states_every_status_once() {
         list.items.push(TodoItem {
             id: id.into(),
             content: content.into(),
+            description: content.into(),
             active_form: content.into(),
             status,
         });
@@ -2267,6 +2300,7 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
     list.items.push(TodoItem {
         id: "t1".into(),
         content: "Fix the bug".into(),
+        description: "The redirect loops".into(),
         active_form: "Fixing the bug".into(),
         status: TodoStatus::InProgress,
     });
@@ -2274,7 +2308,7 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
 
     // One write, then nine tool calls: silent for nine, not yet ten. No
     // reminder has ever been sent, so that count runs back to the start.
-    let mut history = vec![user_msg("go"), assistant_tool_uses(&[("w", "todo")]), tool_result_for("w", None)];
+    let mut history = vec![user_msg("go"), assistant_tool_uses(&[("w", "TaskUpdate")]), tool_result_for("w", None)];
     for i in 0..9 {
         history.push(assistant_tool_uses(&[(&format!("c{i}"), "grep")]));
         history.push(tool_result_for(&format!("c{i}"), None));
@@ -2289,17 +2323,19 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
     let reminder = stale_checklist_reminder(&history, &thread).expect("due");
     assert!(reminder.starts_with(CHECKLIST_REMINDER_TAG), "{reminder}");
     assert!(reminder.contains("- [>] t1 Fix the bug (in_progress)"), "{reminder}");
-    assert!(reminder.contains("`todo`"), "{reminder}");
+    assert!(reminder.contains("`TaskUpdate`"), "{reminder}");
     assert!(!reminder.to_lowercase().contains("do not"), "{reminder}");
     assert!(!reminder.to_lowercase().contains("never"), "{reminder}");
 
     // Once sent, it is quiet for another ten even though the list stays
     // untouched — a reminder that repeats is a nag the model learns to skip.
+    //
+    // Sent in the shape `tool_exec` actually writes: its own text block beside
+    // the results, never inside one.
     let mut sent = tool_result_for("c9", None);
-    if let Some(ContentBlock::ToolResult { content, .. }) = sent.blocks.first_mut() {
-        content.push_str("\n\n");
-        content.push_str(&reminder);
-    }
+    sent.blocks.push(ContentBlock::Text {
+        text: reminder.clone(),
+    });
     history.push(sent);
     for i in 10..19 {
         history.push(assistant_tool_uses(&[(&format!("c{i}"), "grep")]));
@@ -2310,9 +2346,27 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
     history.push(assistant_tool_uses(&[("c19", "grep")]));
     assert!(stale_checklist_reminder(&history, &thread).is_some());
 
+    // A thread written before 2026-09-06 carries the reminder glued to the end
+    // of a tool result's body. Those conversations must still read as having
+    // been reminded, or reloading one sends a second reminder immediately.
+    let mut legacy = vec![user_msg("go"), assistant_tool_uses(&[("w", "TaskUpdate")]), tool_result_for("w", None)];
+    let mut glued = tool_result_for("old", None);
+    if let Some(ContentBlock::ToolResult { content, .. }) = glued.blocks.first_mut() {
+        content.push_str("\n\n");
+        content.push_str(&reminder);
+    }
+    legacy.push(assistant_tool_uses(&[("old", "grep")]));
+    legacy.push(glued);
+    for i in 0..9 {
+        legacy.push(assistant_tool_uses(&[(&format!("l{i}"), "grep")]));
+        legacy.push(tool_result_for(&format!("l{i}"), None));
+    }
+    assert_eq!(checklist_silence(&legacy).1, 9, "the glued reminder still counts");
+    assert!(stale_checklist_reminder(&legacy, &thread).is_none());
+
     // A `todo` call anywhere in the run resets the silence — including one
     // in the message being answered right now.
-    history.push(assistant_tool_uses(&[("w2", "todo")]));
+    history.push(assistant_tool_uses(&[("w2", "TaskUpdate")]));
     assert_eq!(checklist_silence(&history).0, 0);
     assert!(stale_checklist_reminder(&history, &thread).is_none());
 
@@ -2326,7 +2380,8 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
     }
     assert_eq!(checklist_silence(&never), (10, 10));
     let reminder = stale_checklist_reminder(&never, &thread).expect("due");
-    assert!(reminder.contains("have not used the `todo` checklist"), "{reminder}");
+    assert!(reminder.contains("have not used the checklist"), "{reminder}");
+    assert!(reminder.contains("`TaskCreate`"), "{reminder}");
     assert!(!reminder.contains("<checklist>"), "{reminder}");
 }
 
@@ -2352,7 +2407,7 @@ fn checklist_silence_stops_counting_at_a_compaction_marker() {
     };
     let history = vec![
         user_msg("go"),
-        assistant_tool_uses(&[("w", "todo")]),
+        assistant_tool_uses(&[("w", "TaskUpdate")]),
         tool_result_for("w", None),
         assistant_tool_uses(&[("a", "grep")]),
         tool_result_for("a", None),
@@ -2535,6 +2590,7 @@ async fn run_turn_adds_the_checklist_to_the_message_context_where_todo_exists() 
     list.items.push(TodoItem {
         id: "t1".into(),
         content: "Fix the bug".into(),
+        description: "The redirect loops".into(),
         active_form: "Fixing the bug".into(),
         status: TodoStatus::InProgress,
     });
@@ -2542,7 +2598,7 @@ async fn run_turn_adds_the_checklist_to_the_message_context_where_todo_exists() 
 
     let with_todo = Arc::new(ToolRegistry::new());
     with_todo.register(Arc::new(RecordingTool {
-        name: "todo",
+        name: "TaskUpdate",
         seen: Arc::new(Mutex::new(Vec::new())),
         response: "{}".into(),
     }));
@@ -2586,10 +2642,16 @@ async fn run_turn_adds_the_checklist_to_the_message_context_where_todo_exists() 
     todo_store::clear(&thread).ok();
 }
 
-/// The stale-checklist reminder is written into the tenth silent tool result
-/// — once, persisted — and nowhere before it.
+/// The stale-checklist reminder rides in the tenth silent tool MESSAGE — once,
+/// persisted, as its own text block — and never inside a tool result's body.
+///
+/// The second half is the point. A result that carries text the tool did not
+/// produce is a result the model cannot trust: on thread `c4669acf` a model
+/// read a shell result ending in a checklist, concluded its results were being
+/// crossed with other calls, and re-verified correct work for the rest of the
+/// session. See `tool_exec`.
 #[tokio::test]
-async fn run_turn_writes_the_stale_checklist_reminder_into_the_tenth_silent_tool_result() {
+async fn run_turn_writes_the_stale_checklist_reminder_beside_the_tenth_silent_result() {
     let mut script = Vec::new();
     for i in 0..10 {
         let id = format!("c{i}");
@@ -2614,7 +2676,7 @@ async fn run_turn_writes_the_stale_checklist_reminder_into_the_tenth_silent_tool
     }));
     // Registered so the reminder applies; never called, so the silence grows.
     tools.register(Arc::new(RecordingTool {
-        name: "todo",
+        name: "TaskUpdate",
         seen: Arc::new(Mutex::new(Vec::new())),
         response: "{}".into(),
     }));
@@ -2639,14 +2701,32 @@ async fn run_turn_writes_the_stale_checklist_reminder_into_the_tenth_silent_tool
         .collect();
     assert_eq!(results.len(), 10);
     let carries = |m: &ConversationMessage| {
+        m.blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains(CHECKLIST_REMINDER_TAG)))
+    };
+    // The invariant that failed in production: no tool result's body ever
+    // holds it, not on the tenth message and not on any of the nine before.
+    let inside_a_result = |m: &ConversationMessage| {
         m.blocks.iter().any(|b| {
             matches!(b, ContentBlock::ToolResult { content, .. } if content.contains(CHECKLIST_REMINDER_TAG))
         })
     };
-    for (i, result) in results.iter().enumerate().take(9) {
-        assert!(!carries(result), "result {i} must be the tool's output alone");
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            !inside_a_result(result),
+            "message {i}: a tool result must be the tool's output alone"
+        );
     }
-    assert!(carries(results[9]), "the tenth silent result carries the reminder");
+    for (i, result) in results.iter().enumerate().take(9) {
+        assert!(!carries(result), "message {i} is too early for a reminder");
+    }
+    assert!(carries(results[9]), "the tenth silent message carries the reminder");
+    // And it is the LAST block, after every result it follows.
+    assert!(
+        matches!(results[9].blocks.last(), Some(ContentBlock::Text { text }) if text.contains(CHECKLIST_REMINDER_TAG)),
+        "the reminder is appended after the results, not spliced among them"
+    );
 }
 
 #[tokio::test]

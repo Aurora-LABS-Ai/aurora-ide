@@ -30,9 +30,44 @@ use super::{http, WebError};
 
 const LITE_URL: &str = "https://lite.duckduckgo.com/lite/";
 const HTML_URL: &str = "https://html.duckduckgo.com/html/";
+/// The full site, for the browser rung. The scriptless hosts above are
+/// separate deployments; this is the one a person uses.
+const BROWSER_URL: &str = "https://duckduckgo.com/";
+
+/// What the app renders one result as, and what the browser waits for before
+/// reading the page.
+const RESULT_SELECTOR: &str = "[data-testid='result']";
 
 pub const ENGINE_LITE: &str = "duckduckgo-lite";
 pub const ENGINE_HTML: &str = "duckduckgo-html";
+pub const ENGINE_BROWSER: &str = "duckduckgo-browser";
+
+/// Which catalogue a search is asking.
+///
+/// Not a fallback order — a choice. The open web and the scholarly catalogues
+/// answer different questions, and one cannot stand in for the other: a
+/// question about nginx has no answer in arXiv, and a question about protein
+/// folding has a better one in PubMed than on a blog. See
+/// [`super::scholar`] for why these never chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchSource {
+    /// The open web, through the ladder in this file.
+    #[default]
+    Web,
+    /// arXiv, OpenAlex, Semantic Scholar and PubMed Central together.
+    Scholar,
+}
+
+impl SearchSource {
+    /// Read the caller's label. Anything unrecognised is the web, because a
+    /// typo must not silently turn a web search into a literature search.
+    pub fn parse(label: &str) -> Self {
+        match label.trim().to_ascii_lowercase().as_str() {
+            "scholar" | "papers" | "academic" => SearchSource::Scholar,
+            _ => SearchSource::Web,
+        }
+    }
+}
 
 /// How a search should be run.
 #[derive(Debug, Clone)]
@@ -41,6 +76,7 @@ pub struct SearchOptions {
     /// DuckDuckGo region code, e.g. `uk-en`, `de-de`.
     pub region: Option<String>,
     pub safe_search: SafeSearch,
+    pub source: SearchSource,
 }
 
 impl Default for SearchOptions {
@@ -49,6 +85,7 @@ impl Default for SearchOptions {
             limit: 10,
             region: None,
             safe_search: SafeSearch::Moderate,
+            source: SearchSource::Web,
         }
     }
 }
@@ -87,7 +124,16 @@ impl SafeSearch {
 /// from one endpoint and ten results from the other is the normal shape of a
 /// blocked request, and returning the empty one would be reporting a block as
 /// an answer.
-pub async fn search(query: &str, opts: &SearchOptions) -> Result<SearchOutcome, WebError> {
+///
+/// The rungs are ordered by what they cost, and the browser is last for that
+/// reason alone: it is a page load in a real engine against two HTTP requests.
+/// It is also the only rung that can pass a challenge page, so it is the one
+/// that decides whether "blocked today" is a failure the user sees.
+pub async fn search(
+    query: &str,
+    opts: &SearchOptions,
+    browser: Option<&dyn super::PageSource>,
+) -> Result<SearchOutcome, WebError> {
     let query = query.trim();
     if query.is_empty() {
         return Err(WebError::EmptyQuery);
@@ -123,10 +169,122 @@ pub async fn search(query: &str, opts: &SearchOptions) -> Result<SearchOutcome, 
         }
     }
 
+    // Both no-JavaScript endpoints declined. The full site is a different
+    // thing entirely — it runs its scripts, keeps its cookies and is driven by
+    // a real engine — so a challenge that stopped the two above is one this
+    // can answer.
+    if let Some(browser) = browser {
+        match run_browser(query, opts, browser).await {
+            Ok(hits) if !hits.is_empty() => {
+                let hits: Vec<SearchHit> = hits.into_iter().take(opts.limit).collect();
+                return Ok(SearchOutcome {
+                    query: query.to_string(),
+                    engine: ENGINE_BROWSER,
+                    count: hits.len(),
+                    results: hits,
+                    fallbacks,
+                });
+            }
+            Ok(_) => fallbacks.push(EngineAttempt {
+                engine: ENGINE_BROWSER,
+                reason: "the results page loaded but held no results in the shape this \
+                         parser knows — the site has probably changed"
+                    .to_string(),
+            }),
+            Err(e) => fallbacks.push(EngineAttempt {
+                engine: ENGINE_BROWSER,
+                reason: e.to_string(),
+            }),
+        }
+    } else {
+        fallbacks.push(EngineAttempt {
+            engine: ENGINE_BROWSER,
+            reason: "not tried — no browser is available to this caller".to_string(),
+        });
+    }
+
     Err(WebError::NoEngineAnswered {
         query: query.to_string(),
         attempts: fallbacks,
     })
+}
+
+/// The full DuckDuckGo site, read out of a real browser.
+///
+/// A separate parser from [`run_html`] because it is a separate page: the
+/// scriptless endpoints render `div.result` from a template, and the app
+/// renders `[data-testid=…]` from its own components. Reusing one selector set
+/// for both would make a change to either look like the web going quiet.
+async fn run_browser(
+    query: &str,
+    opts: &SearchOptions,
+    browser: &dyn super::PageSource,
+) -> Result<Vec<SearchHit>, WebError> {
+    let mut url = format!(
+        "{BROWSER_URL}?q={}&kp={}",
+        urlencode(query),
+        opts.safe_search.param()
+    );
+    if let Some(region) = opts.region.as_deref() {
+        url.push_str(&format!("&kl={}", urlencode(region)));
+    }
+
+    let html = browser
+        .rendered_html(&url, RESULT_SELECTOR)
+        .await
+        .map_err(|detail| WebError::Transport {
+            url: url.clone(),
+            detail,
+        })?;
+
+    Ok(parse_browser_results(&html))
+}
+
+/// Pull results out of the rendered app.
+///
+/// Its own function so the markup can be tested against a fixture. The reason
+/// that matters here more than anywhere else: this parser only ever runs when
+/// the other two have already failed, so a break in it is invisible until the
+/// day the search was going to fail anyway — and then it looks like the web
+/// went quiet rather than like a selector that moved.
+fn parse_browser_results(html: &str) -> Vec<SearchHit> {
+    let dom = Dom::from(html);
+    let mut hits: Vec<SearchHit> = Vec::new();
+    for block in dom.select(RESULT_SELECTOR).iter() {
+        let anchor = block.select("a[data-testid='result-title-a']");
+        if !anchor.exists() {
+            continue;
+        }
+        let Some(href) = anchor.attr("href") else {
+            continue;
+        };
+        // The app links straight out, but it has used a redirector before and
+        // may again — the same unwrapper handles both and returns nothing
+        // rather than a tracker URL.
+        let Some(url) = unwrap_redirect(&href) else {
+            continue;
+        };
+        let title = clean(&anchor.text());
+        if title.is_empty() {
+            continue;
+        }
+        let snippet = block.select("[data-testid='result-snippet']");
+        let display = block.select("[data-testid='result-extras-url-link']");
+        hits.push(SearchHit {
+            rank: hits.len() + 1,
+            title,
+            url,
+            display_url: display
+                .exists()
+                .then(|| clean(&display.text()))
+                .filter(|s| !s.is_empty()),
+            snippet: snippet
+                .exists()
+                .then(|| clean(&snippet.text()))
+                .filter(|s| !s.is_empty()),
+        });
+    }
+    hits
 }
 
 /// `lite.duckduckgo.com` — a flat table, one `<tr>` per part of a result.
@@ -143,7 +301,7 @@ async fn run_lite(query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>, W
         form.push(("kl", region));
     }
 
-    let response = http::post_form(LITE_URL, &form).await?;
+    let response = http::post_form_within(LITE_URL, &form, http::SEARCH_TIMEOUT).await?;
     let dom = Dom::from(response.text().as_str());
 
     let mut hits: Vec<SearchHit> = Vec::new();
@@ -203,7 +361,7 @@ async fn run_html(query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>, W
         url.push_str(&format!("&kl={}", urlencode(region)));
     }
 
-    let response = http::get(&url).await?;
+    let response = http::get_within(&url, http::SEARCH_TIMEOUT).await?;
     let dom = Dom::from(response.text().as_str());
 
     let mut hits: Vec<SearchHit> = Vec::new();
@@ -439,5 +597,68 @@ mod tests {
         assert_eq!(SafeSearch::parse("off").param(), "-2");
         assert_eq!(SafeSearch::parse("STRICT").param(), "1");
         assert_eq!(SafeSearch::parse("anything else").param(), "-1");
+    }
+
+    /// A typo must not silently turn a web search into a literature search:
+    /// the two answer different questions, and the reader is given no sign
+    /// which one they got.
+    #[test]
+    fn only_a_recognised_label_selects_the_scholarly_catalogues() {
+        assert_eq!(SearchSource::parse("scholar"), SearchSource::Scholar);
+        assert_eq!(SearchSource::parse("  Papers "), SearchSource::Scholar);
+        assert_eq!(SearchSource::parse("scholarly"), SearchSource::Web);
+        assert_eq!(SearchSource::parse(""), SearchSource::Web);
+    }
+
+    /// The rendered app, as it comes back from the browser rung. A different
+    /// page from the scriptless endpoints, so a different parser — and the one
+    /// that only runs on a day the search would otherwise have failed.
+    #[test]
+    fn the_rendered_app_gives_up_its_results() {
+        let html = r#"<div>
+          <article data-testid="result">
+            <a data-testid="result-title-a" href="https://docs.rs/tokio/latest/">Tokio docs</a>
+            <span data-testid="result-extras-url-link">docs.rs/tokio/latest</span>
+            <div data-testid="result-snippet">An asynchronous runtime for Rust.</div>
+          </article>
+          <article data-testid="result">
+            <a data-testid="result-title-a" href="https://tokio.rs/">Tokio</a>
+            <div data-testid="result-snippet">The home page.</div>
+          </article>
+        </div>"#;
+        let hits = parse_browser_results(html);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "Tokio docs");
+        assert_eq!(hits[0].url, "https://docs.rs/tokio/latest/");
+        assert_eq!(hits[0].display_url.as_deref(), Some("docs.rs/tokio/latest"));
+        assert_eq!(hits[0].snippet.as_deref(), Some("An asynchronous runtime for Rust."));
+        assert_eq!(hits[1].rank, 2);
+        assert_eq!(hits[1].display_url, None);
+    }
+
+    /// The app has used a click tracker before and may again. Handing one back
+    /// would record duckduckgo.com as the source of whatever gets quoted.
+    #[test]
+    fn a_tracked_link_in_the_app_is_unwrapped_or_dropped() {
+        let html = r#"<div>
+          <article data-testid="result">
+            <a data-testid="result-title-a"
+               href="//duckduckgo.com/l/?uddg=https%3A%2F%2Ftokio.rs%2F&rut=x">Tokio</a>
+          </article>
+          <article data-testid="result">
+            <a data-testid="result-title-a" href="//duckduckgo.com/l/?rut=x">Unreadable</a>
+          </article>
+        </div>"#;
+        let hits = parse_browser_results(html);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://tokio.rs/");
+    }
+
+    /// A challenge page is a page with no results in it. It must come back
+    /// empty so the ladder reports a failure, never as a successful search of
+    /// a web that had nothing to say.
+    #[test]
+    fn a_page_with_no_results_yields_none() {
+        assert!(parse_browser_results("<div><p>Verify you are human</p></div>").is_empty());
     }
 }

@@ -387,6 +387,30 @@
    every other row's, so the rail runs continuously THROUGH the break it opens
    with and the chapter's lower marker simply sits on the line. */
 
+/* …but its BODY has to make room for the gutter it draws in.
+ *
+ * Every spine decoration lives in negative space — the rail at `left: -13px`,
+ * a marker at `-15px` — which is inside `.agw-msg-assistant`'s 20px padding and
+ * therefore paints fine for a row that is a direct child of the message column.
+ * `.agw-chapter-body` is not that: it is a new box that starts AT the content
+ * edge and carries `overflow: hidden` (framer-motion needs it to animate the
+ * collapse to `height: 0`). So every row inside a chapter had its rail, its
+ * marker and its branch clipped away, and the thread appeared to exist only
+ * beside chapter headings — the rest of the turn hung in the air.
+ *
+ * Widening the box leftwards puts the gutter back inside it. The negative
+ * margin cancels the padding, so the rows themselves do not move a pixel and
+ * the collapse animation is untouched. */
+.agw-root[data-transcript-spine] .agw-chapter-body,
+/* The same clip, one level down: `ToolGroup` animates its cards open with an
+   `overflow: hidden` wrapper, which ate every per-card marker and branch. A
+   run of cards therefore hung off the rail with nothing joining it — the one
+   place the thread has the most to say. */
+.agw-root[data-transcript-spine] .agw-tool-group-anim {
+  padding-left: 20px;
+  margin-left: -20px;
+}
+
 /* ── The branch ─────────────────────────────────────────────────────────
  * A quarter-turn that leaves the rail at this row's marker and arrives
  * horizontally at the row's own content edge, so a marker reads as belonging

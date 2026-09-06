@@ -712,6 +712,33 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
 }
 
+/* Standalone: the card IS the detail pane, so its head is a heading rather than
+   a control — no pointer, no fold, nothing suggesting a click does something.
+   The FRAME stays and matches `.agw-prov-detail-top` exactly, because this is
+   the same section a language provider shows: identity and connection. The
+   first version of this dropped the frame and left the fields naked on the
+   page, which is the mistake `.agw-prov-detail-top > .agw-atlas` already
+   records one file over. */
+.agw-img-card[data-standalone] {
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-set-r-card);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
+  padding: 18px;
+}
+
+.agw-img-card[data-standalone] .agw-img-card-top {
+  padding: 0 0 16px;
+}
+
+.agw-img-card[data-standalone] .agw-img-card-body {
+  padding: 0;
+}
+
+.agw-img-card[data-standalone] .agw-img-card-main {
+  cursor: default;
+}
+
 .agw-img-card-name {
   overflow: hidden;
   color: var(--agw-text);

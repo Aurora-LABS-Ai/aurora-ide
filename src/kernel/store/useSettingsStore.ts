@@ -24,6 +24,8 @@ import { providerCatalogService, type ProviderCatalogPreset } from "@/apps/agent
 import { ATLAS_CLOUD_PRESET } from "@/apps/agent/services/providers/atlascloud";
 import {
   normalizeImageProviders,
+  withBuiltInImageProviders,
+  withSeededImageProviders,
   type ImageModel,
   type ImageProvider,
 } from "@/apps/agent/services/providers/image-providers";
@@ -359,6 +361,14 @@ interface SettingsState {
    * wire format has to be per provider.
    */
   imageProviders: ImageProvider[];
+  /**
+   * Ids of the image providers Aurora has already offered as a starting point.
+   *
+   * Offered once, then remembered — so deleting a seeded row keeps it deleted.
+   * A preset that re-seeds on every launch cannot be thrown away, which is the
+   * behaviour the built-in a6api row wants and these rows do not.
+   */
+  seededImageProviderIds: string[];
 
   // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
   teamEnabled: boolean;
@@ -1443,7 +1453,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   auroraSurface: "build",
   deepResearchNext: false,
   chatModelShortlist: [],
-  imageProviders: [],
+  // Seeded, not empty: the shipped a6api row exists before the database has
+  // answered, so the rail never flashes an empty Image group on a cold start.
+  imageProviders: withBuiltInImageProviders([]),
+  seededImageProviderIds: [],
 
   // Agent Team (disabled by default; user opts in from the Agent Window's Settings → Team)
   teamEnabled: false,
@@ -1824,7 +1837,21 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           auroraSurface: persistedSurface,
           deepResearchNext: appSettings.deepResearchNext ?? false,
           chatModelShortlist: normalizeChatShortlist(appSettings.chatModelShortlist),
-          imageProviders: normalizeImageProviders(appSettings.imageProviders),
+          ...(() => {
+            // Seeded rows are offered once and then remembered, so a deleted
+            // one stays deleted. Applied here, on the load, because it is the
+            // only place that both knows what was stored and can write back.
+            const seeding = withSeededImageProviders(
+              normalizeImageProviders(appSettings.imageProviders),
+              Array.isArray(appSettings.seededImageProviderIds)
+                ? appSettings.seededImageProviderIds
+                : [],
+            );
+            return {
+              imageProviders: seeding.providers,
+              seededImageProviderIds: seeding.seededIds,
+            };
+          })(),
           teamEnabled: appSettings.teamEnabled ?? false,
           maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
           teamLeadModel: appSettings.teamLeadModel ?? '',
@@ -1951,6 +1978,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         deepResearchNext: state.deepResearchNext,
         chatModelShortlist: state.chatModelShortlist,
         imageProviders: state.imageProviders,
+        seededImageProviderIds: state.seededImageProviderIds,
         teamEnabled: state.teamEnabled,
         maxTeamSize: state.maxTeamSize,
         teamLeadModel: state.teamLeadModel,
@@ -2565,6 +2593,12 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   deleteImageProvider: (id) => {
+    // A shipped provider stays. Its card offers no delete control, so reaching
+    // here means something other than the button asked — and the row would come
+    // straight back on the next load anyway, which is worse than refusing.
+    if (get().imageProviders.some((provider) => provider.id === id && provider.builtIn)) {
+      return;
+    }
     // The models go with it. They live inside the row, so there is nothing to
     // orphan — which is the reason they live inside the row.
     set({ imageProviders: get().imageProviders.filter((provider) => provider.id !== id) });
@@ -3101,6 +3135,34 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     return buildProviderConfigForSelection(compactionModel, providers, models);
   },
 }));
+
+/**
+ * Resolves once the saved settings have been read out of the database.
+ *
+ * Anything that has to know a **persisted** setting before it acts has to wait
+ * for this, and `auroraSurface` is the one that bites. The agent window's chat
+ * store asks which product the window is on the moment it mounts — and React
+ * runs a child's effect before its parent's, so the mount that fills the rail
+ * happens before the mount that starts this load. Asking early gets the
+ * default, not the answer, and nothing asks again when the real one lands.
+ *
+ * Starts the load if nothing has started it, so a caller cannot wait on
+ * something that was never going to happen. It always resolves: a load that
+ * fails still marks the store initialized, on defaults, because a window that
+ * waits forever is worse than one showing the wrong default.
+ */
+export const whenSettingsReady = (): Promise<void> => {
+  if (useSettingsStore.getState().isInitialized) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const unsubscribe = useSettingsStore.subscribe((state) => {
+      if (!state.isInitialized) return;
+      unsubscribe();
+      resolve();
+    });
+    // No-op when a load is already running or finished.
+    void useSettingsStore.getState().initializeFromDatabase();
+  });
+};
 
 /**
  * Force any debounced settings write to flush immediately. Safe to call

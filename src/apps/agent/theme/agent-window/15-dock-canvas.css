@@ -653,6 +653,68 @@
   gap: 2px;
 }
 
+/* Source, for a picture. Facts in reading order rather than a JSON dump — see
+   `CanvasImageFacts`. Laid out as a definition list because that is what it is:
+   a short set of key/value pairs, not prose and not code. */
+.agw-canvas-facts {
+  overflow: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.agw-canvas-facts-prompt p {
+  margin: 4px 0 0;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  /* The prompt is the one long value here and the one worth reading whole. */
+  white-space: pre-wrap;
+}
+.agw-canvas-facts dl {
+  margin: 0;
+  display: grid;
+  /* The key column sizes to the longest key and then stops, so the values line
+     up in one edge instead of stepping in and out per row. */
+  grid-template-columns: max-content 1fr;
+  gap: 7px 18px;
+}
+.agw-canvas-facts dl > div {
+  display: contents;
+}
+.agw-canvas-facts dd {
+  margin: 0;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  overflow-wrap: anywhere;
+}
+.agw-canvas-facts-key {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+/* The picture, standing in for the kind glyph on an image row. Same box the
+   glyph occupied, so rows of both kinds keep one rhythm. `cover` because this
+   is an identifier, not a view — the full picture is one click away. */
+.agw-canvas-index-thumb {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border);
+  object-fit: cover;
+  background: var(--agw-surface);
+}
+
+/* A title is a NAME, not the paragraph a model happened to pass as one. Held to
+   a readable measure and clipped there: an image artifact titled with its whole
+   prompt was running the full width of the dock and pushing the row's meta out
+   of sight. Capping the line is the display fixing what it can; the title
+   itself is capped where it is written. */
+.agw-canvas-index-title {
+  max-width: 46ch;
+}
+
 .agw-canvas-index-title {
   overflow: hidden;
   color: var(--agw-text);

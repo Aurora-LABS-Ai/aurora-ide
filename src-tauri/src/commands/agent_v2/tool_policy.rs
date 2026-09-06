@@ -237,10 +237,13 @@ pub(super) const PLAN_MUTATING_TOOLS: &[&str] = &[
     "folder_create",
     "shell_spawn",
     "shell_kill",
-    // The checklist is an execution artifact. `todo` is one tool with a typed
-    // `op`, so read cannot be separated from set/update by name — and Plan mode
-    // has nothing to read: it authors the plan, it does not work a checklist.
-    "todo",
+    // The checklist is an execution artifact: Plan mode authors the plan, it
+    // does not work a checklist. All three go, `TaskList` included — a read
+    // that can only ever return the empty list is a tool the model is told
+    // exists for nothing.
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
     "plan_step_update",
 ];
 
@@ -278,6 +281,18 @@ pub(super) fn is_tool_available_this_turn(
         return false;
     }
     match name {
+        // Chat's memory is Chat's alone, and this arm is the half that was
+        // missing. `CHAT_MODE_TOOLS` says what Chat may call; it says nothing
+        // about the other direction, so every non-chat mode fell straight
+        // through to `_ => true` and Aurora Build was handed `recall` and
+        // `remember` on every turn. Observed: a Build turn called `recall`
+        // beside `shell_execute`, got `found: 0` — the index holds Chat
+        // conversations only — and reported to the user that its memory was
+        // empty, when it had simply asked a store that is not about it.
+        //
+        // The comment at `tools/mod.rs` ("always registered, offered only in
+        // chat") described this arm before this arm existed.
+        _ if is_chat_only_tool(name) => false,
         // Authoring the plan is Plan mode's one write, and ONLY Plan mode's.
         // Executing a plan must not silently rewrite what the user approved.
         "plan_write" => planning,
@@ -316,6 +331,14 @@ pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
     // broken canvas is rejected at write time rather than at read time.
     "present_artifact",
     "read_artifact",
+    // …and the contract those canvases are written against. Chat could build a
+    // live canvas and had no way to read the rules for one: measured on a real
+    // chat, a benchmark comparison came back with five hand-picked hues — one
+    // per model — where the doctrine's whole colour system is `tone`
+    // (`neutral | info | good | warn | bad`) and the answer was a single
+    // highlighted series against neutral bars. A tool the roster withholds is a
+    // rule the model cannot follow.
+    "canvas_guidelines",
     // Memory. `recall` reads, `remember` writes; both are scoped to chats and
     // cannot reach `sessions/`.
     "recall",
@@ -333,6 +356,20 @@ pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
 /// an allow-list quietly becomes a deny-list.
 pub(super) fn is_chat_mode_tool(name: &str) -> bool {
     CHAT_MODE_TOOLS.contains(&name) || name.starts_with("mcp_")
+}
+
+/// Tools that exist in Aurora Chat and NOWHERE else.
+///
+/// [`CHAT_MODE_TOOLS`] is an allow-list for one mode; most of what is on it —
+/// web search, artifacts, images, asking a question — is equally a Build tool
+/// and stays available there. These two are not. `recall` and `remember` read
+/// and write the chat memory index, which carries Aurora Chat conversations
+/// only, so offering them to Build gives the model a memory that is
+/// structurally empty of everything Build ever did.
+pub(super) const CHAT_ONLY_TOOLS: &[&str] = &["recall", "remember"];
+
+pub(super) fn is_chat_only_tool(name: &str) -> bool {
+    CHAT_ONLY_TOOLS.contains(&name)
 }
 
 /// Does this workspace have a plan to work against?

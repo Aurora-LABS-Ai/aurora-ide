@@ -351,7 +351,18 @@ fn session_to_db_messages_rich(
                     .blocks
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text { text } if !text.is_empty() => Some(text),
+                        // Aurora's own note to the model is not a message from
+                        // anyone. It rides here as a text block — the same
+                        // shape a mid-turn user message uses — so without this
+                        // filter the transcript draws `<aurora_task_reminder>`
+                        // as a row in the person's chat, tags and all. The
+                        // checklist it describes is already on screen, live, in
+                        // the header indicator.
+                        ContentBlock::Text { text }
+                            if !text.is_empty() && !is_runtime_note(text) =>
+                        {
+                            Some(text)
+                        }
                         _ => None,
                     })
                     .enumerate()
@@ -387,6 +398,24 @@ fn session_to_db_messages_rich(
     }
 
     out
+}
+
+/// Is this text block Aurora talking to the model rather than a person
+/// talking to anyone?
+///
+/// A tool message's text blocks are normally an injected mid-turn user message
+/// — something a person typed, which belongs on screen. The runtime uses the
+/// same slot for its own notes, and those do not: the reader never wrote them,
+/// cannot act on them, and in the checklist's case is already looking at what
+/// they describe in the header indicator.
+///
+/// Found the hard way. Moving the stale-checklist reminder out of a tool
+/// result's body and into its own block (the right fix — a tool result must
+/// hold the tool's output alone) handed it straight to this loop, and the next
+/// session drew `<aurora_task_reminder>`, angle brackets and all, as a card in
+/// the middle of the conversation.
+fn is_runtime_note(text: &str) -> bool {
+    text.contains(crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG)
 }
 
 /// Drop the runtime's mid-turn framing line from an injected message. The
@@ -2188,6 +2217,107 @@ mod tests {
             Some(ApiMessage::User { content })
                 if content.contains("while your tool calls were running")
         ));
+    }
+
+    /// Aurora's note to the model never becomes a row in the person's chat.
+    ///
+    /// Regression, and one I shipped: the stale-checklist reminder moved out of
+    /// a tool result's body into its own text block — correct, a tool result
+    /// must carry the tool's output alone — which is the same slot a mid-turn
+    /// user message uses. The very next reloaded thread drew
+    /// `<aurora_task_reminder>`, angle brackets and all, as a card mid-conversation.
+    #[test]
+    fn the_checklist_reminder_never_becomes_a_transcript_row() {
+        let reminder = format!(
+            "{}\nYou have not used the checklist in this conversation.\n</aurora_task_reminder>",
+            crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG
+        );
+        let tool_message = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text { text: reminder },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        // No row, and no message to hold one: a tool message whose only text
+        // block is a runtime note contributes nothing to the transcript beyond
+        // the tool result it already folded into the assistant above it.
+        assert_eq!(db.len(), 1, "no extra transcript message: {db:?}");
+        assert!(
+            !format!("{:?}", db[0].timeline).contains("aurora_task_reminder"),
+            "the reminder must appear nowhere in the timeline: {:?}",
+            db[0].timeline
+        );
+
+        // The MODEL still gets it — this is a display filter, not a deletion.
+        // Stripping it from the API view would restart the ten-turn cadence on
+        // every reload and nag someone who was already reminded.
+        let api = session_to_api_messages(&messages);
+        assert!(
+            matches!(api.last(), Some(ApiMessage::User { content }) if content.contains("aurora_task_reminder")),
+            "the reminder must survive into the API view"
+        );
+    }
+
+    /// A real mid-turn message riding beside a reminder still shows. The filter
+    /// is per BLOCK, so one runtime note must not silence what a person typed.
+    #[test]
+    fn a_reminder_beside_a_typed_message_hides_only_the_reminder() {
+        let tool_message = ConversationMessage {
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: format!(
+                        "{}\nlist as it stands\n</aurora_task_reminder>",
+                        crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG
+                    ),
+                },
+                ContentBlock::Text {
+                    text: format!(
+                        "{}\nstop, wrong folder",
+                        crate::agent_runtime::session::MID_TURN_PREAMBLE
+                    ),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("the typed message still has a row");
+        assert_eq!(timeline.len(), 1, "exactly one row: {timeline:?}");
+        assert_eq!(timeline[0]["text"], "stop, wrong folder");
     }
 
     #[test]

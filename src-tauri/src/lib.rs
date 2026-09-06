@@ -711,6 +711,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::tokens::estimate_tokens_quick,
             commands::tokens::truncate_to_tokens,
             commands::provider_catalog::commands::provider_catalog_get_presets,
+            commands::provider_models::provider_list_models,
             // Codex (ChatGPT subscription) provider
             commands::codex::codex_auth_status,
             commands::codex::codex_auth_login,
@@ -1380,12 +1381,38 @@ pub fn run_with_args(cli_args: CliArgs) {
                     }
                 }
 
+                // Open under the name of the product it will show.
+                //
+                // `AgentTitlebar` titles the window from the live setting once
+                // React is up, and this is the same answer one step earlier —
+                // read from the same `app_settings` rows as the bounds above,
+                // so the taskbar button and Alt-Tab are right from the first
+                // frame instead of saying "Aurora Agent" until the frontend
+                // boots. The stored value is JSON, written by
+                // `save_app_settings`.
+                //
+                // The JS launcher (`adapters/window.ts`) deliberately does NOT
+                // do this: it lives on the IDE side of the module boundary, and
+                // importing the surface names would pull the agent's prompt
+                // module into the IDE chunk. A window opened from the IDE is
+                // brand new and its titlebar corrects it on mount.
+                let agent_title = app
+                    .state::<Mutex<db::Database>>()
+                    .lock()
+                    .ok()
+                    .and_then(|db| db.settings().get_setting("auroraSurface").ok())
+                    .flatten()
+                    .and_then(|setting| serde_json::from_str::<String>(&setting.value).ok())
+                    .filter(|surface| surface == "chat")
+                    .map(|_| "Aurora Chat")
+                    .unwrap_or("Aurora Build");
+
                 match WebviewWindowBuilder::new(
                     app.handle(),
                     "agent-window",
                     WebviewUrl::App(agent_route.into()),
                 )
-                .title("Aurora Agent")
+                .title(agent_title)
                 .inner_size(width, height)
                 .min_inner_size(820.0, 560.0)
                 .center()

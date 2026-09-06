@@ -68,7 +68,7 @@ pub mod shell_kill;
 pub mod shell_list_processes;
 pub mod shell_read_output;
 pub mod shell_spawn;
-pub mod todo;
+pub mod tasks;
 pub mod todo_store;
 
 pub use ide_event_sink::{
@@ -94,7 +94,9 @@ pub const TOOL_NAMES: &[&str] = &[
     "shell_list_processes",
     "shell_read_output",
     "read_lints",
-    "todo",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskList",
 ];
 
 /// Tools that opt into the Phase 4 permission gate
@@ -121,8 +123,11 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     // the Agent Window still listens on that channel to open files in its
     // right rail.
     reg.register(Arc::new(read_lints::ReadLintsTool::new(sink.clone())));
-    // ONE todo tool with a typed `op`, not three names for one piece of state.
-    reg.register(Arc::new(todo::TodoTool::new(sink)));
+    // The checklist, in Claude Code's shape: one task per create, one task per
+    // update, and a read. Several calls ride in one message — see `tasks`.
+    reg.register(Arc::new(tasks::TaskCreateTool::new(sink.clone())));
+    reg.register(Arc::new(tasks::TaskUpdateTool::new(sink)));
+    reg.register(Arc::new(tasks::TaskListTool));
 }
 
 #[cfg(test)]

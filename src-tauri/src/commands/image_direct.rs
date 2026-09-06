@@ -153,6 +153,7 @@ async fn generate(
                 model: &resolved.model.model_key,
                 prompt,
                 size: size.as_deref(),
+                format: resolved.provider.request_format,
             },
         )
         .await

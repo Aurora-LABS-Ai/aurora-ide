@@ -41,8 +41,27 @@ export type ImageApiFormat =
    */
   | "a6api";
 
-/** What comes back in the response, per image. */
-export type ImageResponseShape = "url" | "b64_json";
+/**
+ * What to ask this provider to send each image back as — the `response_format`
+ * Aurora puts on the request.
+ *
+ * **Absent means ask for nothing** and take whatever arrives. That is the safe
+ * default and the only correct setting for OpenAI's own `gpt-image-*`, which
+ * answers 400 to the field rather than ignoring it.
+ *
+ * It exists because apikl was probed live (2026-09-04, `gpt-image-2-pro`):
+ * `/images/generations` returned `b64_json` and `/images/edits` returned a
+ * `url`, on one key and one model. No single statement of "what this provider
+ * returns" is true of it, so asking for one shape is what makes both endpoints
+ * agree — and sending `response_format: "url"` did exactly that.
+ *
+ * This replaces `responseShape`, which described what to EXPECT and was read by
+ * nothing. A new field rather than a new meaning for the old one: every stored
+ * `responseShape` is a note somebody wrote, not a request they made, and
+ * reading them as requests would start sending the field to providers that
+ * refuse it.
+ */
+export type ImageRequestFormat = "url" | "b64_json";
 
 export interface ImageModel {
   /** Stable local id. */
@@ -87,9 +106,126 @@ export interface ImageProvider {
    * different statement from a model that cannot, and both have to be sayable.
    */
   editPath?: string;
-  responseShape: ImageResponseShape;
+  /** Omitted = send no `response_format`. See {@link ImageRequestFormat}. */
+  requestFormat?: ImageRequestFormat;
   enabled: boolean;
   models: ImageModel[];
+  /**
+   * Ships with Aurora. Its address, key and models are the user's to change —
+   * only the ROW is permanent, exactly like a built-in language provider.
+   * Deleting it would be a decision nothing can undo from the interface, and
+   * the row costs nothing while it sits there with no key.
+   */
+  builtIn?: boolean;
+}
+
+/** The image provider id Aurora ships with. Stable, because rows pin to it. */
+export const A6API_IMAGE_PROVIDER_ID = "img-a6api";
+
+/**
+ * The one image provider Aurora ships.
+ *
+ * a6api is the service the whole image path was built and measured against —
+ * its three deviations from OpenAI's shape are why `apiFormat` is per provider
+ * at all (`DOCS/PLAN/chat-mode-design.md` §8). Shipping it means the common
+ * case is "paste a key", not "work out the address, the wire format and the
+ * two paths from scratch".
+ *
+ * No models are seeded: `/models` lists them with `supported_endpoint_types`,
+ * so Discover fills the list from the live account rather than from a table
+ * that goes stale.
+ */
+export const A6API_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
+  id: A6API_IMAGE_PROVIDER_ID,
+  name: "a6api",
+  baseUrl: "https://api.a6api.com/v1",
+  apiFormat: "a6api",
+  enabled: true,
+  models: [],
+  builtIn: true,
+};
+
+/**
+ * Rows Aurora offers ONCE, as a starting point, and never again.
+ *
+ * Not built in: each is an ordinary provider that can be edited, switched off
+ * and deleted, and a deleted one stays deleted — `seededImageProviderIds`
+ * records that it was offered, so the next launch does not put it back. That
+ * record is the whole difference between this and {@link A6API_IMAGE_PRESET},
+ * which is permanent.
+ *
+ * Everything here was measured against the live service, so the only thing left
+ * to fill in is a key.
+ */
+export const SEEDED_IMAGE_PROVIDERS: ReadonlyArray<Omit<ImageProvider, "apiKey">> = [
+  {
+    id: "img-apikl",
+    name: "apikl",
+    baseUrl: "https://api.apikl.ai/v1",
+    // Its edit takes multipart/form-data — OpenAI's own shape, NOT a6api's
+    // JSON-with-a-URL. Probed 2026-09-04: a real edit, the source picture
+    // preserved pixel for pixel with only the requested change added.
+    apiFormat: "openai-images",
+    // Measured, and the reason this field exists: `/images/generations`
+    // answered with `b64_json` while `/images/edits` answered with a `url`.
+    // Asking for a URL is what makes the two endpoints agree.
+    requestFormat: "url",
+    enabled: true,
+    models: [
+      {
+        id: "img-apikl:gpt-image-2-pro",
+        providerId: "img-apikl",
+        modelKey: "gpt-image-2-pro",
+        canEdit: true,
+        // The one size confirmed to work; a provider that offers more is one
+        // Discover run away from listing them.
+        sizes: ["1024x1024"],
+        defaultSize: "1024x1024",
+      },
+    ],
+  },
+];
+
+/**
+ * Put the shipped provider back if it is missing, keeping whatever the user has
+ * already put into it.
+ *
+ * Merge, never replace: the key, the models Discover found, the enabled switch
+ * and any edited address all survive a relaunch. Only `builtIn` is forced, so a
+ * row saved before this existed becomes undeletable rather than staying a
+ * lookalike the user could throw away.
+ */
+export function withBuiltInImageProviders(rows: ImageProvider[]): ImageProvider[] {
+  const existing = rows.find((row) => row.id === A6API_IMAGE_PROVIDER_ID);
+  if (!existing) return [{ ...A6API_IMAGE_PRESET }, ...rows];
+  return rows.map((row) =>
+    row.id === A6API_IMAGE_PROVIDER_ID ? { ...row, builtIn: true } : row,
+  );
+}
+
+/**
+ * Offer each seed once, and remember that it was offered.
+ *
+ * Returns the rows to store and the ids now accounted for. A seed already in
+ * `seeded` is skipped whether or not its row is still there — that is what lets
+ * a person delete one and have it stay deleted, which a preset that re-seeds on
+ * every launch cannot do.
+ */
+export function withSeededImageProviders(
+  rows: ImageProvider[],
+  seeded: readonly string[],
+): { providers: ImageProvider[]; seededIds: string[] } {
+  const known = new Set(seeded);
+  const added: ImageProvider[] = [];
+  for (const seed of SEEDED_IMAGE_PROVIDERS) {
+    if (known.has(seed.id)) continue;
+    known.add(seed.id);
+    // Not if a row already claims the id — an upgrade should not duplicate a
+    // provider the user built by hand at the same address.
+    if (rows.some((row) => row.id === seed.id)) continue;
+    added.push({ ...seed, models: seed.models.map((model) => ({ ...model })) });
+  }
+  return { providers: [...rows, ...added], seededIds: [...known] };
 }
 
 /** Request paths a format uses when the provider row leaves them blank. */
@@ -201,7 +337,10 @@ function joinUrl(base: string, path: string): string {
  * recognised format is dropped rather than rendered as a row that cannot work.
  */
 export function normalizeImageProviders(value: unknown): ImageProvider[] {
-  if (!Array.isArray(value)) return [];
+  // Nothing stored yet is the FIRST launch, which is exactly when the shipped
+  // provider has to appear — returning an empty list here would leave a fresh
+  // install with no image row at all.
+  if (!Array.isArray(value)) return withBuiltInImageProviders([]);
   const out: ImageProvider[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") continue;
@@ -220,12 +359,16 @@ export function normalizeImageProviders(value: unknown): ImageProvider[] {
       apiFormat,
       generationPath: typeof row.generationPath === "string" ? row.generationPath : undefined,
       editPath: typeof row.editPath === "string" ? row.editPath : undefined,
-      responseShape: row.responseShape === "b64_json" ? "b64_json" : "url",
+      requestFormat:
+        row.requestFormat === "url" || row.requestFormat === "b64_json"
+          ? row.requestFormat
+          : undefined,
       enabled: row.enabled !== false,
       models: normalizeImageModels(row.models, row.id),
+      builtIn: row.builtIn === true || undefined,
     });
   }
-  return out;
+  return withBuiltInImageProviders(out);
 }
 
 function normalizeImageModels(value: unknown, providerId: string): ImageModel[] {

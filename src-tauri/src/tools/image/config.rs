@@ -59,13 +59,33 @@ impl ImageApiFormat {
     }
 }
 
-/// What each image comes back as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// The `response_format` to put on the request, when the row asks for one.
+///
+/// Mirrors `ImageRequestFormat` in `image-providers.ts`. **`None` on the
+/// provider means send nothing and take whatever arrives** — the safe default,
+/// and the only correct setting for OpenAI's own `gpt-image-*`, which answers
+/// 400 to the field rather than ignoring it.
+///
+/// It replaces `responseShape`, which described what to EXPECT and was read by
+/// nothing. apikl, probed live on 2026-09-04 with `gpt-image-2-pro`, returned
+/// `b64_json` from `/images/generations` and a `url` from `/images/edits` on
+/// one key and one model — so no single description of a provider's output is
+/// true, and asking for one shape is what makes both endpoints agree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ImageResponseShape {
-    #[default]
+pub enum ImageRequestFormat {
     Url,
     B64Json,
+}
+
+impl ImageRequestFormat {
+    /// The value to send as `response_format`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Url => "url",
+            Self::B64Json => "b64_json",
+        }
+    }
 }
 
 /// One model under a provider. Mirrors `ImageModel` in
@@ -122,8 +142,9 @@ pub struct ImageProviderConfig {
     /// flattened to a string.
     #[serde(default)]
     pub edit_path: Option<String>,
+    /// `None` = send no `response_format`. See [`ImageRequestFormat`].
     #[serde(default)]
-    pub response_shape: ImageResponseShape,
+    pub request_format: Option<ImageRequestFormat>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -365,7 +386,7 @@ mod tests {
             api_format: ImageApiFormat::A6api,
             generation_path: None,
             edit_path: None,
-            response_shape: ImageResponseShape::Url,
+            request_format: None,
             enabled: true,
             models: models
                 .iter()

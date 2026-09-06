@@ -40,8 +40,11 @@ import {
   type OpenCodeWire,
 } from "@/apps/agent/services/providers/opencode";
 import { groupProviders, isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
-import { ImageProvidersSection } from "@/apps/agent/settings/ImageProvidersSection";
-import { AddProviderChooser, type ProviderKind } from "@/apps/agent/settings/AddProviderChooser";
+import { ImageProviderCard } from "@/apps/agent/settings/ImageProvidersSection";
+import {
+  imageProviderReady,
+  type ImageProvider,
+} from "@/apps/agent/services/providers/image-providers";
 import {
   loadPinnedProviders,
   loadProviderGroupsOpen,
@@ -75,6 +78,7 @@ import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
 import { CommandCodeProviderCard } from "./CommandCodeProviderCard";
 import { isCommandCodeProvider } from "@/apps/agent/services/providers/commandcode";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
+import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 
 /**
  * Smooth height/opacity glide for a collapsible rail group. Mounts/unmounts
@@ -588,6 +592,196 @@ const ApiKeyPoolEditor: React.FC<{
       <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
         Optional. If one key is busy or fails, the next one is used.
       </span>
+    </div>
+  );
+};
+
+// ── Get models: ask the provider what it has, pick from the answer ───────────
+
+/** Mirrors Rust `commands::provider_models::DiscoveredModel` (serde camelCase). */
+interface DiscoveredModel {
+  id: string;
+  displayName: string | null;
+}
+
+/**
+ * "Get models" — the provider's own list, instead of typing ids from memory.
+ *
+ * Nearly every provider publishes `GET <base>/models`, and until now only the
+ * rows with a bespoke importer (Modal, Command Code, OpenCode, kenari, the
+ * local runtimes) used it. An ordinary API-key row was the one kind still
+ * asking a person to know the ids by heart.
+ *
+ * Three decisions worth keeping:
+ *
+ * 1. **It appears only once the row can actually ask.** A key is what the
+ *    request needs, so before there is one the button could only ever fail —
+ *    and a control that is present but always fails teaches people to distrust
+ *    the ones that work. A row that needs no key (local runtimes,
+ *    `requiresApiKey: false`) shows it immediately, because those can ask.
+ * 2. **It lists, it does not add.** A gateway can answer with three hundred
+ *    models and nobody wants three hundred rows because they pressed a button
+ *    once. What comes back is a list to choose from; adding is still a
+ *    deliberate act, and each added model goes through the SAME models.dev
+ *    enrichment as one typed by hand — `/models` carries no context window and
+ *    no pricing, and inventing those from an id is how a limit ends up wrong
+ *    in a way nobody notices until a turn is rejected.
+ * 3. **Models already on the row are shown as already there, not hidden.**
+ *    Hiding them makes the list disagree with the one below it, and the
+ *    question people actually have — "did I already add this one" — is exactly
+ *    what the marker answers.
+ */
+const FetchModelsRow: React.FC<{
+  providerId: string;
+  baseUrl: string;
+  apiKey: string;
+  providerType?: string;
+  existing: Set<string>;
+}> = ({ providerId, baseUrl, apiKey, providerType, existing }) => {
+  const addModel = useSettingsStore((s) => s.addModel);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [found, setFound] = useState<DiscoveredModel[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+
+  const fetchModels = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const models = await invoke<DiscoveredModel[]>("provider_list_models", {
+        baseUrl,
+        apiKey,
+        providerType,
+      });
+      setFound(models);
+      setPicked(new Set());
+    } catch (e) {
+      // Rust already phrased this for a person to act on; showing it verbatim
+      // is the point. Re-wording it here would lose which of the four failures
+      // it was.
+      setError(typeof e === "string" ? e : String(e));
+      setFound(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addPicked = async () => {
+    if (adding || picked.size === 0) return;
+    setAdding(true);
+    try {
+      // Sequential on purpose: `addModel` folds into one store record, and
+      // firing them together races the writes against each other.
+      for (const key of picked) {
+        const entry = await lookupModel(key, providerType);
+        if (entry) {
+          // Same rule as the typed path: models.dev for METADATA only, and the
+          // id stays exactly as the provider spelled it, because that string
+          // is what goes on the wire.
+          addModel(providerId, { ...entryToModelInit(entry), modelKey: key });
+        } else {
+          addModel(providerId, {
+            modelKey: key,
+            supportsVision: false,
+            supportsThinking: false,
+            supportsToolStream: true,
+            enabled: true,
+          });
+        }
+      }
+      setFound(null);
+      setPicked(new Set());
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const toggle = (id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectable = (found ?? []).filter((m) => !existing.has(m.id));
+  const allPicked = selectable.length > 0 && selectable.every((m) => picked.has(m.id));
+
+  return (
+    <div className="agw-prov-fetch">
+      <div className="agw-prov-fetch-head">
+        <AgwButton icon="download" onClick={() => void fetchModels()} disabled={busy}>
+          {busy ? "Asking…" : "Get models"}
+        </AgwButton>
+        <span className="agw-prov-fetch-note">
+          {error ??
+            (found
+              ? `${found.length} model${found.length === 1 ? "" : "s"} from this provider. Pick the ones you want.`
+              : "Asks this provider for its model list, so you don't have to know the ids.")}
+        </span>
+      </div>
+
+      {found && found.length > 0 && (
+        <div className="agw-prov-fetch-panel">
+          <div className="agw-prov-fetch-actions">
+            <button
+              type="button"
+              className="agw-prov-fetch-all"
+              onClick={() =>
+                setPicked(allPicked ? new Set() : new Set(selectable.map((m) => m.id)))
+              }
+              disabled={selectable.length === 0}
+            >
+              {allPicked ? "Clear selection" : `Select all ${selectable.length}`}
+            </button>
+            <button
+              type="button"
+              className="agw-prov-fetch-close"
+              onClick={() => {
+                setFound(null);
+                setPicked(new Set());
+              }}
+            >
+              Close
+            </button>
+          </div>
+          <div className="agw-prov-fetch-list agw-scroll">
+            {found.map((m) => {
+              const already = existing.has(m.id);
+              return (
+                <label key={m.id} className="agw-prov-fetch-item" data-added={already || undefined}>
+                  <input
+                    type="checkbox"
+                    checked={already || picked.has(m.id)}
+                    disabled={already}
+                    onChange={() => toggle(m.id)}
+                  />
+                  <span className="agw-prov-fetch-id">{m.id}</span>
+                  {m.displayName && (
+                    <span className="agw-prov-fetch-label">{m.displayName}</span>
+                  )}
+                  {already && <span className="agw-prov-fetch-added">added</span>}
+                </label>
+              );
+            })}
+          </div>
+          <AgwButton
+            variant="primary"
+            icon="plus"
+            onClick={() => void addPicked()}
+            disabled={adding || picked.size === 0}
+          >
+            {adding
+              ? "Adding…"
+              : picked.size === 0
+                ? "Select models to add"
+                : `Add ${picked.size} model${picked.size === 1 ? "" : "s"}`}
+          </AgwButton>
+        </div>
+      )}
     </div>
   );
 };
@@ -1757,6 +1951,18 @@ const ProviderDetail: React.FC<{
                 ))
               )}
             </div>
+            {/* Only once the row can actually ask — see `FetchModelsRow`. A
+                provider that needs no key (a local runtime, or a preset with
+                `requiresApiKey: false`) can ask from the start. */}
+            {(hasAnyKey(provider) || provider.requiresApiKey === false) && (
+              <FetchModelsRow
+                providerId={provider.id}
+                baseUrl={provider.baseUrl}
+                apiKey={provider.apiKey}
+                providerType={provider.providerType}
+                existing={new Set(models.map((m) => m.modelKey))}
+              />
+            )}
             <AddModelRow providerId={provider.id} providerType={provider.providerType} />
           </div>
         </div>
@@ -1865,6 +2071,57 @@ const ProviderRow = React.forwardRef<
   );
 });
 
+/**
+ * A picture-making provider in the rail.
+ *
+ * The same row as a language provider, minus the pin — pinning exists to lift
+ * one row out of a list of forty, and this group holds a handful. It lives in
+ * the rail because that is where you choose a provider; the fields belonged in
+ * the detail pane all along, and putting them under the SELECTED provider's
+ * settings instead meant every provider's page ended with somebody else's.
+ */
+const ImageProviderRailRow: React.FC<{
+  provider: ImageProvider;
+  active: boolean;
+  onSelect: () => void;
+}> = ({ provider, active, onSelect }) => {
+  const ready = imageProviderReady(provider);
+  const count = provider.models.length;
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+      className="agw-prov-item"
+      data-active={active || undefined}
+    >
+      <button
+        type="button"
+        className="agw-prov-item-hit"
+        aria-label={`Open ${provider.name}`}
+        aria-current={active || undefined}
+        onClick={onSelect}
+      />
+      <span className="agw-prov-avatar agw-prov-avatar-sm">
+        <AgentIcon name="image" size={13} />
+      </span>
+      <span className="agw-prov-item-text">
+        <span className="agw-prov-item-name">{provider.name}</span>
+        <span className="agw-prov-item-sub">
+          {count} {count === 1 ? "model" : "models"}
+        </span>
+      </span>
+      <span
+        className="agw-prov-status-dot"
+        data-tone={ready ? "ready" : "off"}
+        title={ready ? "Ready" : "Needs an address and a key"}
+      />
+    </motion.div>
+  );
+};
+
 // ── Page (master–detail) ─────────────────────────────────────────────────────
 
 export const ProvidersSettings: React.FC = () => {
@@ -1873,6 +2130,7 @@ export const ProvidersSettings: React.FC = () => {
   const selectedModel = useSettingsStore((s) => s.selectedModel);
   const addCustomProvider = useSettingsStore((s) => s.addCustomProvider);
   const addImageProvider = useSettingsStore((s) => s.addImageProvider);
+  const imageProviders = useSettingsStore((s) => s.imageProviders);
   const updateModel = useSettingsStore((s) => s.updateModel);
 
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -2001,6 +2259,16 @@ export const ProvidersSettings: React.FC = () => {
     return map;
   }, [models]);
 
+  // Which IMAGE provider the detail pane is showing, kept apart from `activeId`
+  // so the language-provider fallback above cannot fight it. Non-null wins the
+  // pane; picking any language row clears it.
+  const [activeImageId, setActiveImageId] = useState<string | null>(null);
+  const activeImage = imageProviders.find((p) => p.id === activeImageId) ?? null;
+  const selectProvider = (id: string) => {
+    setActiveImageId(null);
+    setActiveId(id);
+  };
+
   const addProvider = () => {
     const id = addCustomProvider({
       name: "New provider",
@@ -2018,30 +2286,15 @@ export const ProvidersSettings: React.FC = () => {
     setActiveId(id);
   };
 
-  // The image provider the user just added, so its card opens itself in the
-  // section below instead of landing as one more collapsed row.
-  const [revealImageProviderId, setRevealImageProviderId] = useState<string | null>(null);
-  const addByKind = (kind: ProviderKind) => {
-    switch (kind) {
-      case "language-model":
-        addProvider();
-        return;
-      case "image":
-        setRevealImageProviderId(
-          addImageProvider({
-            name: "New image provider",
-            baseUrl: "",
-            apiFormat: "openai-images",
-            responseShape: "url",
-            enabled: true,
-          }),
-        );
-        return;
-      default: {
-        const unhandled: never = kind;
-        throw new Error(`Unknown provider kind: ${String(unhandled)}`);
-      }
-    }
+  const addImage = () => {
+    setActiveImageId(
+      addImageProvider({
+        name: "New image provider",
+        baseUrl: "",
+        apiFormat: "openai-images",
+        enabled: true,
+      }),
+    );
   };
 
   return (
@@ -2105,7 +2358,7 @@ export const ProvidersSettings: React.FC = () => {
                             provider={p}
                             modelCount={modelsByProvider.get(p.id)?.length ?? 0}
                             active={p.id === selected?.id}
-                            onSelect={() => setActiveId(p.id)}
+                            onSelect={() => selectProvider(p.id)}
                             pinned
                             onTogglePin={() => toggleProviderPin(p.id)}
                           />
@@ -2150,7 +2403,7 @@ export const ProvidersSettings: React.FC = () => {
                             provider={p}
                             modelCount={modelsByProvider.get(p.id)?.length ?? 0}
                             active={p.id === selected?.id}
-                            onSelect={() => setActiveId(p.id)}
+                            onSelect={() => selectProvider(p.id)}
                             pinned={false}
                             onTogglePin={() => toggleProviderPin(p.id)}
                           />
@@ -2197,7 +2450,7 @@ export const ProvidersSettings: React.FC = () => {
                         provider={p}
                         modelCount={modelsByProvider.get(p.id)?.length ?? 0}
                         active={p.id === selected?.id}
-                        onSelect={() => setActiveId(p.id)}
+                        onSelect={() => selectProvider(p.id)}
                         pinned={false}
                         onTogglePin={() => toggleProviderPin(p.id)}
                       />
@@ -2210,40 +2463,123 @@ export const ProvidersSettings: React.FC = () => {
                   )}
                 </Collapse>
               </div>
+
+              {/* Picture-making providers. Their own group in the rail, tagged
+                  CHAT because that is the only side they work on — they used to
+                  hang off the bottom of whichever provider happened to be
+                  selected, which put an unrelated list under every one of them.
+                  The plus adds one from here, where you are already looking. */}
+              {chatSurface && (
+                <div className="agw-prov-group" data-divided>
+                  <button
+                    type="button"
+                    className="agw-prov-group-label"
+                    aria-expanded={groupsOpen.images}
+                    onClick={() => toggleGroup("images")}
+                    title={
+                      groupsOpen.images ? "Collapse image providers" : "Expand image providers"
+                    }
+                  >
+                    <span className="agw-prov-group-name">
+                      <AgentIcon
+                        name="chevron-down"
+                        size={11}
+                        className="agw-prov-group-caret"
+                        style={{
+                          transform: groupsOpen.images ? undefined : "rotate(-90deg)",
+                        }}
+                      />
+                      Image
+                      <span className="agw-prov-group-tag">Chat</span>
+                    </span>
+                    {imageProviders.length > 0 && (
+                      <span className="agw-prov-group-count">{imageProviders.length}</span>
+                    )}
+                    {/* A span, not a button: this sits inside the group's own
+                        button and one cannot contain the other. Same trick the
+                        provider row uses for its pin. */}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="agw-prov-group-add"
+                      aria-label="Add an image provider"
+                      title="Add an image provider"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        addImage();
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key !== "Enter" && e.key !== " ") return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        addImage();
+                      }}
+                    >
+                      <AgentIcon name="plus" size={11} />
+                    </span>
+                  </button>
+                  <Collapse open={groupsOpen.images}>
+                    <AnimatePresence initial={false} mode="popLayout">
+                      {imageProviders.map((p) => (
+                        <ImageProviderRailRow
+                          key={p.id}
+                          provider={p}
+                          active={p.id === activeImageId}
+                          onSelect={() => setActiveImageId(p.id)}
+                        />
+                      ))}
+                    </AnimatePresence>
+                    {imageProviders.length === 0 && (
+                      <p className="agw-prov-group-empty">
+                        Somewhere to make pictures from a chat. Add the service you have a
+                        key for.
+                      </p>
+                    )}
+                  </Collapse>
+                </div>
+              )}
             </div>
           </LayoutGroup>
         )}
         <div className="agw-prov-list-foot">
-          <AddProviderChooser offersImage={chatSurface} onAdd={addByKind} />
+          <AgwButton variant="primary" icon="plus" onClick={addProvider}>
+            Add provider
+          </AgwButton>
         </div>
       </aside>
 
       {/* Detail pane — the selected provider's connection + models. */}
       <section className="agw-prov-main agw-scroll">
         <div className="agw-prov-main-inner">
-          {selected ? (
+          {activeImage ? (
+            // Same outer shell as a language provider's detail, so the two
+            // panes stack their sections on the same rhythm.
+            <div className="agw-prov-detail">
+              <ImageProviderCard
+                key={activeImage.id}
+                provider={activeImage}
+                initiallyOpen
+                standalone
+              />
+            </div>
+          ) : selected ? (
             <ProviderDetail
               key={selected.id}
               provider={selected}
               models={modelsByProvider.get(selected.id) ?? []}
               selectedModel={selectedModel}
               onDeleted={() => setActiveId(null)}
-              onSelectProvider={setActiveId}
+              onSelectProvider={selectProvider}
             />
           ) : (
             <div className="agw-prov-detail agw-prov-detail-empty">
               <AgentIcon name="providers" size={24} style={{ color: "var(--agw-text-subtle)" }} />
               <div>No providers yet.</div>
-              <AddProviderChooser offersImage={chatSurface} onAdd={addByKind} />
+              <AgwButton variant="primary" icon="plus" onClick={addProvider}>
+                Add provider
+              </AgwButton>
             </div>
           )}
-
-          {/* Image providers — Aurora Chat only. Below the language-model
-              detail rather than above it: the provider you clicked is what you
-              came to this pane to see. Collapsed until there is one, so on the
-              common path it is a single quiet row rather than a wall of empty
-              fields. */}
-          {chatSurface && <ImageProvidersSection revealProviderId={revealImageProviderId} />}
         </div>
       </section>
     </div>

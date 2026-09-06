@@ -38,9 +38,15 @@ const FORMAT_OPTIONS = (Object.keys(IMAGE_API_FORMAT_LABELS) as ImageApiFormat[]
   (id) => ({ value: id, label: IMAGE_API_FORMAT_LABELS[id] }),
 );
 
+/**
+ * What Aurora puts in `response_format`. "Whatever it sends" omits the field —
+ * the right answer for OpenAI's own `gpt-image-*`, which rejects it outright,
+ * and the right default for a provider nobody has probed yet.
+ */
 const SHAPE_OPTIONS = [
-  { value: "url", label: "url" },
-  { value: "b64_json", label: "b64_json" },
+  { value: "", label: "Whatever it sends" },
+  { value: "url", label: "Ask for a URL" },
+  { value: "b64_json", label: "Ask for base64" },
 ];
 
 /** One field with its label above it. The card's only layout unit. */
@@ -167,10 +173,17 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean }> =
   );
 };
 
-const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: boolean }> = ({
-  provider,
-  initiallyOpen,
-}) => {
+export const ImageProviderCard: React.FC<{
+  provider: ImageProvider;
+  initiallyOpen: boolean;
+  /**
+   * This card IS the detail pane — the rail already chose this provider, so
+   * there is nothing above it to collapse back into. Drops the fold entirely:
+   * a header that shrinks the whole pane to a strip is a control with nowhere
+   * to go.
+   */
+  standalone?: boolean;
+}> = ({ provider, initiallyOpen, standalone = false }) => {
   const updateImageProvider = useSettingsStore((s) => s.updateImageProvider);
   const deleteImageProvider = useSettingsStore((s) => s.deleteImageProvider);
   const addImageModel = useSettingsStore((s) => s.addImageModel);
@@ -189,14 +202,21 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: bool
     setNewModel("");
   };
 
+  const isOpen = standalone || open;
+  const HeadTag = standalone ? "div" : "button";
+
   return (
-    <div className="agw-img-card" data-open={open || undefined}>
+    <div className="agw-img-card" data-open={isOpen || undefined} data-standalone={standalone || undefined}>
       <div className="agw-img-card-top">
-        <button
-          type="button"
+        <HeadTag
+          {...(standalone
+            ? {}
+            : {
+                type: "button" as const,
+                onClick: () => setOpen((v) => !v),
+                "aria-expanded": open,
+              })}
           className="agw-img-card-main"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
         >
           <AgentIcon name="image" size={15} />
           <span className="agw-img-card-name">{provider.name}</span>
@@ -216,16 +236,18 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: bool
                   : "No key"}
             </span>
           )}
-          <AgentIcon
-            name="chevron-down"
-            size={13}
-            style={{
-              marginLeft: "auto",
-              transform: open ? "rotate(180deg)" : "none",
-              transition: "transform 0.18s ease",
-            }}
-          />
-        </button>
+          {!standalone && (
+            <AgentIcon
+              name="chevron-down"
+              size={13}
+              style={{
+                marginLeft: "auto",
+                transform: open ? "rotate(180deg)" : "none",
+                transition: "transform 0.18s ease",
+              }}
+            />
+          )}
+        </HeadTag>
         <AgwSwitch
           ariaLabel={`${provider.name} enabled`}
           checked={provider.enabled}
@@ -233,7 +255,7 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: bool
         />
       </div>
 
-      {open && (
+      {isOpen && (
         <div className="agw-img-card-body">
           <div className="agw-img-fields">
             <Field label="Name">
@@ -303,14 +325,18 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: bool
                 onChange={(e) => updateImageProvider(provider.id, { editPath: e.target.value })}
               />
             </Field>
-            <Field label="Response shape" hint="What each image comes back as.">
+            <Field
+              label="Image format"
+              hint="Leave as-is unless the provider's two endpoints disagree — some return a URL from one and base64 from the other."
+            >
               <AgwSelect
-                ariaLabel="Response shape"
-                value={provider.responseShape}
+                ariaLabel="Image format"
+                value={provider.requestFormat ?? ""}
                 options={SHAPE_OPTIONS}
                 onChange={(value) =>
                   updateImageProvider(provider.id, {
-                    responseShape: value === "b64_json" ? "b64_json" : "url",
+                    requestFormat:
+                      value === "url" || value === "b64_json" ? value : undefined,
                   })
                 }
               />
@@ -319,132 +345,91 @@ const ImageProviderCard: React.FC<{ provider: ImageProvider; initiallyOpen: bool
 
           <ImageProviderProbe provider={provider} />
 
-          <div className="agw-prov-models-head">
-            <span>Models</span>
-          </div>
-          <div className="agw-prov-models">
-            {provider.models.length === 0 ? (
-              <div className="agw-prov-empty">No models yet — add one below.</div>
-            ) : (
-              provider.models.map((model) => (
-                <ImageModelRow key={model.id} model={model} providerCanEdit={canEdit} />
-              ))
-            )}
+          {/* The models section a language provider already draws, reused whole:
+              counted heading OUTSIDE the panel, list and add-row INSIDE it, so
+              the panel is one object holding one list. The add row is the same
+              markup as `AddModelRow` — plus glyph in the field, button at the
+              right end of the SAME row, Enter adds. What was here before was a
+              plain input with a labelled button stacked underneath: a second
+              pattern for a job this page had already solved. */}
+          <div className="agw-prov-detail-models">
+            <div className="agw-prov-models-head">
+              Models <span className="agw-prov-models-count">{provider.models.length}</span>
+            </div>
+            <div className="agw-prov-models-panel">
+              <div className="agw-prov-models agw-scroll">
+                {provider.models.length === 0 ? (
+                  <div className="agw-prov-empty">No models yet — add one below.</div>
+                ) : (
+                  provider.models.map((model) => (
+                    <ImageModelRow key={model.id} model={model} providerCanEdit={canEdit} />
+                  ))
+                )}
+              </div>
+              <div className="agw-prov-addwrap">
+                <div className="agw-prov-addrow">
+                  <div className="agw-prov-add-field">
+                    <AgentIcon
+                      name="plus"
+                      size={14}
+                      style={{ color: "var(--agw-text-subtle)" }}
+                    />
+                    <input
+                      className="agw-prov-add-input"
+                      placeholder="Model ID — e.g. gpt-image-1.5, dall-e-3"
+                      value={newModel}
+                      spellCheck={false}
+                      onChange={(e) => setNewModel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addModel();
+                      }}
+                    />
+                  </div>
+                  <AgwButton
+                    variant="primary"
+                    icon="plus"
+                    disabled={!newModel.trim()}
+                    onClick={addModel}
+                  >
+                    Add
+                  </AgwButton>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div className="agw-prov-addrow">
-            <AgwTextInput
-              value={newModel}
-              placeholder="Model id — e.g. gpt-image-1.5"
-              onChange={(e) => setNewModel(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") addModel();
-              }}
-            />
-            <AgwButton icon="plus" disabled={!newModel.trim()} onClick={addModel}>
-              Add model
-            </AgwButton>
-          </div>
-
-          <div className="agw-prov-detail-danger">
-            <button
-              type="button"
-              className="agw-prov-remove-btn"
-              data-confirm={confirmRemove || undefined}
-              onClick={() => {
-                if (!confirmRemove) {
-                  setConfirmRemove(true);
-                  return;
-                }
-                deleteImageProvider(provider.id);
-              }}
-              onMouseLeave={() => setConfirmRemove(false)}
-            >
-              <AgentIcon name="close" size={13} />
-              {confirmRemove ? "Click again to delete" : "Delete provider"}
-            </button>
-          </div>
+          {/* Same two states a language provider shows, in the same place and
+              the same words: a user-added row gets the two-click delete, a
+              shipped one gets a line saying why there is nothing to click. A
+              missing control with no explanation reads as a bug. */}
+          {provider.builtIn ? (
+            <div className="agw-prov-detail-note">
+              Comes with Aurora. Change its address, key and models freely — the provider
+              itself stays in the list.
+            </div>
+          ) : (
+            <div className="agw-prov-detail-danger">
+              <button
+                type="button"
+                className="agw-prov-remove-btn"
+                data-confirm={confirmRemove || undefined}
+                onClick={() => {
+                  if (!confirmRemove) {
+                    setConfirmRemove(true);
+                    return;
+                  }
+                  deleteImageProvider(provider.id);
+                }}
+                onMouseLeave={() => setConfirmRemove(false)}
+              >
+                <AgentIcon name="close" size={13} />
+                {confirmRemove ? "Click again to delete" : "Delete provider"}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 };
 
-export const ImageProvidersSection: React.FC<{
-  /**
-   * A provider just added from the page's "Add provider" — the section opens
-   * and that card opens with it, so the new row is the thing on screen rather
-   * than one more collapsed line under a collapsed heading.
-   */
-  revealProviderId?: string | null;
-}> = ({ revealProviderId = null }) => {
-  const imageProviders = useSettingsStore((s) => s.imageProviders);
-  const addImageProvider = useSettingsStore((s) => s.addImageProvider);
-  const [open, setOpen] = useState(imageProviders.length > 0);
-  // Adds from inside the section reveal their card the same way.
-  const [addedHere, setAddedHere] = useState<string | null>(null);
-  const reveal = addedHere ?? revealProviderId;
-
-  // Open on a reveal, during render — the documented way to react to a prop
-  // change without an effect and a second paint.
-  const [seenReveal, setSeenReveal] = useState(revealProviderId);
-  if (revealProviderId !== seenReveal) {
-    setSeenReveal(revealProviderId);
-    if (revealProviderId) setOpen(true);
-  }
-
-  const add = () => {
-    setAddedHere(
-      addImageProvider({
-        name: "New image provider",
-        baseUrl: "",
-        apiFormat: "openai-images",
-        responseShape: "url",
-        enabled: true,
-      }),
-    );
-  };
-
-  return (
-    <section className="agw-img-section">
-      <button
-        type="button"
-        className="agw-img-section-head"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        <AgentIcon
-          name="chevron-down"
-          size={13}
-          style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.18s ease" }}
-        />
-        <span>Image providers</span>
-        <span className="agw-img-section-count">
-          {imageProviders.length === 0 ? "none yet" : imageProviders.length}
-        </span>
-      </button>
-
-      {open && (
-        <div className="agw-img-section-body">
-          {imageProviders.length === 0 && (
-            <p className="agw-img-section-empty">
-              Somewhere to generate pictures from a chat. Add the service you have a key
-              for — its address and its wire format are per provider, because they genuinely
-              differ.
-            </p>
-          )}
-          {imageProviders.map((provider) => (
-            <ImageProviderCard
-              key={provider.id}
-              provider={provider}
-              initiallyOpen={provider.id === reveal}
-            />
-          ))}
-          <AgwButton icon="plus" onClick={add}>
-            Add image provider
-          </AgwButton>
-        </div>
-      )}
-    </section>
-  );
-};

@@ -40,6 +40,20 @@ export const AURORA_SURFACES: readonly {
   },
 ];
 
+/**
+ * What to call the product the window is showing.
+ *
+ * One lookup, so the titlebar and the switcher cannot drift into calling the
+ * same thing two names — the window is titled with exactly the words the
+ * control that switched it used.
+ *
+ * Falls back to Build, matching `SurfaceSwitcher`: it is the side Aurora opens
+ * on, so an unreadable value names the default rather than inventing a third
+ * product.
+ */
+export const auroraSurfaceName = (surface: AuroraSurface): string =>
+  (AURORA_SURFACES.find((entry) => entry.id === surface) ?? AURORA_SURFACES[1]).name;
+
 export const normalizeAuroraSurface = (value: unknown): AuroraSurface => {
   if (value === "chat") return "chat";
   if (typeof value === "string") {
@@ -101,6 +115,10 @@ export const CHAT_MODE_TOOLS: ReadonlySet<string> = new Set([
   "auroro_websearch",
   "present_artifact",
   "read_artifact",
+  // The contract a live canvas is written against — see the note beside it in
+  // `tool_policy.rs`. Without it Chat could build one and could not read the
+  // rules for one.
+  "canvas_guidelines",
   "recall",
   "remember",
   "generate_image",
@@ -116,6 +134,22 @@ export const CHAT_MODE_TOOLS: ReadonlySet<string> = new Set([
  */
 export const isChatModeTool = (name: string): boolean =>
   CHAT_MODE_TOOLS.has(name) || name.startsWith("mcp_");
+
+/**
+ * Tools that exist in Aurora Chat and NOWHERE else.
+ *
+ * **Mirrors `CHAT_ONLY_TOOLS` in `commands/agent_v2/tool_policy.rs`, and Rust
+ * is the authority.**
+ *
+ * `CHAT_MODE_TOOLS` above is an allow-list for one mode; most of what is on it
+ * — web search, artifacts, images, asking a question — is equally a Build tool.
+ * These two are not. `recall` and `remember` reach the chat memory index, which
+ * holds Aurora Chat conversations only, so in Build they are a memory with
+ * nothing of Build's in it.
+ */
+export const CHAT_ONLY_TOOLS: ReadonlySet<string> = new Set(["recall", "remember"]);
+
+export const isChatOnlyTool = (name: string): boolean => CHAT_ONLY_TOOLS.has(name);
 
 /**
  * Lead team-control tools are all prefixed `team_` (see
@@ -156,9 +190,14 @@ const WRITE_TOOL_NAMES = new Set([
   "folder_create",
   "shell_spawn",
   "shell_kill",
-  // The checklist is an execution artifact. `todo` is one tool with a typed
-  // `op`, so read cannot be split from set/update by name — and Plan mode has
-  // nothing to read: it authors the plan, it does not work a checklist.
+  // The checklist is an execution artifact: Plan mode authors the plan, it
+  // does not work a checklist. `TaskList` is withheld with the other two even
+  // though it only reads — in Plan mode it can only ever return the empty
+  // list, and a tool that exists for nothing is worse than no tool.
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskList",
+  // Retired checklist names, kept so a stale roster cannot smuggle one back.
   "todo",
   // Legacy names — kept so plan mode still blocks anything historical.
   "todo_write",
@@ -298,14 +337,14 @@ export interface AgentModePromptFacts {
  * Guidance for tracking progress while executing.
  *
  * Two layers, deliberately: the **plan** carries the phases the user read and
- * approved (Canvas, `plan_step_update`), and the **todo list** carries the
+ * approved (Canvas, `plan_step_update`), and the **task list** carries the
  * concrete steps of the phase being worked right now (the checklist behind the
- * window header's indicator, `todo`). Without a plan only the second layer
- * exists.
+ * window header's indicator, `TaskCreate` / `TaskUpdate`). Without a plan only
+ * the second layer exists.
  */
 const trackingSection = (hasActivePlan: boolean): string => {
-  const todoRules = `- \`todo\` is one tool with three operations. \`op: "set"\` lays out the list, \`op: "update"\` flips one item by id, \`op: "read"\` recovers it. Mark an item in_progress BEFORE starting it and completed as soon as it is done. Only one may be in_progress.
-- Call \`todo\` with \`op: "read"\` when you are unsure where you stand — resuming an old conversation, after a compaction, or before choosing what to do next. It reads from disk, so it is right even when the list has left your context. Never re-invent a task list from memory.
+  const todoRules = `- \`TaskCreate\` adds one task — subject, description, and an optional activeForm. Lay the whole list out in ONE message, one call per task. \`TaskUpdate\` moves one task by id: mark it in_progress BEFORE starting it and completed as soon as it is done. Only one may be in_progress, and closing one while starting the next is two \`TaskUpdate\` calls in the same message.
+- Call \`TaskList\` when you are unsure where you stand — resuming an old conversation, after a compaction, or before choosing what to do next. It reads from disk, so it is right even when the list has left your context. Never re-invent a task list from memory.
 - The user watches this checklist live in their window header, so a stale mark is visibly wrong to them. Never mark something completed that is not.
 - Skip the checklist entirely for small, single-step requests — a task list for a one-line change is noise.`;
 
@@ -318,7 +357,7 @@ ${todoRules}`;
   return `### Tracking your work
 This project has a **plan**, and it is the shape of the work the user approved. You are executing it.
 - The plan's steps are **phases**. Work them in order: mark a phase \`in_progress\` with \`plan_step_update\` BEFORE starting it, and \`done\` / \`failed\` as soon as it ends. Only one phase may be in_progress. The user's Canvas animates whichever phase you marked, so a stale mark is visibly wrong to them.
-- Inside a phase, track the concrete work with \`todo\`: \`op: "set"\` the steps that phase needs, work them, then close the phase and set a fresh list for the next one. The plan is what the user approved; the checklist is how you are delivering the current part of it.
+- Inside a phase, track the concrete work with the task tools: \`TaskCreate\` the steps that phase needs, work them, then close the phase and create a fresh set for the next one. The plan is what the user approved; the checklist is how you are delivering the current part of it.
 - Use \`plan_read\` to re-read the plan, and \`failed\` (with a note) or \`skipped\` when a phase cannot or need not be done. Never mark a phase \`done\` that is not.
 - You cannot author or rewrite the plan from here; that is Plan mode's job. If the plan is wrong, say so and let the user switch back rather than silently working around it.
 ${todoRules}`;
@@ -352,6 +391,9 @@ export const CHAT_MODE_SYSTEM_PROMPT = `You are Aurora, talking with a user in A
 - **Remember things.** When you learn something durable about the user or their work, save it. It will be there in later conversations.
 - **Look things up from past conversations.** If the user refers to something you discussed before and it is not in front of you, go and find it rather than saying you do not recall.
 - **Show things on a canvas.** When an answer is really a table, a chart, a diagram, or a document, build it instead of describing it in prose.
+  - Pick the cheapest kind that works: \`markdown\` for a document, \`mermaid\` for a diagram, \`react\` only when it needs to be interactive or when layout carries meaning that text cannot.
+  - Call \`canvas_guidelines\` before your first \`present_artifact\` with \`artifactKind: "react"\`. Those canvases are compiled, so an unread contract is a failed write — and the rules it carries are not guessable.
+  - **Never choose a colour.** The canvas has a tone system (\`neutral | info | good | warn | bad\`) that follows the user's theme; hand-picked hues are the one thing that makes a canvas look like it came from somewhere else. In a comparison, one series carries the tone and the rest stay neutral — a colour per row says every row is special, which says nothing.
 
 ## How to write
 - Format in markdown. Backticks for names, commands, and anything the user would type.
@@ -409,7 +451,7 @@ export const getAgentModePromptSection = (
 - The ONE exception is \`plan_write\`, described below. If the user asks for any other change, explain that they need to switch the input mode to Agent first.
 
 ### The plan document is what Plan mode produces
-- \`plan_write\` writes a real file to \`.aurora/plans/\` and renders it live in the user's Canvas panel. Its steps are the **phases** of the work — the shape the user reads and approves before letting you execute. Size them like milestones a person would name, not individual edits; five to nine phases is a large plan. In Agent mode you close each phase with \`plan_step_update\` and track the concrete steps inside it with the todo tools.
+- \`plan_write\` writes a real file to \`.aurora/plans/\` and renders it live in the user's Canvas panel. Its steps are the **phases** of the work — the shape the user reads and approves before letting you execute. Size them like milestones a person would name, not individual edits; five to nine phases is a large plan. In Agent mode you close each phase with \`plan_step_update\` and track the concrete steps inside it with \`TaskCreate\` / \`TaskUpdate\`.
 - **Discuss first, then write.** Investigate the codebase, ask about anything genuinely ambiguous, and agree the approach with the user. The plan is what they read before deciding to let you execute, so write it once you actually understand the work — not as an opening move.
 - Revise freely as the conversation develops: call \`plan_write\` again and Aurora reconciles by step id, so revising never loses a step's recorded status.
 - Write steps a person can verify from the outside. Each \`title\` is a deliverable, and \`detail\` carries the rationale, the files involved, and what "done" means. Avoid vague steps like "implement the feature".
@@ -503,6 +545,10 @@ export const isToolAllowedForExecutionMode = (
   // correct for the tools that existed when it was written.
   if (mode === "chat") return isChatModeTool(toolName);
 
+  // Chat's memory belongs to Chat. Everything from here down is a deny-list,
+  // and this is the entry it was missing — see `CHAT_ONLY_TOOLS`.
+  if (isChatOnlyTool(toolName)) return false;
+
   // Team-control tools are exposed in Team mode only.
   if (isTeamLeadToolName(toolName)) return mode === "team";
 
@@ -548,6 +594,9 @@ export const filterToolsForExecutionMode = <TTool extends ToolDefinitionLike>(
 
     // Chat mode answers first, by allow-list. See `isToolAllowedForExecutionMode`.
     if (mode === "chat") return isChatModeTool(name);
+
+    // Chat's memory belongs to Chat — see `CHAT_ONLY_TOOLS`.
+    if (isChatOnlyTool(name)) return false;
 
     // Team-control tools are exposed in Team mode only.
     if (isTeamLeadToolName(name)) return mode === "team";

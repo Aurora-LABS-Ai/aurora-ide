@@ -395,12 +395,25 @@ impl ConversationRuntime {
 
     /// Move oversized payloads in `raw` onto disk, returning the content with
     /// a head+tail preview and the file's path. A no-op without a store dir.
-    fn spill_tool_output(&self, session: &Session, tool_call_id: &str, raw: String) -> String {
+    ///
+    /// `tool` decides where the spill fires: the clamp that runs immediately
+    /// after this uses a per-tool cap, and a spill later than that cap cuts
+    /// output with no path to the rest. See
+    /// [`super::tool_spill::spill_under_clamp`].
+    fn spill_tool_output(
+        &self,
+        session: &Session,
+        tool: &str,
+        tool_call_id: &str,
+        raw: String,
+    ) -> String {
         let Some(root) = self.store_dir.as_deref() else {
             return raw;
         };
         let dir = super::session_store::tool_results_dir_in(root, &session.thread_id, self.store_layout);
-        super::tool_spill::spill_oversized(&dir, tool_call_id, raw)
+        let clamp_keeps = tool_results::result_cap_for(tool)
+            .saturating_sub(tool_results::TRUNCATION_MARKER_RESERVE);
+        super::tool_spill::spill_under_clamp(&dir, tool_call_id, raw, clamp_keeps)
     }
 
     /// [`Self::spill_tool_output`] at the budget's lower floor.
@@ -1300,7 +1313,7 @@ impl ConversationRuntime {
 // a child module can see its parent's private imports.
 
 mod compaction;
-mod context_injection;
+pub(crate) mod context_injection;
 #[cfg(test)]
 mod tests;
 mod tokens;

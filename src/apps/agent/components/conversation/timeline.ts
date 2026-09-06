@@ -35,6 +35,11 @@ import { streamedToolStringArguments, toolStatus, type ToolCall } from "@/apps/a
  * says "four files" far less clearly than one line naming them does. The
  * threshold is the answer to "how many rows before the shape stops being
  * readable", and that number is smaller than six.
+ *
+ * Counted in ROWS, not calls (`ToolGroup`): a run of consecutive checklist
+ * calls is one row however many calls it holds, so closing two tasks and
+ * starting a third — three calls, one line — never gets a header asking the
+ * reader what the other two were.
  */
 export const TOOL_GROUP_MIN = 3;
 
@@ -642,26 +647,23 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
 /**
  * Tool calls that render NOTHING in the transcript.
  *
- * Only `todo` with `op: "read"`. A read changes nothing — it is the agent
+ * Only `TaskList`. Reading the checklist changes nothing — it is the agent
  * looking up where it stands — so a row for it is pure noise in a reply.
- * Set and update DO render (as a one-line beat): they are events, and a
- * checklist that changes with no trace in the transcript reads as if nothing
- * happened. It also made a FAILED todo call invisible, which is how a broken
- * checklist went unnoticed.
+ * `TaskCreate` and `TaskUpdate` DO render (as a one-line beat): they are
+ * events, and a checklist that changes with no trace in the transcript reads
+ * as if nothing happened. It also made a FAILED checklist call invisible,
+ * which is how a broken checklist went unnoticed.
+ *
+ * Matched by name alone now that the three jobs have three names — the old
+ * single `todo` tool needed its arguments parsed to tell a read from a write,
+ * which meant a half-streamed call could not be judged at all.
  *
  * The bar for adding a case here is high: the call must change nothing a
  * reader could care about. Silence is otherwise indistinguishable from a tool
  * that failed to run.
  */
 function isSilentToolCall(call: ToolCall): boolean {
-  if (call.name !== "todo") return false;
-  try {
-    return (JSON.parse(call.arguments || "{}") as { op?: unknown }).op === "read";
-  } catch {
-    // Arguments still streaming or malformed — show it. An unreadable call is
-    // exactly the one worth seeing.
-    return false;
-  }
+  return call.name === "TaskList";
 }
 
 /**

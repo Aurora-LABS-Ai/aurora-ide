@@ -432,7 +432,7 @@ pub(super) mod fake_server {
 mod tests {
     use super::fake_server::{serve, Canned};
     use super::*;
-    use crate::tools::image::config::{ImageApiFormat, ImageModelConfig, ImageResponseShape};
+    use crate::tools::image::config::{ImageApiFormat, ImageModelConfig};
 
     fn provider(base_url: &str, format: ImageApiFormat) -> ImageProviderConfig {
         ImageProviderConfig {
@@ -443,7 +443,7 @@ mod tests {
             api_format: format,
             generation_path: None,
             edit_path: None,
-            response_shape: ImageResponseShape::Url,
+            request_format: None,
             enabled: true,
             models: vec![ImageModelConfig {
                 id: "p:m".into(),
@@ -463,6 +463,7 @@ mod tests {
             model: "gpt-image-1.5",
             prompt: "an aurora",
             size: Some("1024x1024"),
+            format: None,
         }
     }
 

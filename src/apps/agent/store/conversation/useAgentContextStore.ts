@@ -159,7 +159,21 @@ export function measuredContextTokens(usage: TokenUsage): number {
 }
 
 /**
- * Raise a thread's high-water context reading, never lower it.
+ * A thread's high-water context reading, and the model that measured it.
+ *
+ * The model is half the reading. A token count only means something next to
+ * the tokenizer that produced it, so a floor without one is a number with no
+ * units — see {@link raiseContextFloor}.
+ */
+export interface ContextFloor {
+  /** `providerId:modelKey`, or `undefined` when the turn did not name one. */
+  model: string | undefined;
+  tokens: number;
+}
+
+/**
+ * Raise a thread's high-water context reading, never lower it — for as long as
+ * the same model is doing the measuring.
  *
  * Between compactions the request only ever grows — every turn appends — so a
  * measurement that comes back SMALLER than the one before it did not observe
@@ -172,23 +186,55 @@ export function measuredContextTokens(usage: TokenUsage): number {
  * low band it under-stated how full the window was, which is the direction
  * that ends in the provider rejecting the next request.
  *
- * Reset by a compaction (which genuinely does shrink the context) and by a
- * rewind. An ESTIMATED usage never raises the floor, for the same reason Rust
- * refuses to anchor on one: it is Aurora's own guess, and laundering it into a
- * floor would make every later real measurement look small.
+ * **Switching model ends the comparison.** Two models do not share a
+ * tokenizer, a window, or a way of counting cache, so the old model's peak
+ * says nothing about how full the new model's window is — and being a
+ * high-water mark, it wins every `Math.max` until the new model happens to
+ * exceed it. Measured, on thread `c4669acf` (2026-09-05): qwen3.8-max peaked
+ * at 189,897, the user switched to GLM-5.3-Flash, which reported 122,746 and
+ * climbed. The ring showed 189,897 for the next 71 messages — twenty-five
+ * minutes of a gauge that had visibly stopped working — and only moved again
+ * on the session's last exchange. So the floor is dropped, not carried, when
+ * the model changes: the first reading from the new model is its own floor.
+ *
+ * A turn that does not name its model leaves the floor alone rather than
+ * clearing it — "unknown" is not evidence of a switch.
+ *
+ * Also reset by a compaction (which genuinely does shrink the context) and by
+ * a rewind. An ESTIMATED usage never raises the floor, for the same reason
+ * Rust refuses to anchor on one: it is Aurora's own guess, and laundering it
+ * into a floor would make every later real measurement look small.
  *
  * Returns the same record when nothing moved, so the store does not publish a
  * new reference and re-render the card for nothing.
  */
 export function raiseContextFloor(
-  record: Record<string, number>,
+  record: Record<string, ContextFloor>,
   threadId: string,
   usage: TokenUsage,
-): Record<string, number> {
+  model?: string,
+): Record<string, ContextFloor> {
   if (usage.estimated === true) return record;
   const measured = measuredContextTokens(usage);
-  if (measured <= (record[threadId] ?? 0)) return record;
-  return { ...record, [threadId]: measured };
+  const prev = record[threadId];
+  if (prev === undefined) return { ...record, [threadId]: { model, tokens: measured } };
+
+  // A different model is a different ruler. Its first reading is its own
+  // floor, however far below the old model's peak it lands.
+  if (model !== undefined && prev.model !== undefined && prev.model !== model) {
+    return { ...record, [threadId]: { model, tokens: measured } };
+  }
+
+  if (measured <= prev.tokens) {
+    // Same reading, but now we know who took it. Adopting the name costs one
+    // repaint and makes the NEXT switch visible; a floor that never learns its
+    // model can never notice it changed.
+    if (model !== undefined && prev.model === undefined) {
+      return { ...record, [threadId]: { model, tokens: prev.tokens } };
+    }
+    return record;
+  }
+  return { ...record, [threadId]: { model: model ?? prev.model, tokens: measured } };
 }
 
 interface AgentContextState {
@@ -217,10 +263,12 @@ interface AgentContextState {
    */
   projectedByThread: Record<string, number>;
   /**
-   * Largest context reading a thread has had since its last compaction.
-   * See {@link raiseContextFloor} for why the newest reading is not enough.
+   * Largest context reading a thread has had since its last compaction, and
+   * the model that measured it. See {@link raiseContextFloor} for why the
+   * newest reading is not enough on its own, and why the model has to travel
+   * with it.
    */
-  contextFloorByThread: Record<string, number>;
+  contextFloorByThread: Record<string, ContextFloor>;
   /**
    * Threads whose stored breakdown no longer matches the transcript (a turn
    * finished since it was read). Re-fetched lazily when the card next opens,
@@ -228,8 +276,14 @@ interface AgentContextState {
    */
   staleBreakdowns: Record<string, true>;
 
-  /** Record the latest response's usage (called from `onUsage`). */
-  setUsage: (threadId: string, usage: TokenUsage) => void;
+  /**
+   * Record the latest response's usage (called from `onUsage`).
+   *
+   * `model` is the one running this turn. It is what lets the high-water
+   * reading tell "the same conversation got bigger" apart from "a different
+   * model counted it" — see {@link raiseContextFloor}.
+   */
+  setUsage: (threadId: string, usage: TokenUsage, model?: string) => void;
   /** Record the post-compaction projection (see {@link projectedByThread}). */
   setProjectedUsage: (threadId: string, tokens: number) => void;
   /**
@@ -265,11 +319,11 @@ export const useAgentContextStore = create<AgentContextState>((set, get) => ({
   cacheByThread: {},
   contextFloorByThread: {},
 
-  setUsage: (threadId, usage) =>
+  setUsage: (threadId, usage, model) =>
     set((s) => ({
       byThread: { ...s.byThread, [threadId]: usage },
       cacheByThread: foldCacheReading(s.cacheByThread, threadId, usage),
-      contextFloorByThread: raiseContextFloor(s.contextFloorByThread, threadId, usage),
+      contextFloorByThread: raiseContextFloor(s.contextFloorByThread, threadId, usage, model),
       // A measurement supersedes a projection — the request the projection
       // was anticipating has now actually happened and been counted.
       projectedByThread: dropKey(s.projectedByThread, threadId),

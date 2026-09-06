@@ -122,16 +122,13 @@
 
 /* ── Chat rail: day-group headers ─────────────────────────────────────────
  *
- * "Today", "Yesterday", "Previous 7 days". Deliberately NOT the collapsible
- * `.agw-rail-section-toggle` a project header uses: a day is not a container
- * you shut, it is a divider you read past. No caret, no hit target, nothing to
- * click — which is also why it is a div rather than a button.
+ * "Today", "Yesterday", "Previous 7 days" now use `.agw-rail-section-toggle`,
+ * the same header, caret and collapse as Pinned and Recent directly above them.
+ *
+ * They used to be plain labels, on the reasoning that a day is a divider you
+ * read past rather than a container you shut. That argument does not survive
+ * the rail it lives in: Pinned and Recent fold, Projects folds, and the day
+ * group was the one section in the same list that did not — so the rail had two
+ * behaviours for one shape, and the buckets most worth folding ("Previous 30
+ * days", "Older") were the ones that could not be. Owner's call, 2026-09-06.
  */
-.agw-rail-daygroup {
-  padding: 2px 8px 2px 10px;
-  color: var(--agw-text-subtle);
-  font-size: var(--agw-fs-micro);
-  font-weight: var(--agw-fw-medium);
-  letter-spacing: 0.02em;
-  user-select: none;
-}

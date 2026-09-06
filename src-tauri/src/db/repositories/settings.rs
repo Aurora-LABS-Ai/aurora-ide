@@ -262,6 +262,30 @@ impl<'a> SettingsRepository<'a> {
                     settings.skill_toggles = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.skill_toggles.clone())
                 }
+                // Aurora Chat. Absent from this match until 2026-09-04, which
+                // is why an image provider's key and models vanished on every
+                // relaunch — the value was written by the frontend, dropped
+                // here, and read back as the default.
+                "auroraSurface" => {
+                    settings.aurora_surface = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.aurora_surface.clone())
+                }
+                "chatModelShortlist" => {
+                    settings.chat_model_shortlist = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.chat_model_shortlist.clone())
+                }
+                "deepResearchNext" => {
+                    settings.deep_research_next = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.deep_research_next)
+                }
+                "imageProviders" => {
+                    settings.image_providers = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.image_providers.clone())
+                }
+                "seededImageProviderIds" => {
+                    settings.seeded_image_provider_ids = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.seeded_image_provider_ids.clone())
+                }
                 "fireworksTabEnabled" => {
                     settings.fireworks_tab_enabled = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.fireworks_tab_enabled)
@@ -493,6 +517,27 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "skillToggles",
             &serde_json::to_string(&settings.skill_toggles).unwrap_or_default(),
+        )?;
+        // Aurora Chat — see the matching arms in `get_app_settings`.
+        self.set_setting(
+            "auroraSurface",
+            &serde_json::to_string(&settings.aurora_surface).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "chatModelShortlist",
+            &serde_json::to_string(&settings.chat_model_shortlist).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "deepResearchNext",
+            &serde_json::to_string(&settings.deep_research_next).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "imageProviders",
+            &serde_json::to_string(&settings.image_providers).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "seededImageProviderIds",
+            &serde_json::to_string(&settings.seeded_image_provider_ids).unwrap_or_default(),
         )?;
         self.set_setting(
             "fireworksTabEnabled",
@@ -843,6 +888,25 @@ mod tests {
             },
         ];
         settings.active_global_instruction_profile_id = "two".into();
+        // Aurora Chat. Every one of these was written by the frontend and
+        // silently dropped here until 2026-09-04 — the whole-struct comparison
+        // below is what pins them, so a field added to `AppSettings` without a
+        // save/load arm fails this test rather than a person's settings.
+        settings.aurora_surface = "chat".into();
+        settings.chat_model_shortlist = vec!["p:alpha".into(), "p:beta".into()];
+        settings.deep_research_next = true;
+        settings.seeded_image_provider_ids = vec!["img-apikl".into()];
+        settings.image_providers = serde_json::json!([{
+            "id": "img-a6api",
+            "name": "a6api",
+            "baseUrl": "https://api.a6api.com/v1",
+            "apiKey": "sk-live",
+            "apiFormat": "a6api",
+            "responseShape": "url",
+            "enabled": true,
+            "builtIn": true,
+            "models": [{ "id": "img-a6api:gpt-image-1.5", "modelKey": "gpt-image-1.5" }],
+        }]);
 
         repo.save_app_settings(&settings).expect("save");
         let loaded = repo.get_app_settings().expect("load");
@@ -851,6 +915,36 @@ mod tests {
             serde_json::to_value(&settings).expect("serialize saved"),
             serde_json::to_value(&loaded).expect("serialize loaded"),
         );
+    }
+
+    /// The symptom, stated on its own because it is the one a person met: type
+    /// a key into an image provider, add a model, relaunch, and both were gone —
+    /// so the model picker had no image models and its Image tab never appeared.
+    #[test]
+    fn an_image_provider_keeps_its_key_and_models_across_a_relaunch() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+
+        let mut settings = AppSettings::default();
+        settings.image_providers = serde_json::json!([{
+            "id": "img-a6api",
+            "name": "a6api",
+            "baseUrl": "https://api.a6api.com/v1",
+            "apiKey": "sk-the-one-that-vanished",
+            "apiFormat": "a6api",
+            "responseShape": "url",
+            "enabled": true,
+            "models": [
+                { "id": "img-a6api:gpt-image-1.5", "modelKey": "gpt-image-1.5", "canEdit": true },
+                { "id": "img-a6api:nano-banana", "modelKey": "nano-banana" },
+            ],
+        }]);
+        repo.save_app_settings(&settings).expect("save");
+
+        let row = &repo.get_app_settings().expect("load").image_providers[0];
+        assert_eq!(row["apiKey"], "sk-the-one-that-vanished");
+        assert_eq!(row["models"].as_array().expect("models").len(), 2);
+        assert_eq!(row["models"][0]["canEdit"], true);
     }
 
     /// A database from before the profile fields existed must still load, and

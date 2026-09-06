@@ -274,6 +274,25 @@ fn unicode_ok() -> bool {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that touch `NO_COLOR` against the ones that paint.
+    ///
+    /// `NO_COLOR` is process-global, the suite runs threaded, and **crossterm
+    /// reads it too** — so while `no_color_env_disables_auto` holds it set,
+    /// any test painting in another thread gets plain text back and fails an
+    /// assertion about escape codes. Measured: `painted_text_carries_a_reset`
+    /// failed in 2 of 5 full-suite runs and passes alone every time.
+    ///
+    /// Restoring the variable at the end of that test was never enough; the
+    /// window it is set in is what does the damage, so the window has to be
+    /// exclusive.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the lock, surviving a poisoned mutex — a panic in one test must
+    /// fail that test, not cascade into every other one in this module.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Styling forced on, so the assertions describe the renderer rather than
     /// the machine the suite happens to run on.
     fn styled() -> Term {
@@ -309,6 +328,7 @@ mod tests {
         // colour closes with SGR 39 (default foreground) and an attribute with
         // SGR 0 (reset all). Both end the span; asserting one specific code
         // would be pinning crossterm's internals rather than our invariant.
+        let _guard = env_lock();
         for style in [Style::Error, Style::Muted, Style::Brand] {
             let painted = styled().paint(style, "boom");
             assert!(painted.contains("boom"), "{style:?} dropped its text");
@@ -322,6 +342,7 @@ mod tests {
 
     #[test]
     fn strong_applies_both_weight_and_hue() {
+        let _guard = env_lock();
         let painted = styled().strong(Style::Error, "boom");
         assert!(painted.contains("boom"));
         // SGR 1 is bold; its presence alongside a colour introducer is what
@@ -352,8 +373,11 @@ mod tests {
 
     #[test]
     fn no_color_env_disables_auto() {
-        // `NO_COLOR` is process-global and this suite runs threaded, so the
-        // variable is restored before the test returns.
+        // `NO_COLOR` is process-global and this suite runs threaded, so no
+        // painting test may run while it is set — see `ENV`. The variable is
+        // also restored before the test returns, for anything outside this
+        // module.
+        let _guard = env_lock();
         let restore = std::env::var_os("NO_COLOR");
         std::env::set_var("NO_COLOR", "1");
         assert!(!ColorChoice::Auto.enabled());

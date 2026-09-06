@@ -49,16 +49,18 @@ const PREVIEW_TAIL: usize = 5 * 1024;
 /// Floor for a spill forced by the per-message budget
 /// ([`super::conversation::MAX_TOOL_RESULTS_PER_MESSAGE`]).
 ///
-/// Lower than [`SPILL_THRESHOLD`] because the budget's problem is different:
-/// results that are each individually fine can still add up to megabytes in one
-/// message.
+/// The budget's problem is different from the clamp's: results that are each
+/// individually fine can still add up to megabytes in one message.
 ///
-/// Derived, not picked. [`preview`] keeps `PREVIEW_HEAD + PREVIEW_TAIL` inline
-/// plus its note, so it cannot shrink anything at or below that size at all —
-/// a lower floor would write a file, free nothing, and leave the budget
-/// reporting the result as exempt when the truth is that spilling it was
-/// pointless. Twice the preview size is the first point where a move reliably
-/// halves the result, which is what makes the round trip worth offering.
+/// Derived, not picked, and **higher** than [`SPILL_THRESHOLD`]. [`preview`]
+/// keeps `PREVIEW_HEAD + PREVIEW_TAIL` inline plus its note, so it cannot
+/// shrink anything at or below that size at all — a lower floor would write a
+/// file, free nothing, and leave the budget reporting the result as exempt when
+/// the truth is that spilling it was pointless. Twice the preview size is the
+/// first point where a move reliably halves the result, which is what makes the
+/// round trip worth offering. (This comment used to claim the constant was
+/// LOWER than `SPILL_THRESHOLD`; it never was, and the derivation below is the
+/// half that was right.)
 const BUDGET_SPILL_THRESHOLD: usize = 2 * (PREVIEW_HEAD + PREVIEW_TAIL);
 
 /// Rewrite `raw` so any oversized payload lives on disk.
@@ -67,6 +69,33 @@ const BUDGET_SPILL_THRESHOLD: usize = 2 * (PREVIEW_HEAD + PREVIEW_TAIL);
 #[must_use]
 pub fn spill_oversized(dir: &Path, tool_call_id: &str, raw: String) -> String {
     spill_with_threshold(dir, tool_call_id, raw, SPILL_THRESHOLD)
+}
+
+/// [`spill_oversized`], but never later than the clamp that runs next.
+///
+/// The spill's whole promise — stated to the model in the system prompt as
+/// "large tool output is MOVED, never cut" — only holds when it fires at or
+/// before the clamp. It did not. `SPILL_THRESHOLD` is a flat 12 KiB while most
+/// tools clamp at 8 KiB, so every result between the two was cut with no file
+/// written and no path to the rest: too big to keep, too small to spill.
+///
+/// Two agent reports landed in exactly that band and both retried the call
+/// looking for a path that was never written — `browser_guidelines` at 9,144
+/// bytes and `shell_execute` at 11,533.
+///
+/// `clamp_keeps` is what the next clamp will actually retain for this tool
+/// (its cap minus the truncation marker's reserve). Taking the smaller of the
+/// two closes the band without spilling earlier than necessary for the
+/// large-cap tools — reads, `workspace_tree` and websearch keep the 12 KiB
+/// behaviour they were tuned for.
+#[must_use]
+pub fn spill_under_clamp(
+    dir: &Path,
+    tool_call_id: &str,
+    raw: String,
+    clamp_keeps: usize,
+) -> String {
+    spill_with_threshold(dir, tool_call_id, raw, SPILL_THRESHOLD.min(clamp_keeps))
 }
 
 /// [`spill_oversized`] at the budget's lower floor.
@@ -383,6 +412,64 @@ mod tests {
         assert_eq!(
             spill_oversized(dir.path(), "call_1", between.clone()),
             between
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    /// The gap [`spill_under_clamp`] exists to close.
+    ///
+    /// [`SPILL_THRESHOLD`] is a flat 12 KiB while most tools clamp at 8 KiB,
+    /// so a result between the two was cut with no file written and no path to
+    /// the rest — the model was told to look for a spill file that was never
+    /// created. Two agent reports landed in that band: `browser_guidelines` at
+    /// 9,144 bytes and `shell_execute` at 11,533.
+    #[test]
+    fn a_result_between_the_clamp_and_the_flat_threshold_spills_instead_of_vanishing() {
+        let dir = tempfile::tempdir().unwrap();
+        // What the generic 8 KiB cap actually retains once the truncation
+        // marker's reserve is taken out — `MAX_TOOL_RESULT_LENGTH` minus
+        // `TRUNCATION_MARKER_RESERVE`.
+        let clamp_keeps = 8_192 - 128;
+
+        let output = format!("FIRST_LINE\n{}\nLAST_LINE_MARKER", "y".repeat(11_500));
+        assert!(
+            output.len() > clamp_keeps && output.len() < SPILL_THRESHOLD,
+            "the test text must sit in the dead band: {} bytes",
+            output.len()
+        );
+        let raw = serde_json::json!({ "success": true, "stdout": output }).to_string();
+
+        // The flat threshold walks past it. That IS the bug, pinned here so a
+        // future tidy-up cannot quietly reintroduce it as the only path.
+        assert_eq!(spill_oversized(dir.path(), "call_band", raw.clone()), raw);
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+
+        let spilled: Value =
+            serde_json::from_str(&spill_under_clamp(dir.path(), "call_band", raw, clamp_keeps))
+                .unwrap();
+
+        assert!(
+            spilled.get("stdoutFile").is_some(),
+            "a path to the whole text, which is what the prompt promises: {spilled:?}"
+        );
+        let preview = spilled["stdout"].as_str().unwrap();
+        assert!(preview.contains("full output: "), "and it names the path");
+        assert!(
+            preview.contains("LAST_LINE_MARKER"),
+            "the tail survives — the half a head-only clamp always lost"
+        );
+    }
+
+    /// Closing the band must not make the large-cap tools spill early. A read
+    /// or a websearch clamps at 512 KiB, so its spill still belongs at the
+    /// flat 12 KiB threshold those were tuned for.
+    #[test]
+    fn a_large_cap_tool_keeps_the_flat_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let under = "z".repeat(SPILL_THRESHOLD);
+        assert_eq!(
+            spill_under_clamp(dir.path(), "call_1", under.clone(), 512 * 1024),
+            under
         );
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }

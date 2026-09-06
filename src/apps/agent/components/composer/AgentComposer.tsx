@@ -1050,10 +1050,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     }
   }, [value]);
 
+  // Takes focus when this composer is the one a person is about to type into.
+  //
+  // Both composers pass it — the home screen's and the transcript's — because
+  // sending the first message swaps one for the other and focus does not
+  // survive that on its own. See `ConversationPane`.
   useEffect(() => {
     if (autoFocus) editorRef.current?.focus();
   }, [autoFocus]);
-
 
   // After each turn the agent may have created/edited files — drop the index.
   const prevSending = useRef(sending);

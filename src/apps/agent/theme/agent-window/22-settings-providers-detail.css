@@ -123,6 +123,50 @@
 .agw-prov-group-count {
   order: 2;
 }
+/* Which product a group belongs to. Only earned by a group that is NOT on both
+   sides — every other group would carry a tag saying "everywhere", which is the
+   same as no tag. Sits inside the name so the hairline still starts after it. */
+.agw-prov-group-tag {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  color: var(--agw-text-subtle);
+}
+/* Add one from the heading, where you are already looking for the list. Quiet
+   until the group is hovered — the same rule the description pencil follows. */
+.agw-prov-group-add {
+  order: 3;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin: -2px -2px -2px 0;
+  border-radius: var(--agw-radius-sm);
+  color: var(--agw-text-subtle);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+.agw-prov-group-label:hover .agw-prov-group-add,
+.agw-prov-group-add:focus-visible {
+  opacity: 1;
+}
+.agw-prov-group-add:hover,
+.agw-prov-group-add:focus-visible {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+  outline: none;
+}
 .agw-prov-group-caret {
   flex-shrink: 0;
   transition: transform 0.12s ease;
@@ -499,9 +543,135 @@
 .agw-prov-models-head,
 .agw-prov-models-hint,
 .agw-prov-addwrap,
+.agw-prov-fetch,
 .agw-prov-detail-note,
 .agw-prov-detail-danger {
   flex-shrink: 0;
+}
+
+/* ── Get models ─────────────────────────────────────────────────────────
+ * The provider's own list, asked for on demand. It sits between the model
+ * list and the type-an-id row because that is its place in the sequence:
+ * the list you have, the list you could have, the one you know by name.
+ *
+ * The button's row reads like the add row above it — control on the left,
+ * one sentence of state beside it — so the two are visibly the same KIND of
+ * thing (a way to get a model onto this provider) rather than two unrelated
+ * controls that happen to be adjacent. */
+.agw-prov-fetch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  margin-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-prov-fetch-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+/* The sentence carries the result AND every failure, so it has to be able to
+   run to two lines rather than truncate — a rejected key explained down to
+   "The provider rejec…" is worse than no explanation. */
+.agw-prov-fetch-note {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-fetch-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-composer-surface);
+}
+.agw-prov-fetch-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agw-prov-fetch-all,
+.agw-prov-fetch-close {
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+}
+.agw-prov-fetch-all:hover:not(:disabled),
+.agw-prov-fetch-close:hover {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+}
+.agw-prov-fetch-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Capped, not unbounded: a gateway can answer with three hundred models, and
+   a settings pane that grows to three hundred rows has stopped being a pane. */
+.agw-prov-fetch-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.agw-prov-fetch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text);
+  cursor: pointer;
+  min-width: 0;
+}
+.agw-prov-fetch-item:hover {
+  background: var(--agw-hover-paint);
+}
+/* Already on the row: still listed, so the picker agrees with the list above
+   it, but visibly settled rather than offered. */
+.agw-prov-fetch-item[data-added] {
+  color: var(--agw-text-subtle);
+  cursor: default;
+}
+.agw-prov-fetch-item[data-added]:hover {
+  background: none;
+}
+/* The id is the wire value, so it gets the mono face and never wraps — a
+   model id broken across two lines is a different-looking string. */
+.agw-prov-fetch-id {
+  font-family: var(--agw-font-mono);
+  font-size: var(--agw-fs-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-fetch-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-fetch-added {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
 }
 .agw-prov-detail-head {
   display: flex;
@@ -549,12 +719,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The pencil is there when you look for it, not before. */
+/* The pencil is there when you look for it, not before. With no description it
+   is the whole control — icon only, no label — so it keeps its own box rather
+   than sizing to a line of text that is not there. */
 .agw-prov-desc-edit,
 .agw-prov-desc-add {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
   padding: 2px 4px;
   margin: 0 -4px;
   border: 0;
@@ -596,8 +768,11 @@
   font: inherit;
   line-height: 1.3;
 }
+/* The window's rule for a focused text field, stated at `.agw-set-input:focus`:
+   the border firms up and nothing else happens. An accent border here read as a
+   focus ring on a field that is already obviously the thing being typed in. */
 .agw-prov-desc-input:focus {
-  border-color: var(--agw-accent);
+  border-color: var(--agw-border-strong);
   outline: none;
 }
 .agw-prov-desc-input::placeholder {

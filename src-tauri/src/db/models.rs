@@ -453,6 +453,38 @@ pub struct AppSettings {
     /// Id of the profile injected into the system prompt. Empty = none active.
     #[serde(default)]
     pub active_global_instruction_profile_id: String,
+    /// Which product the agent window opens on — `"build"` or `"chat"`.
+    ///
+    /// These four Aurora Chat settings were on the TypeScript type and in the
+    /// payload from the day chat mode shipped, but never on this struct — so
+    /// `save_app_settings` dropped them and `get_app_settings` never returned
+    /// them. Everything a person set on the chat side survived exactly until
+    /// the next launch: the surface, the shortlist, the deep-research seed and,
+    /// most visibly, an image provider's API key and its models.
+    #[serde(default)]
+    pub aurora_surface: String,
+    /// Up to ten models ticked as Aurora Chat's picker roster.
+    #[serde(default)]
+    pub chat_model_shortlist: Vec<String>,
+    /// Whether the NEXT chat is created in deep research. A seed, not a state:
+    /// a conversation's own flag lives on its sidecar.
+    #[serde(default)]
+    pub deep_research_next: bool,
+    /// Picture-making providers, models nested inside each row.
+    ///
+    /// Held opaquely. The shape is the frontend's (`services/providers/
+    /// image-providers.ts`) and Rust reads it through `AgentChatRequest`, not
+    /// from here — a typed mirror would be a second definition to keep in step
+    /// for no gain, and the mismatch would silently drop fields again.
+    #[serde(default)]
+    pub image_providers: serde_json::Value,
+    /// Image providers Aurora has already offered once as a starting point.
+    ///
+    /// The record is what lets a seeded row be DELETED and stay deleted; a
+    /// preset that re-seeds every launch cannot be thrown away. Ids only —
+    /// Rust never needs to know what was in them.
+    #[serde(default)]
+    pub seeded_image_provider_ids: Vec<String>,
     /// Context-compaction trigger as a % of the context window (50–95).
     #[serde(default)]
     pub compaction_threshold_pct: f64,
@@ -577,6 +609,16 @@ impl Default for AppSettings {
             global_instructions: String::new(),
             global_instruction_profiles: Vec::new(),
             active_global_instruction_profile_id: String::new(),
+            // Aurora opens on the side that writes software; Chat is the
+            // deliberate trip. Mirrors `useSettingsStore`'s own default.
+            aurora_surface: "build".into(),
+            chat_model_shortlist: Vec::new(),
+            deep_research_next: false,
+            // Null, not `[]`: the frontend seeds the shipped a6api row when it
+            // reads nothing, and an empty array is a stored decision to have no
+            // providers, which is a different statement.
+            image_providers: serde_json::Value::Null,
+            seeded_image_provider_ids: Vec::new(),
             compaction_threshold_pct: 80.0,
             compaction_summary_budget: 8192,
             compaction_model: String::new(),

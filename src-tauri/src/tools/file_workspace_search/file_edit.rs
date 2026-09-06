@@ -151,21 +151,29 @@ impl ToolExecutor for FileEditTool {
         let resolved_arg = super::path_argument::resolve(&input, "edit").map_err(with_batch_hint);
         let top_path = resolved_arg.as_ref().ok().map(|arg| arg.path.as_str());
 
-        // Batch form takes priority when present. Accept `edits` (the canonical
-        // key) or `replacements` (back-compat alias). Each item may name its own
-        // `path`; items without one fall back to the top-level `path`.
-        let batch = input
+        // Batch form takes priority when present. `edits_argument` reads the
+        // canonical key, its `replacements` alias, and the forms that can only
+        // mean the batch — a misspelled key, the array written as a string, a
+        // single edit sent unwrapped — reporting whatever it assumed.
+        if let Some(batch) = super::edits_argument::resolve(&input) {
+            let note = batch.note.clone();
+            let mut result = self.run_batch(&batch.items, top_path, &input, ctx).await?;
+            if let Some(note) = note {
+                result = with_argument_note(&result, &note);
+            }
+            return Ok(result);
+        }
+        if let Some(arr) = input
             .get("edits")
             .and_then(Value::as_array)
-            .or_else(|| input.get("replacements").and_then(Value::as_array));
-
-        if let Some(arr) = batch {
-            if arr.is_empty() {
-                return Err(ToolError::InvalidInput(
-                    "`edits` must be a non-empty array".into(),
-                ));
-            }
-            return self.run_batch(arr, top_path, ctx).await;
+            .or_else(|| input.get("replacements").and_then(Value::as_array))
+        {
+            // Only an EMPTY array reaches here — `edits_argument` claims every
+            // batch that has something in it.
+            debug_assert!(arr.is_empty());
+            return Err(ToolError::InvalidInput(
+                "`edits` must be a non-empty array".into(),
+            ));
         }
 
         // Single-edit form — requires a top-level `path`. The batch form above
@@ -181,11 +189,7 @@ impl ToolExecutor for FileEditTool {
         let old_string = input
             .get("old_string")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidInput(
-                    "supply either `edits` (array) or `old_string`+`new_string`".into(),
-                )
-            })?;
+            .ok_or_else(|| ToolError::InvalidInput(no_edit_named(&input)))?;
         if old_string.is_empty() {
             return Err(ToolError::InvalidInput(
                 "`old_string` must not be empty".into(),
@@ -256,10 +260,15 @@ impl FileEditTool {
     /// first (no disk writes), and only if every file plans cleanly do we
     /// commit. A single failure leaves the whole workspace untouched, so the
     /// contract is identical whether the agent edits one file or ten.
+    ///
+    /// `input` is the whole call, carried in only so a missing per-item `path`
+    /// can be explained against what the model actually sent — see
+    /// [`super::path_argument::batch_item_without_path`].
     async fn run_batch(
         &self,
         arr: &[Value],
         top_path: Option<&str>,
+        input: &Value,
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         // Build per-file groups, preserving first-seen order so the result
@@ -275,10 +284,7 @@ impl FileEditTool {
                 .and_then(Value::as_str)
                 .or(top_path)
                 .ok_or_else(|| {
-                    ToolError::InvalidInput(format!(
-                        "Edit {n}: no `path`. Set `path` on this edit item, or provide a \
-                         top-level `path` that all edits share."
-                    ))
+                    ToolError::InvalidInput(super::path_argument::batch_item_without_path(input, n))
                 })?;
             let old_string = rep
                 .get("old_string")
@@ -555,6 +561,54 @@ struct FileGroup {
     /// The canonical on-disk path (grouping key + write target).
     resolved: String,
     items: Vec<SearchReplaceItem>,
+}
+
+/// Say what a repaired argument was read as, inside the result the tool
+/// already returns.
+///
+/// A repair is never silent ([`super::path_argument`] holds the same rule): the
+/// model sees the name it should have used, and the transcript shows the user
+/// what was assumed. Attached rather than prepended so nothing about the
+/// successful edit moves.
+fn with_argument_note(result: &str, note: &str) -> String {
+    let Ok(mut parsed) = serde_json::from_str::<Value>(result) else {
+        return result.to_string();
+    };
+    let Some(object) = parsed.as_object_mut() else {
+        return result.to_string();
+    };
+    object.insert("argumentNote".into(), json!(note));
+    serde_json::to_string(&parsed).unwrap_or_else(|_| result.to_string())
+}
+
+/// The refusal for a call that named no edit at all.
+///
+/// It lists the fields that DID arrive, because the sentence it replaced —
+/// "supply either `edits` (array) or `old_string`+`new_string`" — is a true
+/// statement about the tool and says nothing about the call. A model reading it
+/// after sending `edites` looks at its own payload, sees the edits it wrote,
+/// and starts theorising. Naming what arrived is what turns the retry into a
+/// correction. Same rule as [`crate::agent_runtime::tool_executor::ToolError`]'s
+/// malformed-input doc: never tell a model a field is missing without saying
+/// what you received instead.
+fn no_edit_named(input: &Value) -> String {
+    let keys: Vec<&str> = input
+        .as_object()
+        .map(|o| o.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    if keys.is_empty() {
+        return "supply either `edits` (an array of {old_string, new_string}) or a single \
+                `old_string` + `new_string`. This call carried no arguments at all."
+            .into();
+    }
+    format!(
+        "supply either `edits` (an array of {{old_string, new_string}}) or a single \
+         `old_string` + `new_string`. This call carried: {}.",
+        keys.iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Diagnosis for a match that failed on a file the agent never read.
@@ -1035,6 +1089,49 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], true, "got: {out}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "omega\n");
+    }
+
+    /// The same trap, one form along: a BATCH across two files, each edit
+    /// leaning on `affected_paths` for its file.
+    ///
+    /// Reproduced verbatim from thread `c4669acf` (2026-09-05), where it cost
+    /// three requests. The refusal it used to give — "Edit 1: no `path`. Set
+    /// `path` on this edit item, or provide a top-level `path` that all edits
+    /// share." — is true about the tool and says nothing about the call: it
+    /// never mentions `affected_paths`, which is the field the model filled
+    /// and the field this tool's own description tells it to send first.
+    #[tokio::test]
+    async fn a_batch_leaning_on_affected_paths_is_told_what_it_actually_sent() {
+        let ctx = ctx_for(None);
+        let err = FileEditTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        ))
+        .execute(
+            serde_json::json!({
+                "affected_paths": ["a.ts", "b.ts"],
+                "edits": [
+                    { "old_string": "sky", "new_string": "blue" },
+                    { "old_string": "teal", "new_string": "indigo" },
+                ],
+            }),
+            &ctx,
+        )
+        .await
+        .expect_err("two files and no per-item path cannot be mapped");
+        let msg = err.to_string();
+        assert!(msg.contains("affected_paths"), "must name the field it filled: {msg}");
+        assert!(msg.contains("names 2 files"), "must say what arrived: {msg}");
+        assert!(
+            msg.contains("own `path`"),
+            "must say the one thing that fixes it: {msg}"
+        );
+        // The sentence it replaced pointed at a top-level `path`, which is the
+        // WRONG advice for a batch spanning two files — following it would
+        // send both edits to one of them.
+        assert!(
+            !msg.contains("all edits share"),
+            "must not steer a two-file batch onto a single shared path: {msg}"
+        );
     }
 
     /// Two files named and no `path` is a choice, and this tool does not make

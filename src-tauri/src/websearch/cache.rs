@@ -64,11 +64,16 @@ fn evict<T>(map: &mut HashMap<String, Entry<T>>) {
 
 fn search_key(query: &str, opts: &SearchOptions) -> String {
     format!(
-        "{}\u{1}{}\u{1}{}\u{1}{:?}",
+        "{}\u{1}{}\u{1}{}\u{1}{:?}\u{1}{:?}",
         query.trim().to_lowercase(),
         opts.limit,
         opts.region.as_deref().unwrap_or(""),
-        opts.safe_search
+        opts.safe_search,
+        // The source is part of the key, not a detail of how the answer was
+        // produced: the same words asked of the web and of the catalogues are
+        // two different searches, and sharing a key would serve one as the
+        // other for the next fifteen minutes.
+        opts.source
     )
 }
 

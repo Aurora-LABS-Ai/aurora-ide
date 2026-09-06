@@ -191,6 +191,13 @@ export default function Report() {
 choose a tone, and it matches everywhere. `neutral` is the default and stays
 untinted — colour should mean something happened, not that a component exists.
 
+**In a comparison, ONE thing carries a tone and everything else stays
+neutral.** The tone marks the subject — the model under test, the branch you
+changed, the row that failed — and the neutral bars are what it is being
+compared against. A tone per row is the same as no tones at all: five hues say
+every row is special, which says nothing, and a reader then has to learn a
+legend to recover the one fact the chart existed to show.
+
 Components take no `style` or `className`. If you genuinely need something
 the surface does not offer, write a raw element and colour it with
 `var(--agw-text)`, `var(--agw-border)`, `var(--agw-surface)` and friends —

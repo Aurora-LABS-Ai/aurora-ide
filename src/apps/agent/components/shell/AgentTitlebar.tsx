@@ -3,8 +3,10 @@
  *
  * The agent window ships `decorations: false` (both launch paths), so this
  * strip replaces the native Windows caption bar: a frame-tier drag region with
- * the app name on the left and minimize / maximize-restore / close on the
- * right. Every colour reads `--agw-*`, so Appearance retheming recolors it
+ * the name of the product currently open on the left — Aurora Chat or Aurora
+ * Build, the same words the switcher uses — and minimize / maximize-restore /
+ * close on the right. It also keeps the OS window title in step, since that is
+ * what the taskbar and Alt-Tab show. Every colour reads `--agw-*`, so Appearance retheming recolors it
  * exactly like the rail and gutters it sits flush with. Double-click-to-
  * maximize and window dragging come from `data-tauri-drag-region` (buttons are
  * excluded globally in index.css).
@@ -12,6 +14,8 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@/kernel/lib/ipc/tauri";
+import { auroraSurfaceName } from "@/apps/agent/services/runtime/agent-execution-mode";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 
 /** Windows-style caption glyphs — tiny strokes so they stay crisp at 1px. */
 const GLYPHS = {
@@ -41,6 +45,29 @@ const GLYPHS = {
 
 export const AgentTitlebar: React.FC = () => {
   const [maximized, setMaximized] = useState(false);
+  // The window is titled with the product it is showing, not with the window's
+  // own name. One window hosts both, and "Aurora Agent" over Aurora Chat named
+  // something the user could not see anywhere else in the interface.
+  const title = auroraSurfaceName(useSettingsStore((s) => s.auroraSurface));
+
+  // The OS title follows the strip.
+  //
+  // It is a different surface with the same job: the taskbar button, Alt-Tab
+  // and the window list all read it, and Aurora is a product people leave open
+  // beside their editor. Leaving it on the launch-time name would mean the
+  // window says one thing on screen and another everywhere the OS shows it.
+  useEffect(() => {
+    if (!isTauri()) return;
+    void (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().setTitle(title);
+      } catch {
+        // Window mid-teardown, or no OS window to title — the strip above is
+        // the one the user is looking at, and it is already right.
+      }
+    })();
+  }, [title]);
 
   // Track maximize state so the middle button swaps its glyph (and the strip
   // stays correct when the OS toggles it — snap, double-click, Win+Up).
@@ -93,7 +120,7 @@ export const AgentTitlebar: React.FC = () => {
   return (
     <header className="agw-titlebar" data-tauri-drag-region>
       <span className="agw-titlebar-title" data-tauri-drag-region>
-        Aurora Agent
+        {title}
       </span>
       <div className="agw-titlebar-controls">
         <button

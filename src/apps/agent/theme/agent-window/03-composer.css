@@ -319,6 +319,46 @@
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
 }
+/* Text / Image, under the search that runs inside whichever one is open.
+   Underline, not a segmented pill: the segmented control in this window is for
+   choosing a SETTING (API format, Agent/Plan), and these switch which list you
+   are looking at — a different job, and the row below reflows when it changes,
+   which a pill does not lead you to expect. */
+.agw-model-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin: 0 11px 4px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-model-tab {
+  padding: 5px 8px 6px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--agw-text-subtle);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+.agw-model-tab:hover {
+  color: var(--agw-text);
+}
+.agw-model-tab[data-on] {
+  color: var(--agw-text);
+  border-bottom-color: var(--agw-accent);
+}
+.agw-model-tab:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+
 .agw-model-list {
   flex: 1;
   min-height: 0;
@@ -333,18 +373,55 @@
 .agw-model-group + .agw-model-group {
   margin-top: 4px;
 }
+/* Selected and Frequent are plain labels; a provider section's is a BUTTON that
+   folds it — same rule and same chrome as the providers rail, so one concept
+   keeps one shape. The button resets are here rather than on a second class
+   because the two have to be indistinguishable at rest: a heading that looks
+   clickable in one list and not in another is the thing to avoid. */
 .agw-model-group-label {
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
+  border: 0;
+  background: none;
+  font-family: inherit;
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  text-align: left;
   color: var(--agw-text-subtle);
   padding: 7px 8px 4px;
 }
+button.agw-model-group-label {
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+button.agw-model-group-label:hover:not(:disabled) {
+  color: var(--agw-text);
+}
+button.agw-model-group-label:disabled {
+  cursor: default;
+}
+button.agw-model-group-label:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  border-radius: var(--agw-radius-sm);
+}
+.agw-model-group-caret {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-model-group-caret {
+    transition: none;
+  }
+}
+/* The count sits at the far end, so folded sections read as a scannable column
+   of "provider … N" rather than a ragged list. */
 .agw-model-group-count {
+  margin-left: auto;
   font-weight: var(--agw-fw-medium);
   opacity: 0.75;
 }

@@ -30,6 +30,48 @@ export interface ToolCall {
 
 export type ToolStatus = "running" | "done" | "failed";
 
+/**
+ * The tools that move the checklist. `TaskList` is not one of them — it reads,
+ * changes nothing, and never reaches the transcript at all (`isSilentToolCall`).
+ */
+export const CHECKLIST_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "TaskCreate",
+  "TaskUpdate",
+]);
+
+export const isChecklistCall = (call: ToolCall): boolean =>
+  CHECKLIST_TOOL_NAMES.has(call.name);
+
+/**
+ * Split a run of tool calls so that consecutive checklist calls arrive as ONE
+ * entry.
+ *
+ * Laying out a five-task plan is five `TaskCreate` calls in a single message —
+ * that batching is the tool shape working, and it is invisible to the reader,
+ * who sees one decision. Drawn one card per call it wrote five near-identical
+ * rows and a counter climbing `0/1 … 0/5` while nothing had been done.
+ *
+ * The list itself is not the transcript's to show: it lives in the header
+ * indicator, live, and flashes open when it changes. The transcript says a
+ * checklist moved and stops.
+ *
+ * Every other tool passes through as a run of one, so the caller has a single
+ * shape to render and the group's own "N calls" header keeps counting real
+ * calls.
+ */
+export const groupChecklistRuns = (tools: ToolCall[]): ToolCall[][] => {
+  const runs: ToolCall[][] = [];
+  for (const call of tools) {
+    const previous = runs[runs.length - 1];
+    if (previous && isChecklistCall(call) && isChecklistCall(previous[0])) {
+      previous.push(call);
+      continue;
+    }
+    runs.push([call]);
+  }
+  return runs;
+};
+
 export interface StreamedToolStringArgument {
   complete: boolean;
   value: string;

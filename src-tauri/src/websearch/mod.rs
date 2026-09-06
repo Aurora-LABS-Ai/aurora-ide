@@ -28,7 +28,8 @@
 //! | file | job |
 //! |---|---|
 //! | [`http`] | one shared client, charset decoding, the size ceiling |
-//! | [`engines`] | the search back ends and the order they are asked in |
+//! | [`engines`] | the open-web back ends and the order they are asked in |
+//! | [`scholar`] | the free scholarly catalogues, asked only on request |
 //! | [`extract`] | response bytes to readable Markdown |
 //! | [`types`] | what the two calls return |
 
@@ -36,11 +37,12 @@ mod cache;
 pub mod engines;
 mod extract;
 mod http;
+pub mod scholar;
 pub mod types;
 
 use std::fmt;
 
-pub use engines::{SafeSearch, SearchOptions};
+pub use engines::{SafeSearch, SearchOptions, SearchSource};
 pub use types::{Document, EngineAttempt, SearchOutcome};
 
 /// Characters of page text returned when the caller does not say.
@@ -168,12 +170,51 @@ impl fmt::Display for WebError {
 
 impl std::error::Error for WebError {}
 
-/// Search the web.
-pub async fn search(query: &str, opts: &SearchOptions) -> Result<SearchOutcome, WebError> {
+/// A real browser, for the pages plain HTTP cannot get.
+///
+/// The last rung of the web ladder needs to run JavaScript, hold cookies and
+/// look like a person, because that is exactly what a search engine's
+/// challenge page is testing for — and no HTTP client can pass it by trying
+/// harder. Aurora already has a browser; this is the seam that lets the search
+/// ladder reach it.
+///
+/// A trait rather than a direct call so this module keeps knowing nothing
+/// about Tauri, windows or webviews. Everything here is testable without an
+/// app, and the one implementation that needs an app
+/// ([`crate::services::browser_search`]) lives beside the app.
+#[async_trait::async_trait]
+pub trait PageSource: Send + Sync {
+    /// Load `url` in a browser, wait for `ready_selector` to appear, and
+    /// return the rendered HTML.
+    ///
+    /// The selector is required, not optional: a results page is finished when
+    /// its results exist, and "wait a second and hope" is how a fallback comes
+    /// back with an empty list on a slow connection.
+    async fn rendered_html(&self, url: &str, ready_selector: &str) -> Result<String, String>;
+}
+
+/// Search the web, or the scholarly catalogues.
+///
+/// Which one is the caller's choice (`opts.source`) and never a fallback: see
+/// [`scholar`] for why a blocked web search must not quietly become a
+/// literature search.
+///
+/// `browser` is the last rung of the web ladder, used only after the HTTP back
+/// ends have all declined. `None` leaves the ladder as it was — which is what
+/// every caller outside the agent's own tool passes, because the browser
+/// belongs to the agent window.
+pub async fn search(
+    query: &str,
+    opts: &SearchOptions,
+    browser: Option<&dyn PageSource>,
+) -> Result<SearchOutcome, WebError> {
     if let Some(hit) = cache::search_hit(query, opts) {
         return Ok(hit);
     }
-    let outcome = engines::search(query, opts).await?;
+    let outcome = match opts.source {
+        SearchSource::Web => engines::search(query, opts, browser).await?,
+        SearchSource::Scholar => scholar::search(query, opts).await?,
+    };
     cache::store_search(query, opts, &outcome);
     Ok(outcome)
 }
@@ -404,7 +445,7 @@ mod live {
     #[tokio::test]
     #[ignore = "hits the network"]
     async fn search_returns_ranked_results_with_real_urls() {
-        let outcome = search("rust async trait object safety", &SearchOptions::default())
+        let outcome = search("rust async trait object safety", &SearchOptions::default(), None)
             .await
             .expect("search");
 

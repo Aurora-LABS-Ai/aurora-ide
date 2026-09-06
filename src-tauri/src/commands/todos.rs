@@ -37,8 +37,9 @@ mod tests {
             &thread,
             &TodoList {
                 items: vec![TodoItem {
-                    id: "t1".into(),
+                    id: "1".into(),
                     content: "Wire auth".into(),
+                    description: "Add the login redirect".into(),
                     active_form: "Wiring auth".into(),
                     status: TodoStatus::InProgress,
                 }],
@@ -47,11 +48,13 @@ mod tests {
         .expect("seed");
 
         let payload = todo_list_for_thread(thread.clone()).expect("read");
+        // Ids are plain numbers since the checklist took `TaskCreate`'s shape.
         let items = payload.as_array().expect("array");
 
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["id"], "t1");
+        assert_eq!(items[0]["id"], "1");
         assert_eq!(items[0]["content"], "Wire auth");
+        assert_eq!(items[0]["description"], "Add the login redirect");
         assert_eq!(items[0]["activeForm"], "Wiring auth");
         assert_eq!(items[0]["status"], "in_progress");
 

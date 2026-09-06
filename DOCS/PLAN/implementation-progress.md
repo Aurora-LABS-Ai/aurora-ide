@@ -406,18 +406,33 @@ of something freshly looked up, which is invisible to the reader. The result now
 says not to cite sources it could not reach, and that training knowledge is
 allowed only when labelled as unverified.
 
+### Done later — 2026-09-05
+
+- [x] **The browser is the ladder's third rung.** `services/browser_search.rs`
+      behind the `PageSource` trait in `websearch/mod.rs`. This is the answer
+      the four probed engines could not be: a challenge page is testing for a
+      browser, so the way past it is to be one. Its own off-screen webview
+      (`browser-search`), never the right-rail panel, and serialized behind a
+      mutex because the search tool is `concurrency_safe` and there is one
+      webview. **Never run in a live app** — see `.knowledge/knowledge.md`.
+- [x] **Four scholarly catalogues, native Rust** (`websearch/scholar.rs`):
+      arXiv, OpenAlex, Semantic Scholar, PubMed Central, free and keyless,
+      asked concurrently and merged round-robin. Reached with `source:
+      "scholar"`, which is a **choice, not a rung** — they answer a different
+      question from the open web and must never be a fallback for it. Verified
+      live; Semantic Scholar rate-limits unauthenticated callers and the merge
+      survives it.
+
 ### Left
 
-- [ ] **A second free search engine.** Four probed, none usable: Mojeek serves a
-      captcha, `search.inetol.net` / `opnxng.com` / `priv.au` return **429**,
+- [ ] **A second free general web engine.** Still nothing usable: Mojeek serves
+      a captcha, `search.inetol.net` / `opnxng.com` / `priv.au` return **429**,
       `searxng.site` returns **403**, and Marginalia's public API does not
-      resolve. DuckDuckGo lite works (verified, 10 results). **Adding an engine
-      that captchas would make the ladder longer and no more reliable** — it
-      would add latency before the same failure. Not built on purpose.
-- [ ] Off-screen browser as the last rung. This is the real answer to the above,
-      and Alvan already sanctioned it ("if needed, we will implement entire
-      browser inside it"). Deferred until the DuckDuckGo path is observed
-      failing in real use rather than in theory.
+      resolve. **Adding an engine that captchas would make the ladder longer
+      and no more reliable.** Less pressing now that the browser rung exists,
+      which is the thing that actually adds a capability rather than a retry.
+      A user-configured SearXNG instance is the one shape worth revisiting —
+      the public ones fail, a private one would not.
 
 ---
 

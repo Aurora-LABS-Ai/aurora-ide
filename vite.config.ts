@@ -98,10 +98,47 @@ export default defineConfig({
     // Optimize dependencies
     optimizeDeps: {
         include: ["react", "react-dom", "zustand", "@monaco-editor/react"],
+        // Where the dependency scanner is allowed to start.
+        //
+        // Left to itself it crawls every source file under the project root,
+        // which includes `thirdparty/` — vendored copies of other agents
+        // (opencode, claude-code-cli, …) that are here to be READ, never built.
+        // Their imports resolve against their own workspaces, so the scan ended
+        // every `tauri dev` with a page of "could not be resolved: solid-js,
+        // @opencode-ai/ui, @sentry/solid …" and the line "Skipping dependency
+        // pre-bundling". Nothing was broken — the app ran — but a warning that
+        // names nine missing packages on every start reads exactly like a
+        // failure, and it costs the pre-bundling it skipped.
+        //
+        // Naming the real entry points is the whole fix: Aurora is one HTML
+        // page and one `src/` tree.
+        entries: ["index.html", "src/**/*.{ts,tsx}"],
     },
 
     // Dev server config
     server: {
+        // Aurora's own port, and it must stay in step with `devUrl` in
+        // `src-tauri/tauri.conf.json`.
+        //
+        // Not Vite's 5173. `tauri dev` does not discover the dev server, it is
+        // TOLD where to look — so when 5173 was already serving another Vite
+        // app, Vite quietly moved Aurora to 5174 and Tauri opened a window
+        // onto the other project. The app looked like it had been replaced.
+        // 5273 is two digits off the family so it still reads as a dev server,
+        // and nothing defaults to it.
+        port: 5273,
+        // The half that actually prevents the bug. Without it Vite treats a
+        // busy port as a suggestion and slides to the next free one, while
+        // `devUrl` stays pointed at the old number — so the failure is silent
+        // and arrives as the wrong application. With it, a busy port is an
+        // error before the window ever opens.
+        strictPort: true,
+        // The vendored agents are read by people and by the agent, never by
+        // the bundler. Watching them costs file handles and wakes HMR for
+        // edits that can never reach the app.
+        watch: {
+            ignored: ["**/thirdparty/**"],
+        },
         proxy: {
             "/proxy/ollama": {
                 target: "http://localhost:11434",

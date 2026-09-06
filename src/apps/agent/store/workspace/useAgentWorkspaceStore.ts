@@ -15,10 +15,12 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import {
+  CHAT_DOCK_TABS,
   DOCK_TAB_LABELS,
   type DockSingletonKind,
   type DockTabInstance,
 } from "@/apps/agent/types";
+import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 
 /** Review diff layout — side-by-side (Codex default) vs single-column. */
 export type DiffMode = "split" | "unified";
@@ -111,7 +113,17 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         set((s) => {
           if (s.dockOpen) return { dockOpen: false, expanded: false };
           if (s.tabs.length === 0) {
-            const tab: DockTabInstance = { id: "files", kind: "files", title: DOCK_TAB_LABELS.files };
+            // What the dock opens on has to be a tab THIS product has. Files is
+            // the right first tab on the Build side, where the dock is mostly a
+            // way into the workspace — but Aurora Chat has no files at all
+            // (`CHAT_DOCK_TABS` is Canvas and Memory), so opening the dock there
+            // put up a tab that is not in its roster and cannot be reached any
+            // other way.
+            const kind: DockSingletonKind =
+              useSettingsStore.getState().auroraSurface === "chat"
+                ? CHAT_DOCK_TABS[0]
+                : "files";
+            const tab: DockTabInstance = { id: kind, kind, title: DOCK_TAB_LABELS[kind] };
             return { dockOpen: true, tabs: [tab], activeTabId: tab.id };
           }
           return { dockOpen: true, activeTabId: s.activeTabId ?? s.tabs[0].id };

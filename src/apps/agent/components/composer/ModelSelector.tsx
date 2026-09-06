@@ -45,12 +45,26 @@ import {
   type ModelUsage,
 } from "@/apps/agent/lib/model/model-usage";
 import {
+  FREQUENT_GROUP_KEY,
+  isModelGroupOpen,
+  readModelGroupsOpen,
+  readModelScroll,
+  readModelTab,
+  toggleModelGroup,
+  writeModelGroupsOpen,
+  writeModelScroll,
+  writeModelTab,
+  type ModelGroupsOpen,
+  type ModelTab,
+} from "@/apps/agent/lib/model/model-menu-memory";
+import {
   readFastPreferences,
   setFastOn,
   type FastPreferences,
 } from "@/apps/agent/lib/model/cursor-fast";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
 import {
+  canEditWith,
   imageProviderReady,
   isImageModelSelection,
 } from "@/apps/agent/services/providers/image-providers";
@@ -82,6 +96,13 @@ interface RichOption {
    * missing ones.
    */
   image?: boolean;
+  /**
+   * An image model that can also be handed an EXISTING picture to change,
+   * rather than only making one from a prompt. Provider and model both have to
+   * allow it, so it cannot be read off either alone — and it is the one thing
+   * that genuinely differs between two picture models in the same list.
+   */
+  canEdit?: boolean;
 }
 
 const MENU_EST_HEIGHT = 420;
@@ -587,6 +608,18 @@ export const ModelSelector: React.FC<{
   const [placement, setPlacement] = useState<"up" | "down">("up");
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<Record<string, ModelUsage>>(() => readModelUsage());
+  // Which provider sections are open. Read from storage rather than reset per
+  // mount: this menu unmounts every time it closes, so component state would
+  // shut every group again on each visit and charge the clicks twice.
+  const [openGroups, setOpenGroups] = useState<ModelGroupsOpen>(() => readModelGroupsOpen());
+  /** A query is on, so it — not the fold — decides what is on screen. */
+  const searching = query.trim().length > 0;
+  const frequentOpen = isModelGroupOpen(openGroups, FREQUENT_GROUP_KEY);
+  const toggleGroup = (providerId: string) => {
+    const next = toggleModelGroup(openGroups, providerId);
+    setOpenGroups(next);
+    writeModelGroupsOpen(next);
+  };
   // Cursor's Fast lane, per model. Held here rather than on the model row
   // because it is Cursor's alone — see `lib/model/cursor-fast`.
   const [fast, setFast] = useState<FastPreferences>(() => readFastPreferences());
@@ -629,40 +662,80 @@ export const ModelSelector: React.FC<{
         sortOrder: m?.sortOrder ?? 0,
       };
     });
-    if (!chatSurface) return language;
-    // Aurora Chat also offers image models, from providers that are ready to
-    // be used. They are not on the shortlist — that is ticked on the language
-    // provider page — so they are appended whole, each provider its own group.
-    // Build never sees them: an agent turn cannot be run by an image model.
-    const pictures = imageProviders
-      .filter(imageProviderReady)
-      .flatMap((provider) =>
-        provider.models.map((m, index): RichOption => ({
-          providerId: provider.id,
-          providerName: provider.name,
-          model: m.modelKey,
-          label: m.label?.trim() || m.modelKey,
-          id: m.id,
-          vision: false,
-          tools: false,
-          createdAt: 0,
-          sortOrder: index,
-          image: true,
-        })),
-      );
-    return [...language, ...pictures];
-  }, [providers, models, chatSurface, chatShortlist, imageProviders]);
+    return language;
+  }, [providers, models, chatSurface, chatShortlist]);
+
+  // Aurora Chat also offers image models, from providers ready to be used. They
+  // are not on the shortlist — that is ticked on the language provider page —
+  // and they are NOT mixed into the list above: a picture model answers a
+  // different question from every other row, so it gets its own tab rather than
+  // turning up in the middle of a search for a model to talk to.
+  // Build never sees them: an agent turn cannot be run by an image model.
+  const pictureOptions = useMemo(() => {
+    if (!chatSurface) return [];
+    return imageProviders.filter(imageProviderReady).flatMap((provider) =>
+      provider.models.map((m, index): RichOption => ({
+        providerId: provider.id,
+        providerName: provider.name,
+        model: m.modelKey,
+        label: m.label?.trim() || m.modelKey,
+        id: m.id,
+        vision: false,
+        tools: false,
+        createdAt: 0,
+        sortOrder: index,
+        image: true,
+        // Both ends have to agree: the provider needs an edit endpoint and the
+        // model has to be marked able to use it. Either one missing means the
+        // row cannot edit, and the glyph must not claim otherwise.
+        canEdit: canEditWith(provider, m),
+      })),
+    );
+  }, [chatSurface, imageProviders]);
+
+  /**
+   * The two kinds of model this menu can offer, as tabs under the search.
+   *
+   * They are not two views of one list — they answer different questions
+   * ("which model should talk to me" vs "which one draws"), and mixing them
+   * meant a search for a model to talk to returned picture models it can never
+   * apply to. The strip appears ONLY when there is something in the second tab:
+   * with no image provider configured there is one kind of model, and one tab
+   * is a control that does nothing.
+   */
+  const showTabs = chatSurface && pictureOptions.length > 0;
+  // Remembered across openings, because the menu unmounts on close and snapping
+  // back to Text every time undoes the switch the user just made. The fallback
+  // — used only until a tab has ever been chosen — is the tab the CURRENT model
+  // lives in, so a first open of a picture chat still lands on the picture list.
+  const [tab, setTab] = useState<ModelTab>(() =>
+    readModelTab(isImageModelSelection(selectedModel) ? "image" : "text"),
+  );
+  const chooseTab = (next: ModelTab) => {
+    setTab(next);
+    writeModelTab(next);
+  };
+
+  /** Everything, for looking a selection up — never for drawing the list. */
+  const allOptions = useMemo(
+    () => [...options, ...pictureOptions],
+    [options, pictureOptions],
+  );
+  const tabOptions = useMemo(() => {
+    if (!showTabs) return options;
+    return tab === "image" ? pictureOptions : options;
+  }, [showTabs, tab, options, pictureOptions]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return options;
-    return options.filter(
+    if (!q) return tabOptions;
+    return tabOptions.filter(
       (o) =>
         o.label.toLowerCase().includes(q) ||
         o.providerName.toLowerCase().includes(q) ||
         o.model.toLowerCase().includes(q),
     );
-  }, [options, query]);
+  }, [tabOptions, query]);
 
   // Provider sections, in the order the user arranged providers; models inside
   // each section in the user's configured order (`sortOrder` ASCENDING — the
@@ -728,17 +801,17 @@ export const ModelSelector: React.FC<{
 
   const recentRows = useMemo(() => {
     if (query.trim()) return [];
-    const byKey = new Map(options.map((o) => [`${o.providerId}:${o.model}`, o]));
+    const byKey = new Map(tabOptions.map((o) => [`${o.providerId}:${o.model}`, o]));
     // Never repeat the selected model here — it owns the section above.
     const candidates = [...byKey.keys()].filter((key) => key !== selectedModel);
     return rankByUsage(candidates, recent, openedAt, RECENT_MAX)
       .map((key) => byKey.get(key))
       .filter((o): o is RichOption => Boolean(o));
-  }, [options, recent, query, selectedModel, openedAt]);
+  }, [tabOptions, recent, query, selectedModel, openedAt]);
 
   const current = useMemo(
-    () => options.find((o) => `${o.providerId}:${o.model}` === selectedModel),
-    [options, selectedModel],
+    () => allOptions.find((o) => `${o.providerId}:${o.model}` === selectedModel),
+    [allOptions, selectedModel],
   );
   // The selection is `"providerId:modelKey"`, and a modelKey may itself contain
   // a colon — Ollama and LM Studio ship `name:tag` ids like `llama3:8b`. Split
@@ -847,8 +920,8 @@ export const ModelSelector: React.FC<{
   ]);
 
   const providerCount = useMemo(
-    () => new Set(options.map((o) => o.providerName)).size,
-    [options],
+    () => new Set(tabOptions.map((o) => o.providerName)).size,
+    [tabOptions],
   );
 
   const toggle = () => {
@@ -967,6 +1040,18 @@ export const ModelSelector: React.FC<{
               name="image"
               size={13}
               title="Makes pictures. Replies with an image; reads no history."
+              className="agw-model-cap"
+            />
+          )}
+          {/* The one thing that genuinely differs between two picture models in
+              the same list: some can only make a new image, some can be handed
+              an existing one to change. Without this the rows are identical and
+              the difference is only discoverable by trying it. */}
+          {opt.canEdit && (
+            <AgentIcon
+              name="pencil"
+              size={13}
+              title="Can also change an existing picture, not only make a new one."
               className="agw-model-cap"
             />
           )}
@@ -1202,17 +1287,58 @@ export const ModelSelector: React.FC<{
               />
             </div>
 
+            {/* Two kinds of model, two tabs — under the search, because the
+                search runs inside whichever one is open. Absent entirely until
+                an image provider is configured: with one kind of model there is
+                nothing to switch between, and a lone tab is a control that does
+                nothing. */}
+            {showTabs && (
+              <div className="agw-model-tabs" role="tablist" aria-label="Kind of model">
+                {(
+                  [
+                    ["text", "Text"],
+                    ["image", "Image"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    className="agw-model-tab"
+                    aria-selected={tab === id}
+                    data-on={tab === id || undefined}
+                    onClick={() => chooseTab(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* List — Recent strip, then one section per provider in the
                 user's configured order (models in provider-page order). */}
-            <div className="agw-model-list agw-scroll">
+            <div
+              className="agw-model-list agw-scroll"
+              // Put the list back where it was left. A ref callback rather than
+              // an effect: it fires with the node already populated, so the
+              // restore happens in the same frame the menu paints and there is
+              // no visible jump from the top.
+              ref={(node) => {
+                if (node) node.scrollTop = readModelScroll(tab);
+              }}
+              onScroll={(e) => writeModelScroll(tab, e.currentTarget.scrollTop)}
+            >
               {filtered.length === 0 ? (
                 <div className="agw-model-empty">
-                  {options.length === 0 ? "No models configured." : "No models match."}
+                  {tabOptions.length === 0 ? "No models configured." : "No models match."}
                 </div>
               ) : (
                 <>
                   {selectedRow && (
                     <div className="agw-model-group">
+                      {/* One row, and it is the row you are already on — a fold
+                          here would be a control whose whole effect is hiding
+                          the answer to "which model am I using". */}
                       <div className="agw-model-group-label">Selected</div>
                       {renderRow(selectedRow, true)}
                     </div>
@@ -1222,27 +1348,66 @@ export const ModelSelector: React.FC<{
                       {/* "Frequent", not "Recent" — the ranking is frecency, so
                           a model you lean on stays here through a day of
                           one-off experiments. Calling it Recent would promise
-                          an ordering it deliberately no longer has. */}
-                      <div className="agw-model-group-label">Frequent</div>
-                      {recentRows.map((opt) => renderRow(opt, true))}
+                          an ordering it deliberately no longer has.
+
+                          Folds like a provider section, and remembers, but
+                          starts OPEN: it exists to save clicks, so shipping it
+                          closed would charge one to reach the shortcut. */}
+                      <button
+                        type="button"
+                        className="agw-model-group-label"
+                        aria-expanded={frequentOpen}
+                        onClick={() => toggleGroup(FREQUENT_GROUP_KEY)}
+                        title={frequentOpen ? "Collapse Frequent" : "Expand Frequent"}
+                      >
+                        <AgentIcon
+                          name="chevron-down"
+                          size={11}
+                          className="agw-model-group-caret"
+                          style={{ transform: frequentOpen ? undefined : "rotate(-90deg)" }}
+                        />
+                        Frequent
+                        <span className="agw-model-group-count">{recentRows.length}</span>
+                      </button>
+                      {frequentOpen && recentRows.map((opt) => renderRow(opt, true))}
                     </div>
                   )}
-                  {groups.map((g) => (
-                    <div key={g.providerId} className="agw-model-group">
-                      <div className="agw-model-group-label">
-                        {g.providerName}
-                        <span className="agw-model-group-count">{g.items.length}</span>
+                  {groups.map((g) => {
+                    // A search owns the list: every match shows, whatever the
+                    // fold says, because a result you cannot see is the same as
+                    // no result. The fold state is left alone — searching is not
+                    // a decision to open anything permanently.
+                    const expanded = searching || isModelGroupOpen(openGroups, g.providerId);
+                    return (
+                      <div key={g.providerId} className="agw-model-group">
+                        <button
+                          type="button"
+                          className="agw-model-group-label"
+                          aria-expanded={expanded}
+                          disabled={searching}
+                          onClick={() => toggleGroup(g.providerId)}
+                          title={expanded ? `Collapse ${g.providerName}` : `Expand ${g.providerName}`}
+                        >
+                          <AgentIcon
+                            name="chevron-down"
+                            size={11}
+                            className="agw-model-group-caret"
+                            style={{ transform: expanded ? undefined : "rotate(-90deg)" }}
+                          />
+                          {g.providerName}
+                          <span className="agw-model-group-count">{g.items.length}</span>
+                        </button>
+                        {expanded && g.items.map((opt) => renderRow(opt, false))}
                       </div>
-                      {g.items.map((opt) => renderRow(opt, false))}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </>
               )}
             </div>
 
             {/* Footer */}
             <div className="agw-model-foot">
-              {options.length} model{options.length === 1 ? "" : "s"} · {providerCount} provider
+              {tabOptions.length} model{tabOptions.length === 1 ? "" : "s"} · {providerCount} provider
               {providerCount === 1 ? "" : "s"}
             </div>
           </motion.div>

@@ -249,9 +249,9 @@ impl ConversationRuntime {
             sections.push(ctx.to_string());
         }
         // A checklist only exists where the tool that writes it does. Plan
-        // mode and Aurora Chat have no `todo`, so a stale list from a Build
+        // mode and Aurora Chat have no task tools, so a stale list from a Build
         // turn must not follow the user into them.
-        if self.tools.get("todo").is_some() {
+        if self.tools.get("TaskUpdate").is_some() {
             if let Some(list) = checklist_block(thread_id) {
                 sections.push(list);
             }
@@ -393,7 +393,12 @@ fn render_checklist(list: &crate::tools::shell_editor_todo::todo_store::TodoList
 pub(super) const CHECKLIST_REMINDER_TURNS: usize = 10;
 
 /// The tag the reminder ships under. Counted, so it must stay stable.
-pub(super) const CHECKLIST_REMINDER_TAG: &str = "<aurora_task_reminder>";
+///
+/// `pub(crate)` because `commands::threads` has to recognise it too: the
+/// reminder rides as a text block in a tool message, and that is the same
+/// shape a mid-turn user message uses, so without this the transcript would
+/// draw Aurora's note to the model as a row in the person's chat.
+pub(crate) const CHECKLIST_REMINDER_TAG: &str = "<aurora_task_reminder>";
 
 /// The one reminder Aurora still sends about the checklist, and only when it
 /// has gone quiet: [`CHECKLIST_REMINDER_TURNS`] assistant messages since the
@@ -421,14 +426,14 @@ pub(super) fn stale_checklist_reminder(
     }
     let list = crate::tools::shell_editor_todo::todo_store::read(thread_id).ok()?;
     let body = if list.items.is_empty() {
-        "You have not used the `todo` checklist in this conversation. If the work has \
-         several steps, lay them out with `todo` so the user can follow your progress; if it \
+        "You have not used the checklist in this conversation. If the work has \
+         several steps, lay them out with `TaskCreate` so the user can follow your progress; if it \
          does not, carry on."
             .to_string()
     } else {
         format!(
             "Your checklist has not been updated for a while. If the work has moved on, bring \
-             it up to date with `todo`; if some of it no longer applies, cancel those items. \
+             it up to date with `TaskUpdate`; if some of it no longer applies, cancel those items. \
              Here it is as it stands:\n\n{}",
             render_checklist(&list)
         )
@@ -463,10 +468,13 @@ pub(super) fn checklist_silence(messages: &[ConversationMessage]) -> (usize, usi
         }
         match message.role {
             MessageRole::Assistant => {
-                let writes_todo = message
-                    .blocks
-                    .iter()
-                    .any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "todo"));
+                let writes_todo = message.blocks.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::ToolUse { name, .. }
+                            if name == "TaskCreate" || name == "TaskUpdate"
+                    )
+                });
                 if writes_todo {
                     write_seen = true;
                 }
@@ -478,9 +486,17 @@ pub(super) fn checklist_silence(messages: &[ConversationMessage]) -> (usize, usi
                 }
             }
             MessageRole::Tool => {
-                let carries_reminder = message.blocks.iter().any(|b| {
-                    matches!(b, ContentBlock::ToolResult { content, .. }
-                        if content.contains(CHECKLIST_REMINDER_TAG))
+                // Its own text block since 2026-09-06 — see `tool_exec`. The
+                // `ToolResult` arm stays for threads written before that, where
+                // the reminder was appended to the last result's body; drop it
+                // and every one of those conversations reads as never having
+                // been reminded, so the next turn sends another one.
+                let carries_reminder = message.blocks.iter().any(|b| match b {
+                    ContentBlock::Text { text } => text.contains(CHECKLIST_REMINDER_TAG),
+                    ContentBlock::ToolResult { content, .. } => {
+                        content.contains(CHECKLIST_REMINDER_TAG)
+                    }
+                    _ => false,
                 });
                 if carries_reminder {
                     reminder_seen = true;

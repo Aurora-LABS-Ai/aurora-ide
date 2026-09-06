@@ -1655,8 +1655,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             usageFired = true;
             const context = useAgentContextStore.getState();
             // The context ring wants the LATEST request (each one resends the
-            // whole history, so its input size IS the window occupancy).
-            context.setUsage(threadId, usage);
+            // whole history, so its input size IS the window occupancy). The
+            // model travels with it: the ring holds a high-water reading, and
+            // a reading from another tokenizer is not comparable to this one.
+            context.setUsage(threadId, usage, turnModel);
             // The cost card wants the SUM: a turn makes one request per tool
             // iteration, and only adding them up gives what the turn actually
             // cost. Attributed to the model running this turn so a later

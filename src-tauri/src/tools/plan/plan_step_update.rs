@@ -47,8 +47,8 @@ Mark a step `in_progress` BEFORE you start working it, and `done` / `failed` as 
 finish. The Canvas animates the step you marked in_progress, so the user can see what you are \
 working on right now — leaving it stale is visibly wrong to them.
 
-A plan step is a PHASE. The usual rhythm for one is: mark it in_progress here, call `todo` with \
-`op: \"set\"` and the concrete steps that phase needs, work them with `op: \"update\"`, then mark the phase `done` \
+A plan step is a PHASE. The usual rhythm for one is: mark it in_progress here, call `TaskCreate` \
+once per concrete step that phase needs, work them with `TaskUpdate`, then mark the phase `done` \
 here and move to the next one.
 
 Only one step may be in_progress at a time; marking a new one does not automatically close the \

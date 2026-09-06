@@ -489,6 +489,50 @@ fn validate_mode(command: &str, mode: ExecutionMode) -> ValidationResult {
     }
 }
 
+/// The `/dev/` entries that are shell plumbing rather than a place on disk.
+///
+/// `2>/dev/null` is the most-typed idiom in shell, and it is not a target — it
+/// is where output goes to be discarded. Matching `/dev/` as a bare substring
+/// made every write command carrying one look like a write to a system device.
+/// Measured on thread `c4669acf` (2026-09-05):
+///
+/// ```text
+/// rm -f /e/VOID-EDITOR/sub2api/backend/.local-data/config.yaml 2>/dev/null; ls …
+///   -> policy violation: Command appears to target files outside the workspace
+/// ```
+///
+/// The path being deleted was inside the workspace root, `file_write` and
+/// `file_edit` had been writing to that same directory all session, and the
+/// refusal named a permission problem that did not exist — so it sent the user
+/// to check a setting instead of showing the real (absent) fault. A real
+/// device write (`> /dev/sda`) is still worth a warning, which is why `/dev/`
+/// stays on the list and only the pseudo-files below are exempt.
+const DEV_PSEUDO_FILES: &[&str] = &[
+    "null", "zero", "full", "random", "urandom", "stdin", "stdout", "stderr", "tty",
+    // `/dev/fd/3`, `/dev/tcp/host/port`, `/dev/udp/…` — bash's own constructs,
+    // matched by prefix because each carries a path after it.
+    "fd/", "tcp/", "udp/",
+];
+
+/// Does every `/dev/` in this command name shell plumbing rather than a device?
+fn only_dev_pseudo_files(command: &str) -> bool {
+    command.match_indices("/dev/").all(|(at, _)| {
+        let rest = &command[at + "/dev/".len()..];
+        DEV_PSEUDO_FILES.iter().any(|name| {
+            rest.strip_prefix(name).is_some_and(|after| {
+                // `/dev/null` and `/dev/nullify-everything` are different
+                // words. A prefix entry (`fd/`) has already consumed its
+                // separator, so anything may follow it.
+                name.ends_with('/')
+                    || after
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+            })
+        })
+    })
+}
+
 /// Heuristic: does the command reference absolute paths outside typical workspace dirs?
 fn command_targets_outside_workspace(command: &str) -> bool {
     let system_paths = [
@@ -504,9 +548,15 @@ fn command_targets_outside_workspace(command: &str) -> bool {
     }
 
     for sys_path in &system_paths {
-        if command.contains(sys_path) {
-            return true;
+        if !command.contains(sys_path) {
+            continue;
         }
+        // `/dev/` earns a second look: a redirect to a pseudo-file is not a
+        // target at all. See `DEV_PSEUDO_FILES`.
+        if *sys_path == "/dev/" && only_dev_pseudo_files(command) {
+            continue;
+        }
+        return true;
     }
 
     false
@@ -1160,6 +1210,57 @@ fn find_end_of_value(s: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Reported from a real session (thread `c4669acf`, 2026-09-05): deleting
+    /// a file INSIDE the workspace was refused as targeting files outside it.
+    /// The only thing outside the workspace in that command was `/dev/null`,
+    /// which is not a place — it is where the error message went.
+    ///
+    /// Cost: a one-line cleanup blocked, then routed around, and a refusal
+    /// that pointed at a permission the user did have. `file_write` and
+    /// `file_edit` had been writing to that very directory all session.
+    #[test]
+    fn a_dev_null_redirect_is_plumbing_not_a_target() {
+        for command in [
+            // Verbatim from the session.
+            "rm -f /e/VOID-EDITOR/sub2api/backend/.local-data/config.yaml 2>/dev/null; ls /e/VOID-EDITOR/sub2api/backend/.local-data 2>/dev/null || echo 'no .local-data yet'",
+            "rm -f build/out.log 2>/dev/null",
+            "cp a.txt b.txt >/dev/null 2>&1",
+            "mv old new 2>/dev/null",
+            "rm -f x && curl -s http://localhost:8080/health > /dev/null",
+            // The other pseudo-files, and bash's own constructs.
+            "rm -f x < /dev/zero",
+            "rm -f x 2>/dev/stderr",
+            "rm -f x && exec 3<>/dev/tcp/127.0.0.1/6379",
+            "rm -f x > /dev/fd/3",
+        ] {
+            assert!(
+                !command_targets_outside_workspace(command),
+                "must not read as a system-path write: {command}"
+            );
+        }
+    }
+
+    /// The guard still earns its keep: a real device, and the other system
+    /// trees, are exactly what it is for. A near-miss name is not a match.
+    #[test]
+    fn a_real_device_or_system_tree_still_warns() {
+        for command in [
+            "dd if=/dev/zero of=/dev/sda",
+            "rm -rf /dev/shm/cache",
+            "rm -f /etc/hosts",
+            "cp payload /usr/local/bin/tool",
+            // `/dev/nullify` is not `/dev/null`.
+            "rm -f /dev/nullify",
+            // One safe redirect does not launder the real target beside it.
+            "rm -f /etc/hosts 2>/dev/null",
+        ] {
+            assert!(
+                command_targets_outside_workspace(command),
+                "must still warn: {command}"
+            );
+        }
+    }
 
     // --- destructiveCommandWarning ---
 

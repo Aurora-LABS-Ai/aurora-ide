@@ -28,8 +28,14 @@ import React, { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
-import { formatToolDuration, toolStatus, type ToolCall } from "@/apps/agent/components/tools/tool-call";
+import { ChecklistBeatCard, ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
+import {
+  formatToolDuration,
+  groupChecklistRuns,
+  isChecklistCall,
+  toolStatus,
+  type ToolCall,
+} from "@/apps/agent/components/tools/tool-call";
 import { TOOL_GROUP_MIN } from "@/apps/agent/components/conversation/timeline";
 
 /**
@@ -49,7 +55,15 @@ const ToolGroupImpl: React.FC<{
    *  future standalone use) keeps the plain streaming behaviour. */
   isLastRow?: boolean;
 }> = ({ tools, isActivelyStreaming = false, isLastRow = true }) => {
-  const grouped = tools.length >= TOOL_GROUP_MIN;
+  // Checklist calls collapse into one step; everything else is a step of one.
+  // Computed from `tools` so the header's "N calls" keeps counting calls.
+  const runs = useMemo(() => groupChecklistRuns(tools), [tools]);
+  // The threshold is about how many ROWS the reader faces, not how many calls
+  // the model made. Three `TaskUpdate` calls — close one, close another, start
+  // the next — are one row, and putting a "3 calls · 3 done" header above a
+  // single line asks the reader what the other two were when the answer is
+  // "this line". A mixed run still groups, because its rows are still rows.
+  const grouped = runs.length >= TOOL_GROUP_MIN;
 
   const stats = useMemo(() => {
     let done = 0;
@@ -145,6 +159,10 @@ const ToolGroupImpl: React.FC<{
       </AnimatePresence>
 
       <motion.div
+        // Named so the spine can widen this box leftwards: `overflow: hidden`
+        // is what makes the height animation work, and it also clips the
+        // gutter every step marker is drawn in. See `11-transcript-bubbles.css`.
+        className="agw-tool-group-anim"
         initial={false}
         animate={{ height: isOpen ? "auto" : 0, opacity: isOpen ? 1 : 0 }}
         transition={{ duration: 0.18, ease: "easeOut" }}
@@ -162,15 +180,24 @@ const ToolGroupImpl: React.FC<{
             paddingTop: grouped ? 6 : 0,
           }}
         >
-          {tools.map((call) => (
-            // One wrapper per call, unstyled by default. `ToolCallCard` renders
+          {runs.map((run) => (
+            // One wrapper per STEP, unstyled by default. `ToolCallCard` renders
             // five different roots depending on the tool (standard card, canvas
             // launch, plan beat, checklist beat), so this is the only element
-            // that reliably means "one call" — which is what the transcript
+            // that reliably means "one step" — which is what the transcript
             // spine hangs its marker on, and what a sixth card shape would get
             // for free.
-            <div className="agw-tool-step" key={call.id}>
-              <ToolCallCard call={call} isActivelyStreaming={isActivelyStreaming} />
+            //
+            // A step is one call, except for the checklist: a run of
+            // consecutive `TaskCreate` / `TaskUpdate` calls is one step,
+            // because laying out a five-task plan is five calls and one
+            // decision. The header above still counts the real calls.
+            <div className="agw-tool-step" key={run[0].id}>
+              {isChecklistCall(run[0]) ? (
+                <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
+              ) : (
+                <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
+              )}
             </div>
           ))}
         </div>

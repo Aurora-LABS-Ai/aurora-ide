@@ -117,25 +117,51 @@ impl Fetched {
     }
 }
 
+/// How long a SEARCH back end is given, as against [`REQUEST_TIMEOUT`] for a
+/// page.
+///
+/// A search engine answers in about a second or it is not going to: it returns
+/// a fixed-size list it already has, not a document it has to send. So a long
+/// wait here buys nothing and costs everything — measured on this machine,
+/// both DuckDuckGo endpoints simply never replied, and at 30s each the model
+/// waited a minute before the browser rung was even tried, on a search a real
+/// browser answers instantly.
+///
+/// A page fetch keeps the full [`REQUEST_TIMEOUT`]. That one really is
+/// downloading a document, and cutting it short would turn a big page into a
+/// failure.
+pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// Send a GET and read the body.
 pub async fn get(url: &str) -> Result<Fetched, WebError> {
-    let response = client()?
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| classify(url, e))?;
-    read(url, response).await
+    send(client()?.get(url), url, None).await
+}
+
+/// Send a GET that gives up sooner than the client's own ceiling.
+pub async fn get_within(url: &str, timeout: Duration) -> Result<Fetched, WebError> {
+    send(client()?.get(url), url, Some(timeout)).await
 }
 
 /// Send a form POST and read the body. Used by the search endpoint that only
 /// answers to POST.
-pub async fn post_form(url: &str, form: &[(&str, &str)]) -> Result<Fetched, WebError> {
-    let response = client()?
-        .post(url)
-        .form(form)
-        .send()
-        .await
-        .map_err(|e| classify(url, e))?;
+pub async fn post_form_within(
+    url: &str,
+    form: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Fetched, WebError> {
+    send(client()?.post(url).form(form), url, Some(timeout)).await
+}
+
+async fn send(
+    request: reqwest::RequestBuilder,
+    url: &str,
+    timeout: Option<Duration>,
+) -> Result<Fetched, WebError> {
+    let request = match timeout {
+        Some(t) => request.timeout(t),
+        None => request,
+    };
+    let response = request.send().await.map_err(|e| classify(url, e))?;
     read(url, response).await
 }
 

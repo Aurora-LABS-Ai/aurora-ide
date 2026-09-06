@@ -141,6 +141,8 @@ export interface AppSettings {
   maxToolCallsPerRequest: number;
   projectLayoutEnabled?: boolean; // Include file tree in first message
   selectedModel: string;
+  /** Image providers Aurora has already offered once; see `withSeededImageProviders`. */
+  seededImageProviderIds?: string[];
   /** Per-workspace skill enablement: `scopeKey -> (storageKey -> boolean)`. */
   skillToggles?: Record<string, Record<string, boolean>>;
   skillsEnabled?: boolean;

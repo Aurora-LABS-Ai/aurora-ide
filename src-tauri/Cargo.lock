@@ -291,6 +291,7 @@ dependencies = [
  "notify",
  "parking_lot",
  "prost",
+ "quick-xml 0.38.4",
  "qwen3-asr",
  "rand 0.8.5",
  "ratatui",

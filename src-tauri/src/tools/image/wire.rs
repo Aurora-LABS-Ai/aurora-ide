@@ -21,19 +21,26 @@
 //! the status — on every format, because a parser that trusts 200 from one
 //! provider and not another is a parser with a provider-shaped hole in it.
 //!
-//! ## `response_format` is never sent
+//! ## `response_format` is sent only when the row asks for it
 //!
 //! OpenAI's `gpt-image-*` models reject the field (they only ever return
-//! `b64_json`); `dall-e-*` accept it and default to `url`. Sending it is a 400
-//! on one family for a default on the other, so the request omits it and
-//! [`parse_response`] accepts whichever of `url` / `b64_json` arrives. The
-//! provider row's `responseShape` documents what to expect; it does not shape
-//! the request.
+//! `b64_json`); `dall-e-*` accept it and default to `url`. Sending it blindly
+//! is a 400 on one family for a default on the other, so the default —
+//! a provider row with no `requestFormat` — omits it and [`parse_response`] accepts
+//! whichever of `url` / `b64_json` arrives.
+//!
+//! A provider row can now ask for one, and it has to be able to. Measured on
+//! apikl (`api.apikl.ai`, `gpt-image-2-pro`, 2026-09-04): `/images/generations`
+//! answered with `b64_json` and `/images/edits` with a `url`, on the same key
+//! and the same model — so "what this provider returns" is not a property of
+//! the provider at all. Sending `response_format: "url"` made the generation
+//! return a URL too, which is the only way to get one answer from both
+//! endpoints. Set it per provider; leave it unset where the field is refused.
 
 use base64::Engine;
 use serde_json::{json, Value};
 
-use super::config::ImageApiFormat;
+use super::config::{ImageApiFormat, ImageRequestFormat};
 
 /// One call to make a picture.
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +50,9 @@ pub struct GenerationCall<'a> {
     /// `WIDTHxHEIGHT`, when the caller chose one. Omitted otherwise so the
     /// provider applies the model's own default rather than one Aurora guessed.
     pub size: Option<&'a str>,
+    /// What to ask the provider to return. `None` omits `response_format`;
+    /// see the module header for why that is the default.
+    pub format: Option<ImageRequestFormat>,
 }
 
 /// The picture an edit starts from.
@@ -79,6 +89,9 @@ pub fn generation_body(_format: ImageApiFormat, call: GenerationCall<'_>) -> Val
     if let Some(size) = call.size.map(str::trim).filter(|size| !size.is_empty()) {
         body["size"] = Value::String(size.to_string());
     }
+    if let Some(format) = call.format {
+        body["response_format"] = Value::String(format.as_str().to_string());
+    }
     body
 }
 
@@ -110,6 +123,13 @@ pub fn edit_body(
             form.text("n", "1");
             if let Some(size) = call.size.map(str::trim).filter(|size| !size.is_empty()) {
                 form.text("size", size);
+            }
+            // Same rule as the generation body — a multipart edit carries it as
+            // a form field. Measured on apikl: its edit answers with a `url`
+            // whether or not this is sent, but a provider whose two endpoints
+            // disagree is exactly why the row can ask.
+            if let Some(format) = call.format {
+                form.text("response_format", format.as_str());
             }
             form.file("image", source.file_name, source.media_type, source.bytes);
             let (content_type, bytes) = form.finish();
@@ -469,6 +489,7 @@ mod tests {
             model: "gpt-image-1.5",
             prompt: "an aurora over mountains",
             size,
+            format: None,
         }
     }
 

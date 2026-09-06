@@ -516,15 +516,15 @@ describe("persisted notices reload into the turn they describe", () => {
   });
 });
 
-describe("todo rows in the transcript", () => {
-  const todoCall = (id: string, op: string) =>
+describe("checklist rows in the transcript", () => {
+  const todoCall = (id: string, name: string) =>
     ({
       kind: "tool" as const,
       id,
       call: {
         id,
-        name: "todo",
-        arguments: JSON.stringify({ op }),
+        name,
+        arguments: "{}",
       },
     });
   const toolEvent = (id: string, name: string) =>
@@ -534,19 +534,19 @@ describe("todo rows in the transcript", () => {
       call: { id, name, arguments: "{}" },
     });
 
-  it("shows set and update — a checklist that moves must leave a trace", () => {
+  it("shows TaskCreate and TaskUpdate — a checklist that moves must leave a trace", () => {
     // Each card names only what CHANGED, so every one carries its own news.
     // The list itself is not repeated here: it has one home, the header
     // indicator, which is live rather than a record of a moment.
-    const rows = buildRows([todoCall("a", "set"), todoCall("b", "update")]);
+    const rows = buildRows([todoCall("a", "TaskCreate"), todoCall("b", "TaskUpdate")]);
     expect(rows).toHaveLength(1);
     expect(rows[0].type === "tools" && rows[0].tools).toHaveLength(2);
   });
 
-  it("drops a read — a lookup changes nothing a reader could care about", () => {
+  it("drops TaskList — a lookup changes nothing a reader could care about", () => {
     const rows = buildRows([
       { kind: "content", id: "c1", text: "Starting." },
-      todoCall("r", "read"),
+      todoCall("r", "TaskList"),
     ]);
     expect(rows.map((r) => r.type)).toEqual(["content"]);
   });
@@ -556,7 +556,7 @@ describe("todo rows in the transcript", () => {
     // between two edits would break them into two separate cards.
     const rows = buildRows([
       toolEvent("a", "file_read"),
-      todoCall("r", "read"),
+      todoCall("r", "TaskList"),
       toolEvent("b", "file_edit"),
     ]);
     expect(rows).toHaveLength(1);
@@ -566,11 +566,16 @@ describe("todo rows in the transcript", () => {
     ]);
   });
 
-  it("shows a todo call whose arguments never parsed", () => {
+  it("shows a checklist call whose arguments never parsed", () => {
     // A call that is unreadable is exactly the one worth seeing — silence
-    // would be indistinguishable from a tool that failed to run.
+    // would be indistinguishable from a tool that failed to run. The name
+    // alone decides now, so a half-streamed call is judged correctly.
     const rows = buildRows([
-      { kind: "tool", id: "x", call: { id: "x", name: "todo", arguments: "{op:" } },
+      {
+        kind: "tool",
+        id: "x",
+        call: { id: "x", name: "TaskCreate", arguments: '{"subject":' },
+      },
     ]);
     expect(rows[0].type === "tools" && rows[0].tools).toHaveLength(1);
   });

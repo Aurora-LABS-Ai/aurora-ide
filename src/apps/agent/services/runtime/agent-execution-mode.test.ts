@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AURORA_SURFACES,
+  auroraSurfaceName,
   cycleAgentExecutionMode,
   DEEP_RESEARCH_PROMPT,
   effectiveExecutionMode,
@@ -80,12 +81,13 @@ describe("agent execution mode", () => {
     });
 
     it("withholds the checklist from plan mode entirely", () => {
-      // `todo` is ONE tool with a typed `op`, so its read cannot be separated
-      // from its writes by name — and plan mode has nothing to read: it
-      // authors the plan, it does not work a checklist.
-      expect(isToolAllowedForExecutionMode("plan", "todo")).toBe(false);
-      expect(isToolAllowedForExecutionMode("agent", "todo")).toBe(true);
-      expect(isToolAllowedForExecutionMode("team", "todo")).toBe(true);
+      // All three, `TaskList` included: plan mode authors the plan, it does
+      // not work a checklist, so its list can only ever be empty.
+      for (const name of ["TaskCreate", "TaskUpdate", "TaskList"]) {
+        expect(isToolAllowedForExecutionMode("plan", name)).toBe(false);
+        expect(isToolAllowedForExecutionMode("agent", name)).toBe(true);
+        expect(isToolAllowedForExecutionMode("team", name)).toBe(true);
+      }
     });
 
     it("still blocks the retired todo tool names in plan mode", () => {
@@ -122,16 +124,17 @@ describe("agent execution mode", () => {
 
     it("tells agent mode to read back state rather than re-invent it", () => {
       const prompt = getAgentModePromptSection("agent");
-      expect(prompt).toContain('op: "read"');
+      expect(prompt).toContain("`TaskList`");
       expect(prompt).toContain("Never re-invent a task list from memory");
     });
 
-    it("names all three operations of the one todo tool", () => {
-      // A single tool with a discriminated `op` only works if the prompt says
-      // which values exist — the model cannot discover an enum by guessing.
+    it("names all three task tools", () => {
+      // Three names for three jobs, said once where the model will read them:
+      // a roster entry alone does not say that closing one task and starting
+      // the next is two calls in the same message.
       const prompt = getAgentModePromptSection("agent");
-      for (const op of ['op: "set"', 'op: "update"', 'op: "read"']) {
-        expect(prompt).toContain(op);
+      for (const name of ["`TaskCreate`", "`TaskUpdate`", "`TaskList`"]) {
+        expect(prompt).toContain(name);
       }
     });
 
@@ -141,7 +144,7 @@ describe("agent execution mode", () => {
       const prompt = getAgentModePromptSection("agent", { hasActivePlan: false });
       expect(prompt).not.toContain("plan_step_update");
       expect(prompt).not.toContain("plan_read");
-      expect(prompt).toContain("`todo`");
+      expect(prompt).toContain("`TaskCreate`");
     });
 
     it("describes the two layers once the project has a plan", () => {
@@ -149,7 +152,7 @@ describe("agent execution mode", () => {
       expect(prompt).toContain("plan_step_update");
       expect(prompt).toContain("phases");
       // The plan does not replace the checklist; it sits above it.
-      expect(prompt).toContain("`todo`");
+      expect(prompt).toContain("`TaskCreate`");
       expect(prompt).toContain("cannot author or rewrite the plan from here");
     });
   });
@@ -246,6 +249,25 @@ describe("agent execution mode", () => {
       ]);
     });
 
+    // The memory tools travel one way. Chat's index holds Chat conversations,
+    // so a Build turn that calls `recall` asks a store that knows nothing about
+    // what Build did and is told, accurately and uselessly, that it found
+    // nothing. It shipped that way: a Build turn called `recall` beside
+    // `shell_execute`.
+    it("keeps its memory out of every build mode", () => {
+      for (const mode of ["agent", "plan", "team"] as const) {
+        for (const name of ["recall", "remember"]) {
+          expect(isToolAllowedForExecutionMode(mode, name)).toBe(false);
+        }
+        expect(
+          filterToolsForExecutionMode(
+            [tool("recall"), tool("remember"), tool("file_read")],
+            mode,
+          ).map((t) => t.function.name),
+        ).toEqual(["file_read"]);
+      }
+    });
+
     // Chat mode's prompt REPLACES the base rather than appending to it, so the
     // section helper has nothing to contribute. A non-empty return here would
     // mean the coding prompt is being layered underneath.
@@ -307,6 +329,17 @@ describe("agent execution mode", () => {
         expect(surface.name).not.toMatch(/agent/i);
         expect(surface.tagline.length).toBeGreaterThan(0);
       }
+    });
+
+    /// The titlebar and the OS window title both read this, so a chat window
+    /// titled "Aurora Agent" — a name that appears nowhere else on screen —
+    /// is what it exists to prevent.
+    it("titles the window with the product that is open", () => {
+      expect(auroraSurfaceName("chat")).toBe("Aurora Chat");
+      expect(auroraSurfaceName("build")).toBe("Aurora Build");
+      // An unreadable stored value names the side Aurora opens on rather than
+      // inventing a third product.
+      expect(auroraSurfaceName("nonsense" as never)).toBe("Aurora Build");
     });
 
     // Seen live on the first real chat turn: the window keeps its project so

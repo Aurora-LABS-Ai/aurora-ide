@@ -85,6 +85,7 @@ pub mod multi_file_read;
 /// Internal: reading the path argument out of a mutating tool's input, and
 /// naming what actually arrived when it isn't a usable string. Shared by every
 /// tool in this bucket that writes.
+pub mod edits_argument;
 pub mod path_argument;
 pub mod path_recovery;
 /// Internal: per-session read-before-edit guard state.
@@ -116,9 +117,15 @@ pub mod workspace_tree;
 /// `Arc<DashMap>` under the hood). We keep `&mut` on the public
 /// signature so the contract still type-checks against an exclusive
 /// borrow Sub-E may have, and we just don't need the `mut` ourselves.
+///
+/// `browser` reaches only `auroro_websearch`, as the last rung of its search
+/// ladder — see [`crate::services::browser_search`]. It is `None` wherever
+/// there is no browser to drive, and the ladder reports that rung as
+/// unavailable rather than quietly being one shorter.
 pub fn register(
     reg: &mut ToolRegistry,
     sink: std::sync::Arc<dyn crate::tools::shell_editor_todo::IdeEventSink>,
+    browser: Option<std::sync::Arc<crate::services::browser_runtime::BrowserManager>>,
 ) {
     use std::sync::Arc;
 
@@ -131,7 +138,7 @@ pub fn register(
     reg.register(Arc::new(workspace_tree::WorkspaceTreeTool));
     reg.register(Arc::new(file_write::FileWriteTool::new(sink.clone())));
     reg.register(Arc::new(folder_create::FolderCreateTool::new(sink)));
-    reg.register(Arc::new(auroro_websearch::AuroroWebSearchTool));
+    reg.register(Arc::new(auroro_websearch::AuroroWebSearchTool::new(browser)));
 }
 
 /// The tool names this bucket registers, in roster order. Used by the
@@ -693,7 +700,7 @@ mod tests {
     #[test]
     fn register_mounts_all_bucket_tools() {
         let mut reg = ToolRegistry::new();
-        register(&mut reg, test_sink());
+        register(&mut reg, test_sink(), None);
         assert_eq!(reg.len(), TOOL_NAMES.len(), "expected 10 tools in bucket");
         assert_eq!(TOOL_NAMES.len(), 10);
 
@@ -709,7 +716,7 @@ mod tests {
     #[test]
     fn schemas_match_tool_names() {
         let mut reg = ToolRegistry::new();
-        register(&mut reg, test_sink());
+        register(&mut reg, test_sink(), None);
         for &name in TOOL_NAMES {
             let tool = reg.get(name).unwrap_or_else(|| panic!("{name} missing"));
             let schema = tool.schema();

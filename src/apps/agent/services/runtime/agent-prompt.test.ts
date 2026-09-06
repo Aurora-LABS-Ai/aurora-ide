@@ -146,11 +146,22 @@ describe("the base system prompt does not contradict the tools", () => {
   });
 
   // 741 of the checklist-only assistant messages on disk were followed by a
-  // message of real tool calls: a `todo` update sent by itself, then the work.
-  // One sentence about batching is the whole fix for that; it competes with
-  // no other rule because the update still comes BEFORE the step it starts.
+  // message of real tool calls: a checklist update sent by itself, then the
+  // work. One sentence about batching is the whole fix for that.
   it("tells the model a checklist update rides with the next step's tool calls", () => {
-    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/A checklist update never travels alone/);
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(
+      /Checklist calls travel with the work they describe/,
+    );
+  });
+
+  // …and the exception, because the two rules meet at the end of every turn.
+  // The last task's work finished in the PREVIOUS message, so closing it can
+  // only travel alone — and a model told both rules without the exception
+  // spends its thinking arbitrating between them. Observed on a real build.
+  it("names the one case where a checklist update travels alone", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(
+      /ONE exception is the final task[\s\S]*close it on its own/,
+    );
   });
 
   // A checklist whose last item IS the written answer has no consistent

@@ -350,6 +350,20 @@
   flex-direction: column;
   gap: 8px;
 }
+/* The picture being made, while it is being made.
+   The SAME box the finished picture lands in — `.agw-tool-shot-img` below —
+   because that is the entire job of a placeholder: hold the space the result
+   will take, so its arrival is a swap and not a jump. Deriving a shape from the
+   requested size was wasted work: the result is letterboxed into this box
+   whatever its aspect, so the placeholder is this box too.
+   Unlike direct generation, which IS the reply and takes the pane, this sits in
+   a tool card in a transcript that keeps scrolling past it. */
+.agw-tool-silk {
+  width: 100%;
+  max-width: 420px;
+  max-height: 320px;
+}
+
 .agw-tool-args {
   display: flex;
   flex-wrap: wrap;

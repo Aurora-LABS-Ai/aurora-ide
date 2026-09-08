@@ -218,6 +218,39 @@ impl ToolExecutor for ShellExecuteTool {
         });
 
         match result {
+            // The user pressed "Run in background" while this was running. The
+            // turn gets its answer NOW so the model can carry on, and the
+            // process carries on too — under `processId`, with its output
+            // still being written to `outputFile`.
+            //
+            // Its own branch rather than a flag on the ordinary result: every
+            // field below describes how a command ENDED, and this one has not
+            // ended. Reusing that shape would have meant `success: false,
+            // exitCode: null` on a healthy process, which reads as a failure.
+            Ok(output) if output.detached => Ok(json!({
+                "success": true,
+                "type": "inline",
+                "detached": true,
+                "command": command_string,
+                "intent": intent,
+                "cwd": cwd,
+                "shell": resolved.as_ref().map(|r| r.kind.id()),
+                "shellNote": shell_note,
+                "processId": ctx.tool_call_id,
+                "outputFile": output.output_file,
+                // What it had printed by the time it was handed over — the tail
+                // of the log, so a long build shows its most recent lines.
+                "stdout": output.stdout,
+                "note": format!(
+                    "Still running. The user moved this command to the background, so it was not \
+                     waited for and the output above is only what it had printed by then — it is \
+                     not the result. The process id is {}. Read what it has printed since with \
+                     shell_read_output, and stop it with shell_kill. Do not re-run the command \
+                     because this result has no exit code; it does not have one yet.",
+                    ctx.tool_call_id
+                ),
+            })
+            .to_string()),
             Ok(output) => Ok(json!({
                 "success": output.success,
                 "type": "inline",
@@ -639,6 +672,8 @@ mod tests {
                     timed_out: true,
                     left_running: false,
                     survivors: Vec::new(),
+                    detached: false,
+                    output_file: None,
                 },
             )
         }
@@ -682,6 +717,107 @@ mod tests {
         assert!(
             note.contains("shell_spawn"),
             "must name the way out: {note}"
+        );
+    }
+
+    /// Sink that reports the run being handed to the background mid-flight —
+    /// what `run_shell_stream` returns after the card's button is pressed.
+    struct DetachedSink;
+
+    #[async_trait]
+    impl crate::tools::shell_editor_todo::ide_event_sink::IdeEventSink for DetachedSink {
+        fn emit_editor_open(
+            &self,
+            _path: &str,
+            _line: Option<u64>,
+            _column: Option<u64>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {
+            Ok(())
+        }
+        fn emit_plan_changed(
+            &self,
+            _payload: &crate::tools::shell_editor_todo::PlanChangedPayload,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        async fn spawn_shell_stream(
+            &self,
+            _req: ShellStreamRequest,
+        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::SpawnOutcome, String> {
+            Err("not used".into())
+        }
+        async fn run_shell_stream(
+            &self,
+            _req: ShellStreamRequest,
+        ) -> Result<crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String>
+        {
+            Ok(
+                crate::tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
+                    stdout: "vite building for production...\n".into(),
+                    stderr: String::new(),
+                    exit_code: None,
+                    success: false,
+                    timed_out: false,
+                    left_running: true,
+                    survivors: Vec::new(),
+                    detached: true,
+                    output_file: Some("E:/logs/tool-call-1.log".into()),
+                },
+            )
+        }
+        fn emit_file_changed(
+            &self,
+            _payload: &crate::tools::shell_editor_todo::FileChangedPayload,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// "Run in background" must answer the model with something it can act on:
+    /// a success (nothing went wrong), an explicit "not finished", the id to
+    /// follow it by, and no exit code pretending to be an outcome.
+    #[tokio::test]
+    async fn a_detached_run_reports_a_live_process_not_a_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(tmp.path().to_path_buf());
+
+        let out = ShellExecuteTool::new(Arc::new(DetachedSink))
+            .execute(json!({"command": "pnpm build"}), &context)
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(parsed["detached"], json!(true));
+        // Nothing failed, so the call did not fail. A `success: false` here
+        // would have the model "recover" from a healthy build.
+        assert_eq!(parsed["success"], json!(true));
+        assert_eq!(parsed["processId"], json!(context.tool_call_id));
+        assert_eq!(parsed["outputFile"], json!("E:/logs/tool-call-1.log"));
+        assert_eq!(
+            parsed["exitCode"],
+            Value::Null,
+            "there is no exit code yet, and zero would claim it succeeded"
+        );
+        assert_eq!(
+            parsed["stdout"],
+            json!("vite building for production...\n"),
+            "what it printed before the hand-off is kept"
+        );
+
+        let note = parsed["note"].as_str().unwrap_or_default();
+        assert!(note.contains("Still running"), "{note}");
+        assert!(note.contains("shell_read_output"), "names how to follow it: {note}");
+        assert!(note.contains("shell_kill"), "names how to stop it: {note}");
+        assert!(
+            note.contains(&context.tool_call_id),
+            "carries the id in prose too, since that is what the model quotes: {note}"
         );
     }
 

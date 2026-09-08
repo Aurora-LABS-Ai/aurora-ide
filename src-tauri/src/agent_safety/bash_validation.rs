@@ -533,11 +533,130 @@ fn only_dev_pseudo_files(command: &str) -> bool {
     })
 }
 
+/// System locations a write should not silently touch.
+///
+/// **Windows entries earn their place the hard way.** This list was POSIX-only,
+/// which on Aurora's primary platform meant the guard could not see the system
+/// directory that actually matters. Measured by the harness rig on 2026-09-06:
+///
+/// ```text
+/// rm -f 'C:/Windows/aurora-probe-nonexistent-zz9.txt'   -> ran, no guard
+/// ```
+///
+/// `shell_validation.rs` does carry Windows markers, but they are written with
+/// backslashes and only apply to the PowerShell/cmd path. A POSIX shell on
+/// Windows writes forward slashes, so that command fell between both
+/// validators. All three spellings are covered here: the drive form
+/// (`c:/windows`), the backslash form normalized to it, and Git Bash's mount
+/// form (`/c/windows`).
+const SYSTEM_PATHS: &[&str] = &[
+    "/etc/", "/usr/", "/var/", "/boot/", "/sys/", "/proc/", "/dev/", "/sbin/", "/lib/", "/opt/",
+    "c:/windows", "c:/program files", "c:/programdata",
+    "/c/windows", "/c/program files", "/c/programdata",
+];
+
+/// Lower-case, forward-slashed copy for path matching only.
+///
+/// Never used to run anything — a scan may flatten `\` freely, where an
+/// executor may not. Windows paths are case-insensitive and arrive in every
+/// casing a person can type.
+fn normalize_for_path_scan(command: &str) -> String {
+    command.replace('\\', "/").to_lowercase()
+}
+
+/// Every path this command redirects output INTO.
+///
+/// A redirect is a write, and the guard could not see one: it matched the
+/// leading command name against [`WRITE_COMMANDS`], so `echo pwned > /etc/x`
+/// was judged by `echo` and waved through. Measured by the harness rig on
+/// 2026-09-06. Handles `>`, `>>`, `2>`, `&>` and `1>`, with or without a space,
+/// and strips one layer of quoting.
+fn redirect_targets(scan: &str) -> Vec<String> {
+    let bytes: Vec<char> = scan.chars().collect();
+    let mut targets = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != '>' {
+            i += 1;
+            continue;
+        }
+        // Skip the operator itself, a doubled `>>`, then any whitespace.
+        i += 1;
+        if i < bytes.len() && bytes[i] == '>' {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i].is_whitespace() {
+            i += 1;
+        }
+        // `>&2` and `>&1` duplicate a descriptor; they name no file.
+        if i < bytes.len() && bytes[i] == '&' {
+            continue;
+        }
+        let quote = bytes.get(i).copied().filter(|c| *c == '\'' || *c == '"');
+        if quote.is_some() {
+            i += 1;
+        }
+        let mut target = String::new();
+        while i < bytes.len() {
+            let c = bytes[i];
+            let done = match quote {
+                Some(q) => c == q,
+                None => c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')'),
+            };
+            if done {
+                break;
+            }
+            target.push(c);
+            i += 1;
+        }
+        if !target.is_empty() {
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+/// Is this one path inside a system location, ignoring `/dev/` plumbing?
+///
+/// `starts_with`, never `contains`: a redirect target is a whole path, and
+/// `src/etc/config.json` is a workspace file that merely spells a system
+/// directory somewhere in the middle.
+fn is_guarded_system_path(path: &str) -> bool {
+    SYSTEM_PATHS.iter().any(|sys| {
+        path.starts_with(sys)
+            // `> /dev/null` is where output goes to be discarded, not a device.
+            && !(*sys == "/dev/" && only_dev_pseudo_files(path))
+    })
+}
+
+/// Does `scan` name this system location as a path, rather than spell it inside
+/// a longer one?
+///
+/// The whole-command sweep matched a bare substring, so `rm -rf src/etc/build`
+/// read as a write to `/etc`. A system path counts only at a boundary — start
+/// of string, whitespace, a quote, or `=` — and never when another path
+/// segment runs into it.
+fn mentions_system_path(scan: &str, sys: &str) -> bool {
+    scan.match_indices(sys).any(|(at, _)| match scan[..at].chars().next_back() {
+        None => true,
+        Some(prev) => !(prev.is_alphanumeric() || matches!(prev, '.' | '_' | '-' | '/')),
+    })
+}
+
 /// Heuristic: does the command reference absolute paths outside typical workspace dirs?
 fn command_targets_outside_workspace(command: &str) -> bool {
-    let system_paths = [
-        "/etc/", "/usr/", "/var/", "/boot/", "/sys/", "/proc/", "/dev/", "/sbin/", "/lib/", "/opt/",
-    ];
+    let scan = normalize_for_path_scan(command);
+
+    // A redirect writes wherever it points, whatever the leading command is.
+    // Checked BEFORE the write-command test on purpose: `echo`, `printf`, `cat`
+    // and `tee`-less pipelines are not write commands and can all clobber a
+    // file through `>`.
+    if redirect_targets(&scan)
+        .iter()
+        .any(|target| is_guarded_system_path(target))
+    {
+        return true;
+    }
 
     let first = extract_first_command(command);
     let is_write_cmd = WRITE_COMMANDS.contains(&first.as_str())
@@ -547,13 +666,13 @@ fn command_targets_outside_workspace(command: &str) -> bool {
         return false;
     }
 
-    for sys_path in &system_paths {
-        if !command.contains(sys_path) {
+    for sys_path in SYSTEM_PATHS {
+        if !mentions_system_path(&scan, sys_path) {
             continue;
         }
         // `/dev/` earns a second look: a redirect to a pseudo-file is not a
         // target at all. See `DEV_PSEUDO_FILES`.
-        if *sys_path == "/dev/" && only_dev_pseudo_files(command) {
+        if *sys_path == "/dev/" && only_dev_pseudo_files(&scan) {
             continue;
         }
         return true;
@@ -1239,6 +1358,95 @@ mod tests {
                 "must not read as a system-path write: {command}"
             );
         }
+    }
+
+    /// Both from the harness rig, 2026-09-06, verbatim. Each ran unguarded.
+    ///
+    /// The guard was POSIX-only on a Windows-first product, and it judged a
+    /// command by its leading NAME — so a redirect, which is a write whatever
+    /// precedes it, was invisible.
+    #[test]
+    fn a_windows_system_path_is_guarded_in_every_spelling() {
+        for command in [
+            // Verbatim from the rig.
+            "rm -f 'C:/Windows/aurora-probe-nonexistent-zz9.txt'; echo \"exit=$?\"",
+            // The same place, the other two ways a shell on Windows writes it.
+            r"rm -f C:\Windows\System32\drivers\etc\hosts",
+            "rm -f /c/Windows/notepad.exe",
+            // Casing is not a defence: Windows paths are case-insensitive.
+            "rm -f 'c:/WINDOWS/x'",
+            "cp payload 'C:/Program Files/app/app.exe'",
+            "rm -rf C:/ProgramData/state",
+        ] {
+            assert!(
+                command_targets_outside_workspace(command),
+                "must be guarded: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_redirect_is_a_write_whatever_command_precedes_it() {
+        for command in [
+            // Verbatim from the rig — `echo` is not a write command, so the
+            // old guard judged this by `echo` and let it through.
+            "echo pwned > /etc/aurora-no-such-dir-9f/probe.txt; echo \"exit=$?\"",
+            "printf x >> /etc/hosts",
+            "cat payload > 'C:/Windows/System32/x.dll'",
+            "date 2> /var/log/aurora.log",
+            "echo x > /c/Windows/y.txt",
+        ] {
+            assert!(
+                command_targets_outside_workspace(command),
+                "a redirect into a system path must be guarded: {command}"
+            );
+        }
+    }
+
+    /// The narrowing must survive the widening. These are the commands people
+    /// actually type, and every one of them would be a false refusal.
+    #[test]
+    fn ordinary_redirects_and_workspace_writes_stay_allowed() {
+        for command in [
+            "echo hello > notes.txt",
+            "echo hello >> build/out.log",
+            "rm -f build/out.log 2>/dev/null",
+            "cp a.txt b.txt >/dev/null 2>&1",
+            "echo x > /dev/null",
+            "printf done >&2",
+            "cd src && rm -rf node_modules 2> /dev/null",
+            // Workspace paths that merely SPELL a system directory inside a
+            // longer one. Substring matching refused all of these.
+            "echo x > src/etc/config.json",
+            "rm -rf src/etc/generated",
+            "rm -f vendor/usr/share/cache",
+            "cp a b my-c:/windows-notes.md",
+        ] {
+            assert!(
+                !command_targets_outside_workspace(command),
+                "must stay allowed: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_targets_reads_the_forms_a_shell_actually_uses() {
+        assert_eq!(redirect_targets("echo x > a.txt"), vec!["a.txt"]);
+        assert_eq!(redirect_targets("echo x>a.txt"), vec!["a.txt"]);
+        assert_eq!(redirect_targets("echo x >> a.txt"), vec!["a.txt"]);
+        assert_eq!(redirect_targets("cmd 2> err.log"), vec!["err.log"]);
+        assert_eq!(
+            redirect_targets("cmd > 'two words.txt'"),
+            vec!["two words.txt"]
+        );
+        assert_eq!(
+            redirect_targets("cmd > a.txt; other > b.txt"),
+            vec!["a.txt", "b.txt"]
+        );
+        // Descriptor duplication names no file.
+        assert!(redirect_targets("printf done >&2").is_empty());
+        assert_eq!(redirect_targets("cmd >/dev/null 2>&1"), vec!["/dev/null"]);
+        assert!(redirect_targets("no redirects here").is_empty());
     }
 
     /// The guard still earns its keep: a real device, and the other system

@@ -51,7 +51,12 @@ import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamV
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
 import { useShellStream } from "@/apps/agent/hooks/useShellStream";
+import { detachCommandStream } from "@/kernel/lib/ipc/tauri";
 import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
+import {
+  processById,
+  useAgentBackgroundStore,
+} from "@/apps/agent/store/conversation/useAgentBackgroundStore";
 
 /** A header chip: an activity target plus optional per-file diff counts. */
 type ChipTarget = AgentActivityTarget & { added?: number; removed?: number };
@@ -609,6 +614,102 @@ const RunningClock: React.FC<{ startedAt?: number }> = ({ startedAt }) => {
 };
 
 /**
+ * How long a command runs before the row offers to hand it over.
+ *
+ * Short enough that a build or a test suite reaches it early, long enough that
+ * the ordinary command — which is most of them — finishes and never draws it.
+ * A control that appears on every call is a control nobody reads; this one
+ * appearing at all is the signal that the wait has become worth a decision.
+ */
+const OFFER_BACKGROUND_AFTER_MS = 10_000;
+
+/**
+ * The elapsed clock on a running shell command, which becomes the offer to
+ * stop waiting for it.
+ *
+ * On the ROW, not in the expanded body: cards are collapsed by default in every
+ * state, so a control inside the body is behind a click — a long way to reach
+ * for the one action whose entire purpose is "this is dragging, free the turn".
+ *
+ * It takes the clock's slot rather than sitting beside it. The clock's job is
+ * to say "this is taking a while"; once that is established the useful thing in
+ * those pixels is the way out, and the exact number is still on the button's
+ * tooltip and in the expanded view.
+ */
+const RunningShellControl: React.FC<{
+  startedAt?: number;
+  onRunInBackground: () => Promise<void>;
+}> = ({ startedAt, onRunInBackground }) => {
+  const [now, setNow] = useState(() => Date.now());
+  const [handingOver, setHandingOver] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const elapsed = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
+  const offered = startedAt !== undefined && elapsed >= OFFER_BACKGROUND_AFTER_MS;
+
+  useEffect(() => {
+    if (startedAt === undefined) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+
+  // A refusal is nearly always "it finished first", and that card is about to
+  // settle on its own. Say so, then put the button back rather than leaving a
+  // dead-end where a control used to be.
+  useEffect(() => {
+    if (!failure) return;
+    const id = window.setTimeout(() => setFailure(null), 4_000);
+    return () => window.clearTimeout(id);
+  }, [failure]);
+
+  if (startedAt === undefined) return null;
+
+  if (failure) {
+    return (
+      <span className="agw-tool-handoff-failed" role="status" title={failure}>
+        still in the foreground
+      </span>
+    );
+  }
+
+  if (!offered) {
+    // Same threshold and same slot the plain clock uses, so nothing appears,
+    // moves, or resizes when the row crosses ten seconds — the text changes.
+    if (elapsed < CLOCK_APPEARS_AFTER_MS) return null;
+    return (
+      <span className="agw-tool-time" aria-label={`Running for ${Math.round(elapsed / 1000)} seconds`}>
+        {formatToolDuration(elapsed)}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="agw-shell-bg-btn"
+      disabled={handingOver}
+      title={`Running ${formatToolDuration(elapsed)} — answer the agent now and leave this running. Its output keeps going to the process list.`}
+      onClick={(event) => {
+        // The row itself is a button (expand/collapse). Without this the card
+        // would also toggle open under the click that handed the command over.
+        event.stopPropagation();
+        setHandingOver(true);
+        void onRunInBackground()
+          .catch((err) => {
+            setFailure(err instanceof Error ? err.message : String(err));
+          })
+          .finally(() => setHandingOver(false));
+      }}
+    >
+      {/* The process list's own glyph: the button names where the command is
+          going, not an abstract idea of "later". */}
+      <AgentIcon name="process-list" size={11} strokeWidth={2} aria-hidden />
+      {handingOver ? "Moving…" : "Run in background"}
+    </button>
+  );
+};
+
+/**
  * Bytes of tool-call JSON streamed so far, as a size the reader can watch move.
  * A spinner is identical at second 2 and second 80; "1.8 KB → 4.2 KB" is not.
  * It measures the ARGUMENT text, which is what the model is actually sending,
@@ -946,6 +1047,47 @@ const StandardToolCallCard: React.FC<{
         ? parsedArgs.timeout_ms
         : DEFAULT_SHELL_TIMEOUT_MS;
   const showLiveShell = isShellTool(call.name) && status === "running";
+
+  // Hand this command to the background. The tool call id IS the stream's
+  // request id AND the process id it will answer to afterwards
+  // (`shell_execute.rs`), which is what lets one id carry the whole hand-off:
+  // the button addresses the run, and the row then looks the process up by the
+  // same string.
+  const cardScope = useConversationScope();
+  const handOverToBackground = async () => {
+    await detachCommandStream(call.id);
+    // Seed the process list ourselves rather than waiting for the ledger poll
+    // to notice. The dock's own reconcile only runs while its popover is open,
+    // and that popover only exists once there is at least one process in the
+    // store — so without this a detached command could stay invisible in the
+    // one panel built to show it.
+    const threadId = cardScope?.threadId ?? useAgentChatStore.getState().currentThreadId;
+    if (!threadId) return;
+    useAgentBackgroundStore.getState().track(threadId, {
+      processId: call.id,
+      title: liveShellCommand || "Background command",
+      command: liveShellCommand || "",
+      cwd: liveShellCwd,
+      status: "running",
+      startedAtMs: call.startedAt ?? Date.now(),
+    });
+  };
+
+  // What became of it afterwards. A settled card holds the result the model was
+  // given — which, for a hand-off, is "still running" and stays that way
+  // forever. The live answer is in the process store, keyed by this same id, so
+  // the row can stop claiming a build is running twenty minutes after it ended.
+  const backgroundProcess = useAgentBackgroundStore((s) =>
+    processById(s.byThread, parsed.shell?.detached ? call.id : null),
+  );
+  // Claimed only on EVIDENCE. It used to default to "running" whenever the
+  // ledger had no row — which is also what a window reload looks like, and what
+  // a hand-off that was never recorded looks like — so a card could sit there
+  // insisting a command was running with nothing behind the claim and no way
+  // for it to ever expire. With no row, the card falls back to the only thing
+  // it actually knows: the result said this was moved to the background.
+  const detachedStillRunning =
+    !!parsed.shell?.detached && backgroundProcess?.status === "running";
   // Which shell the command runs in. The result's resolved id wins (a
   // substitution shows what ACTUALLY ran); the requested arg covers the
   // running state, streamed scanner first because the args JSON is still open.
@@ -1013,8 +1155,31 @@ const StandardToolCallCard: React.FC<{
     // reason in full — where there is room for the recovery step these messages
     // almost always end with, and which is the part actually worth reading.
     if (status === "failed") return "Failed";
+    // A handed-over command outlives its own result. The stored result says
+    // "Moved to the background" and always will; the row says what is true now,
+    // read from the process ledger the whole window keeps current.
+    if (parsed.shell?.detached) {
+      if (detachedStillRunning) return "Running in the background";
+      if (backgroundProcess?.status === "stopped") return "Stopped in the background";
+      if (backgroundProcess?.status === "exited") {
+        return typeof backgroundProcess.exitCode === "number"
+          ? `Ran in the background · exit ${backgroundProcess.exitCode}`
+          : "Ran in the background";
+      }
+      // No row to read — the process list has never heard of this one, or the
+      // window has been reloaded since. State what the result said and stop:
+      // "still running" would be a claim about right now that nothing supports.
+      return "Moved to the background";
+    }
     return parsed.summary || "";
-  }, [status, parsed.summary]);
+  }, [
+    status,
+    parsed.summary,
+    parsed.shell?.detached,
+    detachedStillRunning,
+    backgroundProcess?.status,
+    backgroundProcess?.exitCode,
+  ]);
 
   const hasResult = Boolean(
     parsed.tree ||
@@ -1023,7 +1188,10 @@ const StandardToolCallCard: React.FC<{
       // Not `.files.length`: a glob that matched nothing still has a result
       // worth expanding — it says so, and says how to widen the pattern.
       parsed.glob ||
-      (parsed.shell && parsed.shell.output) ||
+      // `detached` counts even with nothing printed: the body is where the
+      // process id and "still running" live, and a card that cannot be opened
+      // would strand both.
+      (parsed.shell && (parsed.shell.output || parsed.shell.detached)) ||
       parsed.fileList?.length ||
       parsed.diff ||
       parsed.diffs?.length ||
@@ -1089,8 +1257,19 @@ const StandardToolCallCard: React.FC<{
             mark beside it is the live sign now (33-tool-glyph-motion.css), and
             a spinner 8px from an animated glyph is two things saying one thing.
             The box keeps its 16px, so nothing shifts when the ✓ lands. */}
+        {/* A command still running in the background is the one settled row in
+            the transcript that is not finished, and it says so: a slow accent
+            pulse where the tick would be. It stops the moment the process ends,
+            so this cannot become permanent furniture. */}
         <span className={`agw-tool-dot agw-tool-dot-${status}`}>
-          {DOT_ICON[status] && <AgentIcon name={DOT_ICON[status]!} size={13} strokeWidth={2.6} />}
+          {detachedStillRunning ? (
+            <>
+              <span className="agw-tool-dot-live" aria-hidden />
+              <span className="agw-sr-only">Still running in the background</span>
+            </>
+          ) : (
+            DOT_ICON[status] && <AgentIcon name={DOT_ICON[status]!} size={13} strokeWidth={2.6} />
+          )}
         </span>
 
         {/* Two copies while live: the mark itself, and a full-strength copy the
@@ -1242,7 +1421,11 @@ const StandardToolCallCard: React.FC<{
           summary && (
             <span
               className="agw-tool-summary"
-              style={{ color: "var(--agw-text-subtle)" }}
+              style={{
+                color: detachedStillRunning
+                  ? "var(--agw-accent)"
+                  : "var(--agw-text-subtle)",
+              }}
             >
               {summary}
             </span>
@@ -1250,16 +1433,28 @@ const StandardToolCallCard: React.FC<{
         )}
 
         {/* Quiet elapsed time — only once settled, and only when it's long
-            enough to mean something (sub-500ms would just be row noise). */}
+            enough to mean something (sub-500ms would just be row noise).
+            A handed-over command has no duration to report: the number would be
+            how long Aurora waited, not how long the command took. */}
         {status !== "running" &&
+          !parsed.shell?.detached &&
           typeof call.durationMs === "number" &&
           call.durationMs >= 500 && (
             <span className="agw-tool-time">{formatToolDuration(call.durationMs)}</span>
           )}
 
-        {/* The same clock while it runs. Same slot, same face, so a row does
-            not reflow when the number stops moving. */}
-        {status === "running" && <RunningClock startedAt={call.startedAt} />}
+        {/* The same clock while it runs — and, for a shell command that has
+            been running long enough to be worth a decision, the way out of it.
+            Same slot either way, so the row does not reflow at ten seconds. */}
+        {status === "running" &&
+          (call.name === "shell_execute" ? (
+            <RunningShellControl
+              startedAt={call.startedAt}
+              onRunInBackground={handOverToBackground}
+            />
+          ) : (
+            <RunningClock startedAt={call.startedAt} />
+          ))}
 
         <span style={{ flex: 1 }} />
 
@@ -1708,6 +1903,9 @@ export const ToolCallCard: React.FC<{
   call: ToolCall;
   isActivelyStreaming?: boolean;
 }> = ({ call, isActivelyStreaming = false }) => {
+  // An MCP call never reaches here: `groupToolRuns` collects a run of them per
+  // server and `ToolGroup` hands that run to `McpServerLane`, which draws its
+  // own rows. See that component for why they are not tool cards.
   if (call.name === "present_artifact") {
     return <CanvasLaunchCard call={call} isActivelyStreaming={isActivelyStreaming} />;
   }

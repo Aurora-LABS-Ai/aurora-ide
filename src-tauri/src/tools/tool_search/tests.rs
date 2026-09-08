@@ -58,6 +58,152 @@ fn schema_bytes(registry: &ToolRegistry) -> Vec<u8> {
     serde_json::to_vec(&registry.schemas()).unwrap()
 }
 
+/// All three from the harness rig, 2026-09-06, in the shape it reported them.
+mod harness_findings {
+    use super::*;
+
+    fn outline_probe(calls: &Arc<AtomicUsize>) -> Arc<dyn ToolExecutor> {
+        probe(
+            "browser_page_outline",
+            json!({
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer"},
+                    "query": {"type": "string"}
+                }
+            }),
+            calls,
+        )
+    }
+
+    /// The rig's exact call: two misspelled fields, accepted, tool ran with
+    /// defaults and answered a different question than the one asked.
+    #[tokio::test]
+    async fn a_misspelled_argument_is_refused_and_the_tool_never_runs() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = ToolRegistry::new();
+        install(&registry, vec![outline_probe(&calls)]);
+        let call = registry.get("call_tool").unwrap();
+
+        let error = call
+            .execute(
+                json!({"name":"browser_page_outline","arguments":{"limitt":2,"querry":"button"}}),
+                &context(),
+            )
+            .await
+            .expect_err("a typo must not run with defaults");
+
+        let message = error.to_string();
+        assert!(message.contains("limitt"), "names what was sent: {message}");
+        assert!(message.contains("querry"), "names both: {message}");
+        assert!(message.contains("`limit`"), "suggests the real name: {message}");
+        assert!(message.contains("`query`"), "suggests both: {message}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the tool must not have executed"
+        );
+    }
+
+    /// An extra field nobody declared, with no near name to suggest.
+    #[tokio::test]
+    async fn an_undeclared_argument_is_refused_without_a_bogus_suggestion() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = ToolRegistry::new();
+        install(&registry, vec![outline_probe(&calls)]);
+        let call = registry.get("call_tool").unwrap();
+
+        let message = call
+            .execute(
+                json!({"name":"browser_page_outline","arguments":{"includeCookies":true}}),
+                &context(),
+            )
+            .await
+            .expect_err("undeclared fields are silently ignored otherwise")
+            .to_string();
+
+        assert!(message.contains("includeCookies"), "{message}");
+        assert!(
+            !message.contains("did you mean"),
+            "nothing is within two edits of it: {message}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Declared arguments keep working — the guard must not become a wall.
+    #[tokio::test]
+    async fn correct_arguments_still_run() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = ToolRegistry::new();
+        install(&registry, vec![outline_probe(&calls)]);
+        let call = registry.get("call_tool").unwrap();
+
+        call.execute(
+            json!({"name":"browser_page_outline","arguments":{"limit":2,"query":"button"}}),
+            &context(),
+        )
+        .await
+        .expect("a correct call must run");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// `max_results` of 0, 21 and 2.5 all produced the identical sentence.
+    #[tokio::test]
+    async fn a_rejected_number_names_the_value_that_arrived() {
+        let registry = ToolRegistry::new();
+        install(&registry, vec![]);
+        let search = registry.get("tool_search").unwrap();
+
+        for (input, expected) in [
+            (json!({"query":"x","max_results":0}), "0"),
+            (json!({"query":"x","max_results":21}), "21"),
+            (json!({"query":"x","max_results":2.5}), "2.5"),
+        ] {
+            let message = search
+                .execute(input.clone(), &context())
+                .await
+                .expect_err("out of range")
+                .to_string();
+            assert!(
+                message.contains(expected),
+                "must name the value sent ({expected}): {message}"
+            );
+        }
+
+        // A wrong TYPE is a different correction from a wrong range.
+        let message = search
+            .execute(json!({"query":"x","max_results":2.5}), &context())
+            .await
+            .expect_err("not an integer")
+            .to_string();
+        assert!(
+            message.contains("whole number"),
+            "2.5 is not out of range, it is not an integer: {message}"
+        );
+    }
+
+    /// A cut description used to be indistinguishable from a short one.
+    #[test]
+    fn a_cut_description_says_it_was_cut() {
+        use super::super::catalog::{preview_description, DESCRIPTION_PREVIEW_CHARS};
+
+        let short = "a short description";
+        assert_eq!(preview_description(short), short, "nothing to mark");
+
+        let long = "x".repeat(DESCRIPTION_PREVIEW_CHARS + 500);
+        let preview = preview_description(&long);
+        assert!(preview.contains("preview cut at"), "{preview}");
+        assert!(
+            preview.contains(&(DESCRIPTION_PREVIEW_CHARS + 500).to_string()),
+            "names the true length: {preview}"
+        );
+        assert!(
+            preview.contains("definition_page.text"),
+            "says where the rest is: {preview}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn discovery_and_catalog_changes_leave_the_advertised_prefix_identical() {
     let count = Arc::new(AtomicUsize::new(0));

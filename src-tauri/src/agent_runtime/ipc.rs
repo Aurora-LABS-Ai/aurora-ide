@@ -130,6 +130,30 @@ pub struct AgentChatRequest {
     /// session JSONL; `ide_context` (see below) is saved beside it and
     /// folded in after it on every API request.
     pub user_message: String,
+    /// Who is starting this turn.
+    ///
+    /// Defaults to the user, which is every send a person makes. `Process`
+    /// means a background process ended while nothing was running and Aurora
+    /// woke the conversation to say so — the message is real and the model must
+    /// answer it, but nobody typed it, so it is persisted as a
+    /// [`crate::agent_runtime::types::ContentBlock::ProcessEvent`] and the
+    /// transcript draws a beat rather than a bubble.
+    ///
+    /// Defaulted rather than required: every existing caller sends a person's
+    /// words, and a missing field must never silently strip attribution from
+    /// one.
+    #[serde(default)]
+    pub user_message_origin: crate::agent_runtime::types::InjectedOrigin,
+    /// The one line the transcript draws when [`Self::user_message_origin`] is
+    /// `Process`, where [`Self::user_message`] is what the model reads.
+    ///
+    /// The split is the same one the mid-turn injection makes: "Finished pnpm
+    /// test · exit 1" is what a person needs; the model needs the process id
+    /// and the log path, because its useful next move is `shell_read_output`
+    /// and it cannot make that call out of prose. Ignored for a user message,
+    /// whose bubble shows the words that were typed.
+    #[serde(default)]
+    pub user_message_summary: Option<String>,
     /// LLM provider identifier. Used by the
     /// [`crate::commands::agent_v2::AgentRegistry`] for telemetry; the
     /// real provider routing is done by the [`provider_config`] field
@@ -402,6 +426,8 @@ mod tests {
             turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             thread_id: "t-1".into(),
             user_message: "hello".into(),
+            user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
+            user_message_summary: None,
             provider_id: "anthropic".into(),
             model: "claude-3-7-sonnet".into(),
             model_selection: None,
@@ -576,6 +602,8 @@ mod tests {
             turn_id: "x".into(),
             thread_id: "t".into(),
             user_message: "u".into(),
+            user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
+            user_message_summary: None,
             provider_id: "p".into(),
             model: "m".into(),
             model_selection: None,

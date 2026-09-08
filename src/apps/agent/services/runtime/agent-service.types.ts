@@ -23,6 +23,12 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
   onQueuedMessageInjected?: (
     text: string,
     chips?: import("@/apps/agent/services/threads/thread-service").AttachedPromptChip[] | null,
+    /**
+     * Who queued it. `"process"` is Aurora reporting a background process and
+     * renders as a one-line beat — never as the user's own words, which is
+     * what it used to do.
+     */
+    origin?: "user" | "process",
   ) => void;
   /**
    * Context compaction has begun (auto at threshold, or manual). UI: turn the

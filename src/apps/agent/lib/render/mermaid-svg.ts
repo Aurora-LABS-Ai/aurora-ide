@@ -101,6 +101,34 @@ export const initialDiagramViewport = (
   };
 };
 
+/**
+ * Remove mermaid's scratch nodes for one render id — and ONLY those.
+ *
+ * `mermaid.render(id, …)` puts that same `id` on the `<svg>` root it hands
+ * back, so the moment the caller commits that markup the document contains an
+ * element with this id that IS THE DIAGRAM. A bare `getElementById(id).remove()`
+ * therefore deleted the drawing it had just made, and whether it did came down
+ * to whether the DOM commit won a race with the render promise's microtask:
+ * the diagram appeared on some mounts and not others, and switching artifacts
+ * lost it almost every time. What was left was a correctly sized, correctly
+ * placed, perfectly empty artwork box with live zoom controls, no error and no
+ * spinner — a failure with nothing to read.
+ *
+ * The id cannot be stripped from the markup to dodge the collision either:
+ * mermaid writes `<style>#id .node { … }</style>` INSIDE the svg, so the id is
+ * what scopes the diagram's own CSS to it.
+ *
+ * `stage` is the element the diagram is mounted into. Anything inside it is
+ * ours and is never swept. A leftover elsewhere is mermaid's, and only a FAILED
+ * render leaves one — a successful render cleans up after itself — which is the
+ * only reason this exists.
+ */
+export const sweepMermaidScratchNodes = (id: string, stage: Element | null): void => {
+  for (const node of [document.getElementById(id), document.getElementById(`d${id}`)]) {
+    if (node && !stage?.contains(node)) node.remove();
+  }
+};
+
 export const readMermaidSvgSize = (svg: string): MermaidSvgSize => {
   const document = new DOMParser().parseFromString(svg, "image/svg+xml");
   const root = document.documentElement;

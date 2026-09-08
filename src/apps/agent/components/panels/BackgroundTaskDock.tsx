@@ -111,10 +111,14 @@ const ProcessGlyph: React.FC<{ process: BackgroundProcess }> = ({ process }) => 
  *
  * One listener for the whole dock, not one per row.
  */
-const useProcessEndings = (threadId: string | null, settle: BackgroundSettle) => {
+const useProcessEndings = (settle: BackgroundSettle) => {
   useEffect(() => {
-    if (!threadId) return;
-
+    // Deliberately NOT gated on an open conversation. The event is app-wide and
+    // carries the process id, and the dock lists processes from every thread —
+    // including on the home screen, where there is no thread at all. Requiring
+    // one there meant a process that finished while you were looking at it sat
+    // there reporting "Running" over a log that had already closed, offering a
+    // stop button for something already gone.
     let disposed = false;
     let unlisten: (() => void) | null = null;
 
@@ -145,7 +149,7 @@ const useProcessEndings = (threadId: string | null, settle: BackgroundSettle) =>
       disposed = true;
       unlisten?.();
     };
-  }, [threadId, settle]);
+  }, [settle]);
 };
 
 /** One live row from Rust's `shell_background_processes` ledger. */
@@ -316,22 +320,43 @@ const LogBody: React.FC<{ process: BackgroundProcess }> = ({ process }) => {
 
 const ProcessRow: React.FC<{
   process: BackgroundProcess;
-  threadId: string;
+  /**
+   * The conversation to tell about a stop, or null when none is open — the
+   * home screen still lists processes started by other threads, and a process
+   * you can see must be one you can stop.
+   */
+  threadId: string | null;
 }> = ({ process, threadId }) => {
   const [open, setOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
+  /** Set only when the process is still running after a stop was asked for. */
+  const [stopError, setStopError] = useState<string | null>(null);
   const settle = useAgentBackgroundStore((s) => s.settle);
   const dismiss = useAgentBackgroundStore((s) => s.dismiss);
 
   const stop = useCallback(async () => {
     setStopping(true);
+    setStopError(null);
+
+    // Rust distinguishes "already finished" — the same outcome the click asked
+    // for — from "still running, the kill failed". Settling on both is what let
+    // a live process wear a "Stopped" row with a dismiss button.
+    let outcome: { stopped: boolean; error?: string | null };
     try {
-      await cancelCommandStream(process.processId, "user");
-    } catch {
-      // Already gone is the same outcome the user asked for.
+      outcome = await cancelCommandStream(process.processId, "user");
+    } catch (cause) {
+      outcome = {
+        stopped: false,
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    }
+
+    setStopping(false);
+    if (!outcome.stopped) {
+      setStopError(outcome.error?.trim() || "The process is still running.");
+      return;
     }
     settle(process.processId, "stopped");
-    setStopping(false);
 
     // The stop is already recorded where it belongs: Rust closes the log file
     // with a line naming it, so an agent that reads that file afterwards
@@ -342,18 +367,31 @@ const ProcessRow: React.FC<{
     // slot drains at a tool-result boundary, so with no live turn the note
     // sits until some unrelated turn picks it up, arriving without the
     // context that made it meaningful.
+    // No open conversation means no one to tell. The log file still records the
+    // stop, which is where an agent reads it from anyway.
+    if (!threadId) return;
     const chat = useAgentChatStore.getState();
     if (!chat.liveTurns[threadId]) return;
 
     await chat
       .enqueueMessage(
         threadId,
-        `The user stopped the background process "${process.title}" ` +
-          `(id ${process.processId}, \`${process.command}\`). It is no longer running` +
-          (process.outputFile
-            ? `; its log ends with a line recording the stop: ${process.outputFile}`
-            : "") +
-          ".",
+        // Display copy: the beat's own "verb subject" shape, so the transcript
+        // gets one quiet line instead of a paragraph in the user's voice.
+        `Stopped ${process.title}`,
+        {
+          // Machine event, not the user speaking. This is what keeps it out of
+          // the composer pill, off the mid-turn preamble, and out of a bubble
+          // that claimed the user had typed it.
+          origin: "process",
+          modelText:
+            `The user stopped the background process "${process.title}" ` +
+            `(id ${process.processId}, \`${process.command}\`). It is no longer running` +
+            (process.outputFile
+              ? `; its log ends with a line recording the stop: ${process.outputFile}`
+              : "") +
+            ".",
+        },
       )
       .catch(() => undefined);
   }, [process, threadId, settle]);
@@ -373,20 +411,28 @@ const ProcessRow: React.FC<{
           <ProcessGlyph process={process} />
           <span className="agw-task-label">{process.title}</span>
         </button>
+        {/* A failed stop replaces the state, because "Running" alone would not
+            say that stopping it had been tried and had not worked. The reason
+            is on hover, and the stop button below stays live so it can be
+            tried again. */}
         <span
           className="agw-bgtask-state"
+          role={stopError ? "status" : undefined}
+          title={stopError ?? undefined}
           data-fail={
-            (typeof process.exitCode === "number" && process.exitCode !== 0) || undefined
+            Boolean(stopError) ||
+            (typeof process.exitCode === "number" && process.exitCode !== 0) ||
+            undefined
           }
         >
-          {stateLabel(process)}
+          {stopError ? "Could not stop" : stateLabel(process)}
         </span>
         {running ? (
           <button
             type="button"
             className="agw-bgtask-stop"
             disabled={stopping}
-            title={`Stop ${process.title}`}
+            title={stopError ? `Try again — ${stopError}` : `Stop ${process.title}`}
             aria-label={`Stop ${process.title}`}
             onClick={() => void stop()}
           >
@@ -443,7 +489,11 @@ export const BackgroundTaskDock: React.FC<{
   const settle = useAgentBackgroundStore((s) => s.settle);
   const [collapsed, setCollapsed] = useState(false);
 
-  useProcessEndings(threadId, settle);
+  useProcessEndings(settle);
+  // Reconciling still needs a conversation: the ledger's rows are filed under
+  // one, so with no thread open there is nowhere to put a row this window has
+  // not seen. Endings above are unaffected, and they are what a listed row
+  // needs to settle itself.
   useLedgerReconcile(threadId);
 
   /**
@@ -464,7 +514,16 @@ export const BackgroundTaskDock: React.FC<{
     [processes],
   );
 
-  if (!threadId || processes.length === 0) return null;
+  /**
+   * No open conversation is not a reason to hide a running process.
+   *
+   * `visibleProcesses` deliberately includes everything still running in ANY
+   * thread, and the composer rail's chip counts exactly that — so on the home
+   * screen the chip read "1/1" and opened a panel that bailed here and drew
+   * nothing. A one-pixel empty popover reads as a rendering failure, and the
+   * process it was hiding had no stop button anywhere in the window.
+   */
+  if (processes.length === 0) return null;
 
   const rows = (
     <ul className="agw-tasks-list">

@@ -229,15 +229,41 @@ export const executeCommandStream = async (
  * agent reading that file afterwards learns the run was ended on purpose
  * rather than inferring a crash from output that simply stops.
  */
+export interface CommandStopOutcome {
+  /** The process is no longer running: it was killed, or it had already ended. */
+  stopped: boolean;
+  /** Why it could not be stopped. Only ever set when `stopped` is false. */
+  error?: string | null;
+}
+
 export const cancelCommandStream = async (
   requestId: string,
   reason: 'user' | 'agent' = 'user',
-): Promise<void> => {
+): Promise<CommandStopOutcome> => {
   if (!isAuroraRuntimeAvailable()) {
     console.warn('cancelCommandStream: Aurora runtime unavailable');
-    return;
+    return { stopped: false, error: 'Aurora is not running the command runtime.' };
   }
-  await invoke<void>('cancel_command_stream', { requestId, reason });
+  return await invoke<CommandStopOutcome>('cancel_command_stream', { requestId, reason });
+};
+
+/**
+ * Hand a running foreground command to the background — the "Run in background"
+ * button on a shell tool card.
+ *
+ * Nothing is stopped: the process keeps running, keeps writing its log, and
+ * keeps its row in the process dock. What ends is the waiting, so the tool call
+ * answers the model immediately instead of holding the turn.
+ *
+ * Unlike {@link cancelCommandStream} this rejects rather than warning when the
+ * runtime is missing — the caller settles a card on the result, and a silent
+ * no-op would leave the card claiming a hand-off that never happened.
+ */
+export const detachCommandStream = async (requestId: string): Promise<void> => {
+  if (!isAuroraRuntimeAvailable()) {
+    throw new Error('Aurora runtime unavailable');
+  }
+  await invoke<void>('detach_command_stream', { requestId });
 };
 
 // System Operations

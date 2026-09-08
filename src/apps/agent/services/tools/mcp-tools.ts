@@ -475,15 +475,30 @@ export function shouldAutoApproveMcpTool(toolName: string): boolean {
 const mcpToolDisplayNameCache = new Map<string, string>();
 // Cache parsed MCP tool names to avoid repeated server scans.
 const mcpToolParseCache = new Map<string, ParsedMcpToolName | null>();
+// Cache readable operation labels (tool name -> "Execute SQL").
+const mcpOperationLabelCache = new Map<string, string>();
 let mcpToolParseServersRef: McpServerState[] | null = null;
 
 const MCP_ACRONYM_LABELS: Record<string, string> = {
   api: "API",
+  aws: "AWS",
+  cli: "CLI",
+  css: "CSS",
   db: "DB",
+  dns: "DNS",
+  dom: "DOM",
+  html: "HTML",
+  http: "HTTP",
+  https: "HTTPS",
   id: "ID",
+  ip: "IP",
+  json: "JSON",
+  os: "OS",
+  pdf: "PDF",
   sql: "SQL",
   ui: "UI",
   url: "URL",
+  vps: "VPS",
 };
 
 function formatMcpToolLabel(toolName: string): string {
@@ -499,12 +514,96 @@ function formatMcpToolLabel(toolName: string): string {
     .join(" ");
 }
 
+/**
+ * The leading segment EVERY tool on this server shares, or null.
+ *
+ * A server whose whole catalog is `pg_*` is telling you that `pg` separates
+ * nothing — it is the server's own name repeated on each of its tools. Inside a
+ * lane already headed by that server it is pure noise, so the label drops it.
+ * This is read off the catalog the server advertises, so it is a fact about
+ * that server and not a guess about its naming: a mixed catalog (`click`,
+ * `capture`, `dump_tree`) shares nothing and keeps every name whole.
+ *
+ * Requires at least two tools — one tool has no "shared" anything — and never
+ * strips a single-segment name down to nothing.
+ */
+function sharedToolPrefix(tools: McpToolInfo[]): string | null {
+  if (tools.length < 2) return null;
+  let candidate: string | null = null;
+  for (const tool of tools) {
+    const parts = tool.name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+    if (parts.length < 2) return null;
+    const head = parts[0].toLowerCase();
+    if (candidate === null) candidate = head;
+    else if (candidate !== head) return null;
+  }
+  return candidate;
+}
+
+/**
+ * An MCP operation as WORDS, for the transcript row.
+ *
+ * `formatMcpToolLabel` above title-cases every segment, which is how
+ * `pg_execute_sql` renders as "Pg Execute SQL" — a name no human wrote and no
+ * server ships. This differs from it three ways: the shared catalog prefix is
+ * dropped, only the first word is capitalised, and acronyms stay upright. The
+ * result is "Execute SQL", and `browser_find_clickable_by_text` is "Find
+ * clickable by text" — 22 characters instead of 30, which is the difference
+ * between a row that clips and one that does not.
+ *
+ * The raw identifier is never lost: the row keeps it in `title` and the open
+ * card names it outright. Anything that has to MATCH a tool (permissions, the
+ * registry, the model's own call) uses the real name, never this.
+ */
+export function mcpOperationLabel(toolName: string): string {
+  const servers = getServersForParse();
+  const cached = mcpOperationLabelCache.get(toolName);
+  if (cached !== undefined) return cached;
+
+  const parsed = parseMcpToolName(toolName);
+  if (!parsed) {
+    // The server is not in the config, so the id cannot be separated from the
+    // tool name — both may contain underscores. Sentence-casing the whole thing
+    // would invent a phrase out of two names ("Aurora labs postgres mcp pg
+    // execute sql"). The raw identifier, minus Aurora's own prefix, is the
+    // honest answer for a call whose owner is gone.
+    const raw = toolName.startsWith("mcp_") ? toolName.slice(4) : toolName;
+    mcpOperationLabelCache.set(toolName, raw);
+    return raw;
+  }
+  const raw = parsed.originalToolName;
+  const server = servers.find((candidate) => candidate.config.id === parsed.serverId);
+  const prefix = server ? sharedToolPrefix(server.tools) : null;
+
+  const parts = raw.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (parts.length === 0) {
+    mcpOperationLabelCache.set(toolName, raw);
+    return raw;
+  }
+  if (prefix && parts.length > 1 && parts[0].toLowerCase() === prefix) parts.shift();
+
+  const label = parts
+    .map((part, index) => {
+      const lower = part.toLowerCase();
+      if (MCP_ACRONYM_LABELS[lower]) return MCP_ACRONYM_LABELS[lower];
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
+    .join(" ");
+  mcpOperationLabelCache.set(toolName, label);
+  return label;
+}
+
 const getServersForParse = (): McpServerState[] => {
   const servers = useMcpStore.getState().servers;
   if (servers !== mcpToolParseServersRef) {
     mcpToolParseServersRef = servers;
     mcpToolParseCache.clear();
     mcpToolDisplayNameCache.clear();
+    // The label depends on the server's TOOL LIST, not only on its id, so it
+    // must be recomputed when the catalog arrives. Before connection there is
+    // no catalog and no prefix to drop, which is the correct answer for that
+    // moment and the wrong one to keep afterwards.
+    mcpOperationLabelCache.clear();
   }
   return servers;
 };

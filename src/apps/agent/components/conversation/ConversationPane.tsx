@@ -32,6 +32,7 @@ import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWor
 import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
+import { useIdleProcessReport } from "@/apps/agent/hooks/useIdleProcessReport";
 import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
@@ -165,6 +166,18 @@ export const ConversationPane: React.FC = () => {
   // becomes an ordinary message in the open chat, which is what makes it
   // visible and steerable rather than a hidden background job.
   useCliTask(send.send);
+  // A background process that ended while this chat was idle. Nothing drains
+  // the runtime's queued slot without a turn to drain it, so the ending has to
+  // START one — otherwise the agent's last memory of a four-minute run stays
+  // "still running" and it says so, confidently, long after the run failed.
+  useIdleProcessReport(
+    currentThreadId,
+    useCallback(
+      (text: string, summary: string) =>
+        send.send(text, undefined, { origin: "process", summary }),
+      [send],
+    ),
+  );
 
   // Per-chat composer draft: what you were typing in THIS chat, restored when
   // you switch back (and cleared by the composer's own `onValueChange("")` on
@@ -239,7 +252,9 @@ export const ConversationPane: React.FC = () => {
       items: { turn: (typeof turns)[number]; index: number }[];
     }[] = [];
     turns.forEach((turn, index) => {
-      if (turn.role === "user" || out.length === 0) {
+      // A turn a background process opened is its own exchange as much as
+      // one a person opened: nothing above it asked for it.
+      if (turn.role === "user" || turn.startedBy === "process" || out.length === 0) {
         out.push({ key: turn.id, items: [] });
       }
       out[out.length - 1].items.push({ turn, index });
@@ -595,7 +610,11 @@ export const ConversationPane: React.FC = () => {
                   // Retry is offered on ANY assistant turn, not just the
                   // newest: a turn that failed several messages ago is still
                   // worth re-running, and rewinding makes that well-defined.
-                  const canRetry = isAssistant && !openIsStreaming;
+                  // Except one a background process opened — there are no
+                  // typed words to send again, and the ending it reported
+                  // already happened.
+                  const canRetry =
+                    isAssistant && !openIsStreaming && turn.startedBy !== "process";
                   return (
                     <div
                       key={turn.id}

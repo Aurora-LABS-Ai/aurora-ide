@@ -126,6 +126,36 @@ pub enum ContentBlock {
         created_at: i64,
     },
 
+    /// A background process ended, or someone stopped it, while the turn was
+    /// running.
+    ///
+    /// Its own block, for the reason [`Notice`] has one: it is not anybody's
+    /// message. The first version of this rode in as plain text on the queued
+    /// mid-turn slot — the slot built for a person typing — so the model was
+    /// told `[The user sent this while your tool calls were running]` about a
+    /// process that ended by itself, and the transcript drew it as the user's
+    /// own bubble, tooltipped "You added this mid-turn". Live, a display flag
+    /// papered over that; reloaded from disk there was nothing left to read the
+    /// flag from, and the bubble came back.
+    ///
+    /// Two texts because two audiences, and they are not the same sentence:
+    ///
+    /// - `summary` is the transcript's one line, in the checklist beat's
+    ///   "verb subject" shape — `Finished pnpm build · exit 0`.
+    /// - `detail` is what the model is told, and it carries the process id and
+    ///   the log path, because the useful next move is `shell_read_output` and
+    ///   it cannot make that call out of prose.
+    ///
+    /// UNLIKE a notice, this one IS sent to the model — a process it started
+    /// has ended, which is a fact about the work rather than product copy about
+    /// Aurora.
+    ProcessEvent {
+        summary: String,
+        detail: String,
+        /// Unix epoch milliseconds when the process ended.
+        created_at: i64,
+    },
+
     /// A picture Aurora Chat made DIRECTLY — the conversation's model is an
     /// image model, so the user's message went to it as the prompt and this is
     /// the reply. Carried on an [`MessageRole::Assistant`] message.
@@ -281,6 +311,25 @@ pub struct AttachedPromptChip {
     pub path: Option<String>,
 }
 
+/// Who put something into the mid-turn slot — which decides both how it is
+/// framed for the model and how it is drawn in the transcript.
+///
+/// The slot was built for one case (a person typing while tools run) and then
+/// reused for machine events, which inherited the person's framing: a
+/// background process ending arrived as `"The user stopped …"` in the user's
+/// own bubble, tooltipped "You added this mid-turn". A machine event is not a
+/// message from anyone, and saying so is this field's whole job.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectedOrigin {
+    /// A person typed it into the composer.
+    #[default]
+    User,
+    /// Aurora reporting what happened to a background process. Renders as a
+    /// one-line beat, never as anybody's words.
+    Process,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessage {
     pub role: MessageRole,
@@ -339,6 +388,41 @@ impl ConversationMessage {
         Self {
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: text.into() }],
+            usage: None,
+            timestamp,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    /// A turn STARTED by a background process ending, rather than by a person.
+    ///
+    /// The user role is right — it is the model's turn to respond, and there is
+    /// no other role a conversation can be resumed from — but the block is a
+    /// [`ContentBlock::ProcessEvent`], not text. That distinction is what makes
+    /// a reloaded thread still render the beat instead of a user bubble
+    /// claiming somebody typed "Finished pnpm test · exit 1", and it is why the
+    /// origin has to live in the blocks rather than in a display-only flag: the
+    /// transcript is rebuilt from the blocks, the flag would live in an event
+    /// that is long gone.
+    ///
+    /// Every adapter already converts this block to text for the wire, so the
+    /// model reads `detail` exactly as it would mid-turn.
+    #[must_use]
+    pub fn user_process_event(
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+        timestamp: i64,
+    ) -> Self {
+        Self {
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::ProcessEvent {
+                summary: summary.into(),
+                detail: detail.into(),
+                created_at: timestamp,
+            }],
             usage: None,
             timestamp,
             attached_selected_elements: None,

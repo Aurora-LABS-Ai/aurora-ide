@@ -141,6 +141,17 @@ export interface AgentChatRequest {
   turnId: string;
   threadId: string;
   userMessage: string;
+  /**
+   * Who started this turn. Omitted (or `"user"`) for every send a person makes.
+   *
+   * `"process"` means a background process ended while the conversation was
+   * idle and Aurora woke it to say so. The message is real and the model
+   * answers it, but nobody typed it — Rust persists it as a process event, so
+   * the transcript draws a beat instead of a bubble in the user's voice.
+   */
+  userMessageOrigin?: "user" | "process";
+  /** The transcript's one line when `userMessageOrigin` is `"process"`. */
+  userMessageSummary?: string | null;
   providerId: string;
   model: string;
   /** See {@link AgentRuntimeChatInput.modelSelection}. */
@@ -280,6 +291,11 @@ export type AssistantEvent =
       text: string;
       /** Composer pill metadata (file mentions, `/` directives), if any. */
       chips?: AttachedPromptChip[] | null;
+      /**
+       * Who queued it. Absent on events from an older runtime, which only ever
+       * carried the user's own messages — so the default is `"user"`.
+       */
+      origin?: "user" | "process" | null;
     }
   | { type: "compaction_started" }
   | { type: "compaction_completed"; before_tokens: number; after_tokens: number }
@@ -395,7 +411,11 @@ export interface AgentRuntimeCallbacks extends AgentCallbacks {
    * bubble in the chat list (so the timeline reads in human order:
    * tool result → user note → assistant continuation).
    */
-  onQueuedMessageInjected?: (text: string, chips?: AttachedPromptChip[] | null) => void;
+  onQueuedMessageInjected?: (
+    text: string,
+    chips?: AttachedPromptChip[] | null,
+    origin?: "user" | "process",
+  ) => void;
   /** Fires once on success — typically right before the chat() promise resolves. */
   onTurnComplete?: (summary: TurnCompletionPayload) => void;
   /** Fires once on error / cancellation — typically right before the chat() promise rejects. */
@@ -404,6 +424,17 @@ export interface AgentRuntimeCallbacks extends AgentCallbacks {
 
 export interface AgentRuntimeChatInput {
   userMessage: string;
+  /**
+   * Who started this turn. See {@link AgentChatRequest.userMessageOrigin}.
+   *
+   * Nothing else about the request changes with it — same system prompt, same
+   * tools, same model — because a machine-started turn must APPEND to the
+   * cached prefix exactly as a person's turn does. Anything that varied here
+   * would re-bill the whole conversation as a cache write.
+   */
+  userMessageOrigin?: "user" | "process";
+  /** The transcript's one line when the origin is `"process"`. */
+  userMessageSummary?: string | null;
   systemPrompt: string;
   ideContext: string | null;
   tools: RuntimeToolDefinitionLike[];
@@ -597,6 +628,8 @@ export class AgentRuntimeClient {
       turnId,
       threadId,
       userMessage: input.userMessage,
+      userMessageOrigin: input.userMessageOrigin ?? "user",
+      userMessageSummary: input.userMessageSummary ?? null,
       providerId: providerConfig.id,
       model: providerConfig.model,
       modelSelection: input.modelSelection ?? null,
@@ -987,7 +1020,11 @@ export class AgentRuntimeClient {
         callbacks.onMessageStop?.(event.stop_reason);
         break;
       case "queued_message_injected":
-        callbacks.onQueuedMessageInjected?.(event.text, event.chips ?? null);
+        callbacks.onQueuedMessageInjected?.(
+          event.text,
+          event.chips ?? null,
+          event.origin ?? "user",
+        );
         break;
       case "compaction_started":
         callbacks.onCompactionStarted?.();

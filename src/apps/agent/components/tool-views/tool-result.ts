@@ -152,6 +152,14 @@ export interface ShellOutputData {
   mode: "inline" | "terminal";
   output: string;
   success: boolean;
+  /**
+   * The user pressed "Run in background": the command did not finish, it was
+   * handed over. `output` is what it had printed by then and `exitCode` is
+   * absent because there is not one yet — so this has to be read before either.
+   */
+  detached?: boolean;
+  /** Id the process now answers to, for the dock and for `shell_read_output`. */
+  processId?: string;
   /** Shell the command ran in — the RESOLVED id from the result when present
    *  (a substitution shows what actually ran), else the requested arg. */
   shell?: string;
@@ -953,6 +961,15 @@ export function parseToolResult(
     if (error) pieces.push(error);
     const success = parsed.success === true;
     const exit = asNum(parsed.exitCode);
+    // A `shell_spawn` that is still running when the tool returns. Its result
+    // has no exit code — there is not one yet — and reading that absence as a
+    // failure put "Could not run" on a card with a green tick, over a process
+    // that was counting away in the background. It is the same live state a
+    // handed-over `shell_execute` reports as `detached`, so it wears the same
+    // mark. (A spawn that finished inside the startup window carries
+    // `completed: true` and an exit code, and reads as a run like any other.)
+    const started = name === "shell_spawn" && success && parsed.completed === false;
+    const detached = parsed.detached === true || started;
     out.shell = {
       command: asStr(parsed.command) ?? asStr(args.command),
       cwd: asStr(parsed.cwd) ?? asStr(args.cwd),
@@ -962,14 +979,28 @@ export function parseToolResult(
       success,
       shell: asStr(parsed.shell) ?? asStr(args.shell),
       shellNote: asStr(parsed.shellNote),
+      detached: detached || undefined,
+      processId: detached ? asStr(parsed.processId) : undefined,
     };
-    // Surface the exit code on the COLLAPSED row for failures — "exit 1" is
-    // the single most useful fact before deciding whether to expand.
-    out.summary = success
-      ? "Ran command"
+    // What the row says in the slot every other tool uses for its outcome.
+    //
+    // A command that RAN reads the same whether it exited 0 or 2: the tool did
+    // its job either way, and the exit code is a fact about the command, which
+    // is what the expanded view is for. Putting it on the row too meant one
+    // deliberate probe announced itself twice, in red, before anyone asked.
+    //
+    // The cases that ARE failures — Aurora could not run it, or it was killed
+    // before it finished — have no exit code to state, so they say what
+    // happened instead.
+    out.summary = started
+      ? "Started in the background"
+      : detached
+      ? "Moved to the background"
       : typeof exit === "number"
-        ? `Command failed · exit ${exit}`
-        : "Command failed";
+        ? "Ran command"
+        : parsed.timedOut === true
+          ? "Timed out"
+          : "Could not run";
     return out;
   }
 

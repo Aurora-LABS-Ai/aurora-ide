@@ -69,6 +69,8 @@ export type TimelineEvent =
    */
   | { kind: "tool"; id: string; call: ToolCall; at?: number }
   | { kind: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
+  /** A background process ended (or was stopped) mid-turn. Nobody's words. */
+  | { kind: "process_beat"; id: string; text: string }
   /**
    * `startedAt`/`durationMs` exist because compaction is the one thing in the
    * transcript that can run for minutes with nothing to show. Measured
@@ -130,6 +132,7 @@ export type TimelineRow =
   | { type: "content"; id: string; text: string }
   | { type: "tools"; id: string; tools: ToolCall[] }
   | { type: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
+  | { type: "process_beat"; id: string; text: string }
   | {
       type: "compaction";
       id: string;
@@ -184,6 +187,13 @@ export interface AgwTurn {
   startedAt?: string;
   /** Assistant only — timestamp of the last message merged into this turn. */
   endedAt?: string;
+  /**
+   * Assistant only — what opened this turn. A person's message, or a
+   * background process ending while the conversation was idle. Retry needs
+   * to know: there are no typed words to send again for a process-started
+   * turn.
+   */
+  startedBy?: "user" | "process";
 }
 
 const parseTs = (value: string | undefined): number | null => {
@@ -247,11 +257,23 @@ export function formatWorkedDuration(ms: number): string {
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
-let seq = 0;
+/**
+ * The live event counter lives on `globalThis`, not in a module binding.
+ *
+ * A module binding restarts at zero every time this file is re-evaluated,
+ * and in dev that is every hot reload — while the open conversation still
+ * holds `ev1…evN` from before. The next turn then minted the same ids again,
+ * React saw duplicate keys and dropped rows, and the transcript stopped
+ * updating mid-stream for a reason nowhere near the code being edited.
+ */
+const SEQ_KEY = "__agwTimelineEventSeq";
 /** Monotonic id for freshly-created timeline segments (stable across appends). */
 export function nextEventId(): string {
-  seq += 1;
-  return `ev${seq}`;
+  const scope = globalThis as unknown as Record<string, unknown>;
+  const current = typeof scope[SEQ_KEY] === "number" ? (scope[SEQ_KEY] as number) : 0;
+  const next = current + 1;
+  scope[SEQ_KEY] = next;
+  return `ev${next}`;
 }
 
 // ── Live updaters (used by the send hook) ────────────────────────────
@@ -309,6 +331,20 @@ export function appendUserInjection(
       ...(chips && chips.length > 0 ? { chips } : {}),
     },
   ];
+}
+
+/**
+ * Append a background-process beat — a process ended, or someone stopped it,
+ * while the turn was running.
+ *
+ * Deliberately NOT a `user_injection`, which is what this used to be: the same
+ * queue slot carries both, so a stopped process arrived as "The user stopped
+ * the background process…" inside the user's own row, tooltipped "You added
+ * this mid-turn". Nobody said it. It renders in the checklist beat's shape
+ * instead — one quiet line naming what happened to what.
+ */
+export function appendProcessBeat(tl: TimelineEvent[], text: string): TimelineEvent[] {
+  return [...tl, { kind: "process_beat", id: nextEventId(), text }];
 }
 
 /** Append a runtime notice (e.g. "the reply was cut off at the output limit")
@@ -618,6 +654,31 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       });
       continue;
     }
+    if (m.role === "process") {
+      // A background process ended while the conversation was idle, and that
+      // ending started this turn. Nobody typed anything, so there is no user
+      // bubble: the turn opens as a fresh AURORA turn whose first row is the
+      // beat — the same one-line "Finished pnpm test · exit 1" a mid-turn
+      // ending draws — and the reply streams in beneath it.
+      //
+      // Pushed as a NEW turn, never merged into the reply before it. That
+      // boundary is the whole point: without it the reply folded into the
+      // previous, already-settled bubble and nothing new appeared on screen
+      // while the model was answering. The message id is the beat's row id;
+      // it never collides with the `ev…` ids the stream mints.
+      lastUserTs = m.timestamp;
+      turns.push({
+        id: m.id,
+        role: "assistant",
+        content: "",
+        events: [{ kind: "process_beat", id: m.id, text: m.content || "" }],
+        isThinking: false,
+        startedAt: m.timestamp,
+        endedAt: m.timestamp,
+        startedBy: "process",
+      });
+      continue;
+    }
     const prev = turns[turns.length - 1];
     if (prev && prev.role === "assistant") {
       if (m.content) {
@@ -637,6 +698,7 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         isThinking: !!m.isThinking,
         startedAt: lastUserTs,
         endedAt: m.timestamp,
+        startedBy: "user",
       });
     }
   }
@@ -904,6 +966,8 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
         });
       } else if (e.kind === "user_injection") {
         rows.push({ type: "user_injection", id: e.id, text: e.text, chips: e.chips });
+      } else if (e.kind === "process_beat") {
+        rows.push({ type: "process_beat", id: e.id, text: e.text });
       } else if (e.kind === "notice") {
         rows.push({ type: "notice", id: e.id, text: e.text });
       } else if (e.kind === "reconnect") {
@@ -932,5 +996,53 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
     }
   }
   flush();
-  return rows;
+  return dedupeRowIds(rows);
+}
+
+/**
+ * Guarantee the render keys are unique, and say so out loud when they were not.
+ *
+ * Rows are rendered with `key={row.id}`, and an id only has to be unique inside
+ * its own MESSAGE to look correct everywhere it is produced — the live appenders
+ * number from one counter, and the reload path numbers per message. `buildTurns`
+ * then merges consecutive assistant messages and concatenates their event lists,
+ * which is where two ids that were each locally fine can land in one list.
+ *
+ * When that happened, React dropped children and the transcript stopped
+ * updating mid-turn: the reply kept streaming into a view that had quietly
+ * stopped rendering it. The failure appeared nowhere near its cause, and the
+ * only clue was a key name in a warning.
+ *
+ * So the keys are made unique HERE, where the list is finally assembled and the
+ * invariant actually has to hold. This is a guardrail, not a cure: a repeated id
+ * still means something upstream produced the same event twice, so the warning
+ * names it and identifies the row, which is what turns the next occurrence into
+ * an answer instead of another hunt.
+ */
+function dedupeRowIds(rows: TimelineRow[]): TimelineRow[] {
+  const seen = new Set<string>();
+  let duplicates = 0;
+  const out = rows.map((row) => {
+    if (!seen.has(row.id)) {
+      seen.add(row.id);
+      return row;
+    }
+    duplicates += 1;
+    let suffix = 2;
+    let candidate = `${row.id}#${suffix}`;
+    while (seen.has(candidate)) {
+      suffix += 1;
+      candidate = `${row.id}#${suffix}`;
+    }
+    seen.add(candidate);
+    if (import.meta.env?.DEV) {
+      console.warn(
+        `[timeline] duplicate row id "${row.id}" (${row.type}) — rendered as ` +
+          `"${candidate}". Two events reached one turn with the same id; the ` +
+          `transcript is safe, the id source is not.`,
+      );
+    }
+    return { ...row, id: candidate };
+  });
+  return duplicates > 0 ? out : rows;
 }

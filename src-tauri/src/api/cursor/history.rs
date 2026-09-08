@@ -65,10 +65,16 @@ impl TurnInput {
 fn text_of(blocks: &[ContentBlock]) -> String {
     let mut parts = Vec::new();
     for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            if !text.is_empty() {
-                parts.push(text.as_str());
+        match block {
+            ContentBlock::Text { text } if !text.is_empty() => parts.push(text.as_str()),
+            // A background process the agent started has ended, and that is
+            // the whole message when the ending is what woke the conversation.
+            // Without this the active user text came out empty and the turn
+            // was sent as a RESUME — the model was never told.
+            ContentBlock::ProcessEvent { detail, .. } if !detail.is_empty() => {
+                parts.push(detail.as_str());
             }
+            _ => {}
         }
     }
     parts.join("\n")
@@ -319,6 +325,29 @@ mod tests {
         assert!(!input.is_resume());
         // "now" is the action, so only the earlier pair is history.
         assert_eq!(input.root_messages.len(), 2);
+    }
+
+    /// A turn a background process started ends on a user-role message whose
+    /// only block is the process event. Reading text blocks alone made that
+    /// message empty, and an empty active message is a RESUME — the model
+    /// was sent "Continue." instead of being told the process ended.
+    #[test]
+    fn a_process_started_turn_is_the_action_not_a_resume() {
+        let messages = [
+            user("run it in background"),
+            assistant("It's running."),
+            ConversationMessage::user_process_event(
+                "Finished pnpm build · exit 0",
+                "The background process \"pnpm build\" (id bg-1) has ended with exit code 0.",
+                3,
+            ),
+        ];
+
+        let input = build_turn_input(None, &messages);
+
+        assert!(!input.is_resume());
+        assert!(input.user_text.contains("has ended with exit code 0"));
+        assert!(input.user_text.contains("bg-1"));
     }
 
     #[test]

@@ -41,7 +41,10 @@ export const ToolResultView: React.FC<{
   // name search, and its own view says so plus how to widen the pattern. The
   // fallback would otherwise dump the raw JSON.
   if (parsed.glob) return <GlobResultsView data={parsed.glob} />;
-  if (parsed.shell && parsed.shell.output) return <ShellOutputView data={parsed.shell} />;
+  // Not gated on output alone: a command handed to the background may not have
+  // printed anything yet, and its view is what carries the process id.
+  if (parsed.shell && (parsed.shell.output || parsed.shell.detached))
+    return <ShellOutputView data={parsed.shell} />;
   if (parsed.fileList && parsed.fileList.length > 0)
     return <FileListView files={parsed.fileList} />;
 

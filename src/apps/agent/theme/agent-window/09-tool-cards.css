@@ -1,3 +1,133 @@
+/* ── MCP server lane ───────────────────────────────────────────────────────
+ * A run of consecutive calls to ONE server, named once at the top.
+ *
+ * The only new material here is the lettered tile, and that is `.agw-prov-avatar`
+ * (Providers) at row scale. The rule under the header is the same 1px the
+ * expanded tool body draws, and the call lines are ordinary `.agw-tool-head`
+ * rows — so a lane reads as part of the transcript rather than as a panel
+ * dropped into it. See `McpServerLane.tsx` for why an MCP call is not a card.
+ */
+.agw-mcp-lane {
+  margin: 2px 0 6px;
+  min-width: 0;
+}
+.agw-mcp-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px 5px;
+}
+/* Bounded, because a server name is whatever the user typed into mcp.json.
+ * The full name stays in the title attribute. */
+.agw-mcp-lane-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-mcp-lane-rule {
+  flex: 1;
+  min-width: 10px;
+  height: 1px;
+  background: var(--agw-border);
+}
+.agw-mcp-lane-meta,
+.agw-mcp-deliver {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+}
+.agw-mcp-lane-meta {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.agw-mcp-deliver b {
+  color: var(--agw-text-muted);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-mcp-deliver-dot {
+  width: 3px;
+  height: 3px;
+  flex: none;
+  border-radius: var(--agw-radius-pill);
+  background: currentColor;
+  opacity: 0.6;
+}
+.agw-mcp-lane-rows {
+  margin-left: 16px;
+  padding-left: 12px;
+  border-left: 1px solid var(--agw-border);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* A long run gets the same bounded, internally scrolling body a long tool group
+ * gets, and for the same reason: one lane must not push the message off screen.
+ * Short runs are their natural height, so an open card inside them is not
+ * trapped behind a scrollbar it did not need. */
+.agw-mcp-lane-rows[data-scroll] {
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+/* The server's mark. Same construction as `.agw-prov-avatar` in
+ * 20-settings-providers.css — Aurora's existing way of giving an outside party
+ * an identity — at 18px in the header and at 16px on a call line, where 16 is
+ * the box every tool glyph in this window already sits in. The two sizes are
+ * part of what makes the header read as a header. */
+.agw-mcp-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 5px;
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  font-size: 9px;
+  font-weight: var(--agw-fw-strong);
+}
+.agw-mcp-tile[data-row] {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  font-size: 8px;
+}
+/* A server reached over the network. Not a status — a fact about where the
+ * payload went — so it is a hairline on the mark and never a fill. */
+.agw-mcp-tile[data-remote] {
+  border-color: color-mix(in srgb, var(--agw-warning) 60%, var(--agw-border));
+}
+/* The operation, in the UI face. It is set as WORDS ("Execute SQL"), not as the
+ * raw identifier, so it belongs in the same type as the `Read` title above it.
+ * It may not shrink to nothing and it may not eat the outcome: it takes what it
+ * needs to a ceiling, then clips, exactly as the file chip does at 220px. */
+.agw-mcp-op {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 27ch;
+  overflow: hidden;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-status="failed"] > .agw-tool-head > .agw-mcp-op {
+  color: var(--agw-text-muted);
+}
+
 /* Status sign (running spinner / done check / failed ✕) — just the colored
  * glyph, NO disc/wrapper behind it. The box only centers the icon. */
 .agw-tool-dot {
@@ -945,6 +1075,93 @@
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
 }
+
+/* ── "Run in background" ──────────────────────────────────────────────
+ * On the tool ROW, in the elapsed clock's slot, replacing it after ten seconds.
+ * Not in the expanded body: cards are collapsed by default in every state, so a
+ * control in there is behind a click — too far for the one action whose purpose
+ * is to stop a wait the user is already watching.
+ *
+ * Quiet by default — a bordered ghost, not a filled button. The row is a
+ * passive readout, and this must not out-shout the command it belongs to. */
+.agw-shell-bg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.agw-shell-bg-btn:hover:not(:disabled) {
+  color: var(--agw-text);
+  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-accent) 10%, transparent);
+}
+/* Focus is shown through the control itself, not a ring outside it — the same
+ * treatment `.agw-web-hit` and `.agw-tool-shot-canvas` use for a control that
+ * lives inside a card, where a detached outline reads as a second border. */
+.agw-shell-bg-btn:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  border-color: var(--agw-accent);
+  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
+}
+.agw-shell-bg-btn:disabled {
+  /* Mid-hand-off. Still legible — this is a one-way action and the label is
+   * saying what is happening to it. */
+  opacity: 0.6;
+  cursor: default;
+}
+.agw-shell-bg-btn svg {
+  display: block;
+  flex: none;
+}
+
+/* The hand-off was refused — nearly always because the command finished first.
+ * Sits in the same slot, in the same quiet register as the clock it replaced,
+ * with the reason on the title; it clears itself after a few seconds so the
+ * button comes back rather than leaving a dead end. */
+.agw-tool-handoff-failed {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-removed);
+}
+
+/* A settled row whose command is still running somewhere else: a small open
+ * ring where the tick would be.
+ *
+ * Static. It pulsed once and that was wrong — the row already says "Running in
+ * the background" in words, so the movement added nothing except a second thing
+ * asking for attention in a transcript that may hold a dozen of these. A shape
+ * that is not a tick is enough to say "not finished". */
+.agw-tool-dot-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--agw-accent);
+}
+
+/* The settled header's mark for a command that was handed over instead of
+ * finishing. Accent rather than green or red: it has no outcome yet, and both
+ * of those would claim one. */
+.agw-rv-mark-live {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--agw-accent);
+}
+
+/* (A "moved to the background" banner used to live here. Removed: the row says
+ * it in words and the header mark says it in a glyph, so the banner was the
+ * third copy of one fact inside a card two lines tall.) */
 
 /* ── Unified diff view (DiffView) ─────────────────────────────────────
  * Dual line-number gutters · red removed / green added · folded context.

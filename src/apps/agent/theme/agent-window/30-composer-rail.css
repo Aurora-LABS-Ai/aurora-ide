@@ -120,5 +120,11 @@
 .agw-crail-panel-body {
   max-height: 320px;
   overflow-y: auto;
+  /* Explicit, because `overflow-y: auto` alone does not leave the other axis
+     alone: CSS computes a `visible` counterpart to `auto`, so this box grew a
+     horizontal scrollbar the moment anything inside it was too wide, and the
+     panel scrolled sideways away from its own controls. Nothing in a process
+     row is meant to be reached by scrolling right. */
+  overflow-x: hidden;
 }
 

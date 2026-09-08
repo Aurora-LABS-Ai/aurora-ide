@@ -399,7 +399,7 @@ export class AgentService {
           latestUsage = usage;
           callbacks.onUsage?.(usage);
         },
-        onQueuedMessageInjected: (text, chips) => {
+        onQueuedMessageInjected: (text, chips, origin) => {
           // The Rust runtime just drained the queue slot and stapled
           // this text to the tool message about to be sent to the
           // model. UI: clear the pill, then let the panel-level
@@ -416,7 +416,7 @@ export class AgentService {
           void import("@/apps/agent/store/conversation/useChatStore").then(({ useChatStore }) => {
             useChatStore.getState().clearQueuedMessageLocal();
           });
-          callbacks.onQueuedMessageInjected?.(text, chips);
+          callbacks.onQueuedMessageInjected?.(text, chips, origin);
         },
       };
 
@@ -439,6 +439,14 @@ export class AgentService {
 
       const result = await client.chat({
         userMessage,
+        // Everything else on this request is built exactly as it is for a
+        // person's turn — same prompt, same tools, same model — so a
+        // machine-started turn APPENDS to the cached prefix instead of
+        // rewriting it. The system prompt does not read the message text
+        // (`resolveSkillsForPrompt` takes `userMessage` and never uses it),
+        // which is what makes that true rather than merely intended.
+        userMessageOrigin: promptContext?.userMessageOrigin ?? "user",
+        userMessageSummary: promptContext?.userMessageSummary ?? null,
         systemPrompt: composedPrompt.systemPrompt,
         ideContext: composedIdeContext,
         tools: availableTools as RuntimeToolDefinitionLike[],

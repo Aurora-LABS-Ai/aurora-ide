@@ -173,6 +173,34 @@ fn session_to_db_messages_rich(
                 }
             }
             MessageRole::User => {
+                // A turn STARTED by a background process ending, not by a
+                // person. On disk it is user-role (the model's turn to
+                // respond) with a single `ProcessEvent` block; on screen it
+                // is its own `process` row carrying the one-line summary.
+                //
+                // Its own role, like `compaction`, because the transcript
+                // needs a turn boundary here: `buildTurns` merges consecutive
+                // assistant messages into one turn, and the reply to this
+                // event must NOT fold into the reply before it. A `user` row
+                // with empty content used to be that boundary by accident —
+                // and drew as a blank bubble.
+                if let Some(summary) = process_started_turn_summary(&msg.blocks) {
+                    out.push(Message {
+                        id: synthetic_message_id("process", msg.timestamp, out.len()),
+                        role: "process".to_string(),
+                        content: summary,
+                        timestamp,
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
+                    continue;
+                }
                 let content = collect_text_blocks(&msg.blocks);
                 out.push(Message {
                     id: synthetic_message_id("user", msg.timestamp, out.len()),
@@ -282,6 +310,10 @@ fn session_to_db_messages_rich(
                             // Compaction markers and runtime notices live on
                             // System messages and are surfaced as their own
                             // rows; never on Assistant.
+                        }
+                        ContentBlock::ProcessEvent { .. } => {
+                            // Rides the Tool message the runtime was assembling
+                            // when the process ended, and is surfaced there.
                         }
                     }
                 }
@@ -395,6 +427,42 @@ fn session_to_db_messages_rich(
                         attached_prompt_chips: None,
                     });
                 }
+
+                // A background process that ended while these tools ran. Its
+                // own block, so a reload can tell it from a message without
+                // sniffing the text — which is the mistake the filter above
+                // exists to undo. The transcript gets the one-line summary; the
+                // model-facing detail stays in the block for the API view.
+                for (index, summary) in msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ProcessEvent { summary, .. } if !summary.is_empty() => {
+                            Some(summary)
+                        }
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    out.push(Message {
+                        id: synthetic_message_id("process", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::Value::Array(vec![serde_json::json!({
+                            "kind": "process_beat",
+                            "id": format!("process-{}-{index}", msg.timestamp),
+                            "text": summary,
+                        })])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                    });
+                }
             }
         }
     }
@@ -476,7 +544,10 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                 }
             }
             MessageRole::User => {
-                let content = collect_text_blocks(&msg.blocks);
+                // The model's copy: a person's words, or — for a turn a
+                // background process started — the detail with the process id
+                // and log path, which is what every adapter puts on the wire.
+                let content = collect_model_text_blocks(&msg.blocks);
                 if !content.is_empty() {
                     out.push(ApiMessage::User { content });
                 }
@@ -510,6 +581,10 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                         }
                         ContentBlock::ToolResult { .. } => {}
                         ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
+                        // A process event never sits on an assistant message —
+                        // it rides the tool message the runtime was building
+                        // when the process ended. Handled in that branch.
+                        ContentBlock::ProcessEvent { .. } => {}
                     }
                 }
                 let content_opt = if content.is_empty() {
@@ -549,6 +624,14 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                             content: content.clone(),
                         }),
                         ContentBlock::Text { text } => push_with_newline(&mut injected_text, text),
+                        // A background process ended while these tools ran. The
+                        // model gets the detail copy — the ids and the log path
+                        // it needs to act — carried in the same trailing user
+                        // message the injected text uses, which is the shape
+                        // every provider already accepts here.
+                        ContentBlock::ProcessEvent { detail, .. } => {
+                            push_with_newline(&mut injected_text, detail);
+                        }
                         _ => {}
                     }
                 }
@@ -579,6 +662,50 @@ fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
         }
     }
     out
+}
+
+/// The text a user-role message puts on the wire: its words, plus the
+/// model-facing `detail` of a process event when a background process is what
+/// started the turn. `collect_text_blocks` is the display copy and skips the
+/// event on purpose — the transcript draws its `summary` as a beat instead.
+fn collect_model_text_blocks(blocks: &[ContentBlock]) -> String {
+    let mut out = collect_text_blocks(blocks);
+    for block in blocks {
+        if let ContentBlock::ProcessEvent { detail, .. } = block {
+            push_with_newline(&mut out, detail);
+        }
+    }
+    out
+}
+
+/// The one-line summary of a user-role message that a background process
+/// started, or `None` when a person wrote it.
+///
+/// A person's message has text blocks; a process-started one has a single
+/// `ProcessEvent` and nothing to read as words. The presence of ANY text is
+/// what decides — a message someone typed is theirs even if an event were
+/// ever to ride beside it.
+fn process_started_turn_summary(blocks: &[ContentBlock]) -> Option<String> {
+    let typed = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()));
+    if typed {
+        return None;
+    }
+    let summaries: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ProcessEvent { summary, .. } if !summary.trim().is_empty() => {
+                Some(summary.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    if summaries.is_empty() {
+        None
+    } else {
+        Some(summaries.join(" · "))
+    }
 }
 
 fn push_with_newline(out: &mut String, s: &str) {
@@ -1506,6 +1633,199 @@ mod tests {
         assert_eq!(roles, vec!["user", "assistant", "notice"]);
         let notice = out.last().expect("notice row");
         assert_eq!(notice.content, "This reply is cut off.");
+    }
+
+    /// One background-process ending, written to disk and read back.
+    ///
+    /// The first version of this rode in as plain TEXT on the tool message —
+    /// the same shape a mid-turn user message uses. Live, a flag on the event
+    /// told the transcript to draw a beat; the flag was not persisted, so a
+    /// reloaded thread had only the text and drew what text on a tool message
+    /// means: the user's own injected row, carrying the model-facing sentence
+    /// ("The background process … has ended with exit code 0") in the user's
+    /// voice. Its own block is what makes the two distinguishable on disk.
+    #[test]
+    fn a_process_ending_reloads_as_a_beat_and_never_as_a_message() {
+        let messages = vec![
+            user_msg("build it", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell_read_output".into(),
+                    input: serde_json::json!({ "processId": "toolu_1" }),
+                }],
+                2,
+            ),
+            ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "no new output".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ProcessEvent {
+                        summary: "Finished pnpm build · exit 0".into(),
+                        detail: "The background process \"pnpm build\" (id toolu_1) has ended \
+                                 with exit code 0."
+                            .into(),
+                        created_at: 3,
+                    },
+                ],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+
+        let out = session_to_db_messages(&messages);
+
+        // Nothing in the reloaded transcript is the user speaking except the
+        // one thing the user actually said.
+        assert_eq!(
+            out.iter().filter(|m| m.role == "user").count(),
+            1,
+            "the process ending must not reload as a user message"
+        );
+        let timelines: Vec<String> = out
+            .iter()
+            .filter_map(|m| m.timeline.as_ref())
+            .map(std::string::ToString::to_string)
+            .collect();
+        let joined = timelines.join(" ");
+        assert!(
+            joined.contains("process_beat"),
+            "expected a process beat, saw {joined}"
+        );
+        assert!(
+            joined.contains("Finished pnpm build"),
+            "the beat shows the one-line summary: {joined}"
+        );
+        assert!(
+            !joined.contains("user_injection"),
+            "it is nobody's message: {joined}"
+        );
+        // The model-facing copy stays out of the transcript row — it is for the
+        // API view, which the next test covers.
+        assert!(
+            !joined.contains("has ended with exit code"),
+            "the detail copy belongs on the wire, not in the row: {joined}"
+        );
+    }
+
+    /// The other half: the model must still be TOLD. A notice is stripped from
+    /// every provider view because it is product copy about Aurora; a process
+    /// the agent started ending is a fact about the work, and it goes on the
+    /// wire with the id and exit code the model needs to act on.
+    #[test]
+    fn the_model_is_told_the_process_ended() {
+        let messages = vec![
+            user_msg("build it", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell_read_output".into(),
+                    input: serde_json::json!({}),
+                }],
+                2,
+            ),
+            ConversationMessage {
+                role: MessageRole::Tool,
+                blocks: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "no new output".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ProcessEvent {
+                        summary: "Finished pnpm build · exit 0".into(),
+                        detail: "The background process \"pnpm build\" (id toolu_1) has ended \
+                                 with exit code 0."
+                            .into(),
+                        created_at: 3,
+                    },
+                ],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+
+        let api = session_to_api_messages(&messages);
+        let sent = serde_json::to_string(&api).expect("serialises");
+        assert!(
+            sent.contains("has ended with exit code 0"),
+            "the model has to hear it: {sent}"
+        );
+        assert!(
+            sent.contains("toolu_1"),
+            "with the id, because the next move is shell_read_output: {sent}"
+        );
+    }
+
+    /// A process ending that STARTED a turn (the conversation was idle) is a
+    /// user-role message with one process-event block. It reloads as its own
+    /// `process` row carrying the summary — the boundary the transcript needs
+    /// so the reply gets its own turn — and never as a user bubble, blank or
+    /// otherwise.
+    #[test]
+    fn a_process_started_turn_reloads_as_a_process_row() {
+        let messages = vec![
+            user_msg("run it in background", 1),
+            assistant_text("It's running.", 2),
+            ConversationMessage::user_process_event(
+                "Finished count_seconds.py · exit 0",
+                "The background process \"count_seconds.py\" (id bg-1) has ended with exit \
+                 code 0.",
+                3,
+            ),
+            assistant_text("It finished cleanly.", 4),
+        ];
+
+        let out = session_to_db_messages(&messages);
+
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "process", "assistant"]);
+        let row = &out[2];
+        assert_eq!(row.content, "Finished count_seconds.py · exit 0");
+        assert!(
+            row.timeline.is_none(),
+            "the row IS the beat; the frontend draws it: {:?}",
+            row.timeline
+        );
+        assert!(
+            !format!("{out:?}").contains("has ended with exit"),
+            "the model-facing detail stays off the transcript: {out:?}"
+        );
+    }
+
+    /// The other half of the same message: the API view carries the detail,
+    /// because that is what went on the wire. A `process` row with nothing
+    /// behind it would make the rebuild-context view claim the model was
+    /// woken by an empty message.
+    #[test]
+    fn a_process_started_turn_reaches_the_api_view_with_its_detail() {
+        let messages = vec![
+            user_msg("run it in background", 1),
+            ConversationMessage::user_process_event(
+                "Finished count_seconds.py · exit 0",
+                "The background process \"count_seconds.py\" (id bg-1) has ended with exit \
+                 code 0.",
+                3,
+            ),
+        ];
+
+        let api = session_to_api_messages(&messages);
+        let sent = serde_json::to_string(&api).expect("serialises");
+
+        assert!(sent.contains("has ended with exit code 0"), "{sent}");
+        assert!(sent.contains("bg-1"), "{sent}");
     }
 
     #[test]

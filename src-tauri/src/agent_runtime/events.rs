@@ -135,6 +135,11 @@ pub enum AssistantEvent {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         chips: Option<Vec<super::types::AttachedPromptChip>>,
+        /// Who queued it, so the frontend knows which row to draw. A person's
+        /// message keeps the injected-user row; a background-process report is
+        /// a beat, because it is nobody's words.
+        #[serde(default)]
+        origin: super::types::InjectedOrigin,
     },
 
     /// Stream-level error. `recoverable` tells the frontend whether a

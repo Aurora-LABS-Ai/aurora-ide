@@ -220,7 +220,9 @@ impl AgentRegistry {
         text: String,
         display_text: Option<String>,
         chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
+        origin: crate::agent_runtime::types::InjectedOrigin,
     ) -> Result<(), String> {
+        use crate::agent_runtime::types::InjectedOrigin;
         if text.trim().is_empty() {
             return Err("queued message text cannot be empty".to_string());
         }
@@ -232,7 +234,11 @@ impl AgentRegistry {
             text,
             display_text: display_text.filter(|t| !t.trim().is_empty()),
             chips: chips.filter(|c| !c.is_empty()),
-            mid_turn: true,
+            // The mid-turn preamble says "the user sent this while your tools
+            // were running". True of a composer message; a lie about a process
+            // that ended on its own, which carries its own framing instead.
+            mid_turn: origin == InjectedOrigin::User,
+            origin,
             queued_at_ms: chrono::Utc::now().timestamp_millis(),
         });
         Ok(())

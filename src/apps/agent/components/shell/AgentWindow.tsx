@@ -20,6 +20,7 @@ import { registerQuestionHandler } from "@/apps/agent/services/tools/question-br
 import { registerTeamViewOpener } from "@/apps/agent/services/team/team-view-bridge";
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
+import { useBackgroundProcessWatch } from "@/apps/agent/hooks/useBackgroundProcessWatch";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
 import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
@@ -61,6 +62,10 @@ export const AgentWindow: React.FC = () => {
   // Dragging a file out of the Files panel and onto a composer. One coordinator
   // per window owns the pointer listeners for every source and drop zone in it.
   useAgentPathDrag();
+
+  // Background processes end whether or not anyone has the process panel open,
+  // and a tool card in the transcript is one of the things that has to know.
+  useBackgroundProcessWatch(currentThreadId);
 
   // Bind the window to its project + load that project's chats once. If this
   // mount is a RELOAD of the same window (Ctrl+R, or the native crash-recovery

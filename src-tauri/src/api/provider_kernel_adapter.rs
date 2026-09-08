@@ -1425,6 +1425,13 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             // off"). Sending it would both waste tokens and teach the model to
             // imitate Aurora's own voice back at us.
             ContentBlock::Notice { .. } => {}
+            // A background process the agent started has ended. Unlike a
+            // notice, this IS the model's business — it is a fact about the
+            // work, and the next move is usually to read the process's log —
+            // so the detail copy goes on the wire as ordinary text.
+            ContentBlock::ProcessEvent { detail, .. } => {
+                arr.push(json!({ "type": "text", "text": detail }));
+            }
             // A directly made picture: one line of text. Anthropic rejects
             // image blocks in assistant turns, and the model needs the name,
             // not the pixels, to refer to it.
@@ -2552,6 +2559,19 @@ pub(crate) fn collect_text(blocks: &[ContentBlock]) -> String {
             // A directly made picture is text to every provider: its one-line
             // description, so the model can name it, never its pixels.
             ContentBlock::Image { .. } => b.image_as_text(),
+            // A background process the agent started has ended. This IS the
+            // model's business — a fact about the work, whose next move is
+            // usually to read the process's log — so the detail copy goes on
+            // the wire as ordinary text, exactly as the Anthropic path already
+            // sends it (`message_blocks_to_anthropic_content`).
+            //
+            // It used to fall through the `_ => None` below, which meant every
+            // OpenAI-compatible provider — most of them — was handed the
+            // message with NOTHING in it. Caught by reading a model's own
+            // thinking on a live run: "No user content — just an empty message.
+            // The background process likely finished by now." It was never
+            // told; it guessed, and it happened to guess right.
+            ContentBlock::ProcessEvent { detail, .. } => Some(detail.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -3960,6 +3980,42 @@ mod tests {
         assert_eq!(
             AnthropicEffort::parse("x-high"),
             Some(AnthropicEffort::XHigh)
+        );
+    }
+
+    /// A background process ending must reach the model on EVERY wire.
+    ///
+    /// It reached Anthropic and nothing else: `collect_text` — the flattener
+    /// every OpenAI-compatible provider goes through — dropped the block on its
+    /// `_ => None` arm. When the ending was one block among several the loss
+    /// was invisible; once a whole turn was started BY an ending, the message
+    /// went out empty and the model was left to guess. It guessed, in writing:
+    /// "No user content — just an empty message. The background process likely
+    /// finished by now."
+    #[test]
+    fn a_process_ending_reaches_the_openai_wire_too() {
+        let blocks = vec![ContentBlock::ProcessEvent {
+            summary: "Finished pnpm test · exit 0".into(),
+            detail: "The background process \"pnpm test\" (id bg-1) has ended with exit code 0."
+                .into(),
+            created_at: 7,
+        }];
+
+        // The model's copy, not the transcript's one-liner: it carries the id
+        // and the log path, which is what makes `shell_read_output` callable.
+        assert_eq!(
+            collect_text(&blocks),
+            "The background process \"pnpm test\" (id bg-1) has ended with exit code 0."
+        );
+
+        // And the Anthropic path still sends the same thing, so the two wires
+        // cannot drift apart again.
+        let content = message_blocks_to_anthropic_content(&blocks, false);
+        let arr = content.as_array().expect("array");
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(
+            arr[0]["text"],
+            "The background process \"pnpm test\" (id bg-1) has ended with exit code 0."
         );
     }
 

@@ -137,10 +137,37 @@ fn schema_page(schema: &crate::agent_runtime::api_client::ToolSchema, offset: us
     // At most 24 KiB after JSON escaping, including pathological Unicode.
     let page: String = text.chars().skip(offset).take(4_000).collect();
     let end = offset.saturating_add(page.chars().count());
-    json!({"name":schema.name, "description":schema.description.chars().take(1_000).collect::<String>(),
+    json!({"name":schema.name, "description":preview_description(&schema.description),
         "definition_page":{"text":page,"offset":offset,"total_chars":total,"next_offset":if end < total {Some(end)} else {None}},
         "note":"This schema is paged. Read every definition_page before invoking it; concatenate the text as JSON to recover the full description and parameters. Call tool_search with the query below and schema_offset equal to next_offset for the next page.",
         "query":format!("select:{}",schema.name)})
+}
+
+/// How much of a paged tool's description rides on the envelope, and what it
+/// says when that is not all of it.
+pub(super) const DESCRIPTION_PREVIEW_CHARS: usize = 1_000;
+
+/// The description a paged result carries, and a marker when it is cut.
+///
+/// It used to be `take(1_000)` with nothing said, so a long description ended
+/// mid-sentence and read as the whole thing. Found by the harness rig on
+/// 2026-09-06: *"the top-level description field is truncated whenever
+/// schema_offset is non-zero, with no ellipsis or marker."*
+///
+/// Silent truncation is the worst shape for this field, because the reader
+/// cannot tell a complete short description from a cut long one — and a model
+/// that believes it has read the whole contract stops looking. The full text is
+/// in the pages either way; this only has to stop pretending otherwise.
+pub(super) fn preview_description(description: &str) -> String {
+    let total = description.chars().count();
+    if total <= DESCRIPTION_PREVIEW_CHARS {
+        return description.to_string();
+    }
+    let kept: String = description.chars().take(DESCRIPTION_PREVIEW_CHARS).collect();
+    format!(
+        "{kept}\n\n[preview cut at {DESCRIPTION_PREVIEW_CHARS} of {total} characters — the \
+         complete description is inside definition_page.text; concatenate every page to read it]"
+    )
 }
 
 fn definition_text(schema: &crate::agent_runtime::api_client::ToolSchema) -> String {

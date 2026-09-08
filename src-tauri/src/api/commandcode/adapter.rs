@@ -229,6 +229,11 @@ fn build_messages(messages: &[ConversationMessage], supports_vision: bool) -> Ve
                 // Compaction markers and notices are Aurora's own transcript
                 // furniture and are never sent.
                 ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
+                // A background process ending is not furniture — the agent
+                // started it and has to be told it is over.
+                ContentBlock::ProcessEvent { detail, .. } => {
+                    content_parts.push(json!({ "type": "text", "text": detail }));
+                }
             }
         }
 

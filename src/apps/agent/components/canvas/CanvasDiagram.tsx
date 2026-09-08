@@ -14,6 +14,7 @@ import {
   MAX_DIAGRAM_SCALE,
   MIN_DIAGRAM_SCALE,
   readMermaidSvgSize,
+  sweepMermaidScratchNodes,
 } from "@/apps/agent/lib/render/mermaid-svg";
 
 interface CanvasDiagramProps {
@@ -118,6 +119,10 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
     if (!stage) return;
     let cancelled = false;
     const id = `${renderId}-${refreshKey}`;
+
+    // Never sweeps the diagram it just drew — see `sweepMermaidScratchNodes`.
+    const dropScratchNodes = () => sweepMermaidScratchNodes(id, stage);
+
     setLoading(true);
     setError("");
     setSvg("");
@@ -133,11 +138,11 @@ export const CanvasDiagram: React.FC<CanvasDiagramProps> = ({ source, title, ref
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
-        document.getElementById(id)?.remove();
+        dropScratchNodes();
       });
     return () => {
       cancelled = true;
-      document.getElementById(id)?.remove();
+      dropScratchNodes();
     };
   }, [activeCustomization, activeThemeId, contrast, refreshKey, renderId, source]);
 

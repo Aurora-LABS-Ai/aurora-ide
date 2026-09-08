@@ -211,6 +211,22 @@
   box-shadow: 0 0 0 2px var(--agw-ring);
   border-radius: var(--agw-radius-sm);
 }
+/* ONE line, clipped.
+ *
+ * A checklist item is a sentence somebody wrote, so `.agw-task-label` was free
+ * to wrap. A background process falls back to its whole COMMAND when the spawn
+ * carried no name, and a real command is long — `cd api && DATABASE_URL='postgres
+ * ql+asyncpg://…' .venv/Scripts/python.exe -m pytest -q 2>&1 | tail -15`. Wrapped,
+ * that took five lines; worse, a URL has no break opportunity, so it also
+ * overflowed sideways and shoved the state pill and the STOP BUTTON out past the
+ * panel's edge. The process was unstoppable because its own name was in the way.
+ *
+ * The full text stays one hover away (the row carries it in `title`). */
+.agw-bgtask-item .agw-task-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agw-bgtask-state {
   flex: 0 0 auto;
   font-size: var(--agw-fs-label);

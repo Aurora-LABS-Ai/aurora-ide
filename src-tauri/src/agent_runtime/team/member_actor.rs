@@ -1253,6 +1253,9 @@ async fn pump_mailbox(
                         // Mailbox traffic carries its own `[Message from …]`
                         // framing — the user-mid-turn preamble would lie.
                         mid_turn: false,
+                        // A teammate's message IS somebody's words, so it keeps
+                        // the message row; only machine events become beats.
+                        origin: crate::agent_runtime::types::InjectedOrigin::User,
                         queued_at_ms: Utc::now().timestamp_millis(),
                     });
                 }

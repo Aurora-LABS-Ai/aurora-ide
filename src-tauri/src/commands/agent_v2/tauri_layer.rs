@@ -210,9 +210,22 @@ pub async fn agent_enqueue_message(
     text: String,
     display_text: Option<String>,
     chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
+    // `origin`: "user" (the default) or "process". Decides the model-facing
+    // framing and which row the transcript draws — a background process ending
+    // must not arrive wearing the user's voice.
+    origin: Option<String>,
 ) -> Result<(), String> {
+    use crate::agent_runtime::types::InjectedOrigin;
+    // An unrecognised value falls back to `User`, which is the conservative
+    // end: it renders as a message and is framed as one. Silently promoting an
+    // unknown string to a machine event would let a typo strip a person's words
+    // of their attribution.
+    let origin = match origin.as_deref() {
+        Some("process") => InjectedOrigin::Process,
+        _ => InjectedOrigin::User,
+    };
     state
-        .enqueue_message(&thread_id, text, display_text, chips)
+        .enqueue_message(&thread_id, text, display_text, chips, origin)
         .await
 }
 

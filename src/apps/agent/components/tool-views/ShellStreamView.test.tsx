@@ -64,3 +64,22 @@ describe("ShellStreamView while nothing has printed yet", () => {
     expect(html).toContain("78 passed");
   });
 });
+
+/**
+ * The offer to hand a long command over does NOT live here — it is on the tool
+ * row, because cards are collapsed by default and a control in this body would
+ * be behind a click. Covered in `ToolCallCard.test.tsx`; asserted here so the
+ * button cannot quietly come back to the place it was rejected from.
+ */
+describe("ShellStreamView and the background hand-off", () => {
+  it("draws no hand-off control of its own", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_060_000);
+
+    const html = renderToStaticMarkup(
+      <ShellStreamView command="pnpm build" output="" startedAt={1_000_000} />,
+    );
+
+    expect(html).not.toContain("Run in background");
+  });
+});

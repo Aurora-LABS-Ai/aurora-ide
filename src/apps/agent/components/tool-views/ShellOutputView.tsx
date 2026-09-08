@@ -87,21 +87,38 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
             .knowledge/knowledge.md): the glyph carries the state, and the exit
             code beside it carries the detail. The label stays for screen
             readers, since a colour and a shape cannot be the only carriers. */}
-        <span
-          className={data.success ? "agw-rv-mark-ok" : "agw-rv-mark-bad"}
-          title={data.success ? "Succeeded" : "Failed"}
-        >
-          <AgentIcon
-            name={data.success ? "check" : "close"}
-            size={12}
-            strokeWidth={2.6}
-          />
-          <span className="agw-sr-only">{data.success ? "Succeeded" : "Failed"}</span>
-        </span>
-        {typeof data.exitCode === "number" && (
+        {/* A handed-over command has no outcome to mark yet. Drawing the tick
+            would state one, and drawing the × would state the opposite one; it
+            wears the process list's own glyph instead, because "it is over
+            there now" is the whole truth about it. */}
+        {data.detached ? (
+          <span className="agw-rv-mark-live" title="Still running in the background">
+            <AgentIcon name="process-list" size={12} strokeWidth={2.2} />
+            <span className="agw-sr-only">Still running in the background</span>
+          </span>
+        ) : (
+          <span
+            className={data.success ? "agw-rv-mark-ok" : "agw-rv-mark-bad"}
+            title={data.success ? "Succeeded" : "Failed"}
+          >
+            <AgentIcon
+              name={data.success ? "check" : "close"}
+              size={12}
+              strokeWidth={2.6}
+            />
+            <span className="agw-sr-only">{data.success ? "Succeeded" : "Failed"}</span>
+          </span>
+        )}
+        {!data.detached && typeof data.exitCode === "number" && (
           <span className="agw-rv-exit">exit {data.exitCode}</span>
         )}
       </div>
+
+      {/* No "moved to the background" banner here. The row above this card
+          already says "Running in the background" in words, and the header mark
+          beside the shell name says it again in a glyph — a third copy inside
+          the body made one short card state the same fact three times. The mark
+          carries it; its accessible name says it for a screen reader. */}
 
       {data.command && (
         <div className="agw-shell-command" title={data.cwd ? `Working directory: ${data.cwd}` : undefined}>

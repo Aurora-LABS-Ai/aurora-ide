@@ -95,6 +95,7 @@ import {
   appendCompaction,
   appendContent,
   appendNotice,
+  appendProcessBeat,
   appendThinking,
   appendUserInjection,
   beginReconnect,
@@ -302,6 +303,19 @@ export interface SendOptions {
    * right.
    */
   model?: string | null;
+  /**
+   * Who is starting this turn. Defaults to the user, which is every send a
+   * person makes.
+   *
+   * `"process"` is the background report: a process ended while this
+   * conversation was idle, so nothing was going to tell the model unless
+   * something started a turn. The message is real and gets answered, but it is
+   * persisted as a process event rather than as words anybody typed — no user
+   * bubble, no pill, no title derived from it.
+   */
+  origin?: "user" | "process";
+  /** The transcript's one line when {@link SendOptions.origin} is `"process"`. */
+  summary?: string | null;
 }
 
 export interface AgentWindowSend {
@@ -1163,17 +1177,37 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // agent is still working through it, and `todo_write` replaces it when a
     // genuinely new list starts.
 
-    // Optimistic user bubble — the runtime re-persists this verbatim, so the
+    // Optimistic opener — the runtime re-persists this verbatim, so the
     // reload at the end reconciles it to the authoritative id.
-    store.appendTurnMessage(threadId, {
-      id: genId(),
-      role: "user",
-      content: contentForModel,
-      attachedSelectedElements: selectionPills.length > 0 ? selectionPills : undefined,
-      attachedCommands: commandChips.length > 0 ? commandChips : undefined,
-      attachedPromptChips: promptChips.length > 0 ? promptChips : undefined,
-      timestamp: nowIso(),
-    });
+    //
+    // A turn Aurora started because a background process ended has no user
+    // bubble — nobody typed "Failed pnpm test · exit 1". It gets a `process`
+    // row instead, the exact shape `threads.rs` rebuilds from the persisted
+    // `ProcessEvent` block, and `buildTurns` turns that row into a fresh
+    // assistant turn whose first line is the beat. The row is what gives the
+    // reply its own turn: seeding the beat into the streaming message with
+    // no row above it left that message consecutive with the previous
+    // reply, the two merged, and the answer streamed into a bubble that had
+    // already settled and scrolled past. Live and reloaded now disagree
+    // about nothing.
+    if (options?.origin === "process") {
+      store.appendTurnMessage(threadId, {
+        id: genId(),
+        role: "process",
+        content: options.summary?.trim() || contentForModel,
+        timestamp: nowIso(),
+      });
+    } else {
+      store.appendTurnMessage(threadId, {
+        id: genId(),
+        role: "user",
+        content: contentForModel,
+        attachedSelectedElements: selectionPills.length > 0 ? selectionPills : undefined,
+        attachedCommands: commandChips.length > 0 ? commandChips : undefined,
+        attachedPromptChips: promptChips.length > 0 ? promptChips : undefined,
+        timestamp: nowIso(),
+      });
+    }
 
     // AI title maker — ONLY for the first message of a NEW chat (never existing
     // threads). Fire-and-forget so it never blocks the turn; on success it
@@ -1242,7 +1276,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionProvider = undefined;
     }
 
-    // The streaming assistant target.
+    // The streaming assistant target. It follows the opener row appended
+    // above — a user bubble or a process row — and `buildTurns` merges it
+    // into the turn that row opened, whichever kind it was.
     const assistantId = genId();
     const assistantSeed: DbMessage = {
       id: assistantId,
@@ -1674,7 +1710,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // only while the card is actually open.
             context.invalidateBreakdown(threadId);
           },
-          onQueuedMessageInjected: (text, chips) => {
+          onQueuedMessageInjected: (text, chips, origin) => {
             // The runtime drained the queue and stapled the user's text onto the
             // tool message it's about to send. Render it inline in the streaming
             // assistant message — after the tool result, before the agent
@@ -1682,7 +1718,19 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // user bubble (that would land after the streaming message and read
             // as if the agent replied before the user spoke). Then drop the pill.
             // `text` is the display copy; `chips` re-render the composer pills.
+            //
+            // The same slot also carries machine events — a background process
+            // ending or being stopped. Those are nobody's words, so they get
+            // the checklist beat's one-line row instead of the user's, and they
+            // never touch the composer pill (they never lit it).
             flushStreamText();
+            if (origin === "process") {
+              patchMessage(assistantId, (m) => ({
+                ...m,
+                timeline: appendProcessBeat(timelineOf(m), text),
+              }));
+              return;
+            }
             patchMessage(assistantId, (m) => ({
               ...m,
               timeline: appendUserInjection(timelineOf(m), text, chips),
@@ -1883,6 +1931,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         ideContext,
         {
           userMessage: contentForModel,
+          // Only ever `"process"` for the idle background report — see
+          // `SendOptions.origin`. Nothing else about the request changes with
+          // it, so the turn appends to the cached prefix like any other.
+          userMessageOrigin: options?.origin ?? "user",
+          userMessageSummary: options?.summary ?? null,
           workspacePath: projectRoot ?? undefined,
           isFirstMessage: wasDraft,
           // `/`-attached skills → resolved into the system prompt as explicit,

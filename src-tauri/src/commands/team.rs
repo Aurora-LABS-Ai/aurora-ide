@@ -491,6 +491,14 @@ pub async fn team_get_agent_transcript(
                 // Compaction markers and runtime notices carry no
                 // transcript-visible content for a teammate's turn.
                 ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
+                // A process ending shows as the one line the transcript uses,
+                // not the model-facing detail with its ids and log paths.
+                ContentBlock::ProcessEvent { summary, .. } => {
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(summary);
+                }
             }
         }
 

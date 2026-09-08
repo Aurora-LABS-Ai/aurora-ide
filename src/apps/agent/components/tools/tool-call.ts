@@ -6,6 +6,8 @@
  * component import cycle.
  */
 
+import { mcpServerIdForCard } from "./mcp-card";
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -43,31 +45,50 @@ export const isChecklistCall = (call: ToolCall): boolean =>
   CHECKLIST_TOOL_NAMES.has(call.name);
 
 /**
- * Split a run of tool calls so that consecutive checklist calls arrive as ONE
- * entry.
+ * Split a run of tool calls into the STEPS the transcript draws.
  *
- * Laying out a five-task plan is five `TaskCreate` calls in a single message —
- * that batching is the tool shape working, and it is invisible to the reader,
- * who sees one decision. Drawn one card per call it wrote five near-identical
- * rows and a counter climbing `0/1 … 0/5` while nothing had been done.
+ * A step is one call, with two exceptions, both of which are runs the model
+ * makes because the tool shape asks it to and which a reader sees as one thing:
  *
- * The list itself is not the transcript's to show: it lives in the header
- * indicator, live, and flashes open when it changes. The transcript says a
- * checklist moved and stops.
+ * **Consecutive checklist calls.** Laying out a five-task plan is five
+ * `TaskCreate` calls in a single message. Drawn one card per call it wrote five
+ * near-identical rows and a counter climbing `0/1 … 0/5` while nothing had been
+ * done. The list itself is not the transcript's to show: it lives in the header
+ * indicator. The transcript says a checklist moved and stops.
  *
- * Every other tool passes through as a run of one, so the caller has a single
+ * **Consecutive calls to the same MCP server.** Connecting to a server and then
+ * asking it three things is one conversation with one outside party, and the
+ * server's name is the same on all three rows. Grouped, the lane names it once
+ * in a header and each line spends its width on the operation and the outcome
+ * instead. A call to a DIFFERENT server, or any non-MCP call in between, ends
+ * the run — so the grouping never reorders anything or implies an adjacency the
+ * turn did not have.
+ *
+ * Everything else passes through as a run of one, so the caller has a single
  * shape to render and the group's own "N calls" header keeps counting real
  * calls.
  */
-export const groupChecklistRuns = (tools: ToolCall[]): ToolCall[][] => {
+export const groupToolRuns = (tools: ToolCall[]): ToolCall[][] => {
   const runs: ToolCall[][] = [];
+  // Resolving a server id walks the server list, so each call is asked once and
+  // the answer is carried to the next iteration's comparison.
+  let previousServerId: string | null = null;
   for (const call of tools) {
     const previous = runs[runs.length - 1];
-    if (previous && isChecklistCall(call) && isChecklistCall(previous[0])) {
-      previous.push(call);
-      continue;
+    const serverId = mcpServerIdForCard(call);
+    if (previous) {
+      if (isChecklistCall(call) && isChecklistCall(previous[0])) {
+        previous.push(call);
+        previousServerId = null;
+        continue;
+      }
+      if (serverId !== null && serverId === previousServerId) {
+        previous.push(call);
+        continue;
+      }
     }
     runs.push([call]);
+    previousServerId = serverId;
   }
   return runs;
 };
@@ -210,14 +231,29 @@ const MAX_FAILURE_SCAN = 256_000;
  * Does this result say, in its own words, that the tool did not do the thing?
  *
  * Rust tools report failure as `{"success": false, "error": …}` — a refusal to
- * edit an unread file, an exact-text match that found nothing, a shell command
- * that exited non-zero. Only the sentinel prefixes used to be checked, so every
- * one of those rendered with a green check and a "done" count. A card that
- * claims success over its own error message is worse than no card.
+ * edit an unread file, an exact-text match that found nothing. Only the
+ * sentinel prefixes used to be checked, so every one of those rendered with a
+ * green check and a "done" count. A card that claims success over its own error
+ * message is worse than no card.
  *
  * Strictly TOP-LEVEL. Per-item `success` flags are a different statement: one
  * unreadable path inside a 10-file read is a partial result, not a failed call,
  * and the multi-file view reports it per row.
+ *
+ * **A command that ran and exited non-zero is NOT one of these.** That question
+ * — did the tool do its job — is not the same question as whether the command
+ * it ran was happy. `shell_execute`'s job is to run a command and report what
+ * it printed with its exit code; `ls /nope` exiting 2 IS that job done, and the
+ * 2 is the answer. Calling it a failed call marked one deliberate probe with a
+ * red ✗ on the row, a red ✗ in the result header, and a failure in the enclosing
+ * group's "2 done ✗" count — three alarms for a command that behaved exactly as
+ * asked. It is the same distinction `grep` already makes: no matches is an
+ * answer, not a broken search.
+ *
+ * A completed run always carries a numeric `exitCode`. Aurora failing to run
+ * one at all (bad cwd, unknown shell, spawn error) carries `error` and no exit
+ * code, and a killed-on-timeout run reports `exitCode: null` — both still read
+ * as failures here, because in neither case did the command produce an answer.
  */
 export function resultReportsFailure(result: string): boolean {
   const trimmed = result.trimStart();
@@ -227,12 +263,15 @@ export function resultReportsFailure(result: string): boolean {
   if (trimmed.length > MAX_FAILURE_SCAN) return false;
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    return (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      (parsed as Record<string, unknown>).success === false
-    );
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return false;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.success !== false) return false;
+    // It ran, and it told us how it ended. The outcome belongs in the row's
+    // summary ("exit 2"), not in its status.
+    if (typeof record.exitCode === "number") return false;
+    return true;
   } catch {
     // Truncated or malformed → not a claim of failure we can stand behind.
     return false;

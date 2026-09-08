@@ -444,6 +444,15 @@
   background: var(--agw-accent);
 }
 
+/* A background process ending is the same KIND of event as a checklist move —
+   something shifted around the work, worth one line — so it borrows the beat
+   wholesale rather than inventing a second vocabulary for it. It is not a
+   task, though, so its dot stays the quiet default; the verb carries whether
+   the thing finished or failed. */
+.agw-task-beat[data-task-op="process"] .agw-task-beat-verb {
+  color: var(--agw-text-muted);
+}
+
 .agw-task-beat-verb {
   flex: none;
   font-weight: var(--agw-fw-medium);

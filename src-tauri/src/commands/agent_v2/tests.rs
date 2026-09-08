@@ -556,6 +556,8 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         turn_id: turn_id.into(),
         thread_id: thread_id.into(),
         user_message: msg.into(),
+        user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
+        user_message_summary: None,
         provider_id: "mock-provider".into(),
         model: "mock-model".into(),
         model_selection: None,
@@ -2618,3 +2620,72 @@ async fn the_completed_turn_holds_no_duplicate_user_message() {
         "one user message, one reply — saw {lines:#?}"
     );
 }
+
+// ── Mid-turn slot: who queued it ────────────────────────────────
+//
+// The slot was built for a person typing while tools run, then reused for
+// machine events, which inherited the person's framing. A stopped background
+// process reached the model as `[The user sent this while your tool calls were
+// running…] The user stopped …` and reached the screen as the user's own
+// bubble. The origin is what keeps the two apart.
+
+#[tokio::test]
+async fn a_composer_message_is_still_framed_as_the_user_speaking() {
+    use crate::agent_runtime::types::InjectedOrigin;
+    let (registry, _dir) = temp_registry();
+
+    registry
+        .enqueue_message(
+            "thread-user",
+            "wait, don't run pnpm".into(),
+            None,
+            None,
+            InjectedOrigin::User,
+        )
+        .await
+        .expect("queued");
+
+    let session = registry.load_or_create_session("thread-user").expect("session");
+    let queued = session
+        .lock()
+        .await
+        .take_queued_message()
+        .expect("the slot holds it");
+
+    assert_eq!(queued.origin, InjectedOrigin::User);
+    // The preamble tells the model the message arrived AFTER the results above
+    // it. That is true of a person typing, and it must not stop being sent.
+    assert!(queued.mid_turn);
+}
+
+#[tokio::test]
+async fn a_process_report_is_not_framed_as_anybody_speaking() {
+    use crate::agent_runtime::types::InjectedOrigin;
+    let (registry, _dir) = temp_registry();
+
+    registry
+        .enqueue_message(
+            "thread-process",
+            "The background process \"pnpm build\" (id bg-1) has ended".into(),
+            None,
+            None,
+            InjectedOrigin::Process,
+        )
+        .await
+        .expect("queued");
+
+    let session = registry
+        .load_or_create_session("thread-process")
+        .expect("session");
+    let queued = session
+        .lock()
+        .await
+        .take_queued_message()
+        .expect("the slot holds it");
+
+    assert_eq!(queued.origin, InjectedOrigin::Process);
+    // `[The user sent this…]` over a process that ended on its own is a lie
+    // about who is talking, which is the whole defect this field exists for.
+    assert!(!queued.mid_turn);
+}
+

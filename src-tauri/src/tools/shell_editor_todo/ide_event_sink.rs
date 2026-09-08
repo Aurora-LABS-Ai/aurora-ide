@@ -252,6 +252,17 @@ pub struct ShellRunOutput {
     /// The survivors by name when the process table identified them —
     /// see `commands::CommandOutput::survivors`.
     pub survivors: Vec<String>,
+    /// The user pressed "Run in background": this result is the command's
+    /// output *so far*, not its ending. The process is still running under
+    /// `process_id`, and the real ending arrives on `shell-process-ended`.
+    ///
+    /// Every other field describes a finished run, so this one has to be read
+    /// first — `exit_code: None, success: false` on a detached command means
+    /// "not known yet", not "it failed".
+    pub detached: bool,
+    /// Where the run's combined output is being mirrored, so the model can
+    /// read the rest of it later with `shell_read_output`.
+    pub output_file: Option<String>,
 }
 
 /// What a background spawn looked like after its startup window.
@@ -423,6 +434,9 @@ impl IdeEventSink for NoopIdeEventSink {
             timed_out: output.timed_out,
             left_running: output.left_running,
             survivors: output.survivors,
+            // Nothing can press the button on a sink with no window attached.
+            detached: false,
+            output_file: None,
         })
     }
 

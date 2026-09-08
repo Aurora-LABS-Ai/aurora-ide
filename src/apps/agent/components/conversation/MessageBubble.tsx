@@ -676,6 +676,38 @@ const InjectionNote: React.FC<{
 };
 
 /**
+ * A background process ended, or someone stopped it, while the turn was
+ * running.
+ *
+ * The checklist beat's shape on purpose (`ChecklistBeatCard`, `.agw-task-beat`):
+ * a dot, a past-tense verb, and the thing it happened to. Both are the same
+ * kind of event — something moved in the background of the work, worth one line
+ * and no more — so they read as one vocabulary instead of two.
+ *
+ * The text arrives already written by whoever reported the process, in the
+ * form "<verb> <subject>" ("Finished pnpm build · exit 0"). Split on the first
+ * space so the verb can take the beat's weight, exactly as the checklist does.
+ */
+const ProcessBeat: React.FC<{ text: string }> = ({ text }) => {
+  const trimmed = text.trim();
+  const split = trimmed.indexOf(" ");
+  const verb = split === -1 ? trimmed : trimmed.slice(0, split);
+  const rest = split === -1 ? "" : trimmed.slice(split + 1);
+
+  return (
+    <div className="agw-task-beat" data-task-op="process" role="status">
+      <div className="agw-task-beat-head">
+        <span className="agw-task-beat-dot" aria-hidden />
+        <span className="agw-task-beat-verb">{verb}</span>
+        <span className="agw-task-beat-title" title={rest || undefined}>
+          {rest}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+/**
  * Quiet "Worked 4m" readout in the turn footer.
  *
  * While the turn is live it ticks from the moment the user sent, so a long
@@ -840,6 +872,14 @@ const AssistantTurn: React.FC<{
       // boundary and injected here — inline so it reads in the order the
       // model saw it (after the tool result, before the agent continues).
       return <InjectionNote text={row.text} chips={row.chips} />;
+    }
+    if (row.type === "process_beat") {
+      // Something happened to a background process while the turn was running.
+      // It rides the SAME queue slot a mid-turn user message does, and used to
+      // render like one — "The user stopped the background process…" inside the
+      // user's own row, tooltipped "You added this mid-turn". Nobody said it,
+      // so it wears the checklist beat instead: one line, naming what happened.
+      return <ProcessBeat text={row.text} />;
     }
     if (row.type === "chapter") {
       // Unreachable: `buildSections` lifts every chapter row out into a section

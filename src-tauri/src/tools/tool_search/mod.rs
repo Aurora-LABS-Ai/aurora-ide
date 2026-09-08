@@ -62,9 +62,8 @@ impl ToolExecutor for ToolSearchExecutor {
             Some(value) => value
                 .as_u64()
                 .filter(|n| (1..=20).contains(n))
-                .ok_or_else(|| {
-                    ToolError::InvalidInput("`max_results` must be an integer from 1 to 20.".into())
-                })? as usize,
+                .ok_or_else(|| ToolError::InvalidInput(bad_number("max_results", value, "1 to 20")))?
+                as usize,
         };
         let offset = input
             .get("schema_offset")
@@ -73,12 +72,30 @@ impl ToolExecutor for ToolSearchExecutor {
                     .as_u64()
                     .and_then(|n| usize::try_from(n).ok())
                     .ok_or_else(|| {
-                        ToolError::InvalidInput(
-                            "schema_offset must be a nonnegative integer.".into(),
-                        )
+                        ToolError::InvalidInput(bad_number("schema_offset", value, "0 or greater"))
                     })
             })
             .transpose()?;
         Ok(self.catalog.search(query, limit, offset)?.to_string())
     }
+}
+
+/// A refusal that names the value that arrived, not just the rule.
+///
+/// `max_results` of 0, 21 and 2.5 all produced the identical sentence — true
+/// about the tool, silent about the call — so a model reading it had to re-read
+/// the schema instead of its own arguments. Found by the harness rig,
+/// 2026-09-06. A wrong type is said as a wrong type: `2.5` is not out of range,
+/// it is not an integer, and those are different corrections.
+fn bad_number(field: &str, got: &Value, range: &str) -> String {
+    let described = match got {
+        Value::Number(n) if n.is_f64() => format!("{n}, which is not a whole number"),
+        Value::Number(n) => format!("{n}"),
+        Value::String(s) => format!("the string \"{s}\""),
+        Value::Null => "null".into(),
+        Value::Bool(b) => format!("{b}"),
+        Value::Array(_) => "an array".into(),
+        Value::Object(_) => "an object".into(),
+    };
+    format!("`{field}` must be an integer {range}; you sent {described}.")
 }

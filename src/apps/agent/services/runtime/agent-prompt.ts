@@ -40,6 +40,18 @@ export interface AgentPromptContext {
   explicitSkillKeys?: string[];
   isFirstMessage?: boolean;
   userMessage: string;
+  /**
+   * Who started this turn — `"process"` when a background process ended while
+   * the conversation was idle and Aurora woke it to say so.
+   *
+   * Carried on the prompt context because that is what `AgentService.chat`
+   * already receives per turn, but it deliberately changes NOTHING about the
+   * system prompt. It is forwarded to the runtime, where it decides which
+   * content block the message is persisted as.
+   */
+  userMessageOrigin?: "user" | "process";
+  /** The transcript's one line when the origin is `"process"`. */
+  userMessageSummary?: string | null;
   workspacePath?: string | null;
   /**
    * The project's standing `.aurora/*.md` rules, already rendered as a

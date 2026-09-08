@@ -117,6 +117,27 @@ export const visibleProcesses = (
   ];
 };
 
+/**
+ * One process by id, wherever it lives, or `null`.
+ *
+ * A tool card looks itself up with this: a detached `shell_execute` is
+ * registered under its own tool call id, so the card that ran the command can
+ * ask what became of it without knowing which thread adopted the row. Returns
+ * the stored object itself — entries are replaced rather than mutated, so a
+ * selector built on this re-renders exactly when the process changes.
+ */
+export const processById = (
+  byThread: Record<string, BackgroundProcess[]>,
+  processId: string | null | undefined,
+): BackgroundProcess | null => {
+  if (!processId) return null;
+  for (const entries of Object.values(byThread)) {
+    const found = entries.find((entry) => entry.processId === processId);
+    if (found) return found;
+  }
+  return null;
+};
+
 /** Signature of `settle`, for components that take it as a dependency. */
 export type BackgroundSettle = BackgroundState["settle"];
 

@@ -29,9 +29,11 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ChecklistBeatCard, ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
+import { McpServerLane } from "@/apps/agent/components/tools/McpServerLane";
+import { mcpServerIdForCard } from "@/apps/agent/components/tools/mcp-card";
 import {
   formatToolDuration,
-  groupChecklistRuns,
+  groupToolRuns,
   isChecklistCall,
   toolStatus,
   type ToolCall,
@@ -55,9 +57,10 @@ const ToolGroupImpl: React.FC<{
    *  future standalone use) keeps the plain streaming behaviour. */
   isLastRow?: boolean;
 }> = ({ tools, isActivelyStreaming = false, isLastRow = true }) => {
-  // Checklist calls collapse into one step; everything else is a step of one.
-  // Computed from `tools` so the header's "N calls" keeps counting calls.
-  const runs = useMemo(() => groupChecklistRuns(tools), [tools]);
+  // Checklist calls collapse into one step, and so does a run of calls to one
+  // MCP server; everything else is a step of one. Computed from `tools` so the
+  // header's "N calls" keeps counting calls.
+  const runs = useMemo(() => groupToolRuns(tools), [tools]);
   // The threshold is about how many ROWS the reader faces, not how many calls
   // the model made. Three `TaskUpdate` calls — close one, close another, start
   // the next — are one row, and putting a "3 calls · 3 done" header above a
@@ -195,6 +198,8 @@ const ToolGroupImpl: React.FC<{
             <div className="agw-tool-step" key={run[0].id}>
               {isChecklistCall(run[0]) ? (
                 <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
+              ) : mcpServerIdForCard(run[0]) !== null ? (
+                <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
               ) : (
                 <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
               )}

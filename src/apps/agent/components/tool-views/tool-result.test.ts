@@ -227,7 +227,11 @@ describe("persisted file tool results", () => {
     expect(parsed.multiFile![0].truncated).toBe(true);
   });
 
-  it("surfaces the exit code in a failed shell summary", () => {
+  it("reads a non-zero exit as a command that ran, not as a failure", () => {
+    // The tool did its job: it ran the command and reported how it ended.
+    // "Command failed" made a deliberate probe (`ls /nope`) read as a broken
+    // call, and drew a red ✗ on the row, in the result header, and in the
+    // enclosing group's done-count.
     const parsed = parseToolResult(
       "shell_execute",
       { command: "pnpm test" },
@@ -240,8 +244,120 @@ describe("persisted file tool results", () => {
       }),
     );
 
-    expect(parsed.summary).toBe("Command failed · exit 1");
+    // The row reads the same as any other run. The exit code is a fact about
+    // the COMMAND, and it is stated once, in the expanded view.
+    expect(parsed.summary).toBe("Ran command");
     expect(parsed.shell?.exitCode).toBe(1);
+    expect(parsed.shell?.success).toBe(false);
+  });
+
+  it("keeps the failure vocabulary for a command that never produced an answer", () => {
+    // Killed at the timeout: it ran, but it did not finish, so there is no
+    // exit code to state and "exit N" would be a lie.
+    const killed = parseToolResult(
+      "shell_execute",
+      { command: "pnpm build" },
+      JSON.stringify({
+        success: false,
+        exitCode: null,
+        timedOut: true,
+        command: "pnpm build",
+        stdout: "half of it",
+      }),
+    );
+    expect(killed.summary).toBe("Timed out");
+
+    // Aurora could not run it at all — no exit code, no output, an error.
+    const refused = parseToolResult(
+      "shell_execute",
+      { command: "ls" },
+      JSON.stringify({
+        success: false,
+        command: "ls",
+        error: "working directory does not exist",
+      }),
+    );
+    expect(refused.summary).toBe("Could not run");
+  });
+
+  it("reads a handed-over command as still running, not as a result", () => {
+    // The user pressed "Run in background". Every other field in a shell result
+    // describes an ending; this one has not ended, so the row must not borrow
+    // the vocabulary of one.
+    const parsed = parseToolResult(
+      "shell_execute",
+      { command: "pnpm build" },
+      JSON.stringify({
+        success: true,
+        detached: true,
+        command: "pnpm build",
+        processId: "toolu_01ABC",
+        outputFile: "E:/logs/toolu_01ABC.log",
+        stdout: "vite v8.0.0 building for production...",
+      }),
+    );
+
+    expect(parsed.summary).toBe("Moved to the background");
+    expect(parsed.shell?.detached).toBe(true);
+    expect(parsed.shell?.processId).toBe("toolu_01ABC");
+    // No exit code exists yet, and inventing a zero would report a success the
+    // command has not had.
+    expect(parsed.shell?.exitCode).toBeNull();
+  });
+
+  it("reads a spawned process that is still running as started, not as a failure", () => {
+    // The spawn result has no exit code because there is none yet. That
+    // absence used to fall through to "Could not run" — on a card with a
+    // green tick, over a process that was running fine.
+    const parsed = parseToolResult(
+      "shell_spawn",
+      { command: "python count_seconds.py", name: "count_seconds.py" },
+      JSON.stringify({
+        success: true,
+        completed: false,
+        processId: "bg-f16eae20-1788862644424",
+        requestId: "bg-f16eae20-1788862644424",
+        name: "count_seconds.py",
+        command: "python count_seconds.py",
+        outputFile: "E:/logs/bg-f16eae20.log",
+        message: "Background process started with ID: bg-f16eae20-1788862644424.",
+      }),
+    );
+
+    expect(parsed.summary).toBe("Started in the background");
+    expect(parsed.shell?.detached).toBe(true);
+    expect(parsed.shell?.processId).toBe("bg-f16eae20-1788862644424");
+    expect(parsed.shell?.exitCode).toBeNull();
+  });
+
+  it("reads a spawn that finished inside its startup window as a run", () => {
+    const parsed = parseToolResult(
+      "shell_spawn",
+      { command: "echo hi" },
+      JSON.stringify({
+        success: true,
+        completed: true,
+        processId: "bg-1",
+        command: "echo hi",
+        exitCode: 0,
+        stdout: "hi",
+      }),
+    );
+
+    expect(parsed.summary).toBe("Ran command");
+    expect(parsed.shell?.detached).toBeUndefined();
+    expect(parsed.shell?.exitCode).toBe(0);
+  });
+
+  it("leaves an ordinary command undetached", () => {
+    const parsed = parseToolResult(
+      "shell_execute",
+      { command: "pnpm test" },
+      JSON.stringify({ success: true, exitCode: 0, command: "pnpm test", stdout: "ok" }),
+    );
+
+    expect(parsed.summary).toBe("Ran command");
+    expect(parsed.shell?.detached).toBeUndefined();
   });
 
   it("carries per-file line counts on multi-file edit diffs", () => {

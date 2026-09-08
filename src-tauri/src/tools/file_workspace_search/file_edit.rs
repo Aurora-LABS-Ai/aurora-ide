@@ -592,23 +592,67 @@ fn with_argument_note(result: &str, note: &str) -> String {
 /// malformed-input doc: never tell a model a field is missing without saying
 /// what you received instead.
 fn no_edit_named(input: &Value) -> String {
-    let keys: Vec<&str> = input
-        .as_object()
-        .map(|o| o.keys().map(String::as_str).collect())
-        .unwrap_or_default();
-    if keys.is_empty() {
+    let Some(object) = input.as_object().filter(|o| !o.is_empty()) else {
         return "supply either `edits` (an array of {old_string, new_string}) or a single \
                 `old_string` + `new_string`. This call carried no arguments at all."
             .into();
+    };
+
+    // The batch key IS here and still did not produce edits, so its VALUE is
+    // the fault and naming the key alone explains nothing. Found by the harness
+    // rig, 2026-09-06: a double-escaped `edits` string was correctly refused
+    // with "This call carried: `affected_paths`, `edits`" — a sentence that
+    // sends the reader to look for a missing field that is right there.
+    for key in ["edits", "replacements"] {
+        let Some(value) = object.get(key) else {
+            continue;
+        };
+        return match value {
+            Value::String(text) => match serde_json::from_str::<Value>(text.trim()) {
+                Err(error) => format!(
+                    "`{key}` arrived as a string, and that string is not valid JSON ({error}). \
+                     Send `{key}` as a real JSON array — `[{{\"old_string\": …}}]` — not as text. \
+                     A string that parses is read for you; this one could not be parsed, most \
+                     often because the quotes inside it were escaped twice."
+                ),
+                Ok(parsed) => format!(
+                    "`{key}` arrived as a string holding {}, which is not an edit or a list of \
+                     them. Send `{key}` as a JSON array of {{old_string, new_string}} objects.",
+                    describe_shape(&parsed)
+                ),
+            },
+            Value::Array(items) if items.is_empty() => {
+                format!("`{key}` is an empty array. Send at least one {{old_string, new_string}}.")
+            }
+            other => format!(
+                "`{key}` is {}, which is not a list of edits. Send `{key}` as an array of \
+                 {{old_string, new_string}} objects, or use a single `old_string` + `new_string`.",
+                describe_shape(other)
+            ),
+        };
     }
+
     format!(
         "supply either `edits` (an array of {{old_string, new_string}}) or a single \
          `old_string` + `new_string`. This call carried: {}.",
-        keys.iter()
-            .map(|k| format!("`{k}`"))
+        object
+            .iter()
+            .map(|(key, value)| format!("`{key}` ({})", describe_shape(value)))
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+/// What a value IS, in the words a person would use about a JSON payload.
+fn describe_shape(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(_) => "a boolean".into(),
+        Value::Number(_) => "a number".into(),
+        Value::String(_) => "a string".into(),
+        Value::Array(items) => format!("an array of {}", items.len()),
+        Value::Object(fields) => format!("an object with {} field(s)", fields.len()),
+    }
 }
 
 /// Diagnosis for a match that failed on a file the agent never read.
@@ -1132,6 +1176,76 @@ mod tests {
             !msg.contains("all edits share"),
             "must not steer a two-file batch onto a single shared path: {msg}"
         );
+    }
+
+    /// From the harness rig, 2026-09-06. A double-escaped `edits` string was
+    /// correctly refused — and the refusal said "This call carried:
+    /// `affected_paths`, `edits`", which sends the reader hunting for a missing
+    /// field that is sitting right there. The rig's own words: it "names the
+    /// field but not what was actually sent for it".
+    #[tokio::test]
+    async fn a_batch_string_that_is_not_json_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "x
+").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let tool =
+            FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
+
+        // Quotes escaped twice — what a model actually sends when it decides to
+        // hand-write JSON into a string field.
+        let message = tool
+            .execute(
+                serde_json::json!({
+                    "affected_paths": ["lib.rs"],
+                    "edits": r#"[{\"old_string\": \"a\", \"new_string\": \"b\"}]"#,
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("an unparseable string is not a batch")
+            .to_string();
+
+        assert!(message.contains("arrived as a string"), "{message}");
+        assert!(message.contains("not valid JSON"), "{message}");
+        assert!(message.contains("escaped twice"), "names the usual cause: {message}");
+    }
+
+    /// A string that parses, but not into edits.
+    #[tokio::test]
+    async fn a_batch_string_holding_the_wrong_thing_names_the_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x
+").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let message =
+            FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink))
+                .execute(
+                    serde_json::json!({ "path": "a.txt", "edits": "[1, 2, 3]" }),
+                    &ctx,
+                )
+                .await
+                .expect_err("numbers are not edits")
+                .to_string();
+        assert!(message.contains("an array of 3"), "{message}");
+    }
+
+    /// The fallback still lists what arrived — now with each field's shape,
+    /// because a name alone was what made the original message useless.
+    #[tokio::test]
+    async fn the_fallback_names_the_shape_of_every_field_that_arrived() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "x
+").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let message =
+            FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink))
+                .execute(serde_json::json!({ "path": "a.txt", "content": 12 }), &ctx)
+                .await
+                .expect_err("no edit named")
+                .to_string();
+        assert!(message.contains("`path` (a string)"), "{message}");
+        assert!(message.contains("`content` (a number)"), "{message}");
     }
 
     /// Two files named and no `path` is a choice, and this tool does not make

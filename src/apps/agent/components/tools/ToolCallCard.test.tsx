@@ -7,16 +7,17 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ChecklistBeatCard,
   ToolCallCard,
 } from "@/apps/agent/components/tools/ToolCallCard";
 import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
+import { useAgentBackgroundStore } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
 import {
   formatToolDuration,
-  groupChecklistRuns,
+  groupToolRuns,
   type ToolCall,
 } from "@/apps/agent/components/tools/tool-call";
 
@@ -1032,11 +1033,11 @@ describe("checklist beat", () => {
   });
 });
 
-describe("grouping checklist runs", () => {
+describe("grouping tool runs into steps", () => {
   const call = (id: string, name: string): ToolCall => ({ id, name, arguments: "{}" });
 
   it("merges only CONSECUTIVE checklist calls", () => {
-    const runs = groupChecklistRuns([
+    const runs = groupToolRuns([
       call("a", "TaskCreate"),
       call("b", "TaskCreate"),
       call("c", "file_write"),
@@ -1052,12 +1053,270 @@ describe("grouping checklist runs", () => {
   });
 
   it("leaves every other tool as a step of its own", () => {
-    const runs = groupChecklistRuns([
+    const runs = groupToolRuns([
       call("a", "file_read"),
       call("b", "file_read"),
       call("c", "grep"),
     ]);
 
     expect(runs).toHaveLength(3);
+  });
+});
+
+/**
+ * What a shell card treats as a failure.
+ *
+ * "Did the tool do its job" and "was the command happy" are two questions, and
+ * answering the second with the first put a red ✗ on a deliberate probe — on
+ * the row, in the result header, and in the enclosing group's done-count.
+ */
+describe("a command that ran and exited non-zero", () => {
+  const ranWithExit = (result: Record<string, unknown>): string =>
+    renderToStaticMarkup(
+      <ToolCallCard
+        call={{
+          id: "toolu_exit",
+          name: "shell_execute",
+          arguments: JSON.stringify({ command: "ls /definitely-not-a-real-folder", shell: "bash" }),
+          result: JSON.stringify(result),
+        }}
+      />,
+    );
+
+  it("is a completed call, and its row says nothing about the exit code", () => {
+    const html = ranWithExit({
+      success: false,
+      exitCode: 2,
+      command: "ls /definitely-not-a-real-folder",
+      stderr: "ls: cannot access '/definitely-not-a-real-folder': No such file or directory",
+    });
+
+    // The tool ran the command and reported how it ended, which is its job —
+    // so the row reads exactly like every other run.
+    expect(html).toContain("Ran command");
+    expect(html).toContain("agw-tool-dot-done");
+    expect(html).not.toContain("agw-tool-dot-failed");
+    expect(html).not.toContain(">Failed<");
+    // The exit code is a fact about the COMMAND. It is stated once, in the
+    // expanded result header, and a collapsed row must not repeat it.
+    expect(html).not.toContain("exit 2");
+  });
+
+  it("still fails when the command never produced an answer", () => {
+    // Killed at the timeout: no exit code exists, so there is nothing to state
+    // and the call genuinely did not do the thing.
+    const timedOut = ranWithExit({
+      success: false,
+      exitCode: null,
+      timedOut: true,
+      command: "pnpm build",
+    });
+    expect(timedOut).toContain("agw-tool-dot-failed");
+
+    // Aurora could not run it at all.
+    const refused = ranWithExit({
+      success: false,
+      command: "ls",
+      error: "working directory does not exist",
+    });
+    expect(refused).toContain("agw-tool-dot-failed");
+  });
+
+  it("does not count toward the group's failure mark", () => {
+    // Three calls, one of them a deliberate non-zero exit. The group header
+    // said "2 done ✗" over a batch where nothing went wrong.
+    const html = renderToStaticMarkup(
+      <ToolGroup
+        tools={[
+          {
+            id: "a",
+            name: "shell_execute",
+            arguments: "{}",
+            result: JSON.stringify({ success: true, exitCode: 0, command: "pwsh -c ls" }),
+          },
+          {
+            id: "b",
+            name: "shell_execute",
+            arguments: "{}",
+            result: JSON.stringify({ success: true, exitCode: 0, command: "uname -a" }),
+          },
+          {
+            id: "c",
+            name: "shell_execute",
+            arguments: "{}",
+            result: JSON.stringify({ success: false, exitCode: 2, command: "ls /nope" }),
+          },
+        ]}
+      />,
+    );
+
+    expect(html).toContain("3 done");
+  });
+});
+
+/**
+ * Handing a long command to the background.
+ *
+ * The control lives on the ROW, not in the expanded body: cards are collapsed
+ * by default in every state, so a button inside the card is behind a click.
+ */
+describe("the run-in-background offer on a shell row", () => {
+  const started = 1_000_000;
+  // A call with no result is only "running" while the turn is streaming
+  // (`toolStatus`), which is exactly the state this control belongs to.
+  const running = (elapsedMs: number, name = "shell_execute"): string => {
+    vi.useFakeTimers();
+    vi.setSystemTime(started + elapsedMs);
+    return renderToStaticMarkup(
+      <ToolCallCard
+        isActivelyStreaming
+        call={{
+          id: "toolu_bg1",
+          name,
+          arguments: JSON.stringify({ command: "pnpm build", shell: "bash" }),
+          startedAt: started,
+        }}
+      />,
+    );
+  };
+
+  afterEach(() => vi.useRealTimers());
+
+  it("shows the elapsed clock, not a button, while the command is young", () => {
+    const html = running(4_000);
+
+    // Most commands finish inside this window; a control on every one of them
+    // is a control the reader learns to skip.
+    expect(html).not.toContain("Run in background");
+    expect(html).toContain("agw-tool-time");
+  });
+
+  it("becomes the offer once the wait is worth a decision", () => {
+    const html = running(10_000);
+
+    expect(html).toContain("Run in background");
+    // It TAKES the clock's slot rather than joining it, so nothing on the row
+    // moves or resizes as the command crosses ten seconds.
+    expect(html).not.toContain("agw-tool-time");
+  });
+
+  it("never offers it for a tool Aurora cannot hand over", () => {
+    // `shell_spawn` is already in the background; a file read has no process.
+    expect(running(60_000, "shell_spawn")).not.toContain("Run in background");
+    expect(running(60_000, "file_read")).not.toContain("Run in background");
+  });
+
+  it("keeps the clock on a non-shell tool that is simply slow", () => {
+    const html = running(60_000, "grep");
+
+    expect(html).toContain("agw-tool-time");
+    expect(html).not.toContain("Run in background");
+  });
+});
+
+/**
+ * After the hand-off, the row outlives its own result: the stored result says
+ * "moved to the background" forever, and the process ledger says what is true
+ * now. Without that the card claims a build is running twenty minutes after it
+ * ended — the contradiction the pulse would otherwise make permanent.
+ */
+describe("a settled card whose command is still running elsewhere", () => {
+  const detachedCall: ToolCall = {
+    id: "toolu_bg2",
+    name: "shell_execute",
+    arguments: JSON.stringify({ command: "pnpm build", shell: "bash" }),
+    result: JSON.stringify({
+      success: true,
+      detached: true,
+      command: "pnpm build",
+      processId: "toolu_bg2",
+      stdout: "vite building...",
+    }),
+  };
+
+  // Cleared BEFORE, not after: an afterEach here runs while the card is still
+  // mounted (the root unmounts in the outer hook), so resetting the store there
+  // pushes a React update through a live subscription outside `act`.
+  beforeEach(() => {
+    useAgentBackgroundStore.setState({ byThread: {} });
+  });
+
+  const seed = (status: "running" | "exited" | "stopped", exitCode?: number) => {
+    useAgentBackgroundStore.setState({
+      byThread: {
+        t1: [
+          {
+            processId: "toolu_bg2",
+            title: "pnpm build",
+            command: "pnpm build",
+            status,
+            exitCode: exitCode ?? null,
+            startedAtMs: 1_000_000,
+          },
+        ],
+      },
+    });
+  };
+
+  /**
+   * Mounted for real, never `renderToStaticMarkup`: Zustand 5 serves a store's
+   * INITIAL state to a server render, so a seeded ledger is invisible to one —
+   * every one of these assertions would pass against an empty store and prove
+   * nothing.
+   */
+  const mount = async (): Promise<string> => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    mountedContainer = document.createElement("div");
+    document.body.appendChild(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    await act(async () => {
+      mountedRoot!.render(<ToolCallCard call={detachedCall} />);
+    });
+    return mountedContainer.innerHTML;
+  };
+
+  it("says it is still running, in the present tense", async () => {
+    seed("running");
+    const html = await mount();
+
+    expect(html).toContain("Running in the background");
+    // Colour is never the only carrier: the pulse has a screen-reader twin.
+    expect(html).toContain("Still running in the background");
+    expect(html).toContain("agw-tool-dot-live");
+  });
+
+  it("reports the outcome once the process actually ends", async () => {
+    seed("exited", 0);
+    const html = await mount();
+
+    expect(html).toContain("Ran in the background · exit 0");
+    // The pulse stops, or it becomes permanent furniture.
+    expect(html).not.toContain("agw-tool-dot-live");
+  });
+
+  it("names a failure rather than flattening it into 'ran'", async () => {
+    seed("exited", 1);
+    const html = await mount();
+
+    expect(html).toContain("Ran in the background · exit 1");
+  });
+
+  it("distinguishes a process someone stopped from one that finished", async () => {
+    seed("stopped");
+    const html = await mount();
+
+    expect(html).toContain("Stopped in the background");
+  });
+
+  it("stops claiming it is running when nothing backs the claim", async () => {
+    // Nothing seeded — a reloaded window, or a hand-off the process list never
+    // recorded. "Running in the background" here is a statement about right now
+    // with no evidence behind it and no way to ever expire, so the card falls
+    // back to what its own result actually said.
+    const html = await mount();
+
+    expect(html).toContain("Moved to the background");
+    expect(html).not.toContain("Running in the background");
+    expect(html).not.toContain("agw-tool-dot-live");
   });
 });

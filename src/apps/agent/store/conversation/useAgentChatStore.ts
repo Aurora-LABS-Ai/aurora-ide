@@ -203,6 +203,14 @@ interface AgentChatState {
       displayText?: string;
       chips?: AttachedPromptChip[];
       imageCount?: number;
+      /**
+       * Who is queueing this. `"process"` is Aurora reporting a background
+       * process — it is framed for the model as an event rather than as
+       * something the user said, it renders as a one-line beat instead of a
+       * message, and it never lights the composer's "queued" pill (nobody
+       * queued anything to cancel).
+       */
+      origin?: "user" | "process";
     },
   ) => Promise<void>;
   /** Cancel the pending injection for `threadId` (clears the UI + the Rust slot). */
@@ -356,30 +364,40 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     const display = opts?.displayText?.trim() || trimmed;
     const model = opts?.modelText?.trim() || display;
     const chips = opts?.chips && opts.chips.length > 0 ? opts.chips : undefined;
+    const origin = opts?.origin ?? "user";
+    // The pill is "your message is waiting to go in, here is the Cancel
+    // button". A process report is not the user's message and cannot be
+    // cancelled by them, so it never takes that slot — and must never evict a
+    // real queued message that is sitting in it.
+    const showsPill = origin === "user";
     // Optimistic: show the pill before the IPC round-trip resolves. Revert on
     // failure. The Rust slot is single-shot (a second enqueue replaces it).
     const prior = get().queuedByThread[threadId] ?? null;
-    set((s) => ({
-      queuedByThread: {
-        ...s.queuedByThread,
-        [threadId]: {
-          text: trimmed,
-          modelText: model !== trimmed ? model : undefined,
-          chips,
-          imageCount: opts?.imageCount,
-          queuedAt: Date.now(),
+    if (showsPill) {
+      set((s) => ({
+        queuedByThread: {
+          ...s.queuedByThread,
+          [threadId]: {
+            text: trimmed,
+            modelText: model !== trimmed ? model : undefined,
+            chips,
+            imageCount: opts?.imageCount,
+            queuedAt: Date.now(),
+          },
         },
-      },
-    }));
+      }));
+    }
     try {
       await auroraInvoke("agent_enqueue_message", {
         threadId,
         text: model,
         displayText: display !== model ? display : null,
         chips: chips ?? null,
+        origin,
       });
     } catch (err) {
       console.error("[agent-chat] agent_enqueue_message failed:", err);
+      if (!showsPill) return;
       set((s) => {
         const next = { ...s.queuedByThread };
         if (prior) next[threadId] = prior;
@@ -891,23 +909,34 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     const cut = thread.messages.findIndex((m) => m.id === messageId);
     if (cut < 0) return null;
 
-    // The user message that opened the turn being retried. Retry re-runs
-    // THAT message, not whatever the newest one happens to be.
-    let userIndex = -1;
+    // The message that opened the turn being retried. Retry re-runs THAT
+    // message, not whatever the newest one happens to be.
+    //
+    // A `process` row opens a turn too — a background process ending woke
+    // the conversation — and there is nothing to type again for one of
+    // those: the ending already happened, and its report is not a request.
+    // Walking past it to an older user message would rewind a turn the
+    // person did not ask to retry, so it stops here and declines.
+    let openerIndex = -1;
     for (let i = cut; i >= 0; i--) {
-      if (thread.messages[i].role === "user") {
-        userIndex = i;
+      const role = thread.messages[i].role;
+      if (role === "user" || role === "process") {
+        openerIndex = i;
         break;
       }
     }
-    if (userIndex < 0) return null;
+    if (openerIndex < 0) return null;
+    if (thread.messages[openerIndex].role === "process") return null;
 
-    // Its ordinal among user messages — the one ordering the frontend
-    // transcript and the Rust session agree on, since the runtime holds
-    // extra tool/notice messages the UI folds away.
+    // Its ordinal among the runtime's user-role messages — the one ordering
+    // the frontend transcript and the Rust session agree on, since the
+    // runtime holds extra tool/notice messages the UI folds away. A process
+    // row IS a user-role message on disk (a single process-event block), so
+    // it counts here or every retry after one lands a turn early.
     const ordinal = thread.messages
-      .slice(0, userIndex)
-      .filter((m) => m.role === "user").length;
+      .slice(0, openerIndex)
+      .filter((m) => m.role === "user" || m.role === "process").length;
+    const userIndex = openerIndex;
     const content = thread.messages[userIndex].content;
 
     // Rust first: if it refuses (a turn is still streaming) the transcript

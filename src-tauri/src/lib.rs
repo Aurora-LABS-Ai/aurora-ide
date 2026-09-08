@@ -269,6 +269,10 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
                 timed_out: output.timed_out,
                 left_running: output.left_running,
                 survivors: output.survivors.clone(),
+                // A spawn that exited inside its startup window ran to
+                // completion; nothing detached it.
+                detached: false,
+                output_file: log_path.clone(),
             })),
             Ok(Ok(Err(error))) => Err(error),
             Ok(Err(_)) => Err(format!(
@@ -285,21 +289,67 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
         // `shell-stream-{request_id}` chunks as they arrive, and resolves with
         // the complete output. Awaiting it gives the tool one final result
         // while the UI has already been painting the output live.
-        let output = commands::execute_command_stream(
-            self.app.clone(),
-            req.request_id,
-            req.command,
-            req.cwd,
-            req.shell,
-            req.timeout_ms,
-            // No log file: a foreground command's full output already reaches
-            // the model in the tool result, and oversized output spills there.
-            None,
-            // Foreground commands read a deterministic, immediately closed
-            // stdin — anything that waits on input gets EOF, not a hang.
-            Some(false),
-        )
-        .await?;
+        //
+        // It is spawned rather than awaited inline so the run can OUTLIVE this
+        // await. "Run in background" on the card must not stop the loop — the
+        // loop is what drains the child's pipes, and a full pipe blocks the
+        // child — so the only thing that ends here is the waiting.
+        let request_id = req.request_id.clone();
+        // A foreground command now mirrors to a log for the same reason a
+        // background one does: the moment it is detached, the tool result stops
+        // being the record of what it printed. Written for every run, because a
+        // file opened at the click would begin after everything already said.
+        let log_path = self.resolve_background_log_path(&req.thread_id, &req.process_id);
+        let app = self.app.clone();
+        let log_for_task = log_path.clone();
+        let handle = tokio::spawn(async move {
+            commands::execute_command_stream(
+                app,
+                req.request_id,
+                req.command,
+                req.cwd,
+                req.shell,
+                req.timeout_ms,
+                log_for_task,
+                // Foreground commands read a deterministic, immediately closed
+                // stdin — anything that waits on input gets EOF, not a hang.
+                Some(false),
+            )
+            .await
+        });
+
+        let output = tokio::select! {
+            biased;
+            // Checked first: a command that finishes in the same instant the
+            // button is pressed has a real result, and reporting "still
+            // running" over a process that has already exited would be the
+            // `browser_navigate` lie again (lesson.md, 2026-08-21).
+            joined = handle => match joined {
+                Ok(result) => result?,
+                Err(err) => return Err(format!("shell command task failed: {err}")),
+            },
+            () = commands::detached_mid_run(&request_id) => {
+                // The task is deliberately NOT aborted. It keeps streaming into
+                // the card's channel, keeps writing the log, keeps its ledger
+                // row for the dock and `shell_kill`, and still announces the
+                // ending on `shell-process-ended`.
+                return Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
+                    // What it printed before the hand-off. Read back off the
+                    // log because the buffers live inside the task that is
+                    // still filling them.
+                    stdout: commands::read_process_log_tail(log_path.as_deref()),
+                    stderr: String::new(),
+                    exit_code: None,
+                    success: false,
+                    timed_out: false,
+                    left_running: true,
+                    survivors: Vec::new(),
+                    detached: true,
+                    output_file: log_path,
+                });
+            }
+        };
+
         Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
             stdout: output.stdout,
             stderr: output.stderr,
@@ -308,6 +358,8 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             timed_out: output.timed_out,
             left_running: output.left_running,
             survivors: output.survivors,
+            detached: false,
+            output_file: log_path,
         })
     }
 
@@ -570,6 +622,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::execute_command,
             commands::execute_command_stream,
             commands::cancel_command_stream,
+            commands::detach_command_stream,
             commands::get_system_info,
             // System fonts (Settings → Appearance → Typography)
             commands::fonts::system_font_families,

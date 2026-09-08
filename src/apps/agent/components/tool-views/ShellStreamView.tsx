@@ -104,6 +104,7 @@ export const ShellStreamView: React.FC<{
   // moving IS the progress, and a second clock beside it is noise.
   const idle = text.length === 0;
   const [now, setNow] = useState(() => Date.now());
+  const elapsed = startedAt === undefined ? 0 : Math.max(0, now - startedAt);
   useEffect(() => {
     if (!idle || startedAt === undefined) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -113,9 +114,7 @@ export const ShellStreamView: React.FC<{
   const waitLabel =
     startedAt === undefined
       ? null
-      : `${formatSeconds(Math.max(0, now - startedAt))}${
-          timeoutMs ? ` of ${formatSeconds(timeoutMs)}` : ""
-        }`;
+      : `${formatSeconds(elapsed)}${timeoutMs ? ` of ${formatSeconds(timeoutMs)}` : ""}`;
 
   return (
     <div className="agw-rv">
@@ -130,6 +129,10 @@ export const ShellStreamView: React.FC<{
           )}
         </span>
         <span className="agw-rv-title">{shell ? shell.name : "Command"}</span>
+        {/* "Run in background" deliberately does NOT live here. Cards are
+            collapsed by default, so a control in this header is behind a click;
+            it sits on the row instead (`RunningShellControl`), which is on
+            screen whether or not anyone opened the card. */}
         <span className="agw-rv-badge agw-shell-live" aria-live="off">
           Running
         </span>

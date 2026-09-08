@@ -162,6 +162,12 @@ pub(super) fn estimate_message_tokens(
                 // so counting them would inflate the context ring against
                 // tokens that are never sent.
             }
+            ContentBlock::ProcessEvent { detail, .. } => {
+                // This one IS sent, so it is priced — and priced on `detail`,
+                // the copy that goes on the wire, not on the one-line `summary`
+                // the transcript shows.
+                total = total.saturating_add(estimate_text_tokens(detail));
+            }
             ContentBlock::Image { .. } => {
                 // The provider sees the one-line description, never the pixels.
                 if let Some(line) = block.image_as_text() {

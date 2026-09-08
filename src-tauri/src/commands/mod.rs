@@ -235,6 +235,16 @@ pub struct CommandStreamInfo {
     /// process printed — the live stream goes to the UI, not into the
     /// conversation.
     pub log_path: Option<String>,
+    /// The user pressed "Run in background" on a foreground command: the tool
+    /// call returns now, the process keeps running.
+    ///
+    /// Deliberately NOT a second flavour of `cancelled`. Cancelling kills the
+    /// child and ends the stream; detaching changes only who is waiting — the
+    /// loop below keeps draining the pipes, keeps mirroring into the log, and
+    /// still announces the real ending on `shell-process-ended`. A detached
+    /// command also loses its timeout, because the deadline existed to protect
+    /// a caller that is no longer there.
+    pub detached: bool,
 }
 
 lazy_static::lazy_static! {
@@ -275,6 +285,7 @@ pub fn register_command_stream(
             stop_reason: None,
             started_at_ms,
             log_path,
+            detached: false,
         });
 }
 
@@ -320,6 +331,15 @@ pub fn shell_background_processes() -> Vec<BackgroundProcessRow> {
     list_command_streams()
         .into_iter()
         .filter(|stream| !stream.cancelled)
+        // Every foreground `shell_execute` is in this ledger too — that is how
+        // it gets a stop button and a live stream. It is not a BACKGROUND
+        // process, though, and listing it as one put the command the agent is
+        // currently waiting on into a panel titled "Background processes".
+        //
+        // Two things earn a place here, and both are deliberate acts: a
+        // `shell_spawn` (which is required to carry a name) and a foreground
+        // command someone pressed "Run in background" on.
+        .filter(|stream| stream.detached || stream.name.is_some())
         .map(|stream| BackgroundProcessRow {
             process_id: stream.process_id,
             request_id: stream.request_id,
@@ -373,6 +393,91 @@ pub fn cancel_tracked_command_stream(
         try_kill_pid(pid)?;
     }
     Ok(stream)
+}
+
+/// Hand a running foreground command over to the background.
+///
+/// Nothing is killed and nothing is cleaned up: the ledger row stays (so the
+/// dock can show it and `shell_kill` can still stop it), the streaming loop
+/// keeps draining and logging, and the ending is still announced. The only
+/// thing that changes is that whoever was awaiting the result stops waiting.
+///
+/// Idempotent — pressing the button twice, or pressing it as the command
+/// finishes, is not an error worth showing anyone.
+pub fn detach_tracked_command_stream(identifier: &str) -> Result<CommandStreamInfo, String> {
+    let request_id = command_stream_key(identifier).ok_or_else(|| {
+        format!("No running command matches '{identifier}'. It may have already finished.")
+    })?;
+    let mut streams = ACTIVE_COMMAND_STREAMS.write();
+    let stream = streams
+        .get_mut(&request_id)
+        .ok_or_else(|| format!("Command '{identifier}' finished before it could be detached."))?;
+    // A command already on its way out is not a candidate: promising the caller
+    // it is "still running in the background" would be the same lie
+    // `browser_navigate` used to tell (lesson.md, 2026-08-21).
+    if stream.cancelled {
+        return Err(format!("Command '{identifier}' is already stopping."));
+    }
+    stream.detached = true;
+    Ok(stream.clone())
+}
+
+/// Has this run been handed over to the background?
+fn command_stream_detached(request_id: &str) -> bool {
+    ACTIVE_COMMAND_STREAMS
+        .read()
+        .get(request_id)
+        .is_some_and(|stream| stream.detached)
+}
+
+/// How often the waiting side asks whether the button was pressed.
+///
+/// Polled rather than signalled because that is how the streaming loop already
+/// watches for a stop, and one wake-up every fifth of a second costs nothing
+/// next to a process that is printing. The delay a person can perceive here is
+/// the card settling, and 200ms is under that.
+const DETACH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Resolves when `request_id` is handed to the background — never otherwise.
+///
+/// Meant to be raced against the run's own completion, so it deliberately has
+/// no timeout of its own: a command nobody detaches ends by finishing.
+pub async fn detached_mid_run(request_id: &str) {
+    loop {
+        if command_stream_detached(request_id) {
+            return;
+        }
+        tokio::time::sleep(DETACH_POLL_INTERVAL).await;
+    }
+}
+
+/// Tail of a process log, for the "here is what it printed before you sent it
+/// to the background" half of a detached result.
+///
+/// Reads the tail rather than the head: the useful end of a long-running
+/// command's output is the newest part, which is the same choice every shell
+/// view in the window already makes. A log that cannot be read yields an empty
+/// string — the result says what happened either way, and inventing an error
+/// about a convenience copy would bury that.
+#[must_use]
+pub fn read_process_log_tail(path: Option<&str>) -> String {
+    const MAX_TAIL_BYTES: usize = 32 * 1024;
+    let Some(path) = path else {
+        return String::new();
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return String::new();
+    };
+    if bytes.len() <= MAX_TAIL_BYTES {
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    // Cut on a character boundary: a tail sliced mid-sequence renders as a
+    // replacement glyph at the top of every detached result.
+    let mut start = bytes.len() - MAX_TAIL_BYTES;
+    while start < bytes.len() && (bytes[start] & 0b1100_0000) == 0b1000_0000 {
+        start += 1;
+    }
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
 /// Why the streaming loop should stop, if it should — `None` while running.
@@ -1633,17 +1738,60 @@ pub async fn execute_command(
     Ok(output)
 }
 
+/// What a stop attempt actually achieved.
+///
+/// The caller paints a row from this, so the two failing cases must not look
+/// alike. A process that ended by itself a moment before the click is
+/// `stopped` — that is the outcome the click asked for, and reporting it as an
+/// error would make the common race look like a fault. A process that is still
+/// running because the kill failed is NOT stopped, and saying otherwise leaves
+/// a live process wearing a settled row.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandStopOutcome {
+    /// The process is no longer running: it was killed, or it had already ended.
+    pub stopped: bool,
+    /// Why it could not be stopped. Only ever set when `stopped` is false.
+    pub error: Option<String>,
+}
+
 /// Stop a running stream.
 ///
 /// `reason` is `"user"` (the default, and what the stop button sends) or
 /// `"agent"`. It is recorded in the process's log file so whoever reads that
 /// file later learns how the output ended instead of inferring it.
+///
+/// Still `Ok` for a stream that had already finished — cancellation is
+/// idempotent by design — but that case is now distinguishable from a kill that
+/// failed. This used to discard the result entirely (`let _ = …`) and always
+/// answer `Ok(())`, so the dock settled every row to "Stopped" whether or not
+/// anything had been stopped.
 #[tauri::command]
-pub fn cancel_command_stream(request_id: String, reason: Option<String>) -> Result<(), String> {
-    // UI cancellation is intentionally idempotent: the stream may finish
-    // between the user's click and this command reaching Rust.
-    let _ = cancel_tracked_command_stream(&request_id, StopReason::parse(reason.as_deref()));
-    Ok(())
+pub fn cancel_command_stream(
+    request_id: String,
+    reason: Option<String>,
+) -> Result<CommandStopOutcome, String> {
+    match cancel_tracked_command_stream(&request_id, StopReason::parse(reason.as_deref())) {
+        Ok(_) => Ok(CommandStopOutcome { stopped: true, error: None }),
+        // Gone from the registry: it ended between the click and this call.
+        Err(_) if command_stream_key(&request_id).is_none() => {
+            Ok(CommandStopOutcome { stopped: true, error: None })
+        }
+        // Still tracked, so `try_kill_pid` is what failed and the process is
+        // still out there.
+        Err(message) => Ok(CommandStopOutcome { stopped: false, error: Some(message) }),
+    }
+}
+
+/// Hand a running foreground command to the background — the "Run in
+/// background" button on a shell tool card.
+///
+/// Errors are returned rather than swallowed, unlike the cancel above: this one
+/// has a visible consequence (the card settles, the tool call answers the
+/// model), so a click that did nothing must not look like a click that worked.
+#[tauri::command]
+pub fn detach_command_stream(request_id: String) -> Result<(), String> {
+    detach_tracked_command_stream(&request_id).map(|_| ())
 }
 
 // Shell stream batching constants.
@@ -1660,6 +1808,14 @@ pub fn cancel_command_stream(request_id: String, reason: Option<String>) -> Resu
 // chunks. This drops the IPC volume by 1-2 orders of magnitude without losing
 // any output, and the agent still gets the full text via the awaited
 // CommandOutput at the end.
+/// Lifetime a foreground command gets once it is handed to the background.
+///
+/// Matches `shell_spawn`'s own "effectively no cap": a detached command is
+/// stopped by a person or by `shell_kill`, not by the clock its caller left
+/// behind. Keeping a real (if distant) deadline rather than none at all means
+/// a forgotten process still cannot outlive the machine's uptime silently.
+const DETACHED_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+
 const SHELL_STREAM_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
 const SHELL_STREAM_FLUSH_BYTES: usize = 32 * 1024;
 const SHELL_STREAM_READ_BUF: usize = 16 * 1024;
@@ -2015,7 +2171,9 @@ pub(crate) async fn run_command_lifecycle(
     let started = std::time::Instant::now();
 
     let shell_profile = shell.as_deref();
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    // Mutable because "Run in background" lifts it mid-run — see the detach
+    // branch in the loop below.
+    let mut timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let (resolved, mut cmd) = build_shell_command(shell_profile, &command, &cwd);
     let shell_exe = resolved.exe.clone();
     cmd.stdout(Stdio::piped());
@@ -2181,6 +2339,10 @@ pub(crate) async fn run_command_lifecycle(
     // agent stopped it" — the two reach the same exit below but mean opposite
     // things to whoever reads the result.
     let mut timed_out = false;
+    // Applied once. The flag lives out here because the check is per-iteration
+    // and re-arming the timer on every pass would push the deadline forward
+    // forever — which is the same bug in the opposite direction.
+    let mut detach_applied = false;
 
     loop {
         if let Some(reason) = command_stream_stop(&request_id) {
@@ -2189,6 +2351,24 @@ pub(crate) async fn run_command_lifecycle(
             }
             ending = reason.describe().to_string();
             break;
+        }
+
+        // Handed to the background mid-run. The loop does NOT end here — it is
+        // what keeps the pipes drained (a full pipe blocks the child), keeps
+        // the log fed, and still reports the real ending. Only two things
+        // change: the deadline is lifted, because it existed to protect a
+        // caller that has stopped waiting, and the log says where the reader
+        // went. Same "effectively no cap" the background tools already use.
+        //
+        // Nothing is written to the log here. The log IS the command's output —
+        // it is what the detached result hands back and what `shell_read_output`
+        // reads later — so a note about the hand-off would appear as a line the
+        // command printed, which it did not. The ending still gets its footer,
+        // and who was waiting is not a fact about what ran.
+        if !detach_applied && command_stream_detached(&request_id) {
+            detach_applied = true;
+            timeout = std::time::Duration::from_millis(DETACHED_LIFETIME_MS);
+            timeout_fut = Box::pin(tokio::time::sleep(timeout));
         }
 
         tokio::select! {
@@ -3590,6 +3770,148 @@ mod tests {
         assert_eq!(human_duration(Duration::from_secs(47)), "47s");
         assert_eq!(human_duration(Duration::from_secs(192)), "3m 12s");
         assert_eq!(human_duration(Duration::from_secs(3_840)), "1h 04m");
+    }
+
+    /// Registers one ledger row and removes it however the test ends, so these
+    /// cannot leak into each other through the process-wide map.
+    fn with_registered_stream(request_id: &str, body: impl FnOnce()) {
+        register_command_stream(
+            request_id.to_string(),
+            request_id.to_string(),
+            None,
+            "pnpm build".to_string(),
+            None,
+            None,
+        );
+        body();
+        cleanup_command_stream(request_id);
+    }
+
+    #[test]
+    fn detaching_leaves_the_process_running_and_listed() {
+        with_registered_stream("detach-keeps-the-row", || {
+            assert!(!command_stream_detached("detach-keeps-the-row"));
+
+            let stream = detach_tracked_command_stream("detach-keeps-the-row")
+                .expect("a running command can be handed over");
+
+            assert!(stream.detached);
+            // The row must survive: the dock renders from it, `shell_kill`
+            // resolves through it, and the ending is announced off it. Removing
+            // it here is what would make a detached process unstoppable.
+            assert!(command_stream_detached("detach-keeps-the-row"));
+            assert!(list_command_streams()
+                .iter()
+                .any(|row| row.request_id == "detach-keeps-the-row"));
+            // And it is NOT a cancellation: nothing was asked to stop.
+            assert!(!stream.cancelled);
+            assert_eq!(command_stream_stop("detach-keeps-the-row"), None);
+        });
+    }
+
+    /// The dock's list is not the ledger. Every foreground `shell_execute` is
+    /// tracked too — that is how it gets a stop button and a live stream — and
+    /// listing those as background processes is what made an ordinary command
+    /// announce itself as one when it finished.
+    #[test]
+    fn only_deliberate_background_work_reaches_the_process_list() {
+        // A plain foreground command: no name, nobody detached it.
+        with_registered_stream("dock-foreground", || {
+            assert!(
+                !shell_background_processes()
+                    .iter()
+                    .any(|row| row.request_id == "dock-foreground"),
+                "a command the agent is waiting on is not a background process"
+            );
+
+            // The same command, after the user presses "Run in background".
+            detach_tracked_command_stream("dock-foreground").expect("detaches");
+            assert!(
+                shell_background_processes()
+                    .iter()
+                    .any(|row| row.request_id == "dock-foreground"),
+                "handing it over is what puts it in the list"
+            );
+        });
+
+        // A spawn, which the schema requires to carry a name.
+        register_command_stream(
+            "dock-spawn".into(),
+            "dock-spawn".into(),
+            Some("Vite dev server".into()),
+            "pnpm dev".into(),
+            None,
+            None,
+        );
+        assert!(shell_background_processes()
+            .iter()
+            .any(|row| row.request_id == "dock-spawn"));
+        cleanup_command_stream("dock-spawn");
+    }
+
+    #[test]
+    fn detaching_twice_is_not_an_error() {
+        with_registered_stream("detach-idempotent", || {
+            assert!(detach_tracked_command_stream("detach-idempotent").is_ok());
+            // Double-click, or a click as the command finishes. Neither is
+            // worth an error message to a person who got what they asked for.
+            assert!(detach_tracked_command_stream("detach-idempotent").is_ok());
+        });
+    }
+
+    #[test]
+    fn a_stopping_command_cannot_be_detached() {
+        with_registered_stream("detach-after-stop", || {
+            {
+                let mut streams = ACTIVE_COMMAND_STREAMS.write();
+                let stream = streams.get_mut("detach-after-stop").expect("registered");
+                stream.cancelled = true;
+                stream.stop_reason = Some(StopReason::User);
+            }
+            // Answering "it is running in the background" over a process on its
+            // way out is the same lie `browser_navigate` used to tell.
+            let err = detach_tracked_command_stream("detach-after-stop")
+                .expect_err("a stopping command is not a candidate");
+            assert!(err.contains("already stopping"), "{err}");
+        });
+    }
+
+    #[test]
+    fn detaching_something_that_already_finished_says_so() {
+        let err = detach_tracked_command_stream("never-registered")
+            .expect_err("nothing to hand over");
+        assert!(err.contains("already finished"), "{err}");
+    }
+
+    #[test]
+    fn the_log_tail_survives_a_missing_file_and_a_split_character() {
+        // No log, no panic: the detached result still states what happened.
+        assert_eq!(read_process_log_tail(None), "");
+        assert_eq!(read_process_log_tail(Some("E:/nope/missing.log")), "");
+
+        let dir = std::env::temp_dir().join("aurora-detach-tail-test");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("out.log");
+
+        std::fs::write(&path, "short output\n").expect("write");
+        assert_eq!(
+            read_process_log_tail(path.to_str()),
+            "short output\n",
+            "a log under the cap is returned whole"
+        );
+
+        // 32 KiB of a 3-byte character, so the naive cut lands mid-sequence.
+        let big = "☃".repeat(20_000);
+        std::fs::write(&path, &big).expect("write");
+        let tail = read_process_log_tail(path.to_str());
+        assert!(tail.len() <= 32 * 1024);
+        assert!(
+            !tail.starts_with('\u{FFFD}'),
+            "the tail must start on a character boundary, not a replacement glyph"
+        );
+        assert!(big.ends_with(&tail), "the tail is the END of the log");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

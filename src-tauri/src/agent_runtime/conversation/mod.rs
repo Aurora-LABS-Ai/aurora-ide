@@ -1254,26 +1254,52 @@ impl ConversationRuntime {
             // on the next API call, the human sees it as a normal
             // message in the timeline.
             if let Some(queued) = session.take_queued_message() {
-                // A composer mid-turn message gets the framing preamble so
-                // the model knows it arrived while the tools above were
-                // running — "don't run pnpm" landing after the lint output
-                // is otherwise a contradiction the model has to guess at.
-                let injected_text = if queued.mid_turn {
-                    format!(
-                        "{}\n{}",
-                        crate::agent_runtime::session::MID_TURN_PREAMBLE,
-                        queued.text
-                    )
-                } else {
-                    queued.text.clone()
-                };
-                tool_msg.blocks.push(ContentBlock::Text {
-                    text: injected_text,
-                });
-                // Composer pill metadata rides on the tool message itself, so
-                // a reload can re-render the injected row's chips — the same
-                // persistence channel a normal user message uses.
-                tool_msg.attached_prompt_chips = queued.chips.clone();
+                // Two things ride this slot, and they are not the same kind of
+                // thing. A person's message goes in as text on the tool message
+                // — that is a message, and it belongs in the conversation as
+                // one. A background process ending is not anybody's words, so
+                // it goes in as its own block; that is what lets a RELOADED
+                // thread still tell the two apart, which a display-only flag
+                // could not (the flag lives in the event, the transcript is
+                // rebuilt from the blocks).
+                match queued.origin {
+                    crate::agent_runtime::types::InjectedOrigin::Process => {
+                        tool_msg.blocks.push(ContentBlock::ProcessEvent {
+                            // The transcript's one line, in the checklist
+                            // beat's shape; the model's copy keeps the ids.
+                            summary: queued
+                                .display_text
+                                .clone()
+                                .unwrap_or_else(|| queued.text.clone()),
+                            detail: queued.text.clone(),
+                            created_at: queued.queued_at_ms,
+                        });
+                    }
+                    crate::agent_runtime::types::InjectedOrigin::User => {
+                        // A composer mid-turn message gets the framing preamble
+                        // so the model knows it arrived while the tools above
+                        // were running — "don't run pnpm" landing after the
+                        // lint output is otherwise a contradiction the model
+                        // has to guess at.
+                        let injected_text = if queued.mid_turn {
+                            format!(
+                                "{}\n{}",
+                                crate::agent_runtime::session::MID_TURN_PREAMBLE,
+                                queued.text
+                            )
+                        } else {
+                            queued.text.clone()
+                        };
+                        tool_msg.blocks.push(ContentBlock::Text {
+                            text: injected_text,
+                        });
+                        // Composer pill metadata rides on the tool message
+                        // itself, so a reload can re-render the injected row's
+                        // chips — the same persistence channel a normal user
+                        // message uses.
+                        tool_msg.attached_prompt_chips = queued.chips.clone();
+                    }
+                }
                 // The event carries the DISPLAY text: what the user typed,
                 // not the model copy with the resolved directive block.
                 let display = queued.display_text.unwrap_or(queued.text);
@@ -1283,6 +1309,7 @@ impl ConversationRuntime {
                     event: AssistantEvent::QueuedMessageInjected {
                         text: display,
                         chips: queued.chips,
+                        origin: queued.origin,
                     },
                 };
                 seq = seq.saturating_add(1);

@@ -402,7 +402,10 @@ fn responses_instructions_and_input(
                         }
                         ContentBlock::ToolResult { .. }
                         | ContentBlock::Compaction { .. }
-                        | ContentBlock::Notice { .. } => {}
+                        | ContentBlock::Notice { .. }
+                        // A process event rides the Tool message, never an
+                        // assistant one — handled in that branch below.
+                        | ContentBlock::ProcessEvent { .. } => {}
                     }
                 }
             }
@@ -434,6 +437,15 @@ fn responses_instructions_and_input(
                                 injected_text.push_str("\n\n");
                             }
                             injected_text.push_str(text);
+                        }
+                        // A background process ended while these tools ran.
+                        // Rides out in the same trailing user message the
+                        // injected text uses.
+                        ContentBlock::ProcessEvent { detail, .. } => {
+                            if !injected_text.is_empty() {
+                                injected_text.push_str("\n\n");
+                            }
+                            injected_text.push_str(detail);
                         }
                         _ => {
                             // ToolUse / Thinking inside a Tool message

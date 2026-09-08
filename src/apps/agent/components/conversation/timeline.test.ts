@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { DbMessage } from "@/apps/agent/services/threads/thread-service";
 import {
   appendCompaction,
+  appendContent,
   appendNotice,
+  appendProcessBeat,
   appendThinking,
   beginReconnect,
   buildRows,
@@ -188,6 +190,193 @@ describe("agent-window mid-turn injection reload", () => {
       "user_injection",
       "content",
     ]);
+  });
+});
+
+/**
+ * Every row in a turn is rendered with `key={row.id}`, and consecutive assistant
+ * messages are merged into ONE turn with their event lists concatenated — so a
+ * row id only has to be unique within its own message to pass every other test
+ * here, and still collide once the merge happens.
+ *
+ * It went wrong exactly that way: a machine-started turn seeded its beat as a
+ * separate assistant message with an id from `genId()` while every streamed
+ * event uses `nextEventId()`. React reported two children with the same key,
+ * dropped children, and the turn stopped rendering as it streamed — with no
+ * error anywhere near the code that caused it.
+ */
+/**
+ * A background process ending while the conversation was idle STARTS a turn.
+ * On disk that is a user-role message holding one process-event block; the
+ * reload path and the live path both hand the transcript a `process` row.
+ *
+ * The row has to open a fresh assistant turn. The first live run seeded the
+ * beat into the streaming assistant message with no row above it, so it was
+ * consecutive with the previous reply, the two merged, and the answer streamed
+ * into a bubble that had already settled and scrolled past — the turn ran, was
+ * on disk, and never appeared until the thread was reopened.
+ */
+describe("a turn opened by a background process", () => {
+  const previousExchange: DbMessage[] = [
+    { id: "u1", role: "user", content: "run it in background", timestamp: "2026-09-08T00:00:00.000Z" },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "It's running.",
+      timestamp: "2026-09-08T00:00:05.000Z",
+      timeline: [{ kind: "content", id: "ev1", text: "It's running." }],
+    },
+  ];
+  const processRow: DbMessage = {
+    id: "p1",
+    role: "process",
+    content: "Finished count_seconds.py · exit 0",
+    timestamp: "2026-09-08T00:00:35.000Z",
+  };
+  const reply: DbMessage = {
+    id: "a2",
+    role: "assistant",
+    content: "It finished cleanly.",
+    timestamp: "2026-09-08T00:00:39.000Z",
+    timeline: [
+      { kind: "thinking", id: "ev2", text: "…" },
+      { kind: "content", id: "ev3", text: "It finished cleanly." },
+    ],
+  };
+
+  it("is its own AURORA turn, never folded into the reply before it", () => {
+    const turns = buildTurns([...previousExchange, processRow, reply]);
+
+    expect(turns.map((t) => t.role)).toEqual(["user", "assistant", "assistant"]);
+    const [, before, opened] = turns;
+    // The settled reply is untouched…
+    expect(before.content).toBe("It's running.");
+    expect(before.events).toHaveLength(1);
+    // …and the new turn carries the beat first, then everything streamed.
+    expect(opened.startedBy).toBe("process");
+    expect(buildRows(opened.events).map((row) => row.type)).toEqual([
+      "process_beat",
+      "thinking",
+      "content",
+    ]);
+    expect(opened.content).toBe("It finished cleanly.");
+  });
+
+  it("draws the beat in the checklist beat's shape with the one-line summary", () => {
+    const [, , opened] = buildTurns([...previousExchange, processRow, reply]);
+    const [beat] = buildRows(opened.events);
+
+    expect(beat).toMatchObject({
+      type: "process_beat",
+      text: "Finished count_seconds.py · exit 0",
+    });
+  });
+
+  it("stands alone while the reply has not started streaming yet", () => {
+    // The live path appends the row and the streaming seed in two store
+    // updates; a frame can render between them.
+    const turns = buildTurns([...previousExchange, processRow]);
+
+    expect(turns).toHaveLength(3);
+    expect(turns[2].role).toBe("assistant");
+    expect(buildRows(turns[2].events).map((row) => row.type)).toEqual(["process_beat"]);
+  });
+
+  it("clocks the turn from the moment the process ended", () => {
+    const [, , opened] = buildTurns([...previousExchange, processRow, reply]);
+
+    expect(turnWorkedMs(opened)).toBe(4_000);
+  });
+
+  it("keeps every row id unique with the streamed events behind the beat", () => {
+    const [, , opened] = buildTurns([...previousExchange, processRow, reply]);
+    const ids = buildRows(opened.events).map((row) => row.id);
+
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("marks a turn a person opened as theirs", () => {
+    const [, before] = buildTurns(previousExchange);
+
+    expect(before.startedBy).toBe("user");
+  });
+});
+
+describe("row ids survive the assistant merge", () => {
+  it("keeps every row id unique across merged assistant messages", () => {
+    const messages: DbMessage[] = [
+      {
+        id: "beat",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-09-08T00:00:00.000Z",
+        timeline: [{ kind: "process_beat", id: "ev1", text: "Failed slow failer · exit 1" }],
+      },
+      {
+        id: "streamed",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-09-08T00:00:01.000Z",
+        timeline: [
+          { kind: "thinking", id: "ev2", text: "…" },
+          { kind: "content", id: "ev3", text: "Reading the log." },
+        ],
+      },
+    ];
+
+    const [turn] = buildTurns(messages);
+    const ids = buildRows(turn.events).map((row) => row.id);
+
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("keeps rendering when two messages mint the same id", () => {
+    // The shape of the bug: two messages, each numbering its events from one,
+    // merged into a single turn. React saw duplicate keys, dropped children,
+    // and the transcript stopped updating while the reply was still streaming.
+    const messages: DbMessage[] = [
+      {
+        id: "beat",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-09-08T00:00:00.000Z",
+        timeline: [{ kind: "process_beat", id: "ev1", text: "Failed slow failer · exit 1" }],
+      },
+      {
+        id: "streamed",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-09-08T00:00:01.000Z",
+        timeline: [{ kind: "content", id: "ev1", text: "Reading the log." }],
+      },
+    ];
+
+    const [turn] = buildTurns(messages);
+    const rows = buildRows(turn.events);
+    const ids = rows.map((row) => row.id);
+
+    // Both rows survive — losing one is the bug, not the duplicate id itself.
+    expect(rows).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(rows.map((row) => row.type)).toEqual(["process_beat", "content"]);
+  });
+
+  it("leaves ids untouched when there is nothing to fix", () => {
+    const messages: DbMessage[] = [
+      {
+        id: "only",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-09-08T00:00:00.000Z",
+        timeline: [
+          { kind: "content", id: "ev1", text: "one" },
+          { kind: "content", id: "ev2", text: "two" },
+        ],
+      },
+    ];
+
+    const [turn] = buildTurns(messages);
+    expect(buildRows(turn.events).map((row) => row.id)).toEqual(["ev1", "ev2"]);
   });
 });
 
@@ -969,5 +1158,36 @@ describe("a picture made directly", () => {
     const rows = buildRows(reply!.events);
     expect(rows).toHaveLength(1);
     expect(rows[0].type).toBe("image");
+  });
+});
+
+/**
+ * A background process ending rides the same mid-turn slot a user's message
+ * does. It used to come out of that slot as a `user_injection` — the user's own
+ * row, tooltipped "You added this mid-turn", over a sentence beginning "The
+ * user stopped…". It has to reach the transcript as its own kind of row.
+ */
+describe("background process beats", () => {
+  it("keeps a process ending out of the user's row", () => {
+    const events = appendProcessBeat([], "Finished pnpm build · exit 0");
+    const rows = buildRows(events);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].type).toBe("process_beat");
+    expect(rows.some((row) => row.type === "user_injection")).toBe(false);
+  });
+
+  it("sits where it happened, between the tool result and what came after", () => {
+    // The order is the point: the agent was told mid-turn, and the transcript
+    // has to show the interruption at the moment it interrupted.
+    let events: TimelineEvent[] = appendContent([], "Kicking off the build.");
+    events = appendProcessBeat(events, "Finished pnpm build · exit 0");
+    events = appendContent(events, "Build's clean.");
+
+    expect(buildRows(events).map((row) => row.type)).toEqual([
+      "content",
+      "process_beat",
+      "content",
+    ]);
   });
 });

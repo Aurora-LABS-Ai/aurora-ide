@@ -135,6 +135,10 @@ pub struct QueuedUserMessage {
     /// False for team-mailbox traffic, which carries its own framing
     /// (`[Message from …]`) and must not claim to be the user.
     pub mid_turn: bool,
+    /// Who put this here. `User` is a person's words and renders as their own
+    /// row; `Process` is Aurora reporting a background process and renders as a
+    /// one-line beat. See [`crate::agent_runtime::types::InjectedOrigin`].
+    pub origin: crate::agent_runtime::types::InjectedOrigin,
     /// Unix epoch milliseconds when the user hit Send.
     pub queued_at_ms: i64,
 }

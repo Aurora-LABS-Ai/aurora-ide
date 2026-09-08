@@ -352,7 +352,17 @@ impl<E: EventEmitter> TurnDriver<E> {
         // held only what `generate_image` had made, and an edit asked to start
         // from "the first picture in this conversation" silently started from
         // an unrelated one. Chat only — Build conversations have no assets dir.
-        let landed = match self.registry.store_for(request.execution_mode).assets_dir(&request.thread_id) {
+        // A machine-started turn has no pasted pictures to land and no words to
+        // attribute — scanning its text for image markers would only be a way
+        // to misread a log line as one.
+        let started_by_process = request.user_message_origin
+            == crate::agent_runtime::types::InjectedOrigin::Process;
+        let landed = match self
+            .registry
+            .store_for(request.execution_mode)
+            .assets_dir(&request.thread_id)
+            .filter(|_| !started_by_process)
+        {
             Some(dir) => {
                 crate::tools::image::ingest::ingest_user_images_into(
                     &dir,
@@ -368,8 +378,25 @@ impl<E: EventEmitter> TurnDriver<E> {
                 stored: Vec::new(),
             },
         };
-        let mut user_message =
-            ConversationMessage::user_text(landed.text, Utc::now().timestamp_millis());
+        let mut user_message = if started_by_process {
+            // The transcript's one line is the display text; the model's copy
+            // keeps the process id and the log path, because the useful next
+            // move is `shell_read_output` and it cannot make that call out of
+            // prose. Same split the mid-turn injection uses.
+            let summary = request
+                .user_message_summary
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(landed.text.as_str());
+            ConversationMessage::user_process_event(
+                summary,
+                landed.text.clone(),
+                Utc::now().timestamp_millis(),
+            )
+        } else {
+            ConversationMessage::user_text(landed.text, Utc::now().timestamp_millis())
+        };
         // The names the pasted pictures were stored under, in the order they
         // appear in the message.
         //
@@ -605,10 +632,16 @@ impl<E: EventEmitter> TurnDriver<E> {
             // blobs, and decorative noise. Only fires when the
             // sidecar still carries the bootstrap "New Chat" title —
             // user-renamed threads are left alone.
-            let needs_auto_title = store
-                .load_metadata(&thread_id)
-                .map(|m| m.title == "New Chat")
-                .unwrap_or(false);
+            // Never from a machine-started turn: "Finished pnpm test · exit 1"
+            // would become the conversation's name, and the thread would be
+            // titled after a thing that happened in it rather than after what
+            // it is about. A turn Aurora started leaves the title for the next
+            // thing a person says.
+            let needs_auto_title = !started_by_process
+                && store
+                    .load_metadata(&thread_id)
+                    .map(|m| m.title == "New Chat")
+                    .unwrap_or(false);
             if needs_auto_title {
                 let derived =
                     crate::agent_runtime::title::derive_thread_title(&request.user_message);

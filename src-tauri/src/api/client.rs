@@ -31,6 +31,8 @@ use serde_json::Value;
 use crate::agent_runtime::api_client::{ReasoningConfig, StreamingApiClient};
 
 use super::anthropic::AnthropicAdapter;
+use super::claude_code::adapter::ClaudeCodeAdapter;
+use super::claude_code::CLAUDE_CODE_PROVIDER_TYPE;
 use super::codex::adapter::CodexAdapter;
 use super::commandcode::adapter::CommandCodeAdapter;
 use super::cursor::adapter::CursorAdapter;
@@ -170,6 +172,11 @@ pub enum ProviderKind {
     /// Responses wire shape; auth + endpoint live in
     /// [`super::codex`].
     Codex,
+    /// Claude models over Anthropic's own endpoint, authenticated with the
+    /// user's claude.ai subscription (OAuth bearer token, no API key). Same
+    /// Messages wire shape as [`Self::Anthropic`]; auth, the beta header
+    /// and the Claude Code identity live in [`super::claude_code`].
+    ClaudeCode,
     /// Cursor's `agent.v1` agent protocol, authenticated with the user's
     /// Cursor subscription (no API key). Not an OpenAI-shaped wire at all —
     /// Connect-RPC over HTTP/2, protobuf framed. See [`super::cursor`].
@@ -190,8 +197,26 @@ impl ProviderKind {
     #[must_use]
     pub fn detect(provider_type: &str) -> Self {
         match provider_type.trim() {
+            // Meta serves all three wires off one base URL and one bearer
+            // key, so it follows the same "wire in the type name" convention
+            // as kenari, Modal and OpenCode Go. Its Messages endpoint accepts
+            // BOTH `x-api-key` and `Authorization: Bearer` (verified live), so
+            // the stock Anthropic adapter reaches it unchanged.
+            // `ark-messages` is Volcano Ark's DEFAULT wire, not an opt-in
+            // variant: it is the only one of their three that signs its
+            // thinking blocks (so reasoning replays across a tool loop) and
+            // the only one that reports cache writes apart from cache reads.
+            // It authenticates with `x-api-key` as well as Bearer, verified
+            // live, so the stock Anthropic adapter reaches it unchanged.
+            //
+            // Unlike every other multi-wire provider here, its base URL is a
+            // DIFFERENT PATH rather than the same one — `/api/coding/v1`,
+            // against `/api/coding/v3` for the other two — so the frontend
+            // rewrites the row's URL when the wire changes.
             "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages"
-            | "modal-messages" => ProviderKind::Anthropic,
+            | "modal-messages" | "ark-messages" | super::meta::META_MESSAGES_TYPE => {
+                ProviderKind::Anthropic
+            }
             "deepseek" => ProviderKind::DeepSeek,
             // On OpenCode Go the wire belongs to the MODEL, not the row: the
             // same key and base URL answer all three formats and each model
@@ -202,9 +227,23 @@ impl ProviderKind {
             // `applyOpenCodeWire`; these arms only say which adapter each of
             // the three names means. `opencode-go-chat` falls through to OpenAI
             // Chat Completions below.
+            //
+            // `meta-responses` is Meta's DEFAULT wire, not an opt-in variant:
+            // it is the only one of their three that replays reasoning across
+            // a tool loop, which is the whole job here. Plain `meta` falls
+            // through to Chat Completions below.
+            //
+            // `ark-responses` is present because Volcano's own console
+            // advertises it on the coding path and it genuinely works,
+            // including tool calls — NOT because it is the one to reach for.
+            // It returns a reasoning SUMMARY rather than the reasoning, and
+            // reports `caching: disabled`.
             "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go"
-            | "modal-responses" => ProviderKind::OpenAIResponses,
+            | "modal-responses" | "ark-responses" | super::meta::META_RESPONSES_TYPE => {
+                ProviderKind::OpenAIResponses
+            }
             "codex" => ProviderKind::Codex,
+            CLAUDE_CODE_PROVIDER_TYPE => ProviderKind::ClaudeCode,
             "cursor" => ProviderKind::Cursor,
             super::commandcode::COMMANDCODE_PROVIDER_TYPE | "command-code" => {
                 ProviderKind::CommandCode
@@ -273,7 +312,7 @@ pub fn reasoning_replay_for(
     match ProviderKind::detect(provider_type) {
         // Anthropic replays `thinking` blocks verbatim and requires it once
         // extended thinking is on.
-        ProviderKind::Anthropic => ReasoningReplay::Text,
+        ProviderKind::Anthropic | ProviderKind::ClaudeCode => ReasoningReplay::Text,
         ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
         // Command Code replays reasoning as a plain `{type:"reasoning",
         // text}` part: no signature to echo, nothing encrypted. It costs
@@ -334,6 +373,7 @@ pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn Strea
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
         ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
         ProviderKind::Codex => Arc::new(CodexAdapter::new(config.clone())),
+        ProviderKind::ClaudeCode => Arc::new(ClaudeCodeAdapter::new(config.clone())),
         ProviderKind::Cursor => Arc::new(CursorAdapter::new(config.clone())),
         ProviderKind::CommandCode => Arc::new(CommandCodeAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
@@ -397,6 +437,24 @@ mod tests {
         assert_eq!(ProviderKind::detect("codex"), ProviderKind::Codex);
     }
 
+    /// The subscription route shares Anthropic's wire but not its auth, so
+    /// it must reach its own adapter — the stock one would send `x-api-key`.
+    #[test]
+    fn detect_claude_code_routes_to_dedicated_adapter() {
+        assert_eq!(ProviderKind::detect("claude-code"), ProviderKind::ClaudeCode);
+        assert_eq!(
+            reasoning_replay_for(
+                "claude-code",
+                "claude-sonnet-5",
+                "https://api.anthropic.com/v1",
+                crate::agent_runtime::api_client::ReasoningReplayMode::default(),
+                None,
+            ),
+            ReasoningReplay::Text,
+            "thinking blocks replay verbatim, as on Anthropic"
+        );
+    }
+
     /// One base URL, one key, three wires — and each OpenCode Go model accepts
     /// exactly one of them. The frontend resolves the wire per model
     /// (`applyOpenCodeWire`) and this match is the only thing that turns the
@@ -444,6 +502,57 @@ mod tests {
         );
     }
 
+    /// Meta's three wires, one base URL, one bearer key.
+    ///
+    /// The Messages arm is the one worth pinning: Aurora's Anthropic adapter
+    /// authenticates with `x-api-key`, and Meta's docs only ever show
+    /// `Authorization: Bearer`. Both were tried against the live endpoint and
+    /// both answered 200, which is why this maps to the stock adapter instead
+    /// of a Meta-specific one.
+    #[test]
+    fn detect_maps_each_meta_wire_to_its_own_adapter() {
+        assert_eq!(
+            ProviderKind::detect("meta-responses"),
+            ProviderKind::OpenAIResponses,
+        );
+        assert_eq!(
+            ProviderKind::detect("meta-messages"),
+            ProviderKind::Anthropic,
+        );
+        // Plain `meta` is Chat Completions, matching kenari and Modal.
+        assert_eq!(ProviderKind::detect("meta"), ProviderKind::OpenAICompat);
+    }
+
+    /// Responses replays an opaque encrypted reasoning item on Meta exactly
+    /// as it does on OpenAI — `include: ["reasoning.encrypted_content"]` is
+    /// the switch Meta's own agent docs tell clients to set. Counting it as
+    /// dropped would under-report the context a Meta thread is carrying.
+    #[test]
+    fn meta_responses_replays_reasoning_opaquely() {
+        use crate::agent_runtime::api_client::ReasoningReplayMode;
+        assert_eq!(
+            reasoning_replay_for(
+                "meta-responses",
+                "muse-spark-1.3-contributor",
+                "https://api.meta.ai/v1",
+                ReasoningReplayMode::default(),
+                None,
+            ),
+            ReasoningReplay::Opaque,
+        );
+        // The Messages wire carries the reasoning as text, like Anthropic's.
+        assert_eq!(
+            reasoning_replay_for(
+                "meta-messages",
+                "muse-spark-1.3-contributor",
+                "https://api.meta.ai/v1",
+                ReasoningReplayMode::default(),
+                None,
+            ),
+            ReasoningReplay::Text,
+        );
+    }
+
     #[test]
     fn detect_openai_compat_for_others() {
         for id in [
@@ -477,6 +586,7 @@ mod tests {
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("deepseek"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("openai-responses"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("codex"));
+        let _: Arc<dyn StreamingApiClient> = build_api_client(&config("claude-code"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("glm"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("openai"));
         let _: Arc<dyn StreamingApiClient> = build_api_client(&config("custom"));
@@ -573,6 +683,7 @@ mod tests {
             ("minimax", ProviderKind::Anthropic),
             ("deepseek", ProviderKind::DeepSeek),
             ("codex", ProviderKind::Codex),
+            ("claude-code", ProviderKind::ClaudeCode),
             ("openai", ProviderKind::OpenAICompat),
             ("glm", ProviderKind::OpenAICompat),
             ("custom", ProviderKind::OpenAICompat),

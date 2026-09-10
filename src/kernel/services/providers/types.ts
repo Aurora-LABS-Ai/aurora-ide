@@ -299,6 +299,7 @@ export type ProviderType =
   | 'openai'           // OpenAI and compatible APIs (Chat Completions)
   | 'openai-responses' // OpenAI Responses API (/responses, typed streaming events)
   | 'codex'            // Codex via ChatGPT backend (subscription OAuth, Responses dialect)
+  | 'claude-code'      // Claude via the claude.ai subscription (OAuth bearer, Anthropic Messages wire)
   | 'cursor'           // Cursor subscription via its native agent protocol
   | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
   | 'anthropic'        // Native Anthropic Claude API
@@ -314,11 +315,38 @@ export type ProviderType =
   | 'kenari'           // kenari over OpenAI Chat Completions (the default)
   | 'kenari-messages'  // kenari over the Anthropic Messages shape
   | 'kenari-responses' // kenari over the Responses shape (Codex wire)
+  // Volcano Ark's Coding Plan — three wires on one key, all driven live.
+  //
+  // Unlike kenari's, Modal's and Meta's threes, these are NOT three suffixes
+  // of one base URL: messages is `/api/coding/v1`, chat and responses are
+  // `/api/coding/v3`. So changing the wire has to rewrite the row's base URL
+  // (`arkBaseUrlForWire`), and switching only the type would 404.
+  //
+  // The path also has to stay under `/api/coding`: the same key on Ark's
+  // general `/api/v3` succeeds and silently spends pay-as-you-go credit
+  // instead of the subscription.
+  //
+  // Messages is the default because it is the only one that signs its thinking
+  // blocks (reasoning replays across a tool loop) and the only one that splits
+  // cache writes from cache reads.
+  | 'ark-messages'    // Ark over the Anthropic Messages shape (the default)
+  | 'ark'             // Ark over OpenAI Chat Completions
+  | 'ark-responses'   // Ark over the Responses shape
   // Modal — one workspace proxy token, one regional gateway, three wires. The
   // models are the workspace's live endpoints, addressed by hostname.
   | 'modal'            // Modal over OpenAI Chat Completions (the default)
   | 'modal-messages'   // Modal over the Anthropic Messages shape (Bearer auth)
   | 'modal-responses'  // Modal over the Responses shape
+  // Meta Model API (Muse) — one key, one base URL, three wires, like kenari's
+  // and interchangeable in the same way: every Muse Spark model answers all
+  // three. Responses is the default because it is the only one that carries
+  // reasoning across a tool call; Meta's own docs warn that the Chat wire
+  // drops it and makes multi-step runs erratic. The Messages wire accepts
+  // Aurora's `x-api-key` header as well as a bearer token, which is why it
+  // needs no adapter of its own.
+  | 'meta'             // Meta over OpenAI Chat Completions
+  | 'meta-messages'    // Meta over the Anthropic Messages shape
+  | 'meta-responses'   // Meta over the Responses shape (the default)
   // OpenCode Go — three wires on one account and one base URL, but unlike
   // kenari's three these are NOT interchangeable: each model accepts exactly
   // one and fails hard on the others (500, or a 401 that reads as a bad key).

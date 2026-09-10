@@ -84,6 +84,9 @@ export type BrandKey = (typeof BRAND_KEYS)[number];
  */
 const BY_ID: Readonly<Record<string, BrandKey>> = {
   anthropic: "anthropic",
+  // The subscription row serves Claude and nothing else, so it wears
+  // Claude's mark — the account is Anthropic's, only the billing differs.
+  "claude-code": "anthropic",
   openai: "openai",
   "openai-responses": "openai",
   codex: "codex",
@@ -92,6 +95,13 @@ const BY_ID: Readonly<Record<string, BrandKey>> = {
   commandcode: "commandcode",
   deepseek: "deepseek",
   kenari: "kenari",
+  // Volcano Engine's own mark. The Coding Plan resells GLM, Kimi, MiniMax and
+  // DeepSeek alongside Volcano's Doubao models, and the row belongs to Volcano
+  // rather than to whichever of them the router picked — the same reasoning
+  // that puts Modal and Command Code above the vendors they serve. Mapped
+  // explicitly even though the `volces.com` host would also match, so the mark
+  // survives someone pointing the row at a proxy.
+  ark: "doubao",
   modal: "modal",
   glm: "zai",
   minimax: "minimax",

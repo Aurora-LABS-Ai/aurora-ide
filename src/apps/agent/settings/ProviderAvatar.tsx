@@ -33,7 +33,7 @@ export const ProviderAvatar: React.FC<{
         // appears, so announcing the logo too would just say it twice.
         <img src={image} alt="" draggable={false} />
       ) : Mark ? (
-        <Mark size={small ? 16 : 18} />
+        <Mark size={small ? 14 : 18} />
       ) : (
         providerInitial(provider)
       )}

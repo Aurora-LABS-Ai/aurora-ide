@@ -618,13 +618,21 @@
  * its own entry animation). Do NOT re-declare `background` here; that is what
  * previously broke it away from the model menu's glass. */
 .agw-ctx-card {
-  min-width: 210px;
+  /* Raised from 210px. The probe this card was designed in drew it at ~300px,
+   * where the hero reads as one element among several; shipped, the content is
+   * narrower than the probe's two-column fact grid, so the card collapsed
+   * toward its minimum and the same hero filled a third of the width. The
+   * design was right and the box it landed in was not.
+   *
+   * Scaled with the text, because a fixed box around text that grows is how
+   * you get four words per line at 120%. */
+  min-width: calc(260px * var(--agw-ui-text-scale, 1));
   /* The card is its own object and sizes to its OWN budget, never to whatever
    * string happens to land in it. Without this a single long value — a custom
    * provider's UUID, say — stretched the whole card across the window. Same
    * rule as the project switcher: derive width from the container's content
    * budget, not from one arbitrary item. */
-  max-width: 300px;
+  max-width: calc(300px * var(--agw-ui-text-scale, 1));
   padding: 10px 11px;
   border-radius: var(--agw-radius-md);
   animation: agw-ctx-pop 0.12s ease-out;
@@ -635,16 +643,221 @@
     transform: translateY(-3px);
   }
 }
-.agw-ctx-card-head {
+/* ── Head ────────────────────────────────────────────────────────────────
+ * Names what is being measured, and carries the one caveat that outranks
+ * every number below it. NOT uppercase like the old card head: this is a
+ * model id, and shouting an identifier back at someone helps nobody read it.
+ */
+.agw-ctx-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-ctx-who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────────
+ * One dominant element per area (there is exactly one on this card). At
+ * `display` weight because it is a mark to be glanced at, not read — the one
+ * legitimate use of that tier, alongside the wordmark and avatars.
+ *
+ * Tabular figures so 9% and 60% occupy the same box: without it the number
+ * jiggles horizontally every time it crosses a digit boundary, on a card that
+ * repaints once a second during a turn.
+ */
+.agw-ctx-hero {
+  display: flex;
+  align-items: baseline;
+  /* Tight, because the only thing this gap sits between is a number and its
+   * own unit — `12` and `%` are one reading, and 7px at a 30px display size
+   * was enough air to read as two. The caption on the right is pushed away by
+   * its own `margin-left: auto`, so it never wanted this gap in the first
+   * place. */
+  gap: 2px;
+  margin-top: 5px;
+}
+.agw-ctx-hero-n {
+  /* Multiplied by the user's interface text size like every token in the
+   * scale. A raw `38px` here was the one thing on this card that ignored
+   * Appearance → Typography, so at 90% every label around it shrank and this
+   * did not — the number growing relative to its own card each time someone
+   * made the window's text smaller.
+   *
+   * Display text is allowed to sit above the 17px scale (that is what the tier
+   * is for), but it still has to move with it. */
+  font-size: calc(30px * var(--agw-ui-text-scale, 1));
+  line-height: 1;
+  font-weight: var(--agw-fw-display);
+  letter-spacing: -0.03em;
+  /* Equal-width digits, so 11% and 88% occupy the same box and the number does
+   * not shimmer as it counts up during a turn.
+   *
+   * NO `min-width` reserving a third digit. That was tried and reverted: it
+   * detached the `%` from its own number by a whole digit of empty space below
+   * 100%, to prevent a shift that nothing actually suffers from. The caption to
+   * the right is pinned by `margin-left: auto` and the card carries its own
+   * `min-width`, so a digit appearing moves the `%` and nothing else — while
+   * reserving the space moved the `%` permanently, which is worse and constant
+   * rather than occasional. */
+  font-variant-numeric: tabular-nums;
+}
+.agw-ctx-hero-u {
+  align-self: flex-start;
+  margin-top: 3px;
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-medium);
+}
+/* Sits on the hero's baseline, one line, never wrapped.
+ *
+ * `47.9K of 500.0K` is a single fact; split over two lines it read as two
+ * stacked figures the reader had to put back together. `nowrap` is what keeps
+ * it that way when the card is at its narrowest — the card's own min-width was
+ * raised to leave room for it rather than letting this fold. */
+.agw-ctx-hero-r {
+  margin-left: auto;
+  flex: none;
+  align-self: baseline;
+  white-space: nowrap;
+  text-align: right;
+  /* Stated, not inherited. Without this it took the card's 14px and read as
+   * loud as `Cache hit` and `Last turn` — supporting text sitting in the row
+   * tier, which is the whole reason the card looked like it had no hierarchy.
+   * Four sizes live on this card (hero, its unit, rows, detail) and this one
+   * belongs to detail. */
+  font-size: var(--agw-fs-micro);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+/* Thinner than the limit bars below it. The hero already carries this number
+ * at 38px; a second heavy statement of the same fact is redundancy, not
+ * emphasis. */
+.agw-ctx-hero-bar {
+  height: 3px;
+  margin: 10px 0 11px;
+}
+
+/* ── Cache, split into its parts ─────────────────────────────────────────
+ * Three disjoint slices that sum to the input, laid end to end because that
+ * is what they are. Order is cost order — a cache read is cheap, a write
+ * costs MORE than plain input, fresh is full price — so a healthy request
+ * reads as a long green run and an expensive one does not.
+ *
+ * A hit percentage alone cannot separate a turn quietly re-reading its cache
+ * from one that just rebuilt the whole thing. Both read 79%.
+ */
+.agw-ctx-cache-split {
+  display: flex;
+  gap: 1.5px;
+  height: 3px;
+  margin: 6px 0 0;
+  /* The segments ARE the bar; an unfilled track behind them would imply a
+   * remainder that does not exist. */
+  background: transparent;
+  border-radius: 0;
+  overflow: visible;
+}
+.agw-ctx-cache-split > .agw-ctx-bar-fill {
+  border-radius: 1px;
+  /* A slice that rounds to nothing still happened. Better a hairline than a
+   * segment that silently vanishes from a sum the reader is checking. */
+  min-width: 1px;
+}
+.agw-ctx-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 4px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-ctx-parts b {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+
+/* ── Plan section ────────────────────────────────────────────────────────
+ * Names the account and states when its figures were read. The age is not
+ * decoration: these are fetched on open and held for up to a minute, so they
+ * are the one part of the card that can legitimately be stale.
+ */
+.agw-ctx-section {
+  display: flex;
+  align-items: baseline;
   gap: 6px;
   margin-bottom: 8px;
   font-size: var(--agw-fs-micro);
-  font-weight: var(--agw-fw-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
   color: var(--agw-text-subtle);
+}
+.agw-ctx-section-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+.agw-ctx-section-age {
+  margin-left: auto;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* One metered bucket. The VALUE carries the colour, not the name: it is what
+ * the reader acts on, and it is the half that survives being skimmed. */
+.agw-ctx-limit + .agw-ctx-limit {
+  margin-top: 9px;
+}
+.agw-ctx-limit-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: var(--agw-fs-micro);
+}
+.agw-ctx-limit-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+}
+.agw-ctx-limit-val {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+.agw-ctx-limit-bar {
+  height: 3px;
+  margin: 5px 0 0;
+}
+.agw-ctx-limit .agw-ctx-sub {
+  margin-top: 3px;
+}
+.agw-ctx-balance {
+  margin-top: 9px;
+}
+
+/* The provider's own sentence about the provider's own account. Set as a
+ * quotation, not a row, because somebody else wrote it and it is not a
+ * measurement Aurora took. */
+.agw-ctx-quote {
+  margin-top: 7px;
+  padding-left: 8px;
+  border-left: 2px solid color-mix(in srgb, var(--agw-text) 16%, transparent);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.4;
+  color: var(--agw-text-muted);
 }
 .agw-ctx-row {
   display: flex;
@@ -744,39 +957,15 @@
   color: var(--agw-warning);
 }
 
-/* Provenance footer — who counted the figures above.
+/* The provenance footer that used to live here is GONE, deliberately.
  *
- * Deliberately NOT a data row: it carries no measurement, so it does not take
- * the label/value columns the rest of the card uses, and it sits below a
- * heavier rule that closes the card rather than dividing it. It used to be a
- * pill beside the headline percentage, where it competed for the first glance
- * with the one number people open this card to read. */
-.agw-ctx-source {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 9px;
-  padding-top: 8px;
-  border-top: 1px solid var(--agw-border);
-  font-size: var(--agw-fs-micro);
-  color: var(--agw-text-subtle);
-}
-.agw-ctx-source strong {
-  margin-left: 5px;
-  font-weight: var(--agw-fw-medium);
-  color: var(--agw-text-muted);
-}
-/* A measured figure gets a quiet confirming dot; a locally estimated one gets
- * the same amber the rest of the card uses for "approximate". Colour alone
- * never carries the meaning — the word beside it always says which. */
-.agw-ctx-source-dot {
-  flex: none;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--agw-added) 70%, transparent);
-}
-.agw-ctx-source-dot[data-tone="soft"] {
-  background: color-mix(in srgb, var(--agw-warning) 80%, transparent);
-}
+ * It said "Source: provider" on every ordinary hover — the shape of a row the
+ * eye learns to skip, which makes it worthless on the day it has news. What
+ * replaced it speaks only when there is something to say: the amber chip in
+ * `.agw-ctx-head` when Aurora did the counting itself, and
+ * `.agw-ctx-section-age` on the plan block, whose figures are the one part of
+ * this card that can legitimately be a minute out of date.
+ *
+ * Do not reinstate a card-wide footer here without a reason that survives
+ * "what does this tell someone on the 400th hover". */
 

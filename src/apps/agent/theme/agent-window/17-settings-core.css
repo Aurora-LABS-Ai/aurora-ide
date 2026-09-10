@@ -816,6 +816,92 @@
   color: var(--agw-text);
 }
 
+/* ── Who is connected ───────────────────────────────────────────────────────
+ * The card above says how to connect an agent; this says whether one has.
+ * Separated by a rule rather than made into its own card, because it is the
+ * answer to the block it sits under and a second card would read as a second
+ * subject.
+ *
+ * The state is always stated, never implied by an empty space: "nothing
+ * connected" and "this feature is broken" look identical as a gap.
+ */
+.agw-set-connect-live {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-set-connect-live-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+}
+/* Green only when something is actually on the other end. Colour never carries
+ * it alone — the count beside it always says the same thing in words. */
+.agw-set-connect-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--agw-text) 26%, transparent);
+}
+.agw-set-connect-dot[data-on] {
+  background: var(--agw-added);
+}
+.agw-set-connect-live .agw-set-connect-note {
+  margin-top: 6px;
+}
+.agw-set-connect-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.agw-set-connect-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.agw-set-connect-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-set-connect-ver {
+  font-weight: var(--agw-fw-body);
+  color: var(--agw-text-subtle);
+}
+/* The identifying detail, not the headline: it never competes with the name,
+ * and it never wraps the row onto a second line. */
+.agw-set-connect-meta {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+@media (max-width: 420px) {
+  .agw-set-connect-item {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .agw-set-connect-meta {
+    align-self: flex-start;
+  }
+}
+
 /* ── Command usage list ─────────────────────────────────────────────────────
  * What installing the CLI actually gives you. A two-column list rather than a
  * code block: these are five separate commands, and running them together as

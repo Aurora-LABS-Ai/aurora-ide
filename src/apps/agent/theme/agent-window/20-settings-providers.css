@@ -55,6 +55,71 @@
   gap: 6px;
   min-width: 0;
 }
+
+/* ── Pinned endpoint ────────────────────────────────────────────────────────
+ * For a provider whose address the vendor fixes, the key is the only field
+ * almost anyone touches. The endpoint folds away under a disclosure rather
+ * than sitting above the field they opened the card for — still reachable,
+ * because a proxy or a self-hosted deployment is real.
+ *
+ * The summary shows the URL while CLOSED. A disclosure labelled only
+ * "Advanced" makes you open it to learn whether you needed it; naming the
+ * address answers "is this pointing at the right place" without a click.
+ */
+.agw-prov-endpoint {
+  min-width: 0;
+}
+.agw-prov-endpoint-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 0;
+  min-width: 0;
+  cursor: pointer;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+  /* The native triangle is replaced by the window's own chevron, which is the
+     mark every other collapsible thing here uses. */
+  list-style: none;
+}
+.agw-prov-endpoint-summary::-webkit-details-marker {
+  display: none;
+}
+/* No outer ring on focus: the row states itself through its own text colour,
+   which is also what hover does, so keyboard and pointer agree. */
+.agw-prov-endpoint-summary:hover,
+.agw-prov-endpoint-summary:focus-visible {
+  color: var(--agw-text);
+  outline: none;
+}
+.agw-prov-endpoint-chev {
+  flex: none;
+  transform: rotate(-90deg);
+  transition: transform 0.12s ease;
+  color: var(--agw-text-subtle);
+}
+.agw-prov-endpoint[open] .agw-prov-endpoint-chev {
+  transform: none;
+}
+/* The address, quiet and truncated. It is context for the label, not a value
+   to read character by character — the field below is where it is read. */
+.agw-prov-endpoint-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-prov-endpoint[open] .agw-prov-endpoint-url {
+  /* Redundant once the field below shows the same string, and keeping it would
+     put the address on screen twice, two lines apart. */
+  display: none;
+}
+.agw-prov-endpoint-body {
+  padding: 4px 0 2px;
+}
 .agw-prov-edit-field > span {
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);

@@ -11,7 +11,9 @@ import {
   buildRows,
   buildSections,
   buildTurns,
+  CHAPTER_TITLE_MAX,
   clearReconnect,
+  shortenChapterTitle,
   textOf,
   turnWorkedMs,
   formatWorkedDuration,
@@ -38,6 +40,82 @@ describe("compaction terminal states", () => {
       afterTokens: 0,
       reason: "empty_summary",
     });
+  });
+});
+
+/**
+ * The marker a manual `/compact` writes, read back the way the transcript
+ * reads it.
+ *
+ * This is a different path from the one above: mid-turn compaction builds a
+ * timeline EVENT and never round-trips through JSON, while `/compact` appends
+ * a `compaction` message whose content is a small JSON blob. The parser used
+ * to accept every terminal status out of that blob and not `running`, so a
+ * compaction that had only just started rendered as a finished one — the
+ * completed styling (no shimmer), no clock, and, with both counts still zero,
+ * the bare words "Context compacted" three minutes before it was true.
+ */
+describe("a compaction marker read back from a message", () => {
+  const marker = (payload: Record<string, unknown>): DbMessage =>
+    ({
+      id: "compact-msg",
+      role: "compaction",
+      content: JSON.stringify(payload),
+      timestamp: "2026-09-10T04:00:00.000Z",
+    }) as DbMessage;
+
+  it("keeps a running compaction running", () => {
+    const [turn] = buildTurns([
+      marker({ beforeTokens: 0, afterTokens: 0, status: "running", startedAt: 1_700_000_000_000 }),
+    ]);
+    expect(turn.compaction).toMatchObject({
+      status: "running",
+      startedAt: 1_700_000_000_000,
+    });
+    expect(turn.compaction?.durationMs).toBeUndefined();
+  });
+
+  it("carries the drop and how long it took once settled", () => {
+    const [turn] = buildTurns([
+      marker({
+        beforeTokens: 222_000,
+        afterTokens: 59_800,
+        status: "completed",
+        startedAt: 1_700_000_000_000,
+        durationMs: 182_000,
+      }),
+    ]);
+    expect(turn.compaction).toMatchObject({
+      status: "completed",
+      beforeTokens: 222_000,
+      afterTokens: 59_800,
+      durationMs: 182_000,
+    });
+  });
+
+  it("reads a stopped one as stopped, with its reason", () => {
+    const [turn] = buildTurns([
+      marker({ beforeTokens: 90_000, afterTokens: 0, status: "cancelled", reason: "user_stop" }),
+    ]);
+    expect(turn.compaction).toMatchObject({ status: "cancelled", reason: "user_stop" });
+  });
+
+  it("treats a missing clock as absent rather than as zero", () => {
+    // What a marker restored from the session file looks like: it has the
+    // drop and nothing else. A zero here would draw "0s" over a compaction
+    // whose duration nobody recorded.
+    const [turn] = buildTurns([
+      marker({ beforeTokens: 222_000, afterTokens: 59_800, status: "completed" }),
+    ]);
+    expect(turn.compaction?.startedAt).toBeUndefined();
+    expect(turn.compaction?.durationMs).toBeUndefined();
+  });
+
+  it("falls back to done on a marker it cannot read", () => {
+    const [turn] = buildTurns([
+      { id: "x", role: "compaction", content: "not json", timestamp: "" } as DbMessage,
+    ]);
+    expect(turn.compaction?.status).toBe("completed");
   });
 });
 
@@ -821,10 +899,53 @@ describe("chapters in the transcript", () => {
     // A rejected chapter is a heading the user never got. Rendering the title
     // anyway would show a heading the runtime refused; hiding the call entirely
     // would leave nothing to notice.
+    //
+    // Only a MISSING title still rejects. An over-long one is shortened and
+    // succeeds — see the shortening tests below.
     const rows = buildRows([
-      chapter("c1", JSON.stringify({ title: "x".repeat(80) }), "[error] `title` is 80 characters"),
+      chapter("c1", JSON.stringify({ title: "  " }), "[error] `title` is required"),
     ]);
     expect(rows.map((r) => r.type)).toEqual(["tools"]);
+  });
+
+  /**
+   * The heading is drawn from the STREAMED arguments, before any tool result
+   * exists, so the shortening has to happen here as well as in Rust. Left to
+   * the runtime alone, the transcript would keep showing the full over-long
+   * title the model sent while the model was told it got a shortened one.
+   */
+  it("shortens an over-long title rather than showing a paragraph", () => {
+    const long = "Read the reload path and then fix the tool join before running every test";
+    const [row] = buildRows([chapter("c1", JSON.stringify({ title: long }))]);
+    const title = row.type === "chapter" ? row.title : "";
+    expect([...title].length).toBeLessThanOrEqual(CHAPTER_TITLE_MAX);
+    expect(title).toBe("Read the reload path and then fix the tool join before…");
+  });
+
+  it("leaves a title that fits completely alone", () => {
+    const exact = "x".repeat(CHAPTER_TITLE_MAX);
+    expect(shortenChapterTitle(exact)).toBe(exact);
+    expect(shortenChapterTitle("Run the tests")).toBe("Run the tests");
+  });
+
+  /** Agreeing with Rust is the point — the two shorten the same input alike. */
+  it("matches the runtime's shortening rules", () => {
+    // One word longer than the budget: hard cut, because there is no boundary
+    // to prefer and showing nothing is worse.
+    const oneWord = shortenChapterTitle("x".repeat(120));
+    expect([...oneWord].length).toBe(CHAPTER_TITLE_MAX);
+    expect(oneWord.endsWith("…")).toBe(true);
+
+    // An early lone space must not shorten the whole heading to "a…".
+    const early = shortenChapterTitle(`a ${"x".repeat(80)}`);
+    expect([...early].length).toBeGreaterThanOrEqual(CHAPTER_TITLE_MAX / 2);
+  });
+
+  /** Code points, not UTF-16 units: `.length` would cut a pair in half. */
+  it("counts characters, not UTF-16 units", () => {
+    const emoji = "🚀".repeat(40);
+    expect(shortenChapterTitle(emoji)).toBe(emoji);
+    expect([...shortenChapterTitle("🚀".repeat(80))].length).toBe(CHAPTER_TITLE_MAX);
   });
 
   it("still shows the heading before the call is acknowledged", () => {

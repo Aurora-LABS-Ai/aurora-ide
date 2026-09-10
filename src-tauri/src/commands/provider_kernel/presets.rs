@@ -57,6 +57,57 @@ pub(crate) fn provider_preset(config: &AuroraProviderConfig) -> ProviderPreset {
             required_headers: &[("anthropic-version", "2023-06-01")],
             thinking_mode: ThinkingMode::None,
         },
+        // Volcano Ark's Coding Plan. An ordinary OpenAI chat wire with a
+        // Bearer `ark-` key, listed by name only so the base URL stays pinned
+        // to `/api/coding/v3` — the plan's quota does not apply on Ark's
+        // general `/api/v3` path, and a request that lands there is billed
+        // against pay-as-you-go credit instead.
+        //
+        // Thinking is a property of the model, not of the request: GLM 5.3
+        // cannot turn it off, DeepSeek and Doubao default it on and accept
+        // `thinking: {"type": "disabled"}` (verified). So nothing is injected
+        // here, and reasoning arrives in `reasoning_content`, which Aurora's
+        // OpenAI reader already handles.
+        "ark" => ProviderPreset {
+            auth_header: "Authorization",
+            auth_type: AuthType::Bearer,
+            chat_endpoint: "/chat/completions",
+            default_params: &[],
+            format: ProviderFormat::OpenAi,
+            include_stream_options: true,
+            required_headers: &[],
+            thinking_mode: ThinkingMode::None,
+        },
+        // The DEFAULT Ark wire. Two measured reasons, both about what survives
+        // a tool loop: it is the only Ark wire that signs its thinking blocks,
+        // and the only one that reports cache writes apart from cache reads.
+        //
+        // `x-api-key` authenticates here as well as Bearer (verified live), so
+        // Aurora's Anthropic client needs no special case. Its base URL is
+        // `/api/coding/v1`, a different path from the other two.
+        "ark-messages" => ProviderPreset {
+            auth_header: "x-api-key",
+            auth_type: AuthType::XApiKey,
+            chat_endpoint: "/messages",
+            default_params: &[],
+            format: ProviderFormat::Anthropic,
+            include_stream_options: false,
+            required_headers: &[("anthropic-version", "2023-06-01")],
+            thinking_mode: ThinkingMode::None,
+        },
+        // Offered because Volcano advertises it and it works, tool calls
+        // included — not because it is the one to pick. It returns a reasoning
+        // SUMMARY instead of the reasoning, and answers `caching: disabled`.
+        "ark-responses" => ProviderPreset {
+            auth_header: "Authorization",
+            auth_type: AuthType::Bearer,
+            chat_endpoint: "/responses",
+            default_params: &[],
+            format: ProviderFormat::OpenAi,
+            include_stream_options: false,
+            required_headers: &[],
+            thinking_mode: ThinkingMode::None,
+        },
         // kenari — one gateway, three wires, one `kn-` key. The wire rides in
         // the provider type so everything downstream (URL builder, streaming
         // client, reasoning replay) follows from a single value rather than

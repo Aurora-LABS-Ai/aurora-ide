@@ -81,11 +81,17 @@
   justify-content: space-between;
   gap: 8px;
   margin: 0;
-  padding: 10px 10px 6px;
+  /* Tightened with the rows below it. There are now as many headings as there
+     are categories, so the old 10px/6px band multiplied: five categories cost
+     80px of pure heading padding before a single provider was drawn. */
+  padding: 7px 8px 4px;
   font-family: inherit;
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
-  letter-spacing: 0.12em;
+  /* 0.12em was set for two fixed headings. Across a rail of user-named
+     categories it stretched long names past the count; 0.08em still reads as
+     a label without pushing "Coding plans" into an ellipsis. */
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   text-align: left;
   color: var(--agw-text-subtle);
@@ -186,6 +192,241 @@
   line-height: 1.5;
   color: var(--agw-text-subtle);
 }
+/* ── Category headings ────────────────────────────────────────────────────
+   A category heading IS `.agw-prov-group-label` — one button, one behaviour
+   across its whole width: fold the section, and make it the add target on the
+   way. It was briefly two overlapping controls, a chevron that folded and a
+   name that targeted, which made the outcome depend on which pixel you hit;
+   the same heading then appeared to expand, collapse or do nothing at random.
+
+   This class only adds what a category has and a shipped group does not: a
+   colour dot, an elided name, and a targeted state. */
+.agw-prov-cat-label[data-on] {
+  color: var(--agw-text);
+}
+.agw-prov-cat-label[data-on]::after {
+  background: var(--agw-border-strong);
+}
+.agw-prov-cat-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+/* A category name is the user's text, so unlike "Built-in" it can be long
+   enough to need eliding. The hairline still starts after it. */
+.agw-prov-cat-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The targeted heading keeps its actions visible without a hover, so the
+   category you are working in does not hide its own plus. */
+.agw-prov-cat-label[data-on] .agw-prov-group-add {
+  opacity: 1;
+}
+
+/* ── The edit strip ───────────────────────────────────────────────────────
+   One place for every edit a category has: its name, its colour, its position,
+   and its removal. Replaces the heading in place so the name field sits where
+   the name was. */
+.agw-prov-cat-edit {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  gap: 8px;
+  margin: 6px 4px;
+  padding: 8px;
+  background: var(--agw-surface);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+}
+.agw-prov-cat-edit[data-tone="error"] {
+  border-color: var(--agw-removed);
+}
+.agw-prov-cat-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-prov-cat-name-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface-elevated);
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  outline: none;
+}
+/* The window's rule for a focused text field, stated at `.agw-set-input:focus`
+   and again at `.agw-prov-desc-input:focus`: the border firms up to a NEUTRAL
+   strong border and nothing else happens. `--agw-ring` here painted the field
+   accent-blue on focus, which reads as a focus ring on the one element that is
+   already obviously the thing being typed into. Rings belong to
+   keyboard-focused buttons, not to inputs. */
+.agw-prov-cat-name-input:focus {
+  border-color: var(--agw-border-strong);
+}
+.agw-prov-cat-name-input[aria-invalid="true"] {
+  border-color: var(--agw-removed);
+}
+.agw-prov-cat-name-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-prov-cat-edit-done,
+.agw-prov-cat-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+.agw-prov-cat-edit-done:hover,
+.agw-prov-cat-edit-btn:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-prov-cat-edit-done:focus-visible,
+.agw-prov-cat-edit-btn:focus-visible {
+  border-color: var(--agw-ring);
+  outline: none;
+}
+/* Unavailable, and drawn as such rather than left clickable. */
+.agw-prov-cat-edit-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.agw-prov-cat-edit-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.agw-prov-cat-swatches {
+  display: flex;
+  gap: 5px;
+}
+.agw-prov-cat-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: 50%;
+  background: var(--sw);
+  opacity: 0.55;
+  cursor: pointer;
+}
+.agw-prov-cat-swatch:hover {
+  opacity: 0.85;
+}
+/* The chosen one is fully opaque and keeps a ring INSIDE its own edge — an
+   inset shadow, not a detached outline around the control. */
+.agw-prov-cat-swatch[data-on] {
+  opacity: 1;
+  box-shadow: inset 0 0 0 2px var(--agw-rail-paint);
+  border-color: var(--agw-border-strong);
+}
+.agw-prov-cat-swatch:focus-visible {
+  outline: none;
+  border-color: var(--agw-ring);
+}
+.agw-prov-cat-edit-note {
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-removed);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.agw-prov-cat-confirm {
+  display: grid;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.agw-prov-cat-confirm-actions {
+  display: flex;
+  gap: 12px;
+}
+.agw-prov-cat-link {
+  justify-self: start;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-muted);
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+.agw-prov-cat-link:hover {
+  color: var(--agw-text);
+}
+.agw-prov-cat-link[data-tone="danger"] {
+  color: var(--agw-removed);
+}
+.agw-prov-cat-link[data-tone="danger"]:hover {
+  color: var(--agw-removed);
+  text-decoration: underline;
+}
+.agw-prov-cat-link:focus-visible {
+  outline: none;
+  text-decoration: underline;
+}
+
+/* ── Making one ───────────────────────────────────────────────────────────
+   Lives in the footer beside Add provider, not as a row inside the list: a
+   control that creates sections does not belong in the middle of the sections
+   it creates, and down there it cannot scroll out of reach. */
+.agw-prov-cat-new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  font-family: inherit;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+}
+.agw-prov-cat-new:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+  border-color: var(--agw-border-strong);
+}
+.agw-prov-cat-new:focus-visible {
+  outline: none;
+  border-color: var(--agw-ring);
+  color: var(--agw-text);
+}
+.agw-prov-cat-new-open {
+  display: grid;
+  gap: 6px;
+}
 .agw-prov-main {
   flex: 1;
   min-width: 0;
@@ -224,9 +465,14 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* Slim on purpose. This rail holds 46 rows across several categories now, so
+     how many fit above the fold is the thing worth optimising — a row that is
+     comfortable on its own becomes a scroll the moment there are forty of
+     them. Tightened from 8px/10px, which was set when the list was one short
+     Built-in group. */
+  gap: 8px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 5px 8px;
   /* A quiet card seat — fill + hairline derived from the text color so the
      row separates from the rail in both themes instead of floating as bare
      text on a flat background. */
@@ -238,7 +484,7 @@
   transition: background 0.12s ease, border-color 0.12s ease;
 }
 .agw-prov-item + .agw-prov-item {
-  margin-top: 4px;
+  margin-top: 3px;
 }
 .agw-prov-item:hover {
   background: var(--agw-hover-paint);
@@ -323,7 +569,12 @@
   white-space: nowrap;
 }
 .agw-prov-item-sub {
-  font-size: var(--agw-fs-label);
+  /* Micro, which is the token for a subline ("badges, eyebrows, sublines,
+     metadata"). It was on `label`, the chips-and-section-headings size, so the
+     model count sat one step too large under the name it belongs to — the two
+     lines read as siblings rather than as a name and its note. */
+  font-size: var(--agw-fs-micro);
+  line-height: 1.35;
   color: var(--agw-text-subtle);
 }
 .agw-prov-status-dot {
@@ -346,6 +597,10 @@
   background: var(--agw-warning);
 }
 .agw-prov-list-foot {
+  /* Up to two actions now — Add provider, and New category — stacked at the
+     button's own gap rather than sitting flush against each other. */
+  display: grid;
+  gap: 8px;
   padding: 10px;
   border-top: 1px solid var(--agw-border);
 }
@@ -432,11 +687,13 @@
   width: 100%;
   justify-content: center;
 }
+/* Rail rows only — the detail cards use the unsuffixed size, so slimming this
+   cannot shrink a provider's own header. */
 .agw-prov-avatar-sm {
-  width: 26px;
-  height: 26px;
-  font-size: var(--agw-fs-ui);
-  border-radius: var(--agw-radius-md);
+  width: 22px;
+  height: 22px;
+  font-size: var(--agw-fs-label);
+  border-radius: var(--agw-radius-sm);
 }
 
 /* ── Two objects, not one ──────────────────────────────────────────────────

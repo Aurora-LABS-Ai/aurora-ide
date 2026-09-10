@@ -1,0 +1,1038 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aurora — Provider Workbench Concept</title>
+<style>
+  :root{
+    --agw-canvas:#161616;
+    --agw-rail:#161616;
+    --agw-conversation:#0f0f0f;
+    --agw-surface:#1d1d1d;
+    --agw-surface-elevated:#2e2e2e;
+    --agw-text:#ededed;
+    --agw-text-muted:#a0a0a0;
+    --agw-text-subtle:#727272;
+    --agw-border:#222222;
+    --agw-border-strong:#383838;
+    --agw-ring:#3994bc;
+    --agw-accent:#3994bc;
+    --agw-accent-hover:#48a0c7;
+    --agw-on-accent:#fff;
+    --agw-added:#73c991;
+    --agw-warning:#e5ba7d;
+    --agw-removed:#f48771;
+    --agw-info:#3a94bc;
+    --agw-hover:#ffffff0a;
+    --radius-sm:6px;
+    --radius-md:8px;
+    --radius-lg:12px;
+    --font:"Inter Variable","Inter","Segoe UI",system-ui,-apple-system,sans-serif;
+  }
+
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    overflow:hidden;
+    background:var(--agw-conversation);
+    color:var(--agw-text);
+    font-family:var(--font);
+    font-size:14px;
+    -webkit-font-smoothing:antialiased;
+  }
+  button,input,select{font:inherit}
+
+  .app{
+    height:100%;
+    display:grid;
+    grid-template-rows:48px minmax(0,1fr) 27px;
+  }
+
+  /* topbar */
+  .topbar{
+    display:grid;
+    grid-template-columns:248px minmax(340px,1fr) auto;
+    align-items:center;
+    border-bottom:1px solid var(--agw-border);
+    background:#121212;
+  }
+  .brand{
+    height:100%;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 14px;
+    border-right:1px solid var(--agw-border);
+    font-weight:650;
+  }
+  .brand-mark{
+    width:24px;height:24px;
+    display:grid;place-items:center;
+    border-radius:7px;
+    border:1px solid var(--agw-border-strong);
+    background:linear-gradient(145deg,#2a2a2a,#191919);
+    font-weight:800;font-size:12px;
+  }
+  .brand small{
+    color:var(--agw-text-subtle);
+    font-size:11px;
+    font-weight:500;
+    margin-left:2px;
+  }
+  .top-search-wrap{
+    display:flex;
+    justify-content:center;
+    padding:0 18px;
+  }
+  .top-search{
+    width:min(580px,100%);
+    height:30px;
+    position:relative;
+  }
+  .top-search input{
+    width:100%;height:100%;
+    background:#171717;
+    color:var(--agw-text);
+    border:1px solid var(--agw-border);
+    border-radius:8px;
+    padding:0 74px 0 32px;
+    outline:none;
+  }
+  .top-search input:focus{border-color:var(--agw-border-strong);box-shadow:0 0 0 1px #3994bc33}
+  .search-icon{
+    position:absolute;left:10px;top:7px;color:var(--agw-text-subtle);pointer-events:none;
+  }
+  .shortcut{
+    position:absolute;right:7px;top:5px;
+    border:1px solid var(--agw-border-strong);
+    border-radius:5px;
+    padding:1px 6px;
+    font-size:11px;color:var(--agw-text-subtle);
+    background:#202020;
+  }
+  .top-actions{display:flex;gap:7px;padding-right:10px}
+
+  .btn{
+    height:30px;
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;
+    border:1px solid var(--agw-border-strong);
+    border-radius:7px;
+    color:var(--agw-text);
+    background:#1b1b1b;
+    padding:0 11px;
+    cursor:pointer;
+  }
+  .btn:hover{background:#252525}
+  .btn.primary{background:var(--agw-accent);border-color:var(--agw-accent);color:white}
+  .btn.primary:hover{background:var(--agw-accent-hover)}
+  .btn.ghost{background:transparent;border-color:transparent;color:var(--agw-text-muted)}
+  .btn.ghost:hover{background:var(--agw-hover);color:var(--agw-text)}
+  .icon-btn{
+    width:29px;height:29px;display:grid;place-items:center;
+    border:1px solid transparent;border-radius:7px;
+    color:var(--agw-text-subtle);background:transparent;cursor:pointer;
+  }
+  .icon-btn:hover{background:var(--agw-hover);color:var(--agw-text);border-color:var(--agw-border)}
+
+  /* workspace */
+  .workspace{
+    min-height:0;
+    display:grid;
+    grid-template-columns:248px minmax(500px,1fr) 300px;
+  }
+
+  /* sidebar */
+  .sidebar{
+    min-height:0;
+    background:var(--agw-rail);
+    border-right:1px solid var(--agw-border);
+    display:flex;
+    flex-direction:column;
+  }
+  .side-head{
+    height:50px;
+    padding:0 12px;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .side-title{
+    font-size:12px;
+    letter-spacing:.1em;
+    text-transform:uppercase;
+    color:var(--agw-text-subtle);
+    font-weight:650;
+  }
+  .side-count{
+    min-width:22px;height:20px;padding:0 6px;
+    border-radius:10px;background:#202020;
+    display:grid;place-items:center;
+    color:var(--agw-text-muted);font-size:11px;
+  }
+
+  .nav-scroll{flex:1;min-height:0;overflow:auto;padding:0 7px 12px}
+  .nav-scroll::-webkit-scrollbar,.center-scroll::-webkit-scrollbar,.inspector-scroll::-webkit-scrollbar{width:8px}
+  .nav-scroll::-webkit-scrollbar-thumb,.center-scroll::-webkit-scrollbar-thumb,.inspector-scroll::-webkit-scrollbar-thumb{background:#2b2b2b;border-radius:8px}
+
+  .group{margin-bottom:7px}
+  .group-title{
+    height:28px;
+    display:flex;align-items:center;gap:6px;
+    padding:0 7px;
+    color:var(--agw-text-subtle);
+    font-size:11px;
+    font-weight:650;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    user-select:none;
+  }
+  .group-title .grow{flex:1}
+  .group-title .count{font-variant-numeric:tabular-nums}
+  .category-dot{width:6px;height:6px;border-radius:99px;background:var(--agw-accent)}
+  .nav-row{
+    height:34px;
+    display:grid;
+    grid-template-columns:24px minmax(0,1fr) auto auto;
+    gap:7px;
+    align-items:center;
+    padding:0 7px;
+    border-radius:7px;
+    cursor:pointer;
+    color:var(--agw-text-muted);
+  }
+  .nav-row:hover{background:var(--agw-hover);color:var(--agw-text)}
+  .nav-row.active{background:#ffffff0e;color:var(--agw-text)}
+  .provider-avatar{
+    width:22px;height:22px;
+    border-radius:6px;
+    display:grid;place-items:center;
+    background:#292929;
+    border:1px solid var(--agw-border-strong);
+    font-size:11px;font-weight:700;
+    color:#ddd;
+  }
+  .nav-name{
+    min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:13px;font-weight:520;
+  }
+  .nav-models{color:var(--agw-text-subtle);font-size:11px;font-variant-numeric:tabular-nums}
+  .status-dot{width:7px;height:7px;border-radius:50%;background:var(--agw-text-subtle)}
+  .status-dot.ready{background:var(--agw-added)}
+  .status-dot.warn{background:var(--agw-warning)}
+  .status-dot.off{background:#5c5c5c}
+  .side-footer{
+    padding:9px;
+    border-top:1px solid var(--agw-border);
+    display:grid;gap:6px;
+  }
+  .side-footer .btn{width:100%}
+
+  /* center */
+  .center{
+    min-width:0;min-height:0;
+    display:grid;
+    grid-template-rows:auto auto minmax(0,1fr);
+    background:var(--agw-conversation);
+  }
+  .center-head{
+    padding:18px 22px 14px;
+    border-bottom:1px solid var(--agw-border);
+  }
+  .view-switch{
+    display:inline-flex;
+    background:#171717;
+    border:1px solid var(--agw-border);
+    border-radius:8px;
+    padding:2px;
+    margin-bottom:15px;
+  }
+  .view-switch button{
+    height:27px;padding:0 13px;
+    border:0;border-radius:6px;
+    color:var(--agw-text-subtle);
+    background:transparent;cursor:pointer;
+    font-size:12px;font-weight:600;
+  }
+  .view-switch button.active{background:#2b2b2b;color:var(--agw-text)}
+  .provider-head{
+    display:flex;align-items:center;gap:12px;
+  }
+  .provider-head .big-avatar{
+    width:38px;height:38px;border-radius:9px;
+    display:grid;place-items:center;
+    background:#252525;border:1px solid var(--agw-border-strong);
+    font-size:16px;font-weight:800;
+  }
+  .provider-title{min-width:0;flex:1}
+  .provider-name{font-size:18px;font-weight:680;line-height:1.25}
+  .provider-meta{
+    margin-top:3px;display:flex;align-items:center;gap:8px;
+    color:var(--agw-text-subtle);font-size:12px;
+  }
+  .health{
+    display:inline-flex;align-items:center;gap:5px;color:#9fd8ae
+  }
+  .provider-actions{display:flex;gap:5px}
+  .tabs{
+    height:42px;
+    display:flex;align-items:flex-end;gap:18px;
+    padding:0 22px;
+    border-bottom:1px solid var(--agw-border);
+  }
+  .tab{
+    height:42px;
+    display:flex;align-items:center;
+    border:0;background:transparent;color:var(--agw-text-subtle);
+    padding:0 1px;
+    border-bottom:2px solid transparent;
+    cursor:pointer;font-weight:560;
+  }
+  .tab:hover{color:var(--agw-text)}
+  .tab.active{color:var(--agw-text);border-bottom-color:var(--agw-accent)}
+
+  .center-scroll{min-height:0;overflow:auto}
+  .panel{display:none}
+  .panel.active{display:block}
+
+  .model-toolbar{
+    position:sticky;top:0;z-index:5;
+    display:flex;gap:8px;align-items:center;
+    padding:12px 22px;
+    background:#0f0f0ff2;
+    backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--agw-border);
+  }
+  .local-search{
+    flex:1;min-width:180px;height:30px;
+    background:#171717;border:1px solid var(--agw-border);
+    border-radius:7px;padding:0 10px;color:var(--agw-text);outline:none;
+  }
+  .local-search:focus{border-color:var(--agw-border-strong)}
+  .select{
+    height:30px;background:#171717;border:1px solid var(--agw-border);
+    border-radius:7px;color:var(--agw-text-muted);padding:0 9px;outline:none;
+  }
+
+  .filter-chips{
+    display:flex;gap:6px;flex-wrap:wrap;
+    padding:11px 22px 4px;
+  }
+  .chip{
+    height:25px;
+    border:1px solid var(--agw-border);
+    border-radius:999px;
+    background:#161616;color:var(--agw-text-subtle);
+    padding:0 9px;cursor:pointer;font-size:11px;
+  }
+  .chip:hover{color:var(--agw-text);border-color:var(--agw-border-strong)}
+  .chip.active{background:#263640;color:#bfe8fa;border-color:#35596a}
+
+  .model-list{padding:8px 14px 32px}
+  .model-row{
+    display:grid;
+    grid-template-columns:28px minmax(220px,1.8fr) minmax(110px,.75fr) 100px 96px 16px;
+    gap:10px;
+    align-items:center;
+    min-height:60px;
+    padding:8px 10px;
+    border:1px solid transparent;
+    border-radius:9px;
+    cursor:pointer;
+  }
+  .model-row:hover{background:#ffffff07;border-color:#ffffff08}
+  .model-row.selected{background:#ffffff0d;border-color:#ffffff14}
+  .star{
+    color:#666;background:none;border:0;cursor:pointer;font-size:16px;padding:0
+  }
+  .star.on{color:#d6b96b}
+  .model-main{min-width:0}
+  .model-display{
+    font-weight:620;font-size:13.5px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .model-id{
+    color:var(--agw-text-subtle);font-size:11px;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .vendor{color:var(--agw-text-muted);font-size:12px}
+  .metric{color:var(--agw-text-muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .caps{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
+  .tag{
+    display:inline-flex;align-items:center;height:18px;padding:0 6px;
+    border-radius:5px;background:#202020;border:1px solid #292929;
+    color:#929292;font-size:10px;
+  }
+  .tag.blue{color:#9fcce0;background:#1d2b32;border-color:#253a44}
+  .tag.green{color:#a8d2b4;background:#1d2a20;border-color:#2b3c2f}
+  .model-status{justify-self:end}
+  .row-chevron{color:#555;font-size:16px}
+
+  .empty{
+    padding:50px 20px;text-align:center;color:var(--agw-text-subtle)
+  }
+
+  /* secondary panels */
+  .form-page{max-width:820px;padding:22px}
+  .section-card{
+    background:#171717;border:1px solid var(--agw-border);
+    border-radius:10px;margin-bottom:14px;overflow:hidden;
+  }
+  .section-title{
+    padding:13px 15px;border-bottom:1px solid var(--agw-border);
+    font-weight:620;
+  }
+  .section-body{padding:14px 15px}
+  .form-grid{
+    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;
+  }
+  .field{display:grid;gap:6px}
+  .field.full{grid-column:1/-1}
+  .label{font-size:11px;color:var(--agw-text-muted);font-weight:600}
+  .input{
+    width:100%;height:31px;padding:0 9px;
+    background:#101010;border:1px solid var(--agw-border);
+    border-radius:6px;color:var(--agw-text);outline:none;
+  }
+  .input:focus{border-color:var(--agw-border-strong)}
+  .connection-state{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:11px 13px;background:#111;border:1px solid var(--agw-border);
+    border-radius:8px;margin-bottom:14px;
+  }
+  .connection-state .left{display:flex;align-items:center;gap:8px}
+  .routing-row,.usage-row{
+    min-height:48px;display:grid;align-items:center;
+    border-bottom:1px solid var(--agw-border);padding:8px 0;
+  }
+  .routing-row{grid-template-columns:160px 1fr auto;gap:12px}
+  .usage-row{grid-template-columns:1fr 110px 120px;gap:12px}
+  .routing-row:last-child,.usage-row:last-child{border-bottom:0}
+
+  /* global models view */
+  .global-head{
+    display:none;
+    align-items:center;
+    gap:12px;
+  }
+  .global-head.active{display:flex}
+  .provider-head.hidden{display:none}
+  .global-title{font-size:18px;font-weight:680}
+  .global-sub{color:var(--agw-text-subtle);font-size:12px;margin-top:3px}
+
+  /* inspector */
+  .inspector{
+    min-width:0;min-height:0;
+    border-left:1px solid var(--agw-border);
+    background:#141414;
+    display:grid;
+    grid-template-rows:44px minmax(0,1fr);
+  }
+  .inspector-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:0 13px;border-bottom:1px solid var(--agw-border);
+  }
+  .inspector-title{
+    font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    font-weight:650;color:var(--agw-text-subtle)
+  }
+  .inspector-scroll{min-height:0;overflow:auto;padding:15px}
+  .inspector-model{
+    padding-bottom:16px;border-bottom:1px solid var(--agw-border);margin-bottom:16px;
+  }
+  .inspector-model-name{font-size:17px;font-weight:680}
+  .inspector-model-id{font-size:11px;color:var(--agw-text-subtle);margin-top:3px;word-break:break-all}
+  .mini-status{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+  .kv{
+    display:grid;grid-template-columns:1fr auto;
+    gap:8px;padding:7px 0;
+    border-bottom:1px solid #202020;
+  }
+  .kv .k{color:var(--agw-text-subtle)}
+  .kv .v{color:var(--agw-text);font-variant-numeric:tabular-nums}
+  .inspector-section{margin-top:18px}
+  .inspector-section-title{
+    font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--agw-text-subtle);font-weight:650;margin-bottom:9px;
+  }
+  .range-row{display:grid;grid-template-columns:1fr 64px;gap:8px;align-items:center;margin:8px 0}
+  .small-input{
+    height:28px;padding:0 7px;background:#101010;color:var(--agw-text);
+    border:1px solid var(--agw-border);border-radius:6px;outline:none;
+  }
+  .inspector-actions{display:grid;gap:7px;margin-top:18px}
+  .inspector-actions .btn{width:100%}
+
+  /* bottom status */
+  .statusbar{
+    display:flex;align-items:center;gap:16px;
+    padding:0 10px;
+    border-top:1px solid var(--agw-border);
+    background:#131313;color:var(--agw-text-subtle);
+    font-size:11px;
+  }
+  .statusbar .spacer{flex:1}
+  .status-item{display:flex;align-items:center;gap:5px}
+
+  @media(max-width:1100px){
+    .workspace{grid-template-columns:230px minmax(440px,1fr) 270px}
+    .topbar{grid-template-columns:230px minmax(300px,1fr) auto}
+    .model-row{grid-template-columns:28px minmax(200px,1.6fr) 90px 82px 16px}
+    .model-row .vendor{display:none}
+  }
+  @media(max-width:880px){
+    .workspace{grid-template-columns:220px minmax(0,1fr)}
+    .topbar{grid-template-columns:220px 1fr}
+    .top-actions{display:none}
+    .inspector{display:none}
+    .model-row{grid-template-columns:28px minmax(180px,1fr) 80px 16px}
+    .model-row .vendor,.model-row .out{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <span>Providers &amp; Models <small>Workbench</small></span>
+    </div>
+    <div class="top-search-wrap">
+      <div class="top-search">
+        <span class="search-icon">⌕</span>
+        <input id="globalSearch" placeholder="Search providers or models…" autocomplete="off" />
+        <span class="shortcut">Ctrl K</span>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="refreshBtn">↻ Refresh</button>
+      <button class="btn primary">＋ Add provider</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="side-head">
+        <span class="side-title">Providers</span>
+        <span class="side-count">14</span>
+      </div>
+
+      <div class="nav-scroll">
+        <div class="group">
+          <div class="group-title"><span>★ Favorites</span><span class="grow"></span><span class="count">2</span></div>
+
+          <div class="nav-row" data-provider="Volcano Ark">
+            <span class="provider-avatar">V</span><span class="nav-name">Volcano Ark</span><span class="nav-models">11</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="Codex (ChatGPT)">
+            <span class="provider-avatar">C</span><span class="nav-name">Codex (ChatGPT)</span><span class="nav-models">7</span><span class="status-dot ready"></span>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title"><span class="category-dot"></span><span>Coding plans</span><span class="grow"></span><span class="count">3</span></div>
+
+          <div class="nav-row active" data-provider="Kenari">
+            <span class="provider-avatar">K</span><span class="nav-name">Kenari</span><span class="nav-models">54</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="Command Code">
+            <span class="provider-avatar">C</span><span class="nav-name">Command Code</span><span class="nav-models">68</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="Vectide Coding Plan">
+            <span class="provider-avatar">V</span><span class="nav-name">Vectide Coding Plan</span><span class="nav-models">9</span><span class="status-dot warn"></span>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title"><span class="category-dot" style="background:var(--agw-warning)"></span><span>Relays</span><span class="grow"></span><span class="count">2</span></div>
+          <div class="nav-row" data-provider="FREE larprouter">
+            <span class="provider-avatar">F</span><span class="nav-name">FREE larprouter</span><span class="nav-models">11</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="X5M5X MONTHLY SUB">
+            <span class="provider-avatar">X</span><span class="nav-name">X5M5X MONTHLY SUB</span><span class="nav-models">5</span><span class="status-dot ready"></span>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title"><span class="category-dot" style="background:var(--agw-added)"></span><span>Built-in</span><span class="grow"></span><span class="count">3</span></div>
+          <div class="nav-row" data-provider="MiniMax M3">
+            <span class="provider-avatar">M</span><span class="nav-name">MiniMax M3</span><span class="nav-models">8</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="DeepSeek">
+            <span class="provider-avatar">D</span><span class="nav-name">DeepSeek</span><span class="nav-models">3</span><span class="status-dot off"></span>
+          </div>
+          <div class="nav-row" data-provider="Modal">
+            <span class="provider-avatar">M</span><span class="nav-name">Modal</span><span class="nav-models">2</span><span class="status-dot ready"></span>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-title"><span class="category-dot" style="background:var(--agw-text-subtle)"></span><span>Custom</span><span class="grow"></span><span class="count">2</span></div>
+          <div class="nav-row" data-provider="A6-Aurora-Auto">
+            <span class="provider-avatar">A</span><span class="nav-name">A6-Aurora-Auto</span><span class="nav-models">12</span><span class="status-dot ready"></span>
+          </div>
+          <div class="nav-row" data-provider="9inference">
+            <span class="provider-avatar">9</span><span class="nav-name">9inference</span><span class="nav-models">6</span><span class="status-dot ready"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-footer">
+        <button class="btn primary">＋ Add to Coding plans</button>
+        <button class="btn">＋ New category</button>
+      </div>
+    </aside>
+
+    <section class="center">
+      <div class="center-head">
+        <div class="view-switch">
+          <button id="providersViewBtn" class="active">Providers</button>
+          <button id="modelsViewBtn">Models</button>
+        </div>
+
+        <div class="provider-head" id="providerHead">
+          <div class="big-avatar" id="providerAvatar">K</div>
+          <div class="provider-title">
+            <div class="provider-name" id="providerName">Kenari</div>
+            <div class="provider-meta">
+              <span class="health"><span class="status-dot ready"></span> Connected</span>
+              <span>•</span>
+              <span id="providerCount">54 models</span>
+              <span>•</span>
+              <span>OpenAI compatible</span>
+            </div>
+          </div>
+          <div class="provider-actions">
+            <button class="icon-btn" title="Pin">☆</button>
+            <button class="icon-btn" title="More">•••</button>
+          </div>
+        </div>
+
+        <div class="global-head" id="globalHead">
+          <div class="provider-title">
+            <div class="global-title">All Models</div>
+            <div class="global-sub">Browse every route across every configured provider.</div>
+          </div>
+          <button class="btn">Compare routes</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="providerTabs">
+        <button class="tab active" data-panel="modelsPanel">Models</button>
+        <button class="tab" data-panel="connectionPanel">Connection</button>
+        <button class="tab" data-panel="routingPanel">Routing</button>
+        <button class="tab" data-panel="usagePanel">Usage</button>
+      </div>
+
+      <div class="center-scroll">
+        <div class="panel active" id="modelsPanel">
+          <div class="model-toolbar">
+            <input class="local-search" id="modelSearch" placeholder="Filter models in Kenari…" />
+            <select class="select"><option>Recommended</option><option>Name</option><option>Context</option><option>Provider</option></select>
+            <button class="btn">☷ Filters</button>
+          </div>
+
+          <div class="filter-chips">
+            <button class="chip active" data-filter="all">All</button>
+            <button class="chip" data-filter="coding">Coding</button>
+            <button class="chip" data-filter="reasoning">Reasoning</button>
+            <button class="chip" data-filter="vision">Vision</button>
+            <button class="chip" data-filter="tools">Tools</button>
+            <button class="chip" data-filter="favorite">Favorites</button>
+          </div>
+
+          <div class="model-list" id="modelList"></div>
+        </div>
+
+        <div class="panel" id="connectionPanel">
+          <div class="form-page">
+            <div class="connection-state">
+              <div class="left"><span class="status-dot ready"></span><strong>Connected</strong><span style="color:var(--agw-text-subtle)">Last checked just now</span></div>
+              <button class="btn">Test connection</button>
+            </div>
+
+            <div class="section-card">
+              <div class="section-title">Connection</div>
+              <div class="section-body">
+                <div class="form-grid">
+                  <label class="field">
+                    <span class="label">CATEGORY</span>
+                    <select class="input"><option>Coding plans</option><option>Relays</option><option>Tokens</option><option>Built-in</option><option>Custom</option></select>
+                  </label>
+                  <label class="field">
+                    <span class="label">API FORMAT</span>
+                    <select class="input"><option>OpenAI Chat</option><option>Anthropic Messages</option><option>OpenAI Responses</option></select>
+                  </label>
+                  <label class="field full">
+                    <span class="label">BASE URL</span>
+                    <input class="input" value="https://kenari.id/v1" />
+                  </label>
+                  <label class="field full">
+                    <span class="label">API KEY</span>
+                    <input class="input" type="password" value="kn-0000000000000000" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="section-card">
+              <div class="section-title">Discovery</div>
+              <div class="section-body">
+                <div class="form-grid">
+                  <label class="field">
+                    <span class="label">MODEL SOURCE</span>
+                    <select class="input"><option>Auto-discover /models</option><option>Manual only</option></select>
+                  </label>
+                  <label class="field">
+                    <span class="label">REFRESH INTERVAL</span>
+                    <select class="input"><option>On demand</option><option>Every 1 hour</option><option>Every 6 hours</option></select>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="routingPanel">
+          <div class="form-page">
+            <div class="section-card">
+              <div class="section-title">Routing roles</div>
+              <div class="section-body">
+                <div class="routing-row"><strong>Default</strong><span>claude-opus-5</span><button class="btn">Change</button></div>
+                <div class="routing-row"><strong>Coding</strong><span>glm-5-3</span><button class="btn">Change</button></div>
+                <div class="routing-row"><strong>Cheap</strong><span>deepseek-v4-pro</span><button class="btn">Change</button></div>
+                <div class="routing-row"><strong>Long context</strong><span>claude-opus-5</span><button class="btn">Change</button></div>
+                <div class="routing-row"><strong>Fallback</strong><span>qwen3-coder-plus</span><button class="btn">Change</button></div>
+              </div>
+            </div>
+
+            <div class="section-card">
+              <div class="section-title">Fallback behavior</div>
+              <div class="section-body">
+                <div class="form-grid">
+                  <label class="field">
+                    <span class="label">ON RATE LIMIT</span>
+                    <select class="input"><option>Try next healthy route</option><option>Fail immediately</option></select>
+                  </label>
+                  <label class="field">
+                    <span class="label">ON PROVIDER ERROR</span>
+                    <select class="input"><option>Automatic fallback</option><option>Ask first</option></select>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel" id="usagePanel">
+          <div class="form-page">
+            <div class="section-card">
+              <div class="section-title">Recent model usage</div>
+              <div class="section-body">
+                <div class="usage-row"><strong>claude-opus-5</strong><span>38 requests</span><span>4.8M tokens</span></div>
+                <div class="usage-row"><strong>glm-5-3</strong><span>126 requests</span><span>11.2M tokens</span></div>
+                <div class="usage-row"><strong>deepseek-v4-pro</strong><span>64 requests</span><span>7.1M tokens</span></div>
+                <div class="usage-row"><strong>qwen3-coder-plus</strong><span>19 requests</span><span>1.4M tokens</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="inspector-head">
+        <span class="inspector-title">Model inspector</span>
+        <button class="icon-btn">×</button>
+      </div>
+      <div class="inspector-scroll">
+        <div class="inspector-model">
+          <div class="inspector-model-name" id="inspectName">Claude Opus 5</div>
+          <div class="inspector-model-id" id="inspectId">claude-opus-5</div>
+          <div class="mini-status">
+            <span class="tag green">● healthy</span>
+            <span class="tag blue" id="inspectProvider">Kenari</span>
+          </div>
+        </div>
+
+        <div id="inspectKV">
+          <div class="kv"><span class="k">Vendor</span><span class="v">Anthropic</span></div>
+          <div class="kv"><span class="k">Context</span><span class="v">1M</span></div>
+          <div class="kv"><span class="k">Max output</span><span class="v">64K</span></div>
+          <div class="kv"><span class="k">Reasoning</span><span class="v">High</span></div>
+          <div class="kv"><span class="k">Tool use</span><span class="v">Yes</span></div>
+          <div class="kv"><span class="k">Vision</span><span class="v">Yes</span></div>
+        </div>
+
+        <div class="inspector-section">
+          <div class="inspector-section-title">Alias</div>
+          <input class="input" id="aliasInput" value="opus" />
+        </div>
+
+        <div class="inspector-section">
+          <div class="inspector-section-title">Overrides</div>
+          <div class="range-row"><span style="color:var(--agw-text-muted)">Temperature</span><input class="small-input" value="auto" /></div>
+          <div class="range-row"><span style="color:var(--agw-text-muted)">Max tokens</span><input class="small-input" value="64k" /></div>
+        </div>
+
+        <div class="inspector-section">
+          <div class="inspector-section-title">Capabilities</div>
+          <div class="mini-status" id="inspectCaps">
+            <span class="tag blue">Coding</span>
+            <span class="tag">Reasoning</span>
+            <span class="tag">Vision</span>
+            <span class="tag">Tools</span>
+          </div>
+        </div>
+
+        <div class="inspector-actions">
+          <button class="btn primary">▶ Test model</button>
+          <button class="btn">Set as default</button>
+          <button class="btn">Compare routes</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="statusbar">
+    <span class="status-item"><span class="status-dot ready"></span> 11 connected</span>
+    <span>14 providers</span>
+    <span>182 models</span>
+    <span>3 unavailable</span>
+    <span class="spacer"></span>
+    <span>Routing healthy</span>
+  </footer>
+</div>
+
+<script>
+const providers = {
+  "Kenari": {count:54, avatar:"K", format:"OpenAI compatible"},
+  "Command Code": {count:68, avatar:"C", format:"OpenAI compatible"},
+  "Vectide Coding Plan": {count:9, avatar:"V", format:"OpenAI compatible"},
+  "Volcano Ark": {count:11, avatar:"V", format:"OpenAI compatible"},
+  "Codex (ChatGPT)": {count:7, avatar:"C", format:"Responses compatible"},
+  "FREE larprouter": {count:11, avatar:"F", format:"OpenAI compatible"},
+  "X5M5X MONTHLY SUB": {count:5, avatar:"X", format:"OpenAI compatible"},
+  "MiniMax M3": {count:8, avatar:"M", format:"Anthropic compatible"},
+  "DeepSeek": {count:3, avatar:"D", format:"OpenAI compatible"},
+  "Modal": {count:2, avatar:"M", format:"OpenAI compatible"},
+  "A6-Aurora-Auto": {count:12, avatar:"A", format:"Router"},
+  "9inference": {count:6, avatar:"9", format:"OpenAI compatible"}
+};
+
+const providerModels = {
+  "Kenari":[
+    {display:"Claude Opus 5",id:"claude-opus-5",vendor:"Anthropic",context:"1M",output:"64K",caps:["coding","reasoning","vision","tools"],fav:true,alias:"opus"},
+    {display:"DeepSeek V4 Pro",id:"deepseek-v4-pro",vendor:"DeepSeek",context:"1M",output:"128K",caps:["coding","reasoning","tools"],fav:true,alias:"dsv4"},
+    {display:"GLM 5.3",id:"glm-5-3",vendor:"Z.AI",context:"1M",output:"128K",caps:["coding","reasoning","tools"],fav:false,alias:"glm"},
+    {display:"Kimi K3",id:"kimi-k3",vendor:"Moonshot AI",context:"512K",output:"64K",caps:["coding","reasoning","vision","tools"],fav:false,alias:"kimi"},
+    {display:"Qwen3 Coder Plus",id:"qwen3-coder-plus",vendor:"Alibaba",context:"1M",output:"64K",caps:["coding","tools"],fav:false,alias:"qwen"},
+    {display:"GPT 5.6 Luna",id:"gpt-5.6-luna",vendor:"OpenAI",context:"400K",output:"128K",caps:["coding","reasoning","vision","tools"],fav:false,alias:"luna"},
+    {display:"MiniMax M3",id:"minimax-m3",vendor:"MiniMax",context:"1M",output:"64K",caps:["coding","reasoning","tools"],fav:false,alias:"m3"}
+  ],
+  "Command Code":[
+    {display:"Claude Opus 5",id:"claude-opus-5",vendor:"Anthropic",context:"1M",output:"64K",caps:["coding","reasoning","vision","tools"],fav:true,alias:"opus"},
+    {display:"GLM 5.3",id:"glm-5-3",vendor:"Z.AI",context:"1M",output:"128K",caps:["coding","reasoning","tools"],fav:false,alias:"glm"},
+    {display:"Kimi K3",id:"kimi-k3",vendor:"Moonshot AI",context:"512K",output:"64K",caps:["coding","reasoning","tools"],fav:false,alias:"kimi"},
+    {display:"DeepSeek V4",id:"deepseek-v4",vendor:"DeepSeek",context:"1M",output:"128K",caps:["coding","reasoning"],fav:false,alias:"dsv4"}
+  ],
+  "Vectide Coding Plan":[
+    {display:"GLM 5.3",id:"glm-5-3",vendor:"Z.AI",context:"1M",output:"128K",caps:["coding","reasoning","tools"],fav:false,alias:"glm"},
+    {display:"DeepSeek V4 Pro",id:"deepseek-v4-pro",vendor:"DeepSeek",context:"1M",output:"128K",caps:["coding","reasoning"],fav:false,alias:"dsv4"}
+  ]
+};
+
+const fallbackModels = [
+  {display:"Claude Sonnet 5",id:"claude-sonnet-5",vendor:"Anthropic",context:"1M",output:"64K",caps:["coding","vision","tools"],fav:false,alias:"sonnet"},
+  {display:"GLM 5.3",id:"glm-5-3",vendor:"Z.AI",context:"1M",output:"128K",caps:["coding","reasoning","tools"],fav:false,alias:"glm"},
+  {display:"DeepSeek V4 Pro",id:"deepseek-v4-pro",vendor:"DeepSeek",context:"1M",output:"128K",caps:["coding","reasoning"],fav:false,alias:"dsv4"}
+];
+
+const globalModels = [
+  {...providerModels["Kenari"][0], provider:"Kenari"},
+  {...providerModels["Command Code"][0], provider:"Command Code"},
+  {...providerModels["Kenari"][2], provider:"Kenari"},
+  {...providerModels["Command Code"][1], provider:"Command Code"},
+  {...providerModels["Vectide Coding Plan"][0], provider:"Vectide Coding Plan"},
+  {...providerModels["Kenari"][1], provider:"Kenari"},
+  {...providerModels["Vectide Coding Plan"][1], provider:"Vectide Coding Plan"},
+  {...providerModels["Kenari"][3], provider:"Kenari"},
+  {...providerModels["Kenari"][5], provider:"Kenari"},
+  {...providerModels["Kenari"][6], provider:"Kenari"}
+];
+
+let currentProvider = "Kenari";
+let globalMode = false;
+let activeFilter = "all";
+let selectedModelKey = "Kenari::claude-opus-5";
+
+const esc = s => String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+function modelsForCurrent(){
+  if(globalMode) return globalModels;
+  const arr = providerModels[currentProvider] || fallbackModels;
+  return arr.map(x=>({...x, provider:currentProvider}));
+}
+
+function renderModels(){
+  const q = document.getElementById("modelSearch").value.trim().toLowerCase();
+  let models = modelsForCurrent().filter(m=>{
+    const filterOk = activeFilter==="all" ? true : activeFilter==="favorite" ? m.fav : m.caps.includes(activeFilter);
+    const queryOk = !q || [m.display,m.id,m.vendor,m.provider].some(v=>String(v||"").toLowerCase().includes(q));
+    return filterOk && queryOk;
+  });
+
+  const list = document.getElementById("modelList");
+  if(!models.length){
+    list.innerHTML = '<div class="empty">No matching models.</div>';
+    return;
+  }
+
+  list.innerHTML = models.map(m=>{
+    const key = `${m.provider}::${m.id}`;
+    const caps = m.caps.slice(0,4).map(c=>`<span class="tag ${c==="coding"?"blue":""}">${esc(c[0].toUpperCase()+c.slice(1))}</span>`).join("");
+    return `
+      <div class="model-row ${selectedModelKey===key?"selected":""}" data-key="${esc(key)}">
+        <button class="star ${m.fav?"on":""}" data-star="${esc(key)}">${m.fav?"★":"☆"}</button>
+        <div class="model-main">
+          <div class="model-display">${esc(m.display)}</div>
+          <div class="model-id">${esc(m.id)}</div>
+          <div class="caps">${caps}</div>
+        </div>
+        <div class="vendor">${esc(globalMode ? m.provider : m.vendor)}</div>
+        <div class="metric">${esc(m.context)} ctx</div>
+        <div class="metric out">${esc(m.output)} out</div>
+        <div class="row-chevron">›</div>
+      </div>`;
+  }).join("");
+
+  document.querySelectorAll(".model-row").forEach(row=>{
+    row.addEventListener("click", e=>{
+      if(e.target.closest(".star")) return;
+      selectedModelKey = row.dataset.key;
+      renderModels();
+      const [provider,id] = selectedModelKey.split("::");
+      const source = modelsForCurrent().find(x=>x.provider===provider && x.id===id) || globalModels.find(x=>x.provider===provider && x.id===id);
+      if(source) renderInspector(source);
+    });
+  });
+
+  document.querySelectorAll(".star").forEach(star=>{
+    star.addEventListener("click", e=>{
+      e.stopPropagation();
+      const [provider,id] = star.dataset.star.split("::");
+      const arr = providerModels[provider];
+      if(arr){
+        const found = arr.find(x=>x.id===id);
+        if(found) found.fav = !found.fav;
+      }
+      const g = globalModels.find(x=>x.provider===provider && x.id===id);
+      if(g) g.fav = !g.fav;
+      renderModels();
+    });
+  });
+}
+
+function renderInspector(m){
+  document.getElementById("inspectName").textContent = m.display;
+  document.getElementById("inspectId").textContent = m.id;
+  document.getElementById("inspectProvider").textContent = m.provider || currentProvider;
+  document.getElementById("aliasInput").value = m.alias || "";
+
+  const reasoning = m.caps.includes("reasoning") ? "High" : "Standard";
+  document.getElementById("inspectKV").innerHTML = `
+    <div class="kv"><span class="k">Vendor</span><span class="v">${esc(m.vendor)}</span></div>
+    <div class="kv"><span class="k">Context</span><span class="v">${esc(m.context)}</span></div>
+    <div class="kv"><span class="k">Max output</span><span class="v">${esc(m.output)}</span></div>
+    <div class="kv"><span class="k">Reasoning</span><span class="v">${reasoning}</span></div>
+    <div class="kv"><span class="k">Tool use</span><span class="v">${m.caps.includes("tools")?"Yes":"No"}</span></div>
+    <div class="kv"><span class="k">Vision</span><span class="v">${m.caps.includes("vision")?"Yes":"No"}</span></div>`;
+
+  document.getElementById("inspectCaps").innerHTML = m.caps.map(c=>`<span class="tag ${c==="coding"?"blue":""}">${esc(c[0].toUpperCase()+c.slice(1))}</span>`).join("");
+}
+
+function setProvider(name){
+  currentProvider = name;
+  globalMode = false;
+  document.getElementById("providersViewBtn").classList.add("active");
+  document.getElementById("modelsViewBtn").classList.remove("active");
+  document.getElementById("providerHead").classList.remove("hidden");
+  document.getElementById("globalHead").classList.remove("active");
+  document.getElementById("providerTabs").style.display = "flex";
+
+  document.querySelectorAll(".nav-row").forEach(x=>x.classList.toggle("active", x.dataset.provider===name));
+  const p = providers[name] || {count:(providerModels[name]||fallbackModels).length,avatar:name[0],format:"OpenAI compatible"};
+  document.getElementById("providerName").textContent = name;
+  document.getElementById("providerAvatar").textContent = p.avatar;
+  document.getElementById("providerCount").textContent = p.count + " models";
+  document.getElementById("modelSearch").placeholder = `Filter models in ${name}…`;
+
+  selectedModelKey = `${name}::${(providerModels[name]||fallbackModels)[0].id}`;
+  showPanel("modelsPanel");
+  renderModels();
+  renderInspector({...((providerModels[name]||fallbackModels)[0]),provider:name});
+}
+
+function showPanel(id){
+  document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("active",p.id===id));
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.panel===id));
+}
+
+document.querySelectorAll(".nav-row").forEach(row=>{
+  row.addEventListener("click",()=>setProvider(row.dataset.provider));
+});
+
+document.querySelectorAll(".tab").forEach(tab=>{
+  tab.addEventListener("click",()=>showPanel(tab.dataset.panel));
+});
+
+document.querySelectorAll(".chip").forEach(chip=>{
+  chip.addEventListener("click",()=>{
+    activeFilter = chip.dataset.filter;
+    document.querySelectorAll(".chip").forEach(c=>c.classList.toggle("active",c===chip));
+    renderModels();
+  });
+});
+
+document.getElementById("modelSearch").addEventListener("input",renderModels);
+
+document.getElementById("providersViewBtn").addEventListener("click",()=>setProvider(currentProvider));
+
+document.getElementById("modelsViewBtn").addEventListener("click",()=>{
+  globalMode = true;
+  document.getElementById("modelsViewBtn").classList.add("active");
+  document.getElementById("providersViewBtn").classList.remove("active");
+  document.getElementById("providerHead").classList.add("hidden");
+  document.getElementById("globalHead").classList.add("active");
+  document.getElementById("providerTabs").style.display = "none";
+  showPanel("modelsPanel");
+  document.getElementById("modelSearch").placeholder = "Search every model and provider…";
+  selectedModelKey = "Kenari::claude-opus-5";
+  renderModels();
+  renderInspector(globalModels[0]);
+});
+
+document.getElementById("globalSearch").addEventListener("input",e=>{
+  const q = e.target.value.trim();
+  if(q && !globalMode) document.getElementById("modelsViewBtn").click();
+  document.getElementById("modelSearch").value = q;
+  renderModels();
+});
+
+document.getElementById("refreshBtn").addEventListener("click",()=>{
+  const b = document.getElementById("refreshBtn");
+  b.textContent = "✓ Refreshed";
+  setTimeout(()=>b.textContent="↻ Refresh",900);
+});
+
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==="k"){
+    e.preventDefault();document.getElementById("globalSearch").focus();
+  }
+});
+
+renderModels();
+renderInspector({...providerModels["Kenari"][0],provider:"Kenari"});
+</script>
+</body>
+</html>

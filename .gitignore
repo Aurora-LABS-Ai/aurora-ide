@@ -148,3 +148,6 @@ nul
 /image-*.png
 /screenshot.png
 /screenshot-*.png
+
+# HAR captures — contain live session cookies and account data
+*.har

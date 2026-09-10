@@ -15,6 +15,33 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
 pub struct ShellKillTool;
 
+/// Read one identifying field, treating a blank as absent.
+///
+/// A DECLARED-BUT-EMPTY field is not an identifier, and the four fields here
+/// are tried in order — so the first one present wins. Several gateways
+/// serialise every optional property a tool schema declares, blank ones
+/// included, which means `{"processId": "bg-7", "requestId": ""}` arrives
+/// routinely. The empty `requestId` then won, and the process the model had
+/// correctly named could not be stopped by any argument it could send: the
+/// refusal read `No running background process matches ''` and named nothing
+/// to correct (`reports/aurora-issues.md`, 2026-09-08). A live process with no
+/// way to stop it is the one state this tool exists to prevent.
+///
+/// The numeric coercion is no longer `pid`-only. `pid` declares `"type":
+/// "string"` for the reason recorded on `file_read`'s `path` — a union type is
+/// serialised wrongly by real gateways — and a model that sends the number
+/// anyway is not punished for it. The same courtesy costs nothing on the other
+/// three.
+fn identifier(input: &Value, key: &str) -> Option<String> {
+    let value = input.get(key)?;
+    let raw = value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_u64().map(|n| n.to_string()))?;
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
 #[async_trait]
 impl ToolExecutor for ShellKillTool {
     fn name(&self) -> &str {
@@ -55,29 +82,10 @@ impl ToolExecutor for ShellKillTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let identifier = input
-            .get("requestId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                input
-                    .get("processId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .or_else(|| {
-                input.get("pid").and_then(|v| {
-                    v.as_str()
-                        .map(str::to_string)
-                        .or_else(|| v.as_u64().map(|n| n.to_string()))
-                })
-            })
-            .or_else(|| {
-                input
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
+        let identifier = identifier(&input, "requestId")
+            .or_else(|| identifier(&input, "processId"))
+            .or_else(|| identifier(&input, "pid"))
+            .or_else(|| identifier(&input, "name"));
 
         let identifier = identifier.ok_or_else(|| {
             ToolError::InvalidInput(
@@ -168,6 +176,45 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], json!(true));
         assert_eq!(parsed["processId"], json!("req-123"));
+    }
+
+    /// The bug from `reports/aurora-issues.md` (2026-09-08): a gateway that
+    /// serialises every declared optional property sent `requestId: ""`
+    /// alongside the id the model actually chose, and the empty string won the
+    /// chain. The process could not be stopped by any argument.
+    #[tokio::test]
+    async fn an_empty_request_id_does_not_swallow_the_process_id() {
+        #[cfg(not(feature = "verify_only"))]
+        crate::commands::register_command_stream(
+            "req-blank".into(),
+            "req-blank".into(),
+            Some("blank-watcher".into()),
+            "watch".into(),
+            None,
+            None,
+        );
+        let out = ShellKillTool
+            .execute(
+                json!({"processId": "req-blank", "requestId": "", "pid": "", "name": ""}),
+                &ctx(),
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["processId"], json!("req-blank"));
+        #[cfg(not(feature = "verify_only"))]
+        assert_eq!(parsed["success"], json!(true));
+    }
+
+    /// With nothing but blanks there is no id to correct, so the refusal has to
+    /// be the one that names the four fields — not a search for `''`.
+    #[tokio::test]
+    async fn blanks_alone_are_not_an_identifier() {
+        let err = ShellKillTool
+            .execute(json!({"processId": "   ", "requestId": ""}), &ctx())
+            .await
+            .expect_err("must fail");
+        assert!(matches!(err, ToolError::InvalidInput(_)));
     }
 
     #[tokio::test]

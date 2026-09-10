@@ -1208,19 +1208,38 @@ pub(crate) fn strip_system_boundary(prompt: &str) -> std::borrow::Cow<'_, str> {
 
 /// Whether this provider understands Anthropic's `cache_control` markers.
 ///
-/// Deliberately narrow. `cache_control` is an unknown field to everything
-/// that merely speaks an Anthropic-shaped wire format, and an unknown field
-/// is how Aurora has been bitten before (the `oneOf` 400s on xAI, the
-/// `budget_tokens` handling on compat proxies). MiniMax rides the same
-/// adapter and is NOT on this list.
+/// Deliberately narrow. `cache_control` is an unknown field to everything that
+/// merely speaks an Anthropic-shaped wire format, and an unknown field is how
+/// Aurora has been bitten before (the `oneOf` 400s on xAI, the `budget_tokens`
+/// handling on compat proxies). The cost of a false negative is the status quo,
+/// full price and no cache; the cost of a false positive is every request
+/// failing with HTTP 400, so this errs hard toward off.
 ///
-/// The cost of a false negative is the status quo — full price, no cache.
-/// The cost of a false positive is every request failing with HTTP 400, so
-/// this errs hard toward off.
+/// **MiniMax was excluded on that caution and it was wrong.** Measured against
+/// the live endpoint on 2026-09-09, two identical requests carrying one
+/// `cache_control` breakpoint on a 1,582-token system prompt:
+///
+/// | | first call | second call |
+/// |---|---|---|
+/// | `cache_creation_input_tokens` | 1582 | 0 |
+/// | `cache_read_input_tokens` | 0 | **1582** |
+/// | `input_tokens` | 0 | 0 |
+///
+/// A clean write then a clean hit, and `input_tokens` at zero confirms the
+/// three fields are DISJOINT and additive exactly as Anthropic reports them —
+/// which is what Aurora's context arithmetic already assumes everywhere.
+///
+/// Their docs put cache reads at $0.06/M against $0.30/M for fresh input, so
+/// the exclusion was costing 20x on the cached part of every single turn.
+/// MiniMax caps a request at 4 `cache_control` markers; Aurora places at most
+/// four (asserted by `at_most_four_cache_breakpoints_are_emitted`).
 fn supports_prompt_caching(config: &ProviderConfigSnapshot) -> bool {
-    config
-        .effective_provider_type()
-        .eq_ignore_ascii_case("anthropic")
+    let provider_type = config.effective_provider_type();
+    provider_type.eq_ignore_ascii_case("anthropic")
+        // The subscription route is Anthropic's own endpoint; the plan bills
+        // cached reads at the same discount as the API does.
+        || provider_type.eq_ignore_ascii_case(super::claude_code::CLAUDE_CODE_PROVIDER_TYPE)
+        || provider_type.eq_ignore_ascii_case(super::minimax::MINIMAX_PROVIDER_TYPE)
 }
 
 /// Attach an ephemeral `cache_control` marker to a JSON object in place.
@@ -2325,7 +2344,7 @@ pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&
         // (`build_anthropic_body`), Responses and Codex replay an encrypted
         // reasoning item, and Cursor speaks its own. Putting an OpenAI chat
         // field in any of those bodies would be malformed, not merely unwanted.
-        "minimax" | "anthropic" | "openai-responses" | "codex" | "cursor"
+        "minimax" | "anthropic" | "claude-code" | "openai-responses" | "codex" | "cursor"
         | "kenari-messages" | "kenari-responses" | "modal-messages" | "modal-responses" => None,
         // Every other OpenAI-compatible provider — `"openai"`, `"custom"`,
         // Fireworks, Ollama, kenari, and anything Aurora has never heard of:
@@ -4589,6 +4608,48 @@ mod tests {
         }
     }
 
+    /// MiniMax was excluded from prompt caching on caution alone, which cost
+    /// 20x on the cached part of every turn ($0.06/M read against $0.30/M
+    /// fresh). Measured live 2026-09-09: one breakpoint on a 1,582-token system
+    /// prompt wrote the cache on the first call and read all 1,582 back on the
+    /// second, with `input_tokens: 0` both times.
+    #[test]
+    fn minimax_gets_cache_breakpoints_like_anthropic() {
+        let mut config = thinking_config();
+        config.provider_id = "minimax".into();
+        config.provider_type = Some("minimax".into());
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools = [tool_schema("file_read"), tool_schema("grep")];
+
+        let body = build_anthropic_body(&caching_request(&messages, &tools), &config);
+        let serialized = body.to_string();
+
+        assert!(
+            serialized.contains("cache_control"),
+            "MiniMax accepts cache_control; withholding it pays full price"
+        );
+        // MiniMax honours only the last four markers on a request and ignores
+        // the rest, so exceeding four silently drops the earliest prefix.
+        assert!(
+            serialized.matches("cache_control").count() <= 4,
+            "MiniMax caps a request at four cache breakpoints"
+        );
+    }
+
+    /// The guard the caution above was protecting: a provider that merely
+    /// speaks an Anthropic-shaped wire still 400s on an unknown field.
+    #[test]
+    fn an_unknown_anthropic_shaped_provider_still_gets_no_cache_control() {
+        let mut config = thinking_config();
+        config.provider_id = "some-gateway".into();
+        config.provider_type = Some("some-gateway".into());
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let tools = [tool_schema("file_read")];
+
+        let body = build_anthropic_body(&caching_request(&messages, &tools), &config);
+        assert!(!body.to_string().contains("cache_control"));
+    }
+
     #[test]
     fn anthropic_body_sets_all_three_cache_breakpoints() {
         let mut config = thinking_config();
@@ -5042,9 +5103,16 @@ mod tests {
 
     #[test]
     fn non_anthropic_providers_get_no_cache_control_at_all() {
-        // MiniMax rides the same adapter but has never seen `cache_control`.
-        // An unknown field is how Aurora has been 400'd before.
-        for provider in ["minimax", "custom", "glm"] {
+        // MiniMax used to be in this list, on the assumption that it "has never
+        // seen `cache_control`". Measured against the live endpoint on
+        // 2026-09-09, it has: a write of 1,582 tokens followed by a read of the
+        // same 1,582. The assumption was never tested, and it was costing 20x
+        // on the cached half of every turn. It now has its own test above.
+        //
+        // The rule this still guards is real: an unknown field is how Aurora
+        // has been 400'd before, so a provider joins the caching list only
+        // after somebody watches it cache.
+        for provider in ["custom", "glm"] {
             let mut config = thinking_config();
             config.provider_id = provider.into();
             let messages = [ConversationMessage::user_text("hi", 0)];

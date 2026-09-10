@@ -472,3 +472,40 @@ async fn oversized_schemas_are_paged_losslessly_with_bounded_results() {
         ));
     }
 }
+
+/// `schema_offset` declares `minimum: 0`, so zero is the field's own default —
+/// and a model that spelled the default out on a keyword search was refused
+/// with "schema_offset requires select:one_exact_tool_name", which cost it a
+/// turn and sent it looking for another way to find browser tools
+/// (`reports/aurora-issues.md`, 2026-09-08). Only a NON-ZERO offset is a claim
+/// about a page.
+#[tokio::test]
+async fn a_zero_schema_offset_is_the_default_not_a_paging_request() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let registry = ToolRegistry::new();
+    install(
+        &registry,
+        vec![probe(
+            "browser_screenshot",
+            json!({"type":"object","properties":{},"required":[]}),
+            &count,
+        )],
+    );
+    let search = registry.get("tool_search").unwrap();
+    let raw = search
+        .execute(
+            json!({"query":"browser screenshot","max_results":10,"schema_offset":0}),
+            &context(),
+        )
+        .await
+        .expect("a keyword search carrying the field's default is a valid search");
+    let parsed: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["tools"][0]["name"], json!("browser_screenshot"));
+    // A non-zero offset still has to name one exact tool.
+    assert!(matches!(
+        search
+            .execute(json!({"query":"browser screenshot","schema_offset":1}), &context())
+            .await,
+        Err(ToolError::InvalidInput(_))
+    ));
+}

@@ -51,11 +51,14 @@
 
 pub mod anthropic;
 pub mod aurora_image;
+pub mod claude_code;
 pub mod client;
 pub mod codex;
 pub mod commandcode;
 pub mod cursor;
 pub mod deepseek;
+pub mod meta;
+pub mod minimax;
 pub mod openai_compat;
 pub mod pool;
 pub mod provider_kernel_adapter;

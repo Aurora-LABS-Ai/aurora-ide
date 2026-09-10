@@ -39,6 +39,7 @@ import {
   type ToolCall,
 } from "@/apps/agent/components/tools/tool-call";
 import { TOOL_GROUP_MIN } from "@/apps/agent/components/conversation/timeline";
+import { useFollowBottom } from "@/apps/agent/hooks/conversation/useFollowBottom";
 
 /**
  * Renders a run of consecutive tool calls. ALWAYS used for a tools row (even a
@@ -71,15 +72,23 @@ const ToolGroupImpl: React.FC<{
   const stats = useMemo(() => {
     let done = 0;
     let failed = 0;
+    let running = 0;
     let totalMs = 0;
     for (const t of tools) {
       const s = toolStatus(t, isActivelyStreaming);
       if (s === "done") done += 1;
       else if (s === "failed") failed += 1;
+      else running += 1;
       totalMs += t.durationMs ?? 0;
     }
-    return { done, failed, totalMs };
+    return { done, failed, running, totalMs };
   }, [tools, isActivelyStreaming]);
+
+  // The body below is height-capped once grouped, so past about the sixth card
+  // every new one lands out of sight. Follow the newest while the run is in
+  // flight; a finished run stays where the reader left it, and one reopened
+  // from history opens at its first card.
+  const { ref: bodyRef, onScroll: onBodyScroll } = useFollowBottom(stats.running > 0);
 
   // Same trick as the IDE: remember the user's toggle, but key it to the
   // streaming flag so the default flips (open→summary) when the turn ends.
@@ -176,6 +185,8 @@ const ToolGroupImpl: React.FC<{
           // BOUNDED lock area that scrolls internally — so the expansion never
           // balloons the message. Below the threshold it's a plain passthrough.
           className={grouped ? "agw-tool-group-body" : undefined}
+          ref={bodyRef}
+          onScroll={onBodyScroll}
           style={{
             display: "flex",
             flexDirection: "column",

@@ -257,6 +257,12 @@ fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'sta
         ProviderKind::Anthropic => ("Anthropic Messages", build_anthropic_url(&config.base_url)),
         ProviderKind::OpenAIResponses => ("Responses", build_responses_url(&config.base_url)),
         ProviderKind::Codex => ("Codex", CODEX_RESPONSES_URL.to_string()),
+        // Pinned to api.anthropic.com; the row's base URL is not what a
+        // request goes to.
+        ProviderKind::ClaudeCode => (
+            "Claude Code",
+            crate::api::claude_code::adapter::messages_url(),
+        ),
         // Not a URL the user configured: the endpoint is fixed and the wire
         // is an agent protocol, not a chat API. Reporting the configured base
         // URL here would describe a route this provider never takes.

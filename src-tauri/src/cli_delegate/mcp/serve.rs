@@ -24,6 +24,7 @@ use std::io::{BufRead, Write};
 
 use serde_json::{json, Value};
 
+use super::clients;
 use super::protocol::{
     error_code, initialize_result, tool_error, Request, Response, SERVER_NAME,
 };
@@ -44,6 +45,12 @@ pub fn run() -> i32 {
 
     eprintln!("[{SERVER_NAME}] ready on stdio");
 
+    // Held for the life of the connection and dropped when the loop ends, which
+    // is what removes this session from the count. Set on `initialize`, because
+    // that is the only message carrying `clientInfo` — before it there is a
+    // process but not yet an agent with a name.
+    let mut session: Option<clients::SessionHandle> = None;
+
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(line) => line,
@@ -57,6 +64,17 @@ pub fn run() -> i32 {
             continue;
         }
 
+        // Register on the way past, before the reply is composed. Reading the
+        // line twice is cheap next to the round trip, and keeping this out of
+        // `handle_line` leaves that function pure — it is tested on the
+        // strength of taking a string and returning a response, and a
+        // registration side effect inside it would write files during tests.
+        if session.is_none() {
+            if let Some(handle) = register_from(&line) {
+                session = Some(handle);
+            }
+        }
+
         let Some(response) = handle_line(&line) else {
             continue;
         };
@@ -68,7 +86,38 @@ pub fn run() -> i32 {
         }
     }
 
+    // Explicit rather than left to scope end, because what this drop does —
+    // remove the session file — is the visible half of the feature, and a
+    // reader should not have to know `SessionHandle` has a `Drop` to see that
+    // disconnecting updates the count.
+    drop(session);
     0
+}
+
+/// Announce the connection if this line is the `initialize` that opens it.
+///
+/// `clientInfo` is the only place an agent says what it is, and the MCP spec
+/// makes it optional — so a client that sends none is still registered, just
+/// without a name. Counting only the agents polite enough to introduce
+/// themselves would under-report exactly the connections worth worrying about.
+fn register_from(line: &str) -> Option<clients::SessionHandle> {
+    let request: Request = serde_json::from_str(line).ok()?;
+    if request.method != "initialize" {
+        return None;
+    }
+    let info = request.params.get("clientInfo");
+    let text = |key: &str| {
+        info.and_then(|i| i.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let handle = clients::register(text("name"), text("version"));
+    if handle.is_none() {
+        // Worth a line on stderr, which clients surface as the server log: the
+        // connection works, the count will just be missing this row.
+        eprintln!("[{SERVER_NAME}] could not record this connection for the settings page");
+    }
+    handle
 }
 
 /// Answer one line, or `None` when the message wants no reply.

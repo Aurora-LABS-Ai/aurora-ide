@@ -69,6 +69,42 @@ export function loadProviderGroupsOpen(): ProviderGroupsOpen {
   }
 }
 
+/**
+ * Which categories are folded shut.
+ *
+ * Stored as the COLLAPSED ids rather than the open ones, so a category made on
+ * another machine, or one made after this was last written, arrives open. The
+ * alternative reads every unknown id as closed, and a category you just
+ * created would appear already folded.
+ *
+ * localStorage, like the pins above and for the same reason: which sections
+ * are folded is a preference of this window, not a fact about the account. The
+ * categories themselves are in the database.
+ */
+export const COLLAPSED_CATEGORIES_KEY = "agw-prov-collapsed-categories";
+
+export function loadCollapsedCategories(): string[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(COLLAPSED_CATEGORIES_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((x): x is string => typeof x === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCollapsedCategories(ids: string[]): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(COLLAPSED_CATEGORIES_KEY, JSON.stringify(ids));
+  } catch {
+    // Storage full or blocked — the fold still applies for this session.
+  }
+}
+
 export function saveProviderGroupsOpen(state: ProviderGroupsOpen): void {
   if (typeof localStorage === "undefined") return;
   try {

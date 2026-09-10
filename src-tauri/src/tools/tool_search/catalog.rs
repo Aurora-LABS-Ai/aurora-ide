@@ -38,6 +38,17 @@ impl ToolCatalog {
     ) -> Result<Value, ToolError> {
         // Large third-party schemas are paged as JSON text, never silently
         // shortened by the runtime's generic result clamp.
+        //
+        // `schema_offset: 0` on an ordinary keyword search is NOT a paging
+        // request. The field declares `minimum: 0`, so zero is its own default,
+        // and a model that spells the default out was refused with
+        // "schema_offset requires select:one_exact_tool_name" — an error for
+        // asking a perfectly valid question, which cost a turn and sent the
+        // model looking for a different way to find browser tools
+        // (`reports/aurora-issues.md`, 2026-09-08). Only a NON-ZERO offset is a
+        // claim about a page, and only that still has to name one exact tool.
+        let schema_offset =
+            schema_offset.filter(|offset| *offset > 0 || query.starts_with("select:"));
         if let Some(offset) = schema_offset {
             let name = query
                 .strip_prefix("select:")

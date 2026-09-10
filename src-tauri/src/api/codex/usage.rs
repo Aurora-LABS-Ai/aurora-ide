@@ -97,14 +97,29 @@ async fn fetch_usage_with(access: &auth::CodexAccess) -> Result<CodexUsageSnapsh
 /// Map the raw payload into the card snapshot. Public within the module
 /// tree for tests.
 pub(crate) fn parse_usage(root: &Value) -> CodexUsageSnapshot {
-    // The endpoint wraps the payload in `rate_limits`; tolerate both the
-    // wrapped and bare shapes.
-    let payload = root.get("rate_limits").unwrap_or(root);
-    let rate_limit = payload.get("rate_limit").filter(|v| !v.is_null());
+    // The endpoint wraps its rate-limit payload in `rate_limits`, but not
+    // every field lives inside that wrapper — this response is undocumented
+    // and has been seen carrying `credits` and `plan_type` as siblings of it
+    // rather than children.
+    //
+    // So each field is looked up in the wrapper FIRST and in the root
+    // SECOND, instead of swapping wholesale to the wrapper the moment it
+    // exists. That swap is what made a plan section render its windows and
+    // stay silent about credits: the windows were inside, the balance was
+    // outside, and once the wrapper won there was nowhere left to look. An
+    // account whose window is spent and whose work is now paid for out of
+    // credits is exactly when that silence costs the most.
+    let wrapper = root.get("rate_limits").filter(|v| !v.is_null());
+    let pick = |key: &str| -> Option<&Value> {
+        wrapper
+            .and_then(|w| w.get(key))
+            .or_else(|| root.get(key))
+            .filter(|v| !v.is_null())
+    };
+    let rate_limit = pick("rate_limit");
 
     CodexUsageSnapshot {
-        plan_type: payload
-            .get("plan_type")
+        plan_type: pick("plan_type")
             .and_then(Value::as_str)
             .map(str::to_string),
         limit_reached: rate_limit
@@ -117,17 +132,14 @@ pub(crate) fn parse_usage(root: &Value) -> CodexUsageSnapshot {
         secondary: rate_limit
             .and_then(|rl| rl.get("secondary_window"))
             .and_then(parse_window),
-        credits: payload
-            .get("credits")
-            .filter(|v| !v.is_null())
-            .map(|c| CodexCredits {
-                has_credits: c
-                    .get("has_credits")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                unlimited: c.get("unlimited").and_then(Value::as_bool).unwrap_or(false),
-                balance: c.get("balance").and_then(Value::as_str).map(str::to_string),
-            }),
+        credits: pick("credits").map(|c| CodexCredits {
+            has_credits: c
+                .get("has_credits")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            unlimited: c.get("unlimited").and_then(Value::as_bool).unwrap_or(false),
+            balance: c.get("balance").and_then(Value::as_str).map(str::to_string),
+        }),
         fetched_at_ms: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -195,6 +207,35 @@ mod tests {
         let credits = snap.credits.expect("credits");
         assert!(credits.has_credits);
         assert_eq!(credits.balance.as_deref(), Some("12.5"));
+    }
+
+    /// The shape that made the context ring draw a spent window and say
+    /// nothing about the credits paying for the work: the rate limits are
+    /// wrapped, the balance is a sibling of the wrapper. Reading every field
+    /// out of the wrapper once it exists loses both `credits` and `plan_type`.
+    #[test]
+    fn finds_credits_left_outside_the_rate_limits_wrapper() {
+        let raw = json!({
+            "plan_type": "pro",
+            "credits": { "has_credits": true, "unlimited": false, "balance": "3850.0000001" },
+            "rate_limits": {
+                "rate_limit": {
+                    "limit_reached": true,
+                    "secondary_window": {
+                        "used_percent": 100,
+                        "limit_window_seconds": 2_592_000,
+                        "reset_after_seconds": 2_253_600
+                    }
+                }
+            }
+        });
+        let snap = parse_usage(&raw);
+        assert_eq!(snap.plan_type.as_deref(), Some("pro"));
+        assert!(snap.limit_reached);
+        assert_eq!(snap.secondary.expect("secondary").used_percent, 100.0);
+        let credits = snap.credits.expect("credits outside the wrapper");
+        assert!(credits.has_credits);
+        assert_eq!(credits.balance.as_deref(), Some("3850.0000001"));
     }
 
     #[test]

@@ -27,13 +27,17 @@
  */
 export const BUILT_IN_PROVIDER_ORDER: readonly string[] = [
   "anthropic",
+  "claude-code",
   "openai-responses",
   "codex",
   "cursor",
+  "meta",
   "opencode-go",
   "commandcode",
   "deepseek",
+  "minimax",
   "kenari",
+  "ark",
   "modal",
 ];
 

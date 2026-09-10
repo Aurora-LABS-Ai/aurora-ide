@@ -244,7 +244,29 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         }
     }
 
-    if !request.tools.is_empty() {
+    // `tool_choice: "none"` is Aurora saying "these tools exist, but must not
+    // be called this turn". Meta's Responses endpoint accepts only `"auto"`
+    // and answers a hard 400 naming the field for anything else, so there the
+    // same intent has to be expressed by withholding the catalogue instead —
+    // offering no tools is the one spelling of "none" every provider honours.
+    //
+    // Dropping only the field would be the wrong repair: it would leave the
+    // tools on the request with an implicit "auto" and let the model call one
+    // the runtime had just forbidden.
+    //
+    // This DOES cost something, and only on Meta. Keeping the tool array in
+    // place while disabling selection is deliberate elsewhere — it holds the
+    // cache prefix steady across a compaction turn (see
+    // `tools_can_remain_in_the_cache_prefix_while_selection_is_disabled`).
+    // Withholding the tools changes that prefix, so a Meta thread can take a
+    // cache miss on the turn after a no-tools turn. A cold cache is a worse
+    // deal than it sounds but a far better one than a 400, and Meta gives no
+    // third option: there is no value of `tool_choice` that both suppresses
+    // calls and keeps the array.
+    let withhold_tools = request.tool_choice == crate::agent_runtime::api_client::ToolChoice::None
+        && !crate::api::meta::supports_tool_choice(config.effective_provider_type());
+
+    if !request.tools.is_empty() && !withhold_tools {
         // Responses tools are FLAT (no `function` wrapper). `strict`
         // is pinned to false because Aurora tool schemas are not
         // strict-mode compliant (optional properties, no
@@ -1387,6 +1409,52 @@ mod tests {
 
         assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
         assert_eq!(body["tool_choice"], "none");
+    }
+
+    /// Meta is the exception to the test above, and it is not a style choice.
+    ///
+    /// `POST https://api.meta.ai/v1/responses` with `tool_choice: "none"`
+    /// answers 400 `invalid_request_error`:
+    ///
+    /// ```text
+    /// only `"auto"` is supported for `tool_choice`. `"none"`, `"required"`,
+    /// and named function choices are not currently supported
+    /// ```
+    ///
+    /// So on Meta the catalogue is withheld instead. Both halves are pinned:
+    /// dropping the field but keeping the tools would let the model call a
+    /// tool the runtime had just forbidden, which is a correctness bug rather
+    /// than a failed request.
+    #[test]
+    fn meta_withholds_the_tool_catalogue_instead_of_sending_a_non_auto_choice() {
+        let messages = vec![ConversationMessage::user_text("compact", 0)];
+        let tools = vec![ToolSchema {
+            name: "file_read".into(),
+            description: "Read a file".into(),
+            input_schema: json!({"type":"object","properties":{}}),
+        }];
+        let mut req = request(&messages, &tools);
+        req.tool_choice = crate::agent_runtime::api_client::ToolChoice::None;
+
+        let mut cfg = config();
+        cfg.provider_id = "meta".into();
+        cfg.provider_type = Some("meta-responses".into());
+        cfg.base_url = "https://api.meta.ai/v1".into();
+
+        let body = build_responses_body(&req, &cfg);
+
+        assert!(body.get("tools").is_none(), "tools must be withheld");
+        assert!(
+            body.get("tool_choice").is_none(),
+            "a non-auto tool_choice is a 400 on Meta",
+        );
+
+        // With tools ON the same row, both fields come back — the suppression
+        // is scoped to the forbidden value, not to the provider.
+        let req = request(&messages, &tools);
+        let body = build_responses_body(&req, &cfg);
+        assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["tool_choice"], "auto");
     }
 
     #[test]

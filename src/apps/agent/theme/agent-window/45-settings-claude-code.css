@@ -1,0 +1,70 @@
+/* ── Claude Code (claude.ai subscription) provider card ────────────────────
+   Rides the .agw-atlas-* family (container, head, meters, skeletons) and the
+   .agw-codex-* sign-in pieces (actions row, note, footer, links) so the three
+   subscription cards read as one system. Below is only what the manual
+   sign-in adds: the two numbered steps, the link field with its copy
+   control, and the code field. */
+.agw-cc-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agw-cc-step {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  column-gap: 10px;
+  row-gap: 6px;
+}
+.agw-cc-step-num {
+  grid-row: 1 / span 2;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--agw-border);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  line-height: 18px;
+  text-align: center;
+}
+.agw-cc-step-label {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-cc-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agw-cc-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agw-cc-field .agw-set-input {
+  flex: 1;
+  min-width: 0;
+}
+.agw-cc-field .agw-set-input[readonly] {
+  color: var(--agw-text-muted);
+  text-overflow: ellipsis;
+}
+.agw-cc-field-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.agw-cc-hint {
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+.agw-cc-copied {
+  color: var(--agw-added, var(--agw-text));
+}
+.agw-cc-windows {
+  display: flex;
+  flex-direction: column;
+}

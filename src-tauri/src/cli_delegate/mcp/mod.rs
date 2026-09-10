@@ -58,6 +58,7 @@
 //!   each call does.
 //! - [`serve`] — the stdio loop.
 
+pub mod clients;
 pub mod protocol;
 pub mod serve;
 pub mod tools;

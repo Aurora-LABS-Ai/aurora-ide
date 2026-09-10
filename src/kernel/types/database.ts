@@ -36,6 +36,14 @@ export interface AppSettings {
    * startup, written when someone edits them, never joined against anything.
    * See `services/providers/image-providers.ts`.
    */
+  /**
+   * Provider categories and their assignments, as one blob.
+   *
+   * `unknown` on purpose, like `imageProviders` beside it: the shape is owned
+   * and validated by `services/providers/provider-categories.ts`, which has to
+   * tolerate whatever an older build or a hand-edited row left here.
+   */
+  providerCategories?: unknown;
   imageProviders?: unknown[];
   // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
   teamEnabled?: boolean;

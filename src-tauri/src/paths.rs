@@ -148,6 +148,26 @@ pub fn cli_tasks_dir() -> PathBuf {
 /// The file is only ever a *hint*. It can outlive the process that wrote it —
 /// a crash leaves it claiming a window that is gone — so every reader pairs it
 /// with `cli_delegate::presence`, which the OS invalidates on process death.
+/// `<root>/mcp-clients/` — one file per agent currently connected to
+/// `aurora mcp`, written by that server process and read by the app.
+///
+/// The direction matters. `bridge.json` is the app telling outside processes
+/// about itself; this is the reverse, and it needs a directory rather than one
+/// file because there can be several connections at once and each is written by
+/// a different process. One file each means two agents connecting at the same
+/// moment cannot overwrite one another.
+///
+/// Every entry carries a heartbeat, because an `aurora mcp` process that is
+/// killed never gets to clean up after itself. A file nobody has touched
+/// recently is treated as gone — see `cli_delegate::mcp::clients`.
+///
+/// Disposable: deleting it loses nothing but the connection count, which
+/// rebuilds on the next heartbeat.
+pub fn mcp_clients_dir() -> PathBuf {
+    ensure_subdir("mcp-clients")
+}
+
+/// `<root>/bridge.json` — see above.
 pub fn bridge_state_file() -> PathBuf {
     root().join("bridge.json")
 }
@@ -182,7 +202,7 @@ pub fn typing_assist_dir() -> PathBuf {
 }
 
 /// `<root>/auth/` — machine-managed provider credentials Aurora rotates
-/// itself (currently `cursor-auth.json`).
+/// itself (`cursor-auth.json`, `claude-code-auth.json`, `codex-accounts.json`).
 ///
 /// Deliberately not `config/` (nobody hand-authors these, and inviting an
 /// editor into a file holding bearer tokens is how they end up in a paste),

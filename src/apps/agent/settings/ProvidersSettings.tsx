@@ -30,6 +30,7 @@ import type {
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud";
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
+import { isClaudeCodeProvider } from "@/apps/agent/services/providers/claude-code";
 import { isCursorProvider } from "@/apps/agent/services/providers/cursor";
 import {
   defaultOpenCodeWire,
@@ -46,12 +47,23 @@ import {
   type ImageProvider,
 } from "@/apps/agent/services/providers/image-providers";
 import {
+  loadCollapsedCategories,
   loadPinnedProviders,
   loadProviderGroupsOpen,
+  saveCollapsedCategories,
   savePinnedProviders,
   saveProviderGroupsOpen,
   type ProviderGroupsOpen,
 } from "./provider-pins";
+import {
+  NewCategoryRow,
+  ProviderCategoryHeader,
+} from "./ProviderCategoryHeader";
+import {
+  BUILT_IN_CATEGORY_ID,
+  categoryOf,
+  sectionsFor,
+} from "@/apps/agent/services/providers/provider-categories";
 import {
   isKenariProvider,
   kenariWire,
@@ -65,6 +77,14 @@ import {
   type AgentRouterWire,
 } from "@/apps/agent/services/providers/agentrouter";
 import { isModalProvider } from "@/apps/agent/services/providers/modal";
+import { isMinimaxProvider } from "@/apps/agent/services/providers/minimax";
+import {
+  arkBaseUrlForWire,
+  arkWire,
+  ARK_WIRES,
+  isArkProvider,
+  type ArkWire,
+} from "@/apps/agent/services/providers/ark";
 import { ModalWorkspaceCard } from "./ModalWorkspaceCard";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { ProviderDescription } from "./ProviderDescription";
@@ -72,12 +92,22 @@ import { AgentIcon } from "../shared/AgentIcon";
 import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
+import { ClaudeCodeProviderCard } from "./ClaudeCodeProviderCard";
 import { KenariUsageCard } from "./KenariUsageCard";
+import { ArkUsageCard } from "./ArkUsageCard";
+import { MinimaxUsageCard } from "./MinimaxUsageCard";
 import { CursorProviderCard } from "./CursorProviderCard";
 import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
 import { CommandCodeProviderCard } from "./CommandCodeProviderCard";
 import { isCommandCodeProvider } from "@/apps/agent/services/providers/commandcode";
-import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
+import {
+  AgwButton,
+  AgwPill,
+  AgwSegmented,
+  AgwSelect,
+  AgwSwitch,
+  AgwTextInput,
+} from "./primitives";
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 
 /**
@@ -157,12 +187,38 @@ const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = 
   messages: "Messages",
 };
 
+/**
+ * Providers that speak exactly ONE wire, where a per-model format override is
+ * not a choice but a way to break the row.
+ *
+ * The picker exists for an account that genuinely serves several shapes — a
+ * gateway where one model wants Chat and another wants Responses. On these it
+ * offers three options of which two are wrong: Codex and Cursor pin their URL
+ * in Rust, and MiniMax's address ends in `/anthropic/v1`, so anything but
+ * Messages sends the wrong body to a path that does not exist.
+ *
+ * OpenCode Go is excluded separately at the call site rather than added here.
+ * Its wire genuinely belongs to the model — each id accepts exactly one and
+ * answers 500 on the others — so the picker is hidden for a different reason:
+ * `applyOpenCodeWire` has already made the choice per model.
+ */
+const PINNED_WIRE_TYPES = new Set(["codex", "claude-code", "cursor", "minimax"]);
+
+function hasPinnedWire(providerType: string | undefined): boolean {
+  return PINNED_WIRE_TYPES.has((providerType ?? "").toLowerCase());
+}
+
 function apiFormatForProviderType(type: string | undefined): Exclude<EditableApiFormat, "inherit"> {
   const normalized = (type ?? "").toLowerCase();
   if (
-    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages", "modal-messages"].includes(
-      normalized,
-    )
+    [
+      "anthropic",
+      "claude-code",
+      "minimax",
+      "kenari-messages",
+      "opencode-go-messages",
+      "modal-messages",
+    ].includes(normalized)
   ) {
     return "messages";
   }
@@ -901,9 +957,14 @@ const ModelRow: React.FC<{
   // control there would be a switch that does nothing.
   const effectiveWire = (isOpenCode ? ocWire : model.providerType ?? providerType ?? "").toLowerCase();
   const wireFormat: "chat" | "responses" | "messages" | "native" =
-    ["anthropic", "minimax", "kenari-messages", "opencode-go-messages", "modal-messages"].includes(
-      effectiveWire,
-    )
+    [
+      "anthropic",
+      "claude-code",
+      "minimax",
+      "kenari-messages",
+      "opencode-go-messages",
+      "modal-messages",
+    ].includes(effectiveWire)
       ? "messages"
       : ["openai-responses", "kenari-responses", "opencode-go", "modal-responses"].includes(
             effectiveWire,
@@ -1119,7 +1180,7 @@ const ModelRow: React.FC<{
               }
             />
           </label>
-          {!isOpenCode && !["codex", "cursor"].includes((providerType ?? "").toLowerCase()) && (
+          {!isOpenCode && !hasPinnedWire(providerType) && (
             <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
               <span>API format</span>
               <AgwSegmented<EditableApiFormat>
@@ -1653,17 +1714,34 @@ const ProviderDetail: React.FC<{
   const updateProvider = useSettingsStore((s) => s.updateProvider);
   const removeProvider = useSettingsStore((s) => s.removeProvider);
   const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
+  // Read here rather than passed down: the detail pane is the one place a
+  // provider is moved BETWEEN categories, and threading two more props through
+  // for it would make every caller of this component carry them.
+  const providerCategories = useSettingsStore((s) => s.providerCategories);
+  const setProviderCategory = useSettingsStore((s) => s.setProviderCategory);
   const [showKey, setShowKey] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const atlas = isAtlasCloudProvider(provider);
   const codex = isCodexProvider(provider);
+  const claudeCode = isClaudeCodeProvider(provider);
   const cursor = isCursorProvider(provider);
   const opencode = isOpenCodeProvider(provider);
   const commandcode = isCommandCodeProvider(provider);
   const builtIn = isBuiltInProvider(provider);
   const kenari = isKenariProvider(provider);
+  const ark = isArkProvider(provider);
   const modal = isModalProvider(provider);
+  // Providers whose address the vendor fixes. The key is the only thing almost
+  // anyone sets, so the endpoint moves under a disclosure instead of sitting
+  // above the field they opened the card for. Still editable — a proxy or a
+  // self-hosted deployment is a real thing — just not the first thing offered.
+  //
+  // A boolean rather than a special case in the markup, so switching another
+  // provider to this shape later is one name on this line.
+  const minimax = isMinimaxProvider(provider);
+  const pinnedEndpoint = minimax;
   const wire = kenariWire(provider);
+  const arkWireValue = arkWire(provider);
   const agentrouter = isAgentRouterProvider(provider);
   const arWire = agentRouterWire(provider);
   // How many model rows below have set their own API format. The control here
@@ -1712,6 +1790,14 @@ const ProviderDetail: React.FC<{
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
+      ) : claudeCode ? (
+        /* Same shape as Codex: the card owns sign-in and the plan meters, and
+           there is no key or endpoint to edit — Rust pins both. The seeded
+           model list still renders underneath. */
+        <ClaudeCodeProviderCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
       ) : cursor ? (
         <CursorProviderCard
           enabled={provider.enabled}
@@ -1740,6 +1826,26 @@ const ProviderDetail: React.FC<{
            list still render underneath — unlike Codex, kenari has a real key
            and real models to edit. */
         <KenariUsageCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
+      ) : ark ? (
+        /* Same shape as kenari's, and for the same reason: the quota bars are
+           the first thing worth reading, and this is the other provider where a
+           working key cannot read its own account — Volcano's control plane
+           refuses the `ark-` key, so the numbers come from a console sign-in. */
+        <ArkUsageCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
+      ) : minimax ? (
+        /* Same reason as kenari's: the plan bars are the first thing worth
+           reading and the generic head would push them below the fold. Unlike
+           kenari's, this card needs the KEY — on MiniMax the subscription key
+           is also the account credential, so there is no sign-in to run and the
+           card fills in the moment a key is pasted below. */
+        <MinimaxUsageCard
+          apiKey={provider.apiKey}
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
@@ -1772,8 +1878,28 @@ const ProviderDetail: React.FC<{
           are managed by the card above, and both Rust adapters pin the URL so
           a stale field could not reroute a turn anyway. Cursor also owns its
           own model list, which the generic model editor must not duplicate. */}
-      {!codex && !cursor && !modal && (
+      {!codex && !claudeCode && !cursor && !modal && (
       <div className="agw-prov-conn">
+        {/* Where this provider sits in the rail. First field, because it is
+            identity rather than connection: it is the same kind of fact as the
+            name, and it decides which section you will look in to find this
+            row again.
+
+            This is the move-an-existing-provider path. Adding a new one goes
+            the other way round — you pick the category first, from the rail —
+            so the two never disagree about which is the source of truth. */}
+        <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+          <span>Category</span>
+          <AgwSelect
+            ariaLabel={`Category for ${provider.name}`}
+            value={categoryOf(providerCategories, provider)}
+            options={providerCategories.categories.map((c) => ({
+              value: c.id,
+              label: c.name,
+            }))}
+            onChange={(next) => setProviderCategory(provider.id, next)}
+          />
+        </label>
         {/* kenari answers the same account on three different wires, and the
             choice changes real behaviour — not a preference. Offered here
             rather than buried in Extra request fields, with what each one
@@ -1794,6 +1920,31 @@ const ProviderDetail: React.FC<{
             />
             <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
               {KENARI_WIRES.find((w) => w.value === wire)?.detail}
+            </span>
+          </div>
+        )}
+        {/* Ark answers the same account on three wires, kenari-style — but
+            with one difference that matters: its wires are on DIFFERENT PATHS,
+            not different suffixes of one base URL. Messages is
+            `/api/coding/v1`, chat and responses are `/api/coding/v3`. So this
+            writes the URL as well as the type; changing only the type would
+            leave the row pointed at a path that 404s. */}
+        {ark && (
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>API format</span>
+            <AgwSegmented<ArkWire>
+              ariaLabel="Volcano Ark API format"
+              value={arkWireValue}
+              options={ARK_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+              onChange={(next) =>
+                updateProvider(provider.id, {
+                  providerType: next,
+                  baseUrl: arkBaseUrlForWire(next),
+                })
+              }
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {ARK_WIRES.find((w) => w.value === arkWireValue)?.detail}
             </span>
           </div>
         )}
@@ -1852,14 +2003,19 @@ const ProviderDetail: React.FC<{
             </div>
           </>
         )}
-        <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
-          <span>Base URL</span>
-          <AgwTextInput
-            value={provider.baseUrl}
-            placeholder="https://api.example.com/v1"
-            onChange={(e) => updateProvider(provider.id, { baseUrl: e.target.value })}
-          />
-        </label>
+        {/* Above the key for a provider whose address is genuinely a choice.
+            For one the vendor pins, it moves below and into a disclosure —
+            see `pinnedEndpoint` and the <details> after the key field. */}
+        {!pinnedEndpoint && (
+          <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>Base URL</span>
+            <AgwTextInput
+              value={provider.baseUrl}
+              placeholder="https://api.example.com/v1"
+              onChange={(e) => updateProvider(provider.id, { baseUrl: e.target.value })}
+            />
+          </label>
+        )}
         {provider.requiresApiKey !== false && (
           <label className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
             <span>API key</span>
@@ -1889,6 +2045,37 @@ const ProviderDetail: React.FC<{
         )}
         {provider.requiresApiKey !== false && (
           <ApiKeyPoolEditor provider={provider} updateProvider={updateProvider} />
+        )}
+        {/* The pinned endpoint, folded away.
+          *
+          * Native <details> rather than a state hook: it is a disclosure, the
+          * element exists for exactly this, and it arrives keyboard-operable
+          * and correctly announced without anything to wire up.
+          *
+          * Closed by default and it says what is behind it while closed. A
+          * disclosure whose summary reads "Advanced" makes you open it to find
+          * out whether you needed it; this one names the address, so the answer
+          * to "is it pointing at the right place" is already on screen. */}
+        {pinnedEndpoint && (
+          <details className="agw-prov-endpoint" style={{ gridColumn: "1 / -1" }}>
+            <summary className="agw-prov-endpoint-summary">
+              <AgentIcon name="chevron-down" size={12} className="agw-prov-endpoint-chev" />
+              <span>Endpoint</span>
+              <span className="agw-prov-endpoint-url">{provider.baseUrl}</span>
+            </summary>
+            <label className="agw-prov-edit-field agw-prov-endpoint-body">
+              <span>Base URL</span>
+              <AgwTextInput
+                value={provider.baseUrl}
+                placeholder="https://api.example.com/v1"
+                onChange={(e) => updateProvider(provider.id, { baseUrl: e.target.value })}
+              />
+              <span className="agw-set-row-hint">
+                Set by the provider. Change it only to reach a proxy or a self-hosted
+                deployment.
+              </span>
+            </label>
+          </details>
         )}
         <CustomHeadersEditor provider={provider} updateProvider={updateProvider} />
       </div>
@@ -2159,6 +2346,72 @@ export const ProvidersSettings: React.FC = () => {
     });
   };
 
+  // ── Categories ─────────────────────────────────────────────────────────
+  //
+  // The categories themselves come from the store (they are account facts and
+  // will group the model selector too). What is local to this rail is which
+  // ones are folded, and which one new providers land in.
+  const providerCategories = useSettingsStore((s) => s.providerCategories);
+  const createProviderCategory = useSettingsStore((s) => s.createProviderCategory);
+  const renameProviderCategory = useSettingsStore((s) => s.renameProviderCategory);
+  const setProviderCategoryColor = useSettingsStore((s) => s.setProviderCategoryColor);
+  const deleteProviderCategory = useSettingsStore((s) => s.deleteProviderCategory);
+  const moveProviderCategory = useSettingsStore((s) => s.moveProviderCategory);
+  const setProviderCategory = useSettingsStore((s) => s.setProviderCategory);
+
+  const [collapsedCats, setCollapsedCats] = useState<string[]>(loadCollapsedCategories);
+  const collapsedSet = useMemo(() => new Set(collapsedCats), [collapsedCats]);
+  const toggleCategoryOpen = (id: string) => {
+    setCollapsedCats((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      saveCollapsedCategories(next);
+      return next;
+    });
+  };
+  /**
+   * Open a category, whatever state it was in.
+   *
+   * Separate from the toggle above, and not written in terms of it, because a
+   * toggle is only safe when nothing else in the same click also folds. That
+   * exact pair — the heading toggling and a second handler "expanding if
+   * collapsed" — cancelled out and made expanding impossible: the second
+   * handler read the fold state from the render it was called in, which the
+   * first had already changed. An idempotent open cannot do that.
+   */
+  const expandCategory = (id: string) => {
+    setCollapsedCats((prev) => {
+      if (!prev.includes(id)) return prev;
+      const next = prev.filter((x) => x !== id);
+      saveCollapsedCategories(next);
+      return next;
+    });
+  };
+
+  /**
+   * Which category the footer's Add provider will fill.
+   *
+   * A provider has to live somewhere, so there is no such thing as adding one
+   * without answering this. Null means nothing is targeted yet, and the footer
+   * says so rather than offering a button that would have to guess.
+   */
+  const [targetCategoryId, setTargetCategoryId] = useState<string | null>(null);
+  // Derived, never synced: a targeted category that is then deleted resolves
+  // to null here and the footer falls back to its hint on the same render. An
+  // effect clearing the id would be a second source of truth for the same
+  // fact, and it would also throw the target away if the category came back.
+  const targetCategory =
+    providerCategories.categories.find((c) => c.id === targetCategoryId) ?? null;
+
+  /**
+   * Target a category, and nothing else.
+   *
+   * It must not touch the fold: the heading's own click already toggles that,
+   * and a second opinion about it in the same click is what broke expanding.
+   * Opening on demand belongs to the paths that need a row to be VISIBLE —
+   * `addProviderTo` — not to targeting.
+   */
+  const selectCategory = (id: string) => setTargetCategoryId(id);
+
   // Backfill a BARREN preset/seeded model's missing metadata from models.dev,
   // exactly ONCE per model per session. Reasoning is NO LONGER a trigger and is
   // NEVER re-derived here: it's the user's to configure, so models.dev must not
@@ -2225,14 +2478,24 @@ export const ProvidersSettings: React.FC = () => {
     () => [...builtIn, ...custom].filter((p) => pinnedSet.has(p.id)),
     [builtIn, custom, pinnedSet],
   );
-  const builtInRest = useMemo(
-    () => builtIn.filter((p) => !pinnedSet.has(p.id)),
-    [builtIn, pinnedSet],
+  // Everything not pinned, grouped into the categories the user made, then
+  // the two seeds holding whatever is unfiled. `sectionsFor` is the single
+  // source of that order and guarantees each provider appears exactly once —
+  // see `services/providers/provider-categories.ts`.
+  //
+  // Built-in order is preserved INSIDE each section by feeding it the already
+  // sorted list, so a category holding shipped rows still lists them in the
+  // catalogue's order rather than in map-insertion order.
+  const unpinned = useMemo(
+    () => [...builtIn, ...custom].filter((p) => !pinnedSet.has(p.id)),
+    [builtIn, custom, pinnedSet],
   );
-  const customRest = useMemo(
-    () => custom.filter((p) => !pinnedSet.has(p.id)),
-    [custom, pinnedSet],
+  const sections = useMemo(
+    () => sectionsFor(providerCategories, unpinned),
+    [providerCategories, unpinned],
   );
+  const userSections = useMemo(() => sections.filter((s) => !s.category.system), [sections]);
+  const systemSections = useMemo(() => sections.filter((s) => s.category.system), [sections]);
 
   // Keep a valid selection as the provider list changes. The fallback follows
   // the order the rail DRAWS, not the order the store happens to hold — picking
@@ -2240,8 +2503,7 @@ export const ProvidersSettings: React.FC = () => {
   const selected =
     providers.find((p) => p.id === activeId) ??
     pinnedProviders[0] ??
-    builtInRest[0] ??
-    customRest[0] ??
+    sections.flatMap((s) => s.providers)[0] ??
     null;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep a valid provider selected
@@ -2269,7 +2531,15 @@ export const ProvidersSettings: React.FC = () => {
     setActiveId(id);
   };
 
-  const addProvider = () => {
+  /**
+   * Add a provider INTO a category.
+   *
+   * The category is required, not defaulted. A provider that lands nowhere is
+   * the state this page was reorganised to remove, and picking a category on
+   * the caller's behalf would put rows in a section they did not choose and
+   * then hide that fact.
+   */
+  const addProviderTo = (categoryId: string) => {
     const id = addCustomProvider({
       name: "New provider",
       baseUrl: "",
@@ -2283,6 +2553,14 @@ export const ProvidersSettings: React.FC = () => {
       requiresApiKey: true,
       enabled: true,
     });
+    // A new row is always custom, so filing it under Custom is the same state
+    // as not filing it; the store's transform handles that and stores nothing.
+    setProviderCategory(id, categoryId);
+    setTargetCategoryId(categoryId);
+    // Open it, or the row that was just created lands inside a folded section
+    // and the click looks like it did nothing. Idempotent, so it cannot fight
+    // whatever else the same click touched.
+    expandCategory(categoryId);
     setActiveId(id);
   };
 
@@ -2305,22 +2583,26 @@ export const ProvidersSettings: React.FC = () => {
           <span>Providers</span>
           <span className="agw-prov-side-count">{providers.length}</span>
         </div>
-        {/* Two groups, because the two kinds of row behave differently: the
-            ones Aurora ships with can be configured but not removed, the ones
-            below are the user's own. Grouping is carried by a label and a
+        {/* Categories, in the order the user arranged them, then the two seeds
+            holding whatever is unfiled. Grouping is carried by a label and a
             hairline rather than by boxing each group — the rail already has
-            enough edges. */}
-        {providers.length === 0 ? (
-          <div className="agw-prov-empty">No providers yet.</div>
-        ) : (
-          // One LayoutGroup across all three groups, so when a pin moves a row
-          // the siblings in BOTH lists glide instead of snapping.
+            enough edges.
+
+            Pinned stays above all of it and is not a category: a pin is "right
+            now", a category is "what kind of thing this is", and collapsing
+            the two would lose the one that is cheap to change. */}
+        {/* No `providers.length === 0` special case, deliberately. It used to
+            replace this whole list with "No providers yet", which is now a dead
+            end: adding a provider requires a category, and the only way to make
+            one is the row at the bottom of this list. An empty rail must still
+            offer the first move. The empty message lives in the detail pane,
+            which is where there is room to say what to do about it. */}
+        {
+          // One LayoutGroup across every group, so when a pin or a move takes a
+          // row out of one section the siblings in both glide instead of
+          // snapping.
           <LayoutGroup>
-            {/* Pinned area. The user's pins and the shipped providers are the
-                short, fixed sets people return to — scrolling them away to
-                reach a long custom list is the wrong trade. Only the list that
-                grows without bound scrolls. */}
-            {(pinnedProviders.length > 0 || builtInRest.length > 0) && (
+            {pinnedProviders.length > 0 && (
               <div className="agw-prov-side-pinned">
                 {pinnedProviders.length > 0 && (
                   <div className="agw-prov-group">
@@ -2367,37 +2649,45 @@ export const ProvidersSettings: React.FC = () => {
                     </Collapse>
                   </div>
                 )}
-                {builtInRest.length > 0 && (
-                  <div className="agw-prov-group">
-                    <button
-                      type="button"
-                      className="agw-prov-group-label"
-                      aria-expanded={groupsOpen.builtIn}
-                      onClick={() => toggleGroup("builtIn")}
-                      title={
-                        groupsOpen.builtIn
-                          ? "Collapse built-in providers"
-                          : "Expand built-in providers"
-                      }
-                    >
-                      <span className="agw-prov-group-name">
-                        <AgentIcon
-                          name="chevron-down"
-                          size={11}
-                          className="agw-prov-group-caret"
-                          style={{
-                            transform: groupsOpen.builtIn ? undefined : "rotate(-90deg)",
-                          }}
-                        />
-                        Built-in
-                      </span>
-                      <span className="agw-prov-group-count">
-                        {builtInRest.length}
-                      </span>
-                    </button>
-                    <Collapse open={groupsOpen.builtIn}>
+              </div>
+            )}
+            <div className="agw-prov-side-scroll agw-scroll">
+              {/* Your categories, then the two seeds. `sectionsFor` keeps an
+                  empty category you just made — there has to be somewhere to
+                  put the first provider — and drops an empty seed, because
+                  those are leftovers rather than destinations. */}
+              {[...userSections, ...systemSections].map(
+                ({ category, providers: rows }, index) => (
+                  <div
+                    key={category.id}
+                    className="agw-prov-group"
+                    data-divided={
+                      // One hairline where your categories end and the shipped
+                      // split begins, not between every section.
+                      (category.system && index === userSections.length) || undefined
+                    }
+                  >
+                    <ProviderCategoryHeader
+                      category={category}
+                      count={rows.length}
+                      open={!collapsedSet.has(category.id)}
+                      selected={category.id === targetCategoryId}
+                      onToggle={() => toggleCategoryOpen(category.id)}
+                      onSelect={() => selectCategory(category.id)}
+                      // Built-in cannot receive a new provider: its rows are
+                      // Aurora's own, re-seeded on every launch.
+                      canAddProviders={category.id !== BUILT_IN_CATEGORY_ID}
+                      onAddProvider={() => addProviderTo(category.id)}
+                      onRename={(name) => renameProviderCategory(category.id, name)}
+                      onRecolor={(color) => setProviderCategoryColor(category.id, color)}
+                      onMove={(direction) => moveProviderCategory(category.id, direction)}
+                      onDelete={() => deleteProviderCategory(category.id)}
+                      canMoveUp={!category.system && index > 0}
+                      canMoveDown={!category.system && index < userSections.length - 1}
+                    />
+                    <Collapse open={!collapsedSet.has(category.id)}>
                       <AnimatePresence initial={false} mode="popLayout">
-                        {builtInRest.map((p) => (
+                        {rows.map((p) => (
                           <ProviderRow
                             key={p.id}
                             provider={p}
@@ -2409,60 +2699,16 @@ export const ProvidersSettings: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                      {rows.length === 0 && (
+                        <p className="agw-prov-group-empty">
+                          Empty. Use the plus on this heading to add a provider here, or
+                          move one in from its own page.
+                        </p>
+                      )}
                     </Collapse>
                   </div>
-                )}
-              </div>
-            )}
-            <div className="agw-prov-side-scroll agw-scroll">
-              <div className="agw-prov-group" data-divided={builtIn.length > 0 || undefined}>
-                <button
-                  type="button"
-                  className="agw-prov-group-label"
-                  aria-expanded={groupsOpen.custom}
-                  onClick={() => toggleGroup("custom")}
-                  title={
-                    groupsOpen.custom
-                      ? "Collapse custom providers"
-                      : "Expand custom providers"
-                  }
-                >
-                  <span className="agw-prov-group-name">
-                    <AgentIcon
-                      name="chevron-down"
-                      size={11}
-                      className="agw-prov-group-caret"
-                      style={{
-                        transform: groupsOpen.custom ? undefined : "rotate(-90deg)",
-                      }}
-                    />
-                    Custom
-                  </span>
-                  {customRest.length > 0 && (
-                    <span className="agw-prov-group-count">{customRest.length}</span>
-                  )}
-                </button>
-                <Collapse open={groupsOpen.custom}>
-                  <AnimatePresence initial={false} mode="popLayout">
-                    {customRest.map((p) => (
-                      <ProviderRow
-                        key={p.id}
-                        provider={p}
-                        modelCount={modelsByProvider.get(p.id)?.length ?? 0}
-                        active={p.id === selected?.id}
-                        onSelect={() => selectProvider(p.id)}
-                        pinned={false}
-                        onTogglePin={() => toggleProviderPin(p.id)}
-                      />
-                    ))}
-                  </AnimatePresence>
-                  {custom.length === 0 && (
-                    <p className="agw-prov-group-empty">
-                      Anything you add below lands here.
-                    </p>
-                  )}
-                </Collapse>
-              </div>
+                ),
+              )}
 
               {/* Picture-making providers. Their own group in the rail, tagged
                   CHAT because that is the only side they work on — they used to
@@ -2540,11 +2786,38 @@ export const ProvidersSettings: React.FC = () => {
               )}
             </div>
           </LayoutGroup>
-        )}
+        }
+        {/* The footer follows the rail rather than leading it. A provider has to
+            land in a category, so with nothing targeted this cannot offer a
+            button — it says which click makes one appear instead of rendering
+            an Add provider that would have to guess where the row goes. */}
         <div className="agw-prov-list-foot">
-          <AgwButton variant="primary" icon="plus" onClick={addProvider}>
-            Add provider
-          </AgwButton>
+          {/* Add provider is offered only once a category can receive one.
+              Built-in cannot, so picking it leaves just New category here
+              rather than a button that would file a hand-made row under
+              Aurora's own heading. */}
+          {targetCategory && targetCategory.id !== BUILT_IN_CATEGORY_ID && (
+            <AgwButton
+              variant="primary"
+              icon="plus"
+              onClick={() => addProviderTo(targetCategory.id)}
+            >
+              Add provider to {targetCategory.name}
+            </AgwButton>
+          )}
+          {/* Making a category is a footer action, not a row in the list. It
+              was a dashed row at the bottom of the scroll area, which put a
+              control in the middle of the content it creates and scrolled away
+              exactly when a long list made it hardest to reach. */}
+          <NewCategoryRow
+            onCreate={(name) => {
+              const id = createProviderCategory(name);
+              // Targeted straight away: naming a category is almost always
+              // the first half of "and put something in it".
+              if (id) setTargetCategoryId(id);
+              return id !== null;
+            }}
+          />
         </div>
       </aside>
 
@@ -2575,9 +2848,22 @@ export const ProvidersSettings: React.FC = () => {
             <div className="agw-prov-detail agw-prov-detail-empty">
               <AgentIcon name="providers" size={24} style={{ color: "var(--agw-text-subtle)" }} />
               <div>No providers yet.</div>
-              <AgwButton variant="primary" icon="plus" onClick={addProvider}>
-                Add provider
-              </AgwButton>
+              {/* Names the first move rather than offering a button that cannot
+                  say where the row would land. With a category targeted it is
+                  the same button the footer shows. */}
+              {targetCategory ? (
+                <AgwButton
+                  variant="primary"
+                  icon="plus"
+                  onClick={() => addProviderTo(targetCategory.id)}
+                >
+                  Add provider to {targetCategory.name}
+                </AgwButton>
+              ) : (
+                <div style={{ color: "var(--agw-text-subtle)", fontSize: "var(--agw-fs-label)" }}>
+                  Make a category in the list on the left, then add a provider to it.
+                </div>
+              )}
             </div>
           )}
         </div>

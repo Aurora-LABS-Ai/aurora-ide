@@ -38,6 +38,17 @@ pub struct ProviderCatalogPreset {
     /// hides the cost row for those models.
     #[serde(default)]
     pub model_pricing: Option<HashMap<String, ModelPricing>>,
+    /// Per-model context window, for a provider whose models do not share one.
+    /// Keyed like [`Self::model_pricing`]; anything absent falls back to
+    /// [`Self::context_window`].
+    ///
+    /// This exists because MiniMax ships M3 at 1,000,000 tokens beside an M2.x
+    /// family at 204,800, and a provider-wide figure has to be wrong for one of
+    /// them. Wrong in the generous direction is the dangerous one: the ring
+    /// reads comfortable, nothing compacts, and the provider rejects the
+    /// request. Anything a preset knows per model belongs on the model.
+    #[serde(default)]
+    pub model_context_windows: Option<HashMap<String, u32>>,
 }
 
 /// USD-denominated pricing for a single model. All three rates are
@@ -97,6 +108,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -121,6 +133,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -145,6 +158,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // Anthropic published pricing (USD per 1M tokens). Cache
             // read = `cache_read_input_tokens` rate, cache write is a
             // separate cost we don't currently expose; the cache_hit
@@ -169,17 +183,134 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             ])),
         },
         ProviderCatalogPreset {
+            id: "meta".to_string(),
+            name: "Meta Model API".to_string(),
+            // "Muse" is what the models are actually called; "Meta" alone
+            // reads as the company, and the row sits in a list of companies.
+            nickname: Some("Muse".to_string()),
+            // One root for all three wires — the adapter appends `/responses`,
+            // `/chat/completions` or `/messages` to it.
+            base_url: crate::api::meta::META_BASE_URL.to_string(),
+            // The contributor tier is the default on purpose: it is the tier a
+            // Muse Code subscription is meant to be spent through, and it is
+            // what Meta's own dashboard hands people in the Claude Code
+            // snippet. The trade is stated plainly on the model row — Meta
+            // trains on prompts and completions sent to a `-contributor`
+            // model. `muse-spark-1.3` is the same model without that term and
+            // is one click away in the picker.
+            model: "muse-spark-1.3-contributor".to_string(),
+            context_window: crate::api::meta::META_CONTEXT_WINDOW,
+            max_output_tokens: crate::api::meta::META_MAX_OUTPUT_TOKENS,
+            supports_thinking: true,
+            supports_tool_stream: Some(true),
+            // Text, image, video and PDF in; text out.
+            supports_vision: Some(true),
+            // The Muse Spark family only. `GET /v1/models` also lists
+            // `muse-image-1.0` and `muse-voice-transcribe-1.0`, and both are
+            // deliberately absent: they are an image endpoint and a
+            // transcription endpoint, not chat models, so seeding them would
+            // put rows in the model picker that look selectable and fail on
+            // the first message.
+            custom_models: Some(vec![
+                "muse-spark-1.3-contributor".to_string(),
+                "muse-spark-1.3".to_string(),
+                "muse-spark-1.2-contributor".to_string(),
+                "muse-spark-1.2".to_string(),
+                "muse-spark-1.1".to_string(),
+            ]),
+            model_aliases: Some(HashMap::from([
+                (
+                    "muse-spark-1.3-contributor".to_string(),
+                    "Muse Spark 1.3 (Contributor)".to_string(),
+                ),
+                ("muse-spark-1.3".to_string(), "Muse Spark 1.3".to_string()),
+                (
+                    "muse-spark-1.2-contributor".to_string(),
+                    "Muse Spark 1.2 (Contributor)".to_string(),
+                ),
+                ("muse-spark-1.2".to_string(), "Muse Spark 1.2".to_string()),
+                ("muse-spark-1.1".to_string(), "Muse Spark 1.1".to_string()),
+            ])),
+            // Responses, not Chat Completions. Meta serves all three wires,
+            // but only this one replays reasoning across a tool loop; their
+            // own docs warn that the Chat Completions adapter drops it and
+            // makes multi-step loops erratic. `meta` and `meta-messages` are
+            // selectable in the API-type dropdown for anyone who needs them.
+            provider_type: crate::api::meta::META_RESPONSES_TYPE.to_string(),
+            // Reasoning models reject `temperature` on `/responses`; the
+            // adapter gates it by model family, so no preset default. Same
+            // reasoning as the OpenAI (Responses) preset above.
+            default_temperature: None,
+            default_max_tokens: None,
+            requires_api_key: true,
+            model_context_windows: None,
+            // Meta's published rates (USD per 1M tokens: cached input, fresh
+            // input, output). Seeded, unlike Command Code's, because these are
+            // what a pay-as-you-go account is actually charged — and
+            // pay-as-you-go is the state every account starts in.
+            //
+            // The contributor rows are an order of magnitude cheaper for one
+            // reason: Meta keeps what you send them and trains on it. The
+            // price gap IS the trade, so showing both rates side by side in
+            // the model picker is the clearest way to state it.
+            //
+            // A Muse Code subscription covers API usage and makes the
+            // dashboard read $0.00 against millions of tokens. Aurora cannot
+            // detect that — there is no endpoint that reports plan state (the
+            // API key 404s on every billing path and the sign-in token is
+            // refused by the API outright) — so a subscriber sees an estimate
+            // of what the same traffic would have cost, and can zero these
+            // rates on the model row. That is the honest failure direction:
+            // over-reporting a cost is noticed and corrected, silently
+            // under-reporting one is not.
+            model_pricing: Some(HashMap::from([
+                (
+                    "muse-spark-1.3-contributor".to_string(),
+                    ModelPricing::usd(0.002, 0.10, 0.20),
+                ),
+                (
+                    "muse-spark-1.2-contributor".to_string(),
+                    ModelPricing::usd(0.002, 0.10, 0.20),
+                ),
+                (
+                    "muse-spark-1.3".to_string(),
+                    ModelPricing::usd(0.15, 1.25, 4.25),
+                ),
+                (
+                    "muse-spark-1.2".to_string(),
+                    ModelPricing::usd(0.15, 1.25, 4.25),
+                ),
+                (
+                    "muse-spark-1.1".to_string(),
+                    ModelPricing::usd(0.15, 1.25, 4.25),
+                ),
+            ])),
+        },
+        ProviderCatalogPreset {
             id: "minimax".to_string(),
-            name: "MiniMax M2.7".to_string(),
+            name: "MiniMax M3".to_string(),
             nickname: Some("MiniMax".to_string()),
-            base_url: "https://api.minimax.io/anthropic/v1".to_string(),
-            model: "MiniMax-M2.7".to_string(),
-            context_window: 200000,
-            max_output_tokens: 128000,
+            base_url: crate::api::minimax::MINIMAX_BASE_URL.to_string(),
+            // M3 is the current frontier model and was missing from this list
+            // entirely. Its 1M window and 524,288-token output ceiling come
+            // from MiniMax's own Messages reference; the M2.x family is
+            // 204,800, which is what the old `200000` here was rounding away.
+            model: "MiniMax-M3".to_string(),
+            // The FALLBACK, which is the M2.x family's real figure (204,800 —
+            // the old `200000` here rounded it away). M3's own 1M window is a
+            // per-model override below, because a provider-wide number has to
+            // be wrong for one family or the other, and wrong-generous is the
+            // dangerous direction: the ring reads comfortable, nothing
+            // compacts, and the provider rejects the request.
+            context_window: 204_800,
+            max_output_tokens: 204_800,
             supports_thinking: true,
             supports_tool_stream: None,
-            supports_vision: None,
+            // M3 takes image and video content blocks; the M2.x rows do not,
+            // and carry their own overrides.
+            supports_vision: Some(true),
             custom_models: Some(vec![
+                "MiniMax-M3".to_string(),
                 "MiniMax-M2.7".to_string(),
                 "MiniMax-M2.7-highspeed".to_string(),
                 "MiniMax-M2.5".to_string(),
@@ -189,6 +320,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 "MiniMax-M2".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
+                ("MiniMax-M3".to_string(), "MiniMax M3".to_string()),
                 ("MiniMax-M2.7".to_string(), "MiniMax M2.7".to_string()),
                 (
                     "MiniMax-M2.7-highspeed".to_string(),
@@ -206,11 +338,43 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 ),
                 ("MiniMax-M2".to_string(), "MiniMax M2".to_string()),
             ])),
-            provider_type: "minimax".to_string(),
+            provider_type: crate::api::minimax::MINIMAX_PROVIDER_TYPE.to_string(),
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
-            model_pricing: None,
+            // Published pay-as-you-go rates, USD per 1M tokens. These exist so
+            // the cost card can price a MiniMax chat at all — it showed a dash
+            // before, because a model with no price is a request the card
+            // cannot count.
+            //
+            // The cache-read column is the point: at $0.06 against $0.30 fresh,
+            // a cached prefix is 20x cheaper, which is exactly what Aurora was
+            // throwing away by withholding `cache_control` from this provider.
+            //
+            // M3's listed rates carry a "permanent 50% off" and step up beyond
+            // a 512k prompt ($0.60 / $2.40 / $0.12); the row below is the
+            // under-512k tier, which is where a coding turn lives.
+            model_pricing: Some(HashMap::from([
+                (
+                    "MiniMax-M3".to_string(),
+                    ModelPricing::usd(0.06, 0.30, 1.20),
+                ),
+                (
+                    "MiniMax-M2.7".to_string(),
+                    ModelPricing::usd(0.06, 0.30, 1.20),
+                ),
+                (
+                    "MiniMax-M2.7-highspeed".to_string(),
+                    ModelPricing::usd(0.06, 0.60, 2.40),
+                ),
+            ])),
+            // Only M3 differs from the family fallback above. Its 1M window
+            // and 524,288 output ceiling are from MiniMax's own Messages
+            // reference; every M2.x row is 204,800 and needs no entry.
+            model_context_windows: Some(HashMap::from([(
+                "MiniMax-M3".to_string(),
+                1_000_000,
+            )])),
         },
         ProviderCatalogPreset {
             id: "deepseek".to_string(),
@@ -253,6 +417,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // Pricing taken from the official DeepSeek pricing table
             // (USD per 1M tokens). V4 Pro is shown at its post-launch
             // 75% discounted rate; list price is documented inline so a
@@ -332,6 +497,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // USD per 1M tokens as (cached input, fresh input, output),
             // transcribed from the models.dev catalogue the UI enriches
             // from — so a seeded row and an enriched row agree instead of
@@ -415,6 +581,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: None,
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // Pricing intentionally omitted — the UI enriches models
             // from models.dev, which stays current across releases.
             model_pricing: None,
@@ -456,8 +623,131 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: None,
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // Priced in RUPIAH per million tokens, not dollars, so the USD
             // helper here would be a lie. Left to the model rows.
+            model_pricing: None,
+        },
+        ProviderCatalogPreset {
+            id: "ark".to_string(),
+            name: "Volcano Ark".to_string(),
+            nickname: Some("Ark".to_string()),
+            // The CODING PLAN address, not Ark's general inference one. Using
+            // `/api/v3` with a Coding Plan key spends pay-as-you-go credit
+            // instead of the subscription, and Volcano's own docs warn that
+            // the plan's quota only applies on this path.
+            //
+            // THREE wires answer here, all driven live, and the wire rides in
+            // `provider_type` (`ark-messages` / `ark` / `ark-responses`) the
+            // way it does for kenari, Modal and Meta. What is different about
+            // Ark is that its wires are on DIFFERENT PATHS rather than
+            // different suffixes of one: `/api/coding/v1` for messages,
+            // `/api/coding/v3` for chat completions and responses. So the
+            // frontend rewrites this URL when the wire changes
+            // (`arkBaseUrlForWire`), and a wire swap that only changed the
+            // type would 404.
+            //
+            // Messages is seeded, on two measurements rather than taste: it is
+            // the only Ark wire that signs its thinking blocks — so reasoning
+            // replays across a tool loop — and the only one that reports cache
+            // writes apart from cache reads, which is the whole point of the
+            // context ring's cache row. It costs ~40 tokens of Volcano's own
+            // injected instructions per call, which chat completions does not
+            // charge; that is the trade, and it is worth it.
+            base_url: "https://ark.cn-beijing.volces.com/api/coding/v1".to_string(),
+            // The console-controlled router, and the plan's own default.
+            //
+            // `Auto` — the name the docs give it — is a hard 404
+            // (`UnsupportedModel`) in both cases. `ark-code-latest` is the id
+            // that works and it echoes `"model": "auto"` back, so it IS the
+            // Auto option; which model it routes to is chosen in Volcano's
+            // console rather than here.
+            model: "ark-code-latest".to_string(),
+            // The CONSERVATIVE fallback: 262,144, which is what the Doubao
+            // Seed 2.x rows and Kimi K2.7 Code actually have. The 1M models
+            // carry their own overrides below.
+            //
+            // Wrong-generous is the dangerous direction — the ring reads
+            // comfortable, nothing compacts, and the provider rejects the
+            // request — so the default is the small one and every larger
+            // window is stated explicitly.
+            context_window: 262_144,
+            max_output_tokens: 131_072,
+            supports_thinking: true,
+            supports_tool_stream: Some(true),
+            supports_vision: Some(true),
+            // Every id here answered a live request through a Coding Plan key.
+            // `auto` is deliberately absent: it is refused, and only
+            // `ark-code-latest` reaches the router.
+            custom_models: Some(vec![
+                "ark-code-latest".to_string(),
+                "doubao-seed-evolving".to_string(),
+                "doubao-seed-2.1-turbo".to_string(),
+                "doubao-seed-2.0-lite".to_string(),
+                "kimi-k3".to_string(),
+                "kimi-k2.7-code".to_string(),
+                "glm-5.3".to_string(),
+                "glm-5.3-flash".to_string(),
+                "MiniMax-M3".to_string(),
+                "deepseek-v4-pro".to_string(),
+                "deepseek-v4-flash".to_string(),
+            ]),
+            model_aliases: Some(HashMap::from([
+                ("ark-code-latest".to_string(), "Auto (console)".to_string()),
+                (
+                    "doubao-seed-evolving".to_string(),
+                    "Doubao Seed Evolving".to_string(),
+                ),
+                (
+                    "doubao-seed-2.1-turbo".to_string(),
+                    "Doubao Seed 2.1 Turbo".to_string(),
+                ),
+                (
+                    "doubao-seed-2.0-lite".to_string(),
+                    "Doubao Seed 2.0 Lite".to_string(),
+                ),
+                ("kimi-k3".to_string(), "Kimi K3".to_string()),
+                ("kimi-k2.7-code".to_string(), "Kimi K2.7 Code".to_string()),
+                ("glm-5.3".to_string(), "GLM 5.3".to_string()),
+                ("glm-5.3-flash".to_string(), "GLM 5.3 Flash".to_string()),
+                ("MiniMax-M3".to_string(), "MiniMax M3".to_string()),
+                (
+                    "deepseek-v4-pro".to_string(),
+                    "DeepSeek V4 Pro".to_string(),
+                ),
+                (
+                    "deepseek-v4-flash".to_string(),
+                    "DeepSeek V4 Flash".to_string(),
+                ),
+            ])),
+            // Volcano's published per-model windows. Everything absent falls
+            // back to the conservative 262,144 above.
+            model_context_windows: Some(HashMap::from([
+                ("doubao-seed-evolving".to_string(), 1_048_576),
+                ("kimi-k3".to_string(), 1_048_576),
+                ("glm-5.3".to_string(), 1_048_576),
+                ("glm-5.3-flash".to_string(), 1_048_576),
+                ("MiniMax-M3".to_string(), 1_048_576),
+                ("deepseek-v4-pro".to_string(), 1_048_576),
+                ("deepseek-v4-flash".to_string(), 1_048_576),
+            ])),
+            // The wire. `ark-messages` routes to the Anthropic adapter;
+            // `ark` falls through to the OpenAI-compatible one, which is
+            // exactly what that wire is. Either way the `ark` prefix is what
+            // lets the provider card and the context ring recognise the row
+            // and read its quota.
+            provider_type: "ark-messages".to_string(),
+            default_temperature: None,
+            // 32,768 rather than the 131,072 ceiling above. Kimi K2.7 Code caps
+            // its output — thinking included — at 32K, so a higher default
+            // would 400 on one of the eleven rows out of the box. The ceiling
+            // is what a person can raise a row to; this is what every row can
+            // safely start at.
+            default_max_tokens: Some(32_768),
+            requires_api_key: true,
+            // Subscription-billed, like Command Code's. Seeding per-token rates
+            // would put dollar figures on a card for requests that cost quota,
+            // not money.
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -486,6 +776,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: None,
             default_max_tokens: None,
             requires_api_key: true,
+            model_context_windows: None,
             // Endpoints bill for GPU time, not tokens, so there is no per-token
             // price to seed. The cost card stays blank unless the user enters
             // an effective rate on the model row.
@@ -508,6 +799,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: false,
+            model_context_windows: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -527,6 +819,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: false,
+            model_context_windows: None,
             model_pricing: None,
         },
     ]
@@ -586,6 +879,121 @@ mod tests {
         );
         assert!(modal.requires_api_key);
         assert!(modal.model_pricing.is_none(), "endpoints bill GPU time, not tokens");
+    }
+
+    /// Meta ships on the Responses wire and seeds only chat models.
+    ///
+    /// The wire is the load-bearing half: Chat Completions drops reasoning
+    /// between turns on this API, so a row seeded onto `meta` would look
+    /// identical in the UI and behave erratically in a tool loop — the exact
+    /// failure Meta's own docs warn about.
+    #[test]
+    fn meta_defaults_to_the_responses_wire_and_the_contributor_model() {
+        let meta = preset("meta");
+        assert_eq!(meta.provider_type, "meta-responses");
+        assert_eq!(meta.base_url, "https://api.meta.ai/v1");
+        assert_eq!(meta.model, "muse-spark-1.3-contributor");
+        assert!(meta.requires_api_key);
+        assert_eq!(meta.context_window, 1_048_576);
+
+        // The default model must be one of the seeded rows, or the picker
+        // opens on a model the provider does not list.
+        let models = meta.custom_models.as_ref().expect("seeded models");
+        assert!(models.contains(&meta.model));
+
+        // Every seeded row is nameable, or the picker shows raw ids for some
+        // models and friendly names for others.
+        let aliases = meta.model_aliases.as_ref().expect("aliases");
+        for model in models {
+            assert!(aliases.contains_key(model), "{model} has no display name");
+        }
+    }
+
+    /// `GET /v1/models` also returns an image model and a transcription
+    /// model. Neither answers a chat request, so neither belongs in a picker
+    /// whose every other row does.
+    #[test]
+    fn meta_seeds_no_image_or_voice_models() {
+        let meta = preset("meta");
+        let models = meta.custom_models.as_ref().expect("seeded models");
+        for model in models {
+            assert!(
+                model.starts_with("muse-spark-"),
+                "{model} is not a chat model",
+            );
+        }
+    }
+
+    /// Every seeded model carries a rate, and the contributor rows are the
+    /// cheap ones.
+    ///
+    /// The gap is the point: contributor models cost roughly a twelfth of
+    /// their private twins because Meta trains on what is sent to them. A
+    /// picker that showed one price for both would hide the only thing that
+    /// distinguishes the two rows.
+    #[test]
+    fn meta_prices_every_model_and_the_contributor_tier_is_far_cheaper() {
+        let meta = preset("meta");
+        let pricing = meta.model_pricing.as_ref().expect("seeded pricing");
+        let models = meta.custom_models.as_ref().expect("seeded models");
+
+        for model in models {
+            assert!(pricing.contains_key(model), "{model} has no rate");
+        }
+
+        let contributor = &pricing["muse-spark-1.3-contributor"];
+        let standard = &pricing["muse-spark-1.3"];
+        assert!(contributor.cache_miss_per_mtok < standard.cache_miss_per_mtok);
+        assert!(contributor.output_per_mtok < standard.output_per_mtok);
+        // Meta's published numbers, not a ratio someone reasoned to.
+        assert_eq!(contributor.cache_miss_per_mtok, 0.10);
+        assert_eq!(contributor.output_per_mtok, 0.20);
+        assert_eq!(standard.cache_miss_per_mtok, 1.25);
+        assert_eq!(standard.output_per_mtok, 4.25);
+    }
+
+    /// One provider, two families, two window sizes. A single provider-wide
+    /// figure has to be wrong for one of them, and wrong-GENEROUS is the
+    /// dangerous direction: the ring reads comfortable, compaction never
+    /// fires, and the provider rejects the request.
+    #[test]
+    fn minimax_sizes_m3_and_the_m2_family_separately() {
+        let presets = built_in_provider_presets();
+        let minimax = presets
+            .iter()
+            .find(|p| p.id == "minimax")
+            .expect("minimax ships");
+
+        // The fallback is the M2.x family's real figure, not a rounded one.
+        assert_eq!(minimax.context_window, 204_800);
+
+        let windows = minimax
+            .model_context_windows
+            .as_ref()
+            .expect("M3 needs its own window");
+        assert_eq!(windows.get("MiniMax-M3"), Some(&1_000_000));
+        // Every other model takes the fallback; an entry here that merely
+        // repeats it is one more place to forget to change.
+        assert_eq!(windows.len(), 1, "only M3 differs from the family");
+        for model in minimax.custom_models.as_ref().expect("models") {
+            if model != "MiniMax-M3" {
+                assert!(!windows.contains_key(model), "{model} should inherit");
+            }
+        }
+    }
+
+    /// The measured cache-read rate is the whole reason prompt caching was
+    /// turned on for MiniMax, so the catalogue has to carry it.
+    #[test]
+    fn minimax_prices_cache_reads_far_below_fresh_input() {
+        let presets = built_in_provider_presets();
+        let minimax = presets.iter().find(|p| p.id == "minimax").expect("ships");
+        let pricing = minimax.model_pricing.as_ref().expect("priced");
+        let m3 = pricing.get("MiniMax-M3").expect("M3 priced");
+        assert!(
+            m3.cache_hit_per_mtok * 4.0 < m3.cache_miss_per_mtok,
+            "a cache read is meant to be far cheaper than fresh input"
+        );
     }
 
     #[test]

@@ -30,7 +30,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
@@ -47,23 +46,21 @@ import {
 } from "@/apps/agent/lib/cost/cost";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
-  codexFmtDuration,
+  claudeCodeUsageGet,
+  CLAUDE_CODE_PROVIDER_ID,
+  type ClaudeCodeUsageSnapshot,
+} from "@/apps/agent/services/providers/claude-code";
+import {
   codexUsageGet,
-  codexWindowLabel,
   CODEX_PROVIDER_ID,
   type CodexUsageSnapshot,
-  type CodexUsageWindow,
 } from "@/apps/agent/services/providers/codex";
 import {
   fetchOpenCodeUsage,
-  openCodeResetLabel,
   OPENCODE_PROVIDER_ID,
   type OpenCodeUsage,
 } from "@/apps/agent/services/providers/opencode";
 import {
-  commandCodeMoney,
-  commandCodeResetLabel,
-  commandCodeWindowRatio,
   fetchCommandCodeUsage,
   COMMANDCODE_PROVIDER_ID,
   type CommandCodeUsageSnapshot,
@@ -71,17 +68,36 @@ import {
 import {
   fetchKenariUsage,
   isKenariProvider,
-  kenariResetLabel,
-  KENARI_WINDOWS,
   type KenariUsage,
 } from "@/apps/agent/services/providers/kenari";
 import {
-  cursorMeterValue,
-  cursorResetLabel,
+  fetchArkUsage,
+  isArkProvider,
+  type ArkUsage,
+} from "@/apps/agent/services/providers/ark";
+import {
   cursorUsageGet,
   CURSOR_PROVIDER_ID,
   type CursorUsageSnapshot,
 } from "@/apps/agent/services/providers/cursor";
+import {
+  fetchMinimaxUsage,
+  isMinimaxProvider,
+  type MinimaxUsageSnapshot,
+} from "@/apps/agent/services/providers/minimax";
+import {
+  arkPlanView,
+  claudeCodePlanView,
+  codexPlanView,
+  commandCodePlanView,
+  cursorPlanView,
+  kenariPlanView,
+  minimaxPlanView,
+  openCodePlanView,
+  type LimitLine,
+  type LimitTone,
+  type PlanView,
+} from "@/apps/agent/services/providers/plan-view";
 import {
   useReservedCostLines,
   useSticky,
@@ -113,19 +129,67 @@ function bandColor(pct: number): string {
  */
 const PLAN_USAGE_TTL_MS = 60_000;
 
+/**
+ * When the plan figures on screen were actually read.
+ *
+ * Module-level because the caches are, and safe because at most one provider
+ * matches a given conversation — the card never shows two plans at once. This
+ * is what the card states in place of the old "Source: provider" footer: the
+ * plan block is the one part of this card that can be a minute out of date, so
+ * its age is worth a line where the ordinary provenance never was.
+ */
+let lastPlanReadAt = 0;
+
+/** `0` → nothing read yet. Otherwise "just now" or "38s ago". */
+function planAgeLabel(at: number): string | null {
+  if (!at) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 90) return `${seconds}s ago`;
+  return `${Math.round(seconds / 60)}m ago`;
+}
+
 /** Codex quota. One snapshot serves every ring instance. */
 let codexUsageCache: { at: number; snap: CodexUsageSnapshot } | null = null;
 
 async function getCodexUsageCached(): Promise<CodexUsageSnapshot | null> {
   if (codexUsageCache && Date.now() - codexUsageCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = codexUsageCache.at;
     return codexUsageCache.snap;
   }
   try {
     const snap = await codexUsageGet();
     codexUsageCache = { at: Date.now(), snap };
+    lastPlanReadAt = codexUsageCache.at;
     return snap;
   } catch {
     // Signed out / offline — the tooltip simply omits the quota section.
+    return null;
+  }
+}
+
+/**
+ * Claude plan headroom, cached the same way and for the same reason.
+ *
+ * Unkeyed, like Codex's: the sign-in is one stored credential for the whole
+ * app, so there is nothing to key it by.
+ */
+let claudeCodeUsageCache: { at: number; snap: ClaudeCodeUsageSnapshot } | null = null;
+
+async function getClaudeCodeUsageCached(): Promise<ClaudeCodeUsageSnapshot | null> {
+  if (claudeCodeUsageCache && Date.now() - claudeCodeUsageCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = claudeCodeUsageCache.at;
+    return claudeCodeUsageCache.snap;
+  }
+  try {
+    const snap = await claudeCodeUsageGet();
+    claudeCodeUsageCache = { at: Date.now(), snap };
+    lastPlanReadAt = claudeCodeUsageCache.at;
+    return snap;
+  } catch {
+    // Signed out, or the sign-in lacks the profile scope the usage endpoint
+    // needs — the tooltip omits the section rather than explaining it. The
+    // provider card is where a broken sign-in gets a reason.
     return null;
   }
 }
@@ -144,11 +208,13 @@ async function getOpenCodeUsageCached(apiKey: string): Promise<OpenCodeUsage | n
     openCodeUsageCache.key === apiKey &&
     Date.now() - openCodeUsageCache.at < PLAN_USAGE_TTL_MS
   ) {
+    lastPlanReadAt = openCodeUsageCache.at;
     return openCodeUsageCache.usage;
   }
   try {
     const usage = await fetchOpenCodeUsage(apiKey);
     openCodeUsageCache = { at: Date.now(), key: apiKey, usage };
+    lastPlanReadAt = openCodeUsageCache.at;
     return usage;
   } catch {
     // No key yet, revoked, or offline — the section is omitted rather than
@@ -178,11 +244,13 @@ async function getCommandCodeUsageCached(
     commandCodeUsageCache.key === apiKey &&
     Date.now() - commandCodeUsageCache.at < PLAN_USAGE_TTL_MS
   ) {
+    lastPlanReadAt = commandCodeUsageCache.at;
     return commandCodeUsageCache.usage;
   }
   try {
     const usage = await fetchCommandCodeUsage(apiKey);
     commandCodeUsageCache = { at: Date.now(), key: apiKey, usage };
+    lastPlanReadAt = commandCodeUsageCache.at;
     return usage;
   } catch {
     // Not connected, revoked, or offline — the section is omitted rather than
@@ -209,6 +277,7 @@ let kenariUsageCache: { at: number; state: KenariPlanState } | null = null;
 
 async function getKenariUsageCached(): Promise<KenariPlanState> {
   if (kenariUsageCache && Date.now() - kenariUsageCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = kenariUsageCache.at;
     return kenariUsageCache.state;
   }
   let state: KenariPlanState = null;
@@ -222,6 +291,41 @@ async function getKenariUsageCached(): Promise<KenariPlanState> {
     state = "signed-out";
   }
   kenariUsageCache = { at: Date.now(), state };
+  lastPlanReadAt = kenariUsageCache.at;
+  return state;
+}
+
+/**
+ * Volcano Ark Coding Plan headroom, cached the same way.
+ *
+ * Unkeyed for the same reason kenari's is: the `ark-` key cannot read this at
+ * all — Volcano's control plane refuses it before looking up the account — so
+ * the figures come from a stored console sign-in and there is one of those.
+ *
+ * `"signed-out"` is a distinct outcome from `null`, as it is for kenari,
+ * because the card says different things about them. No sign-in has an obvious
+ * next step; a network failure does not, and offering "sign in" over one sends
+ * someone to re-authenticate a session that was working fine.
+ */
+type ArkPlanState = ArkUsage | "signed-out" | null;
+
+let arkUsageCache: { at: number; state: ArkPlanState } | null = null;
+
+async function getArkUsageCached(): Promise<ArkPlanState> {
+  if (arkUsageCache && Date.now() - arkUsageCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = arkUsageCache.at;
+    return arkUsageCache.state;
+  }
+  let state: ArkPlanState = null;
+  try {
+    state = await fetchArkUsage();
+  } catch {
+    // Rust refuses with a message for both "never signed in" and "the session
+    // expired", and the honest answer to each is the same one: sign in.
+    state = "signed-out";
+  }
+  arkUsageCache = { at: Date.now(), state };
+  lastPlanReadAt = arkUsageCache.at;
   return state;
 }
 
@@ -233,13 +337,47 @@ async function getKenariUsageCached(): Promise<KenariPlanState> {
  */
 let cursorUsageCache: { at: number; snap: CursorUsageSnapshot } | null = null;
 
+/**
+ * MiniMax Token Plan headroom, cached the same way and for the same reason.
+ *
+ * Keyed by the API key like OpenCode's: MiniMax's subscription key is both the
+ * chat credential and the account credential, so pasting a different one is a
+ * different account and must not be served a minute of the previous one's
+ * numbers.
+ */
+let minimaxUsageCache: { at: number; key: string; usage: MinimaxUsageSnapshot } | null = null;
+
+async function getMinimaxUsageCached(apiKey: string): Promise<MinimaxUsageSnapshot | null> {
+  if (
+    minimaxUsageCache &&
+    minimaxUsageCache.key === apiKey &&
+    Date.now() - minimaxUsageCache.at < PLAN_USAGE_TTL_MS
+  ) {
+    lastPlanReadAt = minimaxUsageCache.at;
+    return minimaxUsageCache.usage;
+  }
+  try {
+    const usage = await fetchMinimaxUsage(apiKey);
+    minimaxUsageCache = { at: Date.now(), key: apiKey, usage };
+    lastPlanReadAt = minimaxUsageCache.at;
+    return usage;
+  } catch {
+    // No key yet, a pay-as-you-go key that cannot read the account, or offline.
+    // The section is omitted rather than shown empty; the provider page is
+    // where a broken key gets explained.
+    return null;
+  }
+}
+
 async function getCursorUsageCached(): Promise<CursorUsageSnapshot | null> {
   if (cursorUsageCache && Date.now() - cursorUsageCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = cursorUsageCache.at;
     return cursorUsageCache.snap;
   }
   try {
     const snap = await cursorUsageGet();
     cursorUsageCache = { at: Date.now(), snap };
+    lastPlanReadAt = cursorUsageCache.at;
     return snap;
   } catch {
     // Not connected, or the account reported nothing readable — the tooltip
@@ -248,13 +386,6 @@ async function getCursorUsageCached(): Promise<CursorUsageSnapshot | null> {
     return null;
   }
 }
-
-/** The plan's windows, in the order pressure actually arrives. */
-const OPENCODE_WINDOWS: Array<{ key: keyof OpenCodeUsage; label: string }> = [
-  { key: "rolling", label: "Right now" },
-  { key: "weekly", label: "This week" },
-  { key: "monthly", label: "This month" },
-];
 
 /**
  * One priced section of the card — a headline total plus its component lines.
@@ -366,91 +497,72 @@ const CostSection: React.FC<{
   );
 };
 
-/**
- * One limit window inside the tooltip: "5-hour limit — 63% left · resets in 2h".
- *
- * Provider-agnostic on purpose. Every subscription Aurora can see reports the
- * same three facts — which window, how much of it is gone, when it refills —
- * and the reading is only comparable if they are drawn the same way. What each
- * provider keeps to itself is how it *names* its windows and how it words a
- * countdown; both arrive here already said.
- *
- * `usedPercent` is what is spent, and the row shows what is LEFT: the two carry
- * the same fact, but only one answers "can I keep going".
- */
-const QuotaRow: React.FC<{ label: string; usedPercent: number; caption?: string | null }> = ({
-  label,
-  usedPercent,
-  caption,
-}) => {
-  const used = Math.min(100, Math.max(0, usedPercent));
-  const left = Math.max(0, Math.round(100 - used));
-  return (
-    <>
-      <div className="agw-ctx-row">
-        <span className="agw-ctx-label">{label}</span>
-        <span className="agw-ctx-val" style={{ color: bandColor(used) }}>
-          {left}% left
-        </span>
-      </div>
-      <div className="agw-ctx-bar">
-        <div
-          className="agw-ctx-bar-fill"
-          style={{ width: `${used}%`, background: bandColor(used) }}
-        />
-      </div>
-      {caption && <div className="agw-ctx-sub">{caption}</div>}
-    </>
-  );
+/** A tone name from [`PlanView`] → the token that paints it. */
+const TONE_COLOR: Record<LimitTone, string> = {
+  good: "var(--agw-added)",
+  warn: "var(--agw-warning)",
+  bad: "var(--agw-removed)",
 };
 
 /**
- * One Cursor bucket.
+ * One metered bucket: a name, a fill, a value, and when it comes back.
  *
- * Two of its three lines are quota and the third is money, so this cannot be
- * [`QuotaRow`] — that row reports what is LEFT, and "−1% left" is not what an
- * on-demand overage means. Spend states the amount against its cap and lets
- * the pair speak: `$70.46 of $70` needs no adjective.
+ * Provider-agnostic by construction — everything provider-specific was already
+ * said by `plan-view.ts`, which is why this renders Codex's two windows,
+ * Cursor's five buckets and Command Code's dollar caps without knowing which
+ * it is drawing. The value is what the reader acts on, so it carries the
+ * colour; the bar is the supporting glance.
  */
-const CursorPlanRow: React.FC<{ win: CursorUsageSnapshot["windows"][number] }> = ({ win }) => {
-  if (win.kind === "quota") {
-    return <QuotaRow label={win.label} usedPercent={win.usedPercent} />;
-  }
-  const over = win.usedUsd != null && win.limitUsd != null && win.usedUsd > win.limitUsd;
-  // An overage is past the top of its own band, so it is coloured as the
-  // hard stop it is rather than by a percentage that has stopped moving.
-  const tone = over ? bandColor(100) : bandColor(win.usedPercent);
-  return (
-    <>
-      <div className="agw-ctx-row">
-        <span className="agw-ctx-label">{win.label}</span>
-        <span className="agw-ctx-val" style={{ color: tone }}>
-          {cursorMeterValue(win)}
-        </span>
-      </div>
-      <div className="agw-ctx-bar">
-        <div
-          className="agw-ctx-bar-fill"
-          style={{ width: `${Math.min(100, win.usedPercent)}%`, background: tone }}
-        />
-      </div>
-      {over && <div className="agw-ctx-sub">billed on top of the subscription</div>}
-    </>
-  );
-};
+const LimitRow: React.FC<{ line: LimitLine }> = ({ line }) => (
+  <div className="agw-ctx-limit">
+    <div className="agw-ctx-limit-top">
+      <span className="agw-ctx-limit-name">{line.name}</span>
+      <span className="agw-ctx-limit-val" style={{ color: TONE_COLOR[line.tone] }}>
+        {line.value}
+      </span>
+    </div>
+    <div className="agw-ctx-bar agw-ctx-limit-bar">
+      <div
+        className="agw-ctx-bar-fill"
+        style={{ width: `${line.fillPercent}%`, background: TONE_COLOR[line.tone] }}
+      />
+    </div>
+    {line.caption && <div className="agw-ctx-sub">{line.caption}</div>}
+  </div>
+);
 
-/** A Codex window, named and counted down the way Codex reports it. */
-const CodexQuotaRow: React.FC<{ win: CodexUsageWindow; fallbackLabel: string }> = ({
-  win,
-  fallbackLabel,
-}) => (
-  <QuotaRow
-    label={codexWindowLabel(win, fallbackLabel)}
-    usedPercent={win.usedPercent}
-    caption={
-      win.resetsInSeconds != null ? `resets in ${codexFmtDuration(win.resetsInSeconds)}` : null
-    }
-  />
+/**
+ * The whole subscription block, or nothing.
+ *
+ * `readAgo` is where the old "Source: provider" footer went. That row said the
+ * ordinary thing on every hover, which trains the eye to skip it, so by the
+ * time it had news nobody was reading it. The plan figures are the one part of
+ * this card that can be genuinely out of date — they are fetched on open and
+ * held for a minute — so their AGE is the honest thing to say, and it is said
+ * where it applies instead of over the whole card.
+ */
+const PlanSection: React.FC<{ view: PlanView; readAgo: string | null }> = ({ view, readAgo }) => (
+  <>
+    <div className="agw-ctx-divider" />
+    <div className="agw-ctx-section">
+      <span className="agw-ctx-section-name">{view.title}</span>
+      {view.flag && <span className="agw-ctx-chip">{view.flag}</span>}
+      {readAgo && <span className="agw-ctx-section-age">read {readAgo}</span>}
+    </div>
+    {view.limits.map((line) => (
+      <LimitRow key={line.name} line={line} />
+    ))}
+    {/* The provider's own words about the provider's own account. Set as a
+      * quotation rather than a row, because it is a sentence somebody else
+      * wrote and not a measurement Aurora took. */}
+    {view.notice && <div className="agw-ctx-quote">{view.notice}</div>}
+    {view.balance && (
+      <div className="agw-ctx-row agw-ctx-balance">
+        <span className="agw-ctx-label">{view.balance.label}</span>
+        <span className="agw-ctx-val">{view.balance.value}</span>
+      </div>
+    )}
+  </>
 );
 
 export const ContextRing: React.FC = () => {
@@ -517,6 +629,10 @@ export const ContextRing: React.FC = () => {
     (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
   );
   const isCodex = selectedModel.startsWith(`${CODEX_PROVIDER_ID}:`);
+  // The Claude subscription meters the same way Codex does — rolling windows,
+  // no per-token bill — so the cost figures above are $0.00 for a conversation
+  // that is genuinely spending, and the windows are the whole reading.
+  const isClaudeCode = selectedModel.startsWith(`${CLAUDE_CODE_PROVIDER_ID}:`);
   // Same question for the other subscription Aurora can read: a plan bills by
   // headroom, not by the token, so the ring's cost figures say nothing useful
   // and the limit windows say everything.
@@ -544,6 +660,23 @@ export const ContextRing: React.FC = () => {
   // someone added themselves carries a UUID and declares itself through
   // `providerType`. `isKenariProvider` knows both, so the row is looked up and
   // asked. Returns a boolean — a primitive selector, safe to derive from.
+  // And the fifth: a Token Plan meters a rolling 5-hour and a weekly window,
+  // and refuses the request when one runs out. Recognised like kenari rather
+  // than by an id prefix, because a row someone added themselves carries a
+  // UUID and declares itself through `providerType`.
+  const isMinimax = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return false;
+    const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
+    return row ? isMinimaxProvider(row) : false;
+  });
+  // The subscription key, which is also the chat key. Read from the row so
+  // pasting a new one changes what the ring reports.
+  const minimaxKey = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return "";
+    return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.apiKey ?? "";
+  });
   const isKenari = useSettingsStore((s) => {
     // First colon only — a provider id never contains one, a model key can.
     const split = selectedModel.indexOf(":");
@@ -551,6 +684,16 @@ export const ContextRing: React.FC = () => {
     const providerId = selectedModel.slice(0, split);
     const row = s.providers.find((p) => p.id === providerId);
     return row ? isKenariProvider(row) : false;
+  });
+  // And the sixth: Volcano's Coding Plan meters a rolling five-hour window, a
+  // week and a month, all as a share. Recognised like kenari and MiniMax rather
+  // than by an id prefix, because a row someone added themselves carries a UUID
+  // and declares itself through `providerType`.
+  const isArk = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return false;
+    const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
+    return row ? isArkProvider(row) : false;
   });
 
   // ── Cost inputs ───────────────────────────────────────────────────
@@ -647,12 +790,21 @@ export const ContextRing: React.FC = () => {
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const [open, setOpen] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
+  const [claudeCodeUsage, setClaudeCodeUsage] = useState<ClaudeCodeUsageSnapshot | null>(null);
   const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
   const [commandCodeUsage, setCommandCodeUsage] = useState<CommandCodeUsageSnapshot | null>(
     null,
   );
   const [kenariPlan, setKenariPlan] = useState<KenariPlanState>(null);
+  const [arkPlan, setArkPlan] = useState<ArkPlanState>(null);
   const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
+  const [minimaxUsage, setMinimaxUsage] = useState<MinimaxUsageSnapshot | null>(null);
+  // When the plan figures above were read. Stamped from the cache entry that
+  // served them, not from the moment the promise resolved — a cache hit is a
+  // minute-old reading and saying "just now" over it would be the same kind of
+  // false confidence the source footer used to project. See `lastPlanReadAt`.
+  const [planReadAt, setPlanReadAt] = useState(0);
+  const stampPlanRead = useCallback(() => setPlanReadAt(lastPlanReadAt), []);
 
   // Loaded from the hover/focus handlers (not an effect): the quota is only
   // wanted while the card is visible, and the module cache absorbs repeat
@@ -664,12 +816,23 @@ export const ContextRing: React.FC = () => {
     if (isCodex) {
       void getCodexUsageCached().then((snap) => {
         if (snap) setCodexUsage(snap);
+        stampPlanRead();
+      });
+      return;
+    }
+    // Nothing to gate on, like Codex's: the credential is a stored sign-in,
+    // and whether there is one is exactly what this asks.
+    if (isClaudeCode) {
+      void getClaudeCodeUsageCached().then((snap) => {
+        if (snap) setClaudeCodeUsage(snap);
+        stampPlanRead();
       });
       return;
     }
     if (isOpenCode && openCodeKey) {
       void getOpenCodeUsageCached(openCodeKey).then((usage) => {
         if (usage) setOpenCodeUsage(usage);
+        stampPlanRead();
       });
       return;
     }
@@ -678,13 +841,36 @@ export const ContextRing: React.FC = () => {
     if (isCommandCode) {
       void getCommandCodeUsageCached(commandCodeKey).then((usage) => {
         if (usage) setCommandCodeUsage(usage);
+        stampPlanRead();
       });
       return;
     }
     // No key to gate on, unlike the other two: kenari's plan data comes from a
     // stored sign-in, and whether there is one is exactly what this asks.
     if (isKenari) {
-      void getKenariUsageCached().then(setKenariPlan);
+      void getKenariUsageCached().then((state) => {
+        setKenariPlan(state);
+        stampPlanRead();
+      });
+      return;
+    }
+    // No key to gate on, like kenari's: Volcano's control plane refuses the
+    // `ark-` key outright, so the plan data comes from a stored console
+    // sign-in and whether there is one is exactly what this asks.
+    if (isArk) {
+      void getArkUsageCached().then((state) => {
+        setArkPlan(state);
+        stampPlanRead();
+      });
+      return;
+    }
+    // Gated on the key, like OpenCode's: MiniMax has nothing on disk to fall
+    // back to, so with nothing pasted there is no account to ask.
+    if (isMinimax && minimaxKey) {
+      void getMinimaxUsageCached(minimaxKey).then((usage) => {
+        if (usage) setMinimaxUsage(usage);
+        stampPlanRead();
+      });
       return;
     }
     // Nothing to gate on here either: the session is the Cursor app's, and
@@ -692,9 +878,23 @@ export const ContextRing: React.FC = () => {
     if (isCursor) {
       void getCursorUsageCached().then((snap) => {
         if (snap) setCursorUsage(snap);
+        stampPlanRead();
       });
     }
-  }, [isCodex, isOpenCode, isCommandCode, isKenari, isCursor, openCodeKey, commandCodeKey]);
+  }, [
+    isCodex,
+    isClaudeCode,
+    isOpenCode,
+    isCommandCode,
+    isKenari,
+    isArk,
+    isMinimax,
+    isCursor,
+    openCodeKey,
+    commandCodeKey,
+    minimaxKey,
+    stampPlanRead,
+  ]);
 
   /**
    * Read the conversation's cost basis when the card opens.
@@ -833,6 +1033,32 @@ export const ContextRing: React.FC = () => {
   // a context compaction has since replaced, so showing it beside the new size
   // would describe two different conversations as one.
   const showCache = !!cacheReading && cacheInput > 0 && !isProjected;
+  // The three input slices, side by side, in the order they cost money:
+  // a read is cheap, a write costs more than plain input, fresh is full price.
+  // The hit percentage alone says none of that — it cannot tell a turn that
+  // just rebuilt its whole cache from one that is quietly re-reading it.
+  const cacheShare = (n: number) => (cacheInput > 0 ? (n / cacheInput) * 100 : 0);
+
+  // Whichever subscription this conversation's model belongs to, already
+  // reduced to a list of limits. At most one can match — the card never shows
+  // two plans — so the chain below never fans out.
+  const planView: PlanView | null = isCodex
+    ? codexPlanView(codexUsage)
+    : isClaudeCode
+      ? claudeCodePlanView(claudeCodeUsage)
+      : isOpenCode && openCodeUsage
+        ? openCodePlanView(openCodeUsage)
+        : isCommandCode && commandCodeUsage
+          ? commandCodePlanView(commandCodeUsage)
+          : isKenari && kenariPlan && kenariPlan !== "signed-out"
+            ? kenariPlanView(kenariPlan)
+            : isArk && arkPlan && arkPlan !== "signed-out"
+              ? arkPlanView(arkPlan)
+              : isMinimax
+                ? minimaxPlanView(minimaxUsage)
+                : isCursor && cursorUsage
+                  ? cursorPlanView(cursorUsage)
+                  : null;
 
   return (
     <div
@@ -887,28 +1113,43 @@ export const ContextRing: React.FC = () => {
             className="agw-ctx-card"
             style={{ position: "fixed", top: pos.top, right: pos.right, zIndex: 12000 }}
           >
-            <div className="agw-ctx-card-head">
-              <AgentIcon name="database" size={11} />
-              <span>Context window</span>
+            {/* Who is being measured, and the one caveat that outranks every
+              * number under it.
+              *
+              * This is where the "Source: provider" footer went. That row said
+              * the ordinary thing on every single hover, which teaches the eye
+              * to skip it — so by the time it had news, nobody was reading it.
+              * Provenance now speaks only when it has some: this chip, plus the
+              * tilde carried by each figure it applies to. */}
+            <div className="agw-ctx-head">
+              <span className="agw-ctx-who">
+                {modelLabel(selectedModel) ?? "Context window"}
+              </span>
+              {isEstimated && (
+                <span className="agw-ctx-chip" data-tone="soft">
+                  counted here
+                </span>
+              )}
             </div>
 
-            {/* Provenance is a property of the whole card, not of this one
-              * row, so it lives in the footer. As a chip here it competed with
-              * the headline percentage for the first glance and repeated
-              * itself against the per-section "billed by provider" lines —
-              * three statements of the same fact, none of them the thing you
-              * opened the card to read. */}
-            <div className="agw-ctx-row">
-              <span className="agw-ctx-label">Used</span>
-              <span className="agw-ctx-val" style={{ color }}>
-                {approx}{pct}%
+            {/* The one number this card exists to answer, at a size that can be
+              * read without focusing on it. Everything below is a tier down. */}
+            <div className="agw-ctx-hero">
+              <span className="agw-ctx-hero-n" style={{ color }}>
+                {approx}{pct}
+              </span>
+              <span className="agw-ctx-hero-u" style={{ color }}>
+                %
+              </span>
+              {/* One line. Broken across two it read as two separate figures
+                * stacked, and the eye had to reassemble "47.9K of" and "500.0K"
+                * into the one fact they are. */}
+              <span className="agw-ctx-hero-r">
+                {approx}{formatTokens(usedTokens)} of {formatTokens(total)}
               </span>
             </div>
-            <div className="agw-ctx-bar">
+            <div className="agw-ctx-bar agw-ctx-hero-bar">
               <div className="agw-ctx-bar-fill" style={{ width: `${pct}%`, background: color }} />
-            </div>
-            <div className="agw-ctx-sub">
-              {approx}{formatTokens(usedTokens)} / {formatTokens(total)} tokens
             </div>
             {/* Kept here, not in the footer: this is not provenance, it is a
               * temporary caveat about THIS number that clears on the next
@@ -925,7 +1166,6 @@ export const ContextRing: React.FC = () => {
 
             {showCache && cacheReading && (
               <>
-                <div className="agw-ctx-divider" />
                 <div className="agw-ctx-row">
                   <span className="agw-ctx-label">
                     Cache hit
@@ -933,10 +1173,10 @@ export const ContextRing: React.FC = () => {
                       * numbers were measured, just not on the newest request —
                       * a distinction worth one word and not worth a blank.
                       *
-                      * Neutral chip, not the amber `soft` one the Used row
-                      * uses: "projected" and "our estimate" are caveats about
-                      * whether a number is trustworthy, this is only about
-                      * which request it describes. Nothing here is doubtful. */}
+                      * Neutral chip, not the amber `soft` one the head uses:
+                      * "counted here" is a caveat about whether a number can be
+                      * trusted, this is only about which request it describes.
+                      * Nothing here is doubtful. */}
                     {!cacheReading.fresh && (
                       <span className="agw-ctx-chip">last reported</span>
                     )}
@@ -953,9 +1193,54 @@ export const ContextRing: React.FC = () => {
                     {cacheHitPct}%
                   </span>
                 </div>
-                <div className="agw-ctx-sub">
-                  {formatTokens(cacheReading.readTokens)} cached /{" "}
-                  {formatTokens(cacheInput)} input
+                {/* The three input slices, side by side, in the order they
+                  * cost money: a read is cheap, a write costs MORE than plain
+                  * input, and fresh is full price. They are disjoint and they
+                  * sum to the input, so laying them end to end is the true
+                  * picture rather than a decoration.
+                  *
+                  * The percentage alone cannot separate a turn that is quietly
+                  * re-reading its cache from one that just rebuilt the whole
+                  * thing — both can read 79%, and only one of them is cheap. */}
+                <div className="agw-ctx-bar agw-ctx-cache-split">
+                  <div
+                    className="agw-ctx-bar-fill"
+                    style={{
+                      width: `${cacheShare(cacheReading.readTokens)}%`,
+                      background: "var(--agw-added)",
+                    }}
+                  />
+                  <div
+                    className="agw-ctx-bar-fill"
+                    style={{
+                      width: `${cacheShare(cacheReading.writeTokens)}%`,
+                      background: "var(--agw-warning)",
+                    }}
+                  />
+                  <div
+                    className="agw-ctx-bar-fill"
+                    style={{
+                      width: `${cacheShare(cacheReading.promptTokens)}%`,
+                      background: "color-mix(in srgb, var(--agw-text) 22%, transparent)",
+                    }}
+                  />
+                </div>
+                <div className="agw-ctx-parts">
+                  <span>
+                    <b style={{ color: "var(--agw-added)" }}>
+                      {formatTokens(cacheReading.readTokens)}
+                    </b>{" "}
+                    cached
+                  </span>
+                  <span>
+                    <b style={{ color: "var(--agw-warning)" }}>
+                      {formatTokens(cacheReading.writeTokens)}
+                    </b>{" "}
+                    written
+                  </span>
+                  <span>
+                    <b>{formatTokens(cacheReading.promptTokens)}</b> fresh
+                  </span>
                 </div>
               </>
             )}
@@ -981,199 +1266,15 @@ export const ContextRing: React.FC = () => {
               />
             )}
 
-            {isCodex && codexUsage && (codexUsage.primary || codexUsage.secondary) && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-card-head">
-                  <AgentIcon name="chat" size={11} />
-                  <span>ChatGPT plan</span>
-                </div>
-                {codexUsage.primary && (
-                  <CodexQuotaRow win={codexUsage.primary} fallbackLabel="5-hour limit" />
-                )}
-                {codexUsage.secondary && (
-                  <CodexQuotaRow win={codexUsage.secondary} fallbackLabel="Weekly limit" />
-                )}
-              </>
-            )}
-
-            {/* The same section for OpenCode Go, because it answers the same
-              * question. A subscription has no per-token price, so the cost
-              * figures above read $0.00 for a plan that is genuinely being
-              * spent — headroom is the number that means anything here.
+            {/* ONE plan section for every subscription Aurora can read.
               *
-              * All three windows, not the tightest one: running out weekly on
-              * a Tuesday and running out for the next ten minutes are
-              * different problems, and a single blended figure hides which one
-              * you are in. */}
-            {isOpenCode && openCodeUsage && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-card-head">
-                  <AgentIcon name="chat" size={11} />
-                  <span>OpenCode plan</span>
-                </div>
-                {OPENCODE_WINDOWS.map(({ key, label }) => {
-                  const win = openCodeUsage[key];
-                  if (!win) return null;
-                  return (
-                    <QuotaRow
-                      key={key}
-                      label={label}
-                      usedPercent={win.percent}
-                      caption={openCodeResetLabel(win)}
-                    />
-                  );
-                })}
-              </>
-            )}
-
-            {/* Command Code, for the same reason as the two above. Its caps are
-              * in DOLLARS rather than percent, which is the one number the
-              * cost lines above cannot give you here: they price the
-              * conversation, this prices what the plan has left.
-              *
-              * Both windows, not the tighter one — running out for the next
-              * forty minutes and running out for the week are different
-              * problems. Credits come last because they only matter once a
-              * window is spent, but they are what says whether work can
-              * continue at all. */}
-            {isCommandCode && commandCodeUsage && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-card-head">
-                  <AgentIcon name="chat" size={11} />
-                  <span>
-                    Command Code
-                    {commandCodeUsage.planLabel ? ` ${commandCodeUsage.planLabel}` : " plan"}
-                  </span>
-                </div>
-                {commandCodeUsage.limited ? (
-                  <>
-                    {commandCodeUsage.fiveHour && (
-                      <QuotaRow
-                        label="Right now"
-                        usedPercent={commandCodeWindowRatio(commandCodeUsage.fiveHour) * 100}
-                        caption={[
-                          `${commandCodeMoney(commandCodeUsage.fiveHour.used)} of ${commandCodeMoney(commandCodeUsage.fiveHour.cap)}`,
-                          commandCodeResetLabel(commandCodeUsage.fiveHour),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      />
-                    )}
-                    {commandCodeUsage.weekly && (
-                      <QuotaRow
-                        label="This week"
-                        usedPercent={commandCodeWindowRatio(commandCodeUsage.weekly) * 100}
-                        caption={[
-                          `${commandCodeMoney(commandCodeUsage.weekly.used)} of ${commandCodeMoney(commandCodeUsage.weekly.cap)}`,
-                          commandCodeResetLabel(commandCodeUsage.weekly),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      />
-                    )}
-                  </>
-                ) : null}
-                <div className="agw-ctx-row">
-                  <span className="agw-ctx-label">Credits</span>
-                  <span className="agw-ctx-val">
-                    {commandCodeMoney(
-                      commandCodeUsage.credits.monthly +
-                        commandCodeUsage.credits.purchased +
-                        commandCodeUsage.credits.free,
-                    )}{" "}
-                    left
-                  </span>
-                </div>
-              </>
-            )}
-
-            {/* Cursor, for the same reason as the two above — a subscription
-              * turn has no per-token price, so the cost lines read $0.00 while
-              * the plan is genuinely being spent.
-              *
-              * All three buckets, not a blended one: Cursor Models and Other
-              * Models empty independently (this account sits at 16% and 100%
-              * of the same allowance), and On-Demand is not an allowance at
-              * all — it is money billed afterwards. One number would hide
-              * which of the three you are actually out of. */}
-            {isCursor && cursorUsage && cursorUsage.windows.length > 0 && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-card-head">
-                  <AgentIcon name="chat" size={11} />
-                  <span>Cursor plan</span>
-                </div>
-                {/* Cursor's own sentence about its own account, carried
-                  * verbatim rather than reworded from the percentages. */}
-                {cursorUsage.notice && (
-                  <div className="agw-ctx-sub">{cursorUsage.notice}</div>
-                )}
-                {cursorUsage.windows.map((win) => (
-                  <CursorPlanRow key={win.label} win={win} />
-                ))}
-                {cursorResetLabel(cursorUsage.resetsAtMs) && (
-                  <div className="agw-ctx-sub">
-                    {cursorResetLabel(cursorUsage.resetsAtMs)}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* kenari, and the reason it looks different from the two above:
-              * on a plan, exceeding a window does not fall through to the
-              * balance — the request is REFUSED with `plan_limit_reached`, and
-              * that applies to every endpoint, not only chat. So this bar is
-              * not a cost readout, it is the distance to a hard stop, and it is
-              * worth the space even when the cost sections say nothing. */}
-            {isKenari && kenariPlan && kenariPlan !== "signed-out" && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-card-head">
-                  <AgentIcon name="chat" size={11} />
-                  <span>{kenariPlan.planName ? `${kenariPlan.planName} plan` : "kenari plan"}</span>
-                  {/* kenari's own judgement, not a threshold Aurora invented. */}
-                  {kenariPlan.nearLimit && <span className="agw-ctx-chip">near limit</span>}
-                </div>
-                {/* Only the windows this plan actually sets. A plan reports no
-                  * 5-hour or monthly cap as absent rather than as zero, and
-                  * drawing an unset window would render "no limit" as a bar
-                  * that is 100% spent. */}
-                {KENARI_WINDOWS.map(({ key, label }) => {
-                  const win = kenariPlan[key];
-                  if (!win) return null;
-                  return (
-                    <QuotaRow
-                      key={key}
-                      label={label}
-                      /* A FRACTION on the wire (0.202), not a percent. Passed
-                       * through raw it draws a 0.2%-full bar over a
-                       * fifth-spent week. */
-                      usedPercent={win.usedFrac * 100}
-                      caption={kenariResetLabel(win)}
-                    />
-                  );
-                })}
-                {/* Metered separately from the quota windows and separately
-                  * reset, so having plan quota left says nothing about this.
-                  * Shown as counts as well as a bar — "37 left" is the number
-                  * someone acts on, where a percentage of 200 is arithmetic. */}
-                {kenariPlan.webSearchAllowance != null && kenariPlan.webSearchAllowance > 0 && (
-                  <QuotaRow
-                    label="Web searches"
-                    usedPercent={
-                      ((kenariPlan.webSearchUsedToday ?? 0) / kenariPlan.webSearchAllowance) * 100
-                    }
-                    caption={`${Math.max(
-                      0,
-                      kenariPlan.webSearchAllowance - (kenariPlan.webSearchUsedToday ?? 0),
-                    )} of ${kenariPlan.webSearchAllowance} left today`}
-                  />
-                )}
-              </>
-            )}
+              * This replaced five hand-written blocks — Codex, OpenCode,
+              * Command Code, Cursor, kenari — that had drifted apart: Codex
+              * grew a credit balance the card never drew, Cursor needed a row
+              * type the others did not have, and a sixth provider meant a
+              * sixth block. `plan-view.ts` does the per-provider wording; this
+              * renders a list and knows nothing about who filled it. */}
+            {planView && <PlanSection view={planView} readAgo={planAgeLabel(planReadAt)} />}
 
             {/* Said rather than left blank. kenari's key reaches the models but
               * not the account, so this is the one provider where Aurora can
@@ -1191,17 +1292,30 @@ export const ContextRing: React.FC = () => {
               </>
             )}
 
-            {/* Who counted these numbers. One statement, at the end, where a
-              * provenance note belongs — you read the figures first and check
-              * where they came from second, which is the order the card now
-              * presents them in. */}
-            <div className="agw-ctx-source">
-              <span className="agw-ctx-source-dot" data-tone={isEstimated ? "soft" : undefined} />
-              <span>
-                Source
-                <strong>{isEstimated ? "local estimate" : "provider"}</strong>
-              </span>
-            </div>
+            {/* Said rather than left blank, for kenari's reason: the Coding
+              * Plan key reaches the models but Volcano's control plane refuses
+              * it, so this is the second provider where Aurora can be correctly
+              * configured and still know nothing about the quota. A plan that
+              * stops serving when a window runs out must not render that as
+              * empty space. */}
+            {isArk && arkPlan === "signed-out" && (
+              <>
+                <div className="agw-ctx-divider" />
+                <div className="agw-ctx-note">
+                  <strong>Plan usage not connected</strong> — Volcano reports Coding Plan quota
+                  to a signed-in console, not to an API key. Connect it in Settings › Providers ›
+                  Volcano Ark.
+                </div>
+              </>
+            )}
+
+            {/* No provenance footer. It said "Source: provider" on every
+              * ordinary hover, which is the shape of a row people learn to
+              * skip — and a row nobody reads is worthless on the day it has
+              * something to say. What replaced it says something only when
+              * there is something: the amber chip in the head when Aurora did
+              * the counting, and the read-time on the plan block, whose
+              * figures are the one part of this card that can be a minute old. */}
           </div>,
           portalTarget,
         )}

@@ -37,6 +37,7 @@ import { ToolCode } from "@/apps/agent/components/tool-views/ToolCode";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { mcpOperationLabel, parseMcpToolName } from "@/apps/agent/services/tools/mcp-tools";
+import { useFollowBottom } from "@/apps/agent/hooks/conversation/useFollowBottom";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 import { mcpCallForCard } from "./mcp-card";
 import { formatToolDuration, toolStatus, type ToolCall, type ToolStatus } from "./tool-call";
@@ -381,6 +382,15 @@ export const McpServerLane: React.FC<{
 
   const totalMs = calls.reduce((sum, call) => sum + (call.durationMs ?? 0), 0);
 
+  // Past `LANE_SCROLL_MIN_CALLS` the rows are height-capped, so a still-running
+  // line can sit below the fold of a lane nobody has scrolled. Follow it while
+  // the run is in flight; see `useFollowBottom` for why a finished lane is left
+  // alone.
+  const running = calls.some(
+    (call) => toolStatus(call, isActivelyStreaming) === "running",
+  );
+  const { ref: rowsRef, onScroll: onRowsScroll } = useFollowBottom(running);
+
   return (
     <div className="agw-mcp-lane">
       <div className="agw-mcp-lane-head">
@@ -408,6 +418,8 @@ export const McpServerLane: React.FC<{
       <div
         className="agw-mcp-lane-rows"
         data-scroll={calls.length >= LANE_SCROLL_MIN_CALLS ? "" : undefined}
+        ref={rowsRef}
+        onScroll={onRowsScroll}
       >
         {calls.map((call) => (
           <McpCallLine

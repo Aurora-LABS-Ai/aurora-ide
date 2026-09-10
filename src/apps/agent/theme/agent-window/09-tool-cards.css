@@ -651,6 +651,7 @@
  * that fits (a short command / small output) shows NO fade at all. On engines
  * without scroll-driven animations the rule simply no-ops (no fade, no break). */
 .agw-tool-group-body,
+.agw-mcp-lane-rows[data-scroll],
 .agw-rv-body,
 .agw-tool-result,
 .agw-diff,

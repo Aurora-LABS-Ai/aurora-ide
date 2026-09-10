@@ -585,6 +585,18 @@ function eventsOf(m: DbMessage): TimelineEvent[] {
   return out;
 }
 
+/**
+ * A finite positive number out of untyped JSON, or `undefined`.
+ *
+ * Zero counts as absent on purpose: every field read through this is a clock
+ * reading, and an epoch of 0 or a duration of 0 is a field that was never
+ * filled in, not a compaction that took no time.
+ */
+function positiveNumber(raw: unknown): number | undefined {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 /** Collapse the flat message list into render turns (assistant runs merged). */
 export function buildTurns(messages: DbMessage[]): AgwTurn[] {
   const turns: AgwTurn[] = [];
@@ -601,17 +613,36 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       let afterTokens = 0;
       let status: CompactionStatus = "completed";
       let reason: string | undefined;
+      let startedAt: number | undefined;
+      let durationMs: number | undefined;
       try {
         const p = JSON.parse(m.content || "{}");
         beforeTokens = Number(p.beforeTokens) || 0;
         afterTokens = Number(p.afterTokens) || 0;
+        // `running` belongs in this list. Leaving it out is what made a manual
+        // `/compact` render its FINISHED card the instant it started: the
+        // marker says `status: "running"`, that fell past every arm to the
+        // legacy `p.running` boolean nothing writes any more, and landed on
+        // "completed" — no shimmer, no clock, and (with both counts still
+        // zero) the bare words "Context compacted" over a summary that had not
+        // been written yet. Automatic mid-turn compaction never showed it
+        // because that path builds its marker as a timeline event and never
+        // passes through here.
         status =
-          p.status === "failed" || p.status === "cancelled" || p.status === "completed"
+          p.status === "running" ||
+          p.status === "failed" ||
+          p.status === "cancelled" ||
+          p.status === "completed"
             ? p.status
             : p.running === true
               ? "running"
               : "completed";
         reason = typeof p.reason === "string" ? p.reason : undefined;
+        // The live clock, and what it settled to. Both optional: a marker
+        // restored from the session file has neither, and the card draws no
+        // number rather than a guessed one.
+        startedAt = positiveNumber(p.startedAt);
+        durationMs = positiveNumber(p.durationMs);
       } catch {
         /* malformed marker — render an empty (done) card */
       }
@@ -621,7 +652,7 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         content: "",
         events: [],
         isThinking: false,
-        compaction: { beforeTokens, afterTokens, status, reason },
+        compaction: { beforeTokens, afterTokens, status, reason, startedAt, durationMs },
       });
       continue;
     }
@@ -802,10 +833,48 @@ const CHAPTER_TOOL_NAME = "chapter";
  * heading types in as the model writes it. Parsing would fail on every partial
  * frame, and the call would flash as a tool card before becoming a heading.
  */
+/**
+ * Longest chapter title the transcript draws.
+ *
+ * PAIRED with `MAX_TITLE_LEN` in `src-tauri/src/tools/transcript/mod.rs`, which
+ * shortens the same way and tells the model it did. The duplication is not an
+ * oversight: the heading renders from the STREAMED arguments so it appears as
+ * the model types it, which is before any tool result exists — so the shortening
+ * has to happen here too, and the two have to agree, or the model is told it got
+ * a title the user never saw.
+ */
+export const CHAPTER_TITLE_MAX = 60;
+
+/**
+ * Shorten an over-long title the way Rust does: cut at the last word boundary
+ * inside the budget, mark the cut with an ellipsis counted against the budget,
+ * and hard-cut when honouring the boundary would keep less than half of it.
+ *
+ * The ellipsis is the reader's half of the bargain. Rust's note is the model's:
+ * an over-long title is adjusted rather than refused, so the chapter still lands
+ * and nobody sees a failed tool card over a heading that was merely too long.
+ */
+export function shortenChapterTitle(title: string): string {
+  if ([...title].length <= CHAPTER_TITLE_MAX) return title;
+  // Code points, not UTF-16 units, so an emoji counts as one character on both
+  // sides of the boundary. `.length` here would cut a surrogate pair in half.
+  const head = [...title].slice(0, CHAPTER_TITLE_MAX - 1).join("");
+  const hard = head.replace(/\s+$/, "");
+  // The last whitespace anywhere in the head, matching Rust's
+  // `rfind(char::is_whitespace)` rather than approximating it.
+  let at = -1;
+  for (let i = 0; i < head.length; i += 1) {
+    if (/\s/.test(head.charAt(i))) at = i;
+  }
+  const word = at > 0 ? head.slice(0, at).replace(/\s+$/, "") : "";
+  const cut = [...word].length >= CHAPTER_TITLE_MAX / 2 ? word : hard;
+  return `${cut}…`;
+}
+
 function chapterTitleOf(call: ToolCall): string | null {
   const [first] = streamedToolStringArguments(call.arguments || "", ["title"]).title ?? [];
   const title = first?.value.trim();
-  return title ? title : null;
+  return title ? shortenChapterTitle(title) : null;
 }
 
 /**

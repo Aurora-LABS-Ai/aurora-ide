@@ -789,6 +789,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const markerId = genId();
     let markerStarted = false;
     let markerSettled = false;
+    // When the summary call began, for the card's live clock and for the
+    // duration it settles to. Compaction is one model call over the whole
+    // conversation and routinely runs for minutes, so a shimmer with no number
+    // beside it cannot be told apart from a hang — the same reason the
+    // mid-turn marker stamps one (`appendCompaction`).
+    let markerStartedAt = 0;
 
     store.beginTurn(threadId, seed, projectRoot);
     store.setThreadActivity(threadId, { label: "Compacting context…" });
@@ -811,20 +817,31 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       workspaceAccess: settings.workspaceAccess,
     });
 
+    /** How long the run took, or `undefined` when it never started a clock. */
+    const settledDuration = () =>
+      markerStartedAt > 0 ? Date.now() - markerStartedAt : undefined;
+
     const completeMarker = (beforeTokens: number, afterTokens: number) => {
       markerSettled = true;
+      const content = JSON.stringify({
+        beforeTokens,
+        afterTokens,
+        status: "completed",
+        startedAt: markerStartedAt || undefined,
+        durationMs: settledDuration(),
+      });
       if (!markerStarted) {
         markerStarted = true;
         store.appendTurnMessage(threadId, {
           id: markerId,
           role: "compaction",
-          content: JSON.stringify({ beforeTokens, afterTokens, status: "completed" }),
+          content,
           timestamp: nowIso(),
         });
       } else {
         store.patchTurnMessage(threadId, markerId, (message) => ({
           ...message,
-          content: JSON.stringify({ beforeTokens, afterTokens, status: "completed" }),
+          content,
         }));
       }
       // Drop the ring to the post-compaction size immediately; the next real
@@ -842,6 +859,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         afterTokens: 0,
         status: info.cancelled ? "cancelled" : "failed",
         reason: info.reason,
+        startedAt: markerStartedAt || undefined,
+        durationMs: settledDuration(),
       });
       if (!markerStarted) {
         markerStarted = true;
@@ -860,6 +879,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       const result = await agent.compactThread({
         onCompactionStarted: () => {
           markerStarted = true;
+          markerStartedAt = Date.now();
           store.appendTurnMessage(threadId, {
             id: markerId,
             role: "compaction",
@@ -867,6 +887,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               beforeTokens: 0,
               afterTokens: 0,
               status: "running",
+              startedAt: markerStartedAt,
             }),
             timestamp: nowIso(),
           });

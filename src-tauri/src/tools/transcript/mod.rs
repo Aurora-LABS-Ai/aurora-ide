@@ -36,9 +36,50 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, 
 /// Names this bucket registers, in roster order.
 pub const TOOL_NAMES: &[&str] = &["chapter"];
 
-/// Longest title accepted. A chapter is a heading, not a paragraph — past this
-/// it stops being scannable, which is the only thing it is for.
+/// Longest title shown. A chapter is a heading, not a paragraph — past this it
+/// stops being scannable, which is the only thing it is for.
+///
+/// PAIRED with `CHAPTER_TITLE_MAX` in
+/// `src/apps/agent/components/conversation/timeline.ts`. The transcript draws
+/// the heading from the STREAMED arguments so it appears as the model types it,
+/// which is before any result exists — so the frontend shortens it too, and the
+/// two must agree or the model is told it got a title the user never saw.
 const MAX_TITLE_LEN: usize = 60;
+
+/// Shorten an over-long title to fit, or `None` when it already does.
+///
+/// Cuts at the last word boundary inside the budget and marks the cut with an
+/// ellipsis, which is counted against the budget rather than added past it. A
+/// heading sliced mid-word reads as a rendering bug; one ending in `…` reads as
+/// what it is.
+///
+/// A single word longer than the whole budget is hard-cut, because there is no
+/// boundary to prefer and the alternative is showing nothing.
+fn shorten_title(title: &str) -> Option<String> {
+    if title.chars().count() <= MAX_TITLE_LEN {
+        return None;
+    }
+    // One short of the budget: the ellipsis has to live inside it.
+    let head: String = title.chars().take(MAX_TITLE_LEN - 1).collect();
+    let hard = head.trim_end();
+    let cut = match head.rfind(char::is_whitespace) {
+        // `rfind` returns a byte index at a char boundary, so slicing is safe.
+        Some(at) => {
+            let word = head[..at].trim_end();
+            // Prefer the word boundary only when it keeps most of the budget.
+            // Otherwise a title like "a <70-character-word>", whose only space
+            // sits at position 1, would shorten to "a…" — a heading that says
+            // less than no heading at all.
+            if word.chars().count() >= MAX_TITLE_LEN / 2 {
+                word
+            } else {
+                hard
+            }
+        }
+        None => hard,
+    };
+    Some(format!("{cut}…"))
+}
 
 pub struct ChapterTool;
 
@@ -58,8 +99,9 @@ reading all of it.
 Call this the moment you begin a distinct part of the work, BEFORE the tool calls that do it — not \
 afterwards as a summary, and not all at once up front.
 
-Title it by what you are about to do, in a few plain words: \"Read the reload path\", \"Fix the \
-tool join\", \"Run the tests\". Not \"Step 2\", not \"Investigation phase\".
+Title it by what you are about to do, in a few plain words, and keep it under 60 characters — it is \
+a heading, not a sentence: \"Read the reload path\", \"Fix the tool join\", \"Run the tests\". Not \
+\"Step 2\", not \"Investigation phase\". A longer title is shortened to fit, not rejected.
 
 Skip it entirely for short work. Two or three chapters across a long turn is right; a chapter per \
 tool call is noise, and one chapter for everything says nothing."
@@ -69,7 +111,14 @@ tool call is noise, and one chapter for everything says nothing."
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "What you are about to do, in a few plain words."
+                        // The limit is stated in BOTH descriptions on purpose.
+                        // Some providers show the model only the parameter
+                        // descriptions when a schema gets long, and a limit the
+                        // model cannot see is one it can only discover by
+                        // tripping over it.
+                        "description": "What you are about to do, in a few plain words. \
+Under 60 characters.",
+                        "maxLength": MAX_TITLE_LEN
                     }
                 },
                 "required": ["title"]
@@ -91,18 +140,40 @@ tool call is noise, and one chapter for everything says nothing."
                 )
             })?;
 
-        // Rejected rather than truncated. Silently cutting a title would show
-        // the user a heading the model did not write, and the model would never
-        // learn that its titles are too long.
-        if title.chars().count() > MAX_TITLE_LEN {
-            return Err(ToolError::InvalidInput(format!(
-                "`title` is {} characters; keep it under {MAX_TITLE_LEN}. \
-A chapter is a heading, not a sentence.",
-                title.chars().count()
-            )));
-        }
+        // Shortened, not rejected.
+        //
+        // This used to fail the call outright. The objection to truncating was
+        // that it would show a heading the model did not write and teach the
+        // model nothing — both true, and both fixed here without throwing the
+        // call away: the ellipsis tells the READER the title was cut, and the
+        // note tells the MODEL, in the same breath as saying not to retry.
+        //
+        // Failing was the wrong trade. A title is the cosmetic part of this
+        // tool; the chapter boundary is the load-bearing part, and it was
+        // being discarded over the cosmetic half. Worse, the user saw a red
+        // failed tool card in the middle of a turn where nothing had actually
+        // gone wrong, and the model, having been told only "rejected", would
+        // reasonably spend another whole request calling it again.
+        //
+        // A MISSING title still fails, above: there is no heading to salvage.
+        let (title, note) = match shorten_title(title) {
+            None => (title.to_string(), None),
+            Some(short) => (
+                short,
+                Some(format!(
+                    "Your title was {} characters, so Aurora shortened it to fit the \
+{MAX_TITLE_LEN}-character heading. The chapter is on screen — do not call `chapter` again for \
+this one. Keep the next title under {MAX_TITLE_LEN}.",
+                    title.chars().count()
+                )),
+            ),
+        };
 
-        Ok(json!({ "success": true, "chapter": title }).to_string())
+        let mut result = json!({ "success": true, "chapter": title });
+        if let Some(note) = note {
+            result["note"] = json!(note);
+        }
+        Ok(result.to_string())
     }
 }
 
@@ -149,22 +220,108 @@ mod tests {
         }
     }
 
+    /// The behaviour this tool used to get wrong: an over-long title failed the
+    /// call, so the chapter boundary was thrown away over its cosmetic half and
+    /// the user got a red tool card in a turn where nothing had gone wrong.
     #[tokio::test]
-    async fn an_overlong_title_is_rejected_not_truncated() {
-        let err = ChapterTool
-            .execute(json!({ "title": "x".repeat(MAX_TITLE_LEN + 1) }), &ctx())
+    async fn an_overlong_title_is_shortened_and_still_succeeds() {
+        let long = "Read the reload path and then fix the tool join before running every test";
+        assert!(long.chars().count() > MAX_TITLE_LEN);
+        let out = ChapterTool
+            .execute(json!({ "title": long }), &ctx())
             .await
-            .expect_err("must reject");
-        let message = format!("{err:?}");
-        assert!(message.contains("heading"), "{message}");
+            .expect("a long title is a cosmetic problem, not a failed call");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(parsed["success"], true);
+
+        let shown = parsed["chapter"].as_str().expect("a chapter");
+        assert!(shown.chars().count() <= MAX_TITLE_LEN, "{shown}");
+        // Cut at a word boundary, and the cut is visible to the reader.
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(!shown.contains("  "), "{shown}");
+        assert!(long.starts_with(shown.trim_end_matches('…')), "{shown}");
     }
 
+    /// The model has to be told, or it learns nothing — and told NOT to retry,
+    /// or it spends another whole request calling `chapter` again.
     #[tokio::test]
-    async fn a_title_at_the_limit_is_accepted() {
-        ChapterTool
-            .execute(json!({ "title": "x".repeat(MAX_TITLE_LEN) }), &ctx())
+    async fn the_note_says_it_was_adjusted_and_not_to_retry() {
+        let out = ChapterTool
+            .execute(json!({ "title": "x".repeat(MAX_TITLE_LEN + 14) }), &ctx())
+            .await
+            .expect("accepted");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        let note = parsed["note"].as_str().expect("a note");
+        assert!(note.contains(&(MAX_TITLE_LEN + 14).to_string()), "{note}");
+        assert!(note.contains(&MAX_TITLE_LEN.to_string()), "{note}");
+        assert!(note.contains("do not call"), "{note}");
+    }
+
+    /// No note on a title that fitted. A tool that comments on every ordinary
+    /// call is one whose comments stop being read.
+    #[tokio::test]
+    async fn a_title_at_the_limit_is_accepted_untouched_and_unremarked() {
+        let exact = "x".repeat(MAX_TITLE_LEN);
+        let out = ChapterTool
+            .execute(json!({ "title": exact.clone() }), &ctx())
             .await
             .expect("the boundary itself is fine");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(parsed["chapter"], exact);
+        assert!(parsed.get("note").is_none(), "{parsed}");
+    }
+
+    /// One word longer than the whole budget has no boundary to prefer, and
+    /// showing nothing would be worse than a hard cut.
+    #[tokio::test]
+    async fn a_single_overlong_word_is_hard_cut() {
+        let out = ChapterTool
+            .execute(json!({ "title": "x".repeat(120) }), &ctx())
+            .await
+            .expect("accepted");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        let shown = parsed["chapter"].as_str().expect("a chapter");
+        assert_eq!(shown.chars().count(), MAX_TITLE_LEN);
+        assert!(shown.ends_with('…'), "{shown}");
+    }
+
+    /// Counted in CHARACTERS, not bytes. A `.len()` here would make the limit
+    /// roughly a third as long for anyone not writing ASCII.
+    #[tokio::test]
+    async fn the_budget_is_characters_not_bytes() {
+        // 40 three-byte characters: 120 bytes, well under the char limit.
+        let cjk = "码".repeat(40);
+        let out = ChapterTool
+            .execute(json!({ "title": cjk.clone() }), &ctx())
+            .await
+            .expect("accepted");
+        let parsed: Value = serde_json::from_str(&out).expect("json");
+        assert_eq!(parsed["chapter"], cjk);
+        assert!(parsed.get("note").is_none());
+    }
+
+    /// A title whose only whitespace sits near the front must not collapse to
+    /// that first word. Honouring the boundary blindly turned
+    /// `"a <80-character-word>"` into `"a…"`.
+    #[test]
+    fn an_early_lone_space_does_not_eat_the_whole_title() {
+        let shown = shorten_title(&format!("a {}", "x".repeat(80))).expect("shortened");
+        assert!(shown.chars().count() <= MAX_TITLE_LEN, "{shown}");
+        assert!(
+            shown.chars().count() >= MAX_TITLE_LEN / 2,
+            "shortening kept only {:?}",
+            shown
+        );
+    }
+
+    /// The ordinary case: cut at the last space, and keep whole words.
+    #[test]
+    fn a_normal_sentence_is_cut_at_a_word_boundary() {
+        let shown =
+            shorten_title("Read the reload path and then fix the tool join before running tests")
+                .expect("shortened");
+        assert_eq!(shown, "Read the reload path and then fix the tool join before…");
+        assert!(shown.chars().count() <= MAX_TITLE_LEN, "{shown}");
     }
 
     #[test]

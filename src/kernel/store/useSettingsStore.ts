@@ -30,10 +30,24 @@ import {
   type ImageProvider,
 } from "@/apps/agent/services/providers/image-providers";
 import { CODEX_PRESET } from "@/apps/agent/services/providers/codex";
+import { CLAUDE_CODE_PRESET } from "@/apps/agent/services/providers/claude-code";
 import { CURSOR_PRESET } from "@/apps/agent/services/providers/cursor";
 import { OPENCODE_PRESET } from "@/apps/agent/services/providers/opencode";
 import { COMMANDCODE_PRESET } from "@/apps/agent/services/providers/commandcode";
 import { AGENT_ROUTER_PRESET, isAgentRouterWireChoice } from "@/apps/agent/services/providers/agentrouter";
+import { isArkWireChoice } from "@/apps/agent/services/providers/ark";
+import {
+  addCategory,
+  assignProviderToCategory,
+  deleteCategory,
+  emptyProviderCategoryState,
+  moveCategory,
+  normalizeProviderCategories,
+  recolorCategory,
+  renameCategory,
+  type CategoryColor,
+  type ProviderCategoryState,
+} from "@/apps/agent/services/providers/provider-categories";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
 import { MAX_ENABLED_SKILLS } from "@/apps/agent/services/skills/skills";
 import type {
@@ -347,6 +361,29 @@ interface SettingsState {
    * a fresh install must not open onto a chat with no models in it.
    */
   chatModelShortlist: string[];
+
+  /**
+   * The folders the user files providers into, and which provider is in which.
+   *
+   * Persisted with the settings rather than in localStorage (where pinning
+   * lives), because a category is a fact about the account: it names what a
+   * provider is FOR, and it groups the model selector as well as the settings
+   * rail. See `services/providers/provider-categories.ts` for the rules — most
+   * importantly that a provider is in exactly one category, and that the two
+   * seeded ones cannot be renamed or deleted because every provider needs a
+   * home.
+   */
+  providerCategories: ProviderCategoryState;
+  /** Make a category. Returns its id, or `null` when the name is empty or taken. */
+  createProviderCategory: (name: string, color?: CategoryColor) => string | null;
+  /** Rename one. Returns false when the name is empty, taken, or the row is a seed. */
+  renameProviderCategory: (id: string, name: string) => boolean;
+  setProviderCategoryColor: (id: string, color: CategoryColor) => void;
+  /** Delete one. Its providers return to their unfiled home; nothing is lost. */
+  deleteProviderCategory: (id: string) => void;
+  moveProviderCategory: (id: string, direction: -1 | 1) => void;
+  /** File a provider under a category, or unfile it with `null`. */
+  setProviderCategory: (providerId: string, categoryId: string | null) => void;
 
   /**
    * Image providers, configured by the user. Aurora Chat only.
@@ -794,7 +831,7 @@ export interface LLMProvider {
   // one value that cannot disagree with itself.
   // `modal` / `modal-messages` / `modal-responses` follow the same rule: one
   // workspace token, three wires on one gateway, the wire stored as the type.
-  providerType?: "openai" | "openai-responses" | "codex" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "modal" | "modal-messages" | "modal-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
+  providerType?: "openai" | "openai-responses" | "codex" | "claude-code" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "ark" | "ark-messages" | "ark-responses" | "modal" | "modal-messages" | "modal-responses" | "meta" | "meta-messages" | "meta-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -1221,6 +1258,8 @@ function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
   const keys = preset.customModels?.length ? preset.customModels : [preset.model];
   const aliases = preset.modelAliases || {};
   const pricing = preset.modelPricing || {};
+  const windows = preset.modelContextWindows || {};
+  const reasoningByKey = preset.modelReasoning || {};
   return Array.from(new Set(keys.filter(Boolean))).map((modelKey, idx) => {
     const p = pricing[modelKey];
     return {
@@ -1228,7 +1267,12 @@ function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
       providerId: preset.id,
       modelKey,
       label: aliases[modelKey] || undefined,
-      contextWindow: undefined,
+      // Only where the preset says so; `undefined` leaves the row without a
+      // reasoning control, exactly as seeding has always done.
+      reasoning: reasoningByKey[modelKey],
+      // Set only where the preset says this model differs from its provider;
+      // `undefined` falls back to `provider.contextWindow` at resolve time.
+      contextWindow: windows[modelKey],
       maxOutputTokens: undefined,
       // From the preset, not hardcoded `false`. Every seeded model used to
       // arrive claiming no vision regardless of what it actually does, so a
@@ -1435,6 +1479,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   chatModelShortlist: [],
   // Seeded, not empty: the shipped a6api row exists before the database has
   // answered, so the rail never flashes an empty Image group on a cold start.
+  providerCategories: emptyProviderCategoryState(),
   imageProviders: withBuiltInImageProviders([]),
   seededImageProviderIds: [],
 
@@ -1565,6 +1610,14 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         presetProviders.push(CODEX_PRESET);
       }
 
+      // Claude Code (claude.ai subscription): the same shape as Codex — an
+      // OAuth-backed card instead of an API key, auth + routing owned by
+      // Rust (`api::claude_code`), Aurora's own credential file and never
+      // the user's `~/.claude`.
+      if (!presetProviders.some((p) => p.id === CLAUDE_CODE_PRESET.id)) {
+        presetProviders.push(CLAUDE_CODE_PRESET);
+      }
+
       // Cursor (subscription) — same shape again: no API key, the Rust side
       // reads the Cursor app's own session (`api::cursor`) and owns the wire.
       // Its model list is NOT seeded here: the account decides what exists and
@@ -1649,12 +1702,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
               // AgentRouter's wire (Chat vs Messages) is the user's choice —
               // restoring the preset's `openai` here would silently undo it
               // on every launch.
-              providerType: isAgentRouterWireChoice(dbProvider)
-                ? dbProvider.providerType
-                : resolveProviderType(
-                    presetProvider.providerType,
-                    dbProvider.providerType,
-                  ),
+              // Ark is the third: its preset type IS a variant
+              // (`ark-messages`), so `resolveProviderType` cannot see `ark` or
+              // `ark-responses` as siblings of it and would reset the picker
+              // on every launch.
+              providerType:
+                isAgentRouterWireChoice(dbProvider) || isArkWireChoice(dbProvider)
+                  ? dbProvider.providerType
+                  : resolveProviderType(
+                      presetProvider.providerType,
+                      dbProvider.providerType,
+                    ),
               // The catalogue owns a built-in's display name — it cannot be
               // edited in the UI, so a stored one is only ever a stale copy,
               // and letting it win would freeze a name we later corrected.
@@ -1817,6 +1875,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           auroraSurface: persistedSurface,
           deepResearchNext: appSettings.deepResearchNext ?? false,
           chatModelShortlist: normalizeChatShortlist(appSettings.chatModelShortlist),
+          // Defensive on load, not on save: this is a JSON blob, so a
+          // hand-edited database or an older build has to degrade to a working
+          // rail rather than throw here and take the whole settings load down.
+          providerCategories: normalizeProviderCategories(appSettings.providerCategories),
           ...(() => {
             // Seeded rows are offered once and then remembered, so a deleted
             // one stays deleted. Applied here, on the load, because it is the
@@ -1957,6 +2019,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         auroraSurface: state.auroraSurface,
         deepResearchNext: state.deepResearchNext,
         chatModelShortlist: state.chatModelShortlist,
+        providerCategories: state.providerCategories,
         imageProviders: state.imageProviders,
         seededImageProviderIds: state.seededImageProviderIds,
         teamEnabled: state.teamEnabled,
@@ -2161,6 +2224,63 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       };
     });
     // Persist (debouncing now lives inside saveToDatabase).
+    get().saveToDatabase();
+  },
+
+  // ── Provider categories ────────────────────────────────────────────────
+  //
+  // Every one of these is a pure transform in
+  // `services/providers/provider-categories.ts` plus a save. The rules — one
+  // category per provider, seeds cannot be edited, a deleted category frees
+  // its rows rather than taking them with it — live there and are tested
+  // there, so nothing about them is decided in this store.
+
+  createProviderCategory: (name: string, color?: CategoryColor) => {
+    const made = addCategory(get().providerCategories, name, color);
+    // Refused: empty, or a name already in the rail. The caller keeps the
+    // draft open and says so, rather than this inventing "Coding plans (2)".
+    if (!made) return null;
+    set({ providerCategories: made.state });
+    get().saveToDatabase();
+    return made.id;
+  },
+
+  renameProviderCategory: (id: string, name: string) => {
+    const next = renameCategory(get().providerCategories, id, name);
+    if (!next) return false;
+    set({ providerCategories: next });
+    get().saveToDatabase();
+    return true;
+  },
+
+  setProviderCategoryColor: (id: string, color: CategoryColor) => {
+    set({ providerCategories: recolorCategory(get().providerCategories, id, color) });
+    get().saveToDatabase();
+  },
+
+  deleteProviderCategory: (id: string) => {
+    set({ providerCategories: deleteCategory(get().providerCategories, id) });
+    get().saveToDatabase();
+  },
+
+  moveProviderCategory: (id: string, direction: -1 | 1) => {
+    set({ providerCategories: moveCategory(get().providerCategories, id, direction) });
+    get().saveToDatabase();
+  },
+
+  setProviderCategory: (providerId: string, categoryId: string | null) => {
+    const state = get();
+    // The provider's own origin decides which system category counts as its
+    // home, and the transform stores "moved to my own home" as unfiled.
+    const isCustom = !!state.providers.find((p) => p.id === providerId)?.isCustom;
+    set({
+      providerCategories: assignProviderToCategory(
+        state.providerCategories,
+        providerId,
+        categoryId,
+        isCustom,
+      ),
+    });
     get().saveToDatabase();
   },
 

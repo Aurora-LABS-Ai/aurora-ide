@@ -139,6 +139,29 @@ export function codexFmtCredits(value: number): string {
   return Math.round(value).toLocaleString();
 }
 
+/**
+ * The credit balance as one readable phrase, or `null` when there is nothing
+ * true to say about it.
+ *
+ * Deliberately more permissive than the account switcher's `rowCredits`, which
+ * requires `hasCredits`. Once a plan window is spent, credits are the only
+ * thing still answering "can I keep working" — so a balance the backend
+ * reported is shown even if that flag says otherwise. Silence in that moment
+ * reads as "you are out", which is the opposite of the truth.
+ *
+ * The balance arrives as a STRING and is formatted only when it parses as a
+ * number: the backend has been seen to send `3850.0000001`, and it may equally
+ * send something already worded, which must survive untouched.
+ */
+export function codexCreditsLabel(credits: CodexCredits | null | undefined): string | null {
+  if (!credits) return null;
+  if (credits.unlimited) return "Unlimited";
+  const raw = credits.balance?.trim();
+  if (!raw) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? codexFmtCredits(parsed) : raw;
+}
+
 // ── Detection / formatting ───────────────────────────────────────────────────
 
 export function isCodexProvider(provider: { id?: string }): boolean {

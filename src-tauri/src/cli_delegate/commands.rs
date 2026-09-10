@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::bridge::{self, BridgeState, BRIDGE_FORMAT_VERSION};
 use super::inbox::Inbox;
+use super::mcp::{self, clients::McpClientSession};
 use super::mirror;
 
 /// What the frontend reports when it starts a dispatched task.
@@ -211,6 +212,25 @@ pub async fn aurora_mcp_client_config() -> Result<McpClientConfig, String> {
         args: vec!["mcp".to_string()],
         snippet,
     })
+}
+
+/// Which agents are connected to this Aurora over MCP right now.
+///
+/// The settings page could explain how to connect one and could not say
+/// whether any had — the wrong way round for a switch that lets another
+/// program drive your editor.
+///
+/// Reads a directory rather than any live state, because each connection is a
+/// separate `aurora mcp` process this one never speaks to. See
+/// [`crate::cli_delegate::mcp::clients`] for why the entries carry heartbeats.
+///
+/// `spawn_blocking`: this reads and sometimes prunes files, and a sync command
+/// body runs on the UI thread in Tauri v2.
+#[tauri::command]
+pub async fn aurora_mcp_clients() -> Result<Vec<McpClientSession>, String> {
+    tokio::task::spawn_blocking(mcp::clients::list_live)
+        .await
+        .map_err(|error| format!("Listing MCP connections failed: {error}"))
 }
 
 #[cfg(test)]

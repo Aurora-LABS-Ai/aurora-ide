@@ -1,4 +1,5 @@
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
+import type { ModelReasoning } from "@/kernel/types/database";
 
 /**
  * Per-model default pricing (USD per 1M tokens). Mirrors the Rust
@@ -41,6 +42,26 @@ export interface ProviderCatalogPreset {
   requiresApiKey: boolean;
   /** Keyed by API model id; missing entries fall back to user input. */
   modelPricing?: Record<string, ProviderCatalogModelPricing>;
+  /**
+   * Per-model context window, for a provider whose models do not share one.
+   * Keyed like {@link modelPricing}; anything absent falls back to
+   * {@link contextWindow}.
+   *
+   * MiniMax is why: M3 is 1,000,000 tokens and the M2.x family is 204,800, so
+   * one provider-wide figure has to be wrong for one of them. Too GENEROUS is
+   * the dangerous direction — the context ring reads comfortable, compaction
+   * never fires, and the provider rejects the request.
+   */
+  modelContextWindows?: Record<string, number>;
+  /**
+   * Per-model reasoning control to seed, keyed like {@link modelPricing}.
+   *
+   * Seeded rows otherwise arrive with no reasoning profile at all, which means
+   * no effort picker in the composer until the user edits the model row by
+   * hand. A preset that knows its models take an effort tier says so here so
+   * the first chat already has the control. Rust catalog presets omit this.
+   */
+  modelReasoning?: Record<string, ModelReasoning>;
   /**
    * Transport headers to seed onto the created provider. Used by frontend
    * presets (e.g. AgentRouter) that require specific headers to authenticate

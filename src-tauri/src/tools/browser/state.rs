@@ -64,8 +64,40 @@ const SNAPSHOT_EXPR: &str = r#"(() => {
       hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
     }
   }
+  // Counted inside BODY, not the whole document. Aurora's own furniture —
+  // the drawn pointer, its press ripple, the inspector overlay — is appended
+  // to documentElement, outside body, so it never counts. Before this the
+  // ripple's own removal came back as `elements_removed: 1` on a click that
+  // had done nothing at all, and the model read it as a menu that opened and
+  // closed itself.
   let elements = 0;
-  try { elements = document.getElementsByTagName('*').length; } catch (e) {}
+  try { elements = document.body ? document.body.getElementsByTagName('*').length : 0; } catch (e) {}
+
+  // ---- What the FORM holds --------------------------------------------
+  // innerText does not include an input's value, so a fill that worked
+  // perfectly used to read as `nothing_observable_changed` (21 of 33 fills in
+  // twelve real sessions). Values are fingerprinted separately so a fill, a
+  // toggle, a selection or a typed character all register as a change.
+  let values = 0;
+  try {
+    values = 0x811c9dc5;
+    const mix = (s) => {
+      for (let i = 0; i < s.length; i++) {
+        values ^= s.charCodeAt(i);
+        values = (values + (values << 1) + (values << 4) + (values << 7) + (values << 8) + (values << 24)) >>> 0;
+      }
+    };
+    const fields = document.body
+      ? document.body.querySelectorAll('input,textarea,select,[contenteditable=""],[contenteditable="true"]')
+      : [];
+    for (const f of fields) {
+      const tag = f.tagName;
+      if (tag === 'INPUT' && (f.type === 'checkbox' || f.type === 'radio')) mix(f.checked ? '1' : '0');
+      else if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') mix(String(f.value || ''));
+      else mix(String(f.textContent || '').slice(0, 2000));
+      mix('|');
+    }
+  } catch (e) { values = 0; }
   const active = document.activeElement;
   let focus = null;
   try {
@@ -92,6 +124,7 @@ const SNAPSHOT_EXPR: &str = r#"(() => {
     content: {
       text_length: length,
       text_hash: hash,
+      values_hash: values,
       elements: elements,
       focus: focus,
       mutations: (aurora && aurora.__mutations) ? aurora.__mutations.count : null,
@@ -344,6 +377,12 @@ pub fn change_between(before: &Value, after: &Value) -> Value {
             }
         }
 
+        // A field's value is not part of the rendered text, so a fill, a
+        // toggle or a selection would otherwise register as nothing at all.
+        if at(before, "values_hash") != at(after, "values_hash") {
+            change.insert("form_values_changed".into(), json!(true));
+        }
+
         // An overlay, a menu or a toast that mounted — the halo case, which no
         // amount of height-watching catches because it is out of flow.
         let (elements_before, elements_after) =
@@ -480,6 +519,38 @@ mod tests {
         // the count next to it said errors had happened.
         assert!(SNAPSHOT_EXPR.contains("entry.message"));
         assert!(!SNAPSHOT_EXPR.contains("entry.text"));
+    }
+
+    #[test]
+    fn aurora_furniture_is_never_counted_as_a_page_element() {
+        // The pointer, its ripple and the inspector overlay all live on
+        // documentElement. A count over the whole document saw the ripple
+        // finish and reported `elements_removed: 1` for a click that changed
+        // nothing — evidence of a menu that never existed.
+        assert!(SNAPSHOT_EXPR.contains("document.body.getElementsByTagName('*')"));
+        assert!(!SNAPSHOT_EXPR.contains("document.getElementsByTagName('*')"));
+    }
+
+    #[test]
+    fn form_values_are_fingerprinted_separately_from_the_text() {
+        // innerText never includes an input's value, so without this a fill
+        // that worked read as `nothing_observable_changed`.
+        assert!(SNAPSHOT_EXPR.contains("values_hash"));
+        assert!(SNAPSHOT_EXPR.contains("f.checked ? '1' : '0'"));
+    }
+
+    #[test]
+    fn a_fill_that_only_changed_a_value_is_reported() {
+        let mut before = showing("Sign in", 40, json!("input#email"), 3);
+        let mut after = showing("Sign in", 40, json!("input#email"), 13);
+        before["content"]["values_hash"] = json!(1);
+        after["content"]["values_hash"] = json!(2);
+        let change = change_between(&before, &after);
+        assert_eq!(change.get("form_values_changed"), Some(&json!(true)));
+        assert!(
+            change.get("nothing_observable_changed").is_none(),
+            "a value that changed is a change: {change}"
+        );
     }
 
     #[test]

@@ -96,11 +96,14 @@ const TOOL_GERUND: Record<string, string> = {
   browser_navigate: "Browsing to",
   browser_click: "Clicking",
   browser_fill: "Typing into",
+  browser_type: "Typing",
   browser_scroll: "Scrolling",
   browser_screenshot: "Capturing",
   browser_get_console_logs: "Reading console logs",
   browser_page_outline: "Mapping page",
   browser_inspect_element: "Inspecting",
+  browser_wait_for: "Waiting for",
+  browser_evaluate: "Running script in the page",
 };
 
 /** Tools whose path arg names a FILE → file-extension icon. */
@@ -330,7 +333,20 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
   }
   if (name === "browser_click" || name === "browser_inspect_element") {
     const selector = asStr(args.selector);
-    return selector ? `element "${clip(selector, 40)}"` : null;
+    if (selector) return `element "${clip(selector, 40)}"`;
+    // A click by visible text names the control the way a person would.
+    const text = asStr(args.text);
+    return text ? `"${clip(text, 40)}"` : null;
+  }
+  if (name === "browser_type") {
+    const text = asStr(args.text);
+    return text ? `"${clip(text, 40)}"` : null;
+  }
+  if (name === "browser_wait_for") {
+    const selector = asStr(args.selector);
+    const text = asStr(args.text);
+    const url = asStr(args.url_contains);
+    return selector ? `"${clip(selector, 40)}"` : text ? `"${clip(text, 40)}"` : url ? clip(url, 44) : null;
   }
   if (name === "browser_fill" || name === "browser_screenshot") {
     const selector = asStr(args.selector);

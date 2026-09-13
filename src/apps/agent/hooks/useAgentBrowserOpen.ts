@@ -16,6 +16,7 @@ import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
+import { showAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 
 export function useAgentBrowserOpen(): void {
@@ -30,6 +31,13 @@ export function useAgentBrowserOpen(): void {
       // Reveal (or refocus) the Browser panel — mounting it builds the
       // embedded webview the waiting Rust tool will then drive.
       useAgentWorkspaceStore.getState().openTab("browser");
+      // Rust also sends this when the webview EXISTS but is hidden — the
+      // user was on another tab, or a menu had dropped over the page. If
+      // the tab was already the live one, `openTab` changes nothing and no
+      // mount effect runs, so re-show here. Self-gated: it only shows when
+      // the dock is open and Browser is the active tab, so it can never
+      // resurrect the webview over another tab.
+      void showAgentBrowser();
     })
       .then((off) => {
         if (cancelled) off();

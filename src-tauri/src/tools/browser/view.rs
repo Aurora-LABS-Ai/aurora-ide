@@ -46,12 +46,13 @@ const MAX_ELEMENTS: usize = 120;
 /// live document before it is returned, so a selector that comes out of here
 /// resolves to exactly the element described. Anything that cannot be made
 /// unique is returned WITHOUT a selector rather than with a wrong one.
-fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
+fn reader_expr(scope: &str, viewport_only: bool, include_text: bool, query: &str) -> String {
     format!(
         r#"(() => {{
   const SCOPE = {scope};
   const VIEWPORT_ONLY = {viewport_only};
   const WITH_TEXT = {include_text};
+  const QUERY = {query};
   const MAX = {max};
 
   const root = SCOPE ? document.querySelector(SCOPE) : document.body;
@@ -110,15 +111,18 @@ fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
 
   const out = [];
   let seen = 0, skipped = 0;
+  const q = QUERY ? String(QUERY).toLowerCase() : null;
   for (const el of root.querySelectorAll(INTERACTIVE + ',' + LANDMARK)) {{
     const r = el.getBoundingClientRect();
     if (!visible(el, r)) {{ skipped++; continue; }}
-    seen++;
-    if (out.length >= MAX) continue;
 
     const tag = el.tagName.toLowerCase();
     const label = (el.getAttribute('aria-label') || el.getAttribute('placeholder')
       || (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ')).slice(0, 80);
+    if (q && !(label.toLowerCase().includes(q) || (el.id || '').toLowerCase().includes(q)
+      || (typeof el.value === 'string' && el.value.toLowerCase().includes(q)))) continue;
+    seen++;
+    if (out.length >= MAX) continue;
 
     const item = {{
       tag,
@@ -145,14 +149,24 @@ fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
     url: location.href,
     title: document.title || null,
     scope: SCOPE || 'body',
+    query: QUERY || undefined,
     viewport_only: VIEWPORT_ONLY,
     viewport: {{ width: vw, height: vh }},
-    view_range: {{
+    // What this ANSWER covers, not what the viewport does. A whole-page scan
+    // used to report the viewport's range beside elements it had returned
+    // from past that range — a 42% claim next to a hit at Y 2357
+    // (aurora-tool-findings.md, 2026-09-11, finding 4).
+    view_range: VIEWPORT_ONLY ? {{
       from_y: Math.round(window.scrollY),
       to_y: Math.round(window.scrollY + vh),
       page_height: Math.round(pageHeight),
       // The honest headline: what fraction of the page this answer covers.
-      covers_percent: pageHeight > 0 ? Math.round((vh / pageHeight) * 100) : 100,
+      covers_percent: pageHeight > 0 ? Math.min(100, Math.round((vh / pageHeight) * 100)) : 100,
+    }} : {{
+      from_y: 0,
+      to_y: Math.round(pageHeight),
+      page_height: Math.round(pageHeight),
+      covers_percent: 100,
     }},
     elements: out,
     element_count: out.length,
@@ -164,6 +178,7 @@ fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
         scope = scope,
         viewport_only = viewport_only,
         include_text = include_text,
+        query = query,
         max = MAX_ELEMENTS,
     )
 }
@@ -178,14 +193,28 @@ fn reader_expr(scope: &str, viewport_only: bool, include_text: bool) -> String {
 /// happened, and losing its result because the follow-up read stumbled would be
 /// the worst of both.
 pub async fn read(manager: &BrowserManager, scope: Option<&str>, viewport_only: bool) -> Value {
+    read_filtered(manager, scope, viewport_only, None).await
+}
+
+/// [`read`], narrowed to elements whose label, id or value contains `query`.
+pub async fn read_filtered(
+    manager: &BrowserManager,
+    scope: Option<&str>,
+    viewport_only: bool,
+    query: Option<&str>,
+) -> Value {
     let scope_arg = match scope {
         Some(s) => json!(s).to_string(),
+        None => "null".to_string(),
+    };
+    let query_arg = match query.map(str::trim).filter(|q| !q.is_empty()) {
+        Some(q) => json!(q).to_string(),
         None => "null".to_string(),
     };
     match manager
         .eval_with_result(
             AGENT_BROWSER_LABEL,
-            &reader_expr(&scope_arg, viewport_only, true),
+            &reader_expr(&scope_arg, viewport_only, true, &query_arg),
         )
         .await
     {
@@ -240,6 +269,14 @@ Text and structure only. For how it LOOKS — spacing, alignment, colour, overfl
                         "type": "string",
                         "description": "CSS selector to look inside. Omit for the whole page."
                     },
+                    "selector": {
+                        "type": "string",
+                        "description": "Same as `scope`. Either spelling works."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Case-insensitive filter on an element's visible text, id or value — e.g. `save` to find the Save button."
+                    },
                     "viewport_only": {
                         "type": "boolean",
                         "description": "Only elements currently in view. Default true."
@@ -258,13 +295,15 @@ Text and structure only. For how it LOOKS — spacing, alignment, colour, overfl
             .and_then(Value::as_bool)
             .unwrap_or(true);
 
-        let value = read(
+        let value = read_filtered(
             &self.manager,
             input
                 .get("scope")
+                .or_else(|| input.get("selector"))
                 .and_then(Value::as_str)
                 .filter(|s| !s.trim().is_empty()),
             viewport_only,
+            input.get("query").and_then(Value::as_str),
         )
         .await;
         if let Some(error) = value.get("error").and_then(Value::as_str) {
@@ -284,14 +323,14 @@ mod tests {
     fn every_returned_selector_is_verified_unique_before_it_is_handed_over() {
         // The whole value of this tool. A selector that matches two elements is
         // worse than none: the click succeeds, on the wrong thing, silently.
-        let js = reader_expr("null", true, true);
+        let js = reader_expr("null", true, true, "null");
         assert!(js.contains("querySelectorAll(sel).length === 1"));
         assert!(js.contains("selector_note"));
     }
 
     #[test]
     fn selector_preference_runs_stable_attributes_before_positional_paths() {
-        let js = reader_expr("null", true, true);
+        let js = reader_expr("null", true, true, "null");
         let id_at = js.find("el.id && unique").expect("id first");
         let testid_at = js.find("data-testid").expect("test ids next");
         let nth_at = js.find("nth-of-type").expect("positional last");
@@ -303,7 +342,7 @@ mod tests {
     fn the_result_says_how_much_of_the_page_it_covers() {
         // Without this the agent reads a viewport answer as a whole-page one
         // and concludes a below-the-fold element does not exist.
-        let js = reader_expr("null", true, true);
+        let js = reader_expr("null", true, true, "null");
         assert!(js.contains("covers_percent"));
         assert!(js.contains("page_height"));
         assert!(js.contains("truncated"));
@@ -317,15 +356,42 @@ mod tests {
             &serde_json::json!("a[title=\"x\"]").to_string(),
             false,
             true,
+            &serde_json::json!("sa\"ve").to_string(),
         );
         assert!(js.contains(r#"const SCOPE = "a[title=\"x\"]""#));
+        assert!(js.contains(r#"const QUERY = "sa\"ve""#));
+    }
+
+    /// The reported confusion: models called `browser_view` with `query`
+    /// (browser_page_outline's word) and were refused for the spelling.
+    #[test]
+    fn a_query_narrows_the_list_and_counts_only_what_matches() {
+        let js = reader_expr("null", true, true, "\"save\"");
+        assert!(js.contains("label.toLowerCase().includes(q)"));
+        // The filter runs BEFORE `seen++`, so `matched_total` is the number
+        // of matches, not the number of elements on the page.
+        let filter_at = js.find("includes(q)").unwrap();
+        let seen_at = js.find("seen++").unwrap();
+        assert!(filter_at < seen_at);
+    }
+
+    /// A whole-page answer must describe itself as one. The finding: two
+    /// back-to-back calls differing only in `viewport_only` returned a
+    /// byte-identical `view_range`, one of them beside an element it placed
+    /// outside that range.
+    #[test]
+    fn a_whole_page_scan_reports_the_whole_page_as_its_range() {
+        let js = reader_expr("null", false, true, "null");
+        assert!(js.contains("view_range: VIEWPORT_ONLY ?"));
+        assert!(js.contains("covers_percent: 100"));
+        assert!(js.contains("to_y: Math.round(pageHeight)"));
     }
 
     #[test]
     fn hidden_elements_are_counted_but_never_offered() {
         // `display:none` nodes have real selectors and are unclickable. Offering
         // them produces a click that fails for a reason the agent cannot see.
-        let js = reader_expr("null", true, true);
+        let js = reader_expr("null", true, true, "null");
         assert!(js.contains("visibility === 'hidden'"));
         assert!(js.contains("hidden_or_offscreen"));
     }

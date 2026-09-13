@@ -8,34 +8,46 @@
 //! reused browser, so the chat timeline reads like a recipe, not a debugger
 //! session juggling windows.
 //!
-//! Eight tools:
-//! * **Read-only** (`requires_permission == false`): `browser_screenshot`,
-//!   `browser_get_console_logs`, `browser_page_outline`,
-//!   `browser_inspect_element`.
-//! * **Page interaction** (`requires_permission == true`): `browser_navigate`,
-//!   `browser_click`, `browser_fill`, `browser_scroll`.
+//! The roster is [`TOOL_NAMES`]; the permission-gated half is
+//! [`TOOLS_REQUIRING_PERMISSION`].
 //!
 //! `browser_navigate` is the entry point — it opens the right-rail panel and
 //! loads a URL. The others operate on whatever the panel is currently showing.
 //!
-//! `browser_page_outline` is what makes the `selector`-taking tools usable. It
-//! is the only way the agent can DISCOVER a selector: a screenshot is pixels,
-//! and `browser_inspect_element` needs the selector before it can help. Without
-//! it the model could only guess structural paths off an image, which is why
-//! every model produced brittle `div > div:nth-of-type(2) > …` chains and then
-//! looped retrying them.
+//! `browser_view` / `browser_page_outline` are what make the `selector`-taking
+//! tools usable. They are the only way the agent can DISCOVER a selector: a
+//! screenshot is pixels, and `browser_inspect_element` needs the selector
+//! before it can help. Without them the model could only guess structural
+//! paths off an image, which is why every model produced brittle
+//! `div > div:nth-of-type(2) > …` chains and then looped retrying them.
 //!
-//! Removed, not merely hidden:
+//! ## Input is REAL input
+//!
+//! `browser_click`, `browser_fill`, `browser_type` and `browser_press_key`
+//! drive the browser's own input pipeline through the DevTools channel
+//! (`input_tools`). Twelve real sessions with `el.click()` measured the cost
+//! of the synthetic version: a Radix menu trigger answered `ok: true` twice
+//! while never opening (no `pointerdown` was ever dispatched), and 21 of 33
+//! fills read as "nothing changed" because a value is not rendered text. A
+//! click is now a press at the element's centre, checked first against
+//! `elementFromPoint` so an overlay covering the target is reported instead of
+//! silently receiving the click. Script-side `el.click()` remains only as the
+//! fallback where there is no DevTools channel (macOS / Linux).
+//!
+//! ## Removed, not merely hidden
 //! * `browser_open` / `browser_close` / `browser_list_windows` — window
 //!   management is meaningless with exactly one embedded browser.
-//! * `browser_eval` — arbitrary JS in the page is a foot-gun. `BrowserManager`
-//!   still uses eval internally to implement the other tools.
 //! * `browser_get_dom` — burned up to 200 KB of context against an 8 KiB
-//!   result clamp (`conversation.rs::MAX_TOOL_RESULT_LENGTH`), so the model saw
-//!   a snapshot truncated mid-tag. `browser_page_outline` covers the reason
-//!   anyone wanted it (finding a selector) in a few KB.
-//! * `browser_get_url`, `browser_wait_for` — folded into the tools that need
-//!   them (`browser_click` auto-waits, etc.).
+//!   result clamp, so the model saw a snapshot truncated mid-tag.
+//!   `browser_view` covers the reason anyone wanted it (finding a selector) in
+//!   a few KB, and `browser_evaluate` can return any slice of the DOM on
+//!   request.
+//! * `browser_get_url` — folded into every result's `url`.
+//!
+//! `browser_evaluate` was once removed as "a foot-gun". It is back, gated by
+//! the permission gate like every other acting tool, because the alternative
+//! was worse: the model with no way to read a store, call a page function or
+//! test a selector expression wrote shell scripts to fetch HTML instead.
 //!
 //! `browser_screenshot` returns a structured string containing an
 //! `<aurora_image media_type="image/png">BASE64</aurora_image>` marker
@@ -67,6 +79,10 @@ use crate::services::browser_runtime::{BrowserManager, BrowserResult};
 mod a11y_tools;
 /// Viewport and media emulation.
 mod devtools_tools;
+/// Running script in the page and getting the answer back.
+mod evaluate_tool;
+/// One fill strategy per kind of field, with the value read back.
+mod fill;
 /// The doctrine text, compiled in.
 mod guide;
 /// Telling the user when the agent is driving the panel.
@@ -88,6 +104,8 @@ mod reachability;
 pub(crate) mod state;
 /// What is on screen, with verified selectors.
 mod view;
+/// Waiting for the page to reach a state, bounded.
+mod wait_tools;
 
 /// The one browser the agent drives: the agent window's right-dock panel.
 const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
@@ -282,6 +300,11 @@ pub const TOOL_NAMES: &[&str] = &[
     "browser_press_key",
     "browser_hover",
     "browser_a11y_tree",
+    // Added 2026-09-11 after measuring twelve real sessions: keystroke typing,
+    // waiting for a condition, and running script in the page.
+    "browser_type",
+    "browser_wait_for",
+    "browser_evaluate",
 ];
 
 /// Tools that opt into the Phase 4 permission gate.
@@ -295,6 +318,8 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
     "browser_press_key",
     "browser_hover",
     "browser_a11y_tree",
+    "browser_type",
+    "browser_evaluate",
 ];
 
 /// Tools whose result is an image (a vision content block on the next
@@ -418,6 +443,11 @@ pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     driven(Arc::new(a11y_tools::BrowserAccessibilityTreeTool::new(
         manager.clone(),
     )));
+    driven(Arc::new(input_tools::BrowserTypeTool::new(manager.clone())));
+    driven(Arc::new(wait_tools::BrowserWaitForTool::new(manager.clone())));
+    driven(Arc::new(evaluate_tool::BrowserEvaluateTool::new(
+        manager.clone(),
+    )));
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +472,24 @@ async fn ensure_agent_browser(
     initial_url: Option<&str>,
 ) -> Result<(), ToolError> {
     if manager.has_window(AGENT_BROWSER_LABEL) {
+        if manager.is_visible(AGENT_BROWSER_LABEL) {
+            return Ok(());
+        }
+        // The webview exists but the user is on another dock tab (or a menu
+        // is over the panel). Ask the UI to bring the Browser tab forward —
+        // the agent is about to drive the page, and the person should see
+        // that happen — and give it a moment. Not an error if it stays
+        // hidden: the tools still work, screenshots say the frame may be
+        // stale, and a modal the user has open must not be fought over.
+        manager
+            .request_open_agent_browser(initial_url)
+            .map_err(ToolError::Execution)?;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if manager.is_visible(AGENT_BROWSER_LABEL) {
+                break;
+            }
+        }
         return Ok(());
     }
     manager
@@ -470,6 +518,13 @@ async fn ensure_agent_browser(
 fn same_page(a: &str, b: &str) -> bool {
     let normalize = |url: &str| {
         let url = url.trim();
+        // A `file://` URL is loaded through Aurora's own scheme, so the page
+        // reports `http://aurora-page.localhost/<path>` while the caller keeps
+        // saying `file:///<path>`. Both name one file; comparing them raw
+        // made every re-navigate to a local page a silent reload reported as
+        // `reloaded: false` (aurora-tool-findings.md, 2026-09-11, finding 1).
+        let served = crate::services::local_page::to_served_url(url);
+        let url = served.as_deref().unwrap_or(url);
         let (head, fragment) = match url.split_once('#') {
             Some((head, fragment)) => (head, Some(fragment)),
             None => (url, None),
@@ -700,6 +755,208 @@ fn unwrap_browser_result(result: BrowserResult) -> Result<Value, ToolError> {
     Ok(result.value.unwrap_or(Value::Null))
 }
 
+/// Find the element an action is about to touch, and the point to touch it at.
+///
+/// Resolves by `selector` or by visible `text`, scrolls the element into view
+/// (instantly — a smooth-scrolling page would otherwise still be moving when
+/// the pointer lands), takes the centre of its box, and asks the page what is
+/// actually painted at that point. The answer is one of:
+///
+/// - `self` / `descendant` — the element is what a press there would hit.
+/// - `ancestor` — the element has `pointer-events: none` or no painted box of
+///   its own; the press hits its parent, which is what a person's press would
+///   do too. Allowed, and reported.
+/// - `covered` — something else is on top: a modal backdrop, a sticky header,
+///   a toast, a cookie banner. This is the case that used to produce a click
+///   that "registered" on the wrong thing and reported success.
+///
+/// Text matching: exact (case-insensitive, whitespace-collapsed) first, then
+/// prefix, then substring, over the interactive elements a person could
+/// press. Two equally good matches is an error that lists them, never a coin
+/// toss.
+///
+/// Executed under jsdom by `locate-target.test.ts` (frontend), which extracts
+/// this constant from the Rust source — keep the `r#"(() => {` framing.
+const LOCATE_TARGET_JS: &str = r#"(() => {
+  const SEL = __SEL__, TEXT = __TEXT__;
+  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const describe = (el) => {
+    if (!el || !el.tagName) return null;
+    let d = el.tagName.toLowerCase();
+    if (el.id) d += '#' + el.id;
+    else if (typeof el.className === 'string' && el.className.trim()) d += '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.');
+    const role = el.getAttribute && el.getAttribute('role');
+    if (role) d += '[role=' + role + ']';
+    const t = norm(el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('placeholder')) || el.innerText || el.textContent || (typeof el.value === 'string' ? el.value : '')).slice(0, 60);
+    return t ? d + ' "' + t + '"' : d;
+  };
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && cs.opacity !== '0';
+  };
+
+  let el = null, ambiguous = null;
+  if (SEL) {
+    el = document.querySelector(SEL);
+    if (!el) return { found: false, by: 'selector' };
+  } else {
+    const CAND = 'a,button,input,select,textarea,summary,label,option,li,[role="button"],[role="link"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"],[role="option"],[role="treeitem"],[onclick],[tabindex]:not([tabindex="-1"])';
+    const want = norm(TEXT).toLowerCase();
+    const labelOf = (c) => norm(c.getAttribute('aria-label') || (c.tagName === 'INPUT' && (c.type === 'button' || c.type === 'submit') ? c.value : '') || c.innerText || c.textContent || c.getAttribute('title') || c.getAttribute('placeholder')).toLowerCase();
+    const exact = [], prefix = [], partial = [];
+    for (const c of document.body.querySelectorAll(CAND)) {
+      if (!visible(c)) continue;
+      const l = labelOf(c);
+      if (!l) continue;
+      if (l === want) exact.push(c);
+      else if (l.startsWith(want)) prefix.push(c);
+      else if (l.includes(want)) partial.push(c);
+    }
+    // A container whose text merely CONTAINS the target text loses to the
+    // control inside it that IS the text, or every click on "Save" would
+    // land on the form around the button.
+    const tighten = (list) => list.filter((c) => !list.some((o) => o !== c && c.contains(o)));
+    const pick = tighten(exact).length ? tighten(exact) : tighten(prefix).length ? tighten(prefix) : tighten(partial);
+    if (!pick.length) return { found: false, by: 'text' };
+    if (pick.length > 1) return { found: true, ambiguous: pick.slice(0, 8).map(describe), by: 'text' };
+    el = pick[0];
+  }
+
+  try { el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); } catch (e) {}
+  const r = el.getBoundingClientRect();
+  if (!visible(el)) return { found: true, visible: false, description: describe(el) };
+  const x = Math.min(Math.max(r.left + r.width / 2, 0), window.innerWidth - 1);
+  const y = Math.min(Math.max(r.top + r.height / 2, 0), window.innerHeight - 1);
+  let hit = null;
+  try { hit = document.elementFromPoint(x, y); } catch (e) {}
+  // Shadow DOM: elementFromPoint stops at the host. Descend while the host
+  // has an open shadow root with something at that point.
+  let probe = hit;
+  while (probe && probe.shadowRoot && typeof probe.shadowRoot.elementFromPoint === 'function') {
+    const inner = probe.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === probe) break;
+    probe = inner;
+  }
+  hit = probe || hit;
+  let relation = 'covered';
+  if (!hit) relation = 'unknown';
+  else if (hit === el) relation = 'self';
+  else if (el.contains(hit)) relation = 'descendant';
+  else if (hit.contains(el)) relation = 'ancestor';
+  else if (el.getRootNode && el.getRootNode() !== document && el.getRootNode().host && hit.contains(el.getRootNode().host)) relation = 'descendant';
+  return {
+    found: true,
+    visible: true,
+    x, y,
+    tag: el.tagName.toLowerCase(),
+    description: describe(el),
+    disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+    hit: relation,
+    covered_by: relation === 'covered' ? describe(hit) : undefined,
+    box: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+  };
+})()"#;
+
+/// How long [`locate_target`] keeps re-checking a covered or missing target.
+///
+/// Overlays fade, menus animate shut, and async-rendered buttons arrive late.
+/// Retrying briefly turns a race into a wait; the bound keeps a genuinely
+/// covered element from stalling the turn.
+const LOCATE_POLL_MS: u64 = 150;
+
+/// Resolve the element for an action, retrying up to `wait_ms` while it is
+/// missing, invisible, or covered. Returns the page's answer (see
+/// [`LOCATE_TARGET_JS`]) once it is actionable, or the most useful error.
+pub(super) async fn locate_target(
+    manager: &BrowserManager,
+    selector: Option<&str>,
+    text: Option<&str>,
+    wait_ms: u64,
+) -> Result<Value, ToolError> {
+    let (selector, text) = match (
+        selector.map(str::trim).filter(|s| !s.is_empty()),
+        text.map(str::trim).filter(|t| !t.is_empty()),
+    ) {
+        (Some(s), _) => (Some(s), None),
+        (None, Some(t)) => (None, Some(t)),
+        (None, None) => {
+            return Err(ToolError::InvalidInput(
+                "give either `selector` (from browser_view) or `text` (the visible label of the \
+                 control to act on)."
+                    .into(),
+            ))
+        }
+    };
+    let script = LOCATE_TARGET_JS
+        .replace("__SEL__", &json!(selector).to_string())
+        .replace("__TEXT__", &json!(text).to_string());
+    let named = selector
+        .map(|s| format!("`{s}`"))
+        .or_else(|| text.map(|t| format!("text \"{t}\"")))
+        .unwrap_or_default();
+
+    let deadline = std::time::Instant::now() + Duration::from_millis(wait_ms);
+    let last: Value;
+    loop {
+        let result = manager
+            .eval_with_result(AGENT_BROWSER_LABEL, &script)
+            .await
+            .map_err(ToolError::Execution)?;
+        let current = unwrap_browser_result(result)?;
+        let found = current.get("found").and_then(Value::as_bool) == Some(true);
+        let visible = current.get("visible").and_then(Value::as_bool) == Some(true);
+        let ambiguous = current.get("ambiguous").is_some();
+        let covered = current.get("hit").and_then(Value::as_str) == Some("covered");
+        let settled = ambiguous || (found && visible && !covered);
+        if settled || std::time::Instant::now() >= deadline {
+            last = current;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(LOCATE_POLL_MS)).await;
+    }
+
+    if let Some(list) = last.get("ambiguous").and_then(Value::as_array) {
+        let listed: Vec<String> = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        return Err(ToolError::Execution(format!(
+            "{named} matches {} visible controls: {}. Use a selector from browser_view to say \
+             which one.",
+            listed.len(),
+            listed.join("; ")
+        )));
+    }
+    if last.get("found").and_then(Value::as_bool) != Some(true) {
+        return Err(ToolError::Execution(format!(
+            "no element matches {named} on the current page (waited {wait_ms}ms). Run \
+             browser_view to get selectors that exist on this page, or browser_wait_for if it \
+             renders later."
+        )));
+    }
+    if last.get("visible").and_then(Value::as_bool) != Some(true) {
+        return Err(ToolError::Execution(format!(
+            "{named} exists but is not visible (hidden by CSS or has no size), so it cannot be \
+             acted on. If it appears after another action, do that first."
+        )));
+    }
+    if last.get("hit").and_then(Value::as_str) == Some("covered") {
+        let cover = last
+            .get("covered_by")
+            .and_then(Value::as_str)
+            .unwrap_or("another element");
+        return Err(ToolError::Execution(format!(
+            "{named} is covered by {cover} at the point where it would be pressed, so a press \
+             would land on that instead. Dismiss it first (browser_press_key Escape, or click \
+             its close control) — or, if the covering element is what you meant, click that."
+        )));
+    }
+    Ok(last)
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1 — read-only
 // ---------------------------------------------------------------------------
@@ -786,6 +1043,10 @@ impl ToolExecutor for BrowserPageOutlineTool {
                         "type": "string",
                         "description": "Optional CSS selector to scope the scan to one region (e.g. `main`, `#sidebar`). Omit to scan the whole page."
                     },
+                    "scope": {
+                        "type": "string",
+                        "description": "Same as `selector` — the region to scan. Either spelling works."
+                    },
                     "query": {
                         "type": "string",
                         "description": "Optional case-insensitive filter on the element's visible text or id — e.g. `save` to find the Save button."
@@ -802,7 +1063,13 @@ impl ToolExecutor for BrowserPageOutlineTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         ensure_agent_browser(&self.manager, None).await?;
-        let scope = input.get("selector").and_then(Value::as_str);
+        // `scope` is browser_view's name for the same thing; models carry it
+        // over, and a rejected call for a spelling is a wasted request.
+        let scope = input
+            .get("selector")
+            .or_else(|| input.get("scope"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty());
         let query = input.get("query").and_then(Value::as_str);
         let limit = input
             .get("limit")
@@ -897,16 +1164,19 @@ impl ToolExecutor for BrowserScreenshotTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_screenshot".into(),
-            description: "Capture a PNG screenshot of the agent window's right-rail Browser panel \
-                (or a CSS selector within it). The image is returned as a vision content block on \
-                the next turn so vision-capable models (Claude, GPT-4V) can SEE the page directly. \
-                Useful for debugging visual bugs, verifying UI changes, or confirming a feature \
-                works after edits."
+            description: "Capture what the Browser panel shows, as an image you can see on the \
+                next turn. Default: the viewport, exactly as the user sees it. `selector`: just \
+                that element, cropped from the real frame after scrolling it into view — works \
+                for fixed and portalled elements like dialogs. `full_page: true`: the whole \
+                document top to bottom in one image (downscaled to fit, so use the viewport \
+                capture for detail). This is the only tool that answers visual questions — \
+                spacing, alignment, colour, overflow, whether something rendered at all."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "selector": {"type": "string", "description": "Optional CSS selector — captures just that element. Omit for full <body>."}
+                    "selector": {"type": "string", "description": "Optional CSS selector — captures just that element. Omit for the viewport."},
+                    "full_page": {"type": "boolean", "description": "Capture the entire scrollable page, not just the viewport. Ignored when `selector` is given. Default false."}
                 },
                 "required": []
             }),
@@ -916,7 +1186,13 @@ impl ToolExecutor for BrowserScreenshotTool {
         ctx.bail_if_cancelled()?;
         ensure_agent_browser(&self.manager, None).await?;
         let label = AGENT_BROWSER_LABEL;
-        let selector = input.get("selector").and_then(Value::as_str);
+        let selector = input
+            .get("selector")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let full_page = selector.is_none()
+            && input.get("full_page").and_then(Value::as_bool) == Some(true);
         // Take Aurora's own cursor out of the page first. The capture
         // photographs the real webview surface, so anything Aurora drew in
         // there would come back looking like something the SITE rendered — in
@@ -925,11 +1201,12 @@ impl ToolExecutor for BrowserScreenshotTool {
             .manager
             .eval_with_result(label, &pointer::hide_expr())
             .await;
-        let result = self
-            .manager
-            .screenshot(label, selector)
-            .await
-            .map_err(ToolError::Execution)?;
+        let result = if full_page {
+            self.manager.screenshot_full_page(label).await
+        } else {
+            self.manager.screenshot(label, selector).await
+        }
+        .map_err(ToolError::Execution)?;
         let value = unwrap_browser_result(result)?;
         let base64 = value
             .get("base64")
@@ -979,8 +1256,13 @@ impl ToolExecutor for BrowserScreenshotTool {
             ),
         };
 
+        let page_note = value
+            .get("note")
+            .and_then(Value::as_str)
+            .map(|n| format!("\n\n{n}"))
+            .unwrap_or_default();
         Ok(format!(
-            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel} ({w}×{h} px){note}",
+            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel}{scope} ({w}×{h} px){page_note}{note}",
             mt = media_type,
             b64 = base64,
             src = src_attr,
@@ -988,6 +1270,7 @@ impl ToolExecutor for BrowserScreenshotTool {
             sel = selector
                 .map(|s| format!(" — selector `{s}`"))
                 .unwrap_or_default(),
+            scope = if full_page { " — full page" } else { "" },
             w = width,
             h = height,
             note = emulation_note,
@@ -1069,25 +1352,22 @@ treated as a failure."
             .and_then(Value::as_str)
             .is_some_and(|current| same_page(current, url));
 
-        // Whether the last visit produced a page we could read. `state::fallback`
-        // sets this when the page-side namespace never answered, which is what a
-        // WebView error page looks like from here.
-        let last_visit_was_readable = before
-            .get("ready_state")
-            .and_then(Value::as_str)
-            .is_none_or(|ready| ready != "unknown");
+        // Does anything answer at this address? Asked BEFORE the shortcut
+        // below and before the panel is driven. Page reads now go through the
+        // DevTools channel, which answers on WebView2's own error page as
+        // readily as on a real one — so "the page answered a moment ago" no
+        // longer proves anything about the server. Only the probe does, and
+        // against localhost it costs about a millisecond. See `reachability`.
+        let reach = reachability::probe(url).await;
 
-        // The shortcut, and the extra condition that makes it honest.
+        // The shortcut, and the condition that makes it honest.
         //
         // `already_there` alone used to be Aurora citing its own previous visit
         // as proof the page was fine, when the previous visit was the one that
-        // failed. `last_visit_was_readable` is what turns it into evidence: the
-        // snapshot above ran a moment ago and the page answered it, which no
-        // browser error page can do. That is also why this returns before the
-        // reachability probe below — a page that just spoke to us needs no
-        // second opinion, and the probe is a real request that would be pure
-        // added latency here.
-        if already_there && !force_reload && last_visit_was_readable {
+        // failed. The probe is what turns it into evidence: something is
+        // listening there right now, so what the panel shows is that server's
+        // page and not the browser's error document.
+        if already_there && !force_reload && !reach.is_unreachable() {
             // Deliberately does NOT reload. A reload here throws away scroll
             // position, form state and SPA route — invisibly, while reporting
             // success — for a page that was already the one asked for.
@@ -1102,14 +1382,12 @@ treated as a failure."
             .to_string());
         }
 
-        // Does anything answer at this address? Asked BEFORE the panel is
-        // driven, because afterwards there is nothing left to ask: the WebView
-        // loads its own error page for a dead server and that page reads as
-        // healthy from every angle Aurora can see. See `reachability`.
-        let reach = reachability::probe(url).await;
-
         // Reveal + build the right-rail panel (hinting the URL), then drive it.
         ensure_agent_browser(&self.manager, Some(url)).await?;
+        // The document that is there NOW, so the load wait below can tell a
+        // new document from the old one still answering — the only way a
+        // same-URL reload is distinguishable from "nothing happened yet".
+        let previous_document = document_origin(&self.manager).await;
         self.manager
             .navigate(AGENT_BROWSER_LABEL, url)
             .map_err(ToolError::Execution)?;
@@ -1126,6 +1404,11 @@ treated as a failure."
             )));
         }
 
+        // Wait for the NEW document to finish loading, bounded, then settle.
+        // A flat 350ms pause used to be the whole wait, so on any real app the
+        // snapshot said `loading` and the next screenshot was a blank page
+        // read as a broken one.
+        let load = wait_for_load(&self.manager, previous_document).await;
         let after = settled_state(&self.manager).await;
         let status = http_status(&reach);
         Ok(json!({
@@ -1134,6 +1417,14 @@ treated as a failure."
             "panel_was_already_open": was_open,
             "already_there": already_there,
             "reloaded": already_there && force_reload,
+            "load_ms": load.waited_ms,
+            "load_complete": load.complete,
+            "load_note": (!load.complete).then(|| format!(
+                "The page had not finished loading after {}ms (readyState {}). It may still \
+                 be rendering — browser_wait_for a selector or text you expect before reading \
+                 it.",
+                load.waited_ms, load.ready_state
+            )),
             // The server answered — with what, is the model's call. A 404 on a
             // route you are debugging is the answer you came for; a 500 you did
             // not expect is worth knowing before you start reading the DOM.
@@ -1147,6 +1438,81 @@ treated as a failure."
             "state": state::presentable(after),
         })
         .to_string())
+    }
+}
+
+/// How long `browser_navigate` waits for the new document to finish loading.
+///
+/// Generous for a dev server doing a cold compile, short enough that a page
+/// which never settles (a long-polling spinner) is reported as still loading
+/// rather than waited on forever.
+const LOAD_TIMEOUT_MS: u64 = 10_000;
+
+/// A page's `performance.timeOrigin`: the instant its document was created.
+///
+/// Strictly increases with every navigation, including a reload of the same
+/// URL — which URL and readyState cannot tell apart from "the old page is
+/// still here". `None` when nothing answered (no page, an error page).
+async fn document_origin(manager: &BrowserManager) -> Option<f64> {
+    manager
+        .eval_with_result(AGENT_BROWSER_LABEL, "performance.timeOrigin")
+        .await
+        .ok()
+        .filter(|r| r.ok)
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_f64())
+}
+
+struct LoadWait {
+    waited_ms: u64,
+    complete: bool,
+    ready_state: String,
+}
+
+/// Wait until a document NEWER than `previous` reports `readyState complete`.
+///
+/// A read that fails is the old page being torn down or the new one not yet
+/// scriptable; both mean "keep waiting". `about:blank` is never accepted as
+/// the destination — it is what the panel shows before its first real load.
+async fn wait_for_load(manager: &BrowserManager, previous: Option<f64>) -> LoadWait {
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_millis(LOAD_TIMEOUT_MS);
+    let mut ready_state = "unknown".to_string();
+    loop {
+        if let Ok(result) = manager
+            .eval_with_result(
+                AGENT_BROWSER_LABEL,
+                "({ url: location.href, ready: document.readyState, origin: performance.timeOrigin })",
+            )
+            .await
+        {
+            if result.ok {
+                let value = result.value.unwrap_or(Value::Null);
+                let origin = value.get("origin").and_then(Value::as_f64).unwrap_or(0.0);
+                let url = value.get("url").and_then(Value::as_str).unwrap_or("");
+                ready_state = value
+                    .get("ready")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let is_new_document = previous.is_none_or(|p| origin > p + 0.5);
+                if is_new_document && !url.starts_with("about:") && ready_state == "complete" {
+                    return LoadWait {
+                        waited_ms: started.elapsed().as_millis() as u64,
+                        complete: true,
+                        ready_state,
+                    };
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return LoadWait {
+                waited_ms: started.elapsed().as_millis() as u64,
+                complete: false,
+                ready_state,
+            };
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -1174,17 +1540,24 @@ impl ToolExecutor for BrowserClickTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_click".into(),
-            description: "Click the first element matching `selector` in the agent window's \
-                right-rail Browser panel. Automatically scrolls it into view and waits up to 4 \
-                seconds for it to appear, so most async-rendered buttons don't need a separate \
-                wait step."
+            description: "Click an element in the Browser panel with a REAL pointer press — the \
+                browser dispatches pointerdown, mousedown, focus, pointerup, mouseup and click, \
+                exactly as a person's click does, so menus, dropdowns, tabs and switches built \
+                on pointer events open. Name the target by `selector` (from browser_view) or by \
+                its visible `text` (\"Save\", \"Log in\"). Scrolls it into view, waits up to 4 \
+                seconds for it to appear, and checks what is actually painted at the press point: \
+                if a modal, banner or sticky bar covers it, the call FAILS and names the covering \
+                element instead of clicking that. Returns what changed afterwards."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": with_observation(json!({
-                    "selector": {"type": "string"}
+                    "selector": {"type": "string", "description": "CSS selector of the element to click. Get one from browser_view."},
+                    "text": {"type": "string", "description": "Alternative to `selector`: the visible text of the button, link, tab or menu item to click. Exact match wins; two equal matches is an error that lists them."},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button. Default left. Use right for a context menu."},
+                    "double": {"type": "boolean", "description": "Double-click instead of a single click. Default false."}
                 })),
-                "required": ["selector"]
+                "required": []
             }),
         }
     }
@@ -1194,33 +1567,94 @@ impl ToolExecutor for BrowserClickTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         ensure_agent_browser(&self.manager, None).await?;
-        let selector = require_string(&input, "selector")?;
-        // Built-in auto-wait: poll for the element for up to 4 seconds
-        // before clicking. This subsumes the dropped `browser_wait_for`
-        // tool for the 95% case (waiting just before clicking).
-        let _ = self
-            .manager
-            .wait_for(AGENT_BROWSER_LABEL, selector, Some(4_000))
-            .await;
-        // Draw the cursor onto the target and press, so the user watching the
-        // panel sees a click happen instead of the page silently changing. Its
-        // result is ignored on purpose: a pointer that could not be drawn must
-        // never be the reason a click does not run.
-        let _ = self
-            .manager
-            .eval_with_result(
-                AGENT_BROWSER_LABEL,
-                &pointer::point_at_selector_expr(selector, true),
-            )
-            .await;
+        let selector = input.get("selector").and_then(Value::as_str);
+        let text = input.get("text").and_then(Value::as_str);
+        let button = input_tools::MouseButton::parse(input.get("button").and_then(Value::as_str))?;
+        let click_count = if input.get("double").and_then(Value::as_bool) == Some(true) {
+            2
+        } else {
+            1
+        };
+
         let manager = self.manager.clone();
-        let selector = selector.to_string();
+        let (selector, text) = (selector.map(str::to_string), text.map(str::to_string));
+        // Everything from locating onward runs INSIDE the observed action, so
+        // the "before" snapshot is taken before the target is scrolled into
+        // view. Located first and observed second, the scroll a click performs
+        // to reach a below-the-fold element vanished from `changed` — three
+        // clicks that moved the page 0→710 reported it standing still
+        // (aurora-tool-findings.md, 2026-09-11, finding 3).
         let changed = act_and_observe(&self.manager, &input, || async move {
-            let result = manager
-                .click(AGENT_BROWSER_LABEL, &selector)
-                .await
-                .map_err(ToolError::Execution)?;
-            unwrap_browser_result(result)
+            // Where is it, is it visible, and is it actually the thing painted
+            // at its own centre. Waits up to 4s for an async-rendered control,
+            // which covers the common "click right after navigate" case.
+            let located =
+                locate_target(&manager, selector.as_deref(), text.as_deref(), 4_000).await?;
+            let description = located
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("element")
+                .to_string();
+            if located.get("disabled").and_then(Value::as_bool) == Some(true) {
+                return Err(ToolError::Execution(format!(
+                    "{description} is disabled, so a click would do nothing. Whatever enables \
+                     it has not happened yet."
+                )));
+            }
+            let x = located.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+            let y = located.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+            let hit = located
+                .get("hit")
+                .and_then(Value::as_str)
+                .unwrap_or("self")
+                .to_string();
+
+            // Draw the cursor onto the target and press, so the user watching
+            // the panel sees a click happen instead of the page silently
+            // changing. Its result is ignored on purpose: a pointer that could
+            // not be drawn must never be the reason a click does not run.
+            let _ = manager
+                .eval_with_result(AGENT_BROWSER_LABEL, &pointer::point_at_xy_expr(x, y, true))
+                .await;
+
+            let method = if manager.devtools_available() {
+                input_tools::real_click_at(&manager, x, y, button, click_count).await?;
+                "real_pointer"
+            } else {
+                // No DevTools channel on this platform: the best available is
+                // the page-side click on whatever is painted at the point.
+                let expr = format!(
+                    "(() => {{ const el = document.elementFromPoint({x}, {y}); \
+                     if (!el) throw new Error('nothing at the click point'); el.click(); \
+                     return true; }})()"
+                );
+                let result = manager
+                    .eval_with_result(AGENT_BROWSER_LABEL, &expr)
+                    .await
+                    .map_err(ToolError::Execution)?;
+                unwrap_browser_result(result)?;
+                "synthetic_click"
+            };
+            let mut result = json!({
+                "ok": true,
+                "clicked": description,
+                "at": { "x": x.round() as i64, "y": y.round() as i64 },
+                "method": method,
+            });
+            if hit == "ancestor" {
+                result["note"] = json!(
+                    "The element itself is not what is painted at its centre (it has no box of \
+                     its own or pointer-events: none), so the press landed on its parent — the \
+                     same place a person's press would land."
+                );
+            }
+            if method == "synthetic_click" {
+                result["note"] = json!(
+                    "No DevTools channel on this platform, so this was a script click (a `click` \
+                     event only). Components that open on pointer-down may not react."
+                );
+            }
+            Ok(result)
         })
         .await?;
         Ok(changed.to_string())
@@ -1243,17 +1677,24 @@ impl ToolExecutor for BrowserFillTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_fill".into(),
-            description: "In the agent window's right-rail Browser panel, set the value of an \
-                input/textarea/contentEditable matching `selector` and dispatch input + change \
-                events so frameworks (React, Vue, Svelte, …) react to the change. If `submit` is \
-                true and the element is inside a <form>, the form is submitted afterwards."
+            description: "Set a form field's value in the Browser panel and read it back. Text \
+                inputs, textareas and rich-text editors are focused with a real click, cleared, \
+                and the value is typed through the browser's input pipeline, so React, Vue, \
+                Svelte, Lexical, ProseMirror and every input/beforeinput listener see a real \
+                edit. A <select> is set by option value or visible text; a checkbox or radio \
+                takes \"true\"/\"false\"; date, time, colour and range inputs are set directly. \
+                The result carries `value_after` — what the field actually holds now — so a \
+                masked or formatted field cannot silently disagree with what was sent. `submit: \
+                true` submits the enclosing form afterwards (or presses Enter when there is no \
+                form). To append keystrokes without clearing, or to drive an autocomplete, use \
+                browser_type."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": with_observation(json!({
-                    "selector": {"type": "string"},
-                    "value": {"type": "string"},
-                    "submit": {"type": "boolean", "default": false}
+                    "selector": {"type": "string", "description": "CSS selector of the field. Get one from browser_view."},
+                    "value": {"type": "string", "description": "The value to set. For a checkbox or radio: \"true\" or \"false\". For a select: an option's value or its visible text."},
+                    "submit": {"type": "boolean", "description": "Submit the field's form afterwards (press Enter when it has no form). Default false."}
                 })),
                 "required": ["selector", "value"]
             }),
@@ -1265,35 +1706,23 @@ impl ToolExecutor for BrowserFillTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         ensure_agent_browser(&self.manager, None).await?;
-        let selector = require_string(&input, "selector")?;
+        let selector = require_string(&input, "selector")?.to_string();
         let value = input
             .get("value")
             .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidInput("`value` must be a string".into()))?;
+            .ok_or_else(|| ToolError::InvalidInput("`value` must be a string".into()))?
+            .to_string();
         let submit = input
             .get("submit")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        // Point at the field, but no ripple: nothing is being clicked, and a
-        // press animation would show an interaction that did not happen.
-        let _ = self
-            .manager
-            .eval_with_result(
-                AGENT_BROWSER_LABEL,
-                &pointer::point_at_selector_expr(selector, false),
-            )
-            .await;
+
         let manager = self.manager.clone();
-        let (selector, value) = (selector.to_string(), value.to_string());
         // `submit: true` is the case that most needs this: it can navigate, it
         // can fail validation, and it can silently do nothing — three outcomes
         // that returned the same string.
         let changed = act_and_observe(&self.manager, &input, || async move {
-            let result = manager
-                .fill(AGENT_BROWSER_LABEL, &selector, &value, submit)
-                .await
-                .map_err(ToolError::Execution)?;
-            unwrap_browser_result(result)
+            fill::fill_field(&manager, &selector, &value, submit).await
         })
         .await?;
         Ok(changed.to_string())
@@ -1395,6 +1824,32 @@ mod tests {
                 "{name} is permission-gated but is not a registered browser tool"
             );
         }
+    }
+
+    /// A local file is loaded through `aurora-page`, so the page names itself
+    /// by the served URL while the caller keeps the `file://` one. Both are
+    /// one page, or every re-navigate to a local file is a silent reload.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_url_and_its_served_form_are_the_same_page() {
+        assert!(same_page(
+            "file:///E:/proj/fixture.html",
+            "http://aurora-page.localhost/E:/proj/fixture.html"
+        ));
+        assert!(same_page(
+            "file:///E:/proj/fixture.html#top",
+            "http://aurora-page.localhost/E:/proj/fixture.html#top"
+        ));
+        assert!(!same_page(
+            "file:///E:/proj/fixture.html",
+            "http://aurora-page.localhost/E:/proj/other.html"
+        ));
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_make_a_different_page_but_a_fragment_does() {
+        assert!(same_page("http://x/settings", "http://x/settings/"));
+        assert!(!same_page("http://x/#a", "http://x/#b"));
     }
 
     /// The roster is what the model is advertised; a duplicate would ship the

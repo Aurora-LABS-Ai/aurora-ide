@@ -129,6 +129,9 @@ const DRIVING_LABELS: Record<string, string> = {
   browser_press_key: "Pressing a key",
   browser_hover: "Hovering",
   browser_a11y_tree: "Reading the page structure",
+  browser_type: "Typing",
+  browser_wait_for: "Waiting for the page",
+  browser_evaluate: "Running a script",
 };
 
 /**

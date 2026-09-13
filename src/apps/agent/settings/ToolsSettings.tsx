@@ -71,7 +71,15 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
     label: "Browser · Interaction",
     icon: "inspect",
     dangerous: true,
-    tools: ["browser_navigate", "browser_click", "browser_fill", "browser_scroll"],
+    tools: [
+      "browser_navigate",
+      "browser_click",
+      "browser_fill",
+      "browser_type",
+      "browser_scroll",
+      "browser_press_key",
+      "browser_evaluate",
+    ],
   },
 };
 

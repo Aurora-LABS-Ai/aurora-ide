@@ -131,7 +131,10 @@ pub mod transcript;
 /// roster, and one fewer required field to forget — a measured build lost a
 /// whole request to `todo` called without its `op`. See
 /// `shell_editor_todo::tasks` for why the reference's shape won.
-pub const BUILTIN_TOOL_COUNT: usize = 46;
+/// Raised 46 -> 49 by the browser bucket's `browser_type`, `browser_wait_for`
+/// and `browser_evaluate`, after twelve real sessions showed the model with
+/// no way to type keystrokes, wait for a condition, or ask the page anything.
+pub const BUILTIN_TOOL_COUNT: usize = 49;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -266,7 +269,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 46);
+        assert_eq!(BUILTIN_TOOL_COUNT, 49);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()

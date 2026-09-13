@@ -43,6 +43,57 @@ const HOST = "agent-window";
 /** Whether the embedded browser webview has been built this session. */
 let created = false;
 
+/**
+ * Bounds updates, serialised.
+ *
+ * A rail drag fires a ResizeObserver callback per frame, and each used to
+ * fire its own `browser_set_bounds` IPC call. Those calls are independent
+ * async round trips with no ordering guarantee, so under a fast drag an
+ * EARLIER (larger) rectangle could land after a LATER (smaller) one and stay
+ * — the "I dragged the rail smaller and the browser stayed larger" report,
+ * intermittent because it needs two calls to cross. One in-flight call at a
+ * time, always followed by the newest rectangle, makes the last measurement
+ * the one that wins.
+ */
+type Bounds = { x: number; y: number; width: number; height: number };
+let boundsPending: Bounds | null = null;
+let boundsInFlight = false;
+let boundsApplied: Bounds | null = null;
+
+function sameBounds(a: Bounds | null, b: Bounds): boolean {
+  return (
+    !!a &&
+    Math.round(a.x) === Math.round(b.x) &&
+    Math.round(a.y) === Math.round(b.y) &&
+    Math.round(a.width) === Math.round(b.width) &&
+    Math.round(a.height) === Math.round(b.height)
+  );
+}
+
+function syncBounds(next: Bounds): void {
+  if (!boundsInFlight && sameBounds(boundsApplied, next)) return;
+  boundsPending = next;
+  if (boundsInFlight) return;
+  boundsInFlight = true;
+  void (async () => {
+    try {
+      while (boundsPending) {
+        const b = boundsPending;
+        boundsPending = null;
+        try {
+          await setBrowserBounds(LABEL, b.x, b.y, b.width, b.height);
+          boundsApplied = b;
+        } catch {
+          // The webview is gone or not built yet; the next mount re-syncs.
+          boundsApplied = null;
+        }
+      }
+    } finally {
+      boundsInFlight = false;
+    }
+  })();
+}
+
 /** Address-bar normalization: scheme as-is, bare host → https, else web search. */
 function normalizeAddress(input: string): string {
   const t = input.trim();
@@ -56,6 +107,8 @@ function normalizeAddress(input: string): string {
 // eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
 export async function closeAgentBrowser(): Promise<void> {
   created = false;
+  boundsApplied = null;
+  boundsPending = null;
   const { closeBrowserWindow } = await import("@/apps/agent/services/browser/browser-service");
   try {
     await closeBrowserWindow(LABEL);
@@ -180,6 +233,7 @@ export const BrowserPanel: React.FC = () => {
       if (exists) {
         try {
           await setBrowserBounds(LABEL, b.x, b.y, b.width, b.height);
+          boundsApplied = b;
           await showBrowser(LABEL);
           created = true;
           return;
@@ -195,7 +249,13 @@ export const BrowserPanel: React.FC = () => {
           url: "about:blank",
           embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
         });
+        boundsApplied = b;
         created = true;
+        // The layout may have moved during the async build (the rail was
+        // mid-glide when the tab opened). Measure once more so the webview
+        // sits where the panel is NOW, not where it was when the build began.
+        const after = measure();
+        if (after && !disposed) syncBounds(after);
       } catch (err) {
         console.warn("[agent-window] embed browser failed:", err);
       }
@@ -207,7 +267,7 @@ export const BrowserPanel: React.FC = () => {
 
     const resync = () => {
       const b = measure();
-      if (b) void setBrowserBounds(LABEL, b.x, b.y, b.width, b.height).catch(() => {});
+      if (b) syncBounds(b);
     };
     const ro = new ResizeObserver(resync);
     ro.observe(el);
@@ -283,7 +343,7 @@ export const BrowserPanel: React.FC = () => {
     // `measure` reads refs and live layout rather than render state, so it is
     // deliberately not a dependency.
     const b = measure();
-    if (b) void setBrowserBounds(LABEL, b.x, b.y, b.width, b.height).catch(() => {});
+    if (b) syncBounds(b);
   }, [frame]);
 
   // Inspector picks → add a "Selected N" chip to the composer (IDE parity).
@@ -349,6 +409,7 @@ export const BrowserPanel: React.FC = () => {
         url: "about:blank",
         embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
       });
+      boundsApplied = b;
       created = true;
       const normalized = address.trim() ? normalizeAddress(address) : "";
       if (normalized && normalized !== "about:blank") {

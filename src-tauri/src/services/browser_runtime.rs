@@ -56,6 +56,16 @@ struct BrowserWindowState {
     /// keep our own copy that the frontend can read back via
     /// `browser_get_url`.
     current_url: String,
+    /// Whether the frontend currently wants the webview on screen.
+    ///
+    /// The panel hides the native webview whenever another dock tab is
+    /// active or a menu drops over it, because a child webview paints above
+    /// every pixel of DOM. A screenshot used to call `show()` unconditionally
+    /// to get a fresh frame — and left the page sitting on top of the Canvas
+    /// tab the user had switched to. Tracking the frontend's intent lets the
+    /// tools ask for the panel properly (`aurora:agent-open-browser`) instead
+    /// of unhiding it behind the UI's back.
+    hidden: bool,
 }
 
 /// Shared, app-managed state that owns every native browser WebView.
@@ -277,24 +287,49 @@ impl BrowserManager {
         height: f64,
     ) -> Result<(), String> {
         let view = self.window(label)?;
-        view.set_position(LogicalPosition::new(x, y))
-            .map_err(|e| format!("set_position failed: {e}"))?;
-        view.set_size(LogicalSize::new(width.max(1.0), height.max(1.0)))
-            .map_err(|e| format!("set_size failed: {e}"))
+        // One call, not position-then-size: two calls paint an intermediate
+        // rectangle (new position, old size) for a frame, and a burst of
+        // them during a rail drag interleaves badly.
+        view.set_bounds(tauri::Rect {
+            position: LogicalPosition::new(x, y).into(),
+            size: LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
+        })
+        .map_err(|e| format!("set_bounds failed: {e}"))
     }
 
     /// Show the (embedded) browser webview.
     pub fn show(&self, label: &str) -> Result<(), String> {
         self.window(label)?
             .show()
-            .map_err(|e| format!("show failed: {e}"))
+            .map_err(|e| format!("show failed: {e}"))?;
+        if let Some(mut entry) = self.windows.get_mut(label) {
+            entry.hidden = false;
+        }
+        Ok(())
     }
 
     /// Hide the (embedded) browser webview without destroying it.
     pub fn hide(&self, label: &str) -> Result<(), String> {
         self.window(label)?
             .hide()
-            .map_err(|e| format!("hide failed: {e}"))
+            .map_err(|e| format!("hide failed: {e}"))?;
+        if let Some(mut entry) = self.windows.get_mut(label) {
+            entry.hidden = true;
+        }
+        Ok(())
+    }
+
+    /// Does the frontend currently have this webview on screen?
+    ///
+    /// `false` while another dock tab is active or an overlay is up. The
+    /// tools read this before touching the panel so they can ask the UI to
+    /// reveal it rather than force it visible over whatever the user is on.
+    #[must_use]
+    pub fn is_visible(&self, label: &str) -> bool {
+        self.windows
+            .get(label)
+            .map(|entry| !entry.hidden)
+            .unwrap_or(false)
     }
 
     /// Is a browser webview with this label currently live? Used by the agent
@@ -629,9 +664,95 @@ impl BrowserManager {
         params: Value,
     ) -> Result<Value, String> {
         let webview = self.window(label)?;
-        crate::services::browser_devtools::call_devtools(&webview, method, params)
-            .await
-            .map_err(|err| err.to_string())
+        // Bounded. The completion handler fires on the webview's UI thread;
+        // a renderer that has hung (or a webview torn down between the
+        // lookup above and the dispatch) would otherwise park the calling
+        // tool forever, past every timeout the tool layer thinks it has.
+        match tokio::time::timeout(
+            DEFAULT_RESULT_TIMEOUT,
+            crate::services::browser_devtools::call_devtools(&webview, method, params),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|err| err.to_string()),
+            Err(_) => Err(format!(
+                "{method} did not complete within {}s — the page is not responding. \
+                 Call browser_status, or reload it with browser_navigate {{reload: true}}.",
+                DEFAULT_RESULT_TIMEOUT.as_secs()
+            )),
+        }
+    }
+
+    /// Is the DevTools channel available for this build at all?
+    ///
+    /// Callers that can do the job two ways — a real pointer press through the
+    /// browser, or a synthetic `el.click()` inside the page — use this to pick,
+    /// and to say which one they used, because the two are not equivalent.
+    #[must_use]
+    pub fn devtools_available(&self) -> bool {
+        crate::services::browser_devtools::devtools_available()
+    }
+
+    /// Evaluate `expression` through `Runtime.evaluate` and return its value.
+    ///
+    /// Different from [`Self::eval_with_result`] in two ways that matter for
+    /// the tools that reach for it. It does not need the injected
+    /// `window.__aurora` bridge, so it answers on pages where that bridge is
+    /// absent (an error page, a page mid-navigation, a `file://` origin off
+    /// Windows). And a thrown exception comes back with the browser's own
+    /// `exceptionDetails` — the message AND the line/column it happened at —
+    /// where the bridge only has `String(err)`.
+    ///
+    /// Promises are awaited; the result must be JSON-serialisable
+    /// (`returnByValue`). A DOM node or a function comes back as `Value::Null`
+    /// with its `type`/`className` in the error message rather than as `{}`.
+    pub async fn devtools_evaluate(
+        &self,
+        label: &str,
+        expression: &str,
+        timeout_ms: u64,
+    ) -> Result<Value, String> {
+        let response = self
+            .call_devtools(
+                label,
+                "Runtime.evaluate",
+                json!({
+                    "expression": expression,
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                    "userGesture": true,
+                    "timeout": timeout_ms,
+                }),
+            )
+            .await?;
+        if let Some(details) = response.get("exceptionDetails") {
+            return Err(describe_exception(details));
+        }
+        let result = response.get("result").cloned().unwrap_or(Value::Null);
+        if let Some(value) = result.get("value") {
+            return Ok(value.clone());
+        }
+        // No `value` means the result was not serialisable by value. Say what
+        // it was rather than handing back an empty object that reads as "the
+        // expression returned nothing".
+        let kind = result
+            .get("subtype")
+            .or_else(|| result.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("undefined");
+        if kind == "undefined" {
+            return Ok(Value::Null);
+        }
+        let class = result
+            .get("className")
+            .and_then(Value::as_str)
+            .map(|c| format!(" ({c})"))
+            .unwrap_or_default();
+        Err(format!(
+            "the expression returned a {kind}{class}, which cannot be sent back as JSON. Return \
+             plain data instead: strings, numbers, arrays and objects — for a DOM node, return \
+             its outerHTML, textContent or attributes."
+        ))
     }
 
     // -----------------------------------------------------------------
@@ -701,14 +822,47 @@ impl BrowserManager {
     }
 
     /// Run an arbitrary JS expression in the page and return its
-    /// JSON-stringified result. The expression is wrapped so anything
-    /// it returns (or throws) is reported back through the result
-    /// channel.
+    /// JSON-stringified result.
+    ///
+    /// On Windows this goes through the DevTools channel
+    /// ([`Self::devtools_evaluate`]), and that choice is what keeps the
+    /// browser tools from hanging. The injected bridge below answers by
+    /// calling a Tauri command, and Tauri only injects IPC into origins the
+    /// capability file names — `http://*` and `https://*`. On `about:blank`,
+    /// on WebView2's own "can't reach this page" document, on anything
+    /// `edge://`, the bridge's reply silently goes nowhere and Rust waited the
+    /// full 30s. A navigate to a dead port did four such reads in a row and
+    /// sat for the whole panel timeout while the user watched an empty panel
+    /// ("hung so badly", 2026-09-11). `Runtime.evaluate` answers on every
+    /// origin, and a page mid-navigation answers with an error rather than
+    /// with silence.
+    ///
+    /// The bridge remains the path for platforms without a DevTools channel.
     pub async fn eval_with_result(
         &self,
         label: &str,
         expression: &str,
     ) -> Result<BrowserResult, String> {
+        if self.devtools_available() {
+            // The webview must exist; `devtools_evaluate` says so if not.
+            return Ok(
+                match self
+                    .devtools_evaluate(label, expression, DEFAULT_RESULT_TIMEOUT.as_millis() as u64)
+                    .await
+                {
+                    Ok(value) => BrowserResult {
+                        ok: true,
+                        value: Some(value),
+                        error: None,
+                    },
+                    Err(error) => BrowserResult {
+                        ok: false,
+                        value: None,
+                        error: Some(error),
+                    },
+                },
+            );
+        }
         let (request_id, rx) = self.issue_request(label);
         let script = format!(
             r#"(async () => {{
@@ -816,23 +970,6 @@ impl BrowserManager {
             "window.__aurora.getLogs({lvl}, {since})",
             lvl = level_arg,
             since = since_arg
-        );
-        self.eval_with_result(label, &expr).await
-    }
-
-    /// Click the first element matching `selector`. Returns `{ ok,
-    /// selector, tagName }` on success.
-    pub async fn click(&self, label: &str, selector: &str) -> Result<BrowserResult, String> {
-        let selector = sanitize_selector(selector);
-        let expr = format!(
-            r#"(() => {{
-                const el = document.querySelector({s});
-                if (!el) throw new Error('no element matches ' + {s});
-                el.scrollIntoView({{ block: 'center', inline: 'center' }});
-                el.click();
-                return {{ ok: true, selector: {s}, tagName: el.tagName.toLowerCase() }};
-            }})()"#,
-            s = json!(selector)
         );
         self.eval_with_result(label, &expr).await
     }
@@ -1011,66 +1148,98 @@ impl BrowserManager {
 
     /// Capture a PNG screenshot of the page (or one element).
     ///
-    /// Two-track implementation, native-first:
+    /// Native-first, and native for BOTH shapes:
     ///
-    ///   1. When `selector` is `None` and the platform has a native
-    ///      WebView snapshot API (Windows via `ICoreWebView2::CapturePreview`),
-    ///      capture the live WebView surface in one COM call. This is
-    ///      what users want 95% of the time and it sidesteps every
-    ///      failure mode of the JS path (cross-origin canvas taint,
-    ///      `<canvas>` content, shadow DOM, CSP blocking data: URLs).
-    ///   2. Otherwise — element screenshot, native path unimplemented
-    ///      on this platform, or native path failed — fall back to the
-    ///      `foreignObject` SVG renderer below. The fallback is also
-    ///      what runs on macOS/Linux until those backends are wired in.
+    ///   1. On a platform with a WebView snapshot API (Windows via
+    ///      `ICoreWebView2::CapturePreview`) the live surface is captured in
+    ///      one COM call. An element screenshot is that same capture CROPPED
+    ///      to the element's viewport rectangle — the rectangle the page
+    ///      itself reports, in viewport coordinates, after scrolling the
+    ///      element into view. That is what makes a portalled, `position:
+    ///      fixed` dialog come back as the dialog: the old element path
+    ///      re-rendered a CLONE of the element through an SVG
+    ///      `foreignObject`, which paints a fixed element at its document
+    ///      position on an otherwise empty canvas — a blank 576×457 picture
+    ///      that read as "the dialog did not render"
+    ///      (`reports/aurora-issues.md`, 2026-09-10). A crop of the real
+    ///      pixels cannot be wrong in that way.
+    ///   2. Otherwise — no native capture on this platform, or the native
+    ///      call failed — the `foreignObject` SVG renderer below runs. It
+    ///      has known holes (cross-origin images, canvas, shadow DOM) and is
+    ///      the fallback for macOS/Linux only.
     ///
     /// Both paths capture PNG and both are re-encoded by
     /// [`Self::finalize_screenshot`], so this returns
     /// `{ ok, base64, mediaType: "image/jpeg", width, height,
-    /// capturePath: "native"|"svg" }`.
+    /// capturePath: "native"|"native-crop"|"svg" }`.
     pub async fn screenshot(
         &self,
         label: &str,
         selector: Option<&str>,
     ) -> Result<BrowserResult, String> {
         let cleaned = selector.map(sanitize_selector);
+        let element_scope = cleaned.as_deref().filter(|s| !s.is_empty());
 
-        // Native path: only attempt when the caller is asking for a
-        // whole-window snapshot. CapturePreview always captures the
-        // viewport, so an element-scoped selector falls straight
-        // through to the JS path which can scope to `querySelector`.
-        let element_scope = cleaned.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
-        if !element_scope {
-            if let Ok(window) = self.window(label) {
-                // Force the webview visible and let it composite one frame before
-                // capturing. `CapturePreview` grabs the *last painted* surface, and
-                // an occluded / just-navigated / tab-switched webview (Windows sets
-                // `IsVisible=false`, which stops compositing) otherwise returns a
-                // STALE frame — the previous page. This was the "screenshot shows
-                // the wrong page" bug: show + settle guarantees a fresh frame.
+        if let Ok(window) = self.window(label) {
+            // Where the element is on screen, BEFORE the capture, so the
+            // crop is taken from the frame that shows it. Scrolling is
+            // instant on purpose: a page with `scroll-behavior: smooth`
+            // would otherwise still be gliding when the frame is taken.
+            let clip = match element_scope {
+                Some(sel) => Some(self.element_viewport_rect(label, sel).await?),
+                None => None,
+            };
+
+            // Let the webview composite one frame before capturing.
+            // `CapturePreview` grabs the *last painted* surface, and a
+            // just-navigated webview otherwise returns a STALE frame — the
+            // previous page. `show()` is only re-asserted when the frontend
+            // wants the panel on screen anyway: the tools ask the UI to reveal
+            // the panel (`ensure_agent_browser`) rather than unhiding it here
+            // over the Canvas tab the user switched to.
+            let hidden = !self.is_visible(label);
+            if !hidden {
                 let _ = window.show();
-                tokio::time::sleep(Duration::from_millis(180)).await;
-                match crate::services::browser_native_capture::capture_webview_png(&window).await {
-                    Ok(Some(png_bytes)) => {
-                        return Ok(self.finalize_screenshot(png_bytes, "native"));
+            }
+            tokio::time::sleep(Duration::from_millis(180)).await;
+            match crate::services::browser_native_capture::capture_webview_png(&window).await {
+                Ok(Some(png_bytes)) => {
+                    let mut result = match clip {
+                        None => self.finalize_screenshot(png_bytes, "native"),
+                        Some(rect) => {
+                            let cropped = crop_png_to_viewport_rect(&png_bytes, &rect)?;
+                            self.finalize_screenshot(cropped, "native-crop")
+                        }
+                    };
+                    if hidden {
+                        if let Some(value) = result.value.as_mut().and_then(Value::as_object_mut) {
+                            value.insert(
+                                "note".into(),
+                                json!("The Browser panel was hidden behind another tab when this \
+                                       was captured, so the frame may be stale. Open the Browser \
+                                       tab (browser_navigate does) and capture again if it looks \
+                                       wrong."),
+                            );
+                        }
                     }
-                    Ok(None) => {
-                        // Platform unsupported — fall through to SVG path
-                        // without logging (this is expected on macOS/Linux).
-                    }
-                    Err(err) => {
-                        // Native attempt failed for a real reason. Log and
-                        // fall back so the agent still gets *some* image
-                        // instead of an opaque error.
-                        eprintln!(
-                            "[browser_native_capture] '{label}' native screenshot failed, falling back to SVG: {err}"
-                        );
-                    }
+                    return Ok(result);
+                }
+                Ok(None) => {
+                    // Platform unsupported — fall through to SVG path
+                    // without logging (this is expected on macOS/Linux).
+                }
+                Err(err) => {
+                    // Native attempt failed for a real reason. Log and
+                    // fall back so the agent still gets *some* image
+                    // instead of an opaque error.
+                    eprintln!(
+                        "[browser_native_capture] '{label}' native screenshot failed, falling back to SVG: {err}"
+                    );
                 }
             }
         }
 
-        let target = match cleaned.as_deref().filter(|s| !s.is_empty()) {
+        let target = match element_scope {
             Some(sel) => format!("document.querySelector({s})", s = json!(sel)),
             None => "document.body".into(),
         };
@@ -1141,6 +1310,145 @@ impl BrowserManager {
         Ok(self.finalize_svg_result(result))
     }
 
+    /// The element's rectangle in viewport CSS pixels, plus the viewport size
+    /// the rectangle is measured against.
+    ///
+    /// Scrolls the element into view first (instantly), then re-reads the
+    /// rectangle, so the answer describes where the element IS in the frame
+    /// about to be captured rather than where it was before the scroll.
+    async fn element_viewport_rect(
+        &self,
+        label: &str,
+        selector: &str,
+    ) -> Result<ViewportRect, String> {
+        let expr = format!(
+            r#"(() => {{
+                const el = document.querySelector({s});
+                if (!el) return {{ found: false }};
+                try {{ el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }}); }} catch (e) {{}}
+                const r = el.getBoundingClientRect();
+                const cs = getComputedStyle(el);
+                const hidden = cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0';
+                return {{
+                    found: true,
+                    x: r.left, y: r.top, width: r.width, height: r.height,
+                    viewport_width: window.innerWidth, viewport_height: window.innerHeight,
+                    hidden,
+                }};
+            }})()"#,
+            s = json!(selector)
+        );
+        let result = self.eval_with_result(label, &expr).await?;
+        if !result.ok {
+            return Err(result
+                .error
+                .unwrap_or_else(|| "the page could not locate the element".into()));
+        }
+        let value = result.value.unwrap_or(Value::Null);
+        if value.get("found").and_then(Value::as_bool) != Some(true) {
+            return Err(format!(
+                "no element matches `{selector}`. Run browser_view to get selectors that exist on \
+                 this page."
+            ));
+        }
+        let f = |key: &str| value.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+        let rect = ViewportRect {
+            x: f("x"),
+            y: f("y"),
+            width: f("width"),
+            height: f("height"),
+            viewport_width: f("viewport_width"),
+            viewport_height: f("viewport_height"),
+        };
+        if value.get("hidden").and_then(Value::as_bool) == Some(true)
+            || rect.width <= 0.0
+            || rect.height <= 0.0
+        {
+            return Err(format!(
+                "`{selector}` exists but is not visible (no size on screen, or hidden by CSS), \
+                 so there is nothing to capture."
+            ));
+        }
+        Ok(rect)
+    }
+
+    /// Capture the WHOLE document, not just the viewport.
+    ///
+    /// Goes through `Page.captureScreenshot` with `captureBeyondViewport`,
+    /// which renders the page at its full scroll height into one image — the
+    /// one thing `CapturePreview` cannot do, since it photographs the surface
+    /// as it is. Height is capped so a long feed does not produce a picture
+    /// that downscales into an unreadable strip; the cap is reported so the
+    /// caller knows the picture ends before the page does.
+    ///
+    /// DevTools-only. Off Windows, or if the browser refuses the method, the
+    /// error names the alternative (scroll and capture the viewport).
+    pub async fn screenshot_full_page(&self, label: &str) -> Result<BrowserResult, String> {
+        use base64::Engine;
+        const MAX_FULL_PAGE_HEIGHT: f64 = 6_000.0;
+
+        if !self.devtools_available() {
+            return Err("a full-page capture needs the DevTools channel, which exists on Windows \
+                        only. Scroll with browser_scroll and capture the viewport instead."
+                .into());
+        }
+        let metrics = self
+            .devtools_evaluate(
+                label,
+                "({ width: Math.max(document.documentElement.scrollWidth, window.innerWidth), \
+                    height: Math.max(document.documentElement.scrollHeight, window.innerHeight) })",
+                5_000,
+            )
+            .await?;
+        let width = metrics.get("width").and_then(Value::as_f64).unwrap_or(0.0);
+        let height = metrics.get("height").and_then(Value::as_f64).unwrap_or(0.0);
+        if width <= 0.0 || height <= 0.0 {
+            return Err("the page reported no size, so there is nothing to capture".into());
+        }
+        let capped = height.min(MAX_FULL_PAGE_HEIGHT);
+
+        let response = self
+            .call_devtools(
+                label,
+                "Page.captureScreenshot",
+                json!({
+                    "format": "png",
+                    "captureBeyondViewport": true,
+                    "clip": { "x": 0, "y": 0, "width": width, "height": capped, "scale": 1 },
+                }),
+            )
+            .await
+            .map_err(|err| {
+                format!(
+                    "the browser refused a full-page capture ({err}). Scroll with browser_scroll \
+                     and capture the viewport instead."
+                )
+            })?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "the browser returned no image data for the full page".to_string())?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|err| format!("the full-page capture was not valid base64: {err}"))?;
+        let mut result = self.finalize_screenshot(bytes, "native-full-page");
+        if let Some(value) = result.value.as_mut().and_then(Value::as_object_mut) {
+            value.insert("pageHeight".into(), json!(height.round()));
+            if height > capped {
+                value.insert(
+                    "note".into(),
+                    json!(format!(
+                        "The page is {h}px tall; this capture stops at {c}px. Scroll and capture \
+                         the viewport to see the rest.",
+                        h = height.round(),
+                        c = capped
+                    )),
+                );
+            }
+        }
+        Ok(result)
+    }
+
     /// Bound a capture for delivery: decode → fit inside
     /// [`SCREENSHOT_MAX_EDGE`] → re-encode JPEG, base64 it for the model's
     /// vision block, and save a copy to the app cache dir so the tool card can
@@ -1209,6 +1517,95 @@ impl BrowserManager {
         let file = dir.join(format!("shot-{}.jpg", Uuid::new_v4()));
         std::fs::write(&file, bytes).ok()?;
         Some(file.to_string_lossy().to_string())
+    }
+}
+
+/// An element's box in viewport CSS pixels, and the viewport it was measured in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewportRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub viewport_width: f64,
+    pub viewport_height: f64,
+}
+
+/// Cut `rect` out of a capture of the whole viewport.
+///
+/// The capture is in physical pixels and the rectangle in CSS pixels, and the
+/// ratio between them is NOT simply `devicePixelRatio`: under a device-metrics
+/// override the page reports the emulated ratio while the surface is painted
+/// at the monitor's. So the scale is derived from the two things actually in
+/// hand — the image's size and the viewport's — which is right in every case.
+///
+/// The rectangle is clipped to the viewport first. An element half off-screen
+/// yields the visible half; one entirely off-screen is an error, because a
+/// zero-size crop would come back as a blank picture that reads as "nothing
+/// rendered".
+fn crop_png_to_viewport_rect(png: &[u8], rect: &ViewportRect) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(png)
+        .map_err(|err| format!("the native capture could not be decoded: {err}"))?;
+    let (img_w, img_h) = (img.width() as f64, img.height() as f64);
+    if rect.viewport_width <= 0.0 || rect.viewport_height <= 0.0 {
+        return Err("the page reported a zero-size viewport".into());
+    }
+    let scale_x = img_w / rect.viewport_width;
+    let scale_y = img_h / rect.viewport_height;
+
+    let left = rect.x.max(0.0);
+    let top = rect.y.max(0.0);
+    let right = (rect.x + rect.width).min(rect.viewport_width);
+    let bottom = (rect.y + rect.height).min(rect.viewport_height);
+    if right - left < 1.0 || bottom - top < 1.0 {
+        return Err(
+            "the element is entirely outside the viewport, so a crop would be empty. Scroll it \
+             into view (browser_scroll with its selector) and capture again."
+                .into(),
+        );
+    }
+
+    let x = (left * scale_x).floor().clamp(0.0, img_w - 1.0) as u32;
+    let y = (top * scale_y).floor().clamp(0.0, img_h - 1.0) as u32;
+    let w = ((right - left) * scale_x).ceil().max(1.0) as u32;
+    let h = ((bottom - top) * scale_y).ceil().max(1.0) as u32;
+    let w = w.min(img.width() - x);
+    let h = h.min(img.height() - y);
+
+    let cropped = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(cropped)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|err| format!("the cropped capture could not be encoded: {err}"))?;
+    Ok(out)
+}
+
+/// One sentence from a `Runtime.evaluate` `exceptionDetails` object.
+///
+/// The browser's own account of a throw carries the message, and — when the
+/// script threw rather than failed to parse — the line and column it happened
+/// at. Both are kept: "ReferenceError: foo is not defined (line 3, column 12)"
+/// tells the caller where to look; the bridge's `String(err)` only ever said
+/// the first half.
+fn describe_exception(details: &Value) -> String {
+    let exception = details.get("exception");
+    let message = exception
+        .and_then(|e| e.get("description"))
+        .and_then(Value::as_str)
+        .map(|d| d.lines().next().unwrap_or(d).to_string())
+        .or_else(|| {
+            details
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "the script threw".into());
+    let line = details.get("lineNumber").and_then(Value::as_u64);
+    let column = details.get("columnNumber").and_then(Value::as_u64);
+    match (line, column) {
+        // CDP numbers are zero-based; people count from one.
+        (Some(l), Some(c)) => format!("{message} (line {}, column {})", l + 1, c + 1),
+        _ => message,
     }
 }
 
@@ -2069,5 +2466,101 @@ mod screenshot_encoding_tests {
         let (bytes, w, h) = encode_screenshot(junk.clone());
         assert_eq!(bytes, junk);
         assert_eq!((w, h), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod element_crop_tests {
+    use super::{crop_png_to_viewport_rect, describe_exception, ViewportRect};
+    use std::io::Cursor;
+
+    /// A capture whose pixel colour encodes its position, so a crop can be
+    /// checked by reading one pixel back.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 0, 255])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode fixture");
+        out
+    }
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> ViewportRect {
+        ViewportRect {
+            x,
+            y,
+            width: w,
+            height: h,
+            viewport_width: 400.0,
+            viewport_height: 300.0,
+        }
+    }
+
+    /// The reported bug: a fixed-position dialog captured as a blank picture.
+    /// A crop of the real frame at the element's VIEWPORT rectangle has to
+    /// contain the pixels at that rectangle, whatever the document scroll is.
+    #[test]
+    fn the_crop_is_taken_at_the_viewport_rectangle() {
+        let cropped = crop_png_to_viewport_rect(&png(400, 300), &rect(100.0, 50.0, 40.0, 20.0))
+            .expect("crop");
+        let img = image::load_from_memory(&cropped).expect("decode").to_rgba8();
+        assert_eq!((img.width(), img.height()), (40, 20));
+        // Top-left pixel of the crop is pixel (100, 50) of the capture.
+        assert_eq!(img.get_pixel(0, 0).0[..2], [100, 50]);
+    }
+
+    /// Under an emulated viewport the page's devicePixelRatio lies about the
+    /// surface; the scale must come from the capture's own size.
+    #[test]
+    fn the_scale_is_derived_from_the_capture_not_assumed() {
+        // 800×600 capture of a 400×300 viewport: 2× in both axes.
+        let cropped = crop_png_to_viewport_rect(&png(800, 600), &rect(10.0, 20.0, 30.0, 40.0))
+            .expect("crop");
+        let img = image::load_from_memory(&cropped).expect("decode").to_rgba8();
+        assert_eq!((img.width(), img.height()), (60, 80));
+        assert_eq!(img.get_pixel(0, 0).0[..2], [20, 40]);
+    }
+
+    #[test]
+    fn an_element_half_off_screen_yields_the_visible_half() {
+        let cropped = crop_png_to_viewport_rect(&png(400, 300), &rect(380.0, 0.0, 100.0, 50.0))
+            .expect("crop");
+        let img = image::load_from_memory(&cropped).expect("decode");
+        assert_eq!((img.width(), img.height()), (20, 50));
+    }
+
+    /// A zero-size crop would come back as a blank image — the exact false
+    /// evidence this path exists to stop producing.
+    #[test]
+    fn an_element_entirely_off_screen_is_an_error_not_a_blank_picture() {
+        let err = crop_png_to_viewport_rect(&png(400, 300), &rect(0.0, 900.0, 50.0, 50.0))
+            .expect_err("nothing visible to crop");
+        assert!(err.contains("outside the viewport"), "{err}");
+        assert!(err.contains("browser_scroll"), "names the recovery: {err}");
+    }
+
+    #[test]
+    fn a_thrown_exception_names_where_it_happened() {
+        let details = serde_json::json!({
+            "text": "Uncaught",
+            "lineNumber": 2,
+            "columnNumber": 11,
+            "exception": { "description": "ReferenceError: foo is not defined\n    at <anonymous>:3:12" }
+        });
+        assert_eq!(
+            describe_exception(&details),
+            "ReferenceError: foo is not defined (line 3, column 12)"
+        );
+    }
+
+    #[test]
+    fn a_syntax_error_without_an_exception_object_still_has_a_message() {
+        let details = serde_json::json!({ "text": "SyntaxError: Unexpected token '}'" });
+        assert_eq!(
+            describe_exception(&details),
+            "SyntaxError: Unexpected token '}'"
+        );
     }
 }

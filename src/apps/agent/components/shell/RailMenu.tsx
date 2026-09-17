@@ -52,9 +52,29 @@ export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = 
   // re-subscription churn beyond what `onClose`'s identity already causes.
   const anchor = menu.anchor ?? null;
 
+  useLayoutEffect(() => {
+    const element = menuRef.current;
+    element?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    return () => {
+      if (element?.contains(document.activeElement) && anchor?.isConnected) anchor.focus();
+    };
+  }, [anchor]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopPropagation();
+        anchor?.focus(); onClose();
+      }
+      if (!menuRef.current?.contains(document.activeElement)) return;
+      if (event.key === "Tab") { onClose(); return; }
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault(); event.stopPropagation();
+        const items = Array.from(menuRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+        const current = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        items[next]?.focus();
+      }
     };
     const onPointerDown = (event: PointerEvent) => {
       const el = menuRef.current;
@@ -86,12 +106,12 @@ export const RailMenu: React.FC<{ menu: RailMenuState; onClose: () => void }> = 
       onClose();
     };
     const onResize = () => onClose();
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     document.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
       document.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);

@@ -30,6 +30,8 @@ pub mod browser;
 pub mod chat;
 /// The Memory page — reading and editing what Aurora remembers about the user.
 pub mod chat_memory;
+pub mod chat_gallery;
+pub mod chat_video;
 pub mod image_direct;
 pub mod image_providers;
 pub mod checkpoints;
@@ -1476,10 +1478,16 @@ pub async fn aurora_websearch(
 /// those is deserialized from the frontend's payload, so a `&dyn` cannot be a
 /// parameter of it.
 pub async fn aurora_websearch_with(
-    request: AuroraWebSearchRequest,
+    mut request: AuroraWebSearchRequest,
     browser: Option<&dyn crate::websearch::PageSource>,
 ) -> Result<AuroraWebSearchResponse, String> {
     use crate::websearch::{self, FetchOptions, SafeSearch, SearchOptions, SearchSource};
+
+    for value in [&mut request.action, &mut request.url, &mut request.query, &mut request.source] {
+        *value = value.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    request.action = request.action.map(|s| s.to_ascii_lowercase());
+    request.source = request.source.map(|s| s.to_ascii_lowercase());
 
     // A caller that names a URL means "read it" even when it forgot to say so.
     let action = request.action.clone().unwrap_or_else(|| {
@@ -1490,6 +1498,9 @@ pub async fn aurora_websearch_with(
         }
     });
 
+    if !matches!(action.as_str(), "search" | "fetch") {
+        return Err(format!("unknown web action '{action}'; use 'search' or 'fetch'"));
+    }
     if action == "fetch" {
         let url = request
             .url
@@ -1524,6 +1535,11 @@ pub async fn aurora_websearch_with(
         .clone()
         .ok_or_else(|| "search needs a `query`.".to_string())?;
 
+    if let Some(source) = request.source.as_deref() {
+        if !matches!(source, "web" | "scholar" | "papers" | "academic" | "images") {
+            return Err(format!("unknown search source '{source}'; use 'web', 'scholar' or 'images'"));
+        }
+    }
     let opts = SearchOptions {
         limit: request.num_results.unwrap_or(10).clamp(1, 25) as usize,
         region: request.region.clone(),

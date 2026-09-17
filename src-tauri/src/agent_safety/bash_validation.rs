@@ -709,24 +709,104 @@ fn validate_sed(command: &str, mode: ExecutionMode) -> ValidationResult {
 // pathValidation
 // ---------------------------------------------------------------------------
 
-/// Validate that command paths don't include suspicious traversal patterns.
+/// One shell word, stripped of quoting, redirects and chain punctuation.
+///
+/// Not a shell parser — it only has to be good enough to find the words that
+/// could be paths, which is what [`validate_paths`] resolves.
+///
+/// Shared with [`super::shell_validation`], which had its own substring test
+/// for `../` and refused traversal that resolved back inside the workspace —
+/// the bug this pair already fixed on the POSIX side.
+pub(super) fn path_like_words(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')'))
+        .map(|word| word.trim_matches(|c: char| matches!(c, '"' | '\'' | '`')))
+        .map(|word| word.trim_start_matches(['>', '<', '1', '2', '&']))
+        .filter(|word| !word.is_empty())
+}
+
+/// Walk a relative path's components, answering how far ABOVE its starting
+/// directory it ends up, or `None` if it never climbs out.
+///
+/// Purely lexical, which is the point: the command has not run, nothing may be
+/// touched to answer the question, and a symlink is not this guard's problem.
+fn climbs_above_start(relative: &str) -> bool {
+    let mut depth: i32 = 0;
+    for component in relative.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            _ => depth += 1,
+        }
+    }
+    false
+}
+
+/// Does this word climb out of the workspace?
+///
+/// Only words that actually contain a `..` component are asked. An ABSOLUTE
+/// word is not this check's business — [`command_targets_outside_workspace`]
+/// and the system-path list own those — so it is left alone here.
+pub(super) fn escapes_workspace(word: &str, workspace: &Path) -> bool {
+    let normalized = word.replace('\\', "/");
+    if !normalized.split('/').any(|component| component == "..") {
+        return false;
+    }
+    if normalized.starts_with('/') || normalized.chars().nth(1) == Some(':') {
+        let joined = workspace.join(word);
+        return !joined.starts_with(workspace);
+    }
+    climbs_above_start(&normalized)
+}
+
+/// Validate that command paths don't climb out of the workspace.
 ///
 /// Corresponds to upstream `tools/BashTool/pathValidation.ts`.
+///
+/// ## Why this resolves instead of matching a substring
+///
+/// It used to warn on ANY `../` in the command unless the command text
+/// literally spelled the workspace root out, which made every relative `../`
+/// a refusal — including the ones that stay inside. A warning is refused like
+/// a block (see `shell_execute::map_bash_error`), so the command never ran.
+/// Measured on thread `810f1387` (2026-09-16):
+///
+/// ```text
+/// ls ../gadget-and-power-admin-manager/… 2>/dev/null || ls gadget-and-power-admin-manager/…
+///   -> policy violation: warning: Command contains directory traversal pattern '../'
+/// ```
+///
+/// The command carried its own fallback, the second half was correct, and the
+/// whole thing was refused over the first half. The advice it got back —
+/// "verify the target path resolves within the workspace" — was unactionable,
+/// because nothing had run and the message named no path to verify.
+///
+/// Same shape of fix as [`DEV_PSEUDO_FILES`], for the same reason: a substring
+/// that looks like a hazard is not a hazard, and a guard that cannot tell the
+/// difference is one people learn to talk around. `src/../src/a.ts` resolves
+/// inside the workspace and is allowed. `../../etc/passwd` does not and is
+/// still refused — now naming where it actually lands.
 #[must_use]
 fn validate_paths(command: &str, workspace: &Path) -> ValidationResult {
-    // Check for directory traversal attempts.
-    if command.contains("../") {
-        let workspace_str = workspace.to_string_lossy();
-        // Allow traversal if it resolves within workspace (heuristic).
-        if !command.contains(&*workspace_str) {
-            return ValidationResult::Warn {
-                message: "Command contains directory traversal pattern '../' — verify the target path resolves within the workspace".to_string(),
-            };
-        }
+    if let Some(escaping) = path_like_words(command).find(|word| escapes_workspace(word, workspace))
+    {
+        return ValidationResult::Warn {
+            message: format!(
+                "`{escaping}` resolves outside the workspace ({}). Re-issue the command against a \
+                 path inside it — paths are relative to the workspace root, so a sibling directory \
+                 of the root is not reachable.",
+                workspace.display()
+            ),
+        };
     }
 
     // Check for home directory references that could escape workspace.
-    if command.contains("~/") || command.contains("$HOME") {
+    if references_home_directory(command) {
         return ValidationResult::Warn {
             message:
                 "Command references home directory — verify it stays within the workspace scope"
@@ -735,6 +815,38 @@ fn validate_paths(command: &str, workspace: &Path) -> ValidationResult {
     }
 
     ValidationResult::Allow
+}
+
+/// Does this command name the home directory as a PLACE?
+///
+/// `~` only means home at the start of a shell word. Anywhere else it is
+/// ordinary text, and in one language it is an operator: awk matches with
+/// `~`, so `$0 ~ /D/` written without spaces is `s~/D/`, which contains the
+/// substring `~/` and nothing to do with anyone's home directory.
+///
+/// A bare `contains("~/")` could not tell those apart, and refused this —
+/// twice, in thread `46b93977` (2026-08-20), a git status summary that touches
+/// no path at all:
+///
+/// ```text
+/// git status --porcelain=v1 -uall | awk '… {s=substr($0,1,2); … else if(s~/D/)d++; …}'
+///   -> policy violation: warning: Command references home directory
+/// ```
+///
+/// `$HOME` and `$USERPROFILE` need no such care: the `$` already anchors them
+/// to a variable reference, and there is no other thing they can be.
+fn references_home_directory(command: &str) -> bool {
+    if command.contains("$HOME") || command.contains("${HOME}") || command.contains("$USERPROFILE")
+    {
+        return true;
+    }
+    command.match_indices("~/").any(|(at, _)| {
+        // Start of the command, or preceded by something that ends a word:
+        // whitespace, a quote, or an operator that introduces a value.
+        command[..at].chars().next_back().is_none_or(|previous| {
+            previous.is_whitespace() || matches!(previous, '"' | '\'' | '=' | ':' | '(')
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,10 +1223,28 @@ const REGENERABLE_ARTIFACT_DIRS: &[&str] = &[
     ".serverless",
 ];
 
+/// Is this path segment a directory an ecosystem rebuilds on demand?
+fn is_regenerable_segment(name: &str) -> bool {
+    if REGENERABLE_ARTIFACT_DIRS.contains(&name) {
+        return true;
+    }
+    // Two conventional patterns rather than a general glob: Python packaging
+    // writes `<package>.egg-info`, and CLion/CMake write `cmake-build-<profile>`.
+    name.ends_with(".egg-info") || name.starts_with("cmake-build-")
+}
+
 /// Whether one `rm -rf` operand names something an ecosystem can rebuild.
 ///
-/// Judged on the FINAL path segment, so `./__pycache__`, `packages/*/node_modules`
+/// Judged on ANY path segment, so `./__pycache__`, `packages/*/node_modules`
 /// and `src/.pytest_cache` all qualify while `src` alone does not.
+///
+/// The segment test used to look at the FINAL one only, which made the guard
+/// inconsistent with itself: `rm -rf .next` was allowed and `rm -rf .next/types`
+/// — a strictly smaller delete, inside the same regenerable directory — was
+/// refused, because the last segment is `types`. Measured across three threads
+/// in September 2026, every one of them clearing a stale Next.js type cache
+/// before a typecheck. Anything living under a directory the toolchain rebuilds
+/// is rebuilt with it.
 ///
 /// Two restrictions keep the blast radius where the caller can see it:
 /// an absolute path is declined, and so is any path stepping up through `..`.
@@ -1132,6 +1262,12 @@ fn is_regenerable_artifact_path(target: &str) -> bool {
     }
     if trimmed.split('/').any(|segment| segment == "..") {
         return false;
+    }
+    if trimmed
+        .split('/')
+        .any(|segment| is_regenerable_segment(segment))
+    {
+        return true;
     }
 
     let Some(name) = trimmed.rsplit('/').next() else {
@@ -1495,6 +1631,15 @@ mod tests {
             "rm -rf node_modules dist .turbo",
             // After a `cd`, which is how the agent actually issues these.
             "cd /tmp/proj && rm -rf __pycache__",
+            // INSIDE a regenerable directory. `rm -rf .next` was already
+            // routine while `rm -rf .next/types` — a strictly smaller delete
+            // in the same place — was refused, because only the last segment
+            // was tested. Three threads hit exactly this in September 2026,
+            // every one clearing a stale type cache before a typecheck.
+            "rm -rf .next/types",
+            "cd apps/web && rm -rf .next/types && pnpm exec tsc --noEmit",
+            "rm -rf node_modules/.cache/babel-loader",
+            "rm -rf target/debug/incremental",
         ] {
             assert!(
                 matches!(check_destructive(command), ValidationResult::Allow),
@@ -1761,8 +1906,78 @@ mod tests {
         let workspace = PathBuf::from("/workspace/project");
         assert!(matches!(
             validate_paths("cat ../../../etc/passwd", &workspace),
-            ValidationResult::Warn { message } if message.contains("traversal")
+            ValidationResult::Warn { message }
+                if message.contains("../../../etc/passwd")
+                    && message.contains("outside the workspace")
         ));
+    }
+
+    /// A `..` that climbs back down inside the workspace is not an escape, and
+    /// used to be refused anyway — the check only allowed traversal when the
+    /// command text spelled the workspace root out in full, which no relative
+    /// path ever does. Thread `810f1387`, 2026-09-16.
+    #[test]
+    fn allows_traversal_that_stays_inside_the_workspace() {
+        let workspace = PathBuf::from("/workspace/project");
+        assert_eq!(
+            validate_paths("cat src/../src/main.rs", &workspace),
+            ValidationResult::Allow
+        );
+        assert_eq!(
+            validate_paths("ls packages/web/../api/src", &workspace),
+            ValidationResult::Allow
+        );
+    }
+
+    /// A refusal has to name the path it is refusing. The old text said only
+    /// that the command "contains directory traversal pattern '../'" and asked
+    /// the caller to verify a path it never named, about a command that had
+    /// not run.
+    #[test]
+    fn a_refusal_names_the_path_and_the_workspace() {
+        let workspace = PathBuf::from("/workspace/project");
+        let ValidationResult::Warn { message } =
+            validate_paths("ls ../sibling-project/src", &workspace)
+        else {
+            panic!("a sibling of the root is outside the workspace");
+        };
+        assert!(message.contains("../sibling-project/src"), "{message}");
+        assert!(message.contains("/workspace/project"), "{message}");
+    }
+
+    /// Redirects, quoting and chain punctuation must not hide a path from the
+    /// check, nor invent one that isn't there.
+    #[test]
+    fn traversal_is_found_through_quoting_and_chains() {
+        let workspace = PathBuf::from("/workspace/project");
+        assert!(matches!(
+            validate_paths("ls inside && cat \"../../secrets.env\"", &workspace),
+            ValidationResult::Warn { .. }
+        ));
+        assert!(matches!(
+            validate_paths("cat x 2>../../log.txt", &workspace),
+            ValidationResult::Warn { .. }
+        ));
+        assert_eq!(
+            validate_paths("ls a/../b 2>/dev/null || ls b", &workspace),
+            ValidationResult::Allow
+        );
+    }
+
+    /// `..` inside a word that is not a path component does not climb
+    /// anywhere — a range operator, an ellipsis in a message, a file whose
+    /// name happens to contain dots.
+    #[test]
+    fn dots_that_are_not_a_path_component_are_not_traversal() {
+        let workspace = PathBuf::from("/workspace/project");
+        assert_eq!(
+            validate_paths("git log HEAD~3..HEAD --oneline", &workspace),
+            ValidationResult::Allow
+        );
+        assert_eq!(
+            validate_paths("cat src/app/api/[...path]/route.ts", &workspace),
+            ValidationResult::Allow
+        );
     }
 
     #[test]
@@ -1772,6 +1987,33 @@ mod tests {
             validate_paths("cat ~/.ssh/id_rsa", &workspace),
             ValidationResult::Warn { message } if message.contains("home directory")
         ));
+        assert!(matches!(
+            validate_paths("cp \"~/notes.md\" .", &workspace),
+            ValidationResult::Warn { .. }
+        ));
+        assert!(matches!(
+            validate_paths("ls $HOME/.aurora", &workspace),
+            ValidationResult::Warn { .. }
+        ));
+    }
+
+    /// awk matches with `~`, so `s~/D/` carries the substring `~/` and names
+    /// no directory. Thread `46b93977` (2026-08-20) lost two git status
+    /// summaries to this — commands that touch no path at all.
+    #[test]
+    fn an_awk_match_operator_is_not_a_home_directory() {
+        let workspace = PathBuf::from("/workspace/project");
+        assert_eq!(
+            validate_paths(
+                "git status --porcelain=v1 -uall | awk '{s=substr($0,1,2); if(s~/D/)d++; else m++}'",
+                &workspace
+            ),
+            ValidationResult::Allow
+        );
+        assert_eq!(
+            validate_paths("awk '$1~/^src/{print}' files.txt", &workspace),
+            ValidationResult::Allow
+        );
     }
 
     // --- commandSemantics ---
@@ -1951,7 +2193,11 @@ mod tests {
             &workspace,
         )
         .expect_err("traversal must be flagged");
-        assert!(matches!(err, BashValidationError::Warning(ref m) if m.contains("traversal")));
+        assert!(matches!(
+            err,
+            BashValidationError::Warning(ref m)
+                if m.contains("../../../etc/passwd") && m.contains("outside the workspace")
+        ));
     }
 
     #[test]

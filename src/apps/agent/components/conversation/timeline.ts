@@ -412,16 +412,10 @@ export function finishCompaction(
  * The stream died mid-reply: throw away the half of it that reached the screen
  * and mark the gap with a live "reconnecting" row.
  *
- * **What gets dropped, and why exactly this much.** The runtime is about to
- * re-request the SAME model call, which will stream that reply again from its
- * first token — so anything already on screen from the attempt that died would
- * render twice. That partial reply is the trailing run of `thinking` /
- * `content` events plus any tool card whose arguments were still arriving
- * (`result` unset — the same test {@link toolStatus} uses). Walking backwards
- * stops at the first thing that survived: a completed tool call, a mid-turn
- * user note, a compaction marker, a notice. Those belong to model calls that
- * already finished and are committed to session history — a turn that
- * inspected the project and read a file keeps both, and neither re-runs.
+ * Restore the snapshot captured by StreamAttemptStarted before any output
+ * arrived. The retry regenerates one model call, so all earlier replies and
+ * completed tools must survive exactly, even when adjacent text rows merged.
+ * Older producers without attempt events use the trailing-row fallback.
  *
  * The session on disk is already right when this is called: the runtime
  * appends an assistant message only after a clean stream, so the fragment was
@@ -433,7 +427,14 @@ export function beginReconnect(
   id: string,
   attempt: number,
   maxAttempts: number,
+  committed?: TimelineEvent[],
 ): TimelineEvent[] {
+  // Live runtime supplies the exact pre-attempt snapshot. Consecutive text
+  // can merge across message boundaries, so a trailing-row scan cannot safely
+  // recover this boundary. Keep the scan only for older event producers.
+  if (committed) {
+    return [...clearReconnect(committed), { kind: "reconnect", id, attempt, maxAttempts }];
+  }
   let end = tl.length;
   while (end > 0) {
     const e = tl[end - 1];
@@ -442,7 +443,7 @@ export function beginReconnect(
       e.kind === "content" ||
       // A tool whose arguments never finished streaming. The retry gets a new
       // call id from the provider, so leaving this would strand a dead card.
-      (e.kind === "tool" && (e.call.result == null || e.call.result === "")) ||
+      (e.kind === "tool" && e.call.result == null) ||
       // A stale marker from an earlier attempt in the same run of retries.
       e.kind === "reconnect";
     if (!isPartial) break;

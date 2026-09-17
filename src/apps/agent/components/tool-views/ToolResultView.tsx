@@ -14,6 +14,7 @@ import { DiffView } from "@/apps/agent/components/tool-views/DiffView";
 import { GlobResultsView } from "@/apps/agent/components/tool-views/GlobResultsView";
 import { GrepResultsView } from "@/apps/agent/components/tool-views/GrepResultsView";
 import { ImageResult } from "@/apps/agent/components/tool-views/ImageResult";
+import { VideoResultView } from "./VideoResultView";
 import { MultiFileResultsView } from "@/apps/agent/components/tool-views/MultiFileResultsView";
 import { ShellOutputView } from "@/apps/agent/components/tool-views/ShellOutputView";
 import { FileListView } from "@/apps/agent/components/tool-views/FileListView";
@@ -29,6 +30,7 @@ export const ToolResultView: React.FC<{
   // A result that is one picture. Several pictures ride on `multiFile` below,
   // where they share the file chips with the text files read beside them.
   if (parsed.image) return <ImageResult image={parsed.image} />;
+  if (parsed.video) return <VideoResultView video={parsed.video} />;
   // Not gated on a non-empty hit list: "nothing came back" is a real answer to
   // a search, and its own panel says so. The fallback would dump raw JSON.
   if (parsed.web) return <WebResultsView data={parsed.web} />;

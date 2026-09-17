@@ -135,7 +135,16 @@ impl StreamingApiClient for AnthropicAdapter {
             .bytes_stream()
             .map(|chunk| chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
 
-        drive_anthropic_stream(bytes_stream, event_sink, cancel_token).await
+        drive_anthropic_stream_with_legacy_eof(
+            bytes_stream,
+            event_sink,
+            cancel_token,
+            allows_legacy_eof(
+                &url,
+                unprefix_model(request.model, &self.config.provider_id),
+            ),
+        )
+        .await
     }
 }
 
@@ -160,6 +169,30 @@ where
     B: AsRef<[u8]>,
     E: std::fmt::Display,
 {
+    drive_anthropic_stream_with_legacy_eof(bytes_stream, event_sink, cancel_token, false).await
+}
+
+// AgentRouter's deepseek-v4-flash route was measured omitting both message
+// terminators. Keep that compatibility exception on the exact route; a clean
+// HTTP EOF alone cannot establish that any other model finished its response.
+fn allows_legacy_eof(url: &str, model: &str) -> bool {
+    model == "deepseek-v4-flash"
+        && reqwest::Url::parse(url)
+            .ok()
+            .is_some_and(|url| url.host_str() == Some("agentrouter.org"))
+}
+
+async fn drive_anthropic_stream_with_legacy_eof<S, B, E>(
+    bytes_stream: S,
+    event_sink: mpsc::Sender<AssistantEvent>,
+    cancel_token: CancellationToken,
+    allow_legacy_eof: bool,
+) -> Result<TurnUsage, ApiError>
+where
+    S: Stream<Item = Result<B, E>> + Send,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
     let mut bytes_stream: Pin<Box<S>> = Box::pin(bytes_stream);
     let mut sse = SseFrameBuffer::new();
 
@@ -177,12 +210,15 @@ where
     // either means the connection dropped mid-reply — see the check below.
     let mut saw_terminator = false;
 
-    loop {
+    'stream: loop {
         let chunk = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
             next = bytes_stream.next() => match next {
                 Some(Ok(c)) => c,
+                // The model already finished; losing the transport trailer
+                // cannot invalidate its answer or justify another generation.
+                Some(Err(_)) if stop_reason.is_some() => break,
                 Some(Err(e)) => return Err(ApiError::Network(format!("stream error: {e}"))),
                 None => break,
             }
@@ -191,10 +227,12 @@ where
         sse.extend(chunk.as_ref());
         for frame in sse.take_frames() {
             for payload in frame_payloads(&frame) {
-                let event: AnthropicStreamEvent = match serde_json::from_str(&payload) {
-                    Ok(e) => e,
-                    Err(_) => continue, // tolerate malformed events (kernel parity)
-                };
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let event: AnthropicStreamEvent = serde_json::from_str(&payload).map_err(|err| {
+                    ApiError::Network(format!("invalid Anthropic stream event: {err}"))
+                })?;
 
                 // An `error` event ends the turn with the provider's own
                 // reason. Handled here rather than in the event match
@@ -234,6 +272,9 @@ where
                     &event_sink,
                 )
                 .await;
+                if saw_terminator {
+                    break 'stream;
+                }
             }
         }
 
@@ -241,27 +282,8 @@ where
         // iteration will pick it up via `biased; cancelled()`.
     }
 
-    // No `message_stop` and no stop reason. That used to be reported as "the
-    // connection dropped mid-reply", which named a cause nobody had measured —
-    // and for at least one real gateway it was simply wrong.
-    //
-    // Measured on 2026-08-25 against AgentRouter's `/v1/messages` with
-    // `deepseek-v4-flash`: 10 requests out of 10, plain / thinking / with tools
-    // / a 50-second 568 KB generation, the stream ends after the last
-    // `content_block_delta` and NEVER sends `message_delta` or `message_stop`.
-    // The socket closes cleanly on a frame boundary with nothing left over. The
-    // connection was healthy; the gateway just does not terminate its streams.
-    //
-    // So separate the two endings the old check conflated:
-    //
-    //  * EOF on a frame boundary with content already delivered — a
-    //    non-conforming gateway. The reply IS complete; refusing it threw away
-    //    a finished answer and then re-sent the whole request six times, which
-    //    on that 50-second generation is six times the wait and the money for
-    //    an ending that can never arrive.
-    //  * EOF mid-frame, or with nothing delivered at all — genuinely cut off.
-    //    Still an error, and still retryable, but now it says what was actually
-    //    observed instead of guessing at a dropped socket.
+    // A proxy can close HTTP cleanly after losing its upstream. Only a model
+    // completion event proves completion, regardless of SSE frame alignment.
     if !saw_terminator && stop_reason.is_none() {
         let ended_on_a_frame_boundary = sse.pending_len() == 0;
         let delivered_content = block_order
@@ -269,24 +291,24 @@ where
             .filter_map(|index| blocks.get(index))
             .any(BlockState::has_content);
 
-        if !ended_on_a_frame_boundary || !delivered_content {
+        if !allow_legacy_eof || !ended_on_a_frame_boundary || !delivered_content {
             return Err(ApiError::Network(format!(
                 "the response stream stopped early — {}. Retry to run the turn again.",
-                if delivered_content {
+                if !ended_on_a_frame_boundary {
                     "it was cut off partway through an event"
-                } else {
+                } else if !delivered_content {
                     "it closed before any content arrived"
+                } else {
+                    "no message completion event arrived"
                 }
             )));
         }
 
         crate::logging::log_warn(
             "api.anthropic",
-            "stream closed cleanly after its last content event but sent no `message_delta` \
-             or `message_stop`. This endpoint does not terminate its streams the way the \
-             Anthropic wire specifies; the reply was complete, so it is being accepted with \
-             stop_reason `end_turn`. Token usage for this turn may be under-reported, because \
-             the final usage rides on the `message_delta` that never came.",
+            "AgentRouter deepseek-v4-flash closed without a message completion event; \
+             accepted under the measured legacy route exception. Completion and final \
+             token usage cannot be verified on this route.",
         );
     }
 
@@ -465,6 +487,21 @@ async fn handle_anthropic_event(
             let Some(index) = event.index else { return };
             let Some(delta) = event.delta else { return };
             let Some(state) = blocks.get_mut(&index) else {
+                // A delta for a block that was never opened is CONTENT THAT
+                // VANISHES, and it used to vanish without a trace. That silence
+                // is why "did the gateway send the closing brace, or did we
+                // drop it?" (thread `e186eb4b`, 2026-09-16) could not be
+                // answered from anything on disk and needed the adapter read
+                // line by line. One warning makes the same question a log
+                // lookup next time.
+                crate::logging::log_warn(
+                    "api.anthropic",
+                    &format!(
+                        "dropped a {} delta for block index {index}: no content_block_start \
+                         opened it. Content from this block is lost.",
+                        delta.delta_type.as_deref().unwrap_or("unknown"),
+                    ),
+                );
                 return;
             };
             let delta_type = delta.delta_type.as_deref().unwrap_or("");
@@ -678,21 +715,23 @@ mod tests {
     /// `content_block_delta` with no `message_delta` and no `message_stop`,
     /// closing cleanly on a frame boundary with nothing left in the buffer.
     ///
-    /// This is NOT the same as a dropped connection. A dropped connection
-    /// surfaces as `Some(Err(_))` from the byte stream and is rejected further
-    /// up; reaching a clean EOF means the HTTP body completed normally. The
-    /// reply is whole, so refusing it threw away a finished answer and then
-    /// re-sent the entire request six times chasing an ending that was never
-    /// going to come.
+    /// This compatibility exception is confined to that measured route. A
+    /// clean HTTP ending cannot prove its upstream generation was complete.
     #[tokio::test]
     async fn a_gateway_that_never_sends_message_stop_is_still_a_finished_turn() {
         let body = "data: {\"type\":\"content_block_start\",\"index\":0,\
                     \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
                     data: {\"type\":\"content_block_delta\",\"index\":0,\
                     \"delta\":{\"type\":\"text_delta\",\"text\":\"a whole answer\"}}\n\n";
-        let turn = drive(body)
-            .await
-            .expect("a complete reply must not be thrown away over a missing terminator");
+        let (tx, _rx) = mpsc::channel(64);
+        let turn = drive_anthropic_stream_with_legacy_eof(
+            futures_util::stream::iter([Ok::<_, std::io::Error>(body.as_bytes().to_vec())]),
+            tx,
+            CancellationToken::new(),
+            true,
+        )
+        .await
+        .expect("the measured legacy route must remain usable");
         assert_eq!(turn.stop_reason, "end_turn");
         match turn.assistant_message.blocks.as_slice() {
             [ContentBlock::Text { text }] => assert_eq!(text, "a whole answer"),
@@ -709,6 +748,22 @@ mod tests {
             .await
             .expect("message_stop should complete the turn");
         assert_eq!(turn.stop_reason, "end_turn");
+    }
+
+    #[test]
+    fn legacy_eof_is_confined_to_the_measured_route() {
+        assert!(allows_legacy_eof(
+            "https://agentrouter.org/v1/messages", "deepseek-v4-flash"
+        ));
+        assert!(!allows_legacy_eof(
+            "https://agentrouter.org/v1/messages", "claude-opus-5"
+        ));
+        assert!(!allows_legacy_eof(
+            "https://inference.us-west.modal.direct/v1/messages", "deepseek-v4-flash"
+        ));
+        assert!(!allows_legacy_eof(
+            "https://agentrouter.org.example/v1/messages", "deepseek-v4-flash"
+        ));
     }
 
     /// Hitting the output cap is a real ending, not a truncation — the turn

@@ -58,7 +58,7 @@ impl ToolExecutor for AuroroWebSearchTool {
         ToolSchema {
             name: "auroro_websearch".into(),
             description: format!(
-                "Search the web, or read one web page.\n\n\
+                "Search the web, find research papers or images, or read one web page.\n\n\
                  action='search' with a `query` returns ranked results, each with a title, \
                  URL and the engine's summary.\n\
                  action='fetch' with a `url` returns the page as Markdown: headings, lists, \
@@ -69,8 +69,15 @@ impl ToolExecutor for AuroroWebSearchTool {
                  `hasMore: true`, call again with the same URL and `offset` set to \
                  `nextOffset` to read on. Windows default to {DEFAULT_MAX_CHARS} characters \
                  and may be raised to {MAX_MAX_CHARS} with `maxChars`.\n\n\
-                 This reads pages, it does not operate them. For a page that needs a click, \
-                 a login, or JavaScript to render, use the browser tools."
+                 source='images' searches Wikimedia Commons for existing pictures, not generated \
+                 images. It returns up to 10 images with thumbnail URLs, original URLs, dimensions, \
+                 source pages and attribution when provided. Region and safeSearch apply to web \
+                 search only; Commons does not provide those filters. Keep the creator and license \
+                 with an image, link its source page, and check that page for reuse terms. Image \
+                 metadata is not visual inspection.\n\n\
+                 This reads pages, it does not operate them. If a page requires a login or \
+                 JavaScript, use browser tools only when available; otherwise try another source \
+                 and explain what could not be read."
             ),
             input_schema: json!({
                 "type": "object",
@@ -84,14 +91,16 @@ impl ToolExecutor for AuroroWebSearchTool {
                     "url": { "type": "string", "description": "Required for action='fetch'." },
                     "source": {
                         "type": "string",
-                        "enum": ["web", "scholar"],
+                        "enum": ["web", "scholar", "images"],
                         "default": "web",
                         "description": "Which catalogue to ask. 'web' is the open web. 'scholar' \
                                         asks arXiv, OpenAlex, Semantic Scholar and PubMed Central \
                                         together and returns papers — titles, venues, abstracts \
                                         and links you can fetch. Use it for research questions, \
                                         evidence and citations; it has nothing to say about \
-                                        software documentation or current events. Search only."
+                                        software documentation or current events. 'images' finds \
+                                        existing pictures on Wikimedia Commons with source and license \
+                                        metadata, up to 10 results. Search only."
                     },
                     "numResults": {
                         "type": "number",
@@ -125,7 +134,7 @@ impl ToolExecutor for AuroroWebSearchTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
-        let action = string_arg(&input, &["action"]);
+        let action = string_arg(&input, &["action"]).map(|s| s.to_ascii_lowercase());
         let query = string_arg(&input, &["query"]);
         let url = string_arg(&input, &["url"]);
 
@@ -192,7 +201,7 @@ fn refusal(message: &str) -> String {
         .unwrap_or_else(|_| r#"{"success":false,"error":"web request failed"}"#.to_string())
 }
 
-/// A search that reached no engine at all.
+/// A search that could not return a usable result.
 ///
 /// The hazard here is specific and worse than the failure itself: a model that
 /// asked the web a question, got nothing, and answers anyway from memory —
@@ -206,8 +215,8 @@ fn search_failure(message: &str) -> String {
     serde_json::to_string(&json!({
         "success": false,
         "error": message,
-        "guidance": "No search engine could be reached, so nothing was found and nothing was \
-ruled out. Tell the user the search failed rather than answering from memory as though it had \
+        "guidance": "The search failed, so no usable results were returned and nothing was \
+ruled out. Check the error and correct invalid arguments before retrying. Tell the user the search failed rather than answering from memory as though it had \
 succeeded. Do NOT cite sources, name articles, or state current facts you cannot check. If you \
 know something relevant from training, you may say so — but say plainly that you could not verify \
 it just now."
@@ -222,7 +231,7 @@ it just now."
 fn string_arg(input: &Value, names: &[&str]) -> Option<String> {
     names
         .iter()
-        .find_map(|n| input.get(*n).and_then(Value::as_str))
+        .find_map(|n| input.get(*n).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()))
         .map(str::to_string)
 }
 
@@ -275,6 +284,16 @@ mod tests {
         let parsed = run(json!({ "action": "fetch" })).await;
         assert_eq!(parsed["success"], false);
         assert!(parsed["error"].as_str().unwrap().contains("`url`"));
+    }
+
+    #[tokio::test]
+    async fn blank_optional_fields_do_not_override_search_and_bad_actions_are_refused() {
+        let empty = run(json!({"action":"", "url":" ", "query":" "})).await;
+        assert!(empty["error"].as_str().unwrap().contains("query"));
+        let invalid = run(json!({"action":"images", "query":"Webb"})).await;
+        assert!(invalid["error"].as_str().unwrap().contains("unknown web action"));
+        let source = run(json!({"source":"typo", "query":"Webb"})).await;
+        assert!(source["error"].as_str().unwrap().contains("unknown search source"));
     }
 
     /// A bad URL must not reach the network, and must come back as a readable

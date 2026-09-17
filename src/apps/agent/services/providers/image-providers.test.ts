@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   A6API_IMAGE_PROVIDER_ID,
+  MINIMAX_IMAGE_PROVIDER_ID,
   aspectRatioOfSize,
   canEditWith,
   editUrl,
@@ -136,6 +137,17 @@ describe("reading the stored list back", () => {
 });
 
 describe("the image provider Aurora ships", () => {
+  it("ships native MiniMax without overwriting a saved key or model settings", () => {
+    const mini = normalizeImageProviders(undefined).find((row) => row.id === MINIMAX_IMAGE_PROVIDER_ID)!;
+    expect(mini.apiFormat).toBe("minimax-native");
+    expect(mini.models[0].modelKey).toBe("image-01");
+    expect(generationUrl(mini)).toBe("https://api.minimax.io/v1/image_generation");
+    expect(editUrl(mini)).toBe(generationUrl(mini));
+    expect(imageProviderReady(mini)).toBe(false);
+    const custom = { ...mini, apiKey: "subscription-key", enabled: false, models: [{ ...mini.models[0], defaultSize: "1280x720" }] };
+    const rows = normalizeImageProviders(normalizeImageProviders([custom]));
+    expect(rows.filter((row) => row.id === MINIMAX_IMAGE_PROVIDER_ID)).toEqual([custom]);
+  });
   const shipped = (stored: unknown) =>
     normalizeImageProviders(stored).find((r) => r.id === A6API_IMAGE_PROVIDER_ID);
 
@@ -258,7 +270,12 @@ describe("a conversation pinned to an image model", () => {
   it("reserves the picture's shape from its size, square when unsaid", () => {
     expect(aspectRatioOfSize("1536x1024")).toBe("1536 / 1024");
     expect(aspectRatioOfSize("1024×1536")).toBe("1024 / 1536");
+    expect(aspectRatioOfSize("832x1248")).toBe("832 / 1248");
+    expect(aspectRatioOfSize(" 1280 X 720 ")).toBe("1280 / 720");
     expect(aspectRatioOfSize(undefined)).toBe("1 / 1");
     expect(aspectRatioOfSize("auto")).toBe("1 / 1");
+    expect(aspectRatioOfSize("0x1024")).toBe("1 / 1");
+    expect(aspectRatioOfSize("1024x-1")).toBe("1 / 1");
+    expect(aspectRatioOfSize(`${"9".repeat(400)}x1024`)).toBe("1 / 1");
   });
 });

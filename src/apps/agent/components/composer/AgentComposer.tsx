@@ -25,6 +25,7 @@ import {
 } from "@/apps/agent/services/terminal/terminal-sessions";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
+import { ComposerBody } from "./ComposerBody";
 import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
 import {
   ComposerPlusMenu,
@@ -397,6 +398,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // gated per-feature by Preferences. Renders ghost text into this editor and
   // fixes words on boundaries; a no-op when every feature is off.
   const typing = useComposerTyping(editorRef);
+  const clearTyping = typing.clearGhost;
 
   // Keep isEmpty / charLen / emitted value in sync after a programmatic edit
   // (refine apply/undo) WITHOUT the user-edit side effects of handleInput.
@@ -449,7 +451,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     (s) => s.getModelFor(composerModel)?.supportsVision ?? false,
   );
   const [visionWarn, setVisionWarn] = useState<string | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [annotateId, setAnnotateId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!attachmentError) return;
+    const timer = window.setTimeout(() => setAttachmentError(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [attachmentError]);
 
   const warnNoVision = () => {
     setVisionWarn(
@@ -979,9 +988,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // Classify dropped/picked paths: folders → folder pill, images → attachment
   // (vision-gated), else a `@path` mention so the agent can read the file with
   // its tools. The Files panel says `isDir` at press time; an OS drop or picker
-  // pick is a bare path string, so those are stat'ed — Tauri adds every
-  // dropped/picked path to the fs scope, so the stat is always permitted.
+  // pick is a bare path string, so those are stat'ed. The native composer_drop
+  // bridge and file picker grant these exact paths to the plugin-fs scope.
   const handlePaths = (paths: string[], meta?: { isDir?: boolean }) => {
+    setAttachmentError(null);
     void (async () => {
       for (const p of paths) {
         let isDir = meta?.isDir;
@@ -1003,7 +1013,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           }
           void imageFileToAttachment(p)
             .then(addImage)
-            .catch((err) => console.error("[agent-window] read dropped image failed:", err));
+            .catch((err) => {
+              console.error("[agent-window] read dropped image failed:", p, err);
+              setAttachmentError(`Couldn't attach ${basenameOf(p)}. Try Files & images or paste the image.`);
+            });
         } else {
           insertPathPill(p);
         }
@@ -1041,6 +1054,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     if (!el) return;
     const current = serializeEditor(el);
     if (value !== current && value !== lastEmittedRef.current) {
+      clearTyping();
       el.textContent = value;
       lastEmittedRef.current = value;
       // Writing an external prop into the contenteditable is legitimate effect
@@ -1048,7 +1062,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       syncEmpty();
       placeCaretAtEnd(el);
     }
-  }, [value]);
+  }, [value, clearTyping]);
 
   // Takes focus when this composer is the one a person is about to type into.
   //
@@ -1084,6 +1098,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const insertTranscript = (text: string) => {
     const el = editorRef.current;
     if (!el || !text) return;
+    typing.clearGhost();
     el.focus();
     const seln = window.getSelection();
     if (!seln || seln.rangeCount === 0 || !el.contains(seln.anchorNode)) {
@@ -1321,6 +1336,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // Paste: an image goes through the vision gate → attachment; otherwise plain
   // text only (keeps the editor to text nodes + pills).
   const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    typing.clearGhost();
     const items = e.clipboardData?.items ? Array.from(e.clipboardData.items) : [];
     const imageItem = items.find(
       (it) => it.kind === "file" && it.type.startsWith("image/"),
@@ -1460,81 +1476,83 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             input as pills (see `pickCommand` and the selection-sync effect),
             exactly like `@`-mentions — no separate chip rows. */}
 
-        {/* Staged image attachments + the vision-gate warning. */}
-        {(images.length > 0 || visionWarn) && (
-          <div className="agw-attach-row" onClick={(e) => e.stopPropagation()}>
-            {images.map((img) => (
-              <div
-                key={img.id}
-                className="agw-attach-card"
-                title={`${img.name} — click to annotate`}
-                onClick={() => setAnnotateId(img.id)}
-              >
-                <img
-                  src={attachmentDataUrl(img)}
-                  alt={img.name}
-                  className="agw-attach-thumb"
-                  draggable={false}
-                />
-                <button
-                  type="button"
-                  className="agw-attach-x"
-                  title="Remove image"
-                  aria-label="Remove image"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    removeImage(img.id);
-                  }}
+        <ComposerBody>
+          {/* Staged image attachments + the vision-gate warning. */}
+          {(images.length > 0 || visionWarn) && (
+            <div className="agw-attach-row" onClick={(e) => e.stopPropagation()}>
+              {images.map((img) => (
+                <div
+                  key={img.id}
+                  className="agw-attach-card"
+                  title={`${img.name} — click to annotate`}
+                  onClick={() => setAnnotateId(img.id)}
                 >
-                  <AgentIcon name="close" size={9} />
-                </button>
-              </div>
-            ))}
-            {visionWarn && <span className="agw-attach-warn">{visionWarn}</span>}
-          </div>
-        )}
-
-        {/* Contenteditable input + placeholder overlay. `data-top-selector`
-            tells the CSS the band above already provides the top spacing (small
-            padding); without it the editor takes comfortable top padding so the
-            placeholder sits near the box top, Codex-style. */}
-        <div
-          className="agw-ce-wrap"
-          data-top-selector={modelSelectorPosition === "top" || undefined}
-        >
-          {/* `blank` is measured from the editor DOM, which the async pill sync
-              writes to outside React — so a pick that lands while the composer
-              is untouched is checked against the store directly rather than
-              waiting for an input event that never comes. */}
-          {blank && selected.length === 0 && (
-            <div className="agw-ce-placeholder">{placeholder}</div>
+                  <img
+                    src={attachmentDataUrl(img)}
+                    alt={img.name}
+                    className="agw-attach-thumb"
+                    draggable={false}
+                  />
+                  <button
+                    type="button"
+                    className="agw-attach-x"
+                    title="Remove image"
+                    aria-label="Remove image"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      removeImage(img.id);
+                    }}
+                  >
+                    <AgentIcon name="close" size={9} />
+                  </button>
+                </div>
+              ))}
+              {visionWarn && <span className="agw-attach-warn">{visionWarn}</span>}
+            </div>
           )}
+
+          {/* Contenteditable input + placeholder overlay. `data-top-selector`
+              tells the CSS the band above already provides the top spacing (small
+              padding); without it the editor takes comfortable top padding so the
+              placeholder sits near the box top, Codex-style. */}
           <div
-            ref={editorRef}
-            className="agw-ce agw-scroll"
-            contentEditable
-            role="textbox"
-            aria-multiline="true"
-            spellCheck
-            suppressContentEditableWarning
-            onInput={handleInput}
-            onKeyUp={refreshPickers}
-            onClick={refreshPickers}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onBlur={() => {
-              typing.clearGhost();
-              window.setTimeout(() => {
-                // Clear the remembered queries too: coming back to the same
-                // caret should reopen the picker, unlike an Escape dismissal.
-                mentionQueryRef.current = null;
-                slashQueryRef.current = null;
-                setMention(null);
-                setSlash(null);
-              }, 120);
-            }}
-          />
-        </div>
+            className="agw-ce-wrap"
+            data-top-selector={modelSelectorPosition === "top" || undefined}
+          >
+            {/* `blank` is measured from the editor DOM, which the async pill sync
+                writes to outside React — so a pick that lands while the composer
+                is untouched is checked against the store directly rather than
+                waiting for an input event that never comes. */}
+            {blank && selected.length === 0 && (
+              <div className="agw-ce-placeholder">{placeholder}</div>
+            )}
+            <div
+              ref={editorRef}
+              className="agw-ce agw-scroll"
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              spellCheck
+              suppressContentEditableWarning
+              onInput={handleInput}
+              onKeyUp={refreshPickers}
+              onClick={refreshPickers}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              onBlur={() => {
+                typing.clearGhost();
+                window.setTimeout(() => {
+                  // Clear the remembered queries too: coming back to the same
+                  // caret should reopen the picker, unlike an Escape dismissal.
+                  mentionQueryRef.current = null;
+                  slashQueryRef.current = null;
+                  setMention(null);
+                  setSlash(null);
+                }, 120);
+              }}
+            />
+          </div>
+        </ComposerBody>
 
         {/* Bottom action row — attach (left) · reasoning + speech + send (right). */}
         <div className="agw-composer-actions-row">
@@ -1672,14 +1690,16 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       <ComposerRail
         threadId={composerThreadId}
         notice={
-          micNotice
-            ? {
-                text: `Microphone: ${micNotice.text}`,
-                tone: micNotice.severity === "warning" ? "warning" : "error",
-              }
-            : refine.notice
-              ? { text: refine.notice, tone: "warning" }
-              : null
+          attachmentError
+            ? { text: attachmentError, tone: "error" }
+            : micNotice
+              ? {
+                  text: `Microphone: ${micNotice.text}`,
+                  tone: micNotice.severity === "warning" ? "warning" : "error",
+                }
+              : refine.notice
+                ? { text: refine.notice, tone: "warning" }
+                : null
         }
       />
 

@@ -287,6 +287,19 @@ fn go_type_name(node: Node<'_>, src: &[u8]) -> Option<String> {
     }
 }
 
+/// Does this text name a type, rather than spell one out?
+///
+/// A container is reported to the model as `Owner::member`, so whatever goes
+/// on the left has to be something a person could type back. `Store`,
+/// `Vec<u8>` and `crate::db::Store` qualify. `struct { … }` does not: it is
+/// the type's SOURCE, and pasting a declaration where a name belongs is how a
+/// four-field struct came back as four copies of itself.
+fn names_a_type(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 128
+        && !text.contains(['{', '}', '\n', '\r'])
+}
+
 /// Nearest enclosing type/class/module name, for `container`.
 fn enclosing_container(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
     let mut cur = node.parent();
@@ -339,13 +352,31 @@ fn enclosing_container(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String>
                 cur = n.parent();
                 continue;
             }
-            // Rust `impl` blocks name their subject with `type:`, everything
-            // else uses `name:`.
-            if let Some(t) = named_child_text(n, "type", src) {
-                return Some(t);
-            }
+            // `name:` FIRST, `type:` only as the fallback.
+            //
+            // `type:` is here for Rust `impl` blocks, which name their subject
+            // there and carry no `name:` at all. Go's `type_spec` carries
+            // BOTH — `name:` is `Module`, `type:` is the entire `struct { … }`
+            // literal — so trying `type:` first qualified every Go field and
+            // interface method by its type's whole source, comments included,
+            // once per member. See
+            // `a_go_member_is_qualified_by_its_type_name_not_its_type_source`.
+            //
+            // Reordering is safe because a container node that HAS a `name:`
+            // has always meant that name: the C/C++ specifiers, every
+            // class-like declaration, and Go's `type_spec`. Only `impl_item`
+            // reaches the fallback.
             if let Some(t) = named_child_text(n, "name", src) {
                 return Some(t);
+            }
+            // A type literal is not a name, whatever field it arrived in. The
+            // guard is cheap and stops the next grammar that spells things a
+            // third way from putting a page of source into a symbol.
+            if let Some(t) = named_child_text(n, "type", src) {
+                if names_a_type(&t) {
+                    return Some(t);
+                }
+                return None;
             }
         }
         cur = n.parent();
@@ -1221,6 +1252,59 @@ mod tests {
         );
         assert_eq!(sym(&f, "run").container.as_deref(), Some("Service"));
         assert_eq!(sym(&f, "LOCAL").container, None);
+    }
+
+    /// A Go field's container is its TYPE'S NAME, never the type's source.
+    ///
+    /// `type_spec` is Go's only container node and it carries both `name:`
+    /// (the type's name) and `type:` (the literal). The walk tried `type:`
+    /// first — a branch that exists for Rust `impl` blocks, which name their
+    /// subject there and have no `name:` at all — so every Go struct field and
+    /// every Go interface method came back qualified by the whole type body,
+    /// comments and all, repeated once per member:
+    ///
+    /// ```text
+    /// "struct {\n\tdb *pgxpool.Pool\n\t// methods is the set of ways this
+    ///  store can take money…\n\tmethods *payments.Registry\n}::db"
+    /// ```
+    ///
+    /// Measured in thread `aeab101f` (2026-09-16): four `code outline` calls
+    /// on a Go backend returned 19 KB of repeated struct bodies, the model
+    /// wrote "the `code` outline returns fields oddly", abandoned the tool and
+    /// re-derived the same information with two `grep "^func "` calls. A tool
+    /// whose answer sends the model back to grep has cost a turn and bought
+    /// nothing.
+    ///
+    /// Methods were never affected: they resolve through `go_receiver_type`
+    /// before this walk begins, which is why `statusWriter::WriteHeader` was
+    /// right in the same outline that got every field wrong.
+    #[test]
+    fn a_go_member_is_qualified_by_its_type_name_not_its_type_source() {
+        let f = facts(
+            Lang::Go,
+            "package orders\n\
+             type Module struct {\n\
+             \tdb *pgxpool.Pool\n\
+             \t// methods is how this store takes money.\n\
+             \tmethods *payments.Registry\n\
+             }\n\
+             type DB interface {\n\
+             \tExec(ctx context.Context, sql string) error\n\
+             }\n",
+        );
+
+        for member in ["db", "methods", "Exec"] {
+            let container = sym(&f, member).container.clone().unwrap_or_default();
+            assert!(
+                !container.contains('{'),
+                "{member}'s container is the type's SOURCE, not its name: {container:?}",
+            );
+        }
+        assert_eq!(sym(&f, "db").container.as_deref(), Some("Module"));
+        assert_eq!(sym(&f, "methods").container.as_deref(), Some("Module"));
+        assert_eq!(sym(&f, "Exec").container.as_deref(), Some("DB"));
+        // The type itself is still not its own container.
+        assert_eq!(sym(&f, "Module").container, None);
     }
 
     #[test]

@@ -285,6 +285,7 @@ export type AssistantEvent =
       cost_usd?: number | null;
     }
   | { type: "message_stop"; stop_reason: string }
+  | { type: "stream_attempt_started" }
   | {
       type: "queued_message_injected";
       /** Display copy — what the user typed, without the steering block. */
@@ -965,6 +966,9 @@ export class AgentRuntimeClient {
   private dispatchAssistantEvent(event: AssistantEvent): void {
     const { callbacks } = this.options;
     switch (event.type) {
+      case "stream_attempt_started":
+        callbacks.onStreamAttemptStarted?.();
+        break;
       case "text_delta":
         callbacks.onToken?.(event.delta);
         break;

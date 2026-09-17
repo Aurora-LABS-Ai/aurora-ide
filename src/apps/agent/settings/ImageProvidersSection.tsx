@@ -23,11 +23,13 @@ import React, { useState } from "react";
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgwButton, AgwSelect, AgwSwitch, AgwTextInput } from "@/apps/agent/settings/primitives";
 import { ImageProviderProbe } from "@/apps/agent/settings/ImageProviderProbe";
+import { VideoModels } from "@/apps/agent/settings/VideoModels";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import {
   editUrl,
   generationUrl,
   IMAGE_API_FORMAT_LABELS,
+  DEFAULT_IMAGE_PATHS,
   imageProviderReady,
   type ImageApiFormat,
   type ImageModel,
@@ -62,9 +64,10 @@ const Field: React.FC<{
   </label>
 );
 
-const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean }> = ({
+const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean; portraitReference?: boolean }> = ({
   model,
   providerCanEdit,
+  portraitReference,
 }) => {
   const updateImageModel = useSettingsStore((s) => s.updateImageModel);
   const deleteImageModel = useSettingsStore((s) => s.deleteImageModel);
@@ -100,7 +103,7 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean }> =
 
       <div className="agw-prov-model-chips">
         <span className="agw-prov-key">{model.modelKey}</span>
-        {model.canEdit && <span className="agw-prov-chip">Can edit</span>}
+        {model.canEdit && <span className="agw-prov-chip">{portraitReference ? "Portrait reference" : "Can edit"}</span>}
         {model.defaultSize && <span className="agw-prov-meta-dot">{model.defaultSize}</span>}
         {/* Unset price says nothing rather than a measured $0.00. */}
         {typeof model.pricePerImage === "number" && (
@@ -157,11 +160,11 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean }> =
           </Field>
           <div className="agw-img-toggle-row">
             <span>
-              Can edit an existing image
+              {portraitReference ? "Can use a portrait reference" : "Can edit an existing image"}
               {!providerCanEdit && " — this provider has no edit endpoint"}
             </span>
             <AgwSwitch
-              ariaLabel="This model can edit an existing image"
+              ariaLabel={portraitReference ? "This model can use a portrait reference" : "This model can edit an existing image"}
               checked={model.canEdit === true}
               disabled={!providerCanEdit}
               onChange={(next) => updateImageModel(model.id, { canEdit: next })}
@@ -223,7 +226,7 @@ export const ImageProviderCard: React.FC<{
           <span className="agw-img-card-meta">
             {IMAGE_API_FORMAT_LABELS[provider.apiFormat]}
             {provider.models.length > 0 &&
-              ` · ${provider.models.length} model${provider.models.length === 1 ? "" : "s"}`}
+              ` · ${provider.models.length} image model${provider.models.length === 1 ? "" : "s"}`}
           </span>
           {/* Not "not configured": say which piece is missing, or the user has
               to guess between an address, a key and the switch. */}
@@ -271,7 +274,7 @@ export const ImageProviderCard: React.FC<{
                 onChange={(e) => updateImageProvider(provider.id, { baseUrl: e.target.value })}
               />
             </Field>
-            <Field label="API key">
+            <Field label={provider.apiFormat === "minimax-native" ? "Subscription Key or API key" : "API key"}>
               <div className="agw-prov-key-row">
                 <AgwTextInput
                   type={showKey ? "text" : "password"}
@@ -302,10 +305,10 @@ export const ImageProviderCard: React.FC<{
                 }
               />
             </Field>
-            <Field label="Generation path" hint={generationUrl(provider)}>
+            <Field label="Image generation path" hint={generationUrl(provider)}>
               <AgwTextInput
                 value={provider.generationPath ?? ""}
-                placeholder="/images/generations"
+                placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].generation}
                 onChange={(e) =>
                   updateImageProvider(provider.id, { generationPath: e.target.value })
                 }
@@ -321,7 +324,7 @@ export const ImageProviderCard: React.FC<{
             >
               <AgwTextInput
                 value={provider.editPath ?? ""}
-                placeholder="/images/edits"
+                placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].edit}
                 onChange={(e) => updateImageProvider(provider.id, { editPath: e.target.value })}
               />
             </Field>
@@ -354,7 +357,7 @@ export const ImageProviderCard: React.FC<{
               pattern for a job this page had already solved. */}
           <div className="agw-prov-detail-models">
             <div className="agw-prov-models-head">
-              Models <span className="agw-prov-models-count">{provider.models.length}</span>
+              Image models <span className="agw-prov-models-count">{provider.models.length}</span>
             </div>
             <div className="agw-prov-models-panel">
               <div className="agw-prov-models agw-scroll">
@@ -362,7 +365,7 @@ export const ImageProviderCard: React.FC<{
                   <div className="agw-prov-empty">No models yet — add one below.</div>
                 ) : (
                   provider.models.map((model) => (
-                    <ImageModelRow key={model.id} model={model} providerCanEdit={canEdit} />
+                    <ImageModelRow key={model.id} model={model} providerCanEdit={canEdit} portraitReference={provider.apiFormat === "minimax-native"} />
                   ))
                 )}
               </div>
@@ -376,7 +379,8 @@ export const ImageProviderCard: React.FC<{
                     />
                     <input
                       className="agw-prov-add-input"
-                      placeholder="Model ID — e.g. gpt-image-1.5, dall-e-3"
+                      aria-label="Add image model ID"
+                      placeholder={provider.apiFormat === "minimax-native" ? "Image model ID - e.g. image-01" : "Image model ID - e.g. gpt-image-1.5, dall-e-3"}
                       value={newModel}
                       spellCheck={false}
                       onChange={(e) => setNewModel(e.target.value)}
@@ -398,13 +402,18 @@ export const ImageProviderCard: React.FC<{
             </div>
           </div>
 
+          {/* Both services serve video off the same key as their images, so
+              the row that holds the key is where its video models belong. */}
+          {provider.apiFormat === "minimax-native" && <VideoModels vendor="MiniMax" />}
+          {provider.apiFormat === "qwen-dashscope" && <VideoModels vendor="Qwen" />}
+
           {/* Same two states a language provider shows, in the same place and
               the same words: a user-added row gets the two-click delete, a
               shipped one gets a line saying why there is nothing to click. A
               missing control with no explanation reads as a bug. */}
           {provider.builtIn ? (
             <div className="agw-prov-detail-note">
-              Comes with Aurora. Change its address, key and models freely — the provider
+              Comes with Aurora. Change its address, key and image models freely — the provider
               itself stays in the list.
             </div>
           ) : (

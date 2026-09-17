@@ -7,6 +7,8 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+// @ts-expect-error The app intentionally omits Node typings; Vitest itself runs in Node.
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -15,6 +17,7 @@ import {
 } from "@/apps/agent/components/tools/ToolCallCard";
 import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
 import { useAgentBackgroundStore } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
+import { ImageResult } from "@/apps/agent/components/tool-views/ImageResult";
 import {
   formatToolDuration,
   groupToolRuns,
@@ -69,6 +72,104 @@ afterEach(async () => {
 });
 
 describe("ToolCallCard streamed file targets", () => {
+  it("labels model discovery without showing a generation placeholder, even during streamed JSON", () => {
+    for (const args of ['{"op":"list"}', '{"op":"list",']) {
+      const html = renderToStaticMarkup(<ToolCallCard isActivelyStreaming call={{ id: "image-models", name: "generate_image", arguments: args }} />);
+      expect(html).toContain("List Image Models");
+      expect(html).not.toContain("Make Image");
+      expect(html).not.toContain("agw-image-placeholder");
+    }
+  });
+  it("distinguishes video model discovery from checking a submitted task", () => {
+    const html = renderToStaticMarkup(<ToolCallCard call={{ id: "video-query", name: "generate_video", arguments: '{"op":"query","jobId":"saved-job"}' }} />);
+    expect(html).toContain("Check Video Status");
+    expect(html).not.toContain("Generate Video");
+  });
+  it("expands a running model lookup without showing image generation animation", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={{ id: "models-live", name: "generate_image", arguments: '{"op":"list"}' }} />));
+    await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+    expect(mountedContainer.querySelector(".agw-tool-silk")).toBeNull();
+    expect(mountedContainer.textContent).toContain("List Image Models");
+  });
+  it.each([
+    ['{"op":"generate","size":"832x1248"}', "832 / 1248"],
+    ['{"op":"edit","size":"1280x720"}', "1280 / 720"],
+    ['{"op":"generate","size":"832x1248",', "832 / 1248"],
+    ['{"op":"generate","size":"832x1', "1 / 1"],
+    ['{"op":"generate","size":"auto"}', "1 / 1"],
+    ['{"op":"generate","size":null}', "1 / 1"],
+  ])("uses the requested image aspect for complete or streamed arguments: %s", async (arguments_, ratio) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    try {
+      await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={{ id: "image-shape", name: "generate_image", arguments: arguments_ }} />));
+      await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+      const silk = mountedContainer.querySelector<HTMLElement>(".agw-tool-silk")!;
+      expect(silk.style.aspectRatio).toBe(ratio);
+      expect(silk.style.getPropertyValue("--agw-image-ratio")).toBe(ratio);
+    } finally { context.mockRestore(); }
+  });
+  it.each([
+    ['{"op":"generate","prompt":"a harbour at dawn"}', "16 / 9"],
+    ['{"op":"generate","ratio":"9:16"}', "9 / 16"],
+    ['{"op":"generate","ratio":"adaptive"}', "16 / 9"],
+    ['{"op":"generate","ratio":"16:', "16 / 9"],
+    ['{"op":"generate","resolution":"768P"}', "16 / 9"],
+  ])("reserves the video's shape while a generation is submitting: %s", async (arguments_, ratio) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    try {
+      await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={{ id: "video-shape", name: "generate_video", arguments: arguments_ }} />));
+      await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+      const silk = mountedContainer.querySelector<HTMLElement>(".agw-tool-silk")!;
+      expect(silk.style.aspectRatio).toBe(ratio);
+      expect(silk.style.getPropertyValue("--agw-image-ratio")).toBe(ratio);
+    } finally { context.mockRestore(); }
+  });
+  it.each(['{"op":"list"}', '{"op":"query","jobId":"saved-job"}'])(
+    "shows no generation placeholder for a video op with nothing arriving: %s",
+    async (arguments_) => {
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+      mountedRoot = createRoot(mountedContainer);
+      await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={{ id: "video-noop", name: "generate_video", arguments: arguments_ }} />));
+      await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+      expect(mountedContainer.querySelector(".agw-tool-silk")).toBeNull();
+    },
+  );
+  it("bounds loading and finished image widths by the same aspect-aware CSS rule", () => {
+    const toolCardCss = readFileSync("src/apps/agent/theme/agent-window/09-tool-cards.css", "utf8");
+    expect(toolCardCss).toMatch(/\.agw-silk\.agw-tool-silk,\s*\.agw-tool-shot-btn\[data-sized\]\s*\{\s*width: min\(100%, 420px, calc\(320px \* var\(--agw-image-ratio, 1 \/ 1\)\)\);\s*\}/);
+    const html = renderToStaticMarkup(<ImageResult image={{ path: "/portrait.png", width: 832, height: 1248 }} />);
+    expect(html).toContain('data-sized="true"');
+    expect(html).toContain("--agw-image-ratio:832 / 1248");
+    expect(html).toContain("aspect-ratio:832 / 1248");
+  });
+  it("updates the ratio as a streamed size completes and preserves it when the image arrives", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    const call = { id: "portrait-transition", name: "generate_image", arguments: '{"op":"generate","size":"832x1' };
+    try {
+      await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={call} />));
+      await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+      expect(mountedContainer.querySelector<HTMLElement>(".agw-tool-silk")?.style.aspectRatio).toBe("1 / 1");
+      call.arguments = '{"op":"generate","size":"832x1248"}';
+      await act(async () => mountedRoot!.render(<ToolCallCard isActivelyStreaming call={{ ...call }} />));
+      expect(mountedContainer.querySelector<HTMLElement>(".agw-tool-silk")?.style.aspectRatio).toBe("832 / 1248");
+      await act(async () => mountedRoot!.render(<ToolCallCard call={{ ...call, result: JSON.stringify({ screenshot: { path: "/portrait.png", width: 832, height: 1248 } }) }} />));
+      expect(mountedContainer.querySelector(".agw-tool-silk")).toBeNull();
+      expect(mountedContainer.querySelector<HTMLElement>(".agw-tool-shot-btn")?.style.getPropertyValue("--agw-image-ratio")).toBe("832 / 1248");
+    } finally { context.mockRestore(); }
+  });
   it("renders present_artifact as a dedicated non-expandable Canvas launcher", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard
@@ -153,6 +254,62 @@ describe("ToolCallCard streamed file targets", () => {
     // Saying the first file it will touch, not the count it settles on.
     expect(html).toContain("a.test.ts");
     expect(html).not.toContain("4 files");
+  });
+
+  /**
+   * The reel used to be a fixed-pace timer with no connection to the work:
+   * `REEL_HOLD_MS` per name whatever the call took, and `showSummary` required
+   * `drained && settled`, so a finished call still had to wait for its own
+   * animation. Five files is 1.5s of that. At 300 tok/s the model has emitted
+   * the next tool call and a thought block well inside it, so rows appeared
+   * BELOW a row still pretending to be in flight.
+   *
+   * No timer is advanced between settling and the assertion: landing has to be
+   * driven by the work, not by how far the reel happens to have got.
+   */
+  it("lands on the summary the moment the call finishes, however far the reel got", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.useFakeTimers();
+    const args = JSON.stringify({
+      path: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts"],
+    });
+    mountedContainer = document.createElement("div");
+    document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    try {
+      await act(async () =>
+        mountedRoot!.render(
+          <ToolCallCard isActivelyStreaming call={{ id: "reel-fast", name: "file_read", arguments: args }} />,
+        ),
+      );
+
+      // Still running: reading a name out, not stating the count.
+      expect(mountedContainer.querySelector("[data-live]")).not.toBeNull();
+      expect(mountedContainer.textContent).toContain("a.ts");
+      expect(mountedContainer.textContent).not.toContain("5 files");
+
+      // The read finishes after 150ms — long before five names at 300ms each.
+      await act(async () => {
+        vi.advanceTimersByTime(150);
+      });
+      await act(async () =>
+        mountedRoot!.render(
+          <ToolCallCard
+            call={{
+              id: "reel-fast",
+              name: "file_read",
+              arguments: args,
+              result: '{"success":true,"filesRead":5,"files":[]}',
+            }}
+          />,
+        ),
+      );
+
+      expect(mountedContainer.querySelector("[data-live]")).toBeNull();
+      expect(mountedContainer.textContent).toContain("5 files");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never replays the reel for a call that was already finished", () => {

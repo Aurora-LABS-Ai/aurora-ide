@@ -39,6 +39,7 @@ const DOCK_ICONS: Partial<Record<DockSingletonKind, AgentIconName>> = {
   review: "diff",
   canvas: "panel-right",
   memory: "database",
+  gallery: "image",
 };
 
 /** Build's dock surfaces. Chat's roster is `CHAT_DOCK_TABS` in `types.ts`. */

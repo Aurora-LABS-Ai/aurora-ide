@@ -41,7 +41,9 @@ pub fn budget_chars(tokens: usize) -> usize {
 /// Kinds worth naming in a map. Variables, fields, consts and enum variants are
 /// deliberately excluded: they are the bulk of the symbol table and almost
 /// never what someone needs to locate a piece of behaviour.
-fn is_landmark(kind: &str) -> bool {
+/// Shared with `code`'s directory outline, which answers the same question at
+/// a smaller scope and must not grow a second opinion about what a landmark is.
+pub(crate) fn is_landmark(kind: &str) -> bool {
     matches!(
         kind,
         "class" | "struct" | "interface" | "trait" | "enum" | "function" | "method" | "type"
@@ -50,7 +52,7 @@ fn is_landmark(kind: &str) -> bool {
 
 /// Types before functions, so a file reads as "what it defines" rather than
 /// alphabetically.
-fn kind_order(kind: &str) -> u8 {
+pub(crate) fn kind_order(kind: &str) -> u8 {
     match kind {
         "class" | "struct" | "interface" | "trait" => 0,
         "enum" | "type" => 1,

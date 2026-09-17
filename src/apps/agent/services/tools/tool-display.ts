@@ -56,10 +56,12 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   ask_question: "Ask the User",
   present_artifact: "Present on Canvas",
   read_artifact: "Read Canvas Source",
-  // Aurora Chat only. One name for the three ops (generate, edit, list): the
-  // card's own header says which happened, and "Generate Image" over an edit
-  // would contradict it.
-  generate_image: "Make an Image",
+  // Neutral until the operation is known; model discovery makes no image.
+  generate_image: "Image Tools",
+  generate_video: "Video Tools",
+  recall: "Search Past Chats",
+  remember: "Remember",
+  canvas_guidelines: "Read Canvas Guidelines",
   // Browser tools — keep the names short and verb-led so the chat
   // card reads like a human action ("Click Element" instead of
   // "Browser Click"). The legacy auto-title-case produced "Browser
@@ -94,7 +96,30 @@ const formatFallbackToolName = (toolName: string): string =>
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 
-export const getProfessionalToolName = (toolName: string): string => {
+export const webSearchOperation = (args: Record<string, unknown>): "fetch" | "web" | "scholar" | "images" => {
+  const action = typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  if (action === "fetch" || (!action && url)) return "fetch";
+  const source = typeof args.source === "string" ? args.source.trim().toLowerCase() : "";
+  if (source === "images") return "images";
+  if (["scholar", "papers", "academic"].includes(source)) return "scholar";
+  return "web";
+};
+
+export const getProfessionalToolName = (toolName: string, args?: Record<string, unknown>): string => {
+  if (toolName === "auroro_websearch" && args) {
+    return { fetch: Number(args.offset ?? 0) > 0 ? "Read More of Page" : "Read Web Page", web: "Search the Web", scholar: "Search Research Papers", images: "Search Images" }[webSearchOperation(args)];
+  }
+  if (toolName === "generate_image" && args) {
+    if (args.op === "list") return "List Image Models";
+    if (args.op === "edit") return "Edit Image";
+    if (args.op === "generate" || (!args.op && typeof args.prompt === "string")) return "Generate Image";
+  }
+  if (toolName === "generate_video" && args) {
+    if (args.op === "list") return "List Video Models";
+    if (args.op === "query") return "Check Video Status";
+    if (args.op === "generate" || (!args.op && typeof args.prompt === "string")) return "Generate Video";
+  }
   if (toolName.startsWith("mcp_")) {
     return getToolDisplayName(toolName);
   }

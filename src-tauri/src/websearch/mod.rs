@@ -37,6 +37,7 @@ mod cache;
 pub mod engines;
 mod extract;
 mod http;
+mod images;
 pub mod scholar;
 pub mod types;
 
@@ -214,6 +215,7 @@ pub async fn search(
     let outcome = match opts.source {
         SearchSource::Web => engines::search(query, opts, browser).await?,
         SearchSource::Scholar => scholar::search(query, opts).await?,
+        SearchSource::Images => images::search(query, opts).await?,
     };
     cache::store_search(query, opts, &outcome);
     Ok(outcome)

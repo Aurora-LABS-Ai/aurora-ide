@@ -132,11 +132,44 @@ fn listed_paths(items: &[Value]) -> Listed {
 pub(crate) fn resolve(input: &Value, verb: &str) -> Result<PathArgument, ToolError> {
     let field = streaming_targets::FIELD;
     match input.get("path") {
-        // The well-formed case, and the only one that costs nothing.
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(PathArgument {
-            path: s.clone(),
-            note: None,
-        }),
+        // A gateway-FLATTENED array: the characters of `["a.ts"]` arriving as
+        // one string. `file_read` and `read_lints` already decode this (see
+        // `crate::tools::arguments`); the write tools did not, so the blob
+        // became the filename. Measured on thread `7ca13ebb` (2026-09-03):
+        //
+        //   fullPath: E:\…\nextgeninterior-main\["app/(site)/portfolio/page.tsx"]
+        //   error:    Failed to create directories: The filename, directory
+        //             name, or volume label syntax is incorrect. (os error 123)
+        //
+        // Windows cannot store a `"` in a name, so the write failed at
+        // `create_dir_all` and the message blamed directory creation for what
+        // was a mangled argument. Checked BEFORE the plain-string arm, because
+        // a flattened array IS a non-empty string and would otherwise be taken
+        // at face value.
+        Some(Value::String(raw)) if !raw.trim().is_empty() => {
+            match crate::tools::arguments::decode_flattened_string_array(raw) {
+                Some(decoded) if decoded.len() == 1 => Ok(PathArgument {
+                    path: decoded[0].clone(),
+                    note: Some(format!(
+                        "`path` arrived as a list encoded into a string, so {} was used. Send \
+                         `path` as a plain string: the write tools take one file per call.",
+                        decoded[0]
+                    )),
+                }),
+                Some(decoded) => Err(ToolError::InvalidInput(format!(
+                    "`path` arrived as a list of {} paths encoded into a string. Aurora's write \
+                     tools take one file per call: send `path` as a plain string and make one \
+                     call per file.",
+                    decoded.len()
+                ))),
+                // The ordinary well-formed case, and the only one that costs
+                // nothing. A real path is never valid JSON for an array.
+                None => Ok(PathArgument {
+                    path: raw.clone(),
+                    note: None,
+                }),
+            }
+        }
 
         Some(Value::Array(items)) => match listed_paths(items) {
             Listed::One(path) => {
@@ -367,6 +400,58 @@ mod tests {
                 m, "`path` must be a string",
                 "the old message said nothing about what actually arrived"
             );
+        }
+    }
+
+    /// The shape that reached disk as a filename. Thread `7ca13ebb`
+    /// (2026-09-03) wrote `["app/(site)/portfolio/page.tsx"]` — brackets,
+    /// quotes and all — into a Windows path and got `os error 123` back.
+    #[test]
+    fn a_list_encoded_into_a_string_is_still_a_list() {
+        let arg = resolve(
+            &json!({ "path": "[\"app/(site)/portfolio/page.tsx\"]", "content": "x" }),
+            "write",
+        )
+        .expect("a flattened array names one file unambiguously");
+        assert_eq!(arg.path, "app/(site)/portfolio/page.tsx");
+        let note = arg.note.expect("a repair must say what it assumed");
+        assert!(note.contains("encoded into a string"), "{note}");
+
+        // The unescaped Windows spelling, which is not valid JSON until the
+        // backslashes are doubled — see `tools::arguments`.
+        let arg = resolve(
+            &json!({ "path": r#"["E:\gadget\notes.md"]"#, "content": "x" }),
+            "write",
+        )
+        .expect("the unescaped flattening decodes too");
+        assert_eq!(arg.path, r"E:\gadget\notes.md");
+    }
+
+    /// Two files inside a flattened string is still a choice we must not make.
+    #[test]
+    fn a_flattened_list_of_several_is_refused_like_a_real_one() {
+        let err = resolve(&json!({ "path": "[\"a.rs\", \"b.rs\"]" }), "write").unwrap_err();
+        let m = message(err);
+        assert!(m.contains("2 paths"), "{m}");
+        assert!(m.contains("one file per call"), "{m}");
+    }
+
+    /// A real path must never be mistaken for an encoded list. Nothing here
+    /// parses as a JSON array, so every one of them is taken as written.
+    #[test]
+    fn ordinary_paths_are_untouched_by_the_decoder() {
+        for path in [
+            "src/a.rs",
+            r"E:\VOID-EDITOR\Aurora-Agent-IDE\src\main.rs",
+            // A real Next.js route file: brackets in the name, not a list.
+            "src/app/api/[...path]/route.ts",
+            "app/(site)/portfolio/page.tsx",
+            "src/[id].tsx",
+        ] {
+            let arg = resolve(&json!({ "path": path, "content": "x" }), "write")
+                .unwrap_or_else(|err| panic!("{path} must resolve: {err:?}"));
+            assert_eq!(arg.path, path);
+            assert!(arg.note.is_none(), "{path} needed no repair");
         }
     }
 

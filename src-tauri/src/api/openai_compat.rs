@@ -200,12 +200,13 @@ where
     // check after the loop.
     let mut saw_terminator = false;
 
-    loop {
+    'stream: loop {
         let chunk = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
             next = bytes_stream.next() => match next {
                 Some(Ok(c)) => c,
+                Some(Err(_)) if finish_reason.is_some() => break,
                 Some(Err(e)) => return Err(ApiError::Network(format!("stream error: {e}"))),
                 None => break,
             }
@@ -215,12 +216,15 @@ where
         for frame in sse.take_frames() {
             if frame_has_done_marker(&frame) {
                 saw_terminator = true;
+                break 'stream;
             }
             for payload in frame_payloads(&frame) {
-                let parsed: OpenAiStreamingResponse = match serde_json::from_str(&payload) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let parsed: OpenAiStreamingResponse = serde_json::from_str(&payload).map_err(|err| {
+                    ApiError::Network(format!("invalid Chat Completions stream event: {err}"))
+                })?;
 
                 // An in-band error ends the turn, whatever the HTTP status
                 // said. Checked BEFORE the choices so a frame carrying both
@@ -263,9 +267,7 @@ where
                     // mid-reply, and treating that as a farewell would hand
                     // back a truncated answer as a finished turn — the exact
                     // failure the terminator check exists to prevent.
-                    if parsed.choices.is_empty() {
-                        saw_terminator = true;
-                    }
+                    saw_terminator = parsed.choices.is_empty() || finish_reason.is_some();
                     usage.input_tokens = u.prompt_tokens;
                     usage.output_tokens = u.completion_tokens;
                     // Context caching: the cached-read count is a SUBSET of
@@ -294,6 +296,10 @@ where
 
                 for choice in parsed.choices {
                     let delta = choice.delta;
+                    // Running usage is not a farewell if generation resumes.
+                    if finish_reason.is_none() {
+                        saw_terminator = false;
+                    }
 
                     // Reasoning first — DeepSeek-r1 emits reasoning
                     // before the visible answer, so latching it ahead

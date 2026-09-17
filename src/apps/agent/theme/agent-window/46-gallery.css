@@ -1,0 +1,462 @@
+.agw-gallery {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  color: var(--agw-text);
+  background: var(--agw-conversation);
+}
+.agw-gallery-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 10px;
+}
+.agw-gallery-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.agw-gallery button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.agw-gallery button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.agw-gallery-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+}
+.agw-gallery-controls {
+  padding: 0 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agw-gallery-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  background: var(--agw-surface);
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  color: var(--agw-text-muted);
+}
+.agw-gallery-search:focus-within {
+  outline: none;
+  box-shadow: none;
+}
+.agw-gallery-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: 13px;
+}
+.agw-gallery-search input:focus,
+.agw-gallery-search input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.agw-gallery-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.agw-gallery-filters button {
+  padding: 6px 9px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  font-size: 12px;
+  color: var(--agw-text-muted);
+}
+.agw-gallery-filters button[aria-selected="true"] {
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+}
+.agw-gallery button:focus-visible {
+  outline: none;
+  background-color: var(--agw-surface-elevated);
+  text-decoration: underline;
+}
+.agw-gallery-icon:hover,
+.agw-gallery-filters button:hover {
+  background: var(--agw-surface-elevated);
+}
+.agw-gallery-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px 20px;
+  scrollbar-gutter: stable;
+}
+.agw-gallery-section + .agw-gallery-section {
+  margin-top: 24px;
+}
+.agw-gallery-section h3 {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.agw-gallery-section h3 span {
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-gallery-grid {
+  column-count: 2;
+  column-gap: 10px;
+}
+.agw-gallery-item {
+  break-inside: avoid;
+  margin-bottom: 10px;
+}
+.agw-gallery-tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--agw-surface);
+}
+.agw-gallery-tile img,
+.agw-gallery-tile video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.agw-gallery-tile video {
+  pointer-events: none;
+}
+.agw-gallery-video-badge {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  padding: 3px 5px;
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.agw-gallery-tile:focus-visible {
+  border-color: var(--agw-text);
+}
+.agw-gallery-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: var(--agw-text-subtle);
+}
+.agw-gallery-placeholder span {
+  font-size: 11px;
+}
+.agw-gallery-caption {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px;
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+}
+.agw-gallery-tile:hover .agw-gallery-caption,
+.agw-gallery-tile:focus-visible .agw-gallery-caption {
+  opacity: 1;
+}
+.agw-gallery-empty {
+  margin: 16px 0;
+  font-size: 13px;
+  color: var(--agw-text-muted);
+}
+.agw-gallery-error,
+.agw-gallery-warnings {
+  margin: 0 16px 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agw-gallery-error {
+  color: var(--agw-removed);
+}
+.agw-gallery-notice {
+  margin: 0 16px 10px;
+  font-size: 12px;
+  color: var(--agw-text-muted);
+}
+.agw-gallery-retry,
+.agw-gallery-more,
+.agw-gallery-actions button,
+.agw-gallery-error button {
+  border: 0;
+  background: var(--agw-surface);
+  border-radius: var(--agw-radius-sm);
+  padding: 7px 9px;
+  font-size: 12px;
+}
+.agw-gallery-selection {
+  border-top: 1px solid var(--agw-border);
+  padding: 12px 16px;
+  /* `min-height: 0` is load-bearing, not tidying. This is a column flex item,
+   * so its automatic minimum size is its CONTENT height, and a minimum beats a
+   * maximum in the cascade — with a video inside, the automatic minimum was
+   * ~700px, `max-height` never applied, and the strip grew until it pushed
+   * itself off the bottom of the dock. */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 38%;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.agw-gallery-selection > .agw-gallery-icon {
+  float: right;
+}
+.agw-gallery-selection p {
+  margin: 0 0 7px;
+  font-size: 12px;
+  color: var(--agw-text-muted);
+}
+.agw-gallery-selection .agw-gallery-selected-title {
+  color: var(--agw-text);
+  max-height: 4.5em;
+  overflow-y: auto;
+}
+.agw-gallery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.agw-gallery-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agw-video-result {
+  min-width: 0;
+  padding: 12px;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-video-result video {
+  display: block;
+  width: 100%;
+  max-height: 65vh;
+  background: var(--agw-surface);
+  border-radius: 4px;
+}
+
+/* ── The reserved hole, while the task is still running ──────────────────
+ * Card 01 of `aurora-video-result-designs.html`. Same silk the image card
+ * uses, at the video's real aspect, so the clip crossfades into the box it
+ * already occupies instead of shoving the transcript down when it lands. */
+.agw-video-hole {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: var(--agw-radius-md);
+  background: #000;
+}
+.agw-video-hole[data-dead="true"] {
+  background: var(--agw-surface);
+  border: 1px solid var(--agw-border);
+}
+.agw-video-hole .agw-video-silk {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* One line, inside the box. The state, the facts worth rereading during a
+ * wait, the clock, and the refresh — not three stacked rows of chrome. */
+.agw-video-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: auto 10px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.agw-video-facts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+  font-family: var(--agw-font-code);
+}
+.agw-video-clock {
+  margin-left: auto;
+  opacity: 0.85;
+  font-family: var(--agw-font-code);
+  font-variant-numeric: tabular-nums;
+}
+/* Icon only, and no outer ring on any state — the surface carries focus. */
+.agw-video-check {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 0;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.agw-video-check:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+.agw-video-check:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.34);
+}
+.agw-video-check[aria-busy="true"] svg {
+  animation-name: agw-video-spin;
+  animation-duration: 0.9s;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+@keyframes agw-video-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-video-check[aria-busy="true"] svg {
+    animation-name: none;
+  }
+}
+/* A state that is not a wait says so in the corner, and offers no control
+ * that could spend money. */
+.agw-video-badge {
+  position: absolute;
+  z-index: 4;
+  top: 10px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: var(--agw-radius-pill);
+  font-size: 11px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+}
+.agw-video-badge[data-tone="bad"] {
+  background: color-mix(in srgb, var(--agw-removed) 80%, rgba(0, 0, 0, 0.6));
+}
+.agw-video-badge[data-tone="warn"] {
+  background: color-mix(in srgb, var(--agw-warning) 78%, rgba(0, 0, 0, 0.6));
+  color: #1a1206;
+}
+.agw-video-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--agw-text-muted);
+}
+.agw-video-result > button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface);
+  color: var(--agw-text);
+  border-radius: 4px;
+  padding: 6px 9px;
+  font: inherit;
+  cursor: pointer;
+}
+.agw-video-result > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.agw-video-result > p {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--agw-removed);
+}
+.agw-gallery-video-dialog {
+  width: min(1080px, calc(100vw - 40px));
+  padding-top: 32px;
+  background: var(--agw-conversation);
+}
+.agw-gallery-selection .agw-video-result {
+  padding: 0 0 8px;
+}
+/* In the details strip the player is a PREVIEW; "View video" opens the modal
+ * for real playback. `65vh` belongs to the transcript, where the card owns the
+ * column width — here a portrait clip at `width: 100%` is taller than the dock
+ * it lives in. Sizing by height and letting width follow keeps every aspect
+ * inside the strip instead of letterboxing a tall clip into a wide black box. */
+.agw-gallery-selection .agw-video-result video,
+.agw-gallery-selection .agw-video-hole {
+  width: auto;
+  max-width: 100%;
+  max-height: 180px;
+  margin-inline: auto;
+}
+@container (max-width: 239px) {
+  .agw-gallery-grid {
+    column-count: 1;
+  }
+}
+@container (min-width: 520px) {
+  .agw-gallery-grid {
+    column-count: 3;
+  }
+}
+@container (min-width: 760px) {
+  .agw-gallery-grid {
+    column-count: 4;
+  }
+}
+@container (min-width: 1040px) {
+  .agw-gallery-grid {
+    column-count: 5;
+  }
+}
+@container (min-width: 1280px) {
+  .agw-gallery-grid {
+    column-count: 6;
+  }
+}

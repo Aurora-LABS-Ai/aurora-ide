@@ -832,8 +832,7 @@ async fn run_turn_no_tools_returns_after_one_iteration() {
     // session has user + assistant
     assert_eq!(session.len(), 2);
 
-    // Drain the event channel and confirm we got 3 events:
-    // 2 deltas + 1 message_stop, with strictly increasing seq.
+    // Attempt boundary, two deltas, and message_stop, in sequence.
     let mut events = Vec::new();
     while let Ok(envelope) =
         tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
@@ -843,7 +842,8 @@ async fn run_turn_no_tools_returns_after_one_iteration() {
             None => break,
         }
     }
-    assert_eq!(events.len(), 3, "expected 3 events, got {events:?}");
+    assert_eq!(events.len(), 4, "expected 4 events, got {events:?}");
+    assert!(matches!(events[0].event, AssistantEvent::StreamAttemptStarted));
     for window in events.windows(2) {
         assert!(
             window[1].seq > window[0].seq,
@@ -851,7 +851,7 @@ async fn run_turn_no_tools_returns_after_one_iteration() {
         );
         assert_eq!(window[0].turn_id, window[1].turn_id);
     }
-    match &events[2].event {
+    match &events[3].event {
         AssistantEvent::MessageStop { stop_reason } => {
             assert_eq!(stop_reason, "end_turn")
         }
@@ -1133,15 +1133,17 @@ async fn run_turn_dispatches_tool_then_loops_for_final_text() {
     }
     assert_eq!(
         events.len(),
-        5,
+        7,
         "expected full tool lifecycle, got {events:?}"
     );
+    assert!(matches!(events[0].event, AssistantEvent::StreamAttemptStarted));
+    assert!(matches!(events[4].event, AssistantEvent::StreamAttemptStarted));
     assert!(matches!(
-        &events[0].event,
+        &events[1].event,
         AssistantEvent::ToolUse { id, name, .. }
             if id == "call-1" && name == "echo"
     ));
-    match &events[1].event {
+    match &events[2].event {
         AssistantEvent::ToolExecutionStart { id, name, input } => {
             assert_eq!(id, "call-1");
             assert_eq!(name, "echo");
@@ -1149,7 +1151,7 @@ async fn run_turn_dispatches_tool_then_loops_for_final_text() {
         }
         other => panic!("expected ToolExecutionStart, got {other:?}"),
     }
-    match &events[2].event {
+    match &events[3].event {
         AssistantEvent::ToolExecutionResult {
             id,
             name,
@@ -1164,7 +1166,7 @@ async fn run_turn_dispatches_tool_then_loops_for_final_text() {
         }
         other => panic!("expected ToolExecutionResult, got {other:?}"),
     }
-    match &events[4].event {
+    match &events[6].event {
         AssistantEvent::MessageStop { stop_reason } => assert_eq!(stop_reason, "end_turn"),
         other => panic!("expected MessageStop last, got {other:?}"),
     }
@@ -3071,10 +3073,12 @@ async fn run_turn_propagates_recoverable_api_error_with_event() {
     // Drain to the Error event: the retries announce themselves first.
     let mut error_event = None;
     let mut discards = 0_u32;
+    let mut starts = 0_u32;
     while let Ok(Some(envelope)) =
         tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
     {
         match envelope.event {
+            AssistantEvent::StreamAttemptStarted => starts += 1,
             AssistantEvent::PartialReplyDiscarded { .. } => discards += 1,
             AssistantEvent::Error {
                 message,
@@ -3092,6 +3096,7 @@ async fn run_turn_propagates_recoverable_api_error_with_event() {
         MAX_STREAM_ATTEMPTS - 1,
         "one discard per retry, and no discard for the attempt that gave up",
     );
+    assert_eq!(starts, MAX_STREAM_ATTEMPTS);
     let (message, recoverable) = error_event.expect("the error must still reach the user");
     assert!(recoverable, "rate-limit must be recoverable");
     assert!(message.contains("rate"), "got message: {message}");
@@ -3946,11 +3951,19 @@ async fn the_frontend_is_told_to_drop_the_partial_reply_before_a_retry() {
 
     let mut discards = Vec::new();
     let mut deltas_before_discard = 0_u32;
+    let mut attempt_boundaries = Vec::new();
+    let mut last_seq = None;
     while let Ok(Some(envelope)) =
         tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
     {
+        if let Some(previous) = last_seq {
+            assert!(envelope.seq > previous, "retry event order must stay monotonic");
+        }
+        last_seq = Some(envelope.seq);
         match envelope.event {
+            AssistantEvent::StreamAttemptStarted => attempt_boundaries.push(discards.len()),
             AssistantEvent::TextDelta { .. } if discards.is_empty() => {
+                assert_eq!(attempt_boundaries, [0], "snapshot must precede partial output");
                 deltas_before_discard += 1;
             }
             AssistantEvent::PartialReplyDiscarded {
@@ -3967,6 +3980,7 @@ async fn the_frontend_is_told_to_drop_the_partial_reply_before_a_retry() {
         "the failed attempt's text really did reach the frontend",
     );
     assert_eq!(discards.len(), 1, "exactly one discard, for the one retry");
+    assert_eq!(attempt_boundaries, [0, 1], "the replacement starts after rollback");
     let (attempt, max_attempts, reason) = discards.remove(0);
     assert_eq!(attempt, 1, "the attempt that failed, 1-based");
     assert_eq!(max_attempts, MAX_STREAM_ATTEMPTS);

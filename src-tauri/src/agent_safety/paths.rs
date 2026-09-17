@@ -26,8 +26,161 @@
 //! remains as a safety belt for filesystems where canonicalisation does
 //! not transparently resolve links.
 
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Characters Windows refuses to store in a file name.
+///
+/// `:` is absent because it is legal exactly once, as the drive separator, and
+/// [`unstorable_path_reason`] checks the components rather than the whole
+/// string so the drive letter never reaches this list.
+#[cfg(windows)]
+const WINDOWS_ILLEGAL: &[char] = &['<', '>', '"', '|', '?', '*'];
+
+/// `cmd`-era device names. These are not files anywhere on the filesystem, so
+/// `CON.txt` is as unusable as `CON`.
+#[cfg(windows)]
+const WINDOWS_DEVICE_NAMES: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Why this path cannot exist on this platform, in a sentence naming the
+/// offending part, or `None` if it is storable.
+///
+/// ## Why the shape is checked before the filesystem is touched
+///
+/// A malformed name does not fail with "that name is malformed". It fails
+/// with whatever the OS says about the syscall it refused, and on Windows that
+/// is `ERROR_INVALID_NAME` — surfaced as *"The filename, directory name, or
+/// volume label syntax is incorrect. (os error 123)"*, attached to whichever
+/// call happened to run first. Measured on thread `7ca13ebb` (2026-09-03), a
+/// gateway-flattened argument became the filename and the write failed at
+/// `create_dir_all`, so the error read as a folder-creation bug and was
+/// reported as one.
+///
+/// `tools::arguments` now stops that particular argument at the door. This is
+/// the layer under it: whatever produced the name, the caller is told what is
+/// wrong with the name. Claude Code validates the same way and for the same
+/// reason — its own rule refuses a path "containing `\"` `%` CR LF NUL, [or]
+/// ending with a dot or space" before it goes near the disk.
+#[must_use]
+pub fn unstorable_path_reason(path: &str) -> Option<String> {
+    // Every platform. A NUL terminates the string inside the syscall, so the
+    // path that gets acted on is not the path that was asked for.
+    if path.contains('\0') {
+        return Some(format!(
+            "`{}` contains a NUL byte, which no filesystem can store.",
+            path.escape_debug()
+        ));
+    }
+
+    #[cfg(windows)]
+    {
+        for component in path.split(['/', '\\']) {
+            // Not names: a drive qualifier (`E:`), the empty strings a leading
+            // or doubled separator produces, and the two relative components.
+            //
+            // `.` and `..` are exempt explicitly because they would otherwise
+            // fail the trailing-dot rule below — which would turn every
+            // `../escape.txt` from a workspace-boundary refusal into a
+            // "bad name" one, losing the reason that actually matters.
+            if component.is_empty()
+                || component == "."
+                || component == ".."
+                || is_drive_qualifier(component)
+            {
+                continue;
+            }
+            if let Some(bad) = component.chars().find(|c| WINDOWS_ILLEGAL.contains(c)) {
+                return Some(format!(
+                    "`{component}` contains `{bad}`, which Windows cannot store in a file or \
+                     folder name (illegal: {}). If this came from a tool argument, check that \
+                     the path was not sent wrapped in quotes or brackets.",
+                    WINDOWS_ILLEGAL.iter().collect::<String>()
+                ));
+            }
+            if let Some(bad) = component.chars().find(|c| (*c as u32) < 0x20) {
+                return Some(format!(
+                    "`{component}` contains a control character (U+{:04X}), which Windows cannot \
+                     store in a file or folder name.",
+                    bad as u32
+                ));
+            }
+            // A stray `:` anywhere but the drive qualifier is an NTFS
+            // alternate-data-stream separator, not part of the name.
+            if component.contains(':') {
+                return Some(format!(
+                    "`{component}` contains `:`, which Windows allows only as a drive separator \
+                     (`E:\\…`)."
+                ));
+            }
+            if component.ends_with('.') || component.ends_with(' ') {
+                return Some(format!(
+                    "`{component}` ends with a dot or a space. Windows silently strips those, so \
+                     the file would not be at the path you asked for."
+                ));
+            }
+            let stem = component
+                .split('.')
+                .next()
+                .unwrap_or(component)
+                .to_ascii_lowercase();
+            if WINDOWS_DEVICE_NAMES.contains(&stem.as_str()) {
+                return Some(format!(
+                    "`{component}` is a reserved Windows device name (`{stem}`) and cannot be a \
+                     file or folder."
+                ));
+            }
+        }
+    }
+
+    None
+}
+
+/// Is this component a bare drive qualifier, like `E:`?
+#[cfg(windows)]
+fn is_drive_qualifier(component: &str) -> bool {
+    let mut chars = component.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), None) if letter.is_ascii_alphabetic()
+    )
+}
+
+/// Rewrite a Git Bash / MSYS mount path into the form Windows understands.
+///
+/// `/e/VOID-EDITOR/x` and `E:\VOID-EDITOR\x` are the same place, and the first
+/// spelling is what a POSIX shell on Windows prints — so it is what the model
+/// copies out of `pwd`, `git rev-parse --show-toplevel`, or any `shell_execute`
+/// output, and then hands to a file tool.
+///
+/// Left alone, that path is worse than rejected. `Path::new("/e/x")` on Windows
+/// has a root but no prefix, so joining it against the workspace replaces
+/// everything except the drive and yields `C:\e\x` — a path that is not the one
+/// asked for, does not exist, and reports itself as simply missing.
+///
+/// Only `^/<letter>/` is touched, which no workspace-relative path can be
+/// (a relative path has no leading separator) and no real directory on a
+/// Windows drive root realistically is.
+#[must_use]
+pub fn normalize_platform_path(path: &str) -> Cow<'_, str> {
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        let is_mount_form = bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b'/';
+        if is_mount_form {
+            let drive = path[1..2].to_ascii_uppercase();
+            let rest = path[3..].replace('/', "\\");
+            return Cow::Owned(format!("{drive}:\\{rest}"));
+        }
+    }
+    Cow::Borrowed(path)
+}
 
 /// Errors returned by [`resolve_within_workspace`].
 #[derive(Debug, thiserror::Error)]
@@ -293,6 +446,114 @@ mod tests {
             ),
             "expected escape rejection, got {result:?}"
         );
+    }
+
+    /// The exact string that reached `create_dir_all` on thread `7ca13ebb`
+    /// (2026-09-03) and came back as `os error 123`.
+    #[test]
+    fn the_flattened_argument_that_caused_os_error_123_is_named_as_a_bad_name() {
+        let reason = unstorable_path_reason(r#"["app/(site)/portfolio/page.tsx"]"#);
+        #[cfg(windows)]
+        {
+            let reason = reason.expect("a quote cannot be stored in a Windows name");
+            assert!(reason.contains('"'), "names the offending character: {reason}");
+        }
+        #[cfg(not(windows))]
+        assert!(reason.is_none(), "POSIX stores quotes happily");
+    }
+
+    #[test]
+    fn a_nul_byte_is_refused_on_every_platform() {
+        let reason = unstorable_path_reason("src/a\0.rs").expect("NUL is never storable");
+        assert!(reason.contains("NUL"), "{reason}");
+    }
+
+    /// The narrowing has to survive: real paths, including the awkward ones
+    /// a Next.js or Rust project produces, must pass untouched.
+    #[test]
+    fn ordinary_paths_are_storable() {
+        for path in [
+            "src/main.rs",
+            "src/app/api/[...path]/route.ts",
+            "app/(site)/portfolio/page.tsx",
+            r"E:\VOID-EDITOR\Aurora-Agent-IDE\src-tauri\src\lib.rs",
+            "E:/VOID-EDITOR/Aurora-Agent-IDE/README.md",
+            "packages/web/node_modules/.cache/x",
+            "a-b_c.d.e.ts",
+            "src/über/naïve.ts",
+            // The relative components are path syntax, not names. Judging them
+            // as names made every `../x` a "bad name" instead of a workspace
+            // escape, which is a different and much less useful refusal.
+            "../outside.txt",
+            "./src/main.rs",
+            "src/../src/main.rs",
+            "../../etc/passwd",
+        ] {
+            assert_eq!(
+                unstorable_path_reason(path),
+                None,
+                "{path} must be storable"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_specific_unstorable_names_are_each_explained() {
+        for (path, expected) in [
+            ("src/a<b.rs", "<"),
+            ("src/a|b.rs", "|"),
+            ("src/a?b.rs", "?"),
+            ("src/trailing./x.rs", "dot or a space"),
+            ("src/trailing /x.rs", "dot or a space"),
+            ("src/CON", "reserved"),
+            ("src/nul.txt", "reserved"),
+            ("src/a:stream.rs", "drive separator"),
+        ] {
+            let reason =
+                unstorable_path_reason(path).unwrap_or_else(|| panic!("{path} must be refused"));
+            assert!(
+                reason.contains(expected),
+                "{path} should mention {expected:?}, got: {reason}"
+            );
+        }
+    }
+
+    /// A drive qualifier is not a name, so it must not trip the `:` check.
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_letter_is_not_an_alternate_data_stream() {
+        assert_eq!(unstorable_path_reason(r"E:\project\src\main.rs"), None);
+        assert_eq!(unstorable_path_reason("c:/project/src/main.rs"), None);
+    }
+
+    /// `/e/x` is where a POSIX shell on Windows says `E:\x` is. Joined
+    /// unconverted it becomes `C:\e\x`, which is a different, missing place.
+    #[test]
+    fn the_git_bash_mount_form_becomes_a_windows_path() {
+        let converted = normalize_platform_path("/e/VOID-EDITOR/Aurora-Agent-IDE/README.md");
+        #[cfg(windows)]
+        assert_eq!(converted, r"E:\VOID-EDITOR\Aurora-Agent-IDE\README.md");
+        #[cfg(not(windows))]
+        assert_eq!(converted, "/e/VOID-EDITOR/Aurora-Agent-IDE/README.md");
+    }
+
+    /// Everything that is not the mount form is returned untouched, and
+    /// borrowed rather than copied.
+    #[test]
+    fn other_paths_pass_through_unchanged() {
+        for path in [
+            "src/main.rs",
+            "./src/main.rs",
+            r"E:\project\src",
+            "/usr/local/bin/tool",
+            "/etc/hosts",
+            // A single leading segment that is not one letter.
+            "/home/alvan/x",
+            "/",
+        ] {
+            assert_eq!(normalize_platform_path(path), path, "{path} must not change");
+        }
     }
 
     #[test]

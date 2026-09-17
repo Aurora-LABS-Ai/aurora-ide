@@ -123,17 +123,23 @@ pub(super) fn read_targets(input: &Value) -> Result<ReadRequest, ToolError> {
         match input.get(key) {
             None | Some(Value::Null) => {}
             Some(Value::String(raw)) => {
-                // A JSON-ENCODED array — `"[\"a.ts\", \"b.ts\"]"` instead of
+                // A FLATTENED array — `"[\"a.ts\", \"b.ts\"]"` instead of
                 // `["a.ts", "b.ts"]`. Measured at 8 of 542 batch reads on this
-                // machine across 5 conversations: a serialization artifact, not
-                // a model having a bad day. It names an unambiguous list of
-                // files; it just arrived one encoding layer deep.
-                match serde_json::from_str::<Vec<Value>>(raw) {
-                    Ok(decoded) if !decoded.is_empty() => {
+                // machine across 5 conversations, and again from a different
+                // gateway on 2026-09-16: a serialization artifact, not a model
+                // having a bad day. It names an unambiguous list of files; it
+                // just arrived one encoding layer deep.
+                //
+                // Both encodings of it, including the one a Windows path
+                // produces, are decoded by `tools::arguments` — which is where
+                // the measurements and the reasoning live, because `read_lints`
+                // has the same problem.
+                match crate::tools::arguments::decode_flattened_array(raw) {
+                    Some(decoded) => {
                         array_form = true;
                         push_entries(&decoded, &mut targets, key)?;
                     }
-                    _ => push_path(raw, &mut targets),
+                    None => push_path(raw, &mut targets),
                 }
             }
             Some(Value::Array(entries)) => {
@@ -1091,6 +1097,71 @@ mod tests {
             .expect("a stringified array is served, not rejected");
         assert!(result.contains("a.ts"), "first file read: {result}");
         assert!(result.contains("b.ts"), "second file read: {result}");
+    }
+
+    /// The same flattening, but carrying WINDOWS paths — which is not valid
+    /// JSON, because `\g` and `\G` are not escapes. Thread `810f1387`
+    /// (2026-09-16) sent three of these in one message; the strict decode
+    /// failed on every one, the whole bracketed blob became the filename, and
+    /// all three reads came back `exists: false` against a path like
+    /// `E:\…\GADGET-POWER-ECO-SYSTEM\["E:\…\knowledge.md"]`.
+    ///
+    /// Pure argument parsing, so it guards the same on any platform.
+    #[test]
+    fn a_flattened_array_of_windows_paths_still_names_its_files() {
+        let raw = r#"["E:\gadget-and-power\GADGET-POWER-ECO-SYSTEM\.knowledge\knowledge.md", "C:\Users\Alvan\.claude\skills\alvan-style\SKILL.md"]"#;
+        assert!(
+            serde_json::from_str::<Vec<Value>>(raw).is_err(),
+            "the premise: this blob is not valid JSON, which is why it used to fall through",
+        );
+
+        let request = read_targets(&serde_json::json!({ "path": raw }))
+            .expect("an unambiguous list of two files is served, not turned into one filename");
+        assert!(request.array_form, "it is a batch read: {:?}", request.targets);
+        assert_eq!(
+            request.targets,
+            vec![
+                r"E:\gadget-and-power\GADGET-POWER-ECO-SYSTEM\.knowledge\knowledge.md".to_string(),
+                r"C:\Users\Alvan\.claude\skills\alvan-style\SKILL.md".to_string(),
+            ],
+        );
+    }
+
+    /// The repair must not fire on a path that merely CONTAINS brackets: a
+    /// Next.js catch-all route (`app/api/proxy/[...path]/route.ts`) is one
+    /// real filename, not a list, and it is nowhere near parseable as one.
+    #[test]
+    fn a_bracketed_filename_is_still_one_file() {
+        let request = read_targets(&serde_json::json!({
+            "path": "src/app/api/proxy/[...path]/route.ts"
+        }))
+        .expect("a catch-all route names one file");
+        assert!(!request.array_form);
+        assert_eq!(request.targets, vec!["src/app/api/proxy/[...path]/route.ts"]);
+    }
+
+    /// End to end, with the absolute paths a model actually copies out of a
+    /// `workspace_tree` result. On Windows these carry real backslashes, which
+    /// is the failing shape; elsewhere it is the ordinary flattened batch.
+    #[tokio::test]
+    async fn a_flattened_array_of_absolute_paths_reads_both_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("knowledge.md");
+        let b = tmp.path().join("lesson.md");
+        std::fs::write(&a, "# knowledge\n").unwrap();
+        std::fs::write(&b, "# lesson\n").unwrap();
+
+        let flattened = format!("[\"{}\", \"{}\"]", a.display(), b.display());
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileReadTool);
+        let result = tool
+            .execute(
+                serde_json::json!({ "path": flattened }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("both files are read");
+        assert!(result.contains("# knowledge"), "first file read: {result}");
+        assert!(result.contains("# lesson"), "second file read: {result}");
     }
 
     /// A bare string that is NOT an encoded array names exactly one file, so

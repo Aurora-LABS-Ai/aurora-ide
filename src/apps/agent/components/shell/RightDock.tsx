@@ -26,6 +26,7 @@ import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
 import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
+import { GalleryPanel } from "@/apps/agent/components/gallery/GalleryPanel";
 import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
@@ -45,6 +46,7 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   terminal: "terminal",
   team: "users",
   memory: "database",
+  gallery: "image",
 };
 
 /** Entries in the `+` menu. `enabled:false` = structurally present, not wired. */
@@ -334,6 +336,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <TeamPanel />;
     case "memory":
       return <MemoryPanel />;
+    case "gallery":
+      return <GalleryPanel />;
     case "member":
       return <MemberPanel agentId={tab.memberId ?? ""} />;
     case "chat":
@@ -385,7 +389,7 @@ export const RightDock: React.FC = () => {
               tab.kind === "artifact" ||
               tab.kind === "chat",
           )
-        : allTabs,
+        : allTabs.filter((tab) => tab.kind !== "gallery"),
     [allTabs, chatSurface],
   );
   const expanded = useAgentWorkspaceStore((s) => s.expanded);

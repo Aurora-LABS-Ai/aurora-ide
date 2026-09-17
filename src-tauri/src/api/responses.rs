@@ -859,7 +859,7 @@ where
     let mut saw_tool_call = false;
     let mut stop_reason: Option<String> = None;
 
-    loop {
+    'stream: loop {
         let chunk = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
@@ -873,10 +873,12 @@ where
         sse.extend(chunk.as_ref());
         for frame in sse.take_frames() {
             for payload in frame_payloads(&frame) {
-                let event: Value = match serde_json::from_str(&payload) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
+                if payload.trim().is_empty() {
+                    continue;
+                }
+                let event: Value = serde_json::from_str(&payload).map_err(|err| {
+                    ApiError::Network(format!("invalid Responses stream event: {err}"))
+                })?;
                 let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
 
                 match event_type {
@@ -1126,6 +1128,7 @@ where
                         } else {
                             "end_turn".to_string()
                         });
+                        break 'stream;
                     }
 
                     "response.failed" => {

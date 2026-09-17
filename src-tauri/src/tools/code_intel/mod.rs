@@ -575,43 +575,167 @@ fn op_outline(idx: &CodeIndex, path: &str) -> Value {
             .extension()
             .and_then(|e| e.to_str())
             .filter(|ext| crate::code_index::Lang::from_extension(ext).is_none());
-        let message = match unreadable {
-            Some(ext) => format!(
-                "`{path}` is not a language this index reads (`.{ext}`) — {}. Use `grep` or \
-                 `file_read` for this file.",
-                crate::code_index::Lang::UNINDEXED_HINT
+
+        // `success` is the field a caller CHECKS; the message is the one it
+        // reads afterwards. An empty outline can mean two unrelated things,
+        // and reporting both as success makes "I have never heard of this
+        // file" look exactly like "this file has no symbols". The model acts
+        // on the machine field: measured 16 times across 9 threads
+        // (2026-08 → 2026-09), and the ones worth reading are the ones where
+        // it then re-derived the same structure with `grep "^func "` on a file
+        // `code` had just claimed to have answered about.
+        //
+        // `file_read` has always drawn this line correctly — a missing file is
+        // `success: false, exists: false` — so this only brings `code` level
+        // with the tool beside it.
+        let indexed = idx.indexes_file(path);
+        let (served, message) = match (indexed, unreadable) {
+            // Indexed, and genuinely holds nothing structural. That IS the
+            // answer, so it is a success, and the old message would have been
+            // a lie about a file the index can see.
+            (true, _) => (
+                true,
+                format!(
+                    "`{path}` is indexed and has no functions, types or classes in it — nothing \
+                     structural to outline. `file_read` shows what it does contain."
+                ),
             ),
-            None => format!(
-                "No indexed file matches `{path}`. Check the path, or `code {{ op: \"refresh\" }}` \
-                 if it was just created."
+            (false, Some(ext)) => (
+                false,
+                format!(
+                    "`{path}` is not a language this index reads (`.{ext}`) — {}. Use `grep` or \
+                     `file_read` for this file.",
+                    crate::code_index::Lang::UNINDEXED_HINT
+                ),
+            ),
+            (false, None) => (
+                false,
+                format!(
+                    "No indexed file matches `{path}`. Check the path, or `code {{ op: \
+                     \"refresh\" }}` if it was just created."
+                ),
             ),
         };
         return json!({
-            "success": true,
+            "success": served,
             "op": "outline",
             "path": path,
+            "indexed": indexed,
             "symbols": 0,
             "message": message,
         });
     }
-    let shown = rows.len().min(MAX_OUTLINE_ROWS);
-    let mut out = json!({
+    // More symbols than one answer can hold. Spend the budget on BREADTH.
+    //
+    // `rows` is sorted by (path, line), so taking the first 200 spends the
+    // whole answer on whichever files sort first. Measured against a real
+    // 1,993-file index: `src/utils` holds 5,617 symbols across 553 files, and
+    // the 200 rows reached **8 of them** — one percent, alphabetically, ending
+    // at `advisor.ts`. `src/services` reached 14 of 147; `src/tools` 22 of 147.
+    // A caller asking about a directory learned that a handful of `a`-named
+    // files exist and nothing whatsoever about the rest, while the note told
+    // it to "narrow `path` to a single file" — advice to abandon the question
+    // it had asked.
+    //
+    // `repo_map` already settled this trade for the whole-repo case, in those
+    // words: "a map that names one file from each of 60 directories orients
+    // better than one that details 3 directories". A directory outline is that
+    // same question at a smaller scope, so it gets the same answer — one row
+    // per FILE, naming what the file defines, instead of every symbol of the
+    // first few. Depth is still one call away and works perfectly: name a
+    // single file and the full symbol list comes back unchanged.
+    if rows.len() > MAX_OUTLINE_ROWS {
+        return digest_by_file(path, &rows);
+    }
+
+    json!({
         "success": true,
         "op": "outline",
         "path": path,
         "symbols": rows.len(),
-        "outline": rows.iter().take(MAX_OUTLINE_ROWS).map(|(p, s)| json!({
+        "outline": rows.iter().map(|(p, s)| json!({
             "file": p,
             "line": s.line,
             "kind": s.kind,
             "symbol": s.qualified(),
             "exported": s.exported,
         })).collect::<Vec<_>>(),
-    });
-    if rows.len() > shown {
-        out["truncated"] = json!(format!(
-            "showing {shown} of {} symbols — narrow `path` to a single file",
+    })
+}
+
+/// Most files a digest names before it starts counting the rest.
+const MAX_DIGEST_FILES: usize = 120;
+
+/// Landmark names carried per file. Enough to recognise what a file is for;
+/// not so many that a digest becomes the dump it replaced.
+const DIGEST_NAMES_PER_FILE: usize = 6;
+
+/// One row per file: what it defines, and how much of it there is.
+fn digest_by_file(path: &str, rows: &[(&str, &crate::code_index::store::Symbol)]) -> Value {
+    use std::collections::BTreeMap;
+
+    let mut by_file: BTreeMap<&str, Vec<&crate::code_index::store::Symbol>> = BTreeMap::new();
+    for (p, s) in rows {
+        by_file.entry(p).or_default().push(s);
+    }
+    let total_files = by_file.len();
+
+    let mut files: Vec<(&str, Vec<&crate::code_index::store::Symbol>)> = by_file.into_iter().collect();
+    // Biggest first. Alphabetical order is what produced the one-percent
+    // answer above; symbol count at least puts the substantial modules where a
+    // reader looks, and ties keep their path order so the list is stable.
+    files.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+
+    let shown = files.len().min(MAX_DIGEST_FILES);
+    let entries: Vec<Value> = files
+        .iter()
+        .take(MAX_DIGEST_FILES)
+        .map(|(file, syms)| {
+            let mut landmarks: Vec<&crate::code_index::store::Symbol> = syms
+                .iter()
+                .copied()
+                .filter(|s| crate::code_index::repo_map::is_landmark(&s.kind))
+                .collect();
+            // Types before functions, so a row reads as "what this file
+            // defines" — the same ordering `repo_map` uses.
+            landmarks.sort_by_key(|s| {
+                (
+                    crate::code_index::repo_map::kind_order(&s.kind),
+                    !s.exported,
+                    s.line,
+                )
+            });
+            let names: Vec<String> = landmarks
+                .iter()
+                .take(DIGEST_NAMES_PER_FILE)
+                .map(|s| s.qualified())
+                .collect();
+            json!({
+                "file": file,
+                "symbols": syms.len(),
+                "defines": names,
+                "line": syms.iter().map(|s| s.line).min().unwrap_or(0),
+            })
+        })
+        .collect();
+
+    let mut out = json!({
+        "success": true,
+        "op": "outline",
+        "path": path,
+        "symbols": rows.len(),
+        "files": total_files,
+        "byFile": entries,
+        "note": format!(
+            "`{path}` holds {} symbols across {total_files} files — too many to list. This is one \
+             row per file, biggest first, naming what each defines. Name a single file to get its \
+             full symbol list.",
             rows.len()
+        ),
+    });
+    if total_files > shown {
+        out["truncated"] = json!(format!(
+            "showing the {shown} largest of {total_files} files",
         ));
     }
     out
@@ -708,7 +832,7 @@ affects; `read_lints` is what confirms which of them actually broke."
                     },
                     "path": {
                         "type": "string",
-                        "description": "For `outline`: a file path, or any part of one. A directory fragment outlines every file beneath it."
+                        "description": "For `outline`: a file path, or any part of one. Name a FILE and you get its symbols with line numbers. Name a DIRECTORY and you get one row per file beneath it — what each defines and how big it is — so a directory answers at its own scale instead of listing the first few files' symbols."
                     },
                     "in_file": {
                         "type": "string",
@@ -1387,6 +1511,140 @@ mod tests {
             asks.contains(&"A::run") && asks.contains(&"B::run"),
             "distinct containers make the qualified name the right suggestion: {v}"
         );
+    }
+
+    /// A request `code` could not serve must not report `success: true`.
+    ///
+    /// `success` is the field a caller checks; the message is what it reads
+    /// after. Reporting an unresolvable path as a success made "I have never
+    /// heard of this file" identical, in the only field a machine reads, to
+    /// "this file has no symbols". Measured 16 times across 9 threads
+    /// (2026-08 → 2026-09), and the readable ones end with the model going off
+    /// to `grep "^func "` the file `code` had just claimed to answer about.
+    ///
+    /// The three cases are genuinely different and now say so.
+    /// A directory too big to list is answered at the DIRECTORY's granularity.
+    ///
+    /// `outline` sorts by (path, line), so taking the first `MAX_OUTLINE_ROWS`
+    /// spends the whole answer on whichever files sort first. Measured against
+    /// a real 1,993-file index: `src/utils` holds 5,617 symbols across 553
+    /// files and the 200 rows reached **8 of them**, ending at `advisor.ts`.
+    /// `src/services` reached 14 of 147, `src/tools` 22 of 147. The caller
+    /// learned that some `a`-named files exist and nothing about the rest,
+    /// while the note advised narrowing to a single file — abandoning the
+    /// question it asked. Thread `1a98eb9e` did exactly that, then went to
+    /// `grep`.
+    ///
+    /// Breadth over depth is the trade `repo_map` already made for the
+    /// whole-repo map, and this is the same question at a smaller scope.
+    #[test]
+    fn an_oversized_directory_outline_names_every_file_instead_of_the_first_few() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("mod");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // 30 files. The first alphabetically is enormous; the rest are small.
+        // Under the old shape the big one alone would swallow the row budget.
+        let mut big = String::new();
+        for i in 0..MAX_OUTLINE_ROWS + 40 {
+            big.push_str(&format!("pub fn a_{i}() {{}}\n"));
+        }
+        std::fs::write(sub.join("aaa_huge.rs"), &big).unwrap();
+        for i in 0..29 {
+            std::fs::write(
+                sub.join(format!("z{i:02}_small.rs")),
+                format!("pub struct S{i};\npub fn run_{i}() {{}}\n"),
+            )
+            .unwrap();
+        }
+
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        let v = op_outline(&idx, "mod");
+
+        assert_eq!(v["success"], true, "{v}");
+        let by_file = v["byFile"].as_array().expect("a per-file digest: {v}");
+        assert_eq!(
+            v["files"], 30,
+            "every file in the directory is accounted for",
+        );
+        assert_eq!(by_file.len(), 30, "and every one of them has a row");
+
+        // The point of the change: the small files are no longer invisible
+        // behind the big one.
+        let listed: Vec<&str> = by_file.iter().filter_map(|f| f["file"].as_str()).collect();
+        for i in 0..29 {
+            let name = format!("z{i:02}_small.rs");
+            assert!(
+                listed.iter().any(|f| f.ends_with(&name)),
+                "{name} is missing — the digest fell back to an alphabetical prefix: {listed:?}",
+            );
+        }
+
+        // Biggest first, and each row says what its file defines.
+        assert!(by_file[0]["file"].as_str().unwrap().ends_with("aaa_huge.rs"));
+        let small = by_file
+            .iter()
+            .find(|f| f["file"].as_str().unwrap().ends_with("z07_small.rs"))
+            .expect("row present");
+        let defines: Vec<&str> = small["defines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d.as_str())
+            .collect();
+        assert!(defines.contains(&"S7"), "names what it defines: {defines:?}");
+        assert!(defines.contains(&"run_7"), "{defines:?}");
+
+        // Depth is still one call away, and unchanged.
+        let one = op_outline(&idx, "z07_small.rs");
+        assert!(one["outline"].is_array(), "single files still list symbols");
+        assert_eq!(one["symbols"], 2);
+    }
+
+    /// A directory that DOES fit keeps the symbol list — the digest is what
+    /// happens when the answer will not fit, not a new default.
+    #[test]
+    fn a_directory_that_fits_still_lists_its_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("small");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.rs"), "pub fn one() {}\n").unwrap();
+        std::fs::write(sub.join("b.rs"), "pub fn two() {}\n").unwrap();
+
+        let v = op_outline(&CodeIndex::build(dir.path()).unwrap(), "small");
+        assert!(v["outline"].is_array(), "{v}");
+        assert!(v["byFile"].is_null(), "no digest when the list fits: {v}");
+        assert_eq!(v["symbols"], 2);
+    }
+
+    #[test]
+    fn outline_reports_success_only_when_it_actually_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "pub fn run() {}\n").unwrap();
+        // Indexed, parses, and holds nothing structural.
+        std::fs::write(dir.path().join("empty.rs"), "// just a note\n").unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        // Served: the file is known and the answer is "nothing structural".
+        let served = op_outline(&idx, "empty.rs");
+        assert_eq!(served["success"], true, "{served}");
+        assert_eq!(served["indexed"], true);
+        assert_eq!(served["symbols"], 0);
+        let msg = served["message"].as_str().unwrap();
+        assert!(
+            !msg.contains("No indexed file matches"),
+            "the index CAN see this file; saying otherwise is false: {msg}",
+        );
+
+        // Not served: no such file. The caller cannot act on a success here.
+        let missing = op_outline(&idx, "src/nowhere.rs");
+        assert_eq!(missing["success"], false, "{missing}");
+        assert_eq!(missing["indexed"], false);
+
+        // Still a real answer for the file that does have symbols.
+        let real = op_outline(&idx, "a.rs");
+        assert_eq!(real["success"], true);
+        assert_eq!(real["symbols"], 1);
     }
 
     #[test]

@@ -239,6 +239,9 @@ pub enum Outcome<'a> {
 /// inline — a dropped event is a decision, not an omission.
 pub fn translate(event: &AssistantEvent) -> Option<TaskEvent> {
     match event {
+        // UI rollback checkpoint; the append-only CLI transcript already
+        // marks abandoned output with PartialReplyDiscarded's retry notice.
+        AssistantEvent::StreamAttemptStarted => None,
         AssistantEvent::TextDelta { delta } => Some(TaskEvent::Text {
             text: delta.clone(),
         }),

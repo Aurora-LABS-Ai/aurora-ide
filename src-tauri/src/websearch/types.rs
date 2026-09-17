@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
+    /// A discovered image, with the source page kept in `url` for attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<SearchImage>,
     /// 1-based position as the engine ranked it. Kept explicitly rather than
     /// left to array order because the model quotes it back ("the third
     /// result"), and a later filter must not silently renumber the list.
@@ -26,6 +29,21 @@ pub struct SearchHit {
     /// The engine's own summary, with its `<b>` match highlighting stripped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchImage {
+    pub url: String,
+    pub thumbnail_url: String,
+    pub width: u32,
+    pub height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license_url: Option<String>,
 }
 
 /// A finished search.

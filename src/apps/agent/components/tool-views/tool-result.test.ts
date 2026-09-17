@@ -112,6 +112,76 @@ describe("persisted file tool results", () => {
     ]);
   });
 
+  /**
+   * The chip beside this summary already reads "4 files"
+   * (`ToolCallCard::countLabel`), so "Read 4 files" spent the summary slot
+   * restating it and put "Read" on the row twice. Every neighbouring row
+   * already follows the rule this restores: the chip says WHICH, the summary
+   * says HOW MUCH — a single read says `Read 140 lines`, a multi-file edit
+   * says its +/- totals.
+   */
+  it("reports how much a batch read returned, not the count already on the chip", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"] },
+      JSON.stringify({
+        success: true,
+        filesRead: 4,
+        files: [
+          { path: "src/a.ts", success: true, content: "a", lines: 140 },
+          { path: "src/b.ts", success: true, content: "b", lines: 212 },
+          { path: "src/c.ts", success: true, content: "c", lines: 60 },
+          { path: "src/d.ts", success: true, content: "d", lines: 1 },
+        ],
+      }),
+    );
+
+    expect(parsed.summary).toBe("Read 413 lines");
+    expect(parsed.summary).not.toContain("4 files");
+  });
+
+  /**
+   * The one case where the count belongs in the summary: it is no longer the
+   * same number as the chip's, and the gap is the whole message. This used to
+   * report `filesRead` alone — "Read 3 files" beside a chip saying "4 files",
+   * with nothing anywhere saying one had failed.
+   */
+  it("says how many of the batch came back when one could not be read", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["src/a.ts", "src/gone.ts", "src/c.ts"] },
+      JSON.stringify({
+        success: true,
+        filesRead: 2,
+        files: [
+          { path: "src/a.ts", success: true, content: "a", lines: 10 },
+          { path: "src/gone.ts", success: false, error: "File does not exist" },
+          { path: "src/c.ts", success: true, content: "c", lines: 12 },
+        ],
+      }),
+    );
+
+    expect(parsed.summary).toBe("Read 2 of 3 files");
+  });
+
+  /** A batch with no lines to report — images, or empty files — keeps the count. */
+  it("falls back to the count when there is no magnitude to state", () => {
+    const parsed = parseToolResult(
+      "file_read",
+      { path: ["a.png", "b.png"] },
+      JSON.stringify({
+        success: true,
+        filesRead: 2,
+        files: [
+          { path: "a.png", success: true },
+          { path: "b.png", success: true },
+        ],
+      }),
+    );
+
+    expect(parsed.summary).toBe("Read 2 files");
+  });
+
   it("keeps batch read contents for per-file syntax highlighting", () => {
     const parsed = parseToolResult(
       "file_read",
@@ -674,7 +744,7 @@ describe("web search and page fetch", () => {
         },
       }),
     );
-    expect(parsed.web?.note).toBe("One other source returned nothing first.");
+    expect(parsed.web?.note).toBe("duckduckgo-lite: timed out");
   });
 
   it("parses a fetched page as a document, keeping its markdown", () => {

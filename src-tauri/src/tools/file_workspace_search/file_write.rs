@@ -135,11 +135,24 @@ impl ToolExecutor for FileWriteTool {
             } else {
                 String::new()
             };
+            // Unconditional: `create_dir_all` is already a no-op on a
+            // directory that exists, so the `exists()` guard this replaces was
+            // a redundant stat and a race window.
+            //
+            // The directory is NAMED in the failure. It was not, and the one
+            // time this fired for real (thread `7ca13ebb`, 2026-09-03) the
+            // message was `Failed to create directories: The filename,
+            // directory name, or volume label syntax is incorrect` with no
+            // path in it — so the report it produced blamed folder creation,
+            // and finding the actual cause meant grepping 3,899 session files
+            // for the call that made it.
             if let Some(parent) = file_path.parent() {
-                if !parent.exists() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create directories: {e}"))?;
-                }
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create parent directory {}: {e}",
+                        parent.display()
+                    )
+                })?;
             }
             // Detect what convention the existing file uses (CRLF/LF
             // + UTF-8 BOM) and re-apply it to `content` BEFORE writing.

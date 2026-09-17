@@ -39,7 +39,19 @@ export type ImageApiFormat =
    *   3. `/models/{id}` is unreliable — it reported a model missing while
    *      `/models` was listing it. Use the list, never the lookup.
    */
-  | "a6api";
+  | "a6api"
+  | "minimax-native"
+  /**
+   * Qwen / DashScope's own shape. Generation AND editing are the same endpoint,
+   * the prompt is chat-shaped (`input.messages`), and `size` is spelled with an
+   * asterisk (`1024*1024`).
+   *
+   * Qwen also publishes an OpenAI-compatible generation endpoint at
+   * `/compatible-mode/v1/images/generations`, which `openai-images` reaches
+   * unchanged. It is not enough on its own: there is no compatible-mode EDIT,
+   * so a row that should do both speaks this instead.
+   */
+  | "qwen-dashscope";
 
 /**
  * What to ask this provider to send each image back as — the `response_format`
@@ -145,6 +157,65 @@ export const A6API_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
   builtIn: true,
 };
 
+export const MINIMAX_IMAGE_PROVIDER_ID = "img-minimax";
+export const MINIMAX_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
+  id: MINIMAX_IMAGE_PROVIDER_ID,
+  name: "MiniMax",
+  baseUrl: "https://api.minimax.io",
+  apiFormat: "minimax-native",
+  enabled: true,
+  builtIn: true,
+  models: [{
+    id: "img-minimax:image-01", providerId: MINIMAX_IMAGE_PROVIDER_ID,
+    modelKey: "image-01", canEdit: true,
+    sizes: ["1024x1024", "1280x720", "1152x864", "1248x832", "832x1248", "864x1152", "720x1280", "1344x576"],
+    defaultSize: "1024x1024",
+  }],
+};
+
+export const QWEN_IMAGE_PROVIDER_ID = "img-qwen";
+/**
+ * Qwen / DashScope. Built in because it also serves Wan 3.0 video, and the
+ * video tool reads its credentials from this row.
+ *
+ * The address is the Singapore gateway. Mainland accounts use
+ * `https://dashscope.aliyuncs.com` and the row's address is the user's to
+ * change, exactly like every other provider.
+ *
+ * Sizes are the envelope every Qwen image model accepts (512-2048 per side).
+ * The fixed set the `max`/`plus`/`image` models publish all fall inside it, so
+ * one list serves the whole family rather than a second roster that can
+ * disagree with the first.
+ */
+export const QWEN_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
+  id: QWEN_IMAGE_PROVIDER_ID,
+  name: "Qwen",
+  baseUrl: "https://dashscope-intl.aliyuncs.com",
+  apiFormat: "qwen-dashscope",
+  enabled: true,
+  builtIn: true,
+  models: [
+    {
+      id: "img-qwen:qwen-image-3.0-pro",
+      providerId: QWEN_IMAGE_PROVIDER_ID,
+      modelKey: "qwen-image-3.0-pro",
+      label: "Qwen Image 3.0 Pro",
+      canEdit: true,
+      sizes: ["1328x1328", "1024x1024", "1664x928", "1472x1104", "1104x1472", "928x1664", "2048x2048"],
+      defaultSize: "1328x1328",
+    },
+    {
+      id: "img-qwen:qwen-image-3.0",
+      providerId: QWEN_IMAGE_PROVIDER_ID,
+      modelKey: "qwen-image-3.0",
+      label: "Qwen Image 3.0",
+      canEdit: true,
+      sizes: ["1328x1328", "1024x1024", "1664x928", "1472x1104", "1104x1472", "928x1664", "2048x2048"],
+      defaultSize: "1328x1328",
+    },
+  ],
+};
+
 /**
  * Rows Aurora offers ONCE, as a starting point, and never again.
  *
@@ -197,9 +268,15 @@ export const SEEDED_IMAGE_PROVIDERS: ReadonlyArray<Omit<ImageProvider, "apiKey">
  */
 export function withBuiltInImageProviders(rows: ImageProvider[]): ImageProvider[] {
   const existing = rows.find((row) => row.id === A6API_IMAGE_PROVIDER_ID);
-  if (!existing) return [{ ...A6API_IMAGE_PRESET }, ...rows];
-  return rows.map((row) =>
-    row.id === A6API_IMAGE_PROVIDER_ID ? { ...row, builtIn: true } : row,
+  const withA6 = existing ? rows : [{ ...A6API_IMAGE_PRESET }, ...rows];
+  const withMiniMax = withA6.some((row) => row.id === MINIMAX_IMAGE_PROVIDER_ID) ? withA6 :
+    [...withA6, { ...MINIMAX_IMAGE_PRESET, models: MINIMAX_IMAGE_PRESET.models.map((model) => ({ ...model, sizes: [...model.sizes!] })) }];
+  // Deep-copied like MiniMax's: the preset is module state, so handing its
+  // arrays straight to the store lets an edit in settings mutate the constant.
+  const withQwen = withMiniMax.some((row) => row.id === QWEN_IMAGE_PROVIDER_ID) ? withMiniMax :
+    [...withMiniMax, { ...QWEN_IMAGE_PRESET, models: QWEN_IMAGE_PRESET.models.map((model) => ({ ...model, sizes: [...model.sizes!] })) }];
+  return withQwen.map((row) =>
+    [A6API_IMAGE_PROVIDER_ID, MINIMAX_IMAGE_PROVIDER_ID, QWEN_IMAGE_PROVIDER_ID].includes(row.id) ? { ...row, builtIn: true } : row,
   );
 }
 
@@ -235,11 +312,19 @@ export const DEFAULT_IMAGE_PATHS: Record<
 > = {
   "openai-images": { generation: "/images/generations", edit: "/images/edits" },
   a6api: { generation: "/images/generations", edit: "/images/edits" },
+  "minimax-native": { generation: "/v1/image_generation", edit: "/v1/image_generation" },
+  // One endpoint for both. Mirrors `QWEN_IMAGE_PATH` in `tools/image/config.rs`.
+  "qwen-dashscope": {
+    generation: "/api/v1/services/aigc/multimodal-generation/generation",
+    edit: "/api/v1/services/aigc/multimodal-generation/generation",
+  },
 };
 
 export const IMAGE_API_FORMAT_LABELS: Record<ImageApiFormat, string> = {
   "openai-images": "OpenAI images",
   a6api: "a6api",
+  "minimax-native": "MiniMax native",
+  "qwen-dashscope": "Qwen (DashScope)",
 };
 
 /** The generation endpoint this provider actually posts to. */
@@ -318,7 +403,7 @@ export function aspectRatioOfSize(size: string | null | undefined): string {
   if (!match) return "1 / 1";
   const width = Number(match[1]);
   const height = Number(match[2]);
-  if (!(width > 0) || !(height > 0)) return "1 / 1";
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) return "1 / 1";
   return `${width} / ${height}`;
 }
 
@@ -348,7 +433,7 @@ export function normalizeImageProviders(value: unknown): ImageProvider[] {
     if (typeof row.id !== "string" || !row.id.trim()) continue;
     if (typeof row.name !== "string" || !row.name.trim()) continue;
     const apiFormat: ImageApiFormat =
-      row.apiFormat === "a6api" || row.apiFormat === "openai-images"
+      row.apiFormat === "a6api" || row.apiFormat === "openai-images" || row.apiFormat === "minimax-native"
         ? row.apiFormat
         : "openai-images";
     out.push({

@@ -122,6 +122,7 @@ export const CHAT_MODE_TOOLS: ReadonlySet<string> = new Set([
   "recall",
   "remember",
   "generate_image",
+  "generate_video",
   "ask_question",
 ]);
 
@@ -147,7 +148,7 @@ export const isChatModeTool = (name: string): boolean =>
  * holds Aurora Chat conversations only, so in Build they are a memory with
  * nothing of Build's in it.
  */
-export const CHAT_ONLY_TOOLS: ReadonlySet<string> = new Set(["recall", "remember"]);
+export const CHAT_ONLY_TOOLS: ReadonlySet<string> = new Set(["recall", "remember", "generate_video"]);
 
 export const isChatOnlyTool = (name: string): boolean => CHAT_ONLY_TOOLS.has(name);
 
@@ -231,14 +232,50 @@ const PLAN_MODE_SHELL_ALLOWLIST = [
   "whoami",
 ];
 
-const SHELL_MUTATION_PATTERNS = [
-  />|>>/,
-  /\b(add-content|copy|cp|del|erase|mkdir|move|mv|new-item|ni|out-file|remove-item|ren|rename|rm|rmdir|sc|set-content|tee|touch)\b/i,
-  /\b(git)\s+(add|am|apply|checkout|cherry-pick|clean|commit|merge|pull|push|rebase|reset|restore|revert|stash|switch)\b/i,
-  /\b(npm|pnpm|yarn|bun)\s+(add|install|i|remove|uninstall|update|upgrade)\b/i,
-  /\b(cargo)\s+(add|clean|fix|install|publish|remove|update)\b/i,
-  /\b(rustup)\s+(component|default|install|override|self|target|toolchain|update)\b/i,
+/**
+ * A redirection that would create or truncate a file.
+ *
+ * `->`, `=>` and `>=` are arrows, and `>&` duplicates a descriptor rather than
+ * naming a file. A bare `/>/` counted all of them, so in Plan mode
+ * `rg -n "->" src/main.rs` was refused as a write — and the equivalent Rust
+ * guard had the same defect (see `agent_safety::shell_validation`).
+ */
+const SHELL_WRITE_REDIRECTION = /(?<![-=<>])>(?!&)/;
+
+/**
+ * Commands that mutate, anchored to command position.
+ *
+ * These used to be matched with `\b…\b` anywhere in the string, which cannot
+ * tell a verb from an argument: `rg -n "copy" src` and `git log --grep rename`
+ * are searches, and both were refused as writes. Every entry in
+ * `PLAN_MODE_SHELL_ALLOWLIST` is a reader, so the only way a mutating verb can
+ * legitimately lead is after a pipe or a chain operator — which is exactly what
+ * testing each segment's first word catches (`ls | del x` is still refused).
+ */
+const SHELL_MUTATION_COMMANDS = [
+  /^(add-content|copy|cp|del|erase|mkdir|move|mv|new-item|ni|out-file|remove-item|ren|rename|rm|rmdir|sc|set-content|tee|touch)\b/i,
+  /^git\s+(add|am|apply|checkout|cherry-pick|clean|commit|merge|pull|push|rebase|reset|restore|revert|stash|switch)\b/i,
+  /^(npm|pnpm|yarn|bun)\s+(add|install|i|remove|uninstall|update|upgrade)\b/i,
+  /^cargo\s+(add|clean|fix|install|publish|remove|update)\b/i,
+  /^rustup\s+(component|default|install|override|self|target|toolchain|update)\b/i,
 ];
+
+/**
+ * Blank out quoted spans so a search PATTERN cannot read as shell syntax.
+ *
+ * The shell does not treat `">"` as a redirection and neither should this: the
+ * characters inside quotes are data. Length is preserved in spirit (the quotes
+ * stay) so the result is still a recognisable command line.
+ */
+const withoutQuotedSpans = (command: string): string =>
+  command.replace(/"[^"]*"/g, '""').replace(/'[^']*'/g, "''");
+
+/** One slice per chained command, so "first word" means something. */
+const shellCommandSegments = (command: string): string[] =>
+  command
+    .split(/[|;&\n]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
 
 const MCP_READ_VERBS = [
   "count",
@@ -388,6 +425,11 @@ export const CHAT_MODE_SYSTEM_PROMPT = `You are Aurora, talking with a user in A
 
 ## What you can do
 - **Search and read the web.** Use it whenever a question turns on something you would otherwise be guessing at: current facts, specific numbers, anything that changed recently, or any claim the user would be annoyed to find was wrong.
+- Use \`auroro_websearch\` with \`source: "scholar"\` for research papers and \`source: "images"\` for existing pictures on Wikimedia Commons. Read relevant pages before treating search snippets as evidence. Cite source links beside the claims they support, distinguish publication dates from event dates, and name uncertainty or disagreement.
+- For image search results, show returned thumbnail URLs in Markdown and link the source pages. Keep creator and license information when supplied. Never invent image URLs or claim visual inspection from metadata alone. Use \`generate_image\` for making or editing pictures; its \`op: "list"\` reports available models and conversation images.
+- When asked which image models are available, call \`generate_image\` with \`op: "list"\` instead of guessing from memory. This is a read-only lookup, not image generation. Report provider readiness, the default model, and edit support from its result. Do not claim an unconfigured or unready model is usable.
+- Use \`generate_video\` for video: \`op: "list"\` checks model configuration; \`op: "generate"\` starts one task; \`op: "query"\` checks that task and saves the finished video. Default to subscription-compatible MiniMax-Hailuo-2.3. H3/H3-Max use pay-as-you-go access; do not silently switch to them. Never resubmit a queued task or an ambiguous failed submission. Report the jobId and current status honestly. Video results and the Chat Gallery offer playback and status checks; do not claim to have watched the contents.
+- MiniMax image-01 accepts prompts up to 1500 characters. Its image-to-image operation uses a character/portrait reference (PNG/JPEG under 10 MiB), not general pixel editing. Check the model's editMode from the list result and explain this limitation when it matters.
 - **Remember things.** When you learn something durable about the user or their work, save it. It will be there in later conversations.
 - **Look things up from past conversations.** If the user refers to something you discussed before and it is not in front of you, go and find it rather than saying you do not recall.
 - **Show things on a canvas.** When an answer is really a table, a chart, a diagram, or a document, build it instead of describing it in prose.
@@ -504,7 +546,15 @@ export const isPlanModeShellCommandAllowed = (command: string): boolean => {
   const normalized = command.trim().replace(/\s+/g, " ").toLowerCase();
   if (!normalized) return false;
 
-  if (SHELL_MUTATION_PATTERNS.some((pattern) => pattern.test(normalized))) {
+  // Judged on the SYNTAX, with quoted data blanked out — a grep pattern that
+  // happens to contain `>` or the word `copy` is not a write.
+  const syntax = withoutQuotedSpans(normalized);
+  if (SHELL_WRITE_REDIRECTION.test(syntax)) return false;
+  if (
+    shellCommandSegments(syntax).some((segment) =>
+      SHELL_MUTATION_COMMANDS.some((pattern) => pattern.test(segment)),
+    )
+  ) {
     return false;
   }
 

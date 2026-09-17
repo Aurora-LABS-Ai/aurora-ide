@@ -30,6 +30,8 @@ pub mod assets;
 pub mod client;
 pub mod config;
 pub mod ingest;
+pub mod minimax;
+pub mod qwen;
 pub mod wire;
 
 use std::path::{Path, PathBuf};
@@ -220,6 +222,7 @@ generate_image is an Aurora Chat tool."
                         "model": model.model_key,
                         "label": model.label,
                         "canEdit": can_edit_here && model.can_edit,
+                        "editMode": if provider.api_format == config::ImageApiFormat::MiniMax { "portrait-reference" } else { "edit" },
                         "sizes": model.sizes,
                         "defaultSize": model.default_size,
                     })).collect::<Vec<_>>(),

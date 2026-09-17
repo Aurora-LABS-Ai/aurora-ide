@@ -286,6 +286,13 @@ impl<'a> SettingsRepository<'a> {
                     settings.seeded_image_provider_ids = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.seeded_image_provider_ids.clone())
                 }
+                // Absent until 2026-09-16, and the same story one field over:
+                // a category made in the providers rail, and every provider
+                // moved into it, was gone on the next launch.
+                "providerCategories" => {
+                    settings.provider_categories = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.provider_categories.clone())
+                }
                 "fireworksTabEnabled" => {
                     settings.fireworks_tab_enabled = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.fireworks_tab_enabled)
@@ -538,6 +545,10 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "seededImageProviderIds",
             &serde_json::to_string(&settings.seeded_image_provider_ids).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "providerCategories",
+            &serde_json::to_string(&settings.provider_categories).unwrap_or_default(),
         )?;
         self.set_setting(
             "fireworksTabEnabled",
@@ -914,6 +925,57 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&settings).expect("serialize saved"),
             serde_json::to_value(&loaded).expect("serialize loaded"),
+        );
+    }
+
+    /// Every field `AppSettings` declares must reach a row in `app_settings`.
+    ///
+    /// The round-trip test above says in its own comment that it pins this —
+    /// "a field added to `AppSettings` without a save/load arm fails this test
+    /// rather than a person's settings". **It does not**, and that is how the
+    /// next field was lost anyway. It compares a struct that the test author
+    /// moved away from its defaults against what came back; a field nobody
+    /// remembered to touch is default going in and default coming out, so it
+    /// matches whether or not it was ever written. A field missing from the
+    /// struct entirely is invisible to it twice over.
+    ///
+    /// This one enumerates the struct instead of a person's memory: serialize
+    /// the defaults, list what the save actually wrote, and name anything that
+    /// did not make it. Nothing needs adding here when a field is added — the
+    /// field arrives on its own, and stays failing until it has a
+    /// `set_setting` call.
+    ///
+    /// Cost of not having it, twice: `imageProviders` (2026-09-04) took an API
+    /// key and a model list with it on every relaunch, and
+    /// `providerCategories` (2026-09-16) wiped every category in the providers
+    /// rail, and every provider filed into one, on every launch.
+    #[test]
+    fn every_app_settings_field_reaches_a_row() {
+        let conn = db();
+        SettingsRepository::new(&conn)
+            .save_app_settings(&AppSettings::default())
+            .expect("save");
+
+        let mut statement = conn.prepare("SELECT key FROM app_settings").expect("prepare");
+        let stored: std::collections::HashSet<String> = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .map(|key| key.expect("key"))
+            .collect();
+
+        let declared = serde_json::to_value(AppSettings::default()).expect("serialize");
+        let missing: Vec<&String> = declared
+            .as_object()
+            .expect("settings serialize as an object")
+            .keys()
+            .filter(|key| !stored.contains(*key))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "these `AppSettings` fields are never written to the database, so they reset on \
+             every launch: {missing:?}. Add a `set_setting` for each in `save_app_settings` and \
+             a match arm in `get_app_settings`.",
         );
     }
 

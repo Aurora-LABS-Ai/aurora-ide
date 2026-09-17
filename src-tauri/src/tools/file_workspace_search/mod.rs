@@ -232,6 +232,11 @@ pub(crate) fn resolve_path_with_access(
     workspace_root: Option<&Path>,
     access: WorkspaceAccess,
 ) -> Result<PathBuf, ToolError> {
+    let path = crate::agent_safety::paths::normalize_platform_path(path);
+    let path = path.as_ref();
+    if let Some(reason) = crate::agent_safety::paths::unstorable_path_reason(path) {
+        return Err(ToolError::InvalidInput(reason));
+    }
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
         if access.lifts_boundary() {
@@ -301,6 +306,11 @@ pub(crate) fn resolve_path_for_read_with_spill(
     access: WorkspaceAccess,
     spill_dir: Option<&Path>,
 ) -> Result<PathBuf, ToolError> {
+    // Normalized but NOT shape-checked: a read of a path that cannot exist
+    // already answers `exists: false`, which is the honest answer and costs
+    // the caller nothing. Only the acting resolvers refuse outright.
+    let path = crate::agent_safety::paths::normalize_platform_path(path);
+    let path = path.as_ref();
     let raw = Path::new(path);
     if let Some(dir) = spill_dir {
         if is_inside(raw, dir) {
@@ -400,6 +410,14 @@ pub(crate) fn resolve_path_for_create(
     workspace_root: Option<&Path>,
     access: WorkspaceAccess,
 ) -> Result<PathBuf, ToolError> {
+    let path = crate::agent_safety::paths::normalize_platform_path(path);
+    let path = path.as_ref();
+    // Before the filesystem, so a name Windows cannot store is reported as
+    // that rather than as whichever syscall refused it first. See
+    // `agent_safety::paths::unstorable_path_reason`.
+    if let Some(reason) = crate::agent_safety::paths::unstorable_path_reason(path) {
+        return Err(ToolError::InvalidInput(reason));
+    }
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
         if access.writes_outside() {

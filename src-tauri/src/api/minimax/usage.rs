@@ -86,6 +86,13 @@ pub struct MinimaxUsageSnapshot {
 
 impl MinimaxUsageSnapshot {
     /// The text bucket, which is the only one a coding agent spends.
+    ///
+    /// `#[cfg(test)]` because the whole snapshot is serialized to the frontend
+    /// and the bucket is chosen there, so nothing in the Rust half calls this —
+    /// only the tests below, which the `--lib` target cannot see. That made it
+    /// the one `dead_code` warning on every `cargo run`, and a warning that
+    /// fires on a correct accessor is a warning people stop reading.
+    #[cfg(test)]
     #[must_use]
     pub fn general(&self) -> Option<&MinimaxQuota> {
         self.quotas

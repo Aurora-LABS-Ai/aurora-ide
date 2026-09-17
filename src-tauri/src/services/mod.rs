@@ -15,6 +15,7 @@ pub mod browser_devtools;
 pub mod browser_native_capture;
 pub mod browser_runtime;
 pub mod browser_search;
+pub mod composer_drop;
 pub mod local_page;
 pub mod token_service;
 pub mod webview_permissions;

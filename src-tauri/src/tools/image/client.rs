@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use base64::Engine;
 
-use super::config::ImageProviderConfig;
+use super::config::{ImageApiFormat, ImageProviderConfig};
 use super::wire::{
     self, DiscoveredModel, EditSource, GenerationCall, ImageOutput, ImageResponse, RequestBody,
     WireError,
@@ -101,6 +101,11 @@ impl ImageClient {
         provider: &ImageProviderConfig,
         call: GenerationCall<'_>,
     ) -> Result<ImageResponse, ImageError> {
+        match provider.api_format {
+            ImageApiFormat::MiniMax => super::minimax::validate(call, None)?,
+            ImageApiFormat::Qwen => super::qwen::validate(call, None)?,
+            _ => {}
+        }
         let url = provider.generation_url();
         let body = RequestBody::Json(wire::generation_body(provider.api_format, call));
         self.post_image_request(provider, &url, body).await
@@ -116,6 +121,11 @@ impl ImageClient {
         call: GenerationCall<'_>,
         source: EditSource<'_>,
     ) -> Result<ImageResponse, ImageError> {
+        match provider.api_format {
+            ImageApiFormat::MiniMax => super::minimax::validate(call, Some(source))?,
+            ImageApiFormat::Qwen => super::qwen::validate(call, Some(source))?,
+            _ => {}
+        }
         let url = provider.edit_url().ok_or_else(|| ImageError::Transport {
             url: provider.base_url.clone(),
             reason: "this provider has no edit endpoint".to_string(),
@@ -153,7 +163,11 @@ impl ImageClient {
             url: url.to_string(),
             reason: format!("the response body could not be read: {error}"),
         })?;
-        Ok(wire::parse_response(status, &text)?)
+        Ok(match provider.api_format {
+            ImageApiFormat::MiniMax => super::minimax::parse_response(status, &text)?,
+            ImageApiFormat::Qwen => super::qwen::parse_response(status, &text)?,
+            _ => wire::parse_response(status, &text)?,
+        })
     }
 
     /// The picture's bytes, whichever way the provider handed them over.
@@ -287,7 +301,7 @@ fn root_cause(error: &reqwest::Error) -> String {
 /// the tool. Answers each connection from `responses` in order and records
 /// what it was sent.
 #[cfg(test)]
-pub(super) mod fake_server {
+pub(crate) mod fake_server {
     use std::sync::{Arc, Mutex};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

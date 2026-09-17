@@ -366,6 +366,7 @@ fn parse_arxiv_atom(xml: &str, limit: usize) -> Vec<SearchHit> {
                     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
                     if url.starts_with("http") && !title.is_empty() {
                         hits.push(SearchHit {
+                            image: None,
                             rank: hits.len() + 1,
                             title,
                             url,
@@ -435,6 +436,7 @@ async fn openalex(query: &str, limit: usize) -> Result<Vec<SearchHit>, WebError>
             .unwrap_or_default();
         let year = work["publication_year"].as_u64();
         hits.push(SearchHit {
+            image: None,
             rank: hits.len() + 1,
             title,
             url,
@@ -518,6 +520,7 @@ async fn semantic_scholar(query: &str, limit: usize) -> Result<Vec<SearchHit>, W
         let venue = paper["venue"].as_str().unwrap_or_default();
         let year = paper["year"].as_u64();
         hits.push(SearchHit {
+            image: None,
             rank: hits.len() + 1,
             title,
             url,
@@ -595,6 +598,7 @@ async fn pubmed_central(query: &str, limit: usize) -> Result<Vec<SearchHit>, Web
             .or_else(|| entry["pubdate"].as_str())
             .unwrap_or_default();
         hits.push(SearchHit {
+            image: None,
             rank: hits.len() + 1,
             // The title arrives as a fragment of HTML — PMC marks up italics
             // in species names and superscripts in formulae — so the tags come
@@ -637,6 +641,7 @@ mod tests {
 
     fn hit(title: &str, url: &str) -> SearchHit {
         SearchHit {
+            image: None,
             rank: 1,
             title: title.into(),
             url: url.into(),

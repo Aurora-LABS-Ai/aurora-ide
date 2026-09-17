@@ -60,7 +60,12 @@ export const ImageResult: React.FC<{ image: ToolImage }> = ({ image }) => {
     // Neither a path nor base64 — the header summary already notes the image.
     return null;
   }
-  const ratio = image.width && image.height ? `${image.width} / ${image.height}` : undefined;
+  const ratio =
+    typeof image.width === "number" && typeof image.height === "number" &&
+    Number.isSafeInteger(image.width) && Number.isSafeInteger(image.height) &&
+    image.width > 0 && image.height > 0
+      ? `${image.width} / ${image.height}`
+      : undefined;
   const label = image.name
     ? baseName(image.name)
     : image.url
@@ -79,6 +84,8 @@ export const ImageResult: React.FC<{ image: ToolImage }> = ({ image }) => {
       <button
         type="button"
         className="agw-tool-shot-btn"
+        data-sized={ratio ? true : undefined}
+        style={ratio ? ({ "--agw-image-ratio": ratio } as React.CSSProperties) : undefined}
         title={`Open ${label}`}
         onClick={() => setOpen(true)}
       >

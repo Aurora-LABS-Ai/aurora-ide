@@ -11,7 +11,7 @@
  * path degrades to a verb-only label ("Editing…") rather than throwing.
  */
 
-import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
+import { getProfessionalToolName, webSearchOperation } from "@/apps/agent/services/tools/tool-display";
 import {
   completedToolStringArrayArgument,
   streamedToolStringArguments,
@@ -366,7 +366,7 @@ function labelArg(name: string, args: Record<string, unknown>): string | null {
     const title = asStr(args.artifactTitle) || asStr(args.title);
     return title ? `“${clip(title, 40)}”` : null;
   }
-  if (name === "generate_image") {
+  if (name === "generate_image" || name === "generate_video") {
     // The title when the model gave one — it is the short form of the prompt —
     // otherwise the prompt itself, clipped.
     const subject = asStr(args.title) || asStr(args.prompt);
@@ -501,13 +501,19 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
   }
 
   const webUrl = asStr(args.url);
-  if (name === "auroro_websearch" && webUrl && !asStr(args.query)) {
+  if (name === "auroro_websearch" && webSearchOperation(args) === "fetch") {
     // A long page is read in windows, so the second call carries an offset.
     // Saying "Fetching" again would read as the same page being fetched twice.
     const continuing = Number(args.offset ?? 0) > 0;
     return {
-      label: `${continuing ? "Reading more of" : "Fetching"} ${clip(webUrl, 44)}`,
+      label: `${continuing ? "Reading more of" : "Fetching"} ${webUrl ? clip(webUrl, 44) : "a web page"}`,
     };
+  }
+  if (name === "auroro_websearch") {
+    const operation = webSearchOperation(args);
+    const verb = operation === "images" ? "Searching images for" : operation === "scholar" ? "Searching research papers for" : TOOL_GERUND[name];
+    const subject = labelArg(name, args);
+    return { label: subject ? `${verb} ${subject}` : getProfessionalToolName(name, args), verb };
   }
 
   if (name === "browser_screenshot" && !asStr(args.selector)) {
@@ -517,6 +523,12 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
   // One tool, three acts, and none of them touches a file of the user's: the
   // `source` of an edit is a conversation asset, so it must not fall through
   // to `targetsOf` and wear a file chip. A list is a lookup that makes nothing.
+  if (name === "generate_video") {
+    if (args.op === "list") return { label: "Checking which video models are available" };
+    if (args.op === "query") return { label: "Checking video progress" };
+    const subject = labelArg(name, args);
+    return { label: subject ? `Generating a video of ${subject}` : args.op === "generate" ? "Generating a video" : "Checking video tools" };
+  }
   if (name === "generate_image") {
     const op = asStr(args.op);
     if (op === "list") return { label: "Checking which image models are available" };
@@ -529,7 +541,7 @@ export function describeToolActivity(name: string, argsJson: string): AgentActiv
     }
     const verb = TOOL_GERUND[name];
     const subject = labelArg(name, args);
-    return { label: subject ? `${verb} ${subject}` : "Making an image", verb };
+    return { label: subject ? `${verb} ${subject}` : op === "generate" ? "Making an image" : "Checking image tools", verb };
   }
 
   if (name === "browser_scroll" && !asStr(args.selector) && !asStr(args.direction)) {

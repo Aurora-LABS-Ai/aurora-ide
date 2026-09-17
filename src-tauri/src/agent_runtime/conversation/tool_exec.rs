@@ -845,7 +845,24 @@ pub(super) fn malformed_input_error(tool: &str, raw: &str) -> ToolError {
         ));
     }
 
-    message.push_str(if truncated {
+    // `Category::Eof` covers two failures that need opposite answers, and
+    // blaming the output cap for both sent a model to shrink a payload that
+    // was already whole. Measured 2026-09-16, thread `e186eb4b`: four of five
+    // tool calls in one message arrived missing exactly their last `}`, and
+    // each was told it had overrun the token limit. A cap truncates the tail
+    // at ONE point; it does not shave a brace off four blocks and leave the
+    // fifth intact. Aurora now repairs that shape before this message is ever
+    // built (`parse_tool_input`), so anything still reaching here with
+    // unclosed containers was ALSO cut somewhere else, and saying "just
+    // closing braces" would be wrong twice.
+    let only_closers_missing =
+        truncated && crate::api::provider_kernel_adapter::unclosed_containers(raw).is_some();
+    message.push_str(if only_closers_missing {
+        "The payload's values are all complete and only its closing braces are missing — that is \
+         not an output-cap truncation, and re-sending it smaller will not help. Emit the call \
+         again, finished; if it arrives the same way twice, the gateway is dropping the end of \
+         the block rather than the model writing it short."
+    } else if truncated {
         "The payload ends mid-value, so it was almost certainly cut off by the output-token \
          limit rather than written incorrectly. Re-issue this call with a smaller payload — \
          fewer edits per call, a narrower range, or several calls in sequence."

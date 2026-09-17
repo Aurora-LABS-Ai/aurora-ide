@@ -22,9 +22,14 @@ export const auroroWebSearchTool: ToolDefinition = {
   nativeRustOwned: true,
   function: {
     name: 'auroro_websearch',
-    description: `Search the web, or read one web page.
+    description: `Search the web, find research papers or images, or read one web page.
 
 - search: give a query, get ranked results with titles, URLs and summaries.
+- source="scholar": search scholarly catalogues for papers and abstracts.
+- source="images": find existing pictures on Wikimedia Commons, up to 10 results,
+  with thumbnail URLs, originals, source pages and attribution. Link the source
+  page and keep the creator and license when provided. Region and safeSearch
+  apply only to web searches. Image metadata is not visual inspection.
 - fetch: give a url, get the page as Markdown. Headings, lists, tables, code
   blocks and links survive; navigation, scripts and footers are removed. Plain
   text, JSON and source files come back as they are, and a GitHub file page is
@@ -34,7 +39,8 @@ A long page arrives one window at a time. When a result says hasMore, call
 again with the same url and offset set to nextOffset to read on.
 
 This reads pages, it does not operate them. For a page that needs a click, a
-sign-in, or JavaScript to render, use the browser tools.
+sign-in, or JavaScript to render, use browser tools when available. Otherwise
+try another source and explain what could not be read.
 
 Examples:
 - auroro_websearch(action="search", query="rust async runtimes", numResults=5)
@@ -60,6 +66,12 @@ Examples:
           type: 'number',
           description: 'Results to return, 1-25. Search only. Default: 10.',
           default: 10,
+        },
+        source: {
+          type: 'string',
+          enum: ['web', 'scholar', 'images'],
+          default: 'web',
+          description: 'Search catalogue: open web, research papers, or Wikimedia Commons images.',
         },
         region: {
           type: 'string',

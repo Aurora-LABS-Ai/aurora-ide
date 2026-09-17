@@ -152,6 +152,15 @@ pub async fn post_form_within(
     send(client()?.post(url).form(form), url, Some(timeout)).await
 }
 
+/// API requests identify Aurora while sharing the bounded body reader and pool.
+pub(super) async fn get_api(url: &str, user_agent: &str) -> Result<Fetched, WebError> {
+    send(
+        client()?.get(url).header(USER_AGENT, user_agent).header(ACCEPT, "application/json"),
+        url,
+        Some(SEARCH_TIMEOUT),
+    ).await
+}
+
 async fn send(
     request: reqwest::RequestBuilder,
     url: &str,

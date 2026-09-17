@@ -1252,6 +1252,18 @@ impl CodeIndex {
         (!reasons.is_empty()).then(|| reasons.join(". "))
     }
 
+    /// Is any indexed file's path matched by this spec?
+    ///
+    /// Separates the two things an empty [`Self::outline`] can mean. "This file
+    /// is indexed and holds no structural symbols" is an ANSWER. "I have never
+    /// heard of this file" is a request that could not be served, and the
+    /// difference decides whether `code` reports success — see `op_outline`.
+    pub fn indexes_file(&self, file_substring: &str) -> bool {
+        self.files
+            .iter()
+            .any(|f| f.path.contains(file_substring))
+    }
+
     pub fn outline(&self, file_substring: &str) -> Vec<(&str, &Symbol)> {
         let mut out: Vec<(&str, &Symbol)> = self
             .symbols

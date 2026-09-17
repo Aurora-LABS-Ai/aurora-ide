@@ -229,6 +229,9 @@ export const LeftRail: React.FC = () => {
   const memoryTabActive = useAgentWorkspaceStore(
     (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "memory",
   );
+  const galleryTabActive = useAgentWorkspaceStore(
+    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "gallery",
+  );
 
   // Live team run for the current project (kept warm in AgentWindow). Drives the
   // Team entry's tag; `null`/inactive → no tag.
@@ -1126,6 +1129,18 @@ export const LeftRail: React.FC = () => {
             slot and the same shape. It is the page that makes the memory
             trustworthy: everything the model saved about you, visible and
             editable. */}
+        {chatSurface && (
+          <button
+            type="button"
+            className="agw-rail-team"
+            data-active={galleryTabActive || undefined}
+            onClick={() => useAgentWorkspaceStore.getState().openTab("gallery")}
+            title="Open gallery"
+          >
+            <AgentIcon name="image" size={15} />
+            <span>Gallery</span>
+          </button>
+        )}
         {chatSurface && (
           <button
             type="button"

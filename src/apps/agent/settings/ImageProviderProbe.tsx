@@ -93,7 +93,7 @@ export const ImageProviderProbe: React.FC<{ provider: ImageProvider }> = ({ prov
           {probe.kind === "testing" ? "Testing…" : "Test connection"}
         </AgwButton>
         <AgwButton icon="search" disabled={busy || !configured} onClick={() => void discover()}>
-          {probe.kind === "discovering" ? "Asking for the list…" : "Discover models"}
+          {probe.kind === "discovering" ? "Asking for the list…" : "Discover image models"}
         </AgwButton>
         {!configured && (
           <span className="agw-img-probe-note">Needs an address and a key first.</span>

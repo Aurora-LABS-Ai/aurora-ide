@@ -59,6 +59,25 @@ describe("agent execution mode", () => {
     expect(isPlanModeShellCommandAllowed("git checkout main")).toBe(false);
   });
 
+  it("does not read a search pattern as shell syntax", () => {
+    // `>` inside quotes is data. A bare />/ test refused all of these, and in
+    // Plan mode a refusal means the search never ran.
+    expect(isPlanModeShellCommandAllowed('rg -n "->" src/main.rs')).toBe(true);
+    expect(isPlanModeShellCommandAllowed('rg -n "=>" src')).toBe(true);
+    expect(isPlanModeShellCommandAllowed('git log --pretty=format:"%h -> %s"')).toBe(true);
+  });
+
+  it("separates a mutating verb from an argument that merely names one", () => {
+    expect(isPlanModeShellCommandAllowed('rg -n "copy" src')).toBe(true);
+    expect(isPlanModeShellCommandAllowed("rg -n copy src")).toBe(true);
+    expect(isPlanModeShellCommandAllowed("git log --grep rename")).toBe(true);
+    expect(isPlanModeShellCommandAllowed("cat notes/rm-plan.md")).toBe(true);
+    // A mutating verb leading any segment of a chain is still refused.
+    expect(isPlanModeShellCommandAllowed("ls | del x")).toBe(false);
+    expect(isPlanModeShellCommandAllowed("cat a && rm -rf b")).toBe(false);
+    expect(isPlanModeShellCommandAllowed("rm -rf build")).toBe(false);
+  });
+
   describe("plan tools", () => {
     it("exposes plan_write in plan mode only — it is the one permitted write there", () => {
       // Agent mode must not be able to rewrite the plan the user approved.
@@ -206,6 +225,7 @@ describe("agent execution mode", () => {
         "recall",
         "remember",
         "generate_image",
+        "generate_video",
         "ask_question",
       ]) {
         expect(isToolAllowedForExecutionMode("chat", name)).toBe(true);

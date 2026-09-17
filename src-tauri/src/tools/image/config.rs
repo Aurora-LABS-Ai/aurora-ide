@@ -36,18 +36,38 @@ pub enum ImageApiFormat {
     ///    Discovery uses the list, never the lookup.
     #[serde(rename = "a6api")]
     A6api,
+    #[serde(rename = "minimax-native")]
+    MiniMax,
+    /// Qwen / DashScope's own shape. Generation and editing are the SAME
+    /// endpoint, the prompt is chat-shaped (`input.messages`), and `size` is
+    /// spelled with an asterisk. Qwen's OpenAI-compatible endpoint exists and
+    /// is reachable as [`Self::OpenaiImages`], but it cannot edit, so a row
+    /// that should do both speaks this instead. See `super::qwen`.
+    #[serde(rename = "qwen-dashscope")]
+    Qwen,
 }
+
+/// Qwen generates and edits on one endpoint, so both defaults point at it.
+const QWEN_IMAGE_PATH: &str = "/api/v1/services/aigc/multimodal-generation/generation";
 
 impl ImageApiFormat {
     /// Request paths this format uses when the provider row leaves them blank.
     #[must_use]
     pub const fn default_generation_path(self) -> &'static str {
-        "/images/generations"
+        match self {
+            Self::MiniMax => "/v1/image_generation",
+            Self::Qwen => QWEN_IMAGE_PATH,
+            _ => "/images/generations",
+        }
     }
 
     #[must_use]
     pub const fn default_edit_path(self) -> &'static str {
-        "/images/edits"
+        match self {
+            Self::MiniMax => "/v1/image_generation",
+            Self::Qwen => QWEN_IMAGE_PATH,
+            _ => "/images/edits",
+        }
     }
 
     #[must_use]
@@ -55,6 +75,8 @@ impl ImageApiFormat {
         match self {
             Self::OpenaiImages => "OpenAI images",
             Self::A6api => "a6api",
+            Self::MiniMax => "MiniMax native",
+            Self::Qwen => "Qwen (DashScope)",
         }
     }
 }
@@ -201,7 +223,7 @@ impl ImageProviderConfig {
     /// `GET /models`, for discovery.
     #[must_use]
     pub fn models_url(&self) -> String {
-        join_url(&self.base_url, "/models")
+        join_url(&self.base_url, if self.api_format == ImageApiFormat::MiniMax { "/v1/models" } else { "/models" })
     }
 
     /// Provider and model both willing.

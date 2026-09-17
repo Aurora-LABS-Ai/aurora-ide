@@ -1310,6 +1310,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       timeline: [],
     };
     store.appendTurnMessage(threadId, assistantSeed);
+    let streamAttemptCheckpoint: DbMessage | null = null;
 
     const patchTurn = useAgentChatStore.getState().patchTurnMessage;
     const patchMessage = (id: string, patch: (m: DbMessage) => DbMessage) =>
@@ -1898,13 +1899,17 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               timeline: appendNotice(clearReconnect(timelineOf(m)), message),
             }));
           },
-          /**
-           * The connection died mid-reply; the runtime is asking for the same
-           * model call again. Drop what this attempt streamed — it is about to
-           * arrive again from the first token — and leave a live marker where
-           * it was. Recovery removes the marker on the next flush, so a healed
-           * hiccup reads as though nothing happened.
-           */
+          onStreamAttemptStarted: () => {
+            flushStreamText();
+            // Store patches and timeline appenders replace their values; this
+            // immutable snapshot also preserves text merged into an older row.
+            patchMessage(assistantId, (m) => {
+              streamAttemptCheckpoint = m;
+              return m;
+            });
+          },
+          // Restore only this attempt's output. The next flush replaces the
+          // reconnect marker with the new response from its first token.
           onPartialReplyDiscarded: ({ attempt, maxAttempts }) => {
             dropPendingStreamText();
             patchMessage(assistantId, (m) => {
@@ -1913,6 +1918,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
                 nextEventId(),
                 attempt,
                 maxAttempts,
+                streamAttemptCheckpoint ? timelineOf(streamAttemptCheckpoint) : undefined,
               );
               return {
                 ...m,
@@ -1923,6 +1929,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
                 // from the transcript but still in everything derived from it.
                 content: textOf(timeline, "content"),
                 thinking: textOf(timeline, "thinking"),
+                // Drop abandoned tool IDs from the flat mirror too. Otherwise
+                // timeline hydration can resurrect a discarded preview card.
+                tool_calls: timeline.flatMap((event) =>
+                  event.kind === "tool" ? [event.call] : [],
+                ),
                 isThinking: false,
               };
             });

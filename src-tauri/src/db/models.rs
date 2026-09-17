@@ -485,6 +485,25 @@ pub struct AppSettings {
     /// Rust never needs to know what was in them.
     #[serde(default)]
     pub seeded_image_provider_ids: Vec<String>,
+    /// The provider categories in the settings rail, and which provider is in
+    /// which.
+    ///
+    /// Held opaquely for the same reason as [`Self::image_providers`]: the
+    /// shape belongs to the frontend (`services/providers/provider-categories.ts`),
+    /// Rust never groups anything by it, and a typed mirror would be a second
+    /// definition to keep in step.
+    ///
+    /// Absent from this struct until 2026-09-16, which is why a category, and
+    /// every provider moved into one, was wiped on every relaunch. The
+    /// frontend wrote `providerCategories` on every edit and serde dropped it
+    /// on arrival, because a field that is not declared is not an error — it
+    /// is silence. The identical failure hit `imageProviders` on 2026-09-04
+    /// (see the note in `get_app_settings`), so this is the second field lost
+    /// the same way: **adding a key to `DbAppSettings` in TypeScript is half
+    /// the change.** The other half is this field, its `Default`, a match arm
+    /// in `get_app_settings` and a `set_setting` in `save_app_settings`.
+    #[serde(default)]
+    pub provider_categories: serde_json::Value,
     /// Context-compaction trigger as a % of the context window (50–95).
     #[serde(default)]
     pub compaction_threshold_pct: f64,
@@ -619,6 +638,10 @@ impl Default for AppSettings {
             // providers, which is a different statement.
             image_providers: serde_json::Value::Null,
             seeded_image_provider_ids: Vec::new(),
+            // Null for the same reason as `image_providers`: the frontend
+            // normalizes nothing-stored into its seed categories, and an empty
+            // object is a stored decision to have none.
+            provider_categories: serde_json::Value::Null,
             compaction_threshold_pct: 80.0,
             compaction_summary_budget: 8192,
             compaction_model: String::new(),

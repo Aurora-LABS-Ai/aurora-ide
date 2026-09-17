@@ -253,8 +253,45 @@ const CMD_MUTATING: &[&str] = &[
     "setx ",
 ];
 
-/// Redirections that create or truncate a file in either shell family.
-const WRITE_REDIRECTIONS: &[&str] = &[">", ">>"];
+/// Does this command redirect output INTO a file?
+///
+/// A bare `contains(">")` said yes to anything containing the character, and
+/// in read-only mode that is a block. Measured against the searches a plan-mode
+/// turn actually runs: `rg -n "->" src/main.rs`, `rg -n "=>" src` and
+/// `git log --pretty=format:"%h -> %s"` were all refused as writes.
+///
+/// Two rules recover them. A `>` inside quotes is part of a search pattern,
+/// not an operator — the shell does not read it as one either. And `->`, `=>`,
+/// `>=` are arrows, while `>&` duplicates a descriptor and names no file.
+fn write_redirection(normalized: &str) -> Option<&'static str> {
+    let characters: Vec<char> = normalized.chars().collect();
+    let mut quote: Option<char> = None;
+
+    for (index, &character) in characters.iter().enumerate() {
+        match quote {
+            Some(active) if character == active => quote = None,
+            Some(_) => {}
+            None if matches!(character, '"' | '\'') => quote = Some(character),
+            None if character == '>' => {
+                let previous = index.checked_sub(1).map(|i| characters[i]);
+                if matches!(previous, Some('-' | '=' | '<')) {
+                    continue;
+                }
+                // `>>` is one operator; judge it at its first character.
+                if previous == Some('>') {
+                    continue;
+                }
+                let next = characters.get(index + 1).copied();
+                if next == Some('&') {
+                    continue;
+                }
+                return Some(if next == Some('>') { ">>" } else { ">" });
+            }
+            None => {}
+        }
+    }
+    None
+}
 
 fn read_only_violation(normalized: &str, kind: ShellKind) -> Option<String> {
     let mutating: &[&str] = match kind {
@@ -262,8 +299,14 @@ fn read_only_violation(normalized: &str, kind: ShellKind) -> Option<String> {
         _ => POWERSHELL_MUTATING,
     };
 
+    // Command position, not mere presence. Every entry below is either an
+    // ordinary English word (`copy`, `move`, `rename`, `kill`) or a two-letter
+    // alias (`ri`, `ni`, `sc`, `mi`, `ac`), so a grep pattern or a `Get-Help`
+    // argument used to read as the write itself. A pipeline still resolves —
+    // `Get-ChildItem -Recurse | Remove-Item` puts the verb first in its own
+    // segment, which is exactly what command position means.
     for candidate in mutating {
-        if contains_command(normalized, candidate) {
+        if runs_command(normalized, candidate) {
             let name = candidate.trim();
             return Some(format!(
                 "Command '{name}' modifies the filesystem or system state and is not allowed in \
@@ -272,90 +315,220 @@ fn read_only_violation(normalized: &str, kind: ShellKind) -> Option<String> {
         }
     }
 
-    for redirection in WRITE_REDIRECTIONS {
-        if normalized.contains(redirection) {
-            return Some(format!(
-                "Command contains write redirection '{redirection}' which is not allowed in \
-                 read-only mode"
-            ));
-        }
+    if let Some(redirection) = write_redirection(normalized) {
+        return Some(format!(
+            "Command contains write redirection '{redirection}' which is not allowed in \
+             read-only mode"
+        ));
     }
 
     None
 }
 
-/// Match a mutating command name anywhere in the string, respecting token
-/// boundaries so `get-childitem` never matches `ni ` and a path fragment
-/// like `\bin\reg-test` never matches `reg `.
-fn contains_command(normalized: &str, needle: &str) -> bool {
-    let trimmed = needle.trim();
-    let mut haystack = normalized;
-    let mut offset = 0usize;
+/// Operators that end one command and begin the next, in both Windows shells.
+const SEGMENT_BREAKS: &[char] = &[';', '|', '&', '(', ')', '{', '}', '\n', '\r'];
 
-    while let Some(index) = haystack.find(trimmed) {
-        let absolute = offset + index;
-        let before_ok = absolute == 0
-            || normalized[..absolute]
-                .chars()
-                .next_back()
-                .is_some_and(|c| matches!(c, ' ' | '|' | ';' | '(' | '&' | '{'));
-        let after = normalized[absolute + trimmed.len()..].chars().next();
-        let after_ok = after.is_none_or(|c| matches!(c, ' ' | '|' | ';' | ')' | '&' | '}'));
-        if before_ok && after_ok {
-            return true;
+/// Tokens after which the rest of the line is a command in its own right —
+/// but ONLY when the thing being invoked is a shell.
+///
+/// Without this, `cmd /c "format c:"` hides the dangerous verb behind `cmd`
+/// and reads as "the command being run is `cmd`", which is true and useless.
+/// With it applied unconditionally, `rg -c "shutdown" src` would read as
+/// running `shutdown`, because `-c` is also ripgrep's count flag. The flag
+/// only means "here comes a command" when a shell is the one reading it.
+const PAYLOAD_INTRODUCERS: &[&str] = &[" /c ", " /k ", " -c ", " -command "];
+
+/// Programs whose job is to run the rest of the line.
+const NESTED_SHELLS: &[&str] = &[
+    "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "bash", "bash.exe", "sh",
+    "sh.exe", "wsl", "wsl.exe",
+];
+
+/// The command-position slices of `normalized`: one per shell command, plus
+/// one for each payload handed to a nested shell.
+fn command_segments(normalized: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    for (index, character) in normalized.char_indices() {
+        if SEGMENT_BREAKS.contains(&character) {
+            segments.push(&normalized[start..index]);
+            start = index + character.len_utf8();
         }
-        offset = absolute + trimmed.len();
-        haystack = &normalized[offset..];
     }
-    false
+    segments.push(&normalized[start..]);
+
+    let mut with_payloads = Vec::with_capacity(segments.len());
+    for segment in segments {
+        with_payloads.push(segment);
+        if !invokes_a_nested_shell(segment) {
+            continue;
+        }
+        if let Some(payload) = PAYLOAD_INTRODUCERS
+            .iter()
+            .filter_map(|introducer| segment.find(introducer).map(|at| at + introducer.len()))
+            .min()
+        {
+            with_payloads.push(&segment[payload..]);
+        }
+    }
+    with_payloads
+}
+
+/// Is this segment's leading word a shell, by bare name or by full path?
+fn invokes_a_nested_shell(segment: &str) -> bool {
+    let Some(leading) = segment
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`'))
+        .split_whitespace()
+        .next()
+    else {
+        return false;
+    };
+    // `C:\Windows\System32\cmd.exe /c …` names the same program as `cmd /c …`.
+    let program = leading
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(leading);
+    NESTED_SHELLS.contains(&program)
+}
+
+/// Is `needle` the command being RUN, rather than a word inside one?
+///
+/// The distinction `contains_command` cannot make: it honours token
+/// boundaries, so `reg-test` is not `reg`, but it has no idea whether the
+/// token it found is the verb or an argument. `Select-String -Pattern move`
+/// and `Get-Help Remove-Item` both name a mutating command and mutate
+/// nothing, and in read-only mode both were blocked as writes.
+fn runs_command(normalized: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    command_segments(normalized).into_iter().any(|segment| {
+        let segment = segment.trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '`')
+        });
+        segment.strip_prefix(needle).is_some_and(|rest| {
+            // The verb has to end where the word ends. `format` is the `format`
+            // command; `format-volume` is a different one, with its own entry.
+            rest.is_empty()
+                || rest
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_whitespace() || matches!(c, '"' | '\''))
+        })
+    })
+}
+
+/// How much of a command a pattern has to own before it counts.
+///
+/// The table below used to be matched with a bare `normalized.contains(…)`,
+/// which is only safe when every entry is a word that cannot turn up as an
+/// ordinary argument. Two entries are exactly that word: `format` and
+/// `shutdown`. Measured on thread `7584a888` (2026-09-16):
+///
+/// ```text
+/// shell_execute(command: "uv run --frozen ruff format --check src", shell: "pwsh")
+///   -> policy violation: warning: Destructive command detected:
+///      Formatting a volume will destroy all data on it
+/// ```
+///
+/// `ruff format --check` formats Python. It does not format a volume. And
+/// because `shell_execute` maps a warning onto `PolicyViolation` (see
+/// `shell_execute::map_bash_error`), the refusal was total: the command never
+/// ran, twice, and the checks it was gating were abandoned.
+///
+/// Re-measured after the fix, the same substring test also flagged
+/// `dotnet format --verify-no-changes`, `clang-format -i`,
+/// `docker ps --format …`, `git log --format …`, `rg shutdown src`,
+/// `cargo test shutdown` and `Get-Content src/shutdown.rs` — 11 of 20
+/// realistic commands, against 0 of the 10 genuinely dangerous ones that
+/// needed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Match {
+    /// The pattern is a distinctive verb or a flag combination that cannot be
+    /// assembled by accident (`diskpart`, `rd /s`, `reg delete`). Finding it
+    /// anywhere is evidence, and matching it anywhere survives a `cmd /c`
+    /// wrapper this module does not try to parse.
+    Anywhere,
+    /// The pattern is an ordinary English word. It only counts as the command
+    /// being RUN, never as an argument handed to something else.
+    AsCommand,
 }
 
 /// Patterns worth stopping a user for, with the reason they see.
-const DESTRUCTIVE_PATTERNS: &[(&str, &str)] = &[
-    ("rd /s", "Recursive directory deletion"),
-    ("rmdir /s", "Recursive directory deletion"),
-    ("del /s", "Recursive file deletion"),
-    ("del /f", "Forced file deletion"),
-    ("erase /s", "Recursive file deletion"),
-    ("format ", "Formatting a volume will destroy all data on it"),
+const DESTRUCTIVE_PATTERNS: &[(&str, Match, &str)] = &[
+    ("rd /s", Match::Anywhere, "Recursive directory deletion"),
+    ("rmdir /s", Match::Anywhere, "Recursive directory deletion"),
+    ("del /s", Match::Anywhere, "Recursive file deletion"),
+    ("del /f", Match::Anywhere, "Forced file deletion"),
+    ("erase /s", Match::Anywhere, "Recursive file deletion"),
+    (
+        "format",
+        Match::AsCommand,
+        "Formatting a volume will destroy all data on it",
+    ),
     (
         "diskpart",
+        Match::Anywhere,
         "Direct partition manipulation can destroy volumes",
     ),
     (
         "clear-disk",
+        Match::Anywhere,
         "Clearing a disk destroys every partition on it",
     ),
-    ("remove-partition", "Removing a partition destroys its data"),
+    (
+        "remove-partition",
+        Match::Anywhere,
+        "Removing a partition destroys its data",
+    ),
     (
         "initialize-disk",
+        Match::Anywhere,
         "Initializing a disk destroys its contents",
     ),
     (
         "format-volume",
+        Match::Anywhere,
         "Formatting a volume will destroy all data on it",
     ),
-    ("cipher /w", "Wiping free space is irreversible"),
-    ("reg delete", "Deleting registry keys can break the system"),
+    ("cipher /w", Match::Anywhere, "Wiping free space is irreversible"),
+    (
+        "reg delete",
+        Match::Anywhere,
+        "Deleting registry keys can break the system",
+    ),
     (
         "bcdedit",
+        Match::Anywhere,
         "Boot configuration changes can make Windows unbootable",
     ),
     (
         "shutdown",
+        Match::AsCommand,
         "Shutting down or restarting will interrupt work",
     ),
-    ("stop-computer", "Shutting down will interrupt work"),
-    ("restart-computer", "Restarting will interrupt work"),
-    ("%0|%0", "Fork bomb — will crash the system"),
+    (
+        "stop-computer",
+        Match::Anywhere,
+        "Shutting down will interrupt work",
+    ),
+    (
+        "restart-computer",
+        Match::Anywhere,
+        "Restarting will interrupt work",
+    ),
+    ("%0|%0", Match::Anywhere, "Fork bomb — will crash the system"),
 ];
 
 fn destructive_warning(normalized: &str) -> Option<&'static str> {
     // `Remove-Item -Recurse -Force` is the PowerShell `rm -rf`; the flags can
-    // appear in either order and are routinely abbreviated (`-r -fo`).
-    let removes = contains_command(normalized, "remove-item")
-        || contains_command(normalized, "ri")
-        || contains_command(normalized, "rm");
+    // appear in either order and are routinely abbreviated (`-r -fo`). The
+    // deleting verb has to be the command, not a word inside one: `Get-Help
+    // Remove-Item -Full` mentions it and deletes nothing.
+    let removes = runs_command(normalized, "remove-item")
+        || runs_command(normalized, "ri")
+        || runs_command(normalized, "rm");
     let recursive = normalized.contains("-recurse") || normalized.contains(" -r ");
     let forced = normalized.contains("-force") || normalized.contains(" -fo");
     if removes && recursive && forced {
@@ -364,11 +537,19 @@ fn destructive_warning(normalized: &str) -> Option<&'static str> {
 
     DESTRUCTIVE_PATTERNS
         .iter()
-        .find(|(pattern, _)| normalized.contains(pattern))
-        .map(|(_, warning)| *warning)
+        .find(|(pattern, how, _)| match how {
+            Match::Anywhere => normalized.contains(pattern),
+            Match::AsCommand => runs_command(normalized, pattern),
+        })
+        .map(|(_, _, warning)| *warning)
 }
 
 /// Locations outside the workspace that a write should not silently touch.
+///
+/// The `$`-prefixed entries are matched at a word boundary, not as a bare
+/// substring: `$home` is the home directory and `$homepage` is a variable
+/// somebody named, and writing to the second is not a system write. The `%…%`
+/// and `c:\…` forms carry their own delimiters and need no such care.
 const SENSITIVE_PATH_MARKERS: &[&str] = &[
     r"c:\windows",
     r"c:\program files",
@@ -384,6 +565,20 @@ const SENSITIVE_PATH_MARKERS: &[&str] = &[
     "$env:appdata",
 ];
 
+/// Does `normalized` name this marker, rather than spell it inside a longer
+/// identifier? Only the `$` forms can be extended, so only they are checked.
+fn mentions_marker(normalized: &str, marker: &str) -> bool {
+    if !marker.starts_with('$') {
+        return normalized.contains(marker);
+    }
+    normalized.match_indices(marker).any(|(at, _)| {
+        normalized[at + marker.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+    })
+}
+
 fn path_warning(normalized: &str, mode: ExecutionMode, workspace: Option<&Path>) -> Option<String> {
     if mode == ExecutionMode::ReadOnly {
         return None;
@@ -391,14 +586,14 @@ fn path_warning(normalized: &str, mode: ExecutionMode, workspace: Option<&Path>)
     let mutating = POWERSHELL_MUTATING
         .iter()
         .chain(CMD_MUTATING.iter())
-        .any(|candidate| contains_command(normalized, candidate));
+        .any(|candidate| runs_command(normalized, candidate));
     if !mutating {
         return None;
     }
 
     if SENSITIVE_PATH_MARKERS
         .iter()
-        .any(|marker| normalized.contains(marker))
+        .any(|marker| mentions_marker(normalized, marker))
     {
         return Some(
             "Command appears to target files outside the workspace — requires elevated permission"
@@ -406,12 +601,22 @@ fn path_warning(normalized: &str, mode: ExecutionMode, workspace: Option<&Path>)
         );
     }
 
-    // `..\` traversal only matters when a workspace defines an inside.
-    if workspace.is_some() && (normalized.contains(r"..\") || normalized.contains("../")) {
-        return Some(
-            "Command uses parent-directory traversal and may write outside the workspace"
-                .to_string(),
-        );
+    // Traversal is RESOLVED, not matched. `Copy-Item src\..\src\a.ts dst` ends
+    // up inside the workspace and was refused anyway, which is the same defect
+    // the POSIX validator fixed in `validate_paths` — so this borrows that
+    // one's word splitter and its lexical `..` walk instead of keeping a
+    // second, worse copy. A refusal now names the path it is refusing.
+    if let Some(root) = workspace {
+        if let Some(escaping) = super::bash_validation::path_like_words(normalized)
+            .find(|word| super::bash_validation::escapes_workspace(word, root))
+        {
+            return Some(format!(
+                "`{escaping}` resolves outside the workspace ({}). Re-issue the command against a \
+                 path inside it — paths are relative to the workspace root, so a sibling \
+                 directory of the root is not reachable.",
+                root.display()
+            ));
+        }
     }
 
     None
@@ -616,16 +821,182 @@ mod tests {
     }
 
     #[test]
-    fn command_matching_respects_token_boundaries() {
+    fn command_position_separates_the_verb_from_its_arguments() {
         // `reg-test` must not read as the `reg` command, and `Get-ChildItem`
         // must not read as the `ni` alias.
-        assert!(!contains_command("cd src\\reg-test", "reg "));
-        assert!(!contains_command("get-childitem -recurse", "ni "));
-        assert!(contains_command(
-            "get-childitem | remove-item",
+        assert!(!runs_command("cd src\\reg-test", "reg "));
+        assert!(!runs_command("get-childitem -recurse", "ni "));
+        // A pipeline puts the verb first in its own segment.
+        assert!(runs_command("get-childitem | remove-item", "remove-item"));
+        assert!(runs_command("del /f build.log", "del "));
+        // Named, not run.
+        assert!(!runs_command("get-help remove-item -full", "remove-item"));
+        assert!(!runs_command("select-string -pattern move -path src", "move"));
+        // A nested shell's payload is a command in its own right.
+        assert!(runs_command("cmd /c \"format c: /q\"", "format"));
+        assert!(runs_command(
+            "powershell -command \"remove-item x\"",
             "remove-item"
         ));
-        assert!(contains_command("del /f build.log", "del "));
+        assert!(runs_command(
+            "c:\\windows\\system32\\cmd.exe /c \"format c:\"",
+            "format"
+        ));
+        // …but `-c` is ripgrep's count flag, not a payload introducer, so the
+        // pattern it is counting must not read as the command being run.
+        assert!(!runs_command("rg -c \"shutdown\" src", "shutdown"));
+        assert!(!runs_command("rg -c \"format\" src", "format"));
+        // The verb ends where the word ends.
+        assert!(!runs_command("format-volume -driveletter d", "format"));
+    }
+
+    /// Verbatim from thread `7584a888` (2026-09-16), plus every other command
+    /// the bare-substring table flagged when it was re-measured. Each one is a
+    /// total refusal, because `shell_execute` maps a warning onto
+    /// `PolicyViolation` and the command never runs.
+    #[test]
+    fn a_formatter_is_not_a_disk_formatter() {
+        for command in [
+            // The reported call.
+            "uv run --frozen ruff format --check src",
+            "ruff format src",
+            "dotnet format --verify-no-changes",
+            "clang-format -i src/main.cpp",
+            // `--format` as a flag, which is everywhere.
+            "docker ps --format \"{{.Names}}\"",
+            "git log --format \"%h %s\" -n 5",
+            "npm run build -- --format esm",
+            // `Format-*` cmdlets, named and piped.
+            "Get-Service | Format-Table Name,Status -AutoSize",
+            "Get-Help Format-Table",
+        ] {
+            assert_eq!(
+                destructive_warning(&normalize(command)),
+                None,
+                "must not read as a destructive command: {command}"
+            );
+        }
+    }
+
+    /// `shutdown` is a word before it is a command, and the word turns up in
+    /// source files, test names and search patterns.
+    #[test]
+    fn searching_for_the_word_shutdown_is_not_shutting_down() {
+        for command in [
+            "rg shutdown src",
+            "Select-String -Pattern shutdown -Path src",
+            "Get-Content src/shutdown.rs",
+            "cargo test shutdown",
+        ] {
+            assert_eq!(
+                destructive_warning(&normalize(command)),
+                None,
+                "must not read as a shutdown: {command}"
+            );
+        }
+    }
+
+    /// The other half of every narrowing: the dangerous forms still warn.
+    /// All ten of these were flagged before the change and must stay flagged.
+    #[test]
+    fn the_genuinely_destructive_commands_still_warn() {
+        for command in [
+            "format C: /q",
+            "Format-Volume -DriveLetter D",
+            "diskpart /s script.txt",
+            "Clear-Disk -Number 1",
+            "Remove-Item -Recurse -Force .\\dist",
+            "rd /s /q build",
+            "reg delete HKLM\\Software\\X /f",
+            "bcdedit /set nx AlwaysOn",
+            "shutdown /s /t 0",
+            "cipher /w:C",
+        ] {
+            assert!(
+                destructive_warning(&normalize(command)).is_some(),
+                "must still warn: {command}"
+            );
+        }
+    }
+
+    /// A `>` in a search pattern is not a redirection. Plan mode refused all
+    /// three of these, and a refusal there means the search never ran.
+    #[test]
+    fn an_arrow_in_a_search_pattern_is_not_a_redirection() {
+        for command in [
+            "rg -n \"->\" src/main.rs",
+            "rg -n \"=>\" src",
+            "git log --pretty=format:\"%h -> %s\"",
+            "printf done >&2",
+        ] {
+            assert_eq!(
+                write_redirection(&normalize(command)),
+                None,
+                "must not read as a write redirection: {command}"
+            );
+        }
+        // Real redirections, still caught.
+        assert_eq!(write_redirection("get-process > procs.txt"), Some(">"));
+        assert_eq!(write_redirection("get-process >> procs.txt"), Some(">>"));
+        assert_eq!(write_redirection("get-date 2> err.log"), Some(">"));
+    }
+
+    /// Searching for a mutating command's name, in read-only mode, is a read.
+    #[test]
+    fn read_only_allows_searches_that_merely_name_a_write_command() {
+        for command in [
+            "Select-String -Pattern move -Path src",
+            "git log --grep rename",
+            "Get-Help Remove-Item -Full",
+            "rg -n \"->\" src/main.rs",
+        ] {
+            validate_for_shell(command, ExecutionMode::ReadOnly, ShellKind::Pwsh, None)
+                .unwrap_or_else(|err| panic!("{command} must be allowed, got {err:?}"));
+        }
+    }
+
+    /// Traversal that resolves back inside the workspace is not an escape.
+    /// Same defect, and same fix, as the POSIX validator's `validate_paths`.
+    #[test]
+    fn traversal_that_stays_inside_the_workspace_is_allowed() {
+        for command in [
+            r"Copy-Item src\..\src\a.ts dst\a.ts",
+            "Move-Item src/../src/b.ts out/b.ts",
+            "New-Item -ItemType Directory packages/web/../api/src",
+        ] {
+            validate_for_shell(
+                command,
+                ExecutionMode::WorkspaceWrite,
+                ShellKind::Pwsh,
+                Some(workspace()),
+            )
+            .unwrap_or_else(|err| panic!("{command} must be allowed, got {err:?}"));
+        }
+    }
+
+    /// And one that genuinely leaves is still refused — now naming the path.
+    #[test]
+    fn traversal_that_leaves_the_workspace_names_the_path() {
+        let err = validate_for_shell(
+            r"Copy-Item secrets.env ..\..\elsewhere\secrets.env",
+            ExecutionMode::WorkspaceWrite,
+            ShellKind::Pwsh,
+            Some(workspace()),
+        )
+        .expect_err("a path above the root is outside the workspace");
+        let BashValidationError::Warning(message) = err else {
+            panic!("expected a warning");
+        };
+        assert!(message.contains(r"..\..\elsewhere\secrets.env"), "{message}");
+        assert!(message.contains("project"), "{message}");
+    }
+
+    /// `$home` is the home directory; `$homepage` is a variable someone named.
+    #[test]
+    fn a_marker_must_be_the_whole_variable_name() {
+        assert!(!mentions_marker("set-content $homepage.html x", "$home"));
+        assert!(mentions_marker("copy-item a $home/b", "$home"));
+        assert!(mentions_marker("copy-item a $home", "$home"));
     }
 
     #[test]

@@ -30,6 +30,10 @@ use super::types::{ConversationMessage, TokenUsage};
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantEvent {
+    /// Runtime boundary before one model-call attempt emits any output. Lets
+    /// consumers snapshot committed transcript state for exact retry rollback.
+    StreamAttemptStarted,
+
     /// A delta of hidden chain-of-thought output. `signature` is the
     /// per-block opaque token Anthropic requires us to echo back on the
     /// next multi-turn request — losing it produces a 400.

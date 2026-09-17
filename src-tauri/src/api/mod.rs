@@ -66,6 +66,9 @@ pub mod responses;
 pub mod sse;
 pub mod sse_shared;
 
+#[cfg(test)]
+mod stream_recovery_tests;
+
 // Only `client::*` is re-exported at the short path because
 // `crate::agent_runtime::ipc::tests` and `crate::lib` reference
 // `crate::api::ProviderConfigSnapshot` / `crate::api::build_api_client`

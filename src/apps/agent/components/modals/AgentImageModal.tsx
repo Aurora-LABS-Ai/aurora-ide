@@ -32,8 +32,9 @@ const COLORS = ["#ff4d4f", "#ffd60a", "#34c759", "#3994bc", "#ffffff", "#0a0a0a"
 export interface AgentImageModalProps {
   open: boolean;
   mode: "preview" | "annotate";
-  /** `data:` URL of the image. */
+  /** An image URL, including a local asset or `data:` URL. */
   src: string | null;
+  alt?: string;
   onClose: () => void;
   /** annotate mode only — receives the flattened `data:` URL. */
   onSave?: (dataUrl: string) => void;
@@ -43,11 +44,15 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
   open,
   mode,
   src,
+  alt = "Image preview",
   onClose,
   onSave,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const close = useCallback(() => { setFailedSource(null); onClose(); }, [onClose]);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [tool, setTool] = useState<"pen" | "rect">("pen");
   const [color, setColor] = useState(COLORS[0]);
@@ -62,7 +67,7 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
   // writes happen inside the async `onload` callback (not the effect body) so a
   // fresh image always starts with an empty stroke list and a clean canvas.
   useEffect(() => {
-    if (!open || !src) return;
+    if (!open || !src || mode !== "annotate") return;
     let cancelled = false;
     const img = new Image();
     img.onload = () => {
@@ -76,7 +81,7 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
       cancelled = true;
       img.onload = null;
     };
-  }, [open, src]);
+  }, [open, src, mode]);
 
   // Redraw base + every stroke whenever strokes or the loaded image change.
   const redraw = useCallback(() => {
@@ -116,15 +121,31 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
     redraw();
   }, [redraw]);
 
-  // Close on Escape.
+  useEffect(() => {
+    if (!open || !src || mode !== "preview") return;
+    const previous = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [open, src, mode]);
+
+  // Keep preview keyboard navigation inside the modal, including on failure.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      } else if (mode === "preview" && e.key === "Tab") {
+        e.preventDefault();
+        closeRef.current?.focus();
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, mode, close]);
 
   // The agent's embedded browser is a NATIVE webview that paints above all DOM,
   // so this modal would otherwise open BEHIND it whenever the Browser panel is
@@ -187,12 +208,13 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
   if (!open || !src || !portalTarget) return null;
 
   return createPortal(
-    <div className="agw-img-overlay" onClick={onClose}>
+    <div className="agw-img-overlay" onClick={close}>
       <div
         className="agw-img-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-label={mode === "preview" ? "Image preview" : "Annotate image"}
       >
         <div className="agw-img-stage">
           {mode === "annotate" ? (
@@ -205,7 +227,9 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
               onPointerLeave={onPointerUp}
             />
           ) : (
-            <img src={src} alt="" className="agw-img-canvas" draggable={false} />
+            failedSource === src ? <p role="alert">Image could not be loaded. Close the preview and try again.</p> :
+            <img src={src} alt={alt} className="agw-img-canvas" draggable={false}
+              onError={() => setFailedSource(src)} />
           )}
         </div>
 
@@ -273,10 +297,11 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
 
         <button
           type="button"
+          ref={closeRef}
           className="agw-img-close"
           title="Close"
           aria-label="Close"
-          onClick={onClose}
+          onClick={close}
         >
           <AgentIcon name="close" size={16} />
         </button>

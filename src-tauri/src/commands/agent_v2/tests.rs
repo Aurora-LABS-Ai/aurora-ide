@@ -95,8 +95,8 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         })
         .count();
     assert_eq!(
-        named_natives, 5,
-        "auroro_websearch, recall, remember, generate_image and canvas_guidelines are the native ones"
+        named_natives, 6,
+        "auroro_websearch, recall, remember, generate_image, generate_video and canvas_guidelines are the native ones"
     );
     assert_eq!(
         refused,
@@ -144,6 +144,7 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
         "recall",
         "remember",
         "generate_image",
+        "generate_video",
         "ask_question",
     ] {
         assert!(
@@ -1135,18 +1136,19 @@ async fn happy_path_emits_events_persists_session_no_tools() {
     assert_eq!(summary.iterations, 1);
     assert_eq!(summary.stop_reason, "end_turn");
 
-    // Event ordering: TextDelta, TextDelta, MessageStop.
+    // Event ordering: attempt boundary, TextDelta, TextDelta, MessageStop.
     let events = emitter.snapshot_events();
-    assert_eq!(events.len(), 3, "got events: {events:?}");
+    assert_eq!(events.len(), 4, "got events: {events:?}");
     assert!(
         events.iter().all(|event| event.turn_id == "t-1"),
         "all streamed events must use the frontend turn id: {events:?}"
     );
-    match &events[0].event {
+    assert!(matches!(events[0].event, AssistantEvent::StreamAttemptStarted));
+    match &events[1].event {
         AssistantEvent::TextDelta { delta } => assert_eq!(delta, "hello"),
         other => panic!("expected TextDelta, got {other:?}"),
     }
-    match &events[2].event {
+    match &events[3].event {
         AssistantEvent::MessageStop { stop_reason } => assert_eq!(stop_reason, "end_turn"),
         other => panic!("expected MessageStop, got {other:?}"),
     }

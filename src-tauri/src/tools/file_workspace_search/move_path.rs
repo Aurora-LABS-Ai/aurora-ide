@@ -45,14 +45,16 @@ impl ToolExecutor for MovePathTool {
         ToolSchema {
             name: "move_path".into(),
             description:
-                "Move or rename a file OR a folder from one path to another. Fails if the \
-                          source does not exist or the destination already exists."
+                "Move or rename a file OR a folder from one path to another. Creates the \
+                          destination's parent directories automatically, so you can move \
+                          straight into a folder that does not exist yet. Fails if the source \
+                          does not exist or the destination already exists."
                     .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "old_path": { "type": "string", "description": "The current full path (file or folder)." },
-                    "new_path": { "type": "string", "description": "The new full path." }
+                    "old_path": { "type": "string", "description": "The current path of the file or folder, relative to the workspace root or absolute." },
+                    "new_path": { "type": "string", "description": "The new path. Missing parent directories are created for you." }
                 },
                 "required": ["old_path", "new_path"],
                 "additionalProperties": false,
@@ -107,7 +109,29 @@ impl ToolExecutor for MovePathTool {
             if is_dir {
                 crate::file_cache::get_file_cache().invalidate_prefix(&old_str);
             }
-            std::fs::rename(src, dst).map_err(|e| format!("Failed to move: {e}"))?;
+            // The destination's parent is created, the same way `file_write`
+            // creates it. `fs::rename` does not, so moving a file into a
+            // directory that does not exist yet failed with a bare "Failed to
+            // move: The system cannot find the path specified" — a message
+            // that names neither end and reads as if the SOURCE were missing,
+            // when the source is fine and one folder is all that was needed.
+            //
+            // Reorganising a tree is the whole job of this tool, and a new
+            // layout is mostly new directories. Refusing the move is not
+            // safety: it just means the model calls `folder_create` first,
+            // which is a turn spent on something Aurora already knows how to
+            // do. `resolve_path_for_create` has already confirmed the
+            // destination is in bounds.
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create destination directory {}: {e}",
+                        parent.display()
+                    )
+                })?;
+            }
+            std::fs::rename(src, dst)
+                .map_err(|e| format!("Failed to move {old_str} to {new_str}: {e}"))?;
             Ok(is_dir)
         })
         .await
@@ -221,6 +245,51 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(),
             "hi"
         );
+    }
+
+    /// Reorganising a tree means moving things into folders that do not exist
+    /// yet. `fs::rename` refuses that, and the refusal named neither end.
+    #[tokio::test]
+    async fn moves_into_a_destination_whose_parents_do_not_exist_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "hi").unwrap();
+        let out = tool()
+            .execute(
+                serde_json::json!({
+                    "old_path": "a.txt",
+                    "new_path": "src/features/new/a.txt"
+                }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{parsed}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("src/features/new/a.txt")).unwrap(),
+            "hi"
+        );
+        assert!(!tmp.path().join("a.txt").exists(), "source is gone");
+    }
+
+    /// A destination Windows cannot store must be refused BY NAME, before any
+    /// directory is created for it. See `agent_safety::paths`.
+    #[tokio::test]
+    async fn a_destination_that_cannot_exist_is_refused_before_anything_is_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "hi").unwrap();
+        let result = tool()
+            .execute(
+                serde_json::json!({ "old_path": "a.txt", "new_path": "out/a\0.txt" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await;
+        assert!(result.is_err(), "a NUL in the destination must be refused");
+        assert!(
+            !tmp.path().join("out").exists(),
+            "nothing may be created for a destination that cannot exist"
+        );
+        assert!(tmp.path().join("a.txt").exists(), "source untouched");
     }
 
     #[tokio::test]

@@ -67,7 +67,8 @@ impl ToolExecutor for FolderCreateTool {
             if dir.exists() {
                 return Err(format!("Folder already exists: {}", resolved_str));
             }
-            std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create folder: {e}"))
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("Failed to create folder {}: {e}", dir.display()))
         })
         .await
         .map_err(|err| ToolError::Execution(format!("folder_create task panicked: {err}")))?;

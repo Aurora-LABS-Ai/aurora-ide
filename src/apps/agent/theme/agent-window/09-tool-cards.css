@@ -480,18 +480,15 @@
   flex-direction: column;
   gap: 8px;
 }
-/* The picture being made, while it is being made.
-   The SAME box the finished picture lands in — `.agw-tool-shot-img` below —
-   because that is the entire job of a placeholder: hold the space the result
-   will take, so its arrival is a swap and not a jump. Deriving a shape from the
-   requested size was wasted work: the result is letterboxed into this box
-   whatever its aspect, so the placeholder is this box too.
-   Unlike direct generation, which IS the reply and takes the pane, this sits in
-   a tool card in a transcript that keeps scrolling past it. */
-.agw-tool-silk {
-  width: 100%;
-  max-width: 420px;
-  max-height: 320px;
+/* Bound width by BOTH axes. A height cap alone distorts a portrait placeholder.
+   Loading and finished images share the same ratio-aware thumbnail envelope. */
+.agw-silk.agw-tool-silk,
+.agw-tool-shot-btn[data-sized] {
+  width: min(100%, 420px, calc(320px * var(--agw-image-ratio, 1 / 1)));
+}
+.agw-tool-silk .agw-silk-canvas {
+  position: absolute;
+  inset: 0;
 }
 
 .agw-tool-args {
@@ -1344,6 +1341,23 @@
   font-size: var(--agw-fs-micro);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
+}
+.agw-web-thumbnail {
+  flex: none;
+  display: grid;
+  place-items: center;
+  align-self: flex-start;
+  width: 72px;
+  height: 64px;
+  overflow: hidden;
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
+  color: var(--agw-text-subtle);
+}
+.agw-web-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .agw-web-hit-main {
   display: flex;

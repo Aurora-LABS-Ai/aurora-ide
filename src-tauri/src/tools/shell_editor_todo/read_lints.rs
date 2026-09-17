@@ -239,9 +239,40 @@ fn parse_paths(input: &Value) -> Result<Vec<String>, ToolError> {
             })
             .collect(),
         None | Some(Value::Null) => Ok(Vec::new()),
-        Some(_) => Err(ToolError::InvalidInput(
-            "`paths` must be an array of strings".into(),
-        )),
+        // A gateway that flattens the array into a string (see
+        // `crate::tools::arguments`) used to land here and be told `paths`
+        // must be an array — about a call that WAS an array when the model
+        // sent it, and that no rewording of the arguments could fix. The
+        // flattened form names the same files; decode it and lint them.
+        Some(Value::String(raw)) => {
+            match crate::tools::arguments::decode_flattened_string_array(raw) {
+                Some(paths) => Ok(paths),
+                // Not a flattened list: one path named without its array.
+                None if !raw.trim().is_empty() => Ok(vec![raw.trim().to_string()]),
+                None => Ok(Vec::new()),
+            }
+        }
+        Some(other) => Err(ToolError::InvalidInput(format!(
+            "`paths` must be an array of file path strings — `\"paths\": [\"src/a.ts\"]`. \
+             You sent {}.",
+            describe_paths_value(other)
+        ))),
+    }
+}
+
+/// What arrived, in words the caller can check its own call against.
+///
+/// The old text said `paths` must be an array of strings at everything that
+/// was not one, including an array that was. The rule this follows is the
+/// same one `file_workspace_search::path_argument` documents at length:
+/// telling a model the type it already sent is what turns one bad call into
+/// five wasted iterations.
+fn describe_paths_value(value: &Value) -> &'static str {
+    match value {
+        Value::Number(_) => "a number",
+        Value::Bool(_) => "a true/false value",
+        Value::Object(_) => "an object",
+        _ => "something else",
     }
 }
 
@@ -860,13 +891,40 @@ src/bin-library-page.tsx(9,2): error TS2551: pre-existing\n";
     }
 
     #[tokio::test]
-    async fn rejects_paths_not_array() {
+    async fn rejects_paths_that_name_no_file() {
         let tool = ReadLintsTool::new(Arc::new(NoopIdeEventSink));
         let err = tool
-            .execute(json!({"paths": "single.rs"}), &ctx(None))
+            .execute(json!({"paths": 7}), &ctx(None))
             .await
-            .expect_err("must fail");
+            .expect_err("a number names no file");
         assert!(matches!(err, ToolError::InvalidInput(_)));
+    }
+
+    /// A bare string names exactly one file. It used to be refused with
+    /// "`paths` must be an array of strings", which is the same unhelpful
+    /// shape `file_read` removed: one sensible reading, so serve it.
+    #[test]
+    fn a_bare_string_names_one_file() {
+        assert_eq!(
+            parse_paths(&json!({"paths": "single.rs"})).unwrap(),
+            vec!["single.rs".to_string()]
+        );
+    }
+
+    /// The array flattened into a string by a gateway (see
+    /// `crate::tools::arguments`). The model sent an array; refusing it for
+    /// not being one is a correction it cannot act on. Windows paths included,
+    /// because that form is not valid JSON and needs the repair.
+    #[test]
+    fn a_flattened_array_still_names_its_files() {
+        assert_eq!(
+            parse_paths(&json!({"paths": "[\"src/a.ts\", \"src/b.ts\"]"})).unwrap(),
+            vec!["src/a.ts".to_string(), "src/b.ts".to_string()]
+        );
+        assert_eq!(
+            parse_paths(&json!({"paths": r#"["E:\proj\src\a.ts"]"#})).unwrap(),
+            vec![r"E:\proj\src\a.ts".to_string()]
+        );
     }
 
     #[tokio::test]

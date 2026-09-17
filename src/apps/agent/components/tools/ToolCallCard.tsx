@@ -50,6 +50,8 @@ import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
+import { aspectRatioOfSize } from "@/apps/agent/services/providers/image-providers";
+import { aspectRatioOfVideoRatio } from "@/apps/agent/services/gallery/video-service";
 import { useShellStream } from "@/apps/agent/hooks/useShellStream";
 import { detachCommandStream } from "@/kernel/lib/ipc/tauri";
 import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
@@ -171,6 +173,12 @@ function stackTargets(targets: ChipTarget[]): StackMark[] {
  * the agent had moved on to the next tool. A report that lags the work it
  * reports on is worse than no report — the row is describing the past while
  * claiming to be current.
+ *
+ * Cutting it to 300ms narrowed that gap and did not close it: a constant lags
+ * any model fast enough to outrun it, and at 300 tok/s every multi-file call
+ * is. What closes it is `settled` draining the reel (see the second effect in
+ * [`ToolTargetReel`]) — so this is now a PACE for work that is genuinely still
+ * running, and no longer the thing that decides when the row finishes.
  */
 const REEL_HOLD_MS = 300;
 
@@ -241,6 +249,35 @@ const ToolTargetReel: React.FC<{
     const timer = window.setTimeout(() => setIndex((current) => current + 1), REEL_HOLD_MS);
     return () => window.clearTimeout(timer);
   }, [narrates, drained, index]);
+
+  /**
+   * The work landed, so the row lands with it.
+   *
+   * Without this the reel is a fixed-pace timer with no connection to the work
+   * it claims to report: `REEL_HOLD_MS` per name, whatever the call actually
+   * took. Five files is 1.5s of reel; eight is 2.4s. A read finishing in 150ms
+   * left the row still naming its second file while the model — at 300 tok/s —
+   * had already emitted the next tool call, opened a thought block and started
+   * the one after that. Rows appeared BELOW a row still pretending to be in
+   * flight.
+   *
+   * This is the second time that symptom has been fixed and the first time the
+   * cause has been. `REEL_HOLD_MS` shipped at 850ms, was measured lagging, and
+   * was cut to 300 — a smaller constant, not a different mechanism. Any
+   * constant lags a fast model and races a slow one; it only moved the
+   * threshold from "every model" to "a fast one".
+   *
+   * The fix is to stop treating the reel's own progress as a precondition for
+   * the work being over. `showSummary` needs `drained && settled`, so a
+   * finished call still had to wait for the animation; now `settled` DRAINS the
+   * reel, and the summary rides in on the standard glide one step later. Nothing
+   * is swapped and no motion is cut — a slow call still walks its names, a fast
+   * one simply has nothing to narrate, which is the truth about it.
+   */
+  useEffect(() => {
+    if (!narrates || !settled) return;
+    setIndex((current) => (current >= readable ? current : readable));
+  }, [narrates, settled, readable]);
 
   const cellKey = showSummary || !active ? " summary" : `${index}:${active.path}`;
 
@@ -534,7 +571,7 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "auroro_websearch" || lower === "auroro_web_search") return "search";
   // Making a picture. Its own mark, because `palette` is a drawn graphic and
   // `browser-screenshot` is a capture of something that already exists.
-  if (lower === "generate_image") return "image";
+  if (lower === "generate_image" || lower === "generate_video") return "image";
   if (lower === "ask_question") return "help";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
   return "diff";
@@ -914,12 +951,18 @@ const StandardToolCallCard: React.FC<{
       const v = JSON.parse(call.arguments || "{}");
       return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
     } catch {
-      return {};
+      // A completed operation can arrive before the rest of the JSON. Keep
+      // model discovery correctly labelled while arguments are streaming.
+      const streamed = streamedToolStringArguments(call.arguments, ["op", "action", "source", "url", "size"]);
+      return Object.fromEntries(Object.entries(streamed).flatMap(([key, values]) => {
+        const value = values.find((item) => item.complete);
+        return value ? [[key, value.value]] : [];
+      }));
     }
   }, [call.arguments]);
 
   const status = toolStatus(call, isActivelyStreaming);
-  const defaultTitle = getProfessionalToolName(call.name);
+  const defaultTitle = getProfessionalToolName(call.name, parsedArgs);
   const icon = toolIcon(call.name);
   const activity = useMemo(
     () => describeToolActivity(call.name, call.arguments),
@@ -1106,16 +1149,16 @@ const StandardToolCallCard: React.FC<{
   // second, weaker copy of the same fact.
   const resultStatesRange = parsed.multiFile?.some((file) => file.window) ?? false;
 
-  /**
-   * Whether to hold the picture's box open while it is being made.
-   *
-   * No aspect is derived from the requested size: the finished picture is
-   * letterboxed into a fixed box (`.agw-tool-shot-img`), so the placeholder is
-   * that same box and the swap moves nothing. `list` is excluded — it has no
-   * picture coming — and so is any call that is no longer running.
-   */
+  // Model discovery has no picture coming. Only a live generation reserves space.
+  //
+  // Video is the same kind of wait and takes the same body: `generate_video`'s
+  // submit is a tool call, so it keeps the card that already exists and only
+  // its body differs. Its `list` and `query` ops have nothing arriving, the
+  // same way `generate_image`'s `list` does not.
   const showImagePlaceholder = useMemo(() => {
-    if (call.name !== "generate_image") return false;
+    const isImage = call.name === "generate_image";
+    const isVideo = call.name === "generate_video";
+    if (!isImage && !isVideo) return false;
     if (toolStatus(call, isActivelyStreaming) !== "running") return false;
     let op: string | undefined;
     try {
@@ -1125,8 +1168,21 @@ const StandardToolCallCard: React.FC<{
       // Arguments still streaming — read what has arrived so far.
       op = partialString(call.arguments, "op") || undefined;
     }
-    return op !== "list";
+    // A video has no `edit`; everything else about the rule is the same, and
+    // an op that has not streamed yet is a generation if a prompt is arriving.
+    if (op === "generate" || (isImage && op === "edit")) return true;
+    return !op && !!partialString(call.arguments, "prompt");
   }, [call, isActivelyStreaming]);
+  // A video request names a `ratio`, never a `size`; a `resolution` like
+  // `768P` says how many pixels, not what shape they make.
+  const imageAspectRatio =
+    call.name === "generate_video"
+      ? aspectRatioOfVideoRatio(
+          typeof parsedArgs.ratio === "string" ? parsedArgs.ratio : undefined,
+        )
+      : aspectRatioOfSize(
+          typeof parsedArgs.size === "string" ? parsedArgs.size : undefined,
+        );
   const argChips = useMemo(
     () =>
       Object.entries(parsedArgs).filter(
@@ -1182,7 +1238,7 @@ const StandardToolCallCard: React.FC<{
   ]);
 
   const hasResult = Boolean(
-    parsed.tree ||
+    parsed.tree || parsed.web || parsed.video ||
       parsed.multiFile?.length ||
       parsed.grep?.matches.length ||
       // Not `.files.length`: a glob that matched nothing still has a result
@@ -1598,7 +1654,7 @@ const StandardToolCallCard: React.FC<{
                   argument chips. The finished picture renders through the
                   ordinary result view below, unchanged. */}
               {showImagePlaceholder ? (
-                <SilkPlaceholder className="agw-tool-silk" />
+                <SilkPlaceholder className="agw-tool-silk" aspectRatio={imageAspectRatio} />
               ) : showLiveShell ? (
                 <ShellStreamView
                   command={liveShellCommand}

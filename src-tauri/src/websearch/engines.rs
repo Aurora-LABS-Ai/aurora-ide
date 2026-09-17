@@ -56,6 +56,8 @@ pub enum SearchSource {
     Web,
     /// arXiv, OpenAlex, Semantic Scholar and PubMed Central together.
     Scholar,
+    /// Images from Wikimedia Commons, including source pages and attribution.
+    Images,
 }
 
 impl SearchSource {
@@ -64,6 +66,7 @@ impl SearchSource {
     pub fn parse(label: &str) -> Self {
         match label.trim().to_ascii_lowercase().as_str() {
             "scholar" | "papers" | "academic" => SearchSource::Scholar,
+            "images" => SearchSource::Images,
             _ => SearchSource::Web,
         }
     }
@@ -141,10 +144,14 @@ pub async fn search(
 
     let mut fallbacks: Vec<EngineAttempt> = Vec::new();
 
-    for (engine, attempt) in [
-        (ENGINE_LITE, run_lite(query, opts).await),
-        (ENGINE_HTML, run_html(query, opts).await),
-    ] {
+    for engine in [ENGINE_LITE, ENGINE_HTML] {
+        // Await only the current rung. Awaiting both in the array initializer
+        // sends the fallback request even when the first engine succeeds.
+        let attempt = if engine == ENGINE_LITE {
+            run_lite(query, opts).await
+        } else {
+            run_html(query, opts).await
+        };
         match attempt {
             Ok(hits) if !hits.is_empty() => {
                 let hits: Vec<SearchHit> = hits.into_iter().take(opts.limit).collect();
@@ -271,6 +278,7 @@ fn parse_browser_results(html: &str) -> Vec<SearchHit> {
         let snippet = block.select("[data-testid='result-snippet']");
         let display = block.select("[data-testid='result-extras-url-link']");
         hits.push(SearchHit {
+            image: None,
             rank: hits.len() + 1,
             title,
             url,
@@ -314,6 +322,7 @@ async fn run_lite(query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>, W
                 continue;
             }
             hits.push(SearchHit {
+                image: None,
                 rank: hits.len() + 1,
                 title,
                 url,
@@ -390,6 +399,7 @@ async fn run_html(query: &str, opts: &SearchOptions) -> Result<Vec<SearchHit>, W
         let display = block.select("a.result__url");
 
         hits.push(SearchHit {
+            image: None,
             rank: hits.len() + 1,
             title,
             url,
@@ -560,6 +570,7 @@ mod tests {
             let link = row.select("a.result-link");
             if link.exists() {
                 hits.push(SearchHit {
+                    image: None,
                     rank: hits.len() + 1,
                     title: clean(&link.text()),
                     url: link.attr("href").unwrap().to_string(),

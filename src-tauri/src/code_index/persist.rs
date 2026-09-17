@@ -40,7 +40,13 @@ use std::path::{Path, PathBuf};
 /// v13: ordered Dart import combinators, re-export identity, and Dart library
 /// part membership are persisted. A v12 cache can misattribute hidden names,
 /// stop at barrel files, and treat a multi-file library as separate modules.
-pub const FORMAT_VERSION: u32 = 13;
+///
+/// v14: a Go member's `container` is its type's NAME. A v13 cache stores the
+/// type's whole SOURCE there — `struct { … }::db`, once per field — so an
+/// already-indexed Go workspace would keep serving pages of repeated struct
+/// bodies from disk however the extractor now behaves. The rebuild is the fix
+/// becoming visible.
+pub const FORMAT_VERSION: u32 = 14;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.

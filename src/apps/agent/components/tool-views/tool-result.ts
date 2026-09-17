@@ -14,6 +14,7 @@
 
 import { streamedToolStringArguments } from "@/apps/agent/components/tools/tool-call";
 import { computeDiff } from "@/apps/agent/components/tool-views/diff";
+import { parseVideo, videoStatus } from "@/apps/agent/services/gallery/video-service";
 import {
   findImageMarker,
   hasImageMarker,
@@ -225,6 +226,7 @@ export interface ParsedToolResult {
    *  so they share the file chips and one selection with the text files beside
    *  them rather than stacking down the card. */
   image: ToolImage | null;
+  video?: import("@/apps/agent/services/gallery/video-service").VideoData | null;
   /** `auroro_websearch` — either a results page or one fetched document. */
   web: WebData | null;
 }
@@ -236,6 +238,14 @@ export interface WebHit {
   url: string;
   displayUrl?: string;
   snippet?: string;
+  image?: {
+    url: string;
+    thumbnailUrl: string;
+    width?: number;
+    height?: number;
+    creator?: string;
+    license?: string;
+  };
 }
 
 /**
@@ -261,6 +271,8 @@ export interface WebData {
   totalChars?: number;
   offset?: number;
   hasMore?: boolean;
+  byline?: string;
+  published?: string;
   /** Anything the reader has to know: a rewritten URL, an unreadable format,
    *  a partial download. Shown verbatim — it is the same sentence the model
    *  was given. */
@@ -428,6 +440,41 @@ function filesToEntries(files: unknown[], historyTruncated: boolean): MultiFileE
 }
 
 /**
+ * What a batch read's summary slot says — and why it is not the file count.
+ *
+ * The row already carries the count: the chip reads "4 files"
+ * (`ToolCallCard.tsx::countLabel`). Answering it with "Read 4 files" spent the
+ * summary slot restating the slot beside it, and put the word "Read" on the
+ * row twice — once as the verb, once again three inches to the right.
+ *
+ * Every other row on the card already knows better. A single-file read says
+ * `Read 140 lines`; a multi-file EDIT says its +/- totals. Both follow the same
+ * rule: **the chip says WHICH, the summary says HOW MUCH.** The batch read was
+ * the only one that said which, twice.
+ *
+ * Two cases keep the count, because there the two numbers are not the same
+ * number and the difference is the whole message:
+ *
+ * - Some files failed. The chip counts what was ASKED for, this counts what
+ *   came BACK, and `3 of 4` is the only place a reader learns one was lost.
+ *   Silently lowering the count (what it used to do) hid the failure.
+ * - Nothing has lines to report — a batch of images, or of empty files. There
+ *   is no magnitude to state, so the count is the honest fallback.
+ */
+function batchReadSummary(entries: MultiFileEntry[], filesRead: number | undefined): string {
+  const asked = entries.length;
+  const read = filesRead ?? entries.filter((entry) => entry.success).length;
+  if (read < asked) {
+    return `Read ${read} of ${asked} files`;
+  }
+  const lines = entries.reduce((total, entry) => total + (entry.lines ?? 0), 0);
+  if (lines > 0) {
+    return `Read ${lines.toLocaleString()} ${lines === 1 ? "line" : "lines"}`;
+  }
+  return `Read ${read} ${read === 1 ? "file" : "files"}`;
+}
+
+/**
  * Recover the JSON inventory a mixed read appends AFTER its pictures.
  *
  * `file_read` answers a call naming both images and source files in two shapes:
@@ -587,9 +634,7 @@ function recoverTruncatedRead(
         truncated: !contentValue?.complete,
       };
     });
-    out.summary = `Read ${out.multiFile.length} ${
-      out.multiFile.length === 1 ? "file" : "files"
-    }`;
+    out.summary = batchReadSummary(out.multiFile, undefined);
     return true;
   }
 
@@ -690,6 +735,14 @@ const EMPTY: ParsedToolResult = {
  * error path: the tool's own message ("… returned 404 Not Found — the page is
  * gone") is more use than an empty results panel.
  */
+function webUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined;
+  } catch { return undefined; }
+}
+
 function parseWebResult(parsed: Record<string, unknown>): WebData | null {
   if (parsed.success === false) return null;
 
@@ -697,8 +750,11 @@ function parseWebResult(parsed: Record<string, unknown>): WebData | null {
   if (search) {
     const hits = (asArr(search.results) ?? []).flatMap((raw): WebHit[] => {
       const hit = rec(raw);
-      const url = asStr(hit?.url);
+      const url = webUrl(hit?.url);
       if (!hit || !url) return [];
+      const image = rec(hit.image);
+      const imageUrl = webUrl(image?.url);
+      const thumbnailUrl = webUrl(image?.thumbnailUrl);
       return [
         {
           rank: asNum(hit.rank) ?? 0,
@@ -706,6 +762,11 @@ function parseWebResult(parsed: Record<string, unknown>): WebData | null {
           url,
           displayUrl: asStr(hit.displayUrl),
           snippet: asStr(hit.snippet),
+          image: imageUrl && thumbnailUrl ? {
+            url: imageUrl, thumbnailUrl,
+            width: asNum(image?.width), height: asNum(image?.height),
+            creator: asStr(image?.creator), license: asStr(image?.license),
+          } : undefined,
         },
       ];
     });
@@ -719,14 +780,17 @@ function parseWebResult(parsed: Record<string, unknown>): WebData | null {
       hits,
       note:
         fallbacks.length > 0
-          ? `${fallbacks.length === 1 ? "One other source" : `${fallbacks.length} other sources`} returned nothing first.`
+          ? fallbacks.map((raw) => {
+              const attempt = rec(raw);
+              return `${asStr(attempt?.engine) || "Another source"}: ${asStr(attempt?.reason) || "could not return results"}`;
+            }).join("; ")
           : undefined,
     };
   }
 
   const document = rec(parsed.document);
   if (document) {
-    const url = asStr(document.finalUrl) ?? asStr(document.url) ?? "";
+    const url = webUrl(document.finalUrl) ?? webUrl(document.url) ?? "";
     return {
       kind: "document",
       heading: asStr(document.title) || hostOf(url) || url,
@@ -736,6 +800,8 @@ function parseWebResult(parsed: Record<string, unknown>): WebData | null {
       totalChars: asNum(document.totalChars),
       offset: asNum(document.offset),
       hasMore: document.hasMore === true,
+      byline: asStr(document.byline),
+      published: asStr(document.published),
       note: asStr(document.note),
     };
   }
@@ -823,6 +889,11 @@ export function parseToolResult(
               : "Captured screenshot";
       return out;
     }
+  }
+
+  if (parsed && name === "generate_video") {
+    const video = parseVideo(parsed.video);
+    if (video) { out.video = video; out.summary = videoStatus(video); return out; }
   }
 
   // Web search / page fetch. Placed before the generic branches because both
@@ -1009,8 +1080,7 @@ export function parseToolResult(
   if ((name === "multi_file_read" || name === "file_read") && parsed.files) {
     const entries = filesToEntries(asArr(parsed.files) ?? [], parsed.historyTruncated === true);
     out.multiFile = entries;
-    const n = asNum(parsed.filesRead) ?? entries.length;
-    out.summary = `Read ${n} ${n === 1 ? "file" : "files"}`;
+    out.summary = batchReadSummary(entries, asNum(parsed.filesRead));
     return out;
   }
 

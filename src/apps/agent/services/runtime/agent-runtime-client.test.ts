@@ -412,6 +412,7 @@ describe("AgentRuntimeClient.chat — event routing", () => {
   });
 
   it("routes each AssistantEvent variant to the matching callback", async () => {
+    const onStreamAttemptStarted = vi.fn();
     const onToken = vi.fn();
     const onThinking = vi.fn();
     const onToolCall = vi.fn();
@@ -424,6 +425,7 @@ describe("AgentRuntimeClient.chat — event routing", () => {
     const onStart = vi.fn();
 
     const client = buildClient({
+      onStreamAttemptStarted,
       onToken,
       onThinking,
       onToolCall,
@@ -440,6 +442,13 @@ describe("AgentRuntimeClient.chat — event routing", () => {
     const { turnId } = await awaitChatInvocation();
 
     expect(onStart).toHaveBeenCalledTimes(1);
+
+    dispatch(AGENT_EVENT_CHANNEL, {
+      turnId,
+      seq: 0,
+      event: { type: "stream_attempt_started" },
+    });
+    expect(onStreamAttemptStarted).toHaveBeenCalledTimes(1);
 
     dispatch(AGENT_EVENT_CHANNEL, {
       turnId,

@@ -3069,11 +3069,117 @@ pub fn parse_tool_input(raw: &str) -> Value {
         }
     }
 
+    // Third recovery pass: every value is complete and only the closing
+    // braces are missing.
+    //
+    // See [`unclosed_containers`] for why that is a different thing from a
+    // payload cut off mid-value, and why only this one can be repaired.
+    if let Some(closers) = unclosed_containers(raw) {
+        let closed = format!("{raw}{closers}");
+        if let Ok(value) = serde_json::from_str::<Value>(&closed) {
+            if value.is_object() {
+                return value;
+            }
+        }
+    }
+
     // A parsed-but-not-object payload (a bare array, a quoted string)
     // is just as unusable as a parse failure — carry the raw text
     // through the same path rather than handing an executor a shape
     // it will misreport.
     Value::String(raw.to_string())
+}
+
+/// The closers that would finish this payload, if nothing else is missing.
+///
+/// `Some("}}")` means the text is a complete run of complete values with
+/// unclosed containers around them, and appending those characters loses
+/// nothing. `None` means it is not that — either it parses already, or it stops
+/// somewhere that no number of closers can repair.
+///
+/// ## Why the distinction is the whole point
+///
+/// `serde_json` answers both cases with `Category::Eof`, so Aurora treated them
+/// as one and told the model its call "was almost certainly cut off by the
+/// output-token limit" either way. Measured 2026-09-16, thread `e186eb4b`
+/// (`modal-messages`, GLM-5.3): five `call_tool` blocks in one message, and the
+/// first four arrived missing exactly one character each — their outermost `}`.
+/// The fifth was intact. A token cap truncates the message tail at ONE point;
+/// it does not shave the last brace off four blocks and leave the fifth whole.
+///
+/// The two cases need opposite handling, which is why they cannot share an
+/// answer:
+///
+/// - `{"command": "rm -rf /tmp/ca` — cut mid-string. The argument is a
+///   FRAGMENT of what the model meant. Closing it would hand an executor a
+///   plausible-looking command that is not the one that was written, and
+///   `ssh_execute` would run it. This must stay an error.
+/// - `{"command": "whoami", "use_sudo": true}` (missing one `}`) — every key
+///   and value is whole and only the wrapper is open. Nothing is guessed by
+///   closing it.
+///
+/// The test is conservative on purpose: the payload must end on a character
+/// that can only appear at the END of a complete value (`"`, `}`, `]`). A
+/// trailing bare token is refused even though it looks finished, because `12`
+/// is what a truncated `1234` looks like and no inspection can tell them apart.
+pub(crate) fn unclosed_containers(raw: &str) -> Option<String> {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut last_significant = '\0';
+
+    for c in raw.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+                last_significant = '"';
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' | '[' => {
+                stack.push(c);
+                last_significant = c;
+            }
+            '}' | ']' => {
+                match (stack.pop(), c) {
+                    (Some('{'), '}') | (Some('['), ']') => {}
+                    // Mismatched or unbalanced: not this failure.
+                    _ => return None,
+                }
+                last_significant = c;
+            }
+            c if c.is_whitespace() => {}
+            other => last_significant = other,
+        }
+    }
+
+    // Stopped inside a string, or inside an escape: genuinely cut.
+    if in_string || escaped {
+        return None;
+    }
+    // Nothing open — it failed for some other reason.
+    if stack.is_empty() {
+        return None;
+    }
+    // Must stop where a complete value stops. A trailing `,` or `:` means the
+    // next value never arrived; a bare token may be half of a longer one.
+    if !matches!(last_significant, '"' | '}' | ']') {
+        return None;
+    }
+
+    Some(
+        stack
+            .iter()
+            .rev()
+            .map(|open| if *open == '{' { '}' } else { ']' })
+            .collect(),
+    )
 }
 
 /// Longest bare token this pass will quote.
@@ -3413,6 +3519,83 @@ pub fn __unused_hashmap_marker() -> HashMap<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The four payloads that arrived short in thread `e186eb4b` (2026-09-16,
+    /// `modal-messages`/GLM-5.3), byte for byte off the session on disk.
+    ///
+    /// Five `call_tool` blocks in one assistant message; the first four each
+    /// lost exactly their outermost `}` and the fifth was whole. Every key and
+    /// value in all four is complete, so closing them guesses nothing — and
+    /// each one was refused with "almost certainly cut off by the output-token
+    /// limit", advice the model could not act on because the payload was not
+    /// long.
+    #[test]
+    fn a_call_missing_only_its_closing_brace_is_repaired() {
+        let cases = [
+            r#"{"name": "mcp_ssh_fastmcp_ssh_list_servers", "arguments": {}"#,
+            r#"{"name": "mcp_ssh_fastmcp_ssh_execute", "arguments": {"server": "alvan-quantum-oracle", "command": "pwd; whoami; hostname"}"#,
+            r#"{"name": "mcp_ssh_fastmcp_ssh_execute", "arguments": {"server": "alvan-quantum-oracle", "command": "whoami", "use_sudo": true}"#,
+            r#"{"name": "mcp_ssh_fastmcp_ssh_file_list", "arguments": {"path": ".", "server": "alvan-quantum-oracle"}"#,
+        ];
+        for raw in cases {
+            assert_eq!(unclosed_containers(raw).as_deref(), Some("}"), "{raw}");
+            let parsed = parse_tool_input(raw);
+            assert!(parsed.is_object(), "not repaired: {raw}");
+            assert!(
+                parsed["name"].as_str().unwrap_or_default().starts_with("mcp_ssh"),
+                "repair changed the call: {parsed}",
+            );
+            assert!(parsed.get("arguments").is_some(), "{parsed}");
+        }
+    }
+
+    /// The case that must NEVER be repaired.
+    ///
+    /// A payload cut mid-value holds a FRAGMENT of what was written. Closing it
+    /// produces a call that parses, looks deliberate, and is not the one the
+    /// model sent — and the first example below is an `ssh_execute` that would
+    /// then run. A trailing bare token is refused for the same reason: `12` is
+    /// indistinguishable from a truncated `1234`.
+    #[test]
+    fn a_call_cut_mid_value_is_never_closed_and_guessed_at() {
+        for raw in [
+            // Mid-string: the command is half-written.
+            r#"{"name": "x", "arguments": {"command": "rm -rf /tmp/ca"#,
+            // Mid-escape.
+            r#"{"name": "x", "arguments": {"path": "C:\\Users\\a\"#,
+            // The value after the colon never arrived.
+            r#"{"name": "x", "arguments": {"server":"#,
+            // A trailing comma promises another value.
+            r#"{"name": "x", "arguments": {"a": "b","#,
+            // A bare token may be half of a longer one.
+            r#"{"name": "x", "arguments": {"timeout": 12"#,
+            r#"{"name": "x", "arguments": {"flag": tru"#,
+        ] {
+            assert_eq!(unclosed_containers(raw), None, "would have been closed: {raw}");
+            assert!(
+                parse_tool_input(raw).is_string(),
+                "a cut payload must stay raw, not become a call: {raw}",
+            );
+        }
+    }
+
+    /// Valid JSON is never touched, and neither is a balanced payload that
+    /// failed for some other reason.
+    #[test]
+    fn a_whole_payload_is_left_alone() {
+        assert_eq!(unclosed_containers(r#"{"a": 1}"#), None);
+        assert_eq!(unclosed_containers(r#"{"a": [1, 2]}"#), None);
+        // Nested: both levels reported, innermost first.
+        assert_eq!(
+            unclosed_containers(r#"{"a": {"b": ["c"]"#).as_deref(),
+            Some("}}"),
+        );
+        // A brace inside a string is text, not structure: the closed string
+        // below leaves exactly one real `{` open, and the unclosed one above
+        // it is a cut payload however many braces it appears to contain.
+        assert_eq!(unclosed_containers(r#"{"a": "}}}}"#), None);
+        assert_eq!(unclosed_containers(r#"{"a": "x{y}""#).as_deref(), Some("}"));
+    }
 
     /// The model name must NEVER decide this, however tempting it looks — and
     /// it no longer needs to, because the answer is the same for all of them.

@@ -50,9 +50,11 @@ import {
   loadCollapsedCategories,
   loadPinnedProviders,
   loadProviderGroupsOpen,
+  loadProviderSelection,
   saveCollapsedCategories,
   savePinnedProviders,
   saveProviderGroupsOpen,
+  saveProviderSelection,
   type ProviderGroupsOpen,
 } from "./provider-pins";
 import {
@@ -2320,7 +2322,11 @@ export const ProvidersSettings: React.FC = () => {
   const imageProviders = useSettingsStore((s) => s.imageProviders);
   const updateModel = useSettingsStore((s) => s.updateModel);
 
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Seeded from the last visit, not null: leaving settings unmounts this whole
+  // page, so a fresh `null` would drop you back on the first row every time.
+  const [activeId, setActiveId] = useState<string | null>(
+    () => loadProviderSelection().providerId,
+  );
 
   // Each rail group is a disclosure, same pattern as the left rail's Projects
   // header: chevron + click to collapse. Persisted, so the sidebar reopens
@@ -2524,12 +2530,31 @@ export const ProvidersSettings: React.FC = () => {
   // Which IMAGE provider the detail pane is showing, kept apart from `activeId`
   // so the language-provider fallback above cannot fight it. Non-null wins the
   // pane; picking any language row clears it.
-  const [activeImageId, setActiveImageId] = useState<string | null>(null);
+  const [activeImageId, setActiveImageId] = useState<string | null>(
+    () => loadProviderSelection().imageProviderId,
+  );
   const activeImage = imageProviders.find((p) => p.id === activeImageId) ?? null;
   const selectProvider = (id: string) => {
     setActiveImageId(null);
     setActiveId(id);
   };
+
+  // Remember what the pane was showing, after the fallback above has resolved
+  // it, so the next visit reopens on the same row. A stored image id whose row
+  // has since been deleted is cleared rather than left pointing at nothing —
+  // otherwise the rail highlights a row that is not there and the pane quietly
+  // shows a language provider instead.
+  useEffect(() => {
+    if (activeImageId && !activeImage) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drop a selection whose row is gone
+      setActiveImageId(null);
+      return;
+    }
+    saveProviderSelection({
+      providerId: selected?.id ?? null,
+      imageProviderId: activeImage?.id ?? null,
+    });
+  }, [selected, activeImage, activeImageId]);
 
   /**
    * Add a provider INTO a category.

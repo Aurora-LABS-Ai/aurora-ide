@@ -274,7 +274,7 @@ export const SilkPlaceholder: React.FC<SilkPlaceholderProps> = ({
     <div
       ref={hostRef}
       className={className ? `agw-silk ${className}` : "agw-silk"}
-      style={{ aspectRatio }}
+      style={{ aspectRatio, "--agw-image-ratio": aspectRatio } as React.CSSProperties}
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}

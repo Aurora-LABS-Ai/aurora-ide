@@ -534,6 +534,7 @@ pub fn run_with_args(cli_args: CliArgs) {
     };
 
     tauri::Builder::default()
+        .on_webview_event(services::composer_drop::on_webview_event)
         // Quit when the last window the user can actually SEE goes away.
         //
         // Tauri keeps the process alive while any window exists, and Aurora
@@ -731,6 +732,11 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_set_pinned,
             // Aurora Chat's memory page.
             commands::chat_memory::chat_memory_list_facts,
+            commands::chat_gallery::chat_gallery_list,
+            commands::chat_gallery::chat_gallery_copy_image,
+            commands::chat_video::chat_video_refresh,
+            commands::chat_video::video_model_catalog,
+            commands::chat_gallery::chat_gallery_thumbnail,
             commands::chat_memory::chat_memory_add_fact,
             commands::chat_memory::chat_memory_update_fact,
             commands::chat_memory::chat_memory_set_fact_pinned,

@@ -235,6 +235,32 @@
   white-space: nowrap;
 }
 
+/* The content measures at its natural height; only the space around it eases.
+   Bottom alignment keeps the active line beside the action row as the top edge
+   opens for an image or another line. `clip` avoids creating a second scroller
+   that native caret visibility could move. Pickers and controls stay outside. */
+.agw-composer-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: clip;
+  transition: height var(--agw-composer-resize-duration, 180ms)
+    cubic-bezier(0.2, 0, 0, 1);
+}
+.agw-composer-body-content {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.agw-root[data-reduce-motion] .agw-composer-body {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-composer-body {
+    transition: none;
+  }
+}
+
 /* ── Attachment pills (referenced files) ──────────────────────────────── */
 .agw-attach-row {
   display: flex;
@@ -270,7 +296,7 @@
      top. Grows further with content up to max-height.
      A variable because the top-selector layout overrides it — see
      `.agw-ce-wrap[data-top-selector]` below. */
-  min-height: var(--agw-ce-min-h, 44px);
+  min-height: max(var(--agw-ce-min-h, 44px), var(--agw-ce-ghost-min-h, 0px));
   max-height: 200px;
   overflow-y: auto;
   outline: none;
@@ -332,10 +358,17 @@
   opacity: 0.72;
   pointer-events: none;
   user-select: none;
-  white-space: pre;
-  /* Appear smoothly instead of popping in. Only fires when the ghost shows
-     (on a typing pause), so it never flickers per keystroke. */
+  white-space: pre-wrap;
+  /* Fade in a new suggestion; continuing the same word stays visible. */
   animation: agw-ghost-in 150ms ease-out;
+}
+.agw-ghost::before {
+  /* A prediction may wrap, but must never pull the user's word with it.
+     Generated content creates the break without adding document text. */
+  content: "\200b";
+}
+.agw-ghost[data-continuing] {
+  animation: none;
 }
 @keyframes agw-ghost-in {
   from {

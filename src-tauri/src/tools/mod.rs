@@ -56,6 +56,10 @@
 
 #![allow(dead_code)]
 
+/// Shared argument reading for the buckets: what to do when a gateway
+/// delivers an argument in a shape the schema did not ask for. Not a bucket —
+/// it registers no tool.
+mod arguments;
 pub mod browser;
 pub mod canvas;
 pub mod code_intel;
@@ -65,6 +69,7 @@ pub mod file_workspace_search;
 /// `generate_image` — Aurora Chat's picture maker. Same arrangement as
 /// [`memory`]: registered here, gated by the chat-mode allow-list.
 pub mod image;
+pub mod video;
 /// `recall` and `remember` — Aurora Chat's memory. Registered like any other
 /// bucket, and kept out of the project modes by the chat-mode allow-list in
 /// `commands::agent_v2::tool_policy` rather than by not registering it.
@@ -134,7 +139,8 @@ pub mod transcript;
 /// Raised 46 -> 49 by the browser bucket's `browser_type`, `browser_wait_for`
 /// and `browser_evaluate`, after twelve real sessions showed the model with
 /// no way to type keystrokes, wait for a condition, or ask the page anything.
-pub const BUILTIN_TOOL_COUNT: usize = 49;
+/// Raised 49 -> 50 by Chat-only native MiniMax video generation and task queries.
+pub const BUILTIN_TOOL_COUNT: usize = 50;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -186,6 +192,7 @@ pub fn register_builtin_tools(
     diagnostics::register(&mut staging);
     memory::register(&mut staging);
     image::register(&mut staging);
+    video::register(&mut staging);
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
@@ -265,11 +272,12 @@ mod tests {
             + diagnostics::TOOL_NAMES.len()
             + memory::TOOL_NAMES.len()
             + image::TOOL_NAMES.len()
+            + video::TOOL_NAMES.len()
     }
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 49);
+        assert_eq!(BUILTIN_TOOL_COUNT, 50);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()
@@ -281,6 +289,7 @@ mod tests {
                 + diagnostics::TOOL_NAMES.len()
                 + memory::TOOL_NAMES.len()
                 + image::TOOL_NAMES.len()
+                + video::TOOL_NAMES.len()
                 + browser::TOOL_NAMES.len(),
             BUILTIN_TOOL_COUNT
         );

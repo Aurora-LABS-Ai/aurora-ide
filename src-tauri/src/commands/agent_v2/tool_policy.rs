@@ -290,6 +290,7 @@ pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
     "remember",
     // Images.
     "generate_image",
+    "generate_video",
     // Asking the user a question is not a capability, it is a conversation.
     "ask_question",
 ];
@@ -311,7 +312,7 @@ pub(super) fn is_chat_mode_tool(name: &str) -> bool {
 /// and write the chat memory index, which carries Aurora Chat conversations
 /// only, so offering them to Build gives the model a memory that is
 /// structurally empty of everything Build ever did.
-pub(super) const CHAT_ONLY_TOOLS: &[&str] = &["recall", "remember"];
+pub(super) const CHAT_ONLY_TOOLS: &[&str] = &["recall", "remember", "generate_video"];
 
 pub(super) fn is_chat_only_tool(name: &str) -> bool {
     CHAT_ONLY_TOOLS.contains(&name)

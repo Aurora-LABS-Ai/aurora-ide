@@ -72,25 +72,10 @@ use crate::api::ReasoningReplay;
 
 /// Attempts at one model call before the turn gives up.
 ///
-/// Three, not one, because a dropped stream was the most common real
-/// failure this runtime saw and every one of them ended a turn the user
-/// then restarted by hand. Three, not more, because each attempt
-/// re-sends the whole conversation, and a failure that survives three
-/// tries is almost never one that a fourth would clear.
-///
-/// Only errors [`ApiError::is_retryable`] admits are counted here — a
-/// rejected request shape or a bad key fails once and stops.
-/// Six, not three. Three attempts spanning three seconds is enough for a
-/// packet loss and nothing else: a gateway rotating a bad upstream, a provider
-/// shedding load, a laptop waking its wifi all take longer than that, and every
-/// one of them used to end the turn and wait for the user to press Retry.
-///
-/// The cost of raising it is bounded and visible. Each wait emits
-/// [`AssistantEvent::PartialReplyDiscarded`], so the user watches the attempts
-/// rather than staring at a frozen window, and the backoff is interruptible, so
-/// Stop lands immediately instead of after the sleep. Six attempts is ~31s of
-/// waiting in the worst case (see [`STREAM_RETRY_BASE_DELAY_MS`]) — past that a
-/// failure is an outage worth reporting, not a blip worth waiting out.
+/// Retryable failures get six attempts. The five waits total 31–38.75 seconds
+/// with jitter unless the provider supplies Retry-After. Stop interrupts each
+/// wait. Only the current model call is replayed, and only if it has not already
+/// executed tools through an open-stream bridge.
 const MAX_STREAM_ATTEMPTS: u32 = 6;
 
 /// One free request rebuild after an endpoint teaches Aurora a lower context
@@ -681,6 +666,15 @@ impl ConversationRuntime {
             // tool bridge.
             let thread_key = session.thread_id.clone();
             let stream_result = loop {
+                let _ = event_sink
+                    .send(AgentEventEnvelope {
+                        turn_id: turn_id.clone(),
+                        seq,
+                        event: AssistantEvent::StreamAttemptStarted,
+                    })
+                    .await;
+                seq = seq.saturating_add(1);
+
                 // Internal event channel: API impl pushes `AssistantEvent`
                 // onto `api_tx`; a forwarder task wraps each in an envelope
                 // and pushes it onto the caller's sink. Rebuilt per attempt,

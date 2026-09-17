@@ -15,7 +15,7 @@ import { CHAT_MODE_TOOLS } from "@/apps/agent/services/runtime/agent-execution-m
  */
 describe("Aurora Chat's dock", () => {
   it("offers only what this side of the app can act on", () => {
-    expect([...CHAT_DOCK_TABS]).toEqual(["canvas", "memory"]);
+    expect([...CHAT_DOCK_TABS]).toEqual(["canvas", "memory", "gallery"]);
   });
 
   it("names nothing that addresses a project", () => {

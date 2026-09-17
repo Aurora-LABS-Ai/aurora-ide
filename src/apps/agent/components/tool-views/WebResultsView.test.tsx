@@ -96,8 +96,20 @@ describe("fetched page", () => {
   /** Otherwise a reader assumes the document broke. */
   it("says the page continues when only part of it was read", () => {
     const html = render({ ...doc, content: "part one", totalChars: 90000, hasMore: true });
-    expect(html).toContain("first part of the page");
-    expect(html).toContain("8 of 90,000 characters");
+    expect(html).toContain("More of this page is available");
+    expect(html).toContain("Characters 1-8 of 90,000");
+  });
+
+  it("reports the final window and counts Unicode characters like Rust", () => {
+    const html = render({ ...doc, offset: 90, totalChars: 93, content: "A\u{1F600}B", hasMore: false });
+    expect(html).toContain("Characters 91-93 of 93");
+    expect(html).not.toContain("first part");
+    expect(html).not.toContain("More of this page");
+  });
+
+  it("keeps the source author and publication date", () => {
+    const html = render({ ...doc, byline: "Research team", published: "2026-09-14" });
+    expect(html).toContain("Research team / 2026-09-14");
   });
 
   it("names a page whose body could not be read", () => {

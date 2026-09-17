@@ -6,6 +6,8 @@ import type {
 import type { AgentExecutionMode } from "@/apps/agent/services/runtime/agent-execution-mode";
 
 export interface AgentCallbacks extends ProviderStreamCallbacks {
+  /** Snapshot committed output before each model-call attempt starts. */
+  onStreamAttemptStarted?: () => void;
   onIterationComplete?: (iteration: number) => void;
   onToolApprovalRequired?: (toolCall: ToolCallRequest) => Promise<boolean>;
   onToolExecutionComplete?: (toolCall: ToolCallRequest, result: string) => void;

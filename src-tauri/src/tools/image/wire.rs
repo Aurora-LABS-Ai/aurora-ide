@@ -80,7 +80,9 @@ pub enum RequestBody {
 
 /// The JSON body of a generation. Identical on both formats today.
 #[must_use]
-pub fn generation_body(_format: ImageApiFormat, call: GenerationCall<'_>) -> Value {
+pub fn generation_body(format: ImageApiFormat, call: GenerationCall<'_>) -> Value {
+    if format == ImageApiFormat::MiniMax { return super::minimax::generation_body(call); }
+    if format == ImageApiFormat::Qwen { return super::qwen::generation_body(call); }
     let mut body = json!({
         "model": call.model,
         "prompt": call.prompt,
@@ -103,6 +105,8 @@ pub fn edit_body(
     source: EditSource<'_>,
 ) -> RequestBody {
     match format {
+        ImageApiFormat::MiniMax => RequestBody::Json(super::minimax::reference_body(call, source)),
+        ImageApiFormat::Qwen => RequestBody::Json(super::qwen::edit_body(call, source)),
         ImageApiFormat::A6api => {
             let mut body = generation_body(format, call);
             // Measured: a URL. A picture Aurora holds only as bytes goes as a
@@ -243,6 +247,7 @@ pub struct ImageResponse {
 /// Why a response was not a picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
+    InvalidRequest(String),
     /// The provider said so, in its own words — whatever the status was.
     Provider {
         status: u16,
@@ -260,6 +265,7 @@ pub enum WireError {
 impl std::fmt::Display for WireError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidRequest(message) => write!(f, "{message}"),
             Self::Provider {
                 status,
                 code,
@@ -456,7 +462,7 @@ pub fn parse_models(format: ImageApiFormat, status: u16, body: &str) -> Result<V
             });
         let include = match format {
             ImageApiFormat::A6api => tagged.then_some(Discovery::Tagged),
-            ImageApiFormat::OpenaiImages => {
+            ImageApiFormat::OpenaiImages | ImageApiFormat::MiniMax | ImageApiFormat::Qwen => {
                 if tagged {
                     Some(Discovery::Tagged)
                 } else if looks_like_an_image_model(&id) {

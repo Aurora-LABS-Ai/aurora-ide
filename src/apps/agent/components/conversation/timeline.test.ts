@@ -120,6 +120,23 @@ describe("a compaction marker read back from a message", () => {
 });
 
 describe("a dropped stream mid-turn", () => {
+  it("rolls back to the attempt boundary even when content merged with an earlier reply", () => {
+    const committed: TimelineEvent[] = [{ kind: "content", id: "c1", text: "Finished earlier." }];
+    const live: TimelineEvent[] = [{ kind: "content", id: "c1", text: "Finished earlier.Partial retry" }];
+    expect(beginReconnect(live, "r1", 1, 6, committed)).toEqual([
+      ...committed, { kind: "reconnect", id: "r1", attempt: 1, maxAttempts: 6 },
+    ]);
+  });
+
+  it("preserves a completed tool with empty output at the attempt boundary", () => {
+    const committed: TimelineEvent[] = [
+      { kind: "content", id: "c1", text: "Ran the command." },
+      { kind: "tool", id: "t1", call: { id: "t1", name: "shell_execute", arguments: "{}", result: "" } },
+    ];
+    expect(beginReconnect([...committed, { kind: "content", id: "c2", text: "Partial" }], "r1", 1, 6, committed))
+      .toEqual([...committed, { kind: "reconnect", id: "r1", attempt: 1, maxAttempts: 6 }]);
+  });
+
   const toolCall = (id: string, result: string | null) => ({
     kind: "tool" as const,
     id,

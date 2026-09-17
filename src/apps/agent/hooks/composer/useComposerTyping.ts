@@ -56,6 +56,7 @@ import {
   type TypingGhost,
 } from "@/apps/agent/adapters/typing-assist";
 import { useAgentTypingStore } from "@/apps/agent/store/composer/useAgentTypingStore";
+import { ComposerGhost } from "./composer-ghost";
 
 /** Word char = letter or in-word apostrophe (mirrors the Rust `is_word_char`). */
 const WORD_CHAR = /[A-Za-z']/;
@@ -166,6 +167,7 @@ export function useComposerTyping(
 
   const ghostElRef = useRef<HTMLSpanElement | null>(null);
   const ghostInfoRef = useRef<TypingGhost | null>(null);
+  const ghostState = useRef(new ComposerGhost());
   const pendingUndoRef = useRef<PendingUndo | null>(null);
   const debounceRef = useRef<number | null>(null);
   const tokenRef = useRef(0);
@@ -205,6 +207,12 @@ export function useComposerTyping(
       (next as ChildNode).remove();
     }
   }, []);
+
+  const resetGhost = useCallback(() => {
+    removeGhost();
+    const el = editorRef.current;
+    if (el) ghostState.current.clear(el);
+  }, [editorRef, removeGhost]);
 
   /** Plain text from the start of the editor to the caret (pills → space). */
   const textBeforeCaret = useCallback((el: HTMLElement): string | null => {
@@ -312,13 +320,15 @@ export function useComposerTyping(
   );
 
   const showGhost = useCallback(
-    (ghost: TypingGhost) => {
+    (ghost: TypingGhost, continuing = false) => {
       const el = editorRef.current;
       if (!el || !ghost.insert) return;
       if (ghostElRef.current) ghostElRef.current.remove();
       const span = document.createElement("span");
       span.className = "agw-ghost";
       span.dataset.ghost = "1";
+      if (continuing) span.dataset.continuing = "true";
+      span.setAttribute("aria-hidden", "true");
       span.contentEditable = "false";
       span.appendChild(document.createTextNode(ghost.insert));
       // Accent "→" accept hint (visual only). Its text counts toward the span's
@@ -372,6 +382,7 @@ export function useComposerTyping(
       }
       ghostElRef.current = span;
       ghostInfoRef.current = ghost;
+      ghostState.current.reserve(el);
     },
     [editorRef],
   );
@@ -435,6 +446,7 @@ export function useComposerTyping(
         // Still valid? Same text, still focused, still at the end.
         if (document.activeElement !== el) return;
         if (textBeforeCaret(el) !== before || !caretAtEnd(el)) return;
+        ghostState.current.remember(before, ghost);
         showGhost(ghost);
       }, GHOST_DEBOUNCE_MS);
     },
@@ -452,9 +464,24 @@ export function useComposerTyping(
     if (!autocorrect && !completion && !nextWord && !learn) return;
 
     const before = textBeforeCaret(el);
-    if (before === null) return;
+    if (before === null) {
+      resetGhost();
+      return;
+    }
 
     if (autocorrect || learn) maybeCorrect(el, before);
+    if (!caretAtEnd(el)) {
+      resetGhost();
+      return;
+    }
+    ghostState.current.sync(el, before);
+    const continued = ghostState.current.continue(before, completion, nextWord);
+    if (continued) {
+      // Reattach before this input can paint. Matching characters (and their
+      // Backspace) need neither another lookup nor another entrance animation.
+      showGhost(continued, true);
+      return;
+    }
     scheduleGhost(el);
   }, [
     editorRef,
@@ -466,6 +493,9 @@ export function useComposerTyping(
     textBeforeCaret,
     maybeCorrect,
     scheduleGhost,
+    caretAtEnd,
+    resetGhost,
+    showGhost,
   ]);
 
   const onKeyDown = useCallback(
@@ -490,7 +520,7 @@ export function useComposerTyping(
         // Word before the one being completed / the space we're predicting after.
         const previous = splitTail(before).previous;
         e.preventDefault();
-        removeGhost();
+        resetGhost();
         insertText(ghost.insert);
         if (learn) learnWord(previous, ghost.word);
         return true;
@@ -544,37 +574,71 @@ export function useComposerTyping(
       // what guarantees Backspace deletes the user's character (never the
       // ghost-as-a-unit) and typed characters can't land after the ghost.
       // Pure modifiers keep it; Ctrl/Cmd+C is a read, not an edit.
-      if (ghostInfoRef.current && !PURE_MODIFIER_KEYS.has(e.key)) {
+      if (!PURE_MODIFIER_KEYS.has(e.key)) {
         const isCopy = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c";
-        if (!isCopy) removeGhost();
+        if (!isCopy) {
+          const editsWord =
+            (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) ||
+            e.key === "Backspace" || e.key === "Delete";
+          if (editsWord) removeGhost();
+          else resetGhost();
+        }
       }
       return false;
     },
-    [editorRef, caretAtEnd, textBeforeCaret, removeGhost, replaceBeforeCaret, learn],
+    [editorRef, caretAtEnd, textBeforeCaret, removeGhost, resetGhost, replaceBeforeCaret, learn],
   );
 
   const clearGhost = useCallback(() => {
-    removeGhost();
+    resetGhost();
     pendingUndoRef.current = null;
-  }, [removeGhost]);
+  }, [resetGhost]);
 
   const isProgrammaticEdit = useCallback(() => programmaticRef.current, []);
 
-  useEffect(() => () => removeGhost(), [removeGhost]);
+  useEffect(() => {
+    resetGhost();
+    return resetGhost;
+  }, [completion, nextWord, resetGhost]);
 
   // A mouse click moves the caret without a keydown — a ghost left mid-text
   // while the caret is elsewhere is a lie about what → would do. Drop it the
   // moment the caret is no longer at the end.
   useEffect(() => {
     const onSelectionChange = () => {
-      if (!ghostElRef.current) return;
       const el = editorRef.current;
       if (!el) return;
-      if (!caretAtEnd(el)) removeGhost();
+      if (!caretAtEnd(el)) resetGhost();
     };
     document.addEventListener("selectionchange", onSelectionChange);
     return () => document.removeEventListener("selectionchange", onSelectionChange);
-  }, [editorRef, caretAtEnd, removeGhost]);
+  }, [editorRef, caretAtEnd, resetGhost]);
+
+  // Paste, cut, drop and mobile editing need the same protection as keydown.
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    el.addEventListener("beforeinput", removeGhost);
+    return () => el.removeEventListener("beforeinput", removeGhost);
+  }, [editorRef, removeGhost]);
+
+  // A dock resize or text-scale change invalidates the old line measurement.
+  useEffect(() => {
+    const el = editorRef.current;
+    if (!el) return;
+    let width = el.clientWidth;
+    let lineHeight = getComputedStyle(el).lineHeight;
+    const observer = new ResizeObserver(() => {
+      const nextLineHeight = getComputedStyle(el).lineHeight;
+      if (width === el.clientWidth && lineHeight === nextLineHeight) return;
+      width = el.clientWidth;
+      lineHeight = nextLineHeight;
+      ghostState.current.releaseHeight(el);
+      if (ghostElRef.current) ghostState.current.reserve(el);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [editorRef]);
 
   // IME composition: the text is not committed until compositionend — running
   // corrections mid-composition garbles the composed string.
@@ -583,7 +647,7 @@ export function useComposerTyping(
     if (!el) return;
     const start = () => {
       composingRef.current = true;
-      removeGhost();
+      resetGhost();
     };
     const end = () => {
       composingRef.current = false;
@@ -594,7 +658,7 @@ export function useComposerTyping(
       el.removeEventListener("compositionstart", start);
       el.removeEventListener("compositionend", end);
     };
-  }, [editorRef, removeGhost]);
+  }, [editorRef, resetGhost]);
 
   // Persist any recently-learned words before the window goes away (the engine
   // otherwise only auto-saves every 40 updates).

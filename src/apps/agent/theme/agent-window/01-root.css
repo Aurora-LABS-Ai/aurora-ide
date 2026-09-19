@@ -45,6 +45,39 @@
   --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
   --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);
 
+  /* ── The focus mark ──────────────────────────────────────────────────────
+   * ONE shadow for every keyboard-focus ring in the window. Rules say
+   * `box-shadow: var(--agw-focus-ring)` and never spell the geometry out.
+   *
+   * This exists because three spellings had grown side by side — `0 0 0 2px`
+   * outset, `inset 0 0 0 2px`, and `inset 0 0 0 1px` — so whether tabbing onto
+   * a control drew a halo around it or a stroke inside it depended on which
+   * partial the control happened to live in. There was no rule to follow, only
+   * whatever the neighbouring block did.
+   *
+   * INSET is the one to standardise on. An outset ring is drawn OUTSIDE the
+   * border box, which is not space the control owns: on the first row of a
+   * popover it is clipped by the panel's padding, on a full-width rail row it
+   * is cut off at both edges, and in a tight icon strip it lands on the
+   * neighbour. Inset always has room, because the control is at least as big as
+   * its own ring.
+   *
+   * 2px rather than 1px: at 1px the ring is hard to separate from a resting
+   * border at a glance, and this has to survive being the ONLY focus indicator
+   * on controls that have no border of their own.
+   *
+   * It stays `--agw-ring`, so Appearance → Focus ring still colours it.
+   *
+   * THREE controls are exempt, all for one reason: a small FILLED shape cannot
+   * show a ring inside itself, because the ring lands on its own fill. Each
+   * says so at its own rule and each draws OUTSIDE instead.
+   *   `.agw-set-btn[data-variant="primary"]`  accent-filled pill
+   *   `.agw-send`                             the filled round send disc
+   *   `.agw-bud-range::-webkit-slider-thumb`  a ~12px round thumb
+   * `appearance-token-coverage.test.ts` holds that list, so a fourth exemption
+   * has to be argued for rather than simply written. */
+  --agw-focus-ring: inset 0 0 0 2px var(--agw-ring);
+
   /* The PAINT aliases for the frame. Everything that fills the rail/dock tier
    * must use these, never --agw-rail / --agw-dock directly: the translucent
    * option re-derives the paint from the user's chosen colour instead of
@@ -103,6 +136,23 @@
    * popover (#2e2e2e) — the brighter the surface, the weaker it looks. The
    * popover family compensates below. */
   --agw-hover-paint: var(--agw-hover);
+
+  /* The PRESSED fill, one step past hover. Mixing a little foreground into the
+   * hover fill deepens it in light AND dark, because text is always the
+   * high-contrast pole — so one expression works under any palette the user
+   * picks, which a fixed darker colour does not.
+   *
+   * An alias because the same color-mix was being retyped at every control that
+   * bothered to have a press at all, and only 12 of 146 clickable families did.
+   * A control with a hover fill and no press answers a click with nothing until
+   * its result lands, which on anything slow reads as "the click missed" and
+   * gets clicked again.
+   *
+   * Re-declared inside the popover family below for the same reason
+   * `--agw-hover-paint` is: a var() inside a custom property resolves where the
+   * property is DECLARED, so this one captures the ROOT hover value and would
+   * ignore the popover's amplified one. */
+  --agw-press-paint: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
 
   /* ── Chrome type scale ───────────────────────────────────────────────────
    * Six sizes for the window's CHROME (12/13/14/15/16/17). The half-pixel
@@ -391,11 +441,14 @@
    * throw the pill to the right on every press. */
   transform: translateX(-50%) scale(0.97);
 }
+/* Keeps its own elevation shadow and adds the shared focus mark. An inset ring
+   composes with an outer shadow cleanly; the outset one it replaced sat
+   between the pill and its own shadow and read as a second, lighter edge. */
 .agw-jumplatest:focus-visible {
   outline: none;
   box-shadow:
     0 6px 18px rgb(0 0 0 / 28%),
-    0 0 0 2px var(--agw-ring);
+    var(--agw-focus-ring);
 }
 .agw-jumplatest-label {
   white-space: nowrap;

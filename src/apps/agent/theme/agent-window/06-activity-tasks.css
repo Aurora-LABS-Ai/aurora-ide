@@ -91,64 +91,49 @@
 }
 
 /* ── Composer mic (speech-to-text) ────────────────────────────────────
- * Fixed-size live waveform strip shown while recording. The canvas also gets
- * explicit inline dimensions so it can never balloon to its 300×150 default.
- * The mic button turns danger-red (becomes a Stop) while recording. */
-/* Recording visualizer — an "aurora" shimmer bar. A light sweeps through a
-   slim accent track continuously (so it reads as actively listening), and the
-   whole bar brightens, swells, and glows in response to the live mic level fed
-   in as `--level` (0..1) by useAgentSpeech. */
-.agw-mic-wave {
-  --level: 0;
-  flex: 0 0 auto;
-  width: 104px;
-  height: 14px;
-  border-radius: var(--agw-radius-pill);
-  position: relative;
-  overflow: hidden;
-  box-sizing: border-box;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--agw-accent) 14%, transparent),
-    color-mix(in srgb, var(--agw-accent) calc(30% + var(--level) * 42%), transparent),
-    color-mix(in srgb, var(--agw-accent) 14%, transparent)
-  );
-  box-shadow: 0 0 calc(2px + var(--level) * 11px)
-    color-mix(in srgb, var(--agw-accent) calc(18% + var(--level) * 46%), transparent);
-  transform: scaleY(calc(1 + var(--level) * 0.5));
-  transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
-}
-.agw-mic-wave::before {
-  content: "";
+ * The recording visualiser is curtains of light hanging inside the composer's
+ * top edge — see `components/composer/ComposerAurora.tsx`, which owns every
+ * pixel of it on a canvas. Only the placement is CSS.
+ *
+ * It replaced a 104×14 shimmer pill that sat beside the mic button. That bar
+ * swept a white highlight across itself on a CSS keyframe every 1.7s whether
+ * or not anyone was speaking, so the brightest thing on it was unrelated to
+ * your voice and silence looked identical to talking.
+ *
+ * The mic button still turns danger-red (becomes a Stop) while recording. */
+.agw-composer-aurora {
   position: absolute;
   inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--agw-accent) 42%, #ffffff) 42%,
-    #ffffff 50%,
-    color-mix(in srgb, var(--agw-accent) 42%, #ffffff) 58%,
-    transparent
-  );
-  filter: blur(1.5px);
-  opacity: calc(0.45 + var(--level) * 0.55);
-  transform: translateX(-60%);
-  animation: agw-mic-sweep 1.7s linear infinite;
-  mix-blend-mode: screen;
+  /* Above the composer's fill, below its content — the band, the body and the
+     action row are lifted to `z-index: 1` in `13-composer-input.css` to make
+     that gap. Not a negative index: that would resolve against
+     `.agw-composer`'s stacking context and hide the curtain behind the
+     composer's own background. */
+  z-index: 0;
+  overflow: hidden;
+  /* Matches the surface so the rays cannot spill past its rounded corners.
+     The surface sets its radius inline (16px, or square-topped when the task
+     panel is docked above it), so this follows with `inherit`. */
+  border-radius: inherit;
+  pointer-events: none;
 }
-@keyframes agw-mic-sweep {
-  to {
-    transform: translateX(160%);
-  }
+.agw-composer-aurora canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
-@media (prefers-reduced-motion: reduce) {
-  .agw-mic-wave::before {
-    animation-duration: 3.4s;
-  }
-}
+/* Recording: the glyph alone, no plate.
+ *
+ * It used to carry a 14%-red rounded fill behind a 13px stop icon. The `stop`
+ * glyph is a 10-unit rect in a 24-unit box, so 13px drew a 5.4px square inside
+ * a 28px button — a speck sitting on a red tile, where the tile read as the
+ * control and the actual icon read as a smudge on it.
+ *
+ * Bare, the colour does the work and the glyph is the control. Hover still
+ * paints `--agw-hover` from `.agw-icon-btn`, so the button has not lost its
+ * feedback — it has lost a permanent background that was never a state. */
 .agw-icon-btn[data-recording] {
   color: var(--agw-removed);
-  background: color-mix(in srgb, var(--agw-removed) 14%, transparent);
 }
 
 /* ── Docked task panel (todo_write checklist) ─────────────────────────
@@ -208,7 +193,7 @@
   outline: none;
 }
 .agw-bgtask-open:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
   border-radius: var(--agw-radius-sm);
 }
 /* ONE line, clipped.
@@ -275,7 +260,7 @@
 }
 .agw-bgtask-stop:focus-visible,
 .agw-bgtask-x:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* The unfolded output carries no surface of its own.
  *
@@ -349,7 +334,7 @@
 }
 .agw-tasks-toggle:focus-visible,
 .agw-tasks-x:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-tasks-title {
   flex: 1 1 auto;
@@ -529,7 +514,7 @@
   background: color-mix(in srgb, var(--agw-text) 12%, transparent);
 }
 .agw-taskind:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-taskind-count {
   font-size: var(--agw-fs-label);
@@ -611,7 +596,7 @@
   background: var(--agw-hover-paint);
 }
 .agw-ctx-ring:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Surface, border and shadow come from the shared popover-family rule above —
  * this only sets what makes the context card its own thing (tighter radius,

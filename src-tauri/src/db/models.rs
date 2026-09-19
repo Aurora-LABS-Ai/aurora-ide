@@ -531,6 +531,21 @@ pub struct AppSettings {
     pub title_maker_api_key: String,
     #[serde(default)]
     pub title_maker_model: String,
+    /// Local title model, when `title_maker_mode == "local"`. Empty means
+    /// "reuse the prompt-refine model", which is what local mode has always
+    /// done — so an existing install keeps working untouched. Setting it points
+    /// titling at its own GGUF while both features keep sharing ONE llama.cpp
+    /// folder, which stays configured in prompt refine.
+    #[serde(default)]
+    pub title_maker_local_model: String,
+    /// Chat format for [`Self::title_maker_local_model`] — one of the
+    /// `ChatFormat` wire names (`"auto"`, `"model-template"`, `"chatml"`,
+    /// `"chatml-no-think"`, `"raw"`). Empty means `"auto"`. A model path
+    /// without its format is only half a setting: the two measured models here
+    /// need OPPOSITE formats, and picking the wrong one returns fused
+    /// nonsense or crashes llama-completion outright.
+    #[serde(default)]
+    pub title_maker_local_chat_format: String,
     /// How far outside the open project the agent's file tools may reach:
     /// `"workspace"`, `"read"`, or `"full"`. Empty means "not chosen yet", in
     /// which case [`Self::allow_outside_workspace`] below still decides.
@@ -650,6 +665,8 @@ impl Default for AppSettings {
             title_maker_base_url: String::new(),
             title_maker_api_key: String::new(),
             title_maker_model: String::new(),
+            title_maker_local_model: String::new(),
+            title_maker_local_chat_format: String::new(),
             workspace_access: String::new(),
             allow_outside_workspace: false,
             transcript_chapters: false,
@@ -681,7 +698,7 @@ impl Default for AppSettings {
             fireworks_account_id: String::new(),
             removed_provider_ids: Vec::new(),
             speech_enabled: false,
-            speech_engine: "qwen3-rust".to_string(),
+            speech_engine: "crispasr-gguf".to_string(),
             speech_runtime_path: String::new(),
             speech_model_path: String::new(),
             speech_backend: "auto".to_string(),

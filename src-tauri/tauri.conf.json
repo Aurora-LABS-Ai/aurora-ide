@@ -49,7 +49,6 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "runtime/onnxruntime/*.dll": "",
       "resources/typing-assist/*.txt": "typing-assist/"
     },
     "externalBin": [

@@ -51,7 +51,7 @@
   color: var(--agw-text);
 }
 .agw-rail-section-toggle:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-rail-sort {
   flex-shrink: 0;
@@ -74,7 +74,7 @@
   color: var(--agw-text);
 }
 .agw-rail-sort:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Collapse / expand all projects — icon-only sibling of the sort button. */
 .agw-rail-collapse-all {
@@ -100,7 +100,7 @@
   color: var(--agw-text);
 }
 .agw-rail-collapse-all:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Project row — a container holding the main (expand) button + a hover pencil. */
@@ -136,11 +136,25 @@
 /* Right-side meta on a project row: the chat-count badge at rest, swapping to
    the relative last-active time on hover (full date lives in the row tooltip).
    Single fixed slot so the row never reflows between the two. */
+/* The count and the age are STACKED IN ONE GRID CELL, both always in flow, and
+ * only their visibility swaps.
+ *
+ * They used to toggle `display`, which made this box as wide as whichever one
+ * was showing — "49" at rest, "2 days ago" on hover. The name beside it is
+ * `flex: 1`, so the box growing took that width away from the title, which
+ * re-truncated and visibly jumped sideways the instant the pointer arrived.
+ * Every project row twitched on hover, and the longer the title the further it
+ * moved.
+ *
+ * One cell holding both means the track is sized to the WIDER of the two at all
+ * times, so the swap costs no layout at all and the title never moves. The
+ * reserved width is the price, and it is a few characters at the far right of a
+ * row that is mostly empty there anyway. */
 .agw-rail-project-meta {
   flex-shrink: 0;
-  display: inline-flex;
+  display: grid;
   align-items: center;
-  justify-content: flex-end;
+  justify-items: end;
   min-width: 20px;
   margin-left: 6px;
   font-size: var(--agw-fs-label);
@@ -148,23 +162,39 @@
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-subtle);
 }
-.agw-rail-project-count {
-  display: inline-flex;
-}
+.agw-rail-project-count,
 .agw-rail-project-age {
-  display: none;
+  grid-area: 1 / 1;
   white-space: nowrap;
+}
+/* `visibility`, never `display` — a hidden grid item still sizes its track,
+   which is the whole mechanism. */
+.agw-rail-project-age {
+  visibility: hidden;
 }
 /* On row hover, reveal the relative time in place of the count. */
 .agw-rail-project:hover .agw-rail-project-age {
-  display: inline-flex;
+  visibility: visible;
 }
 .agw-rail-project:hover .agw-rail-project-count {
-  display: none;
+  visibility: hidden;
 }
-/* Stale projects (untouched ≥ 30 days) recede at rest, full strength on hover. */
+/* Stale projects (untouched ≥ 30 days) recede at rest, full strength on hover.
+ *
+ * COLOUR, not opacity. An element at opacity < 1 is composited, and composited
+ * text in Chromium drops from subpixel to grayscale antialiasing — so a stale
+ * row was rasterised one way at rest and the other way on hover, and its title
+ * visibly shivered as the pointer arrived and left. Same defect the sliding
+ * label had (`39-scrolling-label.css`), same cause.
+ *
+ * Dimming the ink directly gets the identical recession with no layer. The meta
+ * sets its own colour, so it has to be dimmed alongside rather than inheriting
+ * the way it did under opacity. */
 .agw-rail-project[data-stale]:not(:hover) .agw-rail-project-main {
-  opacity: 0.6;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-project[data-stale]:not(:hover) .agw-rail-project-meta {
+  color: color-mix(in srgb, var(--agw-text-subtle) 62%, transparent);
 }
 .agw-rail-project-main:hover {
   color: var(--agw-text);
@@ -173,7 +203,7 @@
   color: var(--agw-text);
 }
 .agw-rail-project-main:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-rail-project-caret {
   flex-shrink: 0;
@@ -214,7 +244,7 @@
 }
 .agw-rail-newchat:focus-visible {
   opacity: 1;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Nested chats under an open project — indented with a quiet guide line. */
 .agw-rail-chats {
@@ -252,7 +282,7 @@
   color: var(--agw-text);
 }
 .agw-rail-scope:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Home ghost wordmark — the new-chat landing brands itself with a giant
@@ -290,6 +320,10 @@
 
   position: relative; /* containing block for the pool + floor shadow */
   z-index: 0; /* own stacking context: they can't slip behind ancestor paints */
+  /* The one place in the window a DISPLAY face earns its keep: 248px, six
+     glyphs, nobody reads it. Falls back to the UI font, which is what the
+     token ships as. */
+  font-family: var(--agw-font-display, var(--agw-font-ui));
   font-size: min(248px, 31cqi);
   font-weight: var(--agw-fw-display);
   letter-spacing: -0.03em;
@@ -429,7 +463,7 @@
 .agw-projsw:focus-visible {
   outline: none;
   background: var(--agw-surface);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Same yield order as the menu rows: the path shrinks to nothing before the
    project name loses a character. */
@@ -554,9 +588,22 @@
   cursor: pointer;
 }
 /* Keyboard and pointer share one highlight — the active row is the same row
- * whichever input is driving, so there is never a second, competing cursor. */
+ * whichever input is driving, so there is never a second, competing cursor.
+ *
+ * DERIVED from the text colour, not a literal. This was `#ffffff0f`, white at
+ * 6%, which is a visible highlight on the dark popover and NOTHING on Daylight
+ * (white at 6% over a white menu), so the project menu and the `+` menu built
+ * on it had no highlight at all in the light theme — neither hover nor the
+ * keyboard cursor. `--agw-state-selected` is a text mix, and text is the
+ * high-contrast pole in either appearance. */
 .agw-projmenu-row[data-active] {
-  background: #ffffff0f;
+  background: var(--agw-state-selected);
+}
+/* Pressed, one step past the highlight. Derived from the SELECTED fill rather
+   than `--agw-press-paint`, because this row's resting highlight is
+   `--agw-state-selected` and a press has to deepen whatever it is sitting on. */
+.agw-projmenu-row:active {
+  background: color-mix(in srgb, var(--agw-state-selected) 80%, var(--agw-text) 20%);
 }
 .agw-projmenu-row[data-current] .agw-projmenu-name {
   color: var(--agw-accent);
@@ -696,6 +743,6 @@
 }
 .agw-suggestion:focus-visible {
   border-radius: var(--agw-radius-sm);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 

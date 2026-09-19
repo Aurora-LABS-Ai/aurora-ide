@@ -102,7 +102,7 @@
   color: var(--agw-text);
 }
 .agw-prov-group-label:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* The header's own identity: a hairline runs from the label to the count, so
    the row reads as a section separator rather than loose text on the rail.
@@ -497,7 +497,7 @@
 /* Pressed (after [data-active] so selecting an already-active row still
    acknowledges the click with a deeper shade). */
 .agw-prov-item:active {
-  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
 }
 .agw-prov-item-hit {
   position: absolute;
@@ -511,7 +511,7 @@
   outline: none;
 }
 .agw-prov-item-hit:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Per-row pin — hidden until row hover, pinned rows keep it shown. The same
    affordance as the left rail's chat pin, lifted above the hit layer so it
@@ -543,7 +543,7 @@
 }
 .agw-prov-pin:focus-visible {
   opacity: 1;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* A pinned provider shows a filled accent tack that stays visible. */
 .agw-prov-pin[data-on] {
@@ -1088,7 +1088,7 @@
   background: color-mix(in srgb, var(--agw-canvas) 92%, var(--agw-text) 8%);
 }
 .agw-csel-trigger:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-csel-label {
   min-width: 0;
@@ -1127,11 +1127,11 @@
   color: var(--agw-text);
 }
 .agw-csel-item:active {
-  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
   color: var(--agw-text);
 }
 .agw-csel-item:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-csel-item[data-active] {
   color: var(--agw-text);
@@ -1179,7 +1179,7 @@
   color: var(--agw-text);
 }
 .agw-composer-pill:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Active while its popover is open — reads as connected to the menu, tinted
    FROM the composer surface so the pill stays in the composer's color family. */

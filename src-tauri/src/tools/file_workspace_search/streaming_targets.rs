@@ -50,22 +50,34 @@ pub const FIELD: &str = "affected_paths";
 pub const LEGACY_FIELD: &str = "target_paths";
 
 /// The ordering rule, in the words the model reads. One sentence, both tools.
+///
+/// It said "every path this call will touch" until 2026-09-19. "Touch" reads as
+/// "affect", and a model reading it that way lists files the edit has
+/// consequences for rather than files the edit writes. Measured in thread
+/// `9fcb44b1`: three edits, all in `use-run-manager.ts`, with `run-panel.tsx`
+/// listed alongside because exporting a type there fixed its import. Two names,
+/// no per-item `path`, and the batch was refused as ambiguous — over a file
+/// that was never going to be written at all.
 pub const RULE: &str = "ALWAYS emit `affected_paths` FIRST, before any file \
-                        content, listing every path this call will touch (also \
-                        when that is a single file). The interface names the \
-                        files being changed from this field while the rest of \
-                        the arguments are still streaming, so emitting it late \
-                        leaves the reader watching an unlabelled row.";
+                        content, listing every file this call WRITES (also when \
+                        that is a single file). Only files this call writes — \
+                        never one the change merely affects elsewhere. The \
+                        interface names the files being changed from this field \
+                        while the rest of the arguments are still streaming, so \
+                        emitting it late leaves the reader watching an \
+                        unlabelled row.";
 
 /// The JSON Schema fragment. Splice it in as the first property.
 pub fn property() -> Value {
     json!({
         "type": "array",
         "items": { "type": "string" },
-        "description": "Streaming UI metadata: every file path this call will \
-                        touch, including when there is only one. Emit it FIRST, \
-                        before path/content/old_string/new_string/edits. It does \
-                        not change which files are written."
+        "description": "Streaming UI metadata: every file this call WRITES, \
+                        including when there is only one — not files the change \
+                        affects elsewhere. Emit it FIRST, before \
+                        path/content/old_string/new_string/edits. It does not \
+                        choose which files are written: `path` does that, and in \
+                        a batch each `edits` item's own `path` does."
     })
 }
 
@@ -99,5 +111,34 @@ mod tests {
     fn the_rule_names_the_field_it_is_about() {
         assert!(RULE.contains(FIELD));
         assert_eq!(property()["items"]["type"], "string");
+    }
+
+    /// The field is for files this call WRITES. Describing it as files the call
+    /// "touches" invites the reading that lost thread `9fcb44b1` a request: a
+    /// file that only needed recompiling was listed beside the one being
+    /// edited, which made a single-file batch look like a two-file one.
+    #[test]
+    fn the_field_asks_for_files_written_not_files_affected() {
+        let description = property()["description"].as_str().unwrap().to_string();
+        for text in [RULE, description.as_str()] {
+            assert!(
+                text.contains("WRITES") || text.contains("writes"),
+                "the field must ask for what it writes: {text}"
+            );
+            assert!(
+                !text.contains("touch"),
+                "\"touch\" reads as \"affect\", which is the mistake: {text}"
+            );
+        }
+    }
+
+    /// The description may say where the file does NOT come from, but it must
+    /// also say where it DOES — a model told only "this is not the field" has
+    /// nowhere to go.
+    #[test]
+    fn the_description_names_the_fields_that_do_choose_the_file() {
+        let description = property()["description"].as_str().unwrap().to_string();
+        assert!(description.contains("`path`"), "got: {description}");
+        assert!(description.contains("`edits`"), "got: {description}");
     }
 }

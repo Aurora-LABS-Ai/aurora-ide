@@ -24,9 +24,15 @@
   outline: none;
   /* The disc is CONSTANT — the same muted fill whether empty or typed, it never
    * changes. Only the icon reacts (dim when empty → lit when there's text, see
-   * below). */
+   * below).
+   *
+   * Both icon colours come from the FOREGROUND ramp, which is the ramp that is
+   * defined against this disc. `--agw-text-subtle` is the quietest step and
+   * `--agw-text` the loudest, so "off" is always dimmer than "on" no matter
+   * what colours are in play. See the enabled rule below for what this replaced
+   * and why it could invert. */
   background: var(--agw-state-selected);
-  color: var(--agw-text-muted);
+  color: var(--agw-text-subtle);
   cursor: pointer;
   transition: opacity 0.14s ease, color 0.2s ease,
     transform 0.14s cubic-bezier(0.2, 0, 0, 1);
@@ -38,7 +44,12 @@
 }
 .agw-send:focus-visible {
   /* Gap ring in the COMPOSER fill (what the disc actually sits on), then the
-   * focus colour — so the ring reads as separated rather than fused. */
+   * focus colour — so the ring reads as separated rather than fused.
+   *
+   * Exempt from --agw-focus-ring, on purpose: the disc is small and filled at
+   * max contrast, so an inset ring would be painted onto its own fill. It has
+   * clear room around it inside the composer, which is exactly the condition
+   * an outset ring needs and a rail row or a popover row does not have. */
   box-shadow: 0 0 0 2px var(--agw-composer-surface), 0 0 0 4px var(--agw-ring);
 }
 .agw-send:not(:disabled):active {
@@ -98,20 +109,32 @@
   cursor: not-allowed;
 }
 
-/* Text present → the send arrow lights up: the ON-ACCENT colour (the
- * high-contrast glyph colour, not the mid-luminance accent which reads muddy on
- * thin strokes) plus a soft glow, so typing visibly switches the icon on. The
- * DISC does nothing. Scoped to the send arrow (not the streaming stop button).
- * Transitions so it eases on. */
+/* Text present → the send arrow lights up to the window's full foreground, plus
+ * a soft glow, so typing visibly switches the icon on. The DISC does nothing.
+ * Scoped to the send arrow (not the streaming stop button).
+ *
+ * `--agw-text`, NOT `--agw-on-accent`. On-accent is the label colour for text
+ * sitting on an ACCENT FILL, and this disc is not accent-filled — it is
+ * `--agw-state-selected`, a mix of the foreground. Borrowing that token worked
+ * only by coincidence: it ships white in both built-in themes, which reads
+ * correctly on the dark disc and washes out to near-invisible on the light one,
+ * where the disc is already near-white.
+ *
+ * Worse, "On-accent text" is a token the user can set in Appearance → Shared
+ * surfaces. Anything dark there turned this icon dark at exactly the moment it
+ * is supposed to be brightest, so the empty state read LOUDER than the ready
+ * state — the states inverted. Reading the foreground ramp instead means the
+ * enabled icon is the highest-contrast colour available on this surface by
+ * definition, in any theme and under any customization. */
 .agw-send:not(.agw-send-stream) svg {
   transition: filter 0.2s ease;
 }
 .agw-send:not(.agw-send-stream):not(:disabled) {
-  color: var(--agw-on-accent);
+  color: var(--agw-text);
 }
 .agw-send:not(.agw-send-stream):not(:disabled) svg {
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-on-accent) 55%, transparent))
-    drop-shadow(0 0 9px color-mix(in srgb, var(--agw-on-accent) 30%, transparent));
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-text) 55%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--agw-text) 30%, transparent));
 }
 
 /* ── @ and / picker ────────────────────────────────────────────────────
@@ -183,6 +206,23 @@
      UP onto the panel behind it, not sit on its own. */
   box-shadow: var(--agw-card-lift);
   transition: box-shadow 0.17s cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* The recording visualiser paints between this box's fill and its content, so
+   the content has to be lifted off the floor for it to have somewhere to go.
+ *
+ * This is why the surface itself must NOT become a stacking context — the
+ * drag-drop underlight (`26-attachments-drag.css`) is a `z-index: -1` pseudo
+ * that deliberately resolves against `.agw-composer`'s context so it paints
+ * BEHIND this element's background and only its spill past the edges shows.
+ * `isolation: isolate` here would pull it inside and turn a soft underglow
+ * into a visible plate. Raising the three children costs nothing and leaves
+ * that effect exactly as it was. */
+.agw-composer-band,
+.agw-composer-body,
+.agw-composer-actions-row {
+  position: relative;
+  z-index: 1;
 }
 .agw-composer:has(.agw-mention) .agw-composer-surface {
   box-shadow: 0 -7px 18px -8px color-mix(in srgb, var(--agw-overlay) 80%, transparent);
@@ -522,7 +562,7 @@
 }
 .agw-qp-opt:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-qp-opt.is-selected {
   border-color: color-mix(in srgb, var(--agw-accent) 50%, transparent);

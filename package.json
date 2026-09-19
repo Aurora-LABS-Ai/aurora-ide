@@ -8,7 +8,6 @@
     "build": "tsc -b && vite build",
     "icons:sync": "node scripts/sync-material-icons.mjs",
     "crispasr:package": "node scripts/package-crispasr-runtime.mjs",
-    "cuda:check": "node scripts/tauri-cuda.mjs check",
     "icon-pack:build": "node scripts/build-icon-pack.mjs",
     "setup:onnx": "node scripts/setup-onnxruntime.mjs",
     "lint": "eslint .",
@@ -18,9 +17,7 @@
     "test:coverage": "vitest --run --coverage",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev-stable.mjs",
-    "tauri:dev:cuda": "node scripts/tauri-cuda.mjs dev",
-    "tauri:build": "tauri build",
-    "tauri:build:cuda": "node scripts/tauri-cuda.mjs build"
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",

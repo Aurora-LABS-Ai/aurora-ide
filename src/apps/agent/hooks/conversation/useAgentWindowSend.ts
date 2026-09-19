@@ -55,11 +55,12 @@ import {
   IMAGE_TOKEN_COST,
   type ChatMessageForCount,
 } from "@/apps/agent/services/runtime/token-service";
-import { runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
+import { asChatFormat, runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { imageModelFromSelection } from "@/apps/agent/services/providers/image-providers";
 import { runDirectImageTurn } from "./direct-image-turn";
 import {
+  refineConfig,
   refinePathsConfigured,
   replySuggestionsReady,
   useAgentRefineStore,
@@ -517,11 +518,19 @@ async function maybeGenerateTitle(threadId: string, firstMessage: string): Promi
     let title: string;
     if (s.titleMakerMode === "local") {
       const refine = useAgentRefineStore.getState();
-      if (!refinePathsConfigured(refine)) return;
+      // The llama.cpp FOLDER is always the shared one from prompt refine —
+      // there is one runtime on the machine. Only the model can differ.
+      if (!refine.llamaDir.trim()) return;
+      const ownModel = s.titleMakerLocalModel.trim();
+      if (!ownModel && !refinePathsConfigured(refine)) return;
       title = await runLocalTitle(`title_${threadId}`, firstMessage, {
-        llamaDir: refine.llamaDir,
-        modelPath: refine.modelPath,
-        device: refine.device,
+        ...refineConfig(refine),
+        ...(ownModel
+          ? {
+              modelPath: ownModel,
+              chatFormat: asChatFormat(s.titleMakerLocalChatFormat),
+            }
+          : {}),
       });
     } else {
       const baseUrl = s.titleMakerBaseUrl.trim();
@@ -592,11 +601,12 @@ function generateSuggestionsFrom(
     .find((m) => m.role === "user" && (m.content ?? "").trim());
   const userText = (lastUser?.content ?? "").trim();
 
-  void runReplySuggestions(`suggest_${threadId}_${Date.now()}`, userText, text, {
-    llamaDir: refine.llamaDir,
-    modelPath: refine.modelPath,
-    device: refine.device,
-  })
+  void runReplySuggestions(
+    `suggest_${threadId}_${Date.now()}`,
+    userText,
+    text,
+    refineConfig(refine),
+  )
     .then((suggestions) => {
       // A newer turn owns the conversation now — these chips describe a
       // message that's no longer the latest.

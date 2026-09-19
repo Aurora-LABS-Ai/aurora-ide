@@ -242,4 +242,117 @@ describe("agent appearance token coverage", () => {
     const icons = readFileSync(`${cwd}/src/apps/agent/shared/AgentIcon.tsx`, "utf8");
     expect(icons).toContain('"eye-off"');
   });
+
+  /**
+   * Focus marks go through `--agw-focus-ring` and nowhere else.
+   *
+   * Three spellings had grown side by side — `0 0 0 2px` outset,
+   * `inset 0 0 0 2px`, `inset 0 0 0 1px` — so whether focus drew a halo outside
+   * a control or a stroke inside it depended on which partial the control was
+   * written in. Nobody chose that; it accumulated, one rule at a time, because
+   * there was no rule to point at.
+   *
+   * This test is the rule. A raw ring shadow fails and names its line, so a new
+   * one is a decision someone makes on purpose rather than a copy of whatever
+   * block sat above it.
+   */
+  it("routes every focus mark through --agw-focus-ring", () => {
+    // Small FILLED controls, where a ring inside the shape lands on its own
+    // fill. Each carries a comment at its own rule saying so. Adding a fourth
+    // means editing this list, which is the point.
+    const exempt = [
+      ".agw-set-btn[data-variant=\"primary\"]", // accent-filled pill
+      ".agw-send", // filled round send disc
+      ".agw-bud-range", // ~12px round slider thumb
+    ];
+    const offenders: string[] = [];
+    for (const name of (readdirSync(partialsDir) as string[])
+      .filter((n) => n.endsWith(".css"))
+      .sort()) {
+      const text: string = readFileSync(`${partialsDir}/${name}`, "utf8");
+      text.split("\n").forEach((line: string, i: number) => {
+        // The token's own declaration is the one place the geometry is spelled.
+        if (line.includes("--agw-focus-ring:")) return;
+        if (!/box-shadow:[^;]*\bvar\(--agw-ring\)/.test(line)) return;
+        if (line.includes("var(--agw-focus-ring)")) return;
+        // Walk back to the selector this rule belongs to.
+        const before = text.split("\n").slice(0, i).join("\n");
+        const selector = before.slice(before.lastIndexOf("}") + 1);
+        if (exempt.some((sel) => selector.includes(sel))) return;
+        offenders.push(`${name}:${i + 1}`);
+      });
+    }
+    expect(
+      offenders,
+      `these draw a focus ring by hand instead of var(--agw-focus-ring): ${offenders.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * Every class the pressed-states partial targets exists somewhere else.
+   *
+   * This partial styles controls it does not define, by name, from a different
+   * file. A typo or a class that gets renamed later leaves a rule that matches
+   * nothing — and the symptom is the absence of a 100ms press, which is exactly
+   * the kind of thing nobody notices is missing. Cheap to check, invisible to
+   * catch by eye.
+   */
+  it("only writes pressed rules for classes that exist", () => {
+    const press = readFileSync(`${partialsDir}/47-press-states.css`, "utf8");
+    const withoutComments = press.replace(/\/\*[\s\S]*?\*\//g, "");
+    const targeted = [
+      ...new Set([...withoutComments.matchAll(/\.(agw-[a-z0-9-]+)/g)].map((m) => m[1])),
+    ];
+    expect(targeted.length).toBeGreaterThan(20);
+
+    const elsewhere = (readdirSync(partialsDir) as string[])
+      .filter((name) => name.endsWith(".css") && name !== "47-press-states.css")
+      .map((name) => readFileSync(`${partialsDir}/${name}`, "utf8"))
+      .join("\n");
+    const orphans = targeted.filter((cls) => !elsewhere.includes(cls));
+    expect(
+      orphans,
+      `these pressed rules match nothing: ${orphans.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * The send button's two states cannot invert.
+   *
+   * Its enabled icon used `--agw-on-accent`, the label colour for text sitting
+   * on an ACCENT FILL. The send disc is not accent-filled — it is
+   * `--agw-state-selected`. That worked only because the token ships white in
+   * both built-in themes: on the light theme the white icon washed out against
+   * an already-near-white disc, and because "On-accent text" is user-settable
+   * in Appearance, any dark value there turned the icon DARK exactly when it
+   * should be brightest. The empty composer then read louder than the ready
+   * one, which is the inversion this pins.
+   *
+   * Both states must come from the foreground ramp, which is the ramp defined
+   * against this disc: `--agw-text-subtle` off, `--agw-text` on. Then "off is
+   * dimmer than on" holds by construction, in any theme and under any
+   * customization.
+   */
+  it("keeps the composer send icon dim when empty and bright when ready", () => {
+    const composer: string = readFileSync(
+      `${partialsDir}/13-composer-input.css`,
+      "utf8",
+    );
+    const block = (selector: string): string => {
+      const at = composer.indexOf(selector);
+      expect(at, `${selector} is gone from 13-composer-input.css`).toBeGreaterThan(-1);
+      return composer.slice(at, composer.indexOf("}", at));
+    };
+
+    // Resting/disabled: the quietest step of the ramp.
+    expect(block(".agw-send {")).toContain("color: var(--agw-text-subtle)");
+    // Ready: the loudest.
+    const ready = block(".agw-send:not(.agw-send-stream):not(:disabled) {");
+    expect(ready).toContain("color: var(--agw-text)");
+    // And never the accent-label token, whatever it happens to be set to.
+    expect(
+      ready,
+      "the send disc is not accent-filled, so --agw-on-accent does not describe it",
+    ).not.toContain("--agw-on-accent");
+  });
 });

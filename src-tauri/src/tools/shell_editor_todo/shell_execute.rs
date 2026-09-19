@@ -468,17 +468,31 @@ pub(crate) fn resolve_shell(requested: Option<String>) -> Option<String> {
     None
 }
 
-/// Map [`BashValidationError`] onto [`ToolError::PolicyViolation`]
-/// per Sub-D's contract. Both `Blocked` and `Warning` map to the same
-/// variant — the permitter decides interactively whether to allow a
-/// warning-level command.
+/// Map [`BashValidationError`] onto [`ToolError::PolicyViolation`].
+///
+/// Both severities refuse the call. This used to render the softer one as
+/// `policy violation: warning: …`, which described an intention rather than
+/// what happened: the doc here said "the permitter decides interactively
+/// whether to allow a warning-level command", and no permitter was ever
+/// consulted — `PolicyViolation` appears nowhere in `tools::permissions`, and
+/// [`super::shell_execute`] returns this error before any gate runs.
+///
+/// Measured 2026-09-19: eight refusals in three days arrived under the word
+/// "warning", every one of them final. A model reading "warning" about a
+/// command that did not run is being told something untrue about its own call,
+/// and the recovery it picks follows the word, not the outcome.
+///
+/// The severities still differ and the text still says which is which — the
+/// rules behind `Warning` are heuristics about paths and destructive shapes,
+/// and a caller that knows one fired can argue with it. What neither of them
+/// may do is imply the command ran.
 pub fn map_bash_error(err: BashValidationError) -> ToolError {
     match err {
         BashValidationError::Blocked(reason) => {
             ToolError::PolicyViolation(format!("blocked: {reason}"))
         }
         BashValidationError::Warning(message) => {
-            ToolError::PolicyViolation(format!("warning: {message}"))
+            ToolError::PolicyViolation(format!("blocked by a safety rule: {message}"))
         }
     }
 }
@@ -846,16 +860,27 @@ mod tests {
         assert_eq!(MAX_TIMEOUT_MS, 1_800_000, "30 minutes");
     }
 
+    /// Both severities refuse, so both have to SAY they refused. The softer one
+    /// used to open with "warning:", which reads as advisory about a command
+    /// that never ran — see `map_bash_error` for the eight refusals that
+    /// arrived under that word in three days.
     #[test]
-    fn map_bash_error_handles_blocked_and_warning() {
+    fn map_bash_error_says_blocked_for_both_severities() {
         let blocked = map_bash_error(BashValidationError::Blocked("bad".into()));
         match blocked {
-            ToolError::PolicyViolation(m) => assert!(m.starts_with("blocked:")),
+            ToolError::PolicyViolation(m) => assert!(m.starts_with("blocked:"), "got {m}"),
             other => panic!("expected PolicyViolation, got {other:?}"),
         }
         let warned = map_bash_error(BashValidationError::Warning("watch out".into()));
         match warned {
-            ToolError::PolicyViolation(m) => assert!(m.starts_with("warning:")),
+            ToolError::PolicyViolation(m) => {
+                assert!(m.starts_with("blocked"), "a refusal must say so: {m}");
+                assert!(
+                    !m.starts_with("warning:"),
+                    "\"warning\" describes an intention that was never wired: {m}"
+                );
+                assert!(m.contains("watch out"), "and still carries the reason: {m}");
+            }
             other => panic!("expected PolicyViolation, got {other:?}"),
         }
     }

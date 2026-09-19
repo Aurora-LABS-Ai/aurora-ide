@@ -295,7 +295,7 @@
   color: var(--agw-text);
 }
 .agw-br-nav:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-br-address {
   flex: 1;
@@ -325,7 +325,7 @@
 }
 .agw-br-address:focus-within {
   border-color: var(--agw-ring);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* ── The halo — the agent is driving this page right now ─────────────
  *

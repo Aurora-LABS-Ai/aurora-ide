@@ -249,7 +249,7 @@
 }
 .agw-skill-card-hit:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* The hit layer deliberately sits OVER the card's content, and nothing needs
  * lifting above it except the delete button (see below).

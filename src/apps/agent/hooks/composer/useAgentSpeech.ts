@@ -2,7 +2,7 @@
  * Agent Window — speech capture hook.
  *
  * Wraps the SAME local speech pipeline the IDE chat uses (`speechService` →
- * Qwen3-ASR via candle), minus the IDE-only chrome (Tailwind button, settings
+ * CrispASR child process), minus the IDE-only chrome (Tailwind button, settings
  * modal, ConfirmDialog). It records mic audio, resamples to 16 kHz mono PCM,
  * sends it to the Rust transcriber, and hands the transcript back to the caller
  * (the composer inserts it at the caret).
@@ -19,7 +19,11 @@ import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { speechService } from "@/apps/agent/services/speech/speech";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { runDictationCleanup } from "@/apps/agent/adapters/prompt-refine";
-import { dictationCleanupReady, useAgentRefineStore } from "@/apps/agent/store/composer/useAgentRefineStore";
+import {
+  dictationCleanupReady,
+  refineConfig,
+  useAgentRefineStore,
+} from "@/apps/agent/store/composer/useAgentRefineStore";
 
 const TARGET_SAMPLE_RATE = 16_000;
 
@@ -37,11 +41,7 @@ async function polishTranscript(text: string): Promise<string> {
   if (!dictationCleanupReady(refine)) return text;
   try {
     const cleaned = await Promise.race([
-      runDictationCleanup(`dictation_${Date.now()}`, text, {
-        llamaDir: refine.llamaDir,
-        modelPath: refine.modelPath,
-        device: refine.device,
-      }),
+      runDictationCleanup(`dictation_${Date.now()}`, text, refineConfig(refine)),
       new Promise<string>((_, reject) =>
         window.setTimeout(
           () => reject(new Error("dictation cleanup timed out")),
@@ -146,9 +146,10 @@ export interface AgentSpeech {
   notice: MicNotice | null;
   /** Toggle record ↔ stop+transcribe (opens the consent modal on first use). */
   toggle: () => void;
-  /** The recording visualizer element (the shimmer bar) — mount only while
-   *  recording; the hook feeds it a `--level` from the live mic input. */
-  visualizerRef: RefObject<HTMLDivElement>;
+  /** Smoothed 0..1 speech level, updated every animation frame while
+   *  recording. Read it from a render loop — it is deliberately a ref, so a
+   *  new level never re-renders the composer. */
+  levelRef: RefObject<number>;
   /** True while the in-app microphone-consent modal is showing. */
   permissionOpen: boolean;
   /** User allowed access via the modal — optionally remember and start. */
@@ -226,9 +227,11 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  // The recording visualizer (a shimmer bar). We only feed it a smoothed 0..1
-  // input level via a CSS variable — all rendering is CSS.
-  const visualizerRef = useRef<HTMLDivElement>(null);
+  // Smoothed 0..1 speech level, published as a ref rather than written onto an
+  // element. It used to be set as a `--level` CSS variable on a shimmer bar,
+  // because that bar was rendered entirely in CSS. The visualiser is a canvas
+  // now (`ComposerAurora`), which needs the NUMBER each frame — reading it back
+  // out of a CSS custom property would mean a `getComputedStyle` per frame.
   const levelRef = useRef(0);
   const chunksRef = useRef<Float32Array[]>([]);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
@@ -253,15 +256,13 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
 
   useEffect(() => cleanupAudio, [cleanupAudio]);
 
-  // Drive the shimmer's intensity from the live mic level: compute an RMS of the
-  // time-domain samples, map it to a lively 0..1, smooth it, and hand it to CSS
-  // as `--level`. The shimmer sweep runs on its own; this makes it brighten and
-  // swell when you actually speak.
+  // Measure the live mic level: RMS of the time-domain samples, amplified into
+  // a range that actually moves, then smoothed. `ComposerAurora` reads the
+  // result every frame to decide how far the curtain reaches.
   const updateLevel = useCallback(() => {
     animationRef.current = window.requestAnimationFrame(updateLevel);
     const analyser = analyserRef.current;
-    const el = visualizerRef.current;
-    if (!analyser || !el) return;
+    if (!analyser) return;
 
     const data = new Uint8Array(analyser.fftSize);
     analyser.getByteTimeDomainData(data);
@@ -275,7 +276,6 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
     // Asymmetric smoothing: snap up fast on a syllable, fall gently.
     const k = target > levelRef.current ? 0.4 : 0.12;
     levelRef.current += (target - levelRef.current) * k;
-    el.style.setProperty("--level", levelRef.current.toFixed(3));
   }, []);
 
   useEffect(() => {
@@ -480,7 +480,7 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
     isTranscribing,
     notice,
     toggle,
-    visualizerRef,
+    levelRef,
     permissionOpen,
     confirmPermission,
     dismissPermission,

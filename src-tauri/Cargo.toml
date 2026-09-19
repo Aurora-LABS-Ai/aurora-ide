@@ -97,9 +97,6 @@ encoding_rs = "0.8"
 # unreadable rather than fed through an HTML parser as if it were a page.
 mime = "0.3"
 
-# Native Qwen3-ASR speech recognition. Default build is CPU-only; CUDA builds opt in via Aurora's `cuda` feature.
-qwen3-asr = { version = "0.2.2", default-features = false }
-candle-core = { version = "0.9.2", default-features = false }
 
 # Lazy static for singleton patterns
 lazy_static = "1.4"
@@ -290,21 +287,15 @@ tokio = { version = "1", features = ["test-util"] }
 # the static MSVC CRT, which conflicts with cxx's dynamic CRT when Aurora links
 # its Tauri cdylib. The vendored build also gives MSVC its native `/std` flag;
 # upstream passes GCC's `-std=c++11`, which cl.exe ignores with warning D9002.
-esaxx-rs = { path = "../vendor/esaxx-rs" }
 # candle-kernels builds its CUDA MOE archive with the static MSVC CRT by default.
 # Aurora links a Tauri cdylib with dynamic CRT dependencies, so keep the crate
 # source identical except for passing /MD to nvcc's host compiler on MSVC.
-candle-kernels = { path = "../vendor/candle-kernels" }
 
 [features]
-# Default: CPU-only for maximum compatibility out of the box.
-# Opt in to GPU acceleration for the speech runtime with default features
-# disabled:
-#   NVIDIA GPU:  cargo build --no-default-features --features cuda
+# `cpu-only` no longer gates anything: speech moved out of process (CrispASR),
+# so there is no compiled GPU runtime left to opt into. Kept as the default so
+# an existing build command with `--features cpu-only` still resolves.
 default = ["cpu-only"]
-
-# GPU acceleration for the speech runtime (Qwen3-ASR via candle-core).
-cuda = ["qwen3-asr/cuda", "candle-core/cuda"]
 
 # CPU-only build (no GPU acceleration) — safest default
 cpu-only = []

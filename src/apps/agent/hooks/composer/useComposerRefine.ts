@@ -80,6 +80,7 @@ export function useComposerRefine(
   const llamaDir = useAgentRefineStore((s) => s.llamaDir);
   const modelPath = useAgentRefineStore((s) => s.modelPath);
   const device = useAgentRefineStore((s) => s.device);
+  const chatFormat = useAgentRefineStore((s) => s.chatFormat);
   const ready = useAgentRefineStore(refineConfigured);
 
   const [phase, setPhase] = useState<RefinePhase>("idle");
@@ -108,7 +109,7 @@ export function useComposerRefine(
       return;
     }
 
-    const config: RefineConfig = { llamaDir, modelPath, device };
+    const config: RefineConfig = { llamaDir, modelPath, device, chatFormat };
     const reqId =
       typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
@@ -144,7 +145,18 @@ export function useComposerRefine(
         flashNotice(msg || "Refine failed.");
         setPhase("idle");
       });
-  }, [editorRef, ready, phase, serialize, llamaDir, modelPath, device, afterChange, flashNotice]);
+  }, [
+    editorRef,
+    ready,
+    phase,
+    serialize,
+    llamaDir,
+    modelPath,
+    device,
+    chatFormat,
+    afterChange,
+    flashNotice,
+  ]);
 
   const cancel = useCallback(() => {
     cancelledRef.current = true;

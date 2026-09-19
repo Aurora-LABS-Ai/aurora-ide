@@ -1,0 +1,398 @@
+/* ═══ Conversation details (dock tab) ══════════════════════════════════════
+ *
+ * See `components/panels/SessionPanel.tsx`. Sits beside Files and Review in the
+ * dock, which is also where project details already open — this is the same
+ * idea one level down and belongs in the same container.
+ *
+ * Sized against the DOCK, which can be dragged narrow AND dragged very wide.
+ * Narrow was the only case the first cut handled: the bars flexed, so at
+ * 1400px a five-turn conversation drew five 280px slabs four times wider than
+ * they were tall. A bar chart whose bars are wider than they are tall is not
+ * reporting a shape. Hence two caps below — a reading column on the content,
+ * and a maximum bar width — neither of which changes anything at dock widths
+ * where the layout already worked.
+ */
+
+.agw-sess {
+  height: 100%;
+  overflow-y: auto;
+  padding: 14px 16px 20px;
+  background: var(--agw-conversation);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+}
+
+/* The content fills the dock. A reading column was tried here and rejected:
+   at a wide dock it left half the pane empty, and the dock width is already
+   the user's own answer to how much room this deserves. The bar cap below is
+   what keeps a wide pane from turning the timeline into slabs — the column
+   was never the thing doing that work. */
+
+.agw-sess-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--agw-text-subtle);
+}
+.agw-sess-note p {
+  margin: 0;
+}
+
+.agw-sess-head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-sess-title {
+  margin: 0;
+  font-family: var(--agw-font-display, var(--agw-font-ui));
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+.agw-sess-sub {
+  margin: 3px 0 0;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+.agw-sess-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-sess-section:last-of-type {
+  border-bottom: none;
+}
+
+.agw-sess-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 9px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-sess-h-tight {
+  margin-top: 16px;
+}
+/* The qualifier beside a heading — "tallest is the longest", "peak 128k". Not
+   uppercase: it is a sentence, not a label. */
+.agw-sess-h-note {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.agw-sess-empty {
+  margin: 0;
+  color: var(--agw-text-subtle);
+}
+
+/* ── Turn timeline ─────────────────────────────────────────────────────── */
+
+.agw-sess-strip {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 2px;
+  height: 44px;
+  margin-bottom: 8px;
+}
+/* The context strip is the same bars on the other axis, so it is shorter — it
+   is a companion to the duration strip, not a second headline. */
+.agw-sess-strip[data-variant="context"] {
+  height: 34px;
+}
+
+/* Bars share the pane, but never grow past HALF the strip's height, so a bar
+   is always at least twice as tall as it is wide. That single rule is what the
+   original `flex: 1 1 0` was missing: at a wide dock, five turns became five
+   280px slabs, and a slab wider than it is tall reports no shape at all.
+
+   At the cap a long session still fills the pane at close to the probe's
+   proportions, and a short one draws a small chart rather than stretching. */
+.agw-sess-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.1s ease;
+}
+.agw-sess-bar:hover,
+.agw-sess-bar[data-on] {
+  background: var(--agw-accent);
+}
+.agw-sess-bar:focus-visible {
+  box-shadow: var(--agw-focus-ring);
+}
+/* A turn that contained a failed call. Outranks the longest-turn tint: a slow
+   turn is a curiosity, a failed one is the thing you came to find. */
+.agw-sess-bar[data-fail] {
+  background: color-mix(in srgb, var(--agw-removed) 72%, transparent);
+}
+.agw-sess-bar[data-fail]:hover,
+.agw-sess-bar[data-fail][data-on] {
+  background: var(--agw-removed);
+}
+.agw-sess-bar[data-longest]:not([data-fail]) {
+  background: var(--agw-accent);
+}
+/* Compaction is a boundary, not a magnitude, so it marks the bar's foot rather
+   than recolouring it — the height still has to mean duration. */
+.agw-sess-bar[data-compacted] {
+  border-bottom: 3px solid var(--agw-warning);
+}
+.agw-sess-bar[data-context] {
+  background: color-mix(in srgb, var(--agw-text) 22%, transparent);
+  cursor: default;
+}
+.agw-sess-bar[data-context][data-on] {
+  background: color-mix(in srgb, var(--agw-text) 55%, transparent);
+}
+
+/* The pointed-at turn's numbers, UNDER the strip. A floating tooltip would
+   cover the neighbouring bars, which are the thing you are comparing against.
+   Fixed min-height so moving across bars does not make the panel jump.
+
+   It is never empty. The first cut reserved this box and filled it with "Point
+   at a bar for that turn's numbers" — 74px of panel spent on an instruction,
+   directly under the widest thing on screen. It now rests on the longest turn,
+   which is the one the heading already points at. */
+.agw-sess-readout {
+  min-height: 66px;
+  padding: 9px 10px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-surface) 60%, transparent);
+}
+.agw-sess-readout-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.agw-sess-readout-n {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-sess-readout-dur {
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+.agw-sess-readout-model {
+  margin-left: auto;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-sess-readout-prompt {
+  margin: 4px 0 0;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  /* Two lines, then stop: the prompt identifies the turn, it is not the turn. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.agw-sess-readout-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 6px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-sess-readout-facts [data-tone="bad"] {
+  color: var(--agw-removed);
+}
+.agw-sess-readout-facts [data-tone="warn"] {
+  color: var(--agw-warning);
+}
+
+.agw-sess-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 9px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-sess-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.agw-sess-sw {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
+}
+.agw-sess-sw[data-fail] {
+  background: var(--agw-removed);
+}
+.agw-sess-sw[data-longest] {
+  background: var(--agw-accent);
+}
+.agw-sess-sw[data-compacted] {
+  background: var(--agw-warning);
+}
+
+/* ── Tool outcome split ────────────────────────────────────────────────── */
+
+.agw-sess-split {
+  display: flex;
+  height: 6px;
+  margin-bottom: 7px;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-text) 10%, transparent);
+  overflow: hidden;
+}
+.agw-sess-split i[data-tone="good"] {
+  background: var(--agw-added);
+}
+.agw-sess-split i[data-tone="bad"] {
+  background: var(--agw-removed);
+}
+.agw-sess-split i[data-tone="warn"] {
+  background: var(--agw-warning);
+}
+.agw-sess-splitline {
+  margin: 0 0 11px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-sess-splitline [data-tone="good"] {
+  color: var(--agw-added);
+}
+.agw-sess-splitline [data-tone="bad"] {
+  color: var(--agw-removed);
+}
+.agw-sess-splitline [data-tone="warn"] {
+  color: var(--agw-warning);
+}
+
+/* The fold. Same chevron, rotation and timing as the provider rows in
+   `ProjectPanel` — two disclosure affordances in one dock is how they drift. */
+.agw-sess-disclose {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-muted);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--agw-radius-sm);
+}
+.agw-sess-disclose:hover {
+  color: var(--agw-text);
+}
+.agw-sess-disclose:focus-visible {
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-sess-disclose[aria-expanded="true"] {
+  margin-bottom: 4px;
+}
+
+/* ── Tool table ────────────────────────────────────────────────────────── */
+
+.agw-sess-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--agw-fs-micro);
+}
+.agw-sess-table th {
+  padding: 0 0 5px;
+  text-align: left;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+}
+/* `padding-left` is load-bearing, not spacing taste: two right-aligned columns
+   with none read as one word — the header rendered as "CallsFailed". */
+.agw-sess-table th.r,
+.agw-sess-table td.r {
+  width: 56px;
+  padding-left: 14px;
+  text-align: right;
+}
+.agw-sess-table td {
+  padding: 5px 0;
+  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-muted);
+}
+.agw-sess-table td[data-tone="bad"] {
+  color: var(--agw-removed);
+}
+/* The tool NAME is an identifier, so it is mono and it is the only cell allowed
+   to truncate — the counts beside it must never be cut. */
+.agw-sess-tool {
+  font-family: var(--agw-font-code);
+  color: var(--agw-text);
+  max-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Label / value rows ────────────────────────────────────────────────── */
+
+.agw-sess-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+}
+.agw-sess-kv + .agw-sess-kv {
+  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+}
+.agw-sess-k {
+  flex: 1;
+  min-width: 0;
+  color: var(--agw-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-sess-v {
+  flex: none;
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text);
+}
+.agw-sess-v[data-tone="good"] {
+  color: var(--agw-added);
+}
+.agw-sess-v[data-tone="bad"] {
+  color: var(--agw-removed);
+}
+.agw-sess-v[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+
+.agw-sess-foot {
+  padding-top: 14px;
+}

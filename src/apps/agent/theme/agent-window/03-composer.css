@@ -355,7 +355,7 @@
 }
 .agw-model-tab:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
   border-radius: var(--agw-radius-sm);
 }
 
@@ -406,7 +406,7 @@ button.agw-model-group-label:disabled {
 }
 button.agw-model-group-label:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
   border-radius: var(--agw-radius-sm);
 }
 .agw-model-group-caret {
@@ -458,7 +458,7 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-text);
 }
 .agw-model-item:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-model-meta {
   display: flex;
@@ -651,6 +651,9 @@ button.agw-model-group-label:focus-visible {
 .agw-bud-range:focus-visible {
   outline: none;
 }
+/* Exempt from --agw-focus-ring, on purpose. The thumb is a ~12px filled circle:
+   an inset ring would be drawn on its own fill and vanish, and a slider thumb
+   is the one control every platform already marks with an outer halo. */
 .agw-bud-range:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px var(--agw-ring);
 }
@@ -691,7 +694,7 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-accent);
 }
 .agw-bud-preset:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-bud-hint {
   margin: 10px 0 0;
@@ -737,7 +740,7 @@ button.agw-model-group-label:focus-visible {
   background: var(--agw-on-accent);
 }
 .agw-mswitch:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Agent/Plan mode toggle in the picker header — a compact 2-segment control.
    Agent segment tints accent; Plan segment tints warning (read-only posture). */
@@ -781,7 +784,7 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-warning);
 }
 .agw-model-mode-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Provider name on Recent rows — renders inline after the capability chips, so
  * a Recent row is the same height as a provider-grouped row. It yields space
@@ -840,8 +843,17 @@ button.agw-model-group-label:focus-visible {
   background: var(--agw-surface);
   color: var(--agw-text);
 }
+/* Pressed. A menu row is the one control where the press and the result are
+   usually the same frame, so this mostly shows on a slow commit — but that is
+   exactly when a row that answers nothing gets clicked twice. */
+.agw-menu-item:active {
+  background: var(--agw-press-paint);
+}
+/* Inset, like every other row in the window: a popover clips at its own
+   padding, so an outset ring on the first or last row is cut in half. */
 .agw-menu-item:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  background: var(--agw-hover-paint);
+  box-shadow: var(--agw-focus-ring);
 }
 
 

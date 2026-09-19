@@ -25,6 +25,7 @@ import {
 } from "@/apps/agent/services/terminal/terminal-sessions";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
+import { ComposerAurora } from "./ComposerAurora";
 import { ComposerBody } from "./ComposerBody";
 import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
 import {
@@ -1190,7 +1191,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     isTranscribing: micTranscribing,
     notice: micNotice,
     toggle: micToggle,
-    visualizerRef: micWaveRef,
+    levelRef: micLevelRef,
     permissionOpen: micPermissionOpen,
     confirmPermission: micConfirmPermission,
     dismissPermission: micDismissPermission,
@@ -1367,6 +1368,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       ref={composerRef}
       className={`agw-composer z-10 w-full max-w-3xl mx-auto relative${
         isDragOver ? " agw-composer-drop" : ""
+      }${
+        /* Same travelling border as a drag: the composer is holding something
+           and is not done with it. See `26-attachments-drag.css`. */
+        micTranscribing ? " agw-composer-busy" : ""
       }`}
     >
       {/* @-mention file picker — floats above the input. */}
@@ -1461,6 +1466,15 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         }}
         onClick={() => editorRef.current?.focus()}
       >
+        {/* The recording visualiser. It paints above this box's fill and below
+            its content, so the placeholder, any text already typed and the
+            whole action row stay legible on top of it. */}
+        <ComposerAurora
+          recording={micRecording}
+          transcribing={micTranscribing}
+          levelRef={micLevelRef}
+        />
+
         {/* Top band — a SINGLE layer that only exists when the selector is
             top-positioned (mode now lives inside the picker, so there's nothing
             else to reserve space for). When the selector is at the bottom, no
@@ -1599,9 +1613,6 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           )}
           {speechEnabled && (
             <div className="agw-composer-speech" onClick={(e) => e.stopPropagation()}>
-              {micRecording && (
-                <div ref={micWaveRef} className="agw-mic-wave" aria-hidden />
-              )}
               <button
                 type="button"
                 className="agw-icon-btn"
@@ -1624,7 +1635,12 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                 {micTranscribing ? (
                   <span className="agw-rail-spin" aria-hidden />
                 ) : micRecording ? (
-                  <AgentIcon name="stop" size={13} />
+                  // The `stop` glyph is a 10-unit rect in a 24-unit box, so the
+                  // visible square is size × 0.42 — 22 draws ~9px in this 28px
+                  // button, the same proportion the streaming stop disc uses.
+                  // At 13 it was 5.4px and needed a coloured tile behind it to
+                  // be findable at all.
+                  <AgentIcon name="stop" size={22} />
                 ) : (
                   <AgentIcon name="mic" size={15} />
                 )}

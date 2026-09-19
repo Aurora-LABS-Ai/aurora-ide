@@ -55,6 +55,7 @@ pub mod modal;
 pub mod opencode;
 pub mod plans;
 pub mod process_tracking;
+pub mod conversation_stats;
 pub mod project_stats;
 pub mod prompt_refine;
 pub mod provider_catalog;

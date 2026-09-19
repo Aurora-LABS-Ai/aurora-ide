@@ -23,7 +23,10 @@
   background: var(--agw-surface-elevated, var(--agw-surface));
   box-shadow: 0 18px 50px color-mix(in srgb, #000 45%, transparent);
 }
+/* Dialog title takes the display face; the message under it does not. A
+   confirmation is read, the title is scanned. */
 .agw-confirm-title {
+  font-family: var(--agw-font-display, var(--agw-font-ui));
   font-size: var(--agw-fs-body);
   font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
@@ -55,7 +58,7 @@
   background: var(--agw-hover-paint);
 }
 .agw-confirm-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-confirm-primary {
   border-color: transparent;
@@ -178,7 +181,7 @@
 }
 .agw-mic-perm-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-mic-perm-primary {
   border-color: transparent;
@@ -368,7 +371,7 @@
 }
 .agw-bubble-more:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-bubble-more svg {
   transition: transform 0.16s ease;

@@ -162,7 +162,7 @@
   color: var(--agw-accent);
 }
 .agw-prov-chat-pick:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* At the cap. Disabled rather than hidden — the row still has to say that
    this model COULD be offered, and the title says what is in the way. */
@@ -716,7 +716,7 @@
 }
 
 .agw-img-section-head:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 .agw-img-section-count {
@@ -774,7 +774,7 @@
 }
 
 .agw-img-card-main:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Standalone: the card IS the detail pane, so its head is a heading rather than

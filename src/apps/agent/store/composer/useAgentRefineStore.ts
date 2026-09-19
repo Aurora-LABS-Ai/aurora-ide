@@ -11,6 +11,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+// Type-only: erased at build time, so this does not close an import cycle with
+// the adapter (which imports RefineDevice back from here).
+import type { ChatFormat, RefineConfig } from "@/apps/agent/adapters/prompt-refine";
+
 export type RefineDevice = "gpu" | "cpu";
 
 interface AgentRefineState {
@@ -19,6 +23,9 @@ interface AgentRefineState {
   llamaDir: string;
   /** Path to the .gguf model. */
   modelPath: string;
+  /** How to format the conversation for this model. `auto` resolves from the
+   *  path in Rust and is what every install had before this existed. */
+  chatFormat: ChatFormat;
   device: RefineDevice;
   /** Polish voice dictation with the local model before it lands in the
    *  composer. Independent of `replySuggestionsEnabled` — they share the
@@ -30,6 +37,7 @@ interface AgentRefineState {
   setEnabled: (v: boolean) => void;
   setLlamaDir: (v: string) => void;
   setModelPath: (v: string) => void;
+  setChatFormat: (v: ChatFormat) => void;
   setDevice: (v: RefineDevice) => void;
   setDictationCleanupEnabled: (v: boolean) => void;
   setReplySuggestionsEnabled: (v: boolean) => void;
@@ -41,6 +49,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       enabled: false,
       llamaDir: "",
       modelPath: "",
+      chatFormat: "auto",
       device: "gpu",
       dictationCleanupEnabled: false,
       replySuggestionsEnabled: false,
@@ -48,6 +57,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       setEnabled: (v) => set({ enabled: v }),
       setLlamaDir: (v) => set({ llamaDir: v }),
       setModelPath: (v) => set({ modelPath: v }),
+      setChatFormat: (v) => set({ chatFormat: v }),
       setDevice: (v) => set({ device: v }),
       setDictationCleanupEnabled: (v) => set({ dictationCleanupEnabled: v }),
       setReplySuggestionsEnabled: (v) => set({ replySuggestionsEnabled: v }),
@@ -55,6 +65,20 @@ export const useAgentRefineStore = create<AgentRefineState>()(
     { name: "aurora-agent-window-refine" },
   ),
 );
+
+/**
+ * The config every local-model call sends. Built in ONE place so a new field
+ * cannot reach three call sites and miss the fourth — which is exactly how
+ * `chatFormat` would otherwise have been left off the title path.
+ */
+export function refineConfig(s: AgentRefineState): RefineConfig {
+  return {
+    llamaDir: s.llamaDir,
+    modelPath: s.modelPath,
+    device: s.device,
+    chatFormat: s.chatFormat,
+  };
+}
 
 /** True when refine is enabled AND both paths are set (button can show). */
 export function refineConfigured(s: AgentRefineState): boolean {

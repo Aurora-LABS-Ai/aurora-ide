@@ -479,6 +479,12 @@ interface SettingsState {
   titleMakerBaseUrl: string;
   titleMakerApiKey: string;
   titleMakerModel: string;
+  /** Local mode only. Empty = reuse the prompt-refine model, which is what
+   *  local mode has always done. Set it to point titling at its own GGUF while
+   *  both features keep sharing one llama.cpp folder. */
+  titleMakerLocalModel: string;
+  /** Chat format for `titleMakerLocalModel` (a `ChatFormat` wire name). */
+  titleMakerLocalChatFormat: string;
   setTitleMaker: (
     value: Partial<{
       enabled: boolean;
@@ -486,6 +492,8 @@ interface SettingsState {
       baseUrl: string;
       apiKey: string;
       model: string;
+      localModel: string;
+      localChatFormat: string;
     }>,
   ) => void;
 
@@ -1510,6 +1518,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   titleMakerBaseUrl: '',
   titleMakerApiKey: '',
   titleMakerModel: '',
+  titleMakerLocalModel: '',
+  titleMakerLocalChatFormat: 'auto',
 
   // The project and nothing else, until the user says otherwise.
   workspaceAccess: 'workspace',
@@ -1573,7 +1583,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   skillsEnabled: true,
   skillToggles: {},
   speechEnabled: false,
-  speechEngine: "qwen3-rust",
+  speechEngine: "crispasr-gguf",
   speechRuntimePath: "",
   speechModelPath: "",
   speechBackend: "auto",
@@ -1918,6 +1928,10 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           titleMakerBaseUrl: appSettings.titleMakerBaseUrl ?? '',
           titleMakerApiKey: appSettings.titleMakerApiKey ?? '',
           titleMakerModel: appSettings.titleMakerModel ?? '',
+          titleMakerLocalModel: appSettings.titleMakerLocalModel ?? '',
+          // Empty on every row written before the setting existed; "auto" is
+          // what those installs were already doing.
+          titleMakerLocalChatFormat: appSettings.titleMakerLocalChatFormat || 'auto',
           // An install that upgrades without opening Settings has only the old
           // boolean on disk. `true` becomes `read` — never `full`, which
           // nobody has consented to.
@@ -1939,7 +1953,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           skillsEnabled: appSettings.skillsEnabled ?? true,
           skillToggles: appSettings.skillToggles ?? {},
           speechEnabled: appSettings.speechEnabled ?? false,
-          speechEngine: appSettings.speechEngine ?? "qwen3-rust",
+          speechEngine: appSettings.speechEngine ?? "crispasr-gguf",
           speechRuntimePath: normalizeSpeechRuntimePath(appSettings.speechRuntimePath),
           speechModelPath: appSettings.speechModelPath ?? "",
           speechBackend: appSettings.speechBackend ?? "auto",
@@ -2039,6 +2053,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         titleMakerBaseUrl: state.titleMakerBaseUrl,
         titleMakerApiKey: state.titleMakerApiKey,
         titleMakerModel: state.titleMakerModel,
+        titleMakerLocalModel: state.titleMakerLocalModel,
+        titleMakerLocalChatFormat: state.titleMakerLocalChatFormat,
         workspaceAccess: state.workspaceAccess,
         allowOutsideWorkspace: state.allowOutsideWorkspace,
         notifyOnTurnComplete: state.notifyOnTurnComplete,
@@ -2795,6 +2811,9 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     if (value.baseUrl !== undefined) patch.titleMakerBaseUrl = value.baseUrl;
     if (value.apiKey !== undefined) patch.titleMakerApiKey = value.apiKey;
     if (value.model !== undefined) patch.titleMakerModel = value.model;
+    if (value.localModel !== undefined) patch.titleMakerLocalModel = value.localModel;
+    if (value.localChatFormat !== undefined)
+      patch.titleMakerLocalChatFormat = value.localChatFormat;
     set(patch);
     get().saveToDatabase();
   },
@@ -2980,7 +2999,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   },
 
   setSpeechEngine: (engine: string) => {
-    set({ speechEngine: engine || "qwen3-rust" });
+    set({ speechEngine: engine || "crispasr-gguf" });
     get().saveToDatabase();
   },
 

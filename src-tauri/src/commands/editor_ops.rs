@@ -82,6 +82,9 @@ pub enum SearchReplaceResponse {
         /// Replacements that only matched after folding the file's typographic
         /// characters to ASCII. Empty on an ordinary exact-match edit.
         typography_repairs: Vec<TypographyRepair>,
+        /// Replacements that only matched after one level of string escaping
+        /// came off what the caller sent. Empty on an ordinary exact-match edit.
+        escape_repairs: Vec<EscapeRepair>,
     },
     #[serde(rename = "not_found")]
     NotFound {
@@ -159,6 +162,35 @@ pub struct TypographyRepair {
     pub differences: Vec<LineDifference>,
 }
 
+/// A replacement that landed only after one level of string escaping was
+/// removed from what the caller sent.
+///
+/// The caller's `old_string` arrived escaped twice — `\"` where the file holds
+/// `"`, the two characters `\` `n` where the file holds a newline. One JSON
+/// serialization pass produced the whole arguments object, so `new_string`
+/// carries the same extra level and is unescaped with it; writing the escaped
+/// replacement into a file matched by the unescaped pattern would put text on
+/// disk that neither side asked for.
+///
+/// Reported in full because the assumption is larger than the typography one:
+/// that repair changes which bytes MATCHED, this one also changes which bytes
+/// get WRITTEN.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscapeRepair {
+    /// 1-based position of this replacement within the call.
+    pub replacement_index: usize,
+    pub occurrences: usize,
+    /// The first line of `old_string` as it arrived, and as it was read after
+    /// one escape level came off. One line is enough to recognise the shape
+    /// without pasting a whole hunk back into the result.
+    pub sent: String,
+    pub used: String,
+    /// Whether `new_string` was unescaped too. False when it held no escapes,
+    /// in which case only the match was affected.
+    pub new_string_unescaped: bool,
+}
+
 #[tauri::command]
 pub async fn apply_search_replace(
     request: ApplySearchReplaceRequest,
@@ -231,6 +263,7 @@ fn run_multi_search_replace(
             total_replacements,
             replacement_details,
             typography_repairs,
+            escape_repairs,
         } => {
             let mut wrote_to_disk = false;
             if request.write {
@@ -250,6 +283,7 @@ fn run_multi_search_replace(
                 replacement_details,
                 wrote_to_disk,
                 typography_repairs,
+                escape_repairs,
             })
         }
     }
@@ -259,6 +293,7 @@ fn run_multi_search_replace(
 // Plan builder (pure, fully testable)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 enum PlanResult {
     Ok {
         new_content: String,
@@ -268,6 +303,7 @@ enum PlanResult {
         total_replacements: usize,
         replacement_details: Vec<ReplacementDetail>,
         typography_repairs: Vec<TypographyRepair>,
+        escape_repairs: Vec<EscapeRepair>,
     },
     NotFound {
         failed_at: usize,
@@ -302,13 +338,17 @@ fn plan_multi_search_replace(
     let mut planned_ranges: Vec<PlannedRange> = Vec::new();
     let mut replacement_details: Vec<ReplacementDetail> = Vec::with_capacity(replacements.len());
     let mut typography_repairs: Vec<TypographyRepair> = Vec::new();
+    let mut escape_repairs: Vec<EscapeRepair> = Vec::new();
     let mut total_replacements = 0usize;
     let mut total_lines_added = 0usize;
     let mut total_lines_removed = 0usize;
 
     for (index, replacement) in replacements.iter().enumerate() {
         let normalized_old = normalize_line_endings(&replacement.old_string);
-        let normalized_new = normalize_line_endings(&replacement.new_string);
+        // The text actually written. It tracks `old_string`: if the pattern
+        // only matched after an escape level came off, the replacement carries
+        // the same extra level and comes off with it.
+        let mut normalized_new = normalize_line_endings(&replacement.new_string);
 
         if normalized_old.len() != replacement.old_string.len()
             || normalized_new.len() != replacement.new_string.len()
@@ -322,6 +362,11 @@ fn plan_multi_search_replace(
                 diagnosis: None,
             };
         }
+
+        // Lines this replacement removes per hit. It stops matching
+        // `old_string` only when an escape level came off the pattern, which
+        // changes how many lines the matched text spans.
+        let removed_lines_per_hit: usize;
 
         // SIMD-accelerated occurrence scan.
         let finder = memmem::Finder::new(normalized_old.as_bytes());
@@ -354,19 +399,57 @@ fn plan_multi_search_replace(
             };
 
             if !usable {
-                return PlanResult::NotFound {
-                    failed_at: index + 1,
-                    diagnosis: diagnose_no_match(&normalized_original, &normalized_old, &recovered),
+                // Second question the engine can answer for free: did this text
+                // arrive escaped one level too many? A model whose serializer
+                // ran twice sends `\"` for the file's `"` and the two
+                // characters `\` `n` for its newlines. The text is RIGHT — it
+                // is wearing an extra coat.
+                //
+                // Safer than the typography net, not looser. That one folds the
+                // FILE and so loses information; this one transforms only what
+                // the caller sent and then demands the ordinary exact, unique
+                // hit against untouched file bytes. A string that was not
+                // over-escaped does not survive unescaping into a match.
+                let Some(repair) =
+                    recover_overescaped(&normalized_original, &normalized_old, replacement)
+                else {
+                    return PlanResult::NotFound {
+                        failed_at: index + 1,
+                        diagnosis: diagnose_no_match(
+                            &normalized_original,
+                            &normalized_old,
+                            &recovered,
+                        ),
+                    };
                 };
-            }
 
-            typography_repairs.push(TypographyRepair {
-                replacement_index: index + 1,
-                occurrences: recovered.len(),
-                differences: describe_span(&normalized_original, &normalized_old, recovered[0]),
-            });
-            occurrence_count = recovered.len();
-            ranges = recovered;
+                escape_repairs.push(EscapeRepair {
+                    replacement_index: index + 1,
+                    occurrences: repair.ranges.len(),
+                    sent: first_line(&normalized_old),
+                    used: first_line(&repair.old),
+                    new_string_unescaped: repair.new.is_some(),
+                });
+                if let Some(new_text) = repair.new {
+                    normalized_new = new_text;
+                }
+                removed_lines_per_hit = line_count(&repair.old);
+                occurrence_count = repair.ranges.len();
+                ranges = repair.ranges;
+            } else {
+                removed_lines_per_hit = line_count(&normalized_old);
+                typography_repairs.push(TypographyRepair {
+                    replacement_index: index + 1,
+                    occurrences: recovered.len(),
+                    differences: describe_span(
+                        &normalized_original,
+                        &normalized_old,
+                        recovered[0],
+                    ),
+                });
+                occurrence_count = recovered.len();
+                ranges = recovered;
+            }
         } else {
             if exact.len() > 1 && !replacement.replace_all {
                 return PlanResult::NotUnique {
@@ -374,6 +457,7 @@ fn plan_multi_search_replace(
                     occurrences: exact.len(),
                 };
             }
+            removed_lines_per_hit = line_count(&normalized_old);
             occurrence_count = exact.len();
             let selected: &[usize] = if replacement.replace_all {
                 &exact[..]
@@ -406,7 +490,7 @@ fn plan_multi_search_replace(
 
         let replaced_count = ranges.len();
 
-        total_lines_removed += line_count(&normalized_old) * replaced_count;
+        total_lines_removed += removed_lines_per_hit * replaced_count;
         total_lines_added += line_count(&normalized_new) * replaced_count;
         total_replacements += replaced_count;
         replacement_details.push(ReplacementDetail {
@@ -449,6 +533,7 @@ fn plan_multi_search_replace(
         total_replacements,
         replacement_details,
         typography_repairs,
+        escape_repairs,
     }
 }
 
@@ -469,7 +554,7 @@ fn detect_line_ending(content: &str) -> &'static str {
     }
 }
 
-fn normalize_line_endings(value: &str) -> String {
+pub(crate) fn normalize_line_endings(value: &str) -> String {
     if !value.contains(CR) {
         return value.to_string();
     }
@@ -636,6 +721,140 @@ fn recover_typographic(file: &str, old: &str) -> Vec<(usize, usize)> {
             Some((source_start, source_end))
         })
         .collect()
+}
+
+/// One level of string escaping removed, or `None` when there was none to
+/// remove.
+///
+/// Deliberately conservative. It rewrites only the six escapes a JSON or C
+/// serializer emits — `\n`, `\r`, `\t`, `\"`, `\'`, `\\` — and leaves every
+/// other backslash pair exactly as it arrived, both characters intact. A `\d`
+/// in a regex, a `\section` in LaTeX and a `\033` escape in a shell script all
+/// pass through untouched, so text that merely CONTAINS backslashes is not
+/// quietly rewritten on its way to a match.
+///
+/// `\\` is consumed as a pair and emits one backslash, which is what stops the
+/// pass from running away: `\\n` (an escaped backslash followed by `n`) becomes
+/// `\n` the two characters, not a newline.
+pub(crate) fn unescape_once(text: &str) -> Option<String> {
+    if !text.contains('\\') {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    let mut changed = false;
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => {
+                out.push('\n');
+                changed = true;
+            }
+            Some('r') => {
+                out.push('\r');
+                changed = true;
+            }
+            Some('t') => {
+                out.push('\t');
+                changed = true;
+            }
+            Some('"') => {
+                out.push('"');
+                changed = true;
+            }
+            Some('\'') => {
+                out.push('\'');
+                changed = true;
+            }
+            Some('\\') => {
+                out.push('\\');
+                changed = true;
+            }
+            // Not an escape any serializer produces. Keep both characters.
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+
+    changed.then_some(out)
+}
+
+/// What an over-escape recovery found: the pattern that actually matched, the
+/// replacement to write with it, and where it matched.
+pub(crate) struct EscapeRecovery {
+    /// `old_string` with one escape level removed.
+    pub old: String,
+    /// `new_string` with the same level removed — `None` when it held no
+    /// escapes and the caller's text is written unchanged.
+    pub new: Option<String>,
+    /// Byte ranges in the file, exactly as an ordinary exact match produces.
+    pub ranges: Vec<(usize, usize)>,
+}
+
+/// Try to match `old` against `file` after removing one level of escaping.
+///
+/// Returns `None` unless the unescaped text produces the same hit an ordinary
+/// call would need: exactly one occurrence, or at least one under
+/// `replace_all`. No folding, no fuzzy comparison — the recovered ranges are
+/// plain `memmem` hits on untouched file bytes, so a range this returns is a
+/// range the file genuinely contains.
+fn recover_overescaped(
+    file: &str,
+    old: &str,
+    replacement: &SearchReplaceItem,
+) -> Option<EscapeRecovery> {
+    let unescaped_old = normalize_line_endings(&unescape_once(old)?);
+    if unescaped_old.is_empty() || unescaped_old == old {
+        return None;
+    }
+
+    let hits: Vec<usize> = memmem::Finder::new(unescaped_old.as_bytes())
+        .find_iter(file.as_bytes())
+        .collect();
+    let usable = if replacement.replace_all {
+        !hits.is_empty()
+    } else {
+        hits.len() == 1
+    };
+    if !usable {
+        return None;
+    }
+
+    let ranges = hits
+        .into_iter()
+        .map(|start| (start, start + unescaped_old.len()))
+        .collect();
+
+    // One serializer pass produced the whole arguments object, so a
+    // double-escaped `old_string` means a double-escaped `new_string`. Writing
+    // the escaped replacement into a span matched by the unescaped pattern is
+    // the one way this repair could corrupt a file, so the replacement comes
+    // off the same coat.
+    let new = unescape_once(&replacement.new_string).map(|text| normalize_line_endings(&text));
+
+    Some(EscapeRecovery {
+        old: unescaped_old,
+        new,
+        ranges,
+    })
+}
+
+/// The first line of a run, capped, for a result that has to be recognisable
+/// without pasting a whole hunk back at the reader.
+fn first_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("");
+    let mut out: String = line.chars().take(120).collect();
+    if out.chars().count() < line.chars().count() || text.lines().count() > 1 {
+        out.push('…');
+    }
+    out
 }
 
 /// 1-based line number of the byte at `offset`.
@@ -1830,6 +2049,145 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Over-escape recovery
+    // -----------------------------------------------------------------------
+
+    fn one(old: &str, new: &str) -> Vec<SearchReplaceItem> {
+        vec![SearchReplaceItem {
+            old_string: old.to_string(),
+            new_string: new.to_string(),
+            replace_all: false,
+        }]
+    }
+
+    /// The failure this recovery was built for, reproduced from thread
+    /// `bdc42341` (2026-09-19): the model sent `\"` where the file holds `"`,
+    /// and the edit was refused with "One escape level too many" — a correct
+    /// diagnosis attached to a call that then had to be made all over again.
+    #[test]
+    fn an_over_escaped_old_string_matches_after_one_level_comes_off() {
+        let file = "const label = \"Added by our team.\"\n";
+        let plan = plan_multi_search_replace(
+            file,
+            &one(
+                "const label = \\\"Added by our team.\\\"",
+                "const label = \\\"Added by the reseller.\\\"",
+            ),
+        );
+
+        match plan {
+            PlanResult::Ok {
+                new_content,
+                escape_repairs,
+                ..
+            } => {
+                // The replacement came off the same coat: what lands on disk is
+                // the unescaped text, not the backslashes the model sent.
+                assert_eq!(new_content, "const label = \"Added by the reseller.\"\n");
+                assert_eq!(escape_repairs.len(), 1);
+                assert!(
+                    escape_repairs[0].new_string_unescaped,
+                    "new_string held escapes too and must be reported as unescaped"
+                );
+            }
+            other => panic!("expected the escaped text to be recovered, got {other:?}"),
+        }
+    }
+
+    /// `\n` as two characters where the file has a real newline — the other
+    /// half of the same serializer bug (thread `bdc42341`, `batch-input.tsx`).
+    #[test]
+    fn escaped_newlines_match_real_ones() {
+        let plan = plan_multi_search_replace(
+            "alpha\nbeta\n",
+            &one("alpha\\nbeta", "alpha\\nGAMMA"),
+        );
+
+        match plan {
+            PlanResult::Ok {
+                new_content,
+                escape_repairs,
+                ..
+            } => {
+                assert_eq!(new_content, "alpha\nGAMMA\n");
+                assert_eq!(escape_repairs.len(), 1);
+            }
+            other => panic!("expected escaped newlines to recover, got {other:?}"),
+        }
+    }
+
+    /// The net must not widen past its one class. Text that is simply WRONG
+    /// still fails, backslashes or not — otherwise the recovery would start
+    /// editing places nobody named.
+    #[test]
+    fn unescaping_does_not_rescue_text_that_is_merely_wrong() {
+        let plan = plan_multi_search_replace(
+            "const a = 1\n",
+            &one("const b = \\\"2\\\"", "const c = 3"),
+        );
+        assert!(
+            matches!(plan, PlanResult::NotFound { .. }),
+            "text absent from the file must stay absent after unescaping"
+        );
+    }
+
+    /// A backslash that is not a serializer escape is left alone, both
+    /// characters intact. A regex `\d` or a Windows path in source must never
+    /// be quietly rewritten on its way to a match.
+    #[test]
+    fn unescape_leaves_unknown_escapes_untouched() {
+        assert_eq!(unescape_once("\\d+"), None, "`\\d` is not an escape to undo");
+        assert_eq!(unescape_once("no backslashes"), None);
+        assert_eq!(unescape_once("a\\\"b").as_deref(), Some("a\"b"));
+        // `\\n` is an escaped backslash followed by `n`, which unescapes to the
+        // two characters `\` `n` — NOT to a newline. This is what stops the
+        // pass from running away over repeated applications.
+        assert_eq!(unescape_once("a\\\\nb").as_deref(), Some("a\\nb"));
+        // A mixed run keeps the unknown escape and undoes the known one.
+        assert_eq!(unescape_once("\\d\\\"").as_deref(), Some("\\d\""));
+    }
+
+    /// Ambiguity is refused, not resolved — the same rule the typography net
+    /// follows. Two unescaped hits without `replace_all` is an error, because
+    /// picking one would edit a place the caller never chose.
+    #[test]
+    fn an_over_escaped_pattern_matching_twice_is_refused() {
+        let plan = plan_multi_search_replace(
+            "say \"hi\"\nsay \"hi\"\n",
+            &one("say \\\"hi\\\"", "say \\\"bye\\\""),
+        );
+        assert!(
+            matches!(plan, PlanResult::NotFound { .. }),
+            "two candidate spots must refuse rather than pick one"
+        );
+    }
+
+    /// An ordinary exact match must never take the escape path, or a file that
+    /// legitimately contains backslashes would be rewritten without them.
+    #[test]
+    fn exact_matches_never_reach_the_escape_net() {
+        let plan = plan_multi_search_replace(
+            "const re = /\\d+/\n",
+            &one("const re = /\\d+/", "const re = /\\w+/"),
+        );
+
+        match plan {
+            PlanResult::Ok {
+                new_content,
+                escape_repairs,
+                ..
+            } => {
+                assert_eq!(new_content, "const re = /\\w+/\n");
+                assert!(
+                    escape_repairs.is_empty(),
+                    "an exact hit must report no escape repair"
+                );
+            }
+            other => panic!("expected a plain exact match, got {other:?}"),
+        }
+    }
+
     #[test]
     fn plan_preserves_crlf_line_endings() {
         let plan = plan_multi_search_replace(
@@ -1958,11 +2316,24 @@ mod tests {
         );
     }
 
-    /// Thread 652b75d3 again, `storefront.ts`. The file holds `"ultra"`; the
-    /// model sent `\"ultra\"`. Escapes are NOT auto-repaired — a backslash
-    /// carries meaning in code — but the failure now names the cause.
+    /// Thread 652b75d3, `storefront.ts`. The file holds `"ultra"`; the model
+    /// sent `\"ultra\"`.
+    ///
+    /// This used to be `an_over_escaped_quote_is_named_rather_than_repaired`,
+    /// asserting a `NotFound` with a good explanation attached. The reasoning
+    /// was that a backslash carries meaning in code, so the engine must not
+    /// touch one. That is true of the FILE's backslashes and it is still
+    /// enforced — the file is never folded or rewritten here. It was never true
+    /// of the caller's, which are transport, not content: this pattern is
+    /// unescaped, matched exactly and uniquely against untouched file bytes, and
+    /// the result says what came off.
+    ///
+    /// The old behaviour cost the call. Measured 2026-09-19 across five
+    /// sessions: five `file_edit` failures whose entire fault was an escape
+    /// level, each one a perfectly diagnosed message that still had to be sent
+    /// again.
     #[test]
-    fn an_over_escaped_quote_is_named_rather_than_repaired() {
+    fn an_over_escaped_quote_matches_after_the_escape_comes_off() {
         let file = " * printed the raw id and shipped \"ultra\" to customers as a plan name.\n";
         let plan = plan_one(
             file,
@@ -1970,13 +2341,44 @@ mod tests {
             "x",
         );
 
+        match plan {
+            PlanResult::Ok {
+                new_content,
+                escape_repairs,
+                ..
+            } => {
+                assert_eq!(new_content, "x\n");
+                assert_eq!(escape_repairs.len(), 1, "and it says so");
+                assert!(
+                    !escape_repairs[0].new_string_unescaped,
+                    "this new_string held no escapes, so nothing came off it"
+                );
+            }
+            other => panic!("expected the escaped quotes to recover, got {other:?}"),
+        }
+    }
+
+    /// The explanation the test above used to assert still has to exist,
+    /// because recovery does not fire when the unescaped text is ambiguous —
+    /// and that is exactly when the caller most needs to be told why.
+    #[test]
+    fn an_over_escaped_quote_that_cannot_be_resolved_still_names_the_cause() {
+        let line = " * printed the raw id and shipped \"ultra\" to customers as a plan name.";
+        let file = format!("{line}\n{line}\n");
+        let plan = plan_one(
+            &file,
+            " * printed the raw id and shipped \\\"ultra\\\" to customers as a plan name.",
+            "x",
+        );
+
         let PlanResult::NotFound { diagnosis, .. } = plan else {
-            panic!("an escape difference is a real miss");
+            panic!("two candidate spots must refuse rather than pick one");
         };
         let diagnosis = diagnosis.expect("but a diagnosable one");
-        assert_eq!(diagnosis.differences.len(), 1);
-        let difference = &diagnosis.differences[0];
-        assert_eq!(difference.line, 1);
+        let difference = diagnosis
+            .differences
+            .first()
+            .expect("the escape difference is reported");
         assert!(
             difference
                 .note

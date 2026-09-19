@@ -12,7 +12,17 @@
    `.agw-composer` wrapper — the wrapper also contains the disclaimer line
    below the box, so a wrapper-anchored effect drew the wrong shape around the
    wrong corners. `border-radius: inherit` tracks the surface exactly,
-   including its square-top `connectedTop` variant. */
+   including its square-top `connectedTop` variant.
+
+   TWO states share it, and share it deliberately rather than by accident:
+
+     `.agw-composer-drop`  — a file is over the window, waiting to land.
+     `.agw-composer-busy`  — recording stopped and the transcriber is running.
+
+   Both mean the same thing to the person watching: the composer has taken
+   something and is not finished with it yet. The transcribe wait used to show
+   a bare spinner on the mic button over an otherwise dead box; borrowing the
+   language already built for "hold on" beats inventing a second one. */
 
 /* Registered so the conic angle itself is animatable — animating a plain
    custom property would snap instead of sweep. */
@@ -27,7 +37,8 @@
    stacking context: only the spill past the edges shows, biased downward so
    the top stays dark. Deliberately quiet — the traveling shine carries the
    state; this only keeps the box from floating on pure black. */
-.agw-composer-drop .agw-composer-surface::before {
+.agw-composer-drop .agw-composer-surface::before,
+.agw-composer-busy .agw-composer-surface::before {
   content: "";
   position: absolute;
   inset: -1px;
@@ -46,7 +57,8 @@
    head brightened toward white from the theme accent — every theme shines in
    its own color. The band overlays the surface's real border, so it needs a
    positive z-index; at 1.5px it can never cover content. */
-.agw-composer-drop .agw-composer-surface::after {
+.agw-composer-drop .agw-composer-surface::after,
+.agw-composer-busy .agw-composer-surface::after {
   content: "";
   position: absolute;
   inset: -1.5px;
@@ -98,7 +110,9 @@
 @media (prefers-reduced-motion: reduce) {
   /* No sweep — the comets hold still as a partial edge light. */
   .agw-composer-drop .agw-composer-surface::before,
-  .agw-composer-drop .agw-composer-surface::after {
+  .agw-composer-drop .agw-composer-surface::after,
+  .agw-composer-busy .agw-composer-surface::before,
+  .agw-composer-busy .agw-composer-surface::after {
     animation: none;
   }
 }

@@ -24,6 +24,7 @@ import { TerminalPanel } from "@/apps/agent/components/panels/TerminalPanel";
 import { BrowserPanel, closeAgentBrowser, hideAgentBrowser, showAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
 import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
+import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
 import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
 import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
 import { GalleryPanel } from "@/apps/agent/components/gallery/GalleryPanel";
@@ -123,6 +124,10 @@ const TabPill: React.FC<{
         />
       ) : tab.kind === "project" ? (
         <AgentIcon name="folder" size={13} />
+      ) : tab.kind === "session" ? (
+        // Same glyph as "Conversation details" in the rail's context menu, so
+        // the entry and the tab it produces are recognisably one thing.
+        <AgentIcon name="sliders" size={13} />
       ) : tab.kind === "chat" ? (
         <ChatTabGlyph threadId={tab.threadId ?? ""} />
       ) : tab.kind === "browser" ? (
@@ -359,6 +364,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <BrowserPanel />;
     case "project":
       return <ProjectPanel root={tab.projectRoot ?? ""} />;
+    case "session":
+      return <SessionPanel threadId={tab.threadId ?? ""} />;
     default: {
       const _exhaustive: never = tab.kind;
       return _exhaustive;

@@ -41,6 +41,20 @@ export interface AgentThemeTokens {
   // ── Brand ────────────────────────────────────────────────────────────
   accent: string;
   accentHover: string;
+  /**
+   * The tint on SMALL CONTROLS — a switch that is on, the pinned tack in the
+   * rail, the unread badge, the activity spinner and live dot.
+   *
+   * Its own token so `accent` can go neutral without those going grey with it.
+   * A monochrome or near-monochrome theme is a real thing people want, and with
+   * one accent doing both jobs it is not expressible: turning the brand colour
+   * to black or white also erases the only tint distinguishing an on switch
+   * from an off one.
+   *
+   * Ships equal to `accent` in both built-in themes, so nothing changes until
+   * someone sets it.
+   */
+  controlAccent: string;
 
   // ── Semantic (diffs, status) ─────────────────────────────────────────
   added: string;
@@ -75,6 +89,18 @@ export interface AgentThemeTokens {
   // ── Typography & shape (non-color) ───────────────────────────────────
   fontUi: string;
   fontCode: string;
+  /**
+   * DISPLAY face — the hero wordmark, settings page and section headings, and
+   * dialog titles. Nothing anyone READS at length: not transcript prose, not
+   * message headings, not list rows.
+   *
+   * Ships equal to `fontUi`, so an untouched install renders exactly as before
+   * and this is a knob rather than a redesign. Setting it is how the window
+   * gains a second voice at the two or three places a product's identity
+   * actually lands, without putting a display face anywhere it would cost
+   * legibility.
+   */
+  fontDisplay: string;
   /** Multiplier on the chrome type scale, unitless (e.g. "1", "1.15"). */
   uiTextScale: string;
   /** Assistant message prose size (e.g. "15px"). */
@@ -127,6 +153,12 @@ export type DockTabKind =
   | "member"
   | "project"
   | "chat"
+  // One conversation's own numbers — turn timeline, tool outcomes, tokens.
+  // Its own tab rather than a modal because it updates while a turn runs and
+  // is read ALONGSIDE the transcript, and because project details already
+  // open as a dock tab: the same idea one level down belongs in the same
+  // container.
+  | "session"
   // One saved artifact, opened from the Canvas index. Its own tab rather than
   // a selection inside Canvas: a conversation that produced six reports and
   // diagrams is browsed, and two of them are often read side by side.
@@ -136,7 +168,7 @@ export type DockTabKind =
  *  per-team-member, per-project, per-conversation and per-artifact tabs. */
 export type DockSingletonKind = Exclude<
   DockTabKind,
-  "file" | "member" | "project" | "chat" | "artifact"
+  "file" | "member" | "project" | "chat" | "artifact" | "session"
 >;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
@@ -176,7 +208,7 @@ export interface DockTabInstance {
   memberId?: string;
   /** Workspace folder — only for `kind === "project"`. */
   projectRoot?: string;
-  /** Conversation id — only for `kind === "chat"`. */
+  /** Conversation id — for `kind === "chat"` and `kind === "session"`. */
   threadId?: string;
   /** Saved artifact id — only for `kind === "artifact"`. */
   artifactId?: string;

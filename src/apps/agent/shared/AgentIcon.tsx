@@ -138,9 +138,31 @@ export type AgentIconName =
   | "book-open"
   | "image";
 
+/**
+ * Rendered size, as a CSS length that follows Appearance → Interface text size.
+ *
+ * `size` is the authored pixel size at 100%. Below 100% the glyph tracks the
+ * scale exactly; above it, at HALF the rate. Both branches meet at 1, so an
+ * untouched install renders the authored px and nothing moves.
+ *
+ * The half-rate branch above 100% is the part that matters. Icons live inside
+ * fixed-height controls (`.agw-icon-btn` is 28px, a rail row is 34px) that do
+ * not grow with the text scale, and a glyph tracking the scale 1:1 fills them.
+ * Half-rate also keeps the icon reading a touch smaller than the label beside
+ * it, which is the relationship the authored sizes were picked for.
+ *
+ * Before this, `size` was a hard px attribute: turning Interface text size up
+ * to 115% grew every label and left every glyph where it was, so rows that were
+ * optically balanced at 100% went lopsided at any other setting.
+ */
+function scaledLength(size: number): string {
+  const half = size / 2;
+  return `min(calc(${size}px * var(--agw-ui-text-scale, 1)), calc(${half}px + ${half}px * var(--agw-ui-text-scale, 1)))`;
+}
+
 interface AgentIconProps {
   name: AgentIconName;
-  /** Pixel size (width = height). Defaults to 16. */
+  /** Authored pixel size at 100% interface text size (width = height). Defaults to 16. */
   size?: number;
   /** Stroke weight on the 24-grid. Defaults to 1.8. */
   strokeWidth?: number;
@@ -1116,7 +1138,16 @@ export const AgentIcon: React.FC<AgentIconProps> = ({
       strokeLinecap="round"
       strokeLinejoin="round"
       className={className}
-      style={{ flexShrink: 0, ...style }}
+      // The width/height ATTRIBUTES above stay as the authored px so the glyph
+      // has a correct intrinsic size before styles resolve; these override them
+      // with the scaled length. Caller style still wins, so a component that
+      // must pin an exact size can.
+      style={{
+        flexShrink: 0,
+        width: scaledLength(size),
+        height: scaledLength(size),
+        ...style,
+      }}
       role={title ? "img" : undefined}
       aria-label={title}
       aria-hidden={title ? undefined : true}

@@ -100,8 +100,12 @@
   text-transform: uppercase;
   color: var(--agw-text-subtle);
 }
+/* The nav's own wordmark, and the section headings below, take the DISPLAY
+   face. They are the page's two heading tiers and nobody reads either as
+   prose. Every label, row, value and hint underneath stays on the UI font. */
 .agw-settings-nav-title {
   margin-top: 2px;
+  font-family: var(--agw-font-display, var(--agw-font-ui));
   font-size: var(--agw-fs-md);
   font-weight: var(--agw-fw-strong);
   color: var(--agw-text);
@@ -156,7 +160,7 @@
   background: var(--agw-set-nav-active-bg);
 }
 .agw-settings-nav-item:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* ── Main ─────────────────────────────────────────────────────────────── */
@@ -450,6 +454,7 @@
   color: var(--agw-text-muted);
 }
 .agw-set-section-title {
+  font-family: var(--agw-font-display, var(--agw-font-ui));
   font-size: var(--agw-fs-title);
   font-weight: var(--agw-fw-strong);
   letter-spacing: -0.01em;
@@ -605,8 +610,12 @@
 .agw-switch[data-on]:not([data-disabled]):active .agw-switch-knob {
   transform: translateX(14px);
 }
+/* The CONTROL accent, not the brand one. An on switch and an off switch differ
+   by fill alone, so this is the tint that cannot be allowed to go neutral when
+   someone sets a monochrome brand colour. Falls back to the brand accent,
+   which is what both built-in themes ship it as. */
 .agw-switch[data-on][data-tone="accent"] {
-  background: var(--agw-accent);
+  background: var(--agw-control-accent, var(--agw-accent));
 }
 .agw-switch[data-on][data-tone="success"] {
   background: var(--agw-added);
@@ -619,7 +628,7 @@
   cursor: not-allowed;
 }
 .agw-switch:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* ── Segmented control ────────────────────────────────────────────────── */
@@ -707,7 +716,7 @@
   background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 8%);
 }
 .agw-seg-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Selection is the pill plus full-strength text. No fill and no shadow here —
    both moved onto .agw-seg-thumb so they can travel. */

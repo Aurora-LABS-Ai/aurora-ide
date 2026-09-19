@@ -120,7 +120,7 @@
 }
 .agw-set-range:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
   border-radius: var(--agw-radius-sm);
 }
 
@@ -395,7 +395,7 @@
   color: var(--agw-text);
 }
 .agw-tool-head:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* ── Canvas card — the transcript's only DOOR ──────────────────────────────
@@ -781,7 +781,7 @@
   background: var(--agw-hover-paint);
 }
 .agw-plan-launch:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-plan-launch:disabled {
   cursor: default;

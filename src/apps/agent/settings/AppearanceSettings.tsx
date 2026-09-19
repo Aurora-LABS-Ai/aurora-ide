@@ -27,7 +27,7 @@ import React, { useMemo, useRef, useState } from "react";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import {
-  DEFAULT_RAIL_GLIDE_MS,
+  selectHasAppearancePrefChanges,
   useAgentThemeStore,
   type AgentUiVersion,
   type AgentTokenKey,
@@ -37,7 +37,16 @@ import {
   DEFAULT_AGENT_THEME_ID,
   TYPOGRAPHY_TOKEN_KEYS,
 } from "../theme/themes";
-import { toColorInputValue } from "../theme/color";
+import {
+  AA_NORMAL_TEXT_CONTRAST,
+  MIN_ACCENT_CONTRAST,
+  MIN_ON_ACCENT_CONTRAST,
+  contrastRatio,
+  legibleAccent,
+  readableForeground,
+  toColorInputValue,
+} from "../theme/color";
+import { describeImport } from "../theme/appearance-file";
 import { AGENT_UI_FONT_STACK, CODE_FONT_STACK } from "@/kernel/lib/fonts/stacks";
 import { listExplorerIconPacks } from "@/kernel/lib/icons/icon-packs";
 import { useIconPackStore } from "@/kernel/store/useIconPackStore";
@@ -215,9 +224,18 @@ function tokenNumber(raw: string | undefined, fallback: number): number {
 }
 
 type RadiusPreset = "sharp" | "default" | "round";
+/**
+ * `default` MUST equal the radius scale the themes actually ship
+ * (`SHARED_TYPE` in themes.ts: 6 / 8 / 12). It was 6 / 10 / 14, left behind
+ * when the scale moved, and that made "Default" the one preset that could not
+ * restore the default: picking it wrote a radius no theme has, and the
+ * detection below — which matches on `radiusMd` — found no preset for the
+ * shipped 8px and fell back to showing "Default" while the window was not on
+ * it. Only "Reset appearance" could get back.
+ */
 const RADIUS_PRESETS: Record<RadiusPreset, Pick<AgentThemeTokens, "radiusSm" | "radiusMd" | "radiusLg">> = {
   sharp: { radiusSm: "3px", radiusMd: "5px", radiusLg: "7px" },
-  default: { radiusSm: "6px", radiusMd: "10px", radiusLg: "14px" },
+  default: { radiusSm: "6px", radiusMd: "8px", radiusLg: "12px" },
   round: { radiusSm: "10px", radiusMd: "14px", radiusLg: "20px" },
 };
 
@@ -228,30 +246,117 @@ const ColorRow: React.FC<{
   value: string;
   last?: boolean;
   onChange: (value: string) => void;
-}> = ({ field, value, last, onChange }) => (
+  /** Rendered under the control. Used for the accent legibility warning. */
+  note?: React.ReactNode;
+}> = ({ field, value, last, onChange, note }) => (
   <SettingsRow label={field.label} hint={field.hint} last={last}>
-    <div className="agw-appr-color">
-      <label className="agw-appr-swatch" title="Pick a color">
-        <span className="agw-appr-swatch-fill" style={{ background: value || "transparent" }} />
+    <div className="agw-appr-color-wrap">
+      <div className="agw-appr-color">
+        <label className="agw-appr-swatch" title="Pick a color">
+          <span className="agw-appr-swatch-fill" style={{ background: value || "transparent" }} />
+          <input
+            type="color"
+            value={toColorInputValue(value)}
+            onChange={(e) => onChange(e.target.value)}
+            aria-label={`${field.label} color`}
+          />
+        </label>
         <input
-          type="color"
-          value={toColorInputValue(value)}
+          className="agw-set-input agw-appr-hex"
+          value={value}
           onChange={(e) => onChange(e.target.value)}
-          aria-label={`${field.label} color`}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          aria-label={`${field.label} value`}
         />
-      </label>
-      <input
-        className="agw-set-input agw-appr-hex"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        aria-label={`${field.label} value`}
-      />
+      </div>
+      {note}
     </div>
   </SettingsRow>
 );
+
+/**
+ * Legibility warning for the accent, shown only when the accent actually fails.
+ *
+ * Two independent checks, because they fail for opposite reasons:
+ *
+ *   ACCENT vs the surfaces it paints on — a near-black accent on the near-black
+ *     conversation sheet makes markers, active underlines and links vanish.
+ *   ON-ACCENT vs the accent — the label colour drawn INSIDE a filled accent
+ *     button. A pale accent with the default white `onAccent` is unreadable
+ *     text on the send button and every primary dialog action.
+ *
+ * It reports rather than overrides. The page has always taken any value typed
+ * into it, and silently rewriting someone's brand colour the moment they type
+ * it is worse than telling them. The fix is one click away and says what it
+ * will do, so the correction stays the user's decision.
+ *
+ * Nothing renders when a value cannot be measured (`rgba()`, `color-mix()`,
+ * `transparent`) — a missing warning is honest; a wrong ratio is not.
+ */
+const AccentLegibilityNote: React.FC<{
+  accent: string;
+  onAccent: string;
+  /** The surfaces an accent is actually drawn on, worst case first. */
+  surfaces: string[];
+  onFixAccent: (value: string) => void;
+  onFixOnAccent: (value: string) => void;
+}> = ({ accent, onAccent, surfaces, onFixAccent, onFixOnAccent }) => {
+  const worstSurface = useMemo(() => {
+    let worst: { surface: string; ratio: number } | null = null;
+    for (const surface of surfaces) {
+      const ratio = contrastRatio(accent, surface);
+      if (ratio === null) continue;
+      if (!worst || ratio < worst.ratio) worst = { surface, ratio };
+    }
+    return worst;
+  }, [accent, surfaces]);
+
+  const labelRatio = useMemo(() => contrastRatio(onAccent, accent), [onAccent, accent]);
+
+  const accentFails = worstSurface !== null && worstSurface.ratio < MIN_ACCENT_CONTRAST;
+  const labelFails = labelRatio !== null && labelRatio < MIN_ON_ACCENT_CONTRAST;
+  if (!accentFails && !labelFails) return null;
+
+  return (
+    <div className="agw-appr-warn" role="status">
+      <AgentIcon name="alert" size={13} />
+      <div className="agw-appr-warn-body">
+        {accentFails && worstSurface && (
+          <p>
+            This accent has {worstSurface.ratio.toFixed(1)}:1 contrast against the window
+            behind it, under the {MIN_ACCENT_CONTRAST}:1 a marker, underline or link needs
+            to stay visible.
+          </p>
+        )}
+        {labelFails && labelRatio !== null && (
+          <p>
+            Label text on a filled accent button has {labelRatio.toFixed(1)}:1 contrast,
+            below the {MIN_ON_ACCENT_CONTRAST}:1 a label needs to stay readable and well
+            under the {AA_NORMAL_TEXT_CONTRAST}:1 WCAG asks for. That is Send, and the
+            primary button in every dialog.
+          </p>
+        )}
+        <div className="agw-appr-warn-actions">
+          {accentFails && (
+            <AgwButton
+              onClick={() => onFixAccent(legibleAccent(accent, surfaces))}
+              icon="refine"
+            >
+              Use the nearest legible shade
+            </AgwButton>
+          )}
+          {labelFails && (
+            <AgwButton onClick={() => onFixOnAccent(readableForeground(accent))}>
+              Fix the label colour
+            </AgwButton>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const TextTokenRow: React.FC<{
   field: TokenField;
@@ -312,6 +417,14 @@ export const AppearanceSettings: React.FC = () => {
     }));
   }, [customPacks]);
 
+  // An imported file can name a pack this machine does not have (a custom pack
+  // the exporter installed). Checking against the live registry is what keeps
+  // an import from pointing the Files panel at a pack that renders nothing.
+  const iconPackIds = useMemo(
+    () => new Set(iconPackOptions.map((o) => o.value)),
+    [iconPackOptions],
+  );
+
   const setActiveTheme = useAgentThemeStore((s) => s.setActiveTheme);
   const setToken = useAgentThemeStore((s) => s.setToken);
   const setTokens = useAgentThemeStore((s) => s.setTokens);
@@ -324,7 +437,9 @@ export const AppearanceSettings: React.FC = () => {
   const setSyntaxHighlighting = useAgentThemeStore((s) => s.setSyntaxHighlighting);
   const setRailGlide = useAgentThemeStore((s) => s.setRailGlide);
   const setRailGlideMs = useAgentThemeStore((s) => s.setRailGlideMs);
-  const importThemeJson = useAgentThemeStore((s) => s.importThemeJson);
+  const buildAppearanceExport = useAgentThemeStore((s) => s.buildAppearanceExport);
+  const importAppearanceJson = useAgentThemeStore((s) => s.importAppearanceJson);
+  const hasPrefChanges = useAgentThemeStore(selectHasAppearancePrefChanges);
 
   const themes = useMemo(() => {
     const map = new Map<string, (typeof AGENT_THEMES)[string]>();
@@ -392,15 +507,9 @@ export const AppearanceSettings: React.FC = () => {
   const hasTypographyOverrides = TYPOGRAPHY_TOKEN_KEYS.some(
     (key) => customizations[activeThemeId]?.[key] !== undefined,
   );
-  const hasAppearanceChanges =
-    hasOverrides ||
-    contrast !== 50 ||
-    translucentSidebar ||
-    uiVersion !== "classic" ||
-    reduceMotion ||
-    !syntaxHighlighting ||
-    !railGlide ||
-    railGlideMs !== DEFAULT_RAIL_GLIDE_MS;
+  // Derived from the preference table, not re-listed here. The hand-written
+  // version drifted from what Reset actually clears.
+  const hasAppearanceChanges = hasOverrides || hasPrefChanges;
   const radiusPreset: RadiusPreset =
     (Object.keys(RADIUS_PRESETS) as RadiusPreset[]).find(
       (p) => RADIUS_PRESETS[p].radiusMd === tokens.radiusMd,
@@ -433,8 +542,15 @@ export const AppearanceSettings: React.FC = () => {
     }
     try {
       const text = await file.text();
-      const { applied } = importThemeJson(text);
-      flash("ok", `Applied ${applied} token${applied === 1 ? "" : "s"} from ${file.name}.`);
+      const result = importAppearanceJson(text);
+      // The icon pack is the one imported field this store does not own — it
+      // lives in the kernel settings store, shared with the editor window.
+      const iconPackApplied =
+        result.iconPack !== null && iconPackIds.has(result.iconPack);
+      if (iconPackApplied && result.iconPack) {
+        setExplorerIconPack(result.iconPack as typeof explorerIconPack);
+      }
+      flash("ok", describeImport({ ...result, iconPackApplied }));
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Could not import that file.");
     }
@@ -447,28 +563,26 @@ export const AppearanceSettings: React.FC = () => {
     if (file) void applyFile(file);
   };
 
+  // Export and Copy write the SAME payload. They used to differ — Copy dropped
+  // the id and name — which meant pasting a copied theme and opening an
+  // exported one produced two different results from one screen.
+  const appearanceJson = () =>
+    JSON.stringify(buildAppearanceExport(explorerIconPack), null, 2);
+
   const exportTheme = () => {
-    const payload = {
-      id: `${base.id}-custom`,
-      name: `${base.name} (custom)`,
-      appearance: base.appearance,
-      tokens,
-    };
-    const json = JSON.stringify(payload, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
+    const blob = new Blob([appearanceJson()], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = `${base.id}-appearance.json`;
     a.click();
     URL.revokeObjectURL(url);
-    flash("ok", "Exported theme JSON.");
+    flash("ok", "Exported every colour and setting on this page.");
   };
 
   const copyTheme = async () => {
-    const json = JSON.stringify({ appearance: base.appearance, tokens }, null, 2);
-    const ok = await writeClipboardText(json);
-    flash(ok ? "ok" : "err", ok ? "Theme JSON copied." : "Couldn't copy.");
+    const ok = await writeClipboardText(appearanceJson());
+    flash(ok ? "ok" : "err", ok ? "Appearance JSON copied." : "Couldn't copy.");
   };
 
   return (
@@ -618,8 +732,9 @@ export const AppearanceSettings: React.FC = () => {
           >
             <AgentIcon name="upload" size={18} />
             <span>
-              <strong>Drop a theme JSON</strong> here, or click to browse. Cursor/Claude-style
-              token maps and exported Aurora themes both work.
+              <strong>Drop an appearance JSON</strong> here, or click to browse. An Aurora
+              export restores every colour and setting on this page; a Cursor/Claude-style
+              token map sets colours only. Anything the file leaves out stays as you have it.
             </span>
           </div>
         </SettingsBlock>
@@ -641,6 +756,19 @@ export const AppearanceSettings: React.FC = () => {
           }}
           value={tokens.accent}
           onChange={(v) => setToken("accent", v)}
+          note={
+            <AccentLegibilityNote
+              accent={tokens.accent}
+              onAccent={tokens.onAccent}
+              // The surfaces an accent is genuinely drawn on. The conversation
+              // sheet is listed because it is the darkest of them in the
+              // default theme, and an accent that survives there survives
+              // everywhere; the elevated surface covers menus and pills.
+              surfaces={[tokens.conversation, tokens.canvas, tokens.surfaceElevated]}
+              onFixAccent={(v) => setToken("accent", v)}
+              onFixOnAccent={(v) => setToken("onAccent", v)}
+            />
+          }
         />
         <ColorRow
           field={{
@@ -650,6 +778,15 @@ export const AppearanceSettings: React.FC = () => {
           }}
           value={tokens.accentHover}
           onChange={(v) => setToken("accentHover", v)}
+        />
+        <ColorRow
+          field={{
+            key: "controlAccent",
+            label: "Control accent",
+            hint: "The tint on small controls that carry state by colour alone: a switch that is on, the pinned tack in the rail, the unread badge, and the activity spinner and dot. Its own setting so Accent can go neutral — a black or white brand colour — without an on switch becoming indistinguishable from an off one.",
+          }}
+          value={tokens.controlAccent}
+          onChange={(v) => setToken("controlAccent", v)}
         />
         <ColorRow
           field={{
@@ -825,6 +962,18 @@ export const AppearanceSettings: React.FC = () => {
             bundled={BUNDLED_UI_FONTS}
             onChange={(stack) => setToken("fontUi", stack)}
             ariaLabel="UI font"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Display font"
+          hint="The home wordmark, the Settings heading, section titles and dialog titles. Nothing you read at length uses it, so a face with real character is safe here. Matches the UI font until you change it."
+        >
+          <FontStackPicker
+            value={tokens.fontDisplay ?? AGENT_UI_FONT_STACK}
+            baseStack={AGENT_UI_FONT_STACK}
+            bundled={BUNDLED_UI_FONTS}
+            onChange={(stack) => setToken("fontDisplay", stack)}
+            ariaLabel="Display font"
           />
         </SettingsRow>
         <SettingsRow

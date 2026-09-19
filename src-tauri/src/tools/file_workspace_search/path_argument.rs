@@ -6,7 +6,7 @@
 //! `file_write` and `file_edit` ask for the same filename twice. Once in
 //! [`streaming_targets::FIELD`] (`affected_paths`), which the tool description
 //! orders the model to emit FIRST, every time, and describes as "every file
-//! path this call will touch, including when there is only one". Once more in
+//! this call WRITES, including when there is only one". Once more in
 //! `path`, which is the field the tool actually writes to.
 //!
 //! Measured across 924 real `file_write` calls on disk, 25 were refused for a
@@ -123,6 +123,28 @@ fn listed_paths(items: &[Value]) -> Listed {
         1 => Listed::One(paths[0].to_string()),
         n => Listed::Many(n),
     }
+}
+
+/// The paths listed in [`streaming_targets::FIELD`], in the order they arrived.
+///
+/// The field is UI metadata and chooses nothing on its own — but when a batch
+/// item names no file, these are the only files the call ever mentioned, so
+/// they are the candidate set `file_edit` matches `old_string` against. Blanks
+/// and non-strings are dropped, exactly as [`listed_paths`] drops them.
+pub(crate) fn candidate_paths(input: &Value) -> Vec<String> {
+    input
+        .get(streaming_targets::FIELD)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Read `path` for a tool that also carries [`streaming_targets::FIELD`].
@@ -252,12 +274,43 @@ fn from_affected(input: &Value, verb: &str) -> Result<PathArgument, ToolError> {
 ///
 /// Same rule as everywhere else in this module: where the call says one thing,
 /// serve it; where it genuinely says two, refuse and name what arrived.
-pub(crate) fn batch_item_without_path(input: &Value, n: usize) -> String {
+/// What happened when `file_edit` tried to pick this item's file by matching
+/// its `old_string` against the files the call named.
+pub(crate) enum ContentLookup {
+    /// Fewer than two candidates, so there was nothing to choose between.
+    NotAttempted,
+    /// The text is in none of them.
+    NoneMatched,
+    /// Several hold it.
+    Ambiguous(usize),
+}
+
+/// The refusal for a batch item with no `path`, after content resolution has
+/// already had its turn.
+///
+/// Every branch names what the call actually carried and what was tried, so the
+/// model is never told to fix something it did not do. The three outcomes need
+/// three different next steps, and the old single sentence — "give every edit
+/// item its own `path`" — is the right advice for only one of them.
+pub(crate) fn batch_item_without_path(input: &Value, n: usize, lookup: ContentLookup) -> String {
     let field = streaming_targets::FIELD;
     let listed = input
         .get(field)
         .and_then(Value::as_array)
         .map(|v| listed_paths(v));
+
+    // The text was not in any candidate, so a `path` would not have saved this
+    // edit either — it would have failed to match wherever it was sent. Saying
+    // "set `path`" here sends the model to fix the one thing that was not
+    // wrong.
+    if matches!(lookup, ContentLookup::NoneMatched) {
+        return format!(
+            "Edit {n}: no `path`, and its `old_string` is not in any file `{field}` names — so \
+             naming the file would not have made this edit match either. Read the file you mean \
+             with file_read and copy `old_string` from what comes back, then send the edit with \
+             its own `path`."
+        );
+    }
 
     match listed {
         // Can't happen through `resolve` — one file becomes the top-level path
@@ -267,13 +320,25 @@ pub(crate) fn batch_item_without_path(input: &Value, n: usize) -> String {
             "Edit {n}: no `path`. `{field}` names {path}; set `path` on this edit item, or send a \
              top-level `path` that every edit shares."
         ),
-        Some(Listed::Many(count)) => format!(
-            "Edit {n}: no `path`. `{field}` names {count} files, which does not say which of them \
-             THIS edit belongs to — that field only labels the row in the interface while your \
-             arguments are still streaming. Give every edit item its own `path` (the batch form \
-             is built for exactly this: several files in one call), or send a top-level `path` \
-             when they all share one."
-        ),
+        Some(Listed::Many(count)) => {
+            let tried = match lookup {
+                // The one case that is genuinely a choice. The tool read the
+                // files and found the text in more than one of them, so only
+                // the caller knows which was meant.
+                ContentLookup::Ambiguous(hits) => format!(
+                    " Its `old_string` is in {hits} of them, so the text cannot say which you \
+                     meant."
+                ),
+                _ => String::new(),
+            };
+            format!(
+                "Edit {n}: no `path`. `{field}` names {count} files, which does not say which of \
+                 them THIS edit belongs to — that field only labels the row in the interface \
+                 while your arguments are still streaming.{tried} Give every edit item its own \
+                 `path` (the batch form is built for exactly this: several files in one call), \
+                 or send a top-level `path` when they all share one."
+            )
+        }
         _ => format!(
             "Edit {n}: no `path`. Set `path` on this edit item, or send a top-level `path` that \
              every edit shares."

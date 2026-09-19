@@ -39,9 +39,12 @@
   border-color: var(--agw-border);
 }
 
+/* Was a half-strength outset ring, which is a third spelling again — and this
+   control sits hard against the top of the rail, where the top of that ring was
+   cut off. Same mark as every other row now. */
 .agw-surfacesw:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--agw-ring) 45%, transparent);
+  box-shadow: var(--agw-focus-ring);
 }
 
 .agw-surfacesw[data-open] {

@@ -146,10 +146,15 @@
    the hover fill deepens it in BOTH light and dark themes (text is always
    the high-contrast pole), so the press reads with any user palette. */
 .agw-icon-btn:active {
-  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
 }
+/* Focus sits INSIDE the button's own 28px box. These buttons cluster in tight
+   strips (titlebar controls, composer actions, message action bars) where a 2px
+   outset ring overlapped the neighbour on both sides, so the focused button and
+   the ones next to it fought for the same pixels. */
 .agw-icon-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  background: var(--agw-hover-paint);
+  box-shadow: var(--agw-focus-ring);
 }
 
 .agw-zone {
@@ -184,6 +189,20 @@
     in srgb,
     var(--agw-hover) 50%,
     color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
+  );
+  /* The press, re-derived from the AMPLIFIED hover above. It has to be restated
+   * here: a var() inside a custom property is substituted where the property is
+   * declared, so the `--agw-press-paint` on .agw-root closed over the root's
+   * hover value and a pressed menu row would have come out lighter than the
+   * same row merely hovered. */
+  --agw-press-paint: color-mix(
+    in srgb,
+    color-mix(
+      in srgb,
+      var(--agw-hover) 50%,
+      color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
+    ) 88%,
+    var(--agw-text) 12%
   );
 
   /* Near-opaque glass. The blur is kept for depth, but the tint is 95% so the

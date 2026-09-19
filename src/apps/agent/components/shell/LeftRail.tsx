@@ -706,6 +706,18 @@ export const LeftRail: React.FC = () => {
               openChatTab(thread.id, thread.title, thread.workspaceRoot ?? null),
           },
           {
+            // Directly under "Open in side panel", and the second entry that
+            // opens something: it answers the same question a project row's
+            // "Project details" does, one level down, and lands in the same
+            // dock so the pair reads as one idea.
+            icon: "sliders",
+            label: "Conversation details",
+            onSelect: () =>
+              useAgentWorkspaceStore
+                .getState()
+                .openSessionTab(thread.id, thread.title || "New Chat"),
+          },
+          {
             icon: "file-edit",
             label: "Rename chat",
             separatorBefore: true,

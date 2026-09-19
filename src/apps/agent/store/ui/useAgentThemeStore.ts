@@ -18,6 +18,21 @@ import {
   TYPOGRAPHY_TOKEN_KEYS,
 } from "@/apps/agent/theme/themes";
 import { applyContrast } from "@/apps/agent/theme/color";
+import {
+  type AgentUiVersion,
+  type AppearancePrefKey,
+  type AppearancePrefs,
+  type ModelSelectorPosition,
+  APPEARANCE_PREFS,
+  defaultAppearancePrefs,
+  hasAppearancePrefChanges,
+  resettableAppearancePrefs,
+} from "@/apps/agent/theme/appearance-prefs";
+import {
+  type AppearanceFile,
+  buildAppearanceFile,
+  parseAppearanceFile,
+} from "@/apps/agent/theme/appearance-file";
 
 export type AgentTokenKey = keyof AgentThemeTokens;
 
@@ -36,54 +51,81 @@ export type AgentTokenKey = keyof AgentThemeTokens;
  * colour stays the user's. And it is presentation only — same fields, same
  * actions, same stored values in both, so a bug report never has to begin with
  * "which look are you on?".
+ *
+ * Declared in `theme/appearance-prefs.ts` with the rest of the preference
+ * table; re-exported here because this store has always been where it is
+ * imported from.
  */
-export type AgentUiVersion = "classic" | "v2";
+export type { AgentUiVersion, ModelSelectorPosition } from "@/apps/agent/theme/appearance-prefs";
+export { DEFAULT_CONTRAST, DEFAULT_RAIL_GLIDE_MS } from "@/apps/agent/theme/appearance-prefs";
 
 /** The canonical token-key list, derived from the default theme. */
 export const AGENT_TOKEN_KEYS = Object.keys(
   AGENT_THEMES[DEFAULT_AGENT_THEME_ID].tokens,
 ) as AgentTokenKey[];
 const TOKEN_KEY_SET = new Set<string>(AGENT_TOKEN_KEYS);
+const isTokenKey = (key: string): boolean => TOKEN_KEY_SET.has(key);
 
-/** Neutral contrast — no adjustment. */
-export const DEFAULT_CONTRAST = 50;
-export const DEFAULT_RAIL_GLIDE_MS = 580;
+/** The preference keys, in table order. Persistence, reset and export all walk
+ *  this rather than restating the fields. */
+const APPEARANCE_PREF_KEYS = Object.keys(APPEARANCE_PREFS) as AppearancePrefKey[];
 
-interface AgentThemeState {
+/** Lift just the preference slice out of the store state. */
+function currentAppearancePrefs(state: AppearancePrefs): AppearancePrefs {
+  const out = {} as Record<string, unknown>;
+  for (const key of APPEARANCE_PREF_KEYS) out[key] = state[key];
+  return out as AppearancePrefs;
+}
+
+/** The base theme behind the active id: a user's own, then a built-in, then
+ *  the default. Same cascade `resolveAgentTheme` uses, without the contrast
+ *  pass — an export carries contrast as a PREFERENCE, so baking it into the
+ *  tokens too would apply it twice on import. */
+function resolveBaseTheme(state: {
+  activeThemeId: string;
+  customThemes: Record<string, AgentTheme>;
+}): AgentTheme {
+  return (
+    state.customThemes[state.activeThemeId] ??
+    AGENT_THEMES[state.activeThemeId] ??
+    AGENT_THEMES[DEFAULT_AGENT_THEME_ID]
+  );
+}
+
+/**
+ * Which base theme an imported file should land on.
+ *
+ * Prefer the id the file names, when this install actually has it. A file from
+ * someone's own custom theme names an id we have never seen, so fall back to
+ * the first built-in matching the file's light/dark — that keeps
+ * `data-appearance` correct, which is what V2's light-mode shadow block and
+ * every `[data-appearance="light"]` rule read. Returning null means "leave the
+ * active theme alone", which is what a bare token map deserves.
+ */
+function resolveImportTarget(
+  state: { customThemes: Record<string, AgentTheme> },
+  themeId: string | null,
+  appearance: "light" | "dark" | null,
+): string | null {
+  if (themeId && (state.customThemes[themeId] ?? AGENT_THEMES[themeId])) return themeId;
+  if (!appearance) return null;
+  const match = Object.values(AGENT_THEMES).find((t) => t.appearance === appearance);
+  return match?.id ?? null;
+}
+
+/**
+ * The preference FIELDS come from `AppearancePrefs`, which is derived from the
+ * table in `theme/appearance-prefs.ts` — they are deliberately not restated
+ * here. Adding one to the table gives this store the field, the default, the
+ * persistence, the reset and the export in one edit; adding one here alone does
+ * not compile.
+ */
+interface AgentThemeState extends AppearancePrefs {
   activeThemeId: string;
   /** User/imported agent themes, keyed by id (override built-ins of same id). */
   customThemes: Record<string, AgentTheme>;
   /** Live token overrides per base-theme id (applied on top of the base). */
   customizations: Record<string, Partial<AgentThemeTokens>>;
-  /** Frosted, semi-transparent left rail / dock. */
-  translucentSidebar: boolean;
-  /** Which design generation the window draws. Composes with every theme. */
-  uiVersion: AgentUiVersion;
-  /** 0–100, 50 = neutral. Scales foreground/line separation. */
-  contrast: number;
-  /** Honor reduced motion (disables non-essential animation). */
-  reduceMotion: boolean;
-  /** Syntax-highlight code in tool cards, the file viewer, and message code
-   *  blocks. When off, code renders in a single foreground colour. */
-  syntaxHighlighting: boolean;
-  /** Glide the left rail / right dock open & closed. When off they snap
-   *  instantly (no width animation). */
-  railGlide: boolean;
-  /** Rail/dock glide duration in ms (only used when `railGlide` is on). */
-  railGlideMs: number;
-  /** Where the composer model selector sits: the top control row (left) or the
-   *  bottom action row (right). */
-  modelSelectorPosition: "top" | "bottom";
-  /** Keyboard chord that opens the agent-window command center. */
-  commandCenterShortcut: string;
-  /** Draw a continuous vertical rule down the transcript, with each row's
-   *  marker sitting on it, so a turn reads as one thread of work instead of a
-   *  stack of separate cards. Purely visual — off is today's look. */
-  transcriptSpine: boolean;
-  /** Pin each user message to the top of the transcript while its reply scrolls
-   *  underneath, so the question stays on screen through a long answer. Purely
-   *  visual — off is today's look. */
-  transcriptStickyUser: boolean;
 
   setActiveTheme: (id: string) => void;
   registerTheme: (theme: AgentTheme) => void;
@@ -106,16 +148,35 @@ interface AgentThemeState {
   setSyntaxHighlighting: (v: boolean) => void;
   setRailGlide: (v: boolean) => void;
   setRailGlideMs: (v: number) => void;
-  setModelSelectorPosition: (v: "top" | "bottom") => void;
+  setModelSelectorPosition: (v: ModelSelectorPosition) => void;
   setCommandCenterShortcut: (shortcut: string) => void;
   setTranscriptSpine: (v: boolean) => void;
   setTranscriptStickyUser: (v: boolean) => void;
   /**
-   * Apply a pasted/dropped theme JSON to the active theme. Accepts a full
-   * `AgentTheme`, a `{ tokens: {...} }` wrapper, or a flat token map. Only
-   * recognized token keys are applied. Throws on unusable input.
+   * Build the exportable appearance file for whatever is on screen: the base
+   * theme's identity, the FULLY MERGED tokens, and every exportable
+   * preference. The icon pack is passed in because it lives in the kernel's
+   * settings store, shared with the editor window, not here.
    */
-  importThemeJson: (text: string) => { applied: number };
+  buildAppearanceExport: (iconPack?: string) => AppearanceFile;
+  /**
+   * Apply a pasted / dropped / opened appearance JSON.
+   *
+   * Accepts this module's full file, an older `{ tokens: {...} }` export, or a
+   * flat Cursor/Claude-style token map. Whatever the file carries is applied;
+   * whatever it omits is left exactly as the user has it. Throws only when the
+   * text is not JSON or carries nothing recognizable at all.
+   *
+   * `iconPack` comes back in the result rather than being applied here — this
+   * store does not own it. The caller writes it to the settings store.
+   */
+  importAppearanceJson: (text: string) => {
+    tokenCount: number;
+    prefCount: number;
+    themeSwitched: boolean;
+    iconPack: string | null;
+    skipped: string[];
+  };
 }
 
 export const useAgentThemeStore = create<AgentThemeState>()(
@@ -124,17 +185,11 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       activeThemeId: DEFAULT_AGENT_THEME_ID,
       customThemes: {},
       customizations: {},
-      translucentSidebar: false,
-      uiVersion: "classic",
-      contrast: DEFAULT_CONTRAST,
-      reduceMotion: false,
-      syntaxHighlighting: true,
-      railGlide: true,
-      railGlideMs: DEFAULT_RAIL_GLIDE_MS,
-      modelSelectorPosition: "bottom",
-      commandCenterShortcut: "Mod+K",
-      transcriptSpine: false,
-      transcriptStickyUser: false,
+      // Every preference default, spread from the table. Not restated here:
+      // a field with a row in the table but no line here used to be a silent
+      // `undefined` at runtime, which is how a switch ends up persisting
+      // nothing while its test stays green.
+      ...defaultAppearancePrefs(),
 
       setActiveTheme: (id) => set({ activeThemeId: id }),
       registerTheme: (theme) =>
@@ -166,18 +221,10 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         set((s) => {
           const next = { ...s.customizations };
           delete next[s.activeThemeId];
-          return {
-            customizations: next,
-            contrast: DEFAULT_CONTRAST,
-            translucentSidebar: false,
-            uiVersion: "classic" as const,
-            reduceMotion: false,
-            syntaxHighlighting: true,
-            railGlide: true,
-            railGlideMs: DEFAULT_RAIL_GLIDE_MS,
-            transcriptSpine: false,
-            transcriptStickyUser: false,
-          };
+          // Only the preferences the table marks `reset`. Spreading the whole
+          // default set here would also clear the two Preferences-page fields
+          // this button has never touched.
+          return { customizations: next, ...resettableAppearancePrefs() };
         }),
 
       resetTypography: () =>
@@ -205,33 +252,45 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setTranscriptSpine: (v) => set({ transcriptSpine: v }),
       setTranscriptStickyUser: (v) => set({ transcriptStickyUser: v }),
 
-      importThemeJson: (text) => {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          throw new Error("That file isn't valid JSON.");
+      buildAppearanceExport: (iconPack) => {
+        const s = get();
+        const base = resolveBaseTheme(s);
+        return buildAppearanceFile({
+          themeId: base.id,
+          themeName: base.name,
+          appearance: base.appearance,
+          // The MERGED tokens, not the override slice. An export holding only
+          // the overrides is meaningless on a machine whose base theme differs,
+          // and it would silently lose every value the user never touched.
+          tokens: { ...base.tokens, ...(s.customizations[s.activeThemeId] ?? {}) },
+          prefs: currentAppearancePrefs(s),
+          iconPack,
+        });
+      },
+
+      importAppearanceJson: (text) => {
+        const parsed = parseAppearanceFile(text, isTokenKey);
+
+        // ORDER MATTERS. The theme switches first, because token overrides are
+        // keyed by the ACTIVE theme id — writing them before the switch files
+        // them under the outgoing theme, where the window will never read them.
+        let themeSwitched = false;
+        const target = resolveImportTarget(get(), parsed.themeId, parsed.appearance);
+        if (target && target !== get().activeThemeId) {
+          set({ activeThemeId: target });
+          themeSwitched = true;
         }
-        const obj = parsed as Record<string, unknown> | null;
-        const rawTokens =
-          obj && typeof obj === "object" && obj.tokens && typeof obj.tokens === "object"
-            ? (obj.tokens as Record<string, unknown>)
-            : (obj as Record<string, unknown> | null);
-        if (!rawTokens || typeof rawTokens !== "object") {
-          throw new Error("No theme tokens found in that file.");
-        }
-        const partial: Partial<AgentThemeTokens> = {};
-        for (const [k, v] of Object.entries(rawTokens)) {
-          if (TOKEN_KEY_SET.has(k) && typeof v === "string") {
-            (partial as Record<string, string>)[k] = v;
-          }
-        }
-        const applied = Object.keys(partial).length;
-        if (applied === 0) {
-          throw new Error("No recognizable agent-window tokens in that file.");
-        }
-        get().setTokens(partial);
-        return { applied };
+
+        if (parsed.tokenCount > 0) get().setTokens(parsed.tokens);
+        if (parsed.prefCount > 0) set(parsed.prefs as Partial<AgentThemeState>);
+
+        return {
+          tokenCount: parsed.tokenCount,
+          prefCount: parsed.prefCount,
+          themeSwitched,
+          iconPack: parsed.iconPack,
+          skipped: parsed.skipped,
+        };
       },
     }),
     {
@@ -267,21 +326,15 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         }
         return persisted;
       },
+      // Persist the three theme fields explicitly, then EVERY preference by
+      // walking the table. This list used to be hand-written beside the field
+      // declarations, which is exactly how a setting ends up applying at
+      // runtime and vanishing on restart without a single test going red.
       partialize: (s) => ({
         activeThemeId: s.activeThemeId,
         customThemes: s.customThemes,
         customizations: s.customizations,
-        translucentSidebar: s.translucentSidebar,
-        uiVersion: s.uiVersion,
-        contrast: s.contrast,
-        reduceMotion: s.reduceMotion,
-        syntaxHighlighting: s.syntaxHighlighting,
-        railGlide: s.railGlide,
-        railGlideMs: s.railGlideMs,
-        modelSelectorPosition: s.modelSelectorPosition,
-        commandCenterShortcut: s.commandCenterShortcut,
-        transcriptSpine: s.transcriptSpine,
-        transcriptStickyUser: s.transcriptStickyUser,
+        ...currentAppearancePrefs(s),
       }),
     },
   ),
@@ -307,6 +360,21 @@ export function resolveAgentTheme(state: AgentThemeState): AgentTheme {
 
 /** Back-compat selector alias. */
 export const selectActiveAgentTheme = resolveAgentTheme;
+
+/**
+ * Does "Reset appearance" have anything to do, preference-wise?
+ *
+ * Returns a BOOLEAN, not the preference slice: a selector that builds a fresh
+ * object every call re-renders its subscriber on every unrelated store write.
+ *
+ * Derived from the same `reset` flag `resetCustomizations` walks, so the button
+ * and the action can no longer disagree. They did: the Reset button ignored the
+ * two transcript switches while the reset itself cleared them, so turning on
+ * the spine left the only control that would undo it greyed out.
+ */
+export function selectHasAppearancePrefChanges(state: AgentThemeState): boolean {
+  return hasAppearancePrefChanges(currentAppearancePrefs(state));
+}
 
 /** All selectable themes (built-ins + user customs), de-duped by id. */
 export function selectAllAgentThemes(state: AgentThemeState): AgentTheme[] {

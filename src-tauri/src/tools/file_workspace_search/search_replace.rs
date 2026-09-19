@@ -292,6 +292,7 @@ pub(crate) fn render_response(
             total_replacements,
             replacement_details,
             typography_repairs,
+            escape_repairs,
             ..
         } => {
             // An edit that only landed after folding the file's typography is
@@ -304,6 +305,23 @@ pub(crate) fn render_response(
                     " (matched after correcting {count} spot{} where the file uses different \
                      characters — see typographyRepaired)",
                     if count == 1 { "" } else { "s" }
+                )
+            });
+            // Louder than the typography note, because the assumption is
+            // bigger. That repair changes which bytes matched; this one also
+            // changes which bytes were written, and the caller is the only one
+            // who can confirm that was the intent.
+            let escape_note = (!escape_repairs.is_empty()).then(|| {
+                let wrote_unescaped = escape_repairs.iter().any(|r| r.new_string_unescaped);
+                format!(
+                    " (your text arrived escaped one level too many — it matched after removing \
+                     that level{}. Send this file's text without the extra backslashes next time; \
+                     see escapeRepaired)",
+                    if wrote_unescaped {
+                        ", and new_string was unescaped the same way before writing"
+                    } else {
+                        ""
+                    }
                 )
             });
             // Said as a SENTENCE, not only as a flag, and it says what was
@@ -327,8 +345,9 @@ pub(crate) fn render_response(
                 "success": true,
                 "pending": false,
                 "message": format!(
-                    "Replaced {total_replacements} occurrence(s) in {raw_path}{}{}",
+                    "Replaced {total_replacements} occurrence(s) in {raw_path}{}{}{}",
                     repair_note.as_deref().unwrap_or(""),
+                    escape_note.as_deref().unwrap_or(""),
                     crlf_note.unwrap_or("")
                 ),
                 "path": raw_path,
@@ -358,6 +377,9 @@ pub(crate) fn render_response(
             }
             if !typography_repairs.is_empty() {
                 payload["typographyRepaired"] = json!(typography_repairs);
+            }
+            if !escape_repairs.is_empty() {
+                payload["escapeRepaired"] = json!(escape_repairs);
             }
             // Present only when there is something to say — a permanent
             // `"impact": null` on every edit would teach the model to stop

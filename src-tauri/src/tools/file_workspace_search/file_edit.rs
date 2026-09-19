@@ -60,15 +60,22 @@ impl ToolExecutor for FileEditTool {
     /// ## What this description deliberately withholds
     ///
     /// A zero-match edit whose only fault is a straightened quote or dash is
-    /// repaired and applied (see `editor_ops::recover_typographic`). This
-    /// description does **not** say so, and that is the point.
+    /// repaired and applied (`editor_ops::recover_typographic`). So is one
+    /// whose only fault is a level of string escaping the caller's serializer
+    /// added (`editor_ops::recover_overescaped`). This description does **not**
+    /// say so, and that is the point.
     ///
     /// The contract stays "match exactly", because it is still true and it is
     /// still the instruction that produces correct calls. Advertising the net
     /// would teach carelessness across the board while the net covers exactly
-    /// one class — indentation, trailing whitespace and over-escaping are all
-    /// still hard failures. A model told "Aurora fixes my quotes" has no way to
-    /// learn where the fixing stops.
+    /// two classes — indentation and trailing whitespace are still hard
+    /// failures, and so is text the file simply does not contain. A model told
+    /// "Aurora fixes my quotes" has no way to learn where the fixing stops.
+    ///
+    /// Both nets share one rule: they change how the caller's text is READ,
+    /// never what the file says. The file is never folded, rewritten or
+    /// re-escaped to meet a pattern halfway, and a recovered match must still
+    /// be exact and unique or it is refused.
     ///
     /// The caller is not kept in the dark either: a repaired edit says so in
     /// its result ("matched after correcting N spots"), at the moment that
@@ -124,7 +131,15 @@ impl ToolExecutor for FileEditTool {
                             },
                             "required": ["old_string", "new_string"],
                         },
-                        "description": "Batch form: array of edits, applied atomically across all targeted files. Matched regions in the same file must not overlap."
+                        // "across all targeted files" used to stand where the
+                        // second sentence is. It was the only place the batch
+                        // form said where its files come from, and "targeted"
+                        // is the word `affected_paths` was named after until
+                        // 2026-08-20 (`streaming_targets::LEGACY_FIELD`). A
+                        // model reading the array description and skipping the
+                        // nested `path` one was being told, in Aurora's own
+                        // words, to take its files from the streaming field.
+                        "description": "Batch form: array of edits, applied atomically against each file's original snapshot. Each item's own `path` chooses the file that edit belongs to, falling back to the top-level `path`; the file is never taken from `affected_paths`. Matched regions in the same file must not overlap."
                     }
                 },
                 "required": [],
@@ -264,6 +279,11 @@ impl FileEditTool {
     /// `input` is the whole call, carried in only so a missing per-item `path`
     /// can be explained against what the model actually sent — see
     /// [`super::path_argument::batch_item_without_path`].
+    /// Run the batch, then say what had to be worked out to run it.
+    ///
+    /// The note is attached here rather than inside the body because the body
+    /// returns through half a dozen paths, and a resolution the result does not
+    /// mention is a silent one.
     async fn run_batch(
         &self,
         arr: &[Value],
@@ -271,21 +291,39 @@ impl FileEditTool {
         input: &Value,
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
+        let mut resolved_by_content: Vec<(usize, String)> = Vec::new();
+        let result = self
+            .run_batch_inner(arr, top_path, input, ctx, &mut resolved_by_content)
+            .await?;
+        Ok(match content_resolution_note(&resolved_by_content) {
+            Some(note) => with_argument_note(&result, &note),
+            None => result,
+        })
+    }
+
+    async fn run_batch_inner(
+        &self,
+        arr: &[Value],
+        top_path: Option<&str>,
+        input: &Value,
+        ctx: &ToolContext,
+        resolved_by_content: &mut Vec<(usize, String)>,
+    ) -> Result<String, ToolError> {
         // Build per-file groups, preserving first-seen order so the result
         // lists files in the order the agent wrote them.
         let mut groups: Vec<FileGroup> = Vec::new();
         let mut index_by_resolved: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
 
+        // Files the call named but did not assign to any edit, and their
+        // contents once read. Only touched when an item arrives without a
+        // `path`, so an ordinary well-formed batch reads nothing extra.
+        let candidates = super::path_argument::candidate_paths(input);
+        let mut candidate_contents: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+
         for (idx, rep) in arr.iter().enumerate() {
             let n = idx + 1;
-            let raw_path = rep
-                .get("path")
-                .and_then(Value::as_str)
-                .or(top_path)
-                .ok_or_else(|| {
-                    ToolError::InvalidInput(super::path_argument::batch_item_without_path(input, n))
-                })?;
             let old_string = rep
                 .get("old_string")
                 .and_then(Value::as_str)
@@ -297,6 +335,41 @@ impl FileEditTool {
                     "Edit {n}: `old_string` must not be empty"
                 )));
             }
+            // `path` on the item, then the shared top-level `path`, then the
+            // file whose text this edit actually matches. The last step is a
+            // resolution, not a guess — see `resolve_by_content`.
+            let resolved_from_content;
+            let raw_path = match rep.get("path").and_then(Value::as_str).or(top_path) {
+                Some(path) => path,
+                None => {
+                    let outcome =
+                        resolve_by_content(&candidates, old_string, ctx, &mut candidate_contents);
+                    match outcome {
+                        ContentResolution::Resolved(path) => {
+                            resolved_by_content.push((n, path.clone()));
+                            resolved_from_content = path;
+                            &resolved_from_content
+                        }
+                        other => {
+                            return Err(ToolError::InvalidInput(
+                                super::path_argument::batch_item_without_path(
+                                    input,
+                                    n,
+                                    match other {
+                                        ContentResolution::NoneMatched => {
+                                            super::path_argument::ContentLookup::NoneMatched
+                                        }
+                                        ContentResolution::Ambiguous(count) => {
+                                            super::path_argument::ContentLookup::Ambiguous(count)
+                                        }
+                                        _ => super::path_argument::ContentLookup::NotAttempted,
+                                    },
+                                ),
+                            ))
+                        }
+                    }
+                }
+            };
             let new_string = rep
                 .get("new_string")
                 .and_then(Value::as_str)
@@ -554,6 +627,102 @@ where
     }
 }
 
+/// Which of a call's candidate files a pathless batch item belongs to.
+enum ContentResolution {
+    /// Exactly one candidate holds this `old_string`. Not a guess — the text
+    /// is in that file and in no other file the call named.
+    Resolved(String),
+    /// The text is in none of them. Usually a stale `old_string`; the edit
+    /// would have failed to match even with the right path.
+    NoneMatched,
+    /// Several hold it. This is the one case that is genuinely the model's to
+    /// decide, and the refusal says so.
+    Ambiguous(usize),
+    /// Fewer than two candidates, so there was never a choice to resolve.
+    NotApplicable,
+}
+
+/// Decide a pathless batch item's file from the text it matches.
+///
+/// ## Why this exists
+///
+/// `affected_paths` is ordered FIRST in the schema so the interface can label a
+/// row while arguments stream ([`super::streaming_targets`] has the measurement
+/// behind that). Models read the field that leads, fill it, and leave the
+/// per-item `path` out — measured four times in one session on 2026-09-19, and
+/// once more in thread `c4669acf`. The old answer was to refuse and explain the
+/// batch form.
+///
+/// That refusal was right while the tool had only argument SHAPE to reason
+/// from. It stops being right the moment the tool reads the files, because
+/// `old_string` is exact text: the edit belongs to the candidate that contains
+/// it. `path_argument` already resolves every other single-sensible-reading
+/// case (a one-element list, a JSON-encoded array, one file in
+/// `affected_paths`); this is that same rule reaching the case it never covered.
+///
+/// ## Why it cannot pick wrong
+///
+/// The text must be present in exactly one candidate. Two candidates holding it
+/// is [`ContentResolution::Ambiguous`] and still refuses, because a write to the
+/// wrong file is not something a later turn can discover. And resolution only
+/// decides WHICH file to run against — the ordinary uniqueness and exact-match
+/// rules still apply inside it, so a resolved path cannot turn a bad edit good.
+fn resolve_by_content(
+    candidates: &[String],
+    old_string: &str,
+    ctx: &ToolContext,
+    cache: &mut std::collections::HashMap<String, Option<String>>,
+) -> ContentResolution {
+    if candidates.len() < 2 {
+        return ContentResolution::NotApplicable;
+    }
+
+    let normalized = crate::commands::editor_ops::normalize_line_endings(old_string);
+    // The same text with one escape level off, so a call that is BOTH
+    // over-escaped and pathless resolves instead of failing twice. The engine
+    // applies the same recovery once the file is chosen.
+    let unescaped = crate::commands::editor_ops::unescape_once(&normalized)
+        .map(|text| crate::commands::editor_ops::normalize_line_endings(&text));
+
+    let mut hits: Vec<&String> = Vec::new();
+    let mut readable = 0usize;
+    for candidate in candidates {
+        let Ok(resolved) =
+            resolve_path_with_access(candidate, ctx.workspace_root.as_deref(), ctx.workspace_access)
+        else {
+            continue;
+        };
+        let key = resolved.to_string_lossy().to_string();
+        let content = cache
+            .entry(key)
+            .or_insert_with_key(|path| crate::file_cache::read_file_cached(path).ok())
+            .as_deref()
+            .map(crate::commands::editor_ops::normalize_line_endings);
+        let Some(content) = content else {
+            continue;
+        };
+        readable += 1;
+        let found = content.contains(&normalized)
+            || unescaped.as_deref().is_some_and(|text| content.contains(text));
+        if found {
+            hits.push(candidate);
+        }
+    }
+
+    // Nothing could be read, so nothing was tested. "The text is in none of
+    // them" would be a claim about files this never opened — the same shape of
+    // untrue answer the whole module exists to stop.
+    if readable == 0 {
+        return ContentResolution::NotApplicable;
+    }
+
+    match hits.len() {
+        1 => ContentResolution::Resolved(hits[0].clone()),
+        0 => ContentResolution::NoneMatched,
+        n => ContentResolution::Ambiguous(n),
+    }
+}
+
 /// One target file plus the ordered edits destined for it.
 struct FileGroup {
     /// The path exactly as the agent wrote it (for messages / UI).
@@ -577,8 +746,43 @@ fn with_argument_note(result: &str, note: &str) -> String {
     let Some(object) = parsed.as_object_mut() else {
         return result.to_string();
     };
-    object.insert("argumentNote".into(), json!(note));
+    // Two repairs can happen to one call — the batch array read out of a
+    // string, and a pathless item resolved by its text. Replacing the note
+    // would hide whichever landed first, which is exactly the silence this
+    // field exists to prevent.
+    let merged = match object.get("argumentNote").and_then(Value::as_str) {
+        Some(existing) if !existing.is_empty() => format!("{existing} {note}"),
+        _ => note.to_string(),
+    };
+    object.insert("argumentNote".into(), json!(merged));
     serde_json::to_string(&parsed).unwrap_or_else(|_| result.to_string())
+}
+
+/// Say which file each pathless edit was matched to, and on what evidence.
+///
+/// The model has to be able to check this. It names the file and the reason
+/// ("its text is in that file and no other one you named") rather than
+/// announcing a repair, because the next thing the model does is either accept
+/// it or send the edit again with an explicit `path`.
+fn content_resolution_note(resolved: &[(usize, String)]) -> Option<String> {
+    if resolved.is_empty() {
+        return None;
+    }
+    let field = streaming_targets::FIELD;
+    let list = resolved
+        .iter()
+        .map(|(n, path)| format!("edit {n} → {path}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "No `path` on {} — each was matched to the one file in `{field}` that holds its \
+         `old_string` ({list}). Set `path` per edit to say so directly.",
+        if resolved.len() == 1 {
+            "1 edit".to_string()
+        } else {
+            format!("{} edits", resolved.len())
+        }
+    ))
 }
 
 /// The refusal for a call that named no edit at all.
@@ -970,6 +1174,33 @@ mod tests {
         }
     }
 
+    /// The `edits` array description is the only sentence at the array level
+    /// that says where a batch gets its files, and a model that reads it and
+    /// skips the nested `path` description acts on it alone. It used to say
+    /// "applied atomically across all targeted files" — pointing, by the only
+    /// word in it that names a source, at the field formerly called
+    /// `target_paths`. That is the call every model in the measurement made.
+    #[test]
+    fn the_batch_description_says_where_its_files_come_from() {
+        let tool = FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
+        let description = tool.schema().input_schema["properties"]["edits"]["description"]
+            .as_str()
+            .expect("the batch form describes itself")
+            .to_string();
+        assert!(
+            description.contains("`path`"),
+            "the array description must name the field that chooses the file: {description}"
+        );
+        assert!(
+            description.contains(streaming_targets::FIELD),
+            "it must name the field models reach for instead: {description}"
+        );
+        assert!(
+            !description.contains("targeted"),
+            "\"targeted\" points at the streaming field, which chooses nothing: {description}"
+        );
+    }
+
     #[test]
     fn schema_exposes_early_multi_file_targets() {
         let tool = FileEditTool::new(Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink));
@@ -1246,6 +1477,175 @@ mod tests {
                 .to_string();
         assert!(message.contains("`path` (a string)"), "{message}");
         assert!(message.contains("`content` (a number)"), "{message}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Resolving a pathless batch item from the text it matches
+    // -----------------------------------------------------------------------
+
+    /// Build a workspace holding the given files and a tool ready to edit them.
+    fn workspace_with(files: &[(&str, &str)]) -> (tempfile::TempDir, ToolContext, Arc<dyn ToolExecutor>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        for (name, body) in files {
+            let path = tmp.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, body).unwrap();
+            mark_read(&ctx, &path);
+        }
+        let tool: Arc<dyn ToolExecutor> = Arc::new(FileEditTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
+        (tmp, ctx, tool)
+    }
+
+    /// The failure this resolution was built for, reproduced from session
+    /// `402f0f7a` (2026-09-19): `affected_paths` naming two files, `edits`
+    /// carrying no per-item `path`, and every edit's text living in exactly one
+    /// of them. It was refused four times in that session alone.
+    ///
+    /// `old_string` is exact text. When it is in one candidate and no other,
+    /// the file is not a choice anybody has to make — it is a fact the tool can
+    /// read off the disk.
+    #[tokio::test]
+    async fn a_pathless_batch_item_is_matched_to_the_file_holding_its_text() {
+        let (tmp, ctx, tool) = workspace_with(&[
+            ("run-manager.ts", "const started = false\n"),
+            ("run-panel.tsx", "export function RunPanel() {}\n"),
+        ]);
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "affected_paths": ["run-manager.ts", "run-panel.tsx"],
+                    "edits": [
+                        { "old_string": "const started = false", "new_string": "const started = true" },
+                    ],
+                }),
+                &ctx,
+            )
+            .await
+            .expect("the text names its own file");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true), "got {out}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("run-manager.ts")).unwrap(),
+            "const started = true\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("run-panel.tsx")).unwrap(),
+            "export function RunPanel() {}\n",
+            "the file the text is NOT in must be untouched"
+        );
+        // A repair is never silent: the note names the file and the reason, so
+        // the model can check the choice instead of trusting it.
+        let note = parsed["argumentNote"].as_str().unwrap_or_default();
+        assert!(note.contains("run-manager.ts"), "got {note}");
+        assert!(note.contains("old_string"), "got {note}");
+    }
+
+    /// Resolution decides WHICH file, never WHETHER the edit is good. Text in
+    /// two candidates is the one case that is genuinely the caller's to settle,
+    /// and it still refuses — a write to the wrong file is not something a
+    /// later turn can discover.
+    #[tokio::test]
+    async fn text_in_two_candidates_is_refused_rather_than_picked() {
+        let (tmp, ctx, tool) = workspace_with(&[
+            ("a.ts", "export const shared = 1\n"),
+            ("b.ts", "export const shared = 1\n"),
+        ]);
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "affected_paths": ["a.ts", "b.ts"],
+                    "edits": [
+                        { "old_string": "export const shared = 1", "new_string": "export const shared = 2" },
+                    ],
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("two files hold this text");
+
+        let msg = err.to_string();
+        assert!(msg.contains("names 2 files"), "got {msg}");
+        assert!(msg.contains("is in 2 of them"), "must say what it tried: {msg}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.ts")).unwrap(),
+            "export const shared = 1\n",
+            "nothing may be written while the file is undecided"
+        );
+    }
+
+    /// When the text is in none of them, a `path` would not have rescued the
+    /// edit either — it would have failed to match wherever it was sent. The
+    /// refusal has to say that, or the model spends its retry adding a `path`
+    /// to a stale `old_string`.
+    #[tokio::test]
+    async fn text_in_no_candidate_says_the_path_was_not_the_problem() {
+        let (_tmp, ctx, tool) = workspace_with(&[
+            ("a.ts", "export const shared = 1\n"),
+            ("b.ts", "export const other = 2\n"),
+        ]);
+
+        let err = tool
+            .execute(
+                serde_json::json!({
+                    "affected_paths": ["a.ts", "b.ts"],
+                    "edits": [
+                        { "old_string": "export const missing = 9", "new_string": "x" },
+                    ],
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("this text is nowhere");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in any file"),
+            "must not blame the missing path: {msg}"
+        );
+        assert!(msg.contains("file_read"), "must name the recovery: {msg}");
+    }
+
+    /// The two repairs compose. A call that is BOTH over-escaped and pathless
+    /// has to resolve, or fixing one failure just uncovers the other — which is
+    /// what the 2026-09-19 sessions actually looked like.
+    #[tokio::test]
+    async fn an_over_escaped_pathless_item_still_finds_its_file() {
+        let (tmp, ctx, tool) = workspace_with(&[
+            ("card.tsx", "const label = \"Added by our team.\"\n"),
+            ("other.tsx", "const nothing = 0\n"),
+        ]);
+
+        let out = tool
+            .execute(
+                serde_json::json!({
+                    "affected_paths": ["card.tsx", "other.tsx"],
+                    "edits": [
+                        {
+                            "old_string": "const label = \\\"Added by our team.\\\"",
+                            "new_string": "const label = \\\"Added by the reseller.\\\"",
+                        },
+                    ],
+                }),
+                &ctx,
+            )
+            .await
+            .expect("escaped text still names its own file");
+
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true), "got {out}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("card.tsx")).unwrap(),
+            "const label = \"Added by the reseller.\"\n",
+            "the replacement must land unescaped too"
+        );
     }
 
     /// Two files named and no `path` is a choice, and this tool does not make
@@ -1529,6 +1929,7 @@ mod tests {
                 replacement_details: Vec::new(),
                 wrote_to_disk: false,
                 typography_repairs: Vec::new(),
+                escape_repairs: Vec::new(),
             },
         )
     }

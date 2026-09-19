@@ -1,0 +1,130 @@
+/* ═══ Pressed states ══════════════════════════════════════════════════════
+ *
+ * Every control listed here paints a hover fill and, until this file, answered
+ * a click with nothing at all. Only 12 of 146 clickable families in the window
+ * had a `:active` rule; the rest changed on approach and then sat still under
+ * the finger until their result landed. On anything that takes a moment — a
+ * thread loading, a provider fetching, a settings page mounting — that reads as
+ * a click that missed, and the honest user response is to click again.
+ *
+ * ## Why one file instead of a rule beside each control
+ *
+ * `:active` and `:hover` have identical specificity, so which one paints is
+ * decided by SOURCE ORDER. A pressed rule written above its own hover rule
+ * silently does nothing, which is a mistake with no symptom to notice. This
+ * partial is last in the manifest, so every rule in it is guaranteed to win
+ * against a hover declared anywhere else — the ordering problem is solved once,
+ * structurally, instead of being re-checked at each of 134 sites.
+ *
+ * It also keeps the press RECIPE in one place. `--agw-press-paint` was being
+ * retyped as a literal `color-mix` at each of the handful of controls that had
+ * a press at all; those now read the alias too (see `01-root.css`).
+ *
+ * ## What is NOT here
+ *
+ * Controls with their own non-neutral fill — accent-filled buttons, selected
+ * tabs, danger and success variants — keep their own pressed rules beside their
+ * other variants, because the press has to be derived from THEIR fill, not from
+ * the window's hover paint. `.agw-set-btn` in `18-settings-diagnostics.css` is
+ * the worked example.
+ *
+ * Scroll thumbs, resize handles and the jump-rail pins are deliberately absent:
+ * a drag affordance is already giving continuous feedback by moving.
+ *
+ * ## Adding to this file
+ *
+ * A control belongs here when its rest state is transparent or a quiet surface
+ * and its hover is `--agw-hover-paint`. If its hover is a colour of its own,
+ * write the press next to that hover instead.
+ */
+
+/* ── Window chrome ─────────────────────────────────────────────────────── */
+.agw-titlebar-btn:active {
+  background: var(--agw-press-paint);
+}
+/* Close keeps the platform's red through the press, one step deeper. */
+.agw-titlebar-btn-close:active {
+  background: color-mix(in srgb, var(--agw-removed) 86%, #000 14%);
+}
+
+/* ── Composer ──────────────────────────────────────────────────────────── */
+.agw-model-item:active,
+.agw-bud-preset:active,
+.agw-mention-item:active {
+  background: var(--agw-press-paint);
+}
+/* Matches the specificity of the `[aria-pressed="false"]` hover it must beat. */
+.agw-model-effort[aria-pressed="false"]:active {
+  background: var(--agw-press-paint);
+}
+
+/* ── Left rail ─────────────────────────────────────────────────────────── */
+.agw-rail-newchat:active,
+.agw-rail-project:active,
+.agw-rail-sort:active,
+.agw-rail-scope:active,
+.agw-rail-collapse-all:active,
+.agw-rail-team:active,
+.agw-projsw:active,
+.agw-surfacesw:active {
+  background: var(--agw-press-paint);
+}
+/* The pin and delete affordances only exist while the row is hovered, so their
+   press is the one moment they are being aimed at deliberately. */
+.agw-rail-pin:active,
+.agw-rail-del:active {
+  background: var(--agw-press-paint);
+}
+
+/* ── Transcript ────────────────────────────────────────────────────────── */
+/* A tool card header is the most-clicked thing in a long turn: it is how a
+   result gets opened and shut, repeatedly, while reading back through a run. */
+.agw-tool-head:active,
+.agw-tasks-toggle:active,
+.agw-msg-action:active,
+.agw-code-copy:active,
+.agw-tool-chip-btn:active,
+.agw-grep-hit:active,
+.agw-web-hit:active,
+.agw-tree-row:active {
+  background: var(--agw-press-paint);
+}
+
+/* ── Review and dock ───────────────────────────────────────────────────── */
+.agw-btn-ghost:active,
+.agw-rv-file-head:active,
+.agw-rv-openide:active,
+.agw-rv-tool:active,
+.agw-files-tool:active,
+.agw-fv-back:active,
+.agw-fv-openide:active,
+.agw-tabpill:active,
+.agw-term-pill:active,
+.agw-br-nav:active {
+  background: var(--agw-press-paint);
+}
+
+/* ── Settings ──────────────────────────────────────────────────────────── */
+.agw-set-tab:active,
+.agw-settings-back:active,
+.agw-set-group-head:active,
+.agw-set-foot-btn:active,
+.agw-prov-item:active,
+.agw-prov-icon-btn:active,
+.agw-mcp-chev:active,
+.agw-appr-card:active,
+.agw-gi-tab:active,
+.agw-skill-chip:active,
+.agw-memory-row:active,
+.agw-modelcat-row:active {
+  background: var(--agw-press-paint);
+}
+
+/* ── Modals ────────────────────────────────────────────────────────────── */
+/* The confirm dialog's neutral button. The primary and danger variants carry
+   their own fills, so their presses live beside them in `27-modals.css`. */
+.agw-confirm-btn:active,
+.agw-img-tool:active,
+.agw-img-close:active {
+  background: var(--agw-press-paint);
+}

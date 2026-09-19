@@ -57,3 +57,8 @@
 @import "./agent-window/44-direct-image.css";
 @import "./agent-window/45-settings-claude-code.css";
 @import "./agent-window/46-gallery.css";
+/* LAST on purpose — `:active` and `:hover` share a specificity, so a pressed
+   rule only paints if it is declared after the hover it replaces. See the file
+   header. */
+@import "./agent-window/47-press-states.css";
+@import "./agent-window/48-session-details.css";

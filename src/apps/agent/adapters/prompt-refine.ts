@@ -18,10 +18,40 @@ import type { RefineDevice } from "@/apps/agent/store/composer/useAgentRefineSto
  */
 export const MAX_REFINE_CHARS = 8000;
 
+/**
+ * How the conversation is formatted for a local model. Mirrors `ChatFormat` in
+ * `src-tauri/src/prompt_refine/mod.rs` — these exact strings are the wire, and
+ * a rename on either side silently stops the setting applying (there is a Rust
+ * test pinning them).
+ *
+ * A setting rather than a guess: the two models measured here need OPPOSITE
+ * formats. Qwen3.5 hard-crashes llama-completion through its own template;
+ * LFM2.5 returns fused nonsense through hand-written ChatML. `auto` resolves
+ * from the model path and is right for almost everything, so nobody has to
+ * touch this until a model arrives that it guesses wrong.
+ */
+export type ChatFormat = "auto" | "model-template" | "chatml" | "chatml-no-think" | "raw";
+
+/** Label for each format, for the Preferences dropdowns. */
+export const CHAT_FORMAT_LABELS: Record<ChatFormat, string> = {
+  auto: "Auto (detect from model)",
+  "model-template": "Model's own template",
+  chatml: "ChatML",
+  "chatml-no-think": "ChatML, skip thinking",
+  raw: "Raw completion",
+};
+
+/** Narrow an arbitrary stored string; anything unrecognised falls back to auto. */
+export function asChatFormat(value: string | undefined | null): ChatFormat {
+  return value && value in CHAT_FORMAT_LABELS ? (value as ChatFormat) : "auto";
+}
+
 export interface RefineConfig {
   llamaDir: string;
   modelPath: string;
   device: RefineDevice;
+  /** Omitted by callers that predate the setting; the backend defaults to auto. */
+  chatFormat?: ChatFormat;
 }
 
 export interface RefineValidation {

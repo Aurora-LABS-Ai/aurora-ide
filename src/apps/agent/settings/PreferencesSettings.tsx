@@ -29,7 +29,13 @@ import {
   useAgentRefineStore,
   type RefineDevice,
 } from "@/apps/agent/store/composer/useAgentRefineStore";
-import { validateRefine, type RefineValidation } from "../adapters/prompt-refine";
+import {
+  asChatFormat,
+  CHAT_FORMAT_LABELS,
+  validateRefine,
+  type ChatFormat,
+  type RefineValidation,
+} from "../adapters/prompt-refine";
 import {
   formatCommandShortcut,
   shortcutFromKeyboardEvent,
@@ -44,6 +50,7 @@ import {
   AgwButton,
   AgwPill,
   AgwSegmented,
+  AgwSelect,
   AgwSwitch,
   AgwTextInput,
   SettingsBlock,
@@ -55,6 +62,19 @@ import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentUiStore, type PreferencesTab } from "@/apps/agent/store/ui/useAgentUiStore";
 import { SpeechSettings } from "./SpeechSettings";
 import { SystemIntegrationSettings } from "./SystemIntegrationSettings";
+
+/**
+ * The chat-format dropdown's options, built from the one list the backend
+ * shares, so a new format shows up in both places by existing.
+ */
+const CHAT_FORMAT_OPTIONS = (Object.keys(CHAT_FORMAT_LABELS) as ChatFormat[]).map((value) => ({
+  value,
+  label: CHAT_FORMAT_LABELS[value],
+}));
+
+/** Said the same way under Prompt refine and under Chat titles. */
+const CHAT_FORMAT_HINT =
+  "How your message is handed to the model. Auto reads it from the model file and is right for almost every model — change it only if replies come back as run-together words, or the model fails to answer at all.";
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 
@@ -151,6 +171,8 @@ export const PreferencesSettings: React.FC = () => {
   const setLlamaDir = useAgentRefineStore((s) => s.setLlamaDir);
   const modelPath = useAgentRefineStore((s) => s.modelPath);
   const setModelPath = useAgentRefineStore((s) => s.setModelPath);
+  const refineChatFormat = useAgentRefineStore((s) => s.chatFormat);
+  const setRefineChatFormat = useAgentRefineStore((s) => s.setChatFormat);
   const refineDevice = useAgentRefineStore((s) => s.device);
   const setRefineDevice = useAgentRefineStore((s) => s.setDevice);
   const refineReady = useAgentRefineStore(refineConfigured);
@@ -166,8 +188,27 @@ export const PreferencesSettings: React.FC = () => {
   const titleBaseUrl = useSettingsStore((s) => s.titleMakerBaseUrl);
   const titleApiKey = useSettingsStore((s) => s.titleMakerApiKey);
   const titleModel = useSettingsStore((s) => s.titleMakerModel);
+  const titleLocalModel = useSettingsStore((s) => s.titleMakerLocalModel);
+  const titleLocalChatFormat = useSettingsStore((s) => s.titleMakerLocalChatFormat);
   const setTitleMaker = useSettingsStore((s) => s.setTitleMaker);
   const [showTitleKey, setShowTitleKey] = React.useState(false);
+
+  // Whether titles use their OWN model. Stored as "a path, or empty" — one
+  // field, so it can never disagree with itself. This mirrors it into local
+  // state only so the "different model" choice survives an empty path field
+  // while you are still typing it.
+  const [titleOwnModel, setTitleOwnModel] = React.useState(() => titleLocalModel.trim() !== "");
+  React.useEffect(() => {
+    // Settings can hydrate from the database after this mounts. Only ever
+    // turns the choice ON — switching it off clears the path, which would
+    // otherwise make this fight the user.
+    if (titleLocalModel.trim()) setTitleOwnModel(true);
+  }, [titleLocalModel]);
+
+  /** The llama.cpp runtime is shared; only the model can differ. */
+  const titleLocalReady =
+    llamaDir.trim() !== "" &&
+    (titleOwnModel ? titleLocalModel.trim() !== "" : modelPath.trim() !== "");
 
   const [refineCheck, setRefineCheck] = React.useState<RefineValidation | null>(null);
   const [refineChecking, setRefineChecking] = React.useState(false);
@@ -175,7 +216,14 @@ export const PreferencesSettings: React.FC = () => {
   const runRefineCheck = React.useCallback(async () => {
     setRefineChecking(true);
     try {
-      setRefineCheck(await validateRefine({ llamaDir, modelPath, device: refineDevice }));
+      setRefineCheck(
+        await validateRefine({
+          llamaDir,
+          modelPath,
+          device: refineDevice,
+          chatFormat: refineChatFormat,
+        }),
+      );
     } catch (err) {
       setRefineCheck({
         ready: false,
@@ -186,7 +234,7 @@ export const PreferencesSettings: React.FC = () => {
     } finally {
       setRefineChecking(false);
     }
-  }, [llamaDir, modelPath, refineDevice]);
+  }, [llamaDir, modelPath, refineDevice, refineChatFormat]);
 
   const pickLlamaDir = async () => {
     const sel = await open({
@@ -204,6 +252,15 @@ export const PreferencesSettings: React.FC = () => {
       title: "Select a GGUF model",
     });
     if (typeof sel === "string") setModelPath(sel);
+  };
+
+  const pickTitleModel = async () => {
+    const sel = await open({
+      multiple: false,
+      filters: [{ name: "GGUF model", extensions: ["gguf"] }],
+      title: "Select a GGUF model for chat titles",
+    });
+    if (typeof sel === "string") setTitleMaker({ localModel: sel });
   };
 
   // Persisted, so reopening Preferences returns to the category last worked in
@@ -508,6 +565,16 @@ export const PreferencesSettings: React.FC = () => {
               </div>
             </SettingsRow>
 
+            <SettingsRow label="Chat format" hint={CHAT_FORMAT_HINT}>
+              <AgwSelect
+                value={refineChatFormat}
+                options={CHAT_FORMAT_OPTIONS}
+                ariaLabel="Chat format for the prompt-refine model"
+                onChange={(v) => setRefineChatFormat(asChatFormat(v))}
+                width={220}
+              />
+            </SettingsRow>
+
             <SettingsRow
               label="Device"
               hint="GPU uses your llama.cpp CUDA build; CPU works everywhere."
@@ -625,19 +692,78 @@ export const PreferencesSettings: React.FC = () => {
         </SettingsRow>
 
         {titleMode === "local" && (
-          <SettingsRow
-            last
-            label="Local model"
-            hint={
-              refinePathsReady
-                ? "Titles run on the llama.cpp model configured under Prompt refine."
-                : "Set the llama.cpp folder and model under Prompt refine above — titles use the same setup."
-            }
-          >
-            <AgwPill tone={refinePathsReady ? "success" : "warning"}>
-              {refinePathsReady ? "Ready" : "Needs setup"}
-            </AgwPill>
-          </SettingsRow>
+          <>
+            <SettingsRow
+              label="Model"
+              hint="Titles always run through the llama.cpp folder set under Prompt refine — there is only one on this computer. The model can differ, though: a small model made for naming things does this job faster."
+            >
+              <AgwSegmented<"shared" | "own">
+                value={titleOwnModel ? "own" : "shared"}
+                ariaLabel="Which local model writes chat titles"
+                options={[
+                  { value: "shared", label: "Prompt refine" },
+                  { value: "own", label: "Another model" },
+                ]}
+                onChange={(choice) => {
+                  const own = choice === "own";
+                  setTitleOwnModel(own);
+                  // Empty IS "use the refine model" in storage, so switching
+                  // back clears the path rather than leaving a second source
+                  // of truth behind it.
+                  if (!own) setTitleMaker({ localModel: "" });
+                }}
+              />
+            </SettingsRow>
+
+            {titleOwnModel && (
+              <>
+                <SettingsRow
+                  label="Title model (.gguf)"
+                  hint="A tiny model trained to name things is enough here, and finishes in well under a second."
+                  alignTop
+                >
+                  <div className="agw-set-field-row">
+                    <AgwTextInput
+                      value={titleLocalModel}
+                      placeholder="…\\LFM2.5-230M-Title-Generator-bf16.gguf"
+                      onChange={(e) => setTitleMaker({ localModel: e.target.value })}
+                    />
+                    <AgwButton icon="folder" onClick={() => void pickTitleModel()}>
+                      Browse
+                    </AgwButton>
+                  </div>
+                </SettingsRow>
+
+                <SettingsRow label="Chat format" hint={CHAT_FORMAT_HINT}>
+                  <AgwSelect
+                    value={asChatFormat(titleLocalChatFormat)}
+                    options={CHAT_FORMAT_OPTIONS}
+                    ariaLabel="Chat format for the title model"
+                    onChange={(v) => setTitleMaker({ localChatFormat: asChatFormat(v) })}
+                    width={220}
+                  />
+                </SettingsRow>
+              </>
+            )}
+
+            <SettingsRow
+              last
+              label="Status"
+              hint={
+                titleLocalReady
+                  ? "Nothing leaves this computer — titles are written here."
+                  : llamaDir.trim() === ""
+                    ? "Set the llama.cpp folder under Prompt refine above. Titles share it."
+                    : titleOwnModel
+                      ? "Choose the .gguf file to write titles with."
+                      : "Set a model under Prompt refine above, or pick a different one here."
+              }
+            >
+              <AgwPill tone={titleLocalReady ? "success" : "warning"}>
+                {titleLocalReady ? "Ready" : "Needs setup"}
+              </AgwPill>
+            </SettingsRow>
+          </>
         )}
 
         {titleMode === "cloud" && (

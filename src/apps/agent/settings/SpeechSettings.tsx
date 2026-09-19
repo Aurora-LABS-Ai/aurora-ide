@@ -10,9 +10,12 @@
  * Rendered by `PreferencesSettings` next to the dictation-polish toggle, so
  * everything about talking to Aurora sits on one page.
  *
- * Two engines need different things:
- *   qwen3-rust    → a model FOLDER (config.json, tokenizer.json, safetensors)
- *   crispasr-gguf → a runtime folder + a .gguf model FILE + a model family
+ * ONE engine: CrispASR, a child process against the user's own build — a
+ * runtime folder + a .gguf model FILE + a model family. Aurora used to compile
+ * a second engine in (Qwen3-ASR through `candle-core`) and offer a picker; it
+ * was removed because nobody selected it and it cost roughly a third of the
+ * binary plus a `cuda` cargo feature. Local models are child processes here,
+ * the same way `prompt_refine` drives llama.cpp.
  *
  * `speechService.validateConfig` re-checks against the machine (debounced) on
  * every change, so the panel states what will actually happen rather than what
@@ -38,7 +41,6 @@ import {
   type SelectOption,
 } from "./primitives";
 
-const QWEN_MODEL_URL = "https://huggingface.co/Qwen/Qwen3-ASR-0.6B";
 
 type SpeechDevice = "auto" | "cpu" | "gpu";
 
@@ -63,21 +65,11 @@ const LANGUAGE_OPTIONS: SelectOption[] = [
   { value: "ja", label: "Japanese" },
 ];
 
-const openExternal = async (url: string) => {
-  try {
-    const { open: openShell } = await import("@tauri-apps/plugin-shell");
-    await openShell(url);
-  } catch {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
-};
-
 export const SpeechSettings: React.FC = () => {
   const {
     setSpeechBackend,
     setSpeechDevicePreference,
     setSpeechEnabled,
-    setSpeechEngine,
     setSpeechLanguage,
     setSpeechModelPath,
     setSpeechRuntimePath,
@@ -94,8 +86,6 @@ export const SpeechSettings: React.FC = () => {
 
   const [validation, setValidation] = useState<SpeechValidationResult | null>(null);
   const [isValidating, setIsValidating] = useState(false);
-
-  const isQwenEngine = speechEngine !== "crispasr-gguf";
 
   const validate = useCallback(async () => {
     setIsValidating(true);
@@ -162,10 +152,10 @@ export const SpeechSettings: React.FC = () => {
 
   const chooseModelPath = async () => {
     const selected = await open({
-      directory: isQwenEngine,
-      filters: isQwenEngine ? undefined : [{ extensions: ["gguf"], name: "GGUF speech models" }],
+      directory: false,
+      filters: [{ extensions: ["gguf"], name: "GGUF speech models" }],
       multiple: false,
-      title: isQwenEngine ? "Select Qwen3-ASR model folder" : "Select GGUF speech model",
+      title: "Select GGUF speech model",
     });
     if (typeof selected === "string") setSpeechModelPath(selected);
   };
@@ -210,7 +200,7 @@ export const SpeechSettings: React.FC = () => {
     <AgwPill tone="warning">Needs setup</AgwPill>
   );
 
-  const modelLabel = isQwenEngine ? "Model folder" : "Model file (.gguf)";
+  const modelLabel = "Model file (.gguf)";
 
   return (
     <SettingsSection
@@ -234,33 +224,14 @@ export const SpeechSettings: React.FC = () => {
       {speechEnabled && (
         <>
           <SettingsRow
-            label="Engine"
-            hint="Qwen3-ASR is the built-in Rust engine. CrispASR GGUF is a compatibility runtime for other model families."
-          >
-            <AgwSegmented
-              value={isQwenEngine ? "qwen3-rust" : "crispasr-gguf"}
-              ariaLabel="Speech engine"
-              options={[
-                { value: "qwen3-rust", label: "Qwen3-ASR" },
-                { value: "crispasr-gguf", label: "CrispASR GGUF" },
-              ]}
-              onChange={setSpeechEngine}
-            />
-          </SettingsRow>
-
-          <SettingsRow
             alignTop
             label={modelLabel}
-            hint={
-              isQwenEngine
-                ? "The downloaded folder holding config.json, tokenizer.json and model.safetensors."
-                : "A GGUF speech model file."
-            }
+            hint="A GGUF speech model file."
           >
             <div className="agw-set-field-row">
               <AgwTextInput
                 value={speechModelPath}
-                placeholder={isQwenEngine ? "…\\Qwen3-ASR-0.6B" : "…\\model.gguf"}
+                placeholder="…\\model.gguf"
                 onChange={(e) => setSpeechModelPath(e.target.value)}
                 aria-label={modelLabel}
               />
@@ -270,17 +241,7 @@ export const SpeechSettings: React.FC = () => {
             </div>
           </SettingsRow>
 
-          {isQwenEngine ? (
-            <SettingsRow
-              label="Get the model"
-              hint="About 1.2 GB. Download it once, then point the field above at the folder."
-            >
-              <AgwButton icon="download" onClick={() => void openExternal(QWEN_MODEL_URL)}>
-                Qwen3-ASR-0.6B
-              </AgwButton>
-            </SettingsRow>
-          ) : (
-            <>
+          <>
               <SettingsRow
                 alignTop
                 label="Runtime folder"
@@ -327,8 +288,7 @@ export const SpeechSettings: React.FC = () => {
                   aria-label="CPU threads"
                 />
               </SettingsRow>
-            </>
-          )}
+          </>
 
           <SettingsRow label="Device" hint={deviceHint}>
             <AgwSegmented<SpeechDevice>

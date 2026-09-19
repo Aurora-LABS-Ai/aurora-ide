@@ -29,8 +29,23 @@
   background: var(--agw-state-selected);
   color: var(--agw-text);
 }
+/* Pressed. Same recipe as `.agw-icon-btn` and `.agw-set-btn`: mix a little
+   foreground into the hover fill, which deepens it in light AND dark (text is
+   always the high-contrast pole) so the press reads with any user palette.
+   The rail was the one control family in the window that answered a click with
+   nothing until the route changed — on a slow thread load that is a row you
+   click twice. */
+.agw-rail-item:active {
+  background: var(--agw-press-paint);
+  color: var(--agw-text);
+}
+/* Focus is the row's OWN edge, not a halo floating outside it. An outset ring
+   on a full-width row in a 240px rail is clipped by the panel on both sides and
+   collides with the row above; an inset stroke stays inside the row's own
+   rounded box. Still the user's Focus ring colour. */
 .agw-rail-item:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  background: var(--agw-state-selected);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Chat title — fills the row, truncates; leaves room for the hover pin. */
 .agw-rail-item-text {
@@ -231,15 +246,17 @@
 }
 .agw-rail-pin:focus-visible {
   opacity: 1;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
-/* A pinned chat shows a filled accent tack that stays visible. */
+/* A pinned chat shows a filled tack that stays visible. On the CONTROL accent
+   (see types.ts): pinned/unpinned is carried by tint alone, so it must keep a
+   colour even when the brand accent is set neutral. */
 .agw-rail-pin[data-on] {
   opacity: 1;
-  color: var(--agw-accent);
+  color: var(--agw-control-accent, var(--agw-accent));
 }
 .agw-rail-pin[data-on] svg {
-  fill: var(--agw-accent);
+  fill: var(--agw-control-accent, var(--agw-accent));
 }
 /* Project rows reuse the pin affordance; reveal it on the PROJECT row hover. */
 .agw-rail-project-pin {
@@ -261,8 +278,8 @@
   width: 20px;
   height: 20px;
   border-radius: var(--agw-radius-sm);
-  color: var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 13%, transparent);
+  color: var(--agw-control-accent, var(--agw-accent));
+  background: color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 13%, transparent);
 }
 /* On a project row it trails the flex:1 title button; nudge it off the edge. */
 .agw-rail-project-team {
@@ -309,8 +326,8 @@
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--agw-accent) 28%, transparent);
-  border-top-color: var(--agw-accent);
+  border: 2px solid color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 28%, transparent);
+  border-top-color: var(--agw-control-accent, var(--agw-accent));
   animation: agw-rail-spin 0.7s linear infinite;
 }
 /* Background-turn "done" dot — the settled counterpart to the spinner. Shown on
@@ -322,8 +339,8 @@
   height: 8px;
   margin: 0 2px;
   border-radius: 50%;
-  background: var(--agw-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-accent) 22%, transparent);
+  background: var(--agw-control-accent, var(--agw-accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 22%, transparent);
   animation: agw-done-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 @keyframes agw-done-pop {

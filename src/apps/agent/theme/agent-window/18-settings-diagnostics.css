@@ -212,7 +212,7 @@
    clicking gave zero feedback until the state change landed — the single
    biggest "decoration, not a control" tell. */
 .agw-set-btn:active:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
   border-color: var(--agw-border-strong);
 }
 .agw-set-btn[data-variant="primary"] {
@@ -255,8 +255,28 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Focus is the button's OWN border, thickened, plus the resting lift — not a
+   detached halo. The button already has a 1px edge in every variant, so the
+   cheapest honest focus mark is to recolour that edge and double it inward;
+   nothing outside the pill changes, so a focused button in a right-aligned
+   action row no longer pushes against the panel it sits in.
+
+   This rule serves the OUTLINE variants (default, danger, success), whose fill
+   is the panel behind them — the ring colour reads against that. */
 .agw-set-btn:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  border-color: var(--agw-ring);
+  box-shadow: var(--agw-set-shadow-soft), var(--agw-focus-ring);
+}
+/* Primary is FILLED, so the rule above would draw the focus ring on top of the
+   accent it is meant to stand out from — and since --agw-ring ships equal to
+   --agw-accent, that is literally the same colour painting itself. The filled
+   variant marks focus in its own label colour instead, which contrasts with
+   its own fill by construction whatever accent the user picks. */
+.agw-set-btn[data-variant="primary"]:focus-visible {
+  border-color: var(--agw-accent-hover);
+  box-shadow:
+    var(--agw-set-shadow-soft),
+    inset 0 0 0 2px color-mix(in srgb, var(--agw-on-accent) 72%, transparent);
 }
 
 /* ── Text input ───────────────────────────────────────────────────────── */
@@ -330,7 +350,7 @@
 }
 .agw-fontpick-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-fontpick-menu {
   display: flex;

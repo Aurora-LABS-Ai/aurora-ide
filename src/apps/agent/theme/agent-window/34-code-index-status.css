@@ -36,8 +36,10 @@
   cursor: pointer;
   transition: background-color 0.14s ease;
 }
+/* The window's hover alias, not a white literal: white at 5% is a hover on the
+   dark theme and nothing at all on Daylight. */
 .agw-idxstat-btn:hover {
-  background: rgb(255 255 255 / 5%);
+  background: var(--agw-hover-paint);
 }
 .agw-idxstat-btn:focus-visible {
   outline: 2px solid var(--agw-warning);

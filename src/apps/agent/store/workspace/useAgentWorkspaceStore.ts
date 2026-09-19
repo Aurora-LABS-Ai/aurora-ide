@@ -63,6 +63,9 @@ interface AgentWorkspaceState {
   openMemberTab: (agentId: string, title: string) => void;
   /** Open (or focus) the details tab for a project folder. */
   openProjectTab: (root: string, title: string) => void;
+  /** Open the details tab for one conversation (turn timeline, tool outcomes,
+   *  tokens). Opened from a chat row's context menu in the rail. */
+  openSessionTab: (threadId: string, title: string) => void;
   /**
    * Open (or refocus) one saved artifact in its own tab.
    *
@@ -170,6 +173,19 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           const tabs = exists
             ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
             : [...s.tabs, { id, kind: "project" as const, title, projectRoot: root }];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      // One conversation's numbers. Keyed by thread id so re-opening the same
+      // conversation's details refocuses that tab instead of stacking a second
+      // copy — the same rule every other per-thing tab follows.
+      openSessionTab: (threadId, title) =>
+        set((s) => {
+          const id = `session:${threadId}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+            : [...s.tabs, { id, kind: "session" as const, title, threadId }];
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 

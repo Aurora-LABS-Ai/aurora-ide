@@ -41,7 +41,7 @@
   outline: none;
 }
 .agw-rv-file-toggle:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* "Open in IDE" — revealed on row hover (quiet until needed). */
 .agw-rv-openide {
@@ -69,7 +69,7 @@
 .agw-rv-openide:focus-visible {
   opacity: 1;
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Review toolbar controls (in the summary bar). */
@@ -91,7 +91,7 @@
   border-color: var(--agw-border-strong);
 }
 .agw-rv-tool:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Inline text link (e.g. "Show all changes" in the scoped-empty note). */
 .agw-rv-link {
@@ -107,7 +107,7 @@
   text-decoration: underline;
 }
 .agw-rv-link:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
   border-radius: 3px;
 }
 
@@ -142,7 +142,7 @@
   color: var(--agw-accent);
 }
 .agw-rv-seg:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-rv-file-path {
   flex: 1;
@@ -207,7 +207,7 @@
 }
 .agw-btn-ghost:focus-visible,
 .agw-btn-primary:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Per-message actions (Copy / Retry). Always present but DIMMED so they're
@@ -249,6 +249,6 @@
   color: var(--agw-text);
 }
 .agw-msg-action:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 

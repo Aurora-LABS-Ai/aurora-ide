@@ -76,7 +76,7 @@
   border-color: var(--agw-border-strong);
 }
 .agw-files-tool:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Tree rows */
@@ -107,7 +107,7 @@
   color: var(--agw-text);
 }
 .agw-tree-row:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-tree-caret {
   display: inline-flex;
@@ -200,7 +200,7 @@
   color: var(--agw-text);
 }
 .agw-fv-back:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-fv-crumb {
   flex: 1;
@@ -245,7 +245,7 @@
   border-color: var(--agw-border-strong);
 }
 .agw-fv-openide:focus-visible {
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Viewer body: line-number gutter + highlighted code, both scroll together. */
@@ -322,7 +322,7 @@
   color: var(--agw-text);
 }
 .agw-fv-seg button:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 /* Markdown preview body — centered reading column over the dock surface. */

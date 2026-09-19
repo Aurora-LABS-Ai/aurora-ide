@@ -331,7 +331,7 @@
 }
 .agw-tool-chip-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Per-file diff counts inside a chip (multi-file edits): −removed +added. */
 .agw-chip-stat {
@@ -801,7 +801,7 @@
 .agw-suggest-item:focus-visible {
   outline: none;
   border-radius: var(--agw-radius-sm);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 /* Quiet position marker — signals there's more to roll. */
 .agw-suggest-count {

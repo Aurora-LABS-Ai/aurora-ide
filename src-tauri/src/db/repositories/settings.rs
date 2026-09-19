@@ -155,6 +155,14 @@ impl<'a> SettingsRepository<'a> {
                     settings.title_maker_model = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.title_maker_model.clone())
                 }
+                "titleMakerLocalModel" => {
+                    settings.title_maker_local_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_local_model.clone())
+                }
+                "titleMakerLocalChatFormat" => {
+                    settings.title_maker_local_chat_format = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_local_chat_format.clone())
+                }
                 "workspaceAccess" => {
                     settings.workspace_access = serde_json::from_str(&setting.value)
                         .unwrap_or_else(|_| settings.workspace_access.clone())
@@ -414,6 +422,14 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "titleMakerModel",
             &serde_json::to_string(&settings.title_maker_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerLocalModel",
+            &serde_json::to_string(&settings.title_maker_local_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "titleMakerLocalChatFormat",
+            &serde_json::to_string(&settings.title_maker_local_chat_format).unwrap_or_default(),
         )?;
         self.set_setting(
             "workspaceAccess",
@@ -899,6 +915,12 @@ mod tests {
             },
         ];
         settings.active_global_instruction_profile_id = "two".into();
+        // A local title model and its chat format. Set to NON-defaults on
+        // purpose: a field left at its default passes this test even with no
+        // read arm at all, because the default is what a missing arm returns.
+        settings.title_maker_mode = "local".into();
+        settings.title_maker_local_model = "E:/models/title-generator.gguf".into();
+        settings.title_maker_local_chat_format = "chatml-no-think".into();
         // Aurora Chat. Every one of these was written by the frontend and
         // silently dropped here until 2026-09-04 — the whole-struct comparison
         // below is what pins them, so a field added to `AppSettings` without a

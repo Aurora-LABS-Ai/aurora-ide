@@ -92,7 +92,7 @@
 }
 .agw-chapter-toggle:focus-visible {
   border-radius: var(--agw-radius-sm);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-chapter-chev {
   color: var(--agw-text-subtle);

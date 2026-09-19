@@ -98,10 +98,61 @@
 }
 
 /* ── Color row (swatch + hex) ────────────────────────────────────────────── */
+/* Wraps the swatch + hex pair so a legibility warning can sit UNDER them and
+   still right-align with the control, rather than stretching the settings row
+   across the page. */
+.agw-appr-color-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
 .agw-appr-color {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ── Accent legibility warning ────────────────────────────────────────────
+ * Only rendered when the accent actually fails a contrast check, so it is an
+ * ANSWER to something the user just did, not a permanent banner. Warning
+ * coloured rather than error coloured: nothing is broken, and the value is
+ * still theirs to keep. */
+.agw-appr-warn {
+  display: flex;
+  gap: 8px;
+  width: 320px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--agw-warning) 34%, transparent);
+  border-radius: var(--agw-radius-md);
+  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  text-align: left;
+}
+.agw-appr-warn > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--agw-warning);
+}
+.agw-appr-warn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+/* The measured ratio is the point of the sentence, so the figures are lined up
+   rather than proportional — two of these can stack. */
+.agw-appr-warn-body p {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-appr-warn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .agw-appr-swatch {
   position: relative;

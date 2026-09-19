@@ -748,6 +748,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_set_model,
             commands::threads::thread_cancel_current_turn,
             commands::project_stats::project_stats_get,
+            commands::conversation_stats::conversation_stats_get,
             commands::code_index::code_index_status,
             commands::code_index::code_index_probe,
             commands::code_index::code_index_rebuild,

@@ -261,7 +261,7 @@
 }
 .agw-profile-provider-head:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 .agw-profile-provider-name {
   /* `min-width: 0` is what lets it truncate instead of pushing the count

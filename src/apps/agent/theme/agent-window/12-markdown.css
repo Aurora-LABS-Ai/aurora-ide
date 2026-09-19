@@ -307,7 +307,7 @@
 .agw-think-toggle:focus-visible,
 .agw-tool-group-head:focus-visible {
   border-radius: var(--agw-radius-sm);
-  box-shadow: 0 0 0 2px var(--agw-ring);
+  box-shadow: var(--agw-focus-ring);
 }
 
 .agw-think-rail {

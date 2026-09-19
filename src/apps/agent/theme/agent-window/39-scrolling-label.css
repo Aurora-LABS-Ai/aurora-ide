@@ -37,9 +37,22 @@
   /* Let the text run past the clip so there is a tail to travel to. */
   max-width: none;
   text-overflow: clip;
-  /* Promoted only for the row actually being read — not for every row in a
-     rail that can hold a hundred of them. */
-  will-change: transform;
+  /* NO `will-change: transform` here. It used to promote the label to its own
+   * compositing layer the instant the row was hovered — a full second before
+   * anything moved — and composited text in Chromium renders with GRAYSCALE
+   * antialiasing instead of subpixel. Every glyph re-rasterised on hover and
+   * again on leave: stems thinned, positions shifted a fraction of a pixel, and
+   * the title appeared to shiver under the pointer. Every row in the rail did
+   * it, whether or not its title was long enough to ever slide.
+   *
+   * That also silently undid a decision the window makes on purpose: `.agw-root`
+   * keeps `-webkit-font-smoothing: auto` precisely so Windows gets subpixel
+   * rendering (see `01-root.css`), and layer promotion defeats it per element.
+   *
+   * Dropping the hint costs nothing real. Chromium promotes for a transform
+   * transition anyway once one starts — so the re-rasterisation still happens,
+   * but now at the moment the text is already sliding, where it cannot be seen.
+   * The hint only ever moved that cost forward to a moment of stillness. */
   transform: translateX(var(--agw-slide-shift, 0px));
   transition-duration: var(--agw-slide-dur, 0.2s);
   transition-timing-function: linear;

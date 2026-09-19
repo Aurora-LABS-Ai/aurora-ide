@@ -20,6 +20,11 @@ const SHARED_TYPE = {
   // in Appearance; the tokens, not these constants, are what CSS reads.
   fontUi: AGENT_UI_FONT_STACK,
   fontCode: CODE_FONT_STACK,
+  // Display face. Seeded to the UI stack ON PURPOSE: the token exists so the
+  // wordmark, page headings and dialog titles CAN take a second voice, and
+  // shipping them already diverged would be choosing that voice for everyone.
+  // Picking a display font in Appearance is what makes the two differ.
+  fontDisplay: AGENT_UI_FONT_STACK,
   // ── Interface text size ───────────────────────────────────────────────────
   // Multiplier on the whole chrome scale (--agw-fs-micro … --agw-fs-title).
   // 1 = the authored 12/13/14/15/16/17. Chrome is otherwise fixed, so without
@@ -90,6 +95,8 @@ export const agentDark: AgentTheme = {
     // brand — Aurora iris accent (retained)
     accent: "#3994bc",
     accentHover: "#48a0c7",
+    // Small controls follow the brand until someone separates them.
+    controlAccent: "#3994bc",
 
     // semantic
     added: "#73c991",
@@ -149,6 +156,7 @@ export const agentLight: AgentTheme = {
 
     accent: "#4f6bff",
     accentHover: "#3a57f0",
+    controlAccent: "#4f6bff",
 
     added: "#1a7f37",
     addedSurface: "rgba(26, 127, 55, 0.12)",
@@ -190,6 +198,7 @@ export const DEFAULT_AGENT_THEME_ID = agentDark.id;
 export const TYPOGRAPHY_TOKEN_KEYS = [
   "fontUi",
   "fontCode",
+  "fontDisplay",
   "uiTextScale",
   "msgFontSize",
   "msgLineHeight",

@@ -1112,6 +1112,27 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   };
 
   /**
+   * Append dictated words exactly as given.
+   *
+   * Live dictation arrives in pieces that already carry their own spacing —
+   * `"Some call"`, then `" me nature,"` — so the caret-insert helper above
+   * would add a second space before every one of them. This is the same
+   * insertion minus that rule.
+   */
+  const appendWords = (text: string) => {
+    const el = editorRef.current;
+    if (!el || !text) return;
+    typing.clearGhost();
+    el.focus();
+    const seln = window.getSelection();
+    if (!seln || seln.rangeCount === 0 || !el.contains(seln.anchorNode)) {
+      placeCaretAtEnd(el);
+    }
+    document.execCommand("insertText", false, text);
+    handleInput();
+  };
+
+  /**
    * Open the `@` or `/` picker from the `+` menu by TYPING its character, not
    * by calling into the picker state.
    *
@@ -1189,13 +1210,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     speechEnabled,
     isRecording: micRecording,
     isTranscribing: micTranscribing,
+    isLoadingModel: micLoadingModel,
     notice: micNotice,
     toggle: micToggle,
     levelRef: micLevelRef,
     permissionOpen: micPermissionOpen,
     confirmPermission: micConfirmPermission,
     dismissPermission: micDismissPermission,
-  } = useAgentSpeech(insertTranscript);
+  } = useAgentSpeech(insertTranscript, appendWords);
 
   const submit = () => {
     // NB: we intentionally do NOT bail when `sending`. A submit mid-turn is a
@@ -1617,14 +1639,16 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                 type="button"
                 className="agw-icon-btn"
                 data-recording={micRecording || undefined}
-                disabled={micTranscribing}
+                disabled={micTranscribing || micLoadingModel}
                 title={
                   micNotice?.text ||
-                  (micTranscribing
-                    ? "Transcribing…"
-                    : micRecording
-                      ? "Stop recording"
-                      : "Speak")
+                  (micLoadingModel
+                    ? "Loading the speech model…"
+                    : micTranscribing
+                      ? "Transcribing…"
+                      : micRecording
+                        ? "Stop recording"
+                        : "Speak")
                 }
                 aria-label={micRecording ? "Stop recording" : "Start speech input"}
                 onClick={(e) => {
@@ -1632,7 +1656,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
                   micToggle();
                 }}
               >
-                {micTranscribing ? (
+                {micTranscribing || micLoadingModel ? (
                   <span className="agw-rail-spin" aria-hidden />
                 ) : micRecording ? (
                   // The `stop` glyph is a 10-unit rect in a 24-unit box, so the

@@ -179,15 +179,29 @@ export const SettingsBlock: React.FC<{
 
 // ── Switch ─────────────────────────────────────────────────────────────────
 
-export type SwitchTone = "accent" | "success" | "danger";
-
+/**
+ * One switch, one on-colour.
+ *
+ * This used to take a `tone` of `accent | success | danger`. `danger` was never
+ * used. `success` was used three times out of forty-five — the global
+ * instruction set, and MCP's two auto-approve switches — so on a settings page
+ * a green switch sat beside a blue one and read as a category that did not
+ * exist. "Give the agent the browser toolset" makes exactly the same kind of
+ * claim as "sent with every chat" and was never green.
+ *
+ * Green was also pointing the wrong way on two of the three. Auto-approving
+ * tool calls is the LESS careful setting, and a green switch says "safe".
+ *
+ * So on is on, in the control accent, everywhere. A switch that needs to warn
+ * needs words next to it, not a hue that only means something to whoever wrote
+ * that screen.
+ */
 export const AgwSwitch: React.FC<{
   checked: boolean;
   onChange: (next: boolean) => void;
-  tone?: SwitchTone;
   disabled?: boolean;
   ariaLabel: string;
-}> = ({ checked, onChange, tone = "accent", disabled, ariaLabel }) => (
+}> = ({ checked, onChange, disabled, ariaLabel }) => (
   <button
     type="button"
     role="switch"
@@ -197,7 +211,6 @@ export const AgwSwitch: React.FC<{
     onClick={() => !disabled && onChange(!checked)}
     className="agw-switch"
     data-on={checked || undefined}
-    data-tone={tone}
     data-disabled={disabled || undefined}
   >
     <span className="agw-switch-knob" />

@@ -252,7 +252,6 @@ export const AgentSettings: React.FC = () => {
                   <AgwSwitch
                     checked={giIsActive}
                     onChange={(on) => setGiActive(on ? giSelected.id : null)}
-                    tone="success"
                     ariaLabel={`Use "${giSelected.name}" in every chat`}
                   />
                   <span className="agw-gi-state" data-on={giIsActive || undefined}>

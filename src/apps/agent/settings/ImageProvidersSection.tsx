@@ -30,6 +30,7 @@ import {
   generationUrl,
   IMAGE_API_FORMAT_LABELS,
   DEFAULT_IMAGE_PATHS,
+  imageFormatUsesApiKey,
   imageProviderReady,
   type ImageApiFormat,
   type ImageModel,
@@ -197,6 +198,13 @@ export const ImageProviderCard: React.FC<{
 
   const canEdit = editUrl(provider) !== null;
   const ready = imageProviderReady(provider);
+  /**
+   * Whether this row is something to configure at all. A Codex row has no
+   * address, no key and no paths — showing them empty would read as six things
+   * the user forgot to fill in, when the only setting that exists is the
+   * sign-in on another page.
+   */
+  const configurable = imageFormatUsesApiKey(provider.apiFormat);
 
   const addModel = () => {
     const key = newModel.trim();
@@ -267,83 +275,97 @@ export const ImageProviderCard: React.FC<{
                 onChange={(e) => updateImageProvider(provider.id, { name: e.target.value })}
               />
             </Field>
-            <Field label="Base URL">
-              <AgwTextInput
-                value={provider.baseUrl}
-                placeholder="https://api.example.com/v1"
-                onChange={(e) => updateImageProvider(provider.id, { baseUrl: e.target.value })}
-              />
-            </Field>
-            <Field label={provider.apiFormat === "minimax-native" ? "Subscription Key or API key" : "API key"}>
-              <div className="agw-prov-key-row">
-                <AgwTextInput
-                  type={showKey ? "text" : "password"}
-                  value={provider.apiKey ?? ""}
-                  placeholder="sk-…"
-                  onChange={(e) => updateImageProvider(provider.id, { apiKey: e.target.value })}
-                />
-                <button
-                  type="button"
-                  className="agw-prov-icon-btn"
-                  title={showKey ? "Hide key" : "Show key"}
-                  onClick={() => setShowKey((v) => !v)}
+            {configurable ? (
+              <>
+                <Field label="Base URL">
+                  <AgwTextInput
+                    value={provider.baseUrl}
+                    placeholder="https://api.example.com/v1"
+                    onChange={(e) => updateImageProvider(provider.id, { baseUrl: e.target.value })}
+                  />
+                </Field>
+                <Field label={provider.apiFormat === "minimax-native" ? "Subscription Key or API key" : "API key"}>
+                  <div className="agw-prov-key-row">
+                    <AgwTextInput
+                      type={showKey ? "text" : "password"}
+                      value={provider.apiKey ?? ""}
+                      placeholder="sk-…"
+                      onChange={(e) => updateImageProvider(provider.id, { apiKey: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      className="agw-prov-icon-btn"
+                      title={showKey ? "Hide key" : "Show key"}
+                      onClick={() => setShowKey((v) => !v)}
+                    >
+                      <AgentIcon name="eye" size={14} />
+                    </button>
+                  </div>
+                </Field>
+                <Field
+                  label="API format"
+                  hint="What the requests look like on the wire. Measured per provider, never assumed."
                 >
-                  <AgentIcon name="eye" size={14} />
-                </button>
-              </div>
-            </Field>
-            <Field
-              label="API format"
-              hint="What the requests look like on the wire. Measured per provider, never assumed."
-            >
-              <AgwSelect
-                ariaLabel="API format"
-                value={provider.apiFormat}
-                options={FORMAT_OPTIONS}
-                onChange={(value) =>
-                  updateImageProvider(provider.id, { apiFormat: value as ImageApiFormat })
-                }
-              />
-            </Field>
-            <Field label="Image generation path" hint={generationUrl(provider)}>
-              <AgwTextInput
-                value={provider.generationPath ?? ""}
-                placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].generation}
-                onChange={(e) =>
-                  updateImageProvider(provider.id, { generationPath: e.target.value })
-                }
-              />
-            </Field>
-            <Field
-              label="Edit path"
-              hint={
-                canEdit
-                  ? editUrl(provider) ?? ""
-                  : "Empty — this provider cannot edit, only generate."
-              }
-            >
-              <AgwTextInput
-                value={provider.editPath ?? ""}
-                placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].edit}
-                onChange={(e) => updateImageProvider(provider.id, { editPath: e.target.value })}
-              />
-            </Field>
-            <Field
-              label="Image format"
-              hint="Leave as-is unless the provider's two endpoints disagree — some return a URL from one and base64 from the other."
-            >
-              <AgwSelect
-                ariaLabel="Image format"
-                value={provider.requestFormat ?? ""}
-                options={SHAPE_OPTIONS}
-                onChange={(value) =>
-                  updateImageProvider(provider.id, {
-                    requestFormat:
-                      value === "url" || value === "b64_json" ? value : undefined,
-                  })
-                }
-              />
-            </Field>
+                  <AgwSelect
+                    ariaLabel="API format"
+                    value={provider.apiFormat}
+                    options={FORMAT_OPTIONS}
+                    onChange={(value) =>
+                      updateImageProvider(provider.id, { apiFormat: value as ImageApiFormat })
+                    }
+                  />
+                </Field>
+                <Field label="Image generation path" hint={generationUrl(provider)}>
+                  <AgwTextInput
+                    value={provider.generationPath ?? ""}
+                    placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].generation}
+                    onChange={(e) =>
+                      updateImageProvider(provider.id, { generationPath: e.target.value })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Edit path"
+                  hint={
+                    canEdit
+                      ? editUrl(provider) ?? ""
+                      : "Empty — this provider cannot edit, only generate."
+                  }
+                >
+                  <AgwTextInput
+                    value={provider.editPath ?? ""}
+                    placeholder={DEFAULT_IMAGE_PATHS[provider.apiFormat].edit}
+                    onChange={(e) => updateImageProvider(provider.id, { editPath: e.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="Image format"
+                  hint="Leave as-is unless the provider's two endpoints disagree — some return a URL from one and base64 from the other."
+                >
+                  <AgwSelect
+                    ariaLabel="Image format"
+                    value={provider.requestFormat ?? ""}
+                    options={SHAPE_OPTIONS}
+                    onChange={(value) =>
+                      updateImageProvider(provider.id, {
+                        requestFormat:
+                          value === "url" || value === "b64_json" ? value : undefined,
+                      })
+                    }
+                  />
+                </Field>
+              </>
+            ) : (
+              <Field
+                label="Account"
+                hint="Pictures are made on your ChatGPT subscription and count against the same limits as Codex chat."
+              >
+                <p className="agw-img-note">
+                  Signed in under Providers → Codex. Aurora uses whichever account is
+                  serving there, and moves to the next one when a limit is reached.
+                </p>
+              </Field>
+            )}
           </div>
 
           <ImageProviderProbe provider={provider} />

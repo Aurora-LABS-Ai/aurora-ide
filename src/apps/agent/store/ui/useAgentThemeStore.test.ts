@@ -1,10 +1,70 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { resolveAgentTheme, useAgentThemeStore } from "./useAgentThemeStore";
 import {
+  mergeAgentTokens,
+  resolveAgentTheme,
+  useAgentThemeStore,
+} from "./useAgentThemeStore";
+import {
+  AGENT_THEMES,
   DEFAULT_AGENT_THEME_ID,
   TYPOGRAPHY_DEFAULTS,
 } from "@/apps/agent/theme/themes";
+
+/**
+ * The accent family.
+ *
+ * `controlAccent` paints the switches; `accent` paints the sliders, the links
+ * and the chips. Both built-in themes ship them equal and the comment beside
+ * them says small controls follow the brand, but they did not: changing Accent
+ * wrote one and left the other, which is how one settings page ended up drawing
+ * a tan slider beside a blue switch with nobody having chosen that.
+ */
+describe("the control accent follows the brand accent", () => {
+  const base = AGENT_THEMES[DEFAULT_AGENT_THEME_ID].tokens;
+
+  beforeEach(() => {
+    useAgentThemeStore.setState({
+      activeThemeId: DEFAULT_AGENT_THEME_ID,
+      customizations: {},
+    });
+  });
+
+  it("carries a customized accent onto the control accent", () => {
+    const tokens = mergeAgentTokens(base, { accent: "#c9b489" });
+    expect(tokens.accent).toBe("#c9b489");
+    expect(tokens.controlAccent).toBe("#c9b489");
+  });
+
+  it("stops following the moment someone sets the control accent", () => {
+    // The whole reason the second token exists: a brand that goes neutral
+    // needs its switches to keep a hue, and that choice must survive.
+    const tokens = mergeAgentTokens(base, {
+      accent: "#0d0d0d",
+      controlAccent: "#339cff",
+    });
+    expect(tokens.controlAccent).toBe("#339cff");
+  });
+
+  it("leaves an untouched theme exactly as it ships", () => {
+    expect(mergeAgentTokens(base, undefined)).toBe(base);
+    expect(mergeAgentTokens(base, { radiusMd: "4px" }).controlAccent).toBe(
+      base.controlAccent,
+    );
+  });
+
+  it("reaches what the window renders, not just the merge helper", () => {
+    useAgentThemeStore.getState().setToken("accent", "#c9b489");
+    const resolved = resolveAgentTheme(useAgentThemeStore.getState());
+    expect(resolved.tokens.controlAccent).toBe(resolved.tokens.accent);
+  });
+
+  it("and what an export hands to the next machine", () => {
+    useAgentThemeStore.getState().setToken("accent", "#c9b489");
+    const file = useAgentThemeStore.getState().buildAppearanceExport();
+    expect(file.tokens?.controlAccent).toBe("#c9b489");
+  });
+});
 
 describe("resetTypography", () => {
   beforeEach(() => {

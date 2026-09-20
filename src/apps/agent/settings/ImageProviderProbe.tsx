@@ -26,7 +26,11 @@ import {
   type DiscoveredImageModel,
   type ImageProviderTestReport,
 } from "@/apps/agent/services/providers/image-provider-probe";
-import type { ImageProvider } from "@/apps/agent/services/providers/image-providers";
+import {
+  imageFormatUsesApiKey,
+  imageProviderReady,
+  type ImageProvider,
+} from "@/apps/agent/services/providers/image-providers";
 
 type Probe =
   | { kind: "idle" }
@@ -62,7 +66,13 @@ export const ImageProviderProbe: React.FC<{ provider: ImageProvider }> = ({ prov
   }
 
   const busy = probe.kind === "testing" || probe.kind === "discovering";
-  const configured = provider.baseUrl.trim() !== "" && (provider.apiKey ?? "").trim() !== "";
+  // A provider whose credentials live elsewhere has nothing to fill in here,
+  // so the buttons stay live — what they prove for it is the sign-in, which is
+  // exactly what someone opening this card wants to know.
+  const needsKey = imageFormatUsesApiKey(provider.apiFormat);
+  const configured = needsKey
+    ? provider.baseUrl.trim() !== "" && (provider.apiKey ?? "").trim() !== ""
+    : imageProviderReady(provider);
 
   const test = async () => {
     setProbe({ kind: "testing" });
@@ -96,7 +106,9 @@ export const ImageProviderProbe: React.FC<{ provider: ImageProvider }> = ({ prov
           {probe.kind === "discovering" ? "Asking for the list…" : "Discover image models"}
         </AgwButton>
         {!configured && (
-          <span className="agw-img-probe-note">Needs an address and a key first.</span>
+          <span className="agw-img-probe-note">
+            {needsKey ? "Needs an address and a key first." : "Switch this provider on first."}
+          </span>
         )}
       </div>
 

@@ -45,6 +45,12 @@ pub enum ImageApiFormat {
     /// that should do both speaks this instead. See `super::qwen`.
     #[serde(rename = "qwen-dashscope")]
     Qwen,
+    /// The user's own ChatGPT subscription, through the Codex backend. No key,
+    /// no address, no `/images` endpoint: it is the Responses API with the
+    /// hosted `image_generation` tool, and the credentials are the OAuth
+    /// tokens Settings → Providers → Codex already holds. See [`super::codex`].
+    #[serde(rename = "codex-responses")]
+    CodexResponses,
 }
 
 /// Qwen generates and edits on one endpoint, so both defaults point at it.
@@ -57,6 +63,8 @@ impl ImageApiFormat {
         match self {
             Self::MiniMax => "/v1/image_generation",
             Self::Qwen => QWEN_IMAGE_PATH,
+            // The URL is fixed in code and the row has no address to join to.
+            Self::CodexResponses => "",
             _ => "/images/generations",
         }
     }
@@ -66,6 +74,7 @@ impl ImageApiFormat {
         match self {
             Self::MiniMax => "/v1/image_generation",
             Self::Qwen => QWEN_IMAGE_PATH,
+            Self::CodexResponses => "",
             _ => "/images/edits",
         }
     }
@@ -77,7 +86,19 @@ impl ImageApiFormat {
             Self::A6api => "a6api",
             Self::MiniMax => "MiniMax native",
             Self::Qwen => "Qwen (DashScope)",
+            Self::CodexResponses => "ChatGPT (Codex)",
         }
+    }
+
+    /// Whether a row in this format carries its own credentials.
+    ///
+    /// Every other format is an address and a key. Codex is neither: it signs
+    /// in once under Providers → Codex and every request reads that. A row
+    /// that demanded a key would be permanently "not ready" with no field the
+    /// user could fill in to fix it.
+    #[must_use]
+    pub const fn uses_api_key(self) -> bool {
+        !matches!(self, Self::CodexResponses)
     }
 }
 
@@ -181,8 +202,16 @@ impl ImageProviderConfig {
     /// Switched on, addressed, and holding a key.
     #[must_use]
     pub fn ready(&self) -> bool {
-        self.enabled
-            && !self.base_url.trim().is_empty()
+        if !self.enabled {
+            return false;
+        }
+        if !self.api_format.uses_api_key() {
+            // Its address and its credentials both live in code. Whether the
+            // user is actually signed in is not knowable without a round trip,
+            // so it is answered by the call, in the call's own words.
+            return true;
+        }
+        !self.base_url.trim().is_empty()
             && self
                 .api_key
                 .as_deref()
@@ -197,6 +226,9 @@ impl ImageProviderConfig {
     /// The generation endpoint this provider posts to.
     #[must_use]
     pub fn generation_url(&self) -> String {
+        if self.api_format == ImageApiFormat::CodexResponses {
+            return crate::api::codex::CODEX_RESPONSES_URL.to_string();
+        }
         join_url(
             &self.base_url,
             self.generation_path
@@ -210,6 +242,10 @@ impl ImageProviderConfig {
     /// The edit endpoint, or `None` when this provider cannot edit.
     #[must_use]
     pub fn edit_url(&self) -> Option<String> {
+        if self.api_format == ImageApiFormat::CodexResponses {
+            // Same endpoint; the tool's `action` is what makes it an edit.
+            return Some(crate::api::codex::CODEX_RESPONSES_URL.to_string());
+        }
         match self.edit_path.as_deref().map(str::trim) {
             Some("") => None,
             Some(path) => Some(join_url(&self.base_url, path)),

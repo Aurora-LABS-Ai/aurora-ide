@@ -283,10 +283,139 @@ pub async fn chat_gallery_copy_image(
     .map_err(|e| e.to_string())?
 }
 
+/// Copy one gallery file to where the user chose to keep it.
+///
+/// The copy happens here rather than through `plugin-fs` because the fs scope
+/// only ever holds paths the USER picked — the dialog and the file picker add
+/// those as they are chosen. A conversation's asset is not one of them: nobody
+/// picks it, Aurora wrote it. `copyFile` therefore refused every save with
+/// "forbidden path … not allowed on the scope for `allow-copy-file`", naming
+/// the source, while the destination from the save dialog was fine.
+///
+/// Scoping the capability could not have fixed it either: the destination is
+/// wherever the person browsed to, which no list written in advance can cover.
+///
+/// `source` is the absolute path the gallery row carries, and it is checked to
+/// be inside this conversation's assets before anything is read — which also
+/// closes a gap the frontend copy had, where any path the renderer sent would
+/// have been copied.
+#[tauri::command]
+pub async fn chat_gallery_save_as(
+    state: State<'_, Arc<AgentRegistry>>,
+    thread_id: String,
+    source: String,
+    destination: String,
+) -> Result<(), String> {
+    let store = state.chat_store().clone();
+    tauri::async_runtime::spawn_blocking(move || save_as(&store, &thread_id, &source, &destination))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn save_as(
+    store: &SessionStore,
+    thread_id: &str,
+    source: &str,
+    destination: &str,
+) -> Result<(), String> {
+    let dir = conversation_assets(store, thread_id)?;
+    let root = dir
+        .canonicalize()
+        .map_err(|e| format!("Could not open the conversation's files: {e}"))?;
+    // Videos live in `<assets>/videos/`, so this is a containment check rather
+    // than a name lookup — one rule covers both kinds.
+    let from = Path::new(source)
+        .canonicalize()
+        .map_err(|e| format!("That file is no longer there: {e}"))?;
+    if !from.starts_with(&root) || !from.is_file() {
+        return Err("That file does not belong to this conversation".into());
+    }
+    let to = Path::new(destination);
+    if let Some(parent) = to.parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            return Err("That folder no longer exists".into());
+        }
+    }
+    // Saving a file over itself truncates it before the read. Compared after
+    // canonicalizing, so a different spelling of the same file is still caught.
+    if to.canonicalize().is_ok_and(|to| to == from) {
+        return Ok(());
+    }
+    std::fs::copy(&from, to)
+        .map(|_| ())
+        .map_err(|error| format!("Could not save it to {}: {error}", to.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::image::assets::{AssetSource, NewAsset};
+
+    /// Save As copies in Rust because `plugin-fs` cannot: its scope holds only
+    /// paths the user picked, and a conversation's asset is never one of them.
+    /// What Rust owes in return is the check the fs scope would have given —
+    /// that the file really is this conversation's — because the renderer now
+    /// names the source itself.
+    #[test]
+    fn save_as_copies_this_conversations_files_and_refuses_anything_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_folder(temp.path().to_path_buf());
+        let dir = store.assets_dir("chat-one").unwrap();
+        let videos = dir.join("videos");
+        std::fs::create_dir_all(&videos).unwrap();
+        let picture = dir.join("001-generated-red.png");
+        std::fs::write(&picture, b"pixels").unwrap();
+        let clip = videos.join("clip.mp4").to_string_lossy().to_string();
+        std::fs::write(&clip, b"frames").unwrap();
+
+        let out = temp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let saved = out.join("red.png");
+        save_as(
+            &store,
+            "chat-one",
+            &picture.to_string_lossy(),
+            &saved.to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&saved).unwrap(), b"pixels");
+
+        // Videos sit one level down and must save by the same rule.
+        let saved_clip = out.join("clip.mp4");
+        save_as(&store, "chat-one", &clip, &saved_clip.to_string_lossy()).unwrap();
+        assert_eq!(std::fs::read(&saved_clip).unwrap(), b"frames");
+
+        // Saving over the source truncates it before the read, so it is a
+        // no-op rather than a copy — and the file survives.
+        save_as(
+            &store,
+            "chat-one",
+            &picture.to_string_lossy(),
+            &picture.to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&picture).unwrap(), b"pixels");
+
+        // Anything the renderer names that is not this conversation's.
+        let outsider = temp.path().join("secret.txt");
+        std::fs::write(&outsider, b"not yours").unwrap();
+        let attempt = save_as(
+            &store,
+            "chat-one",
+            &outsider.to_string_lossy(),
+            &out.join("leak.txt").to_string_lossy(),
+        );
+        assert!(attempt.is_err(), "{attempt:?}");
+        assert!(!out.join("leak.txt").exists());
+        assert!(save_as(&store, "../other", &picture.to_string_lossy(), "x").is_err());
+        assert!(save_as(
+            &store,
+            "chat-one",
+            &dir.join("missing.png").to_string_lossy(),
+            &out.join("missing.png").to_string_lossy()
+        )
+        .is_err());
+    }
 
     #[test]
     fn gallery_reads_generated_and_attached_assets_and_build_has_none() {

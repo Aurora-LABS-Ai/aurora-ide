@@ -107,6 +107,11 @@ pub fn edit_body(
     match format {
         ImageApiFormat::MiniMax => RequestBody::Json(super::minimax::reference_body(call, source)),
         ImageApiFormat::Qwen => RequestBody::Json(super::qwen::edit_body(call, source)),
+        // Never reached: `client::edit` hands a Codex row to `codex::run`
+        // before a body is built, because the request is not a POST of one.
+        ImageApiFormat::CodexResponses => {
+            RequestBody::Json(super::codex::generation_body(call, Some(source)))
+        }
         ImageApiFormat::A6api => {
             let mut body = generation_body(format, call);
             // Measured: a URL. A picture Aurora holds only as bytes goes as a
@@ -462,6 +467,9 @@ pub fn parse_models(format: ImageApiFormat, status: u16, body: &str) -> Result<V
             });
         let include = match format {
             ImageApiFormat::A6api => tagged.then_some(Discovery::Tagged),
+            // Never reached: Codex publishes no model list, and its roster is
+            // answered from code by `client::discover_models`.
+            ImageApiFormat::CodexResponses => None,
             ImageApiFormat::OpenaiImages | ImageApiFormat::MiniMax | ImageApiFormat::Qwen => {
                 if tagged {
                     Some(Discovery::Tagged)

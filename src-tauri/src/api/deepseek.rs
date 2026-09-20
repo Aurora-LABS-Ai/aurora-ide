@@ -61,6 +61,54 @@
 //! splitter, the cancellation-token plumbing, and the reasoning_content
 //! → `Thinking` event mapping. The only thing we customize is the
 //! outgoing request body (and the URL when strict mode is on).
+//!
+//! # Three wires, one account
+//!
+//! DeepSeek serves the same models and the same key on three request
+//! shapes, and the row's `provider_type` picks which one Aurora speaks:
+//!
+//! | type | endpoint | adapter |
+//! |---|---|---|
+//! | `deepseek` | `https://api.deepseek.com/v1/chat/completions` | this file |
+//! | `deepseek-messages` | `https://api.deepseek.com/anthropic/v1/messages` | [`super::anthropic`] |
+//! | `deepseek-responses` | `https://api.deepseek.com/v1/responses` | [`super::responses`] |
+//!
+//! All three were measured against a live account on 2026-09-20. Each one
+//! needs the same three DeepSeek-specific things said in its own vocabulary,
+//! which is what [`apply_messages_tweaks`] and [`apply_responses_tweaks`]
+//! exist for:
+//!
+//! - **Thinking is ON by default and has to be turned OFF explicitly.**
+//!   Every other provider Aurora talks to treats an absent thinking field as
+//!   "don't think". DeepSeek treats it as "think, at effort `high`" — a
+//!   request with no `thinking` key came back with `reasoning_content` and 26
+//!   reasoning tokens. So "thinking off" in the composer has to be spelled
+//!   out: `{"thinking": {"type": "disabled"}}` on the chat and Messages
+//!   wires, `{"reasoning": {"effort": "none"}}` on Responses. Without it the
+//!   switch in Aurora's UI did nothing here.
+//! - **The effort knob has a different name on each wire.**
+//!   `reasoning_effort` (chat), `output_config.effort` (Messages — DeepSeek
+//!   ignores Anthropic's `thinking.budget_tokens` entirely), `reasoning.effort`
+//!   (Responses).
+//! - **`user_id` buckets the KV cache**, and rides in a different place again:
+//!   top-level on chat, `metadata.user_id` on Messages, `user` on Responses.
+//!
+//! # Cache telemetry, per wire
+//!
+//! All three report it, in two different conventions — measured on one 4,033
+//! token prefix sent twice:
+//!
+//! - chat: `prompt_cache_hit_tokens: 3840` **inside** `prompt_tokens: 4033`
+//! - Responses: `input_tokens_details.cached_tokens: 3840` **inside**
+//!   `input_tokens: 4033`
+//! - Messages: `cache_read_input_tokens: 3840` **beside** `input_tokens: 193`
+//!
+//! Aurora's UI math is Anthropic's (the cache figure ADDS to the input), so
+//! the two OpenAI-shaped wires subtract the hit count before emitting `Usage`
+//! and the Messages wire needs no correction. That already happens in
+//! [`super::openai_compat`] and [`super::responses`]; it is written down here
+//! because it is the one number that looks the same on all three wires and
+//! means something different on two of them.
 
 #![allow(dead_code)]
 
@@ -82,6 +130,34 @@ use super::provider_kernel_adapter::{
     build_openai_body, build_openai_headers, build_openai_url, map_reqwest_error,
     map_status_error_with_headers, unprefix_model, RequestOrigin,
 };
+
+/// Chat Completions — the default wire, and the one this adapter drives.
+pub const DEEPSEEK_PROVIDER_TYPE: &str = "deepseek";
+/// Anthropic Messages, served at `<base>/anthropic`.
+pub const DEEPSEEK_MESSAGES_TYPE: &str = "deepseek-messages";
+/// OpenAI Responses, served at `<base>/responses`.
+pub const DEEPSEEK_RESPONSES_TYPE: &str = "deepseek-responses";
+
+/// Whether this provider type is one of DeepSeek's three wires.
+#[must_use]
+pub fn is_deepseek_type(provider_type: &str) -> bool {
+    let t = provider_type.trim();
+    t.eq_ignore_ascii_case(DEEPSEEK_PROVIDER_TYPE)
+        || t.eq_ignore_ascii_case(DEEPSEEK_MESSAGES_TYPE)
+        || t.eq_ignore_ascii_case(DEEPSEEK_RESPONSES_TYPE)
+}
+
+/// Whether this provider type is DeepSeek on the Anthropic Messages wire.
+#[must_use]
+pub fn is_messages_wire(provider_type: &str) -> bool {
+    provider_type.trim().eq_ignore_ascii_case(DEEPSEEK_MESSAGES_TYPE)
+}
+
+/// Whether this provider type is DeepSeek on the OpenAI Responses wire.
+#[must_use]
+pub fn is_responses_wire(provider_type: &str) -> bool {
+    provider_type.trim().eq_ignore_ascii_case(DEEPSEEK_RESPONSES_TYPE)
+}
 
 /// DeepSeek-specific reasoning-effort knob. Mirrors the doc's
 /// `low | medium | high | max` schema with the documented client-side
@@ -169,6 +245,17 @@ impl DeepSeekAdapter {
 
         if request.reasoning.enabled && self.config.supports_thinking {
             apply_thinking_tweaks(map, &self.config);
+        } else {
+            // Said out loud, because silence means the opposite here. DeepSeek
+            // thinks by DEFAULT at effort `high`: a request carrying no
+            // `thinking` key came back with `reasoning_content` and 26
+            // reasoning tokens (measured 2026-09-20). Every other
+            // OpenAI-shaped provider Aurora talks to reads an absent field as
+            // "off", so until this branch existed the composer's thinking
+            // switch was decorative on DeepSeek — the model reasoned, and the
+            // user paid for it, whatever the UI said.
+            map.insert("thinking".to_string(), json!({ "type": "disabled" }));
+            map.remove("reasoning_effort");
         }
 
         // user_id: respect a user-supplied custom param, otherwise
@@ -247,6 +334,115 @@ fn apply_thinking_tweaks(map: &mut Map<String, Value>, config: &ProviderConfigSn
     ] {
         map.remove(*key);
     }
+}
+
+/// The effort DeepSeek will actually honour, from Aurora's canonical request.
+///
+/// DeepSeek accepts `low | high | max` and publishes the collapse for
+/// everything else (`minimal` → low, `medium` / `xhigh` → high, `ultra` →
+/// max). Doing that mapping here rather than passing a value through means
+/// the Messages and Responses wires — whose effort fields are typed enums,
+/// not free strings — never carry a word DeepSeek has to guess at.
+fn deepseek_effort(request: &ApiRequest<'_>, config: &ProviderConfigSnapshot) -> &'static str {
+    match request.reasoning.effort {
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "minimal" | "low" => "low",
+            "max" | "ultra" => "max",
+            _ => "high",
+        },
+        None => resolve_effort(config).as_str(),
+    }
+}
+
+/// `metadata.user_id` / `user` — the KVCache bucket, if nobody set one.
+fn user_id_for(config: &ProviderConfigSnapshot) -> String {
+    config
+        .custom_params
+        .as_ref()
+        .and_then(|p| p.get("user_id").or_else(|| p.get("user")))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| stable_user_id(config))
+}
+
+/// DeepSeek's dialect of the Anthropic Messages body, applied in place.
+///
+/// Called from [`super::provider_kernel_adapter::build_anthropic_body`] just
+/// before the user's own `customParams` are merged, so anything set by hand
+/// still wins. Four differences from Anthropic proper, all measured against a
+/// live account on 2026-09-20:
+///
+/// - **`thinking.budget_tokens` is ignored**, and `output_config.effort` is
+///   the knob that works. Aurora's Anthropic builder derives a budget and then
+///   raises `max_tokens` to cover it — correct on Anthropic, where reasoning
+///   bills against the same cap, and pure inflation here. The cap is put back
+///   to what the turn actually asked for.
+/// - **Thinking is on unless disabled.** `{"type": "disabled"}` returned a
+///   reply with no `thinking` block; omitting the field returned one.
+/// - **`metadata.user_id`** is where the KVCache bucket rides on this wire.
+/// - **`cache_control` is ignored** — DeepSeek caches automatically. Nothing
+///   to do, because `supports_prompt_caching` already excludes this type, so
+///   no breakpoints are written in the first place.
+pub fn apply_messages_tweaks(
+    body: &mut Map<String, Value>,
+    request: &ApiRequest<'_>,
+    config: &ProviderConfigSnapshot,
+) {
+    if request.reasoning.enabled && config.supports_thinking {
+        body.insert("thinking".to_string(), json!({ "type": "enabled" }));
+        body.insert(
+            "output_config".to_string(),
+            json!({ "effort": deepseek_effort(request, config) }),
+        );
+    } else {
+        body.insert("thinking".to_string(), json!({ "type": "disabled" }));
+        body.remove("output_config");
+    }
+
+    // The budget is ignored on the wire, so the cap raised to cover it is
+    // headroom nothing will use — and on a 384K-output model that is a lot of
+    // imaginary headroom for the runtime to reason about.
+    body.insert(
+        "max_tokens".to_string(),
+        Value::from(request.max_output_tokens.max(1)),
+    );
+
+    let metadata = body
+        .entry("metadata".to_string())
+        .or_insert_with(|| json!({}));
+    if let Some(obj) = metadata.as_object_mut() {
+        obj.entry("user_id".to_string())
+            .or_insert_with(|| Value::String(user_id_for(config)));
+    }
+}
+
+/// DeepSeek's dialect of the Responses body, applied in place.
+///
+/// Called from [`super::responses::build_responses_body`] just before the
+/// user's own `customParams` are merged. Measured 2026-09-20:
+///
+/// - **`reasoning.effort: "none"` is how thinking is turned off** here, and
+///   the only way: a body with no `reasoning` object reasoned anyway.
+/// - **`user`** carries the KVCache bucket on this wire.
+/// - `include`, `prompt_cache_key`, `store` and `parallel_tool_calls` are
+///   accepted and ignored, so they are left alone — a body DeepSeek silently
+///   drops is not worth a branch, and stripping them would cost the shared
+///   builder a special case for no gain.
+pub fn apply_responses_tweaks(
+    body: &mut Map<String, Value>,
+    request: &ApiRequest<'_>,
+    config: &ProviderConfigSnapshot,
+) {
+    if request.reasoning.enabled && config.supports_thinking {
+        body.insert(
+            "reasoning".to_string(),
+            json!({ "effort": deepseek_effort(request, config) }),
+        );
+    } else {
+        body.insert("reasoning".to_string(), json!({ "effort": "none" }));
+    }
+    body.entry("user".to_string())
+        .or_insert_with(|| Value::String(user_id_for(config)));
 }
 
 /// Look up `customParams.aurora_reasoning_effort`. Defaults to
@@ -445,6 +641,128 @@ mod tests {
         assert!(body.get("temperature").is_none());
     }
 
+    /// The switch in the composer has to reach the wire.
+    ///
+    /// DeepSeek reasons unless told not to — a request with no `thinking` key
+    /// came back with `reasoning_content` and 26 reasoning tokens. Omitting
+    /// the field, which is what every other OpenAI-shaped adapter does for
+    /// "off", left the model thinking and the user paying for it.
+    #[test]
+    fn thinking_off_is_stated_rather_than_omitted() {
+        let adapter = DeepSeekAdapter::new(base_config());
+        let mut req = empty_request();
+        req.reasoning.enabled = false;
+        let body = adapter.build_body(&req);
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn messages_wire_uses_output_config_and_drops_the_budget_inflated_cap() {
+        let mut config = base_config();
+        config.provider_type = Some(DEEPSEEK_MESSAGES_TYPE.to_string());
+        let mut request = empty_request();
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+            enabled: true,
+            control: crate::agent_runtime::api_client::ReasoningControl::Effort,
+            effort: Some("max"),
+            ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+        };
+        request.max_output_tokens = 4096;
+
+        let mut body = Map::new();
+        // What the shared Anthropic builder leaves behind: a budget DeepSeek
+        // ignores, and a cap raised to cover it.
+        body.insert(
+            "thinking".to_string(),
+            json!({ "type": "enabled", "budget_tokens": 12_000 }),
+        );
+        body.insert("max_tokens".to_string(), Value::from(16_096));
+        apply_messages_tweaks(&mut body, &request, &config);
+
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+        assert_eq!(body["output_config"], json!({ "effort": "max" }));
+        assert_eq!(
+            body["max_tokens"], 4096,
+            "the cap raised to cover an ignored budget must be put back"
+        );
+        assert!(body["metadata"]["user_id"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("aurora-")));
+    }
+
+    #[test]
+    fn messages_wire_turns_thinking_off_explicitly() {
+        let mut config = base_config();
+        config.provider_type = Some(DEEPSEEK_MESSAGES_TYPE.to_string());
+        let mut request = empty_request();
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest::disabled();
+
+        let mut body = Map::new();
+        apply_messages_tweaks(&mut body, &request, &config);
+
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn messages_wire_keeps_a_user_supplied_bucket() {
+        let mut config = base_config();
+        config.provider_type = Some(DEEPSEEK_MESSAGES_TYPE.to_string());
+        let mut params = HashMap::new();
+        params.insert("user_id".to_string(), Value::String("alvan-prod".into()));
+        config.custom_params = Some(params);
+
+        let mut body = Map::new();
+        apply_messages_tweaks(&mut body, &empty_request(), &config);
+        assert_eq!(body["metadata"]["user_id"], "alvan-prod");
+    }
+
+    #[test]
+    fn responses_wire_spells_thinking_off_as_effort_none() {
+        let mut config = base_config();
+        config.provider_type = Some(DEEPSEEK_RESPONSES_TYPE.to_string());
+        let mut request = empty_request();
+        request.reasoning = crate::agent_runtime::api_client::ReasoningRequest::disabled();
+
+        let mut body = Map::new();
+        // The shared builder's summary block, which DeepSeek accepts and never
+        // fills — it must not survive as a reason to keep reasoning on.
+        body.insert("reasoning".to_string(), json!({ "summary": "auto" }));
+        apply_responses_tweaks(&mut body, &request, &config);
+
+        assert_eq!(body["reasoning"], json!({ "effort": "none" }));
+        assert!(body["user"].as_str().is_some_and(|s| s.starts_with("aurora-")));
+    }
+
+    #[test]
+    fn effort_words_deepseek_does_not_take_are_collapsed_before_they_ship() {
+        // `medium` and `xhigh` are Aurora vocabulary; DeepSeek's enum is
+        // low/high/max, and the Messages and Responses fields are typed.
+        let mut config = base_config();
+        config.provider_type = Some(DEEPSEEK_RESPONSES_TYPE.to_string());
+        for (asked, expected) in [
+            ("minimal", "low"),
+            ("low", "low"),
+            ("medium", "high"),
+            ("high", "high"),
+            ("xhigh", "high"),
+            ("max", "max"),
+            ("ultra", "max"),
+        ] {
+            let mut request = empty_request();
+            request.reasoning = crate::agent_runtime::api_client::ReasoningRequest {
+                enabled: true,
+                control: crate::agent_runtime::api_client::ReasoningControl::Effort,
+                effort: Some(asked),
+                ..crate::agent_runtime::api_client::ReasoningRequest::disabled()
+            };
+            let mut body = Map::new();
+            apply_responses_tweaks(&mut body, &request, &config);
+            assert_eq!(body["reasoning"]["effort"], expected, "asked for {asked}");
+        }
+    }
+
     #[test]
     fn thinking_off_keeps_temperature() {
         let adapter = DeepSeekAdapter::new(base_config());
@@ -459,9 +777,10 @@ mod tests {
             body.get("reasoning_effort").is_none(),
             "reasoning_effort must not appear outside thinking mode"
         );
-        assert!(
-            body.get("thinking").is_none(),
-            "thinking block must not appear when thinking is off"
+        assert_eq!(
+            body["thinking"],
+            json!({ "type": "disabled" }),
+            "an absent thinking block means ON at DeepSeek, so off is stated"
         );
     }
 

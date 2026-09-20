@@ -43,6 +43,7 @@ pub mod commandcode;
 #[cfg(test)]
 mod command_thread_safety;
 pub mod cursor;
+pub mod deepseek;
 pub mod diagnostics;
 pub mod editor_ops;
 pub mod fonts;
@@ -65,6 +66,7 @@ pub mod provider_test;
 pub mod settings;
 pub mod shell_profiles;
 pub mod speech;
+pub mod speech_stream;
 pub mod state;
 pub mod team;
 pub mod terminal;

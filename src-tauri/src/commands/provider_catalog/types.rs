@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +50,41 @@ pub struct ProviderCatalogPreset {
     /// request. Anything a preset knows per model belongs on the model.
     #[serde(default)]
     pub model_context_windows: Option<HashMap<String, u32>>,
+    /// Per-model reasoning control to seed, keyed like [`Self::model_pricing`].
+    ///
+    /// Carried as raw JSON because the shape belongs to the frontend's
+    /// `ModelReasoning` type and Rust never reads it — the seeding path hands
+    /// it straight to the model row. Without it a seeded model arrives with no
+    /// reasoning profile, which means no effort picker in the composer until
+    /// somebody edits the row by hand.
+    #[serde(default)]
+    pub model_reasoning: Option<HashMap<String, Value>>,
+    /// Per-model vision, for a provider whose models do not agree.
+    ///
+    /// [`Self::supports_vision`] answers for the whole provider, and DeepSeek
+    /// is the case where that cannot be right: Flash reads images and V4 Pro
+    /// answers 400 on them. Wrong in the permissive direction is the damaging
+    /// one — a pasted screenshot reaches a model that cannot see it and the
+    /// turn fails — so anything a preset knows per model belongs on the model.
+    #[serde(default)]
+    pub model_vision: Option<HashMap<String, bool>>,
+}
+
+/// DeepSeek's effort picker, as the composer's `ModelReasoning` shape.
+///
+/// A function rather than a constant because it is used once per model row and
+/// `serde_json::json!` is not const. `toggleable` is true because DeepSeek's
+/// thinking genuinely switches off (`{"thinking": {"type": "disabled"}}`),
+/// unlike the natively-reasoning families where the composer must not offer a
+/// switch that does nothing.
+fn deepseek_effort_control() -> Value {
+    serde_json::json!({
+        "type": "effort",
+        "levels": ["low", "high", "max"],
+        "default": "max",
+        "supported": ["effort", "toggle"],
+        "toggleable": true,
+    })
 }
 
 /// USD-denominated pricing for a single model. All three rates are
@@ -109,6 +145,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -134,6 +172,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -159,6 +199,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // Anthropic published pricing (USD per 1M tokens). Cache
             // read = `cache_read_input_tokens` rate, cache write is a
             // separate cost we don't currently expose; the cache_hit
@@ -244,6 +286,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // Meta's published rates (USD per 1M tokens: cached input, fresh
             // input, output). Seeded, unlike Command Code's, because these are
             // what a pay-as-you-go account is actually charged — and
@@ -375,75 +419,83 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 "MiniMax-M3".to_string(),
                 1_000_000,
             )])),
+            model_reasoning: None,
+            model_vision: None,
         },
         ProviderCatalogPreset {
             id: "deepseek".to_string(),
             name: "DeepSeek".to_string(),
             nickname: None,
             base_url: "https://api.deepseek.com/v1".to_string(),
-            model: "deepseek-v4-pro".to_string(),
+            model: "deepseek-flash".to_string(),
             // DeepSeek V4 ships with a 1M-token context window and a
-            // 384K-token max output — published on the official model
-            // card. The V3 family (`deepseek-chat`, `deepseek-reasoner`)
-            // is still capped at 128K, but those overrides live on the
-            // per-model rows when needed.
+            // 384K-token max output — published on the official model card and
+            // the same for both models, so nothing needs a per-model override.
             context_window: 1_000_000,
             max_output_tokens: 384_000,
             supports_thinking: true,
             supports_tool_stream: None,
+            // Per model below: Flash sees, V4 Pro does not. A provider-wide
+            // answer has to be wrong for one of them, and wrong in the
+            // permissive direction means a pasted screenshot reaches a model
+            // that answers 400.
             supports_vision: None,
+            // The live roster, not a remembered one. `GET /models` on
+            // 2026-09-20 returns exactly these two. `deepseek-v4-flash`,
+            // `deepseek-chat` and `deepseek-reasoner` are gone: the first is a
+            // retired alias DeepSeek still accepts and serves with V4.1-Flash
+            // at the Flash price, and the V3 pair is withdrawn. Seeding a name
+            // that silently resolves to a different model is worse than not
+            // offering it — the cost row would quote V3's price for V4's work.
             custom_models: Some(vec![
+                "deepseek-flash".to_string(),
                 "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-                "deepseek-chat".to_string(),
-                "deepseek-reasoner".to_string(),
             ]),
             model_aliases: Some(HashMap::from([
+                (
+                    "deepseek-flash".to_string(),
+                    "DeepSeek V4.1 Flash".to_string(),
+                ),
                 ("deepseek-v4-pro".to_string(), "DeepSeek V4 Pro".to_string()),
-                (
-                    "deepseek-v4-flash".to_string(),
-                    "DeepSeek V4 Flash".to_string(),
-                ),
-                (
-                    "deepseek-chat".to_string(),
-                    "DeepSeek Chat (V3)".to_string(),
-                ),
-                (
-                    "deepseek-reasoner".to_string(),
-                    "DeepSeek Reasoner (R1)".to_string(),
-                ),
             ])),
             provider_type: "deepseek".to_string(),
             default_temperature: Some(1.0),
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
-            // Pricing taken from the official DeepSeek pricing table
-            // (USD per 1M tokens). V4 Pro is shown at its post-launch
-            // 75% discounted rate; list price is documented inline so a
-            // future migration can swap them back without re-reading
-            // the docs:
-            //   - V4 Pro list:  cache_hit $0.0145  cache_miss $1.74    output $3.48
-            //   - V4 Pro 75% off: $0.003625 / $0.435 / $0.87  (active)
-            //   - V4 Flash:        $0.0028   / $0.14  / $0.28
-            // V3 family numbers below are the pre-V4 published prices;
-            // users on legacy contracts can override them in the UI.
+            // Both models take `low | high | max` and both think by default,
+            // which is why `toggleable` is true and the default is the top
+            // tier: DeepSeek's own default effort is `high`, and a coding turn
+            // is what `max` exists for.
+            model_reasoning: Some(HashMap::from([
+                ("deepseek-flash".to_string(), deepseek_effort_control()),
+                ("deepseek-v4-pro".to_string(), deepseek_effort_control()),
+            ])),
+            model_vision: Some(HashMap::from([
+                ("deepseek-flash".to_string(), true),
+                ("deepseek-v4-pro".to_string(), false),
+            ])),
+            // OFF-PEAK rates from the official pricing table (USD per 1M
+            // tokens). DeepSeek bills two rates for the same tokens — peak is
+            // exactly double — and Aurora's catalogue holds one number per
+            // model, so this has to pick.
+            //
+            // Off-peak, because it is what the clock says most of the time:
+            // peak is 01:00–04:00 and 06:00–10:00 UTC on weekdays only, which
+            // is 35 hours of every 168. The other 133 are billed at these
+            // rates. The provider card and the context ring both say which
+            // window is running, so a doubled bill is never a silent one.
+            //
+            //   peak (double these):  Flash $0.006 / $0.3  / $1.2
+            //                         V4 Pro $0.044 / $1.32 / $3.96
             model_pricing: Some(HashMap::from([
                 (
+                    "deepseek-flash".to_string(),
+                    ModelPricing::usd(0.003, 0.15, 0.6),
+                ),
+                (
                     "deepseek-v4-pro".to_string(),
-                    ModelPricing::usd(0.003625, 0.435, 0.87),
-                ),
-                (
-                    "deepseek-v4-flash".to_string(),
-                    ModelPricing::usd(0.0028, 0.14, 0.28),
-                ),
-                (
-                    "deepseek-chat".to_string(),
-                    ModelPricing::usd(0.07, 0.27, 1.10),
-                ),
-                (
-                    "deepseek-reasoner".to_string(),
-                    ModelPricing::usd(0.14, 0.55, 2.19),
+                    ModelPricing::usd(0.022, 0.66, 1.98),
                 ),
             ])),
         },
@@ -498,6 +550,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // USD per 1M tokens as (cached input, fresh input, output),
             // transcribed from the models.dev catalogue the UI enriches
             // from — so a seeded row and an enriched row agree instead of
@@ -582,6 +636,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // Pricing intentionally omitted — the UI enriches models
             // from models.dev, which stays current across releases.
             model_pricing: None,
@@ -624,6 +680,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // Priced in RUPIAH per million tokens, not dollars, so the USD
             // helper here would be a lie. Left to the model rows.
             model_pricing: None,
@@ -731,6 +789,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
                 ("deepseek-v4-pro".to_string(), 1_048_576),
                 ("deepseek-v4-flash".to_string(), 1_048_576),
             ])),
+            model_reasoning: None,
+            model_vision: None,
             // The wire. `ark-messages` routes to the Anthropic adapter;
             // `ark` falls through to the OpenAI-compatible one, which is
             // exactly what that wire is. Either way the `ark` prefix is what
@@ -777,6 +837,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: true,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             // Endpoints bill for GPU time, not tokens, so there is no per-token
             // price to seed. The cost card stays blank unless the user enters
             // an effective rate on the model row.
@@ -800,6 +862,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: false,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             model_pricing: None,
         },
         ProviderCatalogPreset {
@@ -820,6 +884,8 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             default_max_tokens: None,
             requires_api_key: false,
             model_context_windows: None,
+            model_reasoning: None,
+            model_vision: None,
             model_pricing: None,
         },
     ]

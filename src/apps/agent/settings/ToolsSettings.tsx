@@ -85,21 +85,27 @@ const TOOL_CATEGORIES: Record<string, ToolCategory> = {
 
 // ── A compact toggle tile (defaults / guardrails) ────────────────────────────
 
+/**
+ * No `tone`. This grid is where the old per-switch colour was least defensible:
+ * "Auto-approve all tools" — run every tool without asking, the least careful
+ * setting in the window — was blue, while "Pre-save syntax validation" beside it
+ * was green. Four tiles, two colours, and the green ones were not the safe ones.
+ * The label and hint carry the meaning.
+ */
 const ToggleTile: React.FC<{
   icon: AgentIconName;
   label: string;
   hint: string;
   checked: boolean;
   onChange: (v: boolean) => void;
-  tone?: "accent" | "success";
-}> = ({ icon, label, hint, checked, onChange, tone = "accent" }) => (
+}> = ({ icon, label, hint, checked, onChange }) => (
   <div className="agw-set-tile">
     <div className="agw-set-tile-top">
       <span className="agw-set-tile-ico">
         <AgentIcon name={icon} size={15} />
       </span>
       <span className="agw-set-tile-label">{label}</span>
-      <AgwSwitch checked={checked} onChange={onChange} tone={tone} ariaLabel={label} />
+      <AgwSwitch checked={checked} onChange={onChange} ariaLabel={label} />
     </div>
     <div className="agw-set-tile-hint">{hint}</div>
   </div>
@@ -260,7 +266,6 @@ export const ToolsSettings: React.FC = () => {
             hint="Reject writes with syntax errors; the agent must fix and retry."
             checked={syntaxValidationEnabled}
             onChange={setSyntaxValidationEnabled}
-            tone="success"
           />
           <ToggleTile
             icon="files"
@@ -268,7 +273,6 @@ export const ToolsSettings: React.FC = () => {
             hint="Inject a workspace tree into the first message so the agent knows the layout."
             checked={projectLayoutEnabled}
             onChange={setProjectLayoutEnabled}
-            tone="success"
           />
         </div>
       </section>

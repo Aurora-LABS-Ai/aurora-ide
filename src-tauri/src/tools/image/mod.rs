@@ -28,6 +28,7 @@
 
 pub mod assets;
 pub mod client;
+pub mod codex;
 pub mod config;
 pub mod ingest;
 pub mod minimax;

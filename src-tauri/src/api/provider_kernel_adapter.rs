@@ -1024,6 +1024,13 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         body.remove("top_k");
     }
 
+    // DeepSeek serves a real Messages API and diverges from Anthropic in four
+    // places that matter. Applied BEFORE `custom_params` so a hand-set
+    // `thinking` / `output_config` / `metadata` still wins.
+    if super::deepseek::is_messages_wire(config.effective_provider_type()) {
+        super::deepseek::apply_messages_tweaks(&mut body, request, config);
+    }
+
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
             // Never forward `reasoning_effort` — it is not an Anthropic field and

@@ -8,7 +8,6 @@ import type { GalleryImage } from "./gallery-service";
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   save: vi.fn(),
-  copy: vi.fn(),
   clipboard: vi.fn(),
 }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({ auroraInvoke: mocks.invoke }));
@@ -20,7 +19,6 @@ vi.mock("@/kernel/lib/clipboard", () => ({
   writeClipboardText: mocks.clipboard,
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: mocks.save }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ copyFile: mocks.copy }));
 const image: GalleryImage = {
   threadId: "chat",
   threadTitle: "Research",
@@ -43,15 +41,29 @@ it("copies image pixels through the native bounded decoder, not a URL", async ()
 it("saves the original with the native file dialog and respects cancellation", async () => {
   mocks.save.mockResolvedValueOnce(null);
   expect(await saveGalleryMedia(image)).toBe(false);
-  expect(mocks.copy).not.toHaveBeenCalled();
+  expect(mocks.invoke).not.toHaveBeenCalled();
   mocks.save.mockResolvedValueOnce("E:/exports/001.png");
   expect(await saveGalleryMedia(image)).toBe(true);
-  expect(mocks.copy).toHaveBeenCalledWith(image.path, "E:/exports/001.png");
+  expect(mocks.invoke).toHaveBeenCalledWith("chat_gallery_save_as", {
+    threadId: "chat",
+    source: image.path,
+    destination: "E:/exports/001.png",
+  });
 });
-it("does not overwrite a source with itself and reports clipboard failures", async () => {
-  mocks.save.mockResolvedValueOnce(image.path);
+/**
+ * The copy must NOT go through `plugin-fs`. Its scope holds only paths the user
+ * picked, and a conversation's own asset is never one of them, so `copyFile`
+ * refused every save with "forbidden path … `allow-copy-file`". Naming the
+ * command here is what stops someone reaching for `copyFile` again because it
+ * reads as the obvious call.
+ */
+it("never asks the fs plugin to read a path the user did not pick", async () => {
+  mocks.save.mockResolvedValueOnce("E:/exports/001.png");
   await saveGalleryMedia(image);
-  expect(mocks.copy).not.toHaveBeenCalled();
+  expect(mocks.invoke).toHaveBeenCalledOnce();
+  expect(mocks.invoke.mock.calls[0][0]).toBe("chat_gallery_save_as");
+});
+it("reports clipboard failures", async () => {
   mocks.clipboard.mockResolvedValueOnce(false);
   await expect(copyGalleryPath(image)).rejects.toThrow(
     "Clipboard could not be updated",

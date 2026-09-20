@@ -732,8 +732,13 @@ button.agw-model-group-label:focus-visible {
   box-shadow: 0 1px 2px color-mix(in srgb, var(--agw-text) 30%, transparent);
   transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1), background 0.18s ease;
 }
+/* The CONTROL accent, like `.agw-switch` — this is the same object at 30px, and
+   it was reading the BRAND accent, so the composer's reasoning switch and the
+   settings switches would part company the moment a brand went neutral. A
+   17px-tall pill that says on or off by fill alone is exactly what the control
+   accent exists to keep coloured. */
 .agw-mswitch[data-on] {
-  background: var(--agw-accent);
+  background: var(--agw-control-accent, var(--agw-accent));
 }
 .agw-mswitch[data-on] .agw-mswitch-knob {
   transform: translateX(13px);

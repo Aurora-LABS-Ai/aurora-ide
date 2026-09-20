@@ -86,11 +86,17 @@ import {
   type MinimaxUsageSnapshot,
 } from "@/apps/agent/services/providers/minimax";
 import {
+  fetchDeepSeekBalance,
+  isDeepSeekProvider,
+  type DeepSeekBalanceSnapshot,
+} from "@/apps/agent/services/providers/deepseek";
+import {
   arkPlanView,
   claudeCodePlanView,
   codexPlanView,
   commandCodePlanView,
   cursorPlanView,
+  deepseekPlanView,
   kenariPlanView,
   minimaxPlanView,
   openCodePlanView,
@@ -336,6 +342,46 @@ async function getArkUsageCached(): Promise<ArkPlanState> {
  * and there is exactly one of it.
  */
 let cursorUsageCache: { at: number; snap: CursorUsageSnapshot } | null = null;
+
+/**
+ * DeepSeek's balance, cached the same way and for the same reason.
+ *
+ * Keyed by the key AND the base URL: the row's wire changes the URL, and the
+ * balance endpoint hangs off the account root behind it. A row switched from
+ * Chat to Messages is the same account and will hit the same cache entry only
+ * if both halves match, which is the honest test for "same account".
+ */
+let deepseekBalanceCache: {
+  at: number;
+  key: string;
+  baseUrl: string;
+  snap: DeepSeekBalanceSnapshot;
+} | null = null;
+
+async function getDeepSeekBalanceCached(
+  apiKey: string,
+  baseUrl: string,
+): Promise<DeepSeekBalanceSnapshot | null> {
+  if (
+    deepseekBalanceCache &&
+    deepseekBalanceCache.key === apiKey &&
+    deepseekBalanceCache.baseUrl === baseUrl &&
+    Date.now() - deepseekBalanceCache.at < PLAN_USAGE_TTL_MS
+  ) {
+    lastPlanReadAt = deepseekBalanceCache.at;
+    return deepseekBalanceCache.snap;
+  }
+  try {
+    const snap = await fetchDeepSeekBalance(apiKey, baseUrl);
+    deepseekBalanceCache = { at: Date.now(), key: apiKey, baseUrl, snap };
+    lastPlanReadAt = deepseekBalanceCache.at;
+    return snap;
+  } catch {
+    // A rejected key, or offline. The section is omitted rather than shown
+    // empty; the provider page is where a broken key gets explained.
+    return null;
+  }
+}
 
 /**
  * MiniMax Token Plan headroom, cached the same way and for the same reason.
@@ -695,6 +741,31 @@ export const ContextRing: React.FC = () => {
     const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
     return row ? isArkProvider(row) : false;
   });
+  // And the seventh, which is not a plan at all: DeepSeek is pay-as-you-go, so
+  // what this section carries is a balance and the rate window the cost
+  // figures above it were priced at. Recognised like kenari's rather than by
+  // an id prefix — a row someone added themselves carries a UUID, and on
+  // DeepSeek its type is whichever of the three wires they chose.
+  const isDeepSeek = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return false;
+    const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
+    return row ? isDeepSeekProvider(row) : false;
+  });
+  // Gated on the key, like MiniMax's: DeepSeek has nothing on disk to fall
+  // back to, so with nothing pasted there is no account to ask.
+  const deepseekKey = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return "";
+    return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.apiKey ?? "";
+  });
+  // Sent along so a proxied row is asked about ITS account rather than
+  // api.deepseek.com. Rust peels the wire suffix back to the root.
+  const deepseekBaseUrl = useSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return "";
+    return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.baseUrl ?? "";
+  });
 
   // ── Cost inputs ───────────────────────────────────────────────────
   // The running turn's requests (summed live) and the conversation's total
@@ -799,6 +870,9 @@ export const ContextRing: React.FC = () => {
   const [arkPlan, setArkPlan] = useState<ArkPlanState>(null);
   const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
   const [minimaxUsage, setMinimaxUsage] = useState<MinimaxUsageSnapshot | null>(null);
+  const [deepseekBalance, setDeepSeekBalance] = useState<DeepSeekBalanceSnapshot | null>(
+    null,
+  );
   // When the plan figures above were read. Stamped from the cache entry that
   // served them, not from the moment the promise resolved — a cache hit is a
   // minute-old reading and saying "just now" over it would be the same kind of
@@ -864,6 +938,14 @@ export const ContextRing: React.FC = () => {
       });
       return;
     }
+    // Gated on the key for MiniMax's reason: nothing on disk to fall back to.
+    if (isDeepSeek && deepseekKey) {
+      void getDeepSeekBalanceCached(deepseekKey, deepseekBaseUrl).then((snap) => {
+        if (snap) setDeepSeekBalance(snap);
+        stampPlanRead();
+      });
+      return;
+    }
     // Gated on the key, like OpenCode's: MiniMax has nothing on disk to fall
     // back to, so with nothing pasted there is no account to ask.
     if (isMinimax && minimaxKey) {
@@ -889,10 +971,13 @@ export const ContextRing: React.FC = () => {
     isKenari,
     isArk,
     isMinimax,
+    isDeepSeek,
     isCursor,
     openCodeKey,
     commandCodeKey,
     minimaxKey,
+    deepseekKey,
+    deepseekBaseUrl,
     stampPlanRead,
   ]);
 
@@ -1056,9 +1141,11 @@ export const ContextRing: React.FC = () => {
               ? arkPlanView(arkPlan)
               : isMinimax
                 ? minimaxPlanView(minimaxUsage)
-                : isCursor && cursorUsage
-                  ? cursorPlanView(cursorUsage)
-                  : null;
+                : isDeepSeek
+                  ? deepseekPlanView(deepseekBalance)
+                  : isCursor && cursorUsage
+                    ? cursorPlanView(cursorUsage)
+                    : null;
 
   return (
     <div

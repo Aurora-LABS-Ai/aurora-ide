@@ -27,6 +27,7 @@ import React, { useMemo, useRef, useState } from "react";
 
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import {
+  mergeAgentTokens,
   selectHasAppearancePrefChanges,
   useAgentThemeStore,
   type AgentUiVersion,
@@ -498,8 +499,11 @@ export const AppearanceSettings: React.FC = () => {
       AGENT_THEMES[DEFAULT_AGENT_THEME_ID],
     [customThemes, activeThemeId],
   );
+  // Merged through the same helper the window renders from, so the Control
+  // accent swatch shows the colour that is actually on screen rather than the
+  // base theme's shipped value it silently follows.
   const tokens = useMemo<AgentThemeTokens>(
-    () => ({ ...base.tokens, ...(customizations[activeThemeId] ?? {}) }),
+    () => mergeAgentTokens(base.tokens, customizations[activeThemeId]),
     [base, customizations, activeThemeId],
   );
 
@@ -783,7 +787,7 @@ export const AppearanceSettings: React.FC = () => {
           field={{
             key: "controlAccent",
             label: "Control accent",
-            hint: "The tint on small controls that carry state by colour alone: a switch that is on, the pinned tack in the rail, the unread badge, and the activity spinner and dot. Its own setting so Accent can go neutral — a black or white brand colour — without an on switch becoming indistinguishable from an off one.",
+            hint: "The tint on small controls that carry state by colour alone: a switch that is on, the pinned tack in the rail, the unread badge, and the activity spinner and dot. Follows Accent until you set it here. Separate it when Accent goes neutral — a black or white brand colour — so an on switch stays distinguishable from an off one.",
           }}
           value={tokens.controlAccent}
           onChange={(v) => setToken("controlAccent", v)}

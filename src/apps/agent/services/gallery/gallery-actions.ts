@@ -42,7 +42,6 @@ export async function saveGalleryMedia(image: GalleryImage): Promise<boolean> {
   if (!image.path) throw new Error("This video has not been saved yet");
   if (isTauri()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { copyFile } = await import("@tauri-apps/plugin-fs");
     const extension =
       image.name.split(".").pop() || (image.video ? "mp4" : "png");
     const destination = await save({
@@ -52,12 +51,15 @@ export async function saveGalleryMedia(image: GalleryImage): Promise<boolean> {
       ],
     });
     if (!destination) return false;
-    if (
-      destination.replace(/\\/g, "/").toLowerCase() ===
-      image.path.replace(/\\/g, "/").toLowerCase()
-    )
-      return true;
-    await copyFile(image.path, destination);
+    // Rust does the copy. `plugin-fs` cannot: its scope holds only paths the
+    // user picked, and a conversation's own asset is never one of them, so
+    // `copyFile` refused every save as a forbidden path. Rust also checks the
+    // file is really this conversation's before reading it.
+    await auroraInvoke("chat_gallery_save_as", {
+      threadId: image.threadId,
+      source: image.path,
+      destination,
+    });
   } else {
     const link = document.createElement("a");
     link.href = galleryFileSrc(image.path);

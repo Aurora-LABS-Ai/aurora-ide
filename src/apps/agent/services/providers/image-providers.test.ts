@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   A6API_IMAGE_PROVIDER_ID,
+  CODEX_IMAGE_PROVIDER_ID,
   MINIMAX_IMAGE_PROVIDER_ID,
   aspectRatioOfSize,
   canEditWith,
@@ -277,5 +278,68 @@ describe("a conversation pinned to an image model", () => {
     expect(aspectRatioOfSize("0x1024")).toBe("1 / 1");
     expect(aspectRatioOfSize("1024x-1")).toBe("1 / 1");
     expect(aspectRatioOfSize(`${"9".repeat(400)}x1024`)).toBe("1 / 1");
+  });
+});
+
+/**
+ * ChatGPT is the first image provider with neither an address nor a key: it
+ * reads the sign-in under Providers → Codex. Every rule written as "enabled,
+ * addressed and holding a key" had to learn that, and a row that fell through
+ * one of them would sit permanently unusable with no field that could fix it.
+ */
+describe("a provider whose credentials live elsewhere", () => {
+  const codex = (): ImageProvider => {
+    const rows = normalizeImageProviders([]);
+    const row = rows.find((p) => p.id === CODEX_IMAGE_PROVIDER_ID);
+    expect(row, "the built-in ChatGPT row ships").toBeDefined();
+    return row!;
+  };
+
+  it("ships switched on, with no key to fill in", () => {
+    const row = codex();
+    expect(row.apiFormat).toBe("codex-responses");
+    expect(row.apiKey ?? "").toBe("");
+    expect(row.baseUrl).toBe("");
+    expect(row.builtIn).toBe(true);
+  });
+
+  it("is ready on the switch alone", () => {
+    expect(imageProviderReady(codex())).toBe(true);
+    expect(imageProviderReady({ ...codex(), enabled: false })).toBe(false);
+  });
+
+  it("still demands a key from every other format", () => {
+    expect(imageProviderReady(provider({ apiKey: "" }))).toBe(false);
+    expect(imageProviderReady(provider({ baseUrl: "" }))).toBe(false);
+  });
+
+  it("resolves both endpoints from code, not from the row", () => {
+    const row = codex();
+    expect(generationUrl(row)).toBe("https://chatgpt.com/backend-api/codex/responses");
+    // One endpoint for both — the tool's `action` is what makes a call an edit.
+    expect(editUrl(row)).toBe(generationUrl(row));
+  });
+
+  it("only lets the gpt-image models edit", () => {
+    const row = codex();
+    for (const model of row.models) {
+      expect(canEditWith(row, model), model.modelKey).toBe(true);
+      expect(model.modelKey.startsWith("gpt-image-")).toBe(true);
+    }
+  });
+
+  /**
+   * The bug this guards used to be live for `qwen-dashscope`: a format missing
+   * from the normalizer's list does not fail loudly, it silently becomes
+   * `openai-images` on the next launch and starts posting a shape the provider
+   * refuses.
+   */
+  it("survives a round trip through the stored list, as every format must", () => {
+    const stored = normalizeImageProviders([]).map((row) => ({ ...row }));
+    const reloaded = normalizeImageProviders(stored);
+    for (const before of stored) {
+      const after = reloaded.find((row) => row.id === before.id);
+      expect(after?.apiFormat, before.id).toBe(before.apiFormat);
+    }
   });
 });

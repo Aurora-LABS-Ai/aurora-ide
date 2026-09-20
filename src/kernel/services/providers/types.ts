@@ -303,7 +303,17 @@ export type ProviderType =
   | 'cursor'           // Cursor subscription via its native agent protocol
   | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
   | 'anthropic'        // Native Anthropic Claude API
-  | 'deepseek'         // DeepSeek (OpenAI-compatible with extensions)
+  // DeepSeek — one `sk-` key, three wires, all three live. Like Ark's three
+  // and unlike kenari's, these are not suffixes of one base URL: Messages is
+  // served at `/anthropic`, so the picker rewrites the row's URL
+  // (`deepseekBaseUrlForWire`) and switching only the type would 404.
+  //
+  // Chat is the default and stays it: it is the only wire with DeepSeek's
+  // strict-tool beta branch. Messages is the one that returns SIGNED thinking,
+  // so reasoning survives a tool loop; Responses returns it as plain text.
+  | 'deepseek'           // DeepSeek over OpenAI Chat Completions (the default)
+  | 'deepseek-messages'  // DeepSeek over the Anthropic Messages shape
+  | 'deepseek-responses' // DeepSeek over the Responses shape
   | 'glm'              // GLM/Z.AI (OpenAI-compatible with thinking)
   | 'minimax'          // MiniMax M2 family (Anthropic-compatible by default)
   | 'lmstudio'         // LM Studio (local server, uses async-openai Rust crate)

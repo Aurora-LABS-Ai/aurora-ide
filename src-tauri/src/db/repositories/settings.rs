@@ -345,6 +345,14 @@ impl<'a> SettingsRepository<'a> {
                     settings.speech_language = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.speech_language.clone())
                 }
+                "speechMode" => {
+                    settings.speech_mode = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_mode.clone())
+                }
+                "speechLive" => {
+                    settings.speech_live = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.speech_live.clone())
+                }
                 _ => {}
             }
         }
@@ -609,6 +617,14 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "speechLanguage",
             &serde_json::to_string(&settings.speech_language).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechMode",
+            &serde_json::to_string(&settings.speech_mode).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "speechLive",
+            &serde_json::to_string(&settings.speech_live).unwrap_or_default(),
         )?;
         Ok(())
     }
@@ -940,6 +956,20 @@ mod tests {
             "builtIn": true,
             "models": [{ "id": "img-a6api:gpt-image-1.5", "modelKey": "gpt-image-1.5" }],
         }]);
+        // Live dictation. Both away from their defaults on purpose: the sister
+        // test below already catches a field that is never written, but a
+        // field written and never read back looks correct to it, and only a
+        // non-default value here can tell the difference.
+        settings.speech_mode = "live".into();
+        settings.speech_live = serde_json::json!({
+            "runtimePath": "E:/audio.cpp/bin/audiocpp_cli.exe",
+            "modelPath": "E:/audio.cpp/models/r2t2-q8_0.gguf",
+            "libraryPath": "C:/CUDA/v13.2/bin/x64",
+            "backend": "cuda",
+            "chunkMs": 320,
+            "holdBack": 2,
+            "idleSeconds": 300,
+        });
 
         repo.save_app_settings(&settings).expect("save");
         let loaded = repo.get_app_settings().expect("load");

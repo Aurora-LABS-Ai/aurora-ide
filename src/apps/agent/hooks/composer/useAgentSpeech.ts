@@ -17,6 +17,10 @@ import type { RefObject } from "react";
 
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { speechService } from "@/apps/agent/services/speech/speech";
+import {
+  SpeechStreamSession,
+  toStreamConfig,
+} from "@/apps/agent/services/speech/speech-stream";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { runDictationCleanup } from "@/apps/agent/adapters/prompt-refine";
 import {
@@ -142,6 +146,12 @@ export interface AgentSpeech {
   speechEnabled: boolean;
   isRecording: boolean;
   isTranscribing: boolean;
+  /**
+   * Live dictation is loading its model. Only ever true for the first
+   * recording after a cold start or an idle release — about 3.5 seconds. The
+   * mic button shows it so the wait is explained rather than felt as a hang.
+   */
+  isLoadingModel: boolean;
   /** Transient mic notice (auto-dismisses ~5s); `null` when nothing to show. */
   notice: MicNotice | null;
   /** Toggle record ↔ stop+transcribe (opens the consent modal on first use). */
@@ -158,7 +168,16 @@ export interface AgentSpeech {
   dismissPermission: () => void;
 }
 
-export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeech {
+/**
+ * @param onTranscript Insert a finished transcript at the caret. Used by the
+ *   record-then-transcribe path, and as a fallback when `onWords` is absent.
+ * @param onWords Append text exactly as given, no spacing added. Live
+ *   dictation arrives in pieces that already carry their own spacing.
+ */
+export function useAgentSpeech(
+  onTranscript: (text: string) => void,
+  onWords?: (text: string) => void,
+): AgentSpeech {
   const {
     speechBackend,
     speechDevicePreference,
@@ -168,11 +187,15 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
     speechModelPath,
     speechRuntimePath,
     speechThreads,
+    speechMode,
+    speechLive,
     setSpeechDevicePreference,
   } = useSettingsStore();
+  const live = speechMode === "live";
 
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
   const [notice, setNotice] = useState<MicNotice | null>(null);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const noticeTimerRef = useRef<number | null>(null);
@@ -291,6 +314,103 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
     };
   }, [isRecording, updateLevel]);
 
+  // ---- live dictation -----------------------------------------------------
+  //
+  // The program exits when a recording ends, so "kept warm" means: as soon as
+  // one recording finishes, a fresh one is started and left waiting with the
+  // model already loaded. Only the first recording after a cold start or an
+  // idle release pays the ~3.5s load.
+
+  /** Armed and waiting, or currently recording. */
+  const liveRef = useRef<SpeechStreamSession | null>(null);
+  /** The waiting program has finished loading and can hear. */
+  const liveReadyRef = useRef(false);
+  /** Resolved by the ready event, so a click can wait for the model. */
+  const liveReadyWaiters = useRef<Array<() => void>>([]);
+  /** Everything this recording has put into the composer so far. */
+  const liveInsertedRef = useRef("");
+  const idleTimerRef = useRef<number | null>(null);
+  /** Latest settings, read inside callbacks that must not re-create per key. */
+  const liveConfigRef = useRef({ speechLive, speechLanguage });
+  liveConfigRef.current = { speechLive, speechLanguage };
+
+  const appendWords = useCallback(
+    (text: string) => {
+      if (!text) return;
+      liveInsertedRef.current += text;
+      // Verbatim: the model's pieces already carry their own spacing, and the
+      // caret-insert helper would add another space before ones like " and".
+      (onWords ?? onTranscript)(text);
+    },
+    [onTranscript, onWords],
+  );
+
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimerRef.current !== null) {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+  }, []);
+
+  /** Let go of the loaded model. It holds about 2.3 GB of video memory. */
+  const releaseLive = useCallback(async () => {
+    clearIdleTimer();
+    const session = liveRef.current;
+    liveRef.current = null;
+    liveReadyRef.current = false;
+    liveReadyWaiters.current = [];
+    if (session) await session.cancel();
+  }, [clearIdleTimer]);
+
+  const startIdleTimer = useCallback(() => {
+    clearIdleTimer();
+    const seconds = liveConfigRef.current.speechLive.idleSeconds;
+    if (seconds <= 0) return; // 0 means keep it loaded
+    idleTimerRef.current = window.setTimeout(() => {
+      idleTimerRef.current = null;
+      void releaseLive();
+    }, seconds * 1000);
+  }, [clearIdleTimer, releaseLive]);
+
+  /**
+   * Start a program and leave it waiting with the model loaded. Safe to call
+   * when one is already waiting: it does nothing.
+   */
+  const armLive = useCallback(async (): Promise<void> => {
+    if (liveRef.current) return;
+    const { speechLive: cfg, speechLanguage: lang } = liveConfigRef.current;
+    liveReadyRef.current = false;
+    const session = await SpeechStreamSession.arm(toStreamConfig(cfg, lang), {
+      onReady: () => {
+        liveReadyRef.current = true;
+        const waiters = liveReadyWaiters.current;
+        liveReadyWaiters.current = [];
+        waiters.forEach((resolve) => resolve());
+      },
+      onWords: appendWords,
+      onFinal: (text) => {
+        // The held-back words land here. Add only what is not already in the
+        // composer. If the model rewrote earlier text the two will not line up,
+        // and adding nothing beats duplicating a sentence.
+        const already = liveInsertedRef.current;
+        if (text.startsWith(already)) appendWords(text.slice(already.length));
+        else if (!already) appendWords(text);
+        liveInsertedRef.current = "";
+        setIsTranscribing(false);
+        // That program has exited. Load the next one now so the following
+        // click is instant, and start counting down to releasing it.
+        liveRef.current = null;
+        liveReadyRef.current = false;
+        void armLive().then(startIdleTimer);
+      },
+      onError: (message) => {
+        showNotice(message, "error");
+        setIsTranscribing(false);
+      },
+    });
+    liveRef.current = session;
+  }, [appendWords, showNotice, startIdleTimer]);
+
   const runtimeRequest = useCallback(
     (devicePreference = speechDevicePreference) => ({
       backend: speechBackend,
@@ -303,94 +423,166 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
     [speechBackend, speechDevicePreference, speechEngine, speechModelPath, speechRuntimePath, speechThreads],
   );
 
+  /**
+   * Open the microphone and hand every captured block to `onBlock`.
+   *
+   * Shared by both paths: recording the audio is identical, only what happens
+   * to each block differs — buffered for one transcription at the end, or sent
+   * straight out as it arrives.
+   */
+  const openMicrophone = useCallback(
+    async (onBlock: (samples: Float32Array, sampleRate: number) => void): Promise<boolean> => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        console.warn("[agent-window] mic: getUserMedia is unavailable in this WebView");
+        showNotice("Microphone is not available in this WebView.", "error");
+        return false;
+      }
+      try {
+        // Register the WebView's mic auto-grant handler BEFORE we call
+        // getUserMedia. The boot warm-up usually beats the first click, but the
+        // agent window is a JS-created WebView whose handler install races the
+        // click; installing here (idempotent) guarantees the permission request
+        // resolves to a grant instead of silently auto-denying. A missing
+        // command (older build) falls back to the native prompt — still works.
+        if (isAuroraRuntimeAvailable()) {
+          await speechService.ensureMicPermissionHandler().catch((err) => {
+            console.warn("[agent-window] mic permission handler install failed:", err);
+          });
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: TARGET_SAMPLE_RATE,
+          },
+        });
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.5;
+        processor.onaudioprocess = (e) => {
+          onBlock(new Float32Array(e.inputBuffer.getChannelData(0)), audioContext.sampleRate);
+          e.outputBuffer.getChannelData(0).fill(0);
+        };
+        source.connect(analyser);
+        analyser.connect(processor);
+        processor.connect(audioContext.destination);
+        streamRef.current = stream;
+        audioContextRef.current = audioContext;
+        sourceRef.current = source;
+        analyserRef.current = analyser;
+        processorRef.current = processor;
+        setIsRecording(true);
+        return true;
+      } catch (err) {
+        console.error("[agent-window] mic: failed to start recording:", err);
+        cleanupAudio();
+        // A real platform denial means our remembered "granted" flag is stale:
+        // clear it so the NEXT click reopens the consent modal (and re-runs the
+        // handler install) instead of silently retrying a denied getUserMedia.
+        const denied =
+          err instanceof DOMException &&
+          (err.name === "NotAllowedError" || err.name === "SecurityError");
+        if (denied) {
+          writeMicPermissionRemembered(false);
+          showNotice("Microphone access was blocked. Click the mic again to retry.", "error");
+        } else {
+          showNotice(err instanceof Error ? err.message : "Microphone access failed.", "error");
+        }
+        return false;
+      }
+    },
+    [cleanupAudio, showNotice],
+  );
+
+  /** Start a recording whose words appear as they are spoken. */
+  const startLiveRecording = useCallback(async () => {
+    const { speechLive: cfg } = liveConfigRef.current;
+    if (!cfg.runtimePath.trim() || !cfg.modelPath.trim()) {
+      showNotice("Set up live dictation in Preferences → Voice input first.", "warning");
+      return;
+    }
+
+    clearIdleTimer();
+    liveInsertedRef.current = "";
+
+    try {
+      if (!liveRef.current) await armLive();
+      // Only the first recording after a cold start waits here. The button
+      // says so rather than looking stuck.
+      if (!liveReadyRef.current) {
+        setIsLoadingModel(true);
+        await new Promise<void>((resolve) => liveReadyWaiters.current.push(resolve));
+      }
+    } catch (err) {
+      showNotice(
+        err instanceof Error ? err.message : "Could not start live dictation.",
+        "error",
+      );
+      return;
+    } finally {
+      setIsLoadingModel(false);
+    }
+
+    const session = liveRef.current;
+    if (!session) return;
+
+    const opened = await openMicrophone((samples, sampleRate) => {
+      // The model wants 16 kHz. Most inputs capture at 44.1 or 48, so each
+      // block is converted on the way past rather than all at once at the end.
+      const pcm = resampleLinear(samples, sampleRate, TARGET_SAMPLE_RATE);
+      void session.write(pcm).catch((err) => {
+        console.warn("[agent-window] live dictation: dropped a block:", err);
+      });
+    });
+    if (!opened) {
+      // The microphone never opened, so the loaded program has nothing to do.
+      // Leave it warm and start the countdown rather than wasting the load.
+      startIdleTimer();
+    }
+  }, [armLive, clearIdleTimer, openMicrophone, showNotice, startIdleTimer]);
+
   const actuallyStartRecording = useCallback(async () => {
     clearNotice();
+    if (live) {
+      await startLiveRecording();
+      return;
+    }
     if (!speechModelPath.trim()) {
       console.warn("[agent-window] mic: speech model path not configured (Settings → Speech)");
       showNotice("Configure Speech in the IDE's Settings first.", "warning");
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      console.warn("[agent-window] mic: navigator.mediaDevices.getUserMedia is unavailable in this WebView");
-      showNotice("Microphone is not available in this WebView.", "error");
+
+    let validation = await speechService.validateConfig(runtimeRequest());
+    if (!validation.ready && speechDevicePreference === "gpu" && !validation.gpuAvailable) {
+      setSpeechDevicePreference("auto");
+      validation = await speechService.validateConfig(runtimeRequest("auto"));
+    }
+    if (!validation.ready) {
+      console.warn("[agent-window] mic: speech config not ready:", validation.message);
+      showNotice(validation.message, "warning");
       return;
     }
-    try {
-      // Register the WebView's mic auto-grant handler BEFORE we call
-      // getUserMedia. The boot warm-up usually beats the first click, but the
-      // agent window is a JS-created WebView whose handler install races the
-      // click; installing here (idempotent) guarantees the permission request
-      // resolves to a grant instead of silently auto-denying. A missing command
-      // (older build) just falls back to the native prompt — still functional.
-      if (isAuroraRuntimeAvailable()) {
-        await speechService.ensureMicPermissionHandler().catch((err) => {
-          console.warn("[agent-window] mic permission handler install failed:", err);
-        });
-      }
 
-      let validation = await speechService.validateConfig(runtimeRequest());
-      if (!validation.ready && speechDevicePreference === "gpu" && !validation.gpuAvailable) {
-        setSpeechDevicePreference("auto");
-        validation = await speechService.validateConfig(runtimeRequest("auto"));
-      }
-      if (!validation.ready) {
-        console.warn("[agent-window] mic: speech config not ready:", validation.message);
-        showNotice(validation.message, "warning");
-        return;
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: TARGET_SAMPLE_RATE,
-        },
-      });
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.5;
-      chunksRef.current = [];
-      processor.onaudioprocess = (e) => {
-        chunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-        e.outputBuffer.getChannelData(0).fill(0);
-      };
-      source.connect(analyser);
-      analyser.connect(processor);
-      processor.connect(audioContext.destination);
-      streamRef.current = stream;
-      audioContextRef.current = audioContext;
-      sourceRef.current = source;
-      analyserRef.current = analyser;
-      processorRef.current = processor;
-      setIsRecording(true);
-    } catch (err) {
-      console.error("[agent-window] mic: failed to start recording:", err);
-      cleanupAudio();
-      // A real platform denial means our remembered "granted" flag is stale:
-      // clear it so the NEXT click reopens the consent modal (and re-runs the
-      // handler install) instead of silently retrying a denied getUserMedia.
-      const denied =
-        err instanceof DOMException &&
-        (err.name === "NotAllowedError" || err.name === "SecurityError");
-      if (denied) {
-        writeMicPermissionRemembered(false);
-        showNotice("Microphone access was blocked. Click the mic again to retry.", "error");
-      } else {
-        showNotice(err instanceof Error ? err.message : "Microphone access failed.", "error");
-      }
-    }
+    chunksRef.current = [];
+    await openMicrophone((samples) => {
+      chunksRef.current.push(samples);
+    });
   }, [
-    cleanupAudio,
     clearNotice,
+    live,
+    openMicrophone,
     runtimeRequest,
     setSpeechDevicePreference,
     showNotice,
     speechDevicePreference,
     speechModelPath,
+    startLiveRecording,
   ]);
 
   // Gate the first recording behind our own in-app consent modal so the user
@@ -419,6 +611,26 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
   }, []);
 
   const stopRecording = useCallback(async () => {
+    if (live) {
+      cleanupAudio();
+      setIsRecording(false);
+      const session = liveRef.current;
+      if (!session) return;
+      // The words it held back arrive on the final event, which also arms the
+      // next program. Until then the button shows it is still finishing.
+      setIsTranscribing(true);
+      try {
+        await session.stop();
+      } catch (err) {
+        setIsTranscribing(false);
+        showNotice(
+          err instanceof Error ? err.message : "Could not finish the recording.",
+          "error",
+        );
+      }
+      return;
+    }
+
     const sourceRate = audioContextRef.current?.sampleRate || TARGET_SAMPLE_RATE;
     const chunks = [...chunksRef.current];
     cleanupAudio();
@@ -457,6 +669,7 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
   }, [
     cleanupAudio,
     clearNotice,
+    live,
     onTranscript,
     showNotice,
     speechBackend,
@@ -469,15 +682,36 @@ export function useAgentSpeech(onTranscript: (text: string) => void): AgentSpeec
   ]);
 
   const toggle = useCallback(() => {
-    if (isTranscribing) return;
+    if (isTranscribing || isLoadingModel) return;
     if (isRecording) void stopRecording();
     else requestStart();
-  }, [isRecording, isTranscribing, requestStart, stopRecording]);
+  }, [isLoadingModel, isRecording, isTranscribing, requestStart, stopRecording]);
+
+  // A loaded model is 2.3 GB of video memory and a running program. Let go of
+  // it when the composer goes away, and when dictation is switched back to the
+  // record-then-transcribe engine — otherwise it would sit there unused with
+  // nothing left that could ever release it.
+  useEffect(() => {
+    if (!live || !speechEnabled) void releaseLive();
+  }, [live, releaseLive, speechEnabled]);
+
+  useEffect(() => () => void releaseLive(), [releaseLive]);
+
+  // Closing the window tears the WebView down without necessarily running the
+  // unmount above, which would leave a loaded model and a running program with
+  // nothing left to stop them. `kill_on_drop` still catches it when Aurora
+  // itself exits, but not when only this window goes.
+  useEffect(() => {
+    const onGone = () => void releaseLive();
+    window.addEventListener("pagehide", onGone);
+    return () => window.removeEventListener("pagehide", onGone);
+  }, [releaseLive]);
 
   return {
     speechEnabled,
     isRecording,
     isTranscribing,
+    isLoadingModel,
     notice,
     toggle,
     levelRef,

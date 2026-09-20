@@ -206,7 +206,11 @@ fn model_supports_temperature(model: &str) -> bool {
 /// Build the JSON body for a `POST /responses` streaming call.
 pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapshot) -> Value {
     let model = unprefix_model(request.model, &config.provider_id);
-    let (instructions, input) = responses_instructions_and_input(request, config.supports_vision);
+    let (instructions, input) = responses_instructions_and_input(
+        request,
+        config.supports_vision,
+        crate::api::deepseek::is_responses_wire(config.effective_provider_type()),
+    );
 
     // The Responses API enforces a floor of 16 output tokens.
     let max_tokens = request.max_output_tokens.max(16);
@@ -308,6 +312,13 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         body.insert("reasoning".to_string(), reasoning);
     }
 
+    // DeepSeek's Responses endpoint reasons unless told not to, and names its
+    // cache bucket `user`. Applied BEFORE `custom_params` so a hand-set
+    // `reasoning` object still wins.
+    if crate::api::deepseek::is_responses_wire(config.effective_provider_type()) {
+        crate::api::deepseek::apply_responses_tweaks(&mut body, request, config);
+    }
+
     if let Some(custom) = &config.custom_params {
         for (key, value) in custom {
             // Aurora directive for the OpenAI-compat path; the Responses API
@@ -341,9 +352,21 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 
 /// Split conversation history into `instructions` (system prompt +
 /// system messages) and the typed `input` item list.
+///
+/// `plain_reasoning` is for endpoints that return their chain-of-thought as
+/// readable text instead of OpenAI's `encrypted_content` blob. On OpenAI a
+/// thinking block with no encrypted payload cannot be replayed at all — the
+/// item would be rejected — so it is dropped. DeepSeek is the opposite case:
+/// it never sends an encrypted payload, it accepts a `reasoning` item whose
+/// content is plain `reasoning_text` (verified 200 on a live tool loop,
+/// 2026-09-20), and its own docs say that text is merged back into the
+/// adjacent assistant message. Dropping it there would throw away the
+/// reasoning that justified the tool call Aurora is about to report the
+/// result of.
 fn responses_instructions_and_input(
     request: &ApiRequest<'_>,
     supports_vision: bool,
+    plain_reasoning: bool,
 ) -> (Option<String>, Vec<Value>) {
     let mut system_chunks: Vec<String> = Vec::new();
     if let Some(prompt) = request.system_prompt {
@@ -401,6 +424,11 @@ fn responses_instructions_and_input(
                         } => {
                             if let Some(item) = reasoning_replay_item(text, signature.as_deref()) {
                                 items.push(item);
+                            } else if plain_reasoning && !text.is_empty() {
+                                items.push(json!({
+                                    "type": "reasoning",
+                                    "content": [{ "type": "reasoning_text", "text": text }],
+                                }));
                             }
                         }
                         ContentBlock::ToolUse { id, name, input } => {
@@ -1932,7 +1960,7 @@ mod rejection_tests {
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
             session_key: None,        };
-        let (_, items) = responses_instructions_and_input(&request, false);
+        let (_, items) = responses_instructions_and_input(&request, false, false);
         assert!(!items.is_empty());
         for item in &items {
             let kind = item.get("type").and_then(Value::as_str);
@@ -1984,7 +2012,7 @@ mod rejection_tests {
             tool_bridge: None,
             session_key: None,        };
 
-        let (_, items) = responses_instructions_and_input(&request, true);
+        let (_, items) = responses_instructions_and_input(&request, true, false);
         let trailing = items.last().expect("trailing user item");
         assert_eq!(trailing["role"], "user");
         let parts = trailing["content"].as_array().expect("content parts");
@@ -2002,7 +2030,7 @@ mod rejection_tests {
         );
 
         // Non-vision: placeholder, never raw base64.
-        let (_, items) = responses_instructions_and_input(&request, false);
+        let (_, items) = responses_instructions_and_input(&request, false, false);
         let trailing = items.last().expect("trailing user item");
         let text = trailing["content"].as_array().expect("parts")[0]["text"]
             .as_str()

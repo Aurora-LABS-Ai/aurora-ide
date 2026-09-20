@@ -629,6 +629,19 @@ pub struct AppSettings {
     pub speech_device_preference: String,
     pub speech_threads: i32,
     pub speech_language: String,
+    /// `batch` transcribes on stop, `live` shows words while you talk.
+    #[serde(default = "default_speech_mode")]
+    pub speech_mode: String,
+    /// Live-dictation settings, kept as the frontend's own JSON object. Aurora
+    /// never reads the individual fields here — the composer sends them to
+    /// `speech_stream` when it starts a recording — so typing them out again
+    /// would only mean two lists to keep in step.
+    #[serde(default)]
+    pub speech_live: serde_json::Value,
+}
+
+fn default_speech_mode() -> String {
+    "batch".to_string()
 }
 
 impl Default for AppSettings {
@@ -705,6 +718,8 @@ impl Default for AppSettings {
             speech_device_preference: "auto".to_string(),
             speech_threads: 4,
             speech_language: "auto".to_string(),
+            speech_mode: default_speech_mode(),
+            speech_live: serde_json::Value::Null,
         }
     }
 }

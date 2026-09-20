@@ -164,6 +164,14 @@ export interface AppSettings {
   speechEnabled?: boolean;
   speechEngine?: string;
   speechLanguage?: string;
+  /** `batch` transcribes on stop, `live` shows words while you talk. */
+  speechMode?: 'batch' | 'live';
+  /**
+   * Live-dictation settings, stored as one object. Shaped by
+   * `SpeechLiveSettings` in the settings store, which also fills in anything an
+   * older saved row is missing.
+   */
+  speechLive?: unknown;
   speechModelPath?: string;
   speechRuntimePath?: string;
   speechThreads?: number;

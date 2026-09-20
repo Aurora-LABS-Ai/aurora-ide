@@ -59,9 +59,21 @@ export interface ProviderCatalogPreset {
    * Seeded rows otherwise arrive with no reasoning profile at all, which means
    * no effort picker in the composer until the user edits the model row by
    * hand. A preset that knows its models take an effort tier says so here so
-   * the first chat already has the control. Rust catalog presets omit this.
+   * the first chat already has the control. Most Rust catalog presets omit
+   * this; DeepSeek sets it.
    */
   modelReasoning?: Record<string, ModelReasoning>;
+  /**
+   * Per-model vision, keyed like {@link modelPricing}, for a provider whose
+   * models do not agree.
+   *
+   * {@link supportsVision} answers for the whole provider, and DeepSeek is the
+   * case where that cannot be right: Flash reads images and V4 Pro answers 400
+   * on them. Wrong in the permissive direction is the damaging one — a pasted
+   * screenshot reaches a model that cannot see it and the turn fails — so
+   * anything the preset knows per model is set per model.
+   */
+  modelVision?: Record<string, boolean>;
   /**
    * Transport headers to seed onto the created provider. Used by frontend
    * presets (e.g. AgentRouter) that require specific headers to authenticate

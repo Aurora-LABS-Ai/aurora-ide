@@ -51,7 +51,23 @@ export type ImageApiFormat =
    * unchanged. It is not enough on its own: there is no compatible-mode EDIT,
    * so a row that should do both speaks this instead.
    */
-  | "qwen-dashscope";
+  | "qwen-dashscope"
+  /**
+   * The user's own ChatGPT subscription, through the Codex backend.
+   *
+   * Unlike every other format this is not an address and a key. There is no
+   * image endpoint on that backend at all: a picture is the Responses API with
+   * the hosted `image_generation` tool, posted to a URL fixed in code, and the
+   * credentials are the OAuth tokens Settings → Providers → Codex already
+   * holds — including the several accounts it can fail over between. So the
+   * row has no address field, no key field, and no paths.
+   *
+   * Two ways to name a model, decided by the key alone: `gpt-image-*` is a
+   * TOOL model (can edit, forced), and `<chat model>-image` asks that chat
+   * model to draw if it decides to (cannot edit). `tools/image/codex.rs` owns
+   * the split.
+   */
+  | "codex-responses";
 
 /**
  * What to ask this provider to send each image back as — the `response_format`
@@ -216,6 +232,64 @@ export const QWEN_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
   ],
 };
 
+export const CODEX_IMAGE_PROVIDER_ID = "img-codex";
+/**
+ * Where a Codex picture is actually made. Shown, never sent: Rust posts to its
+ * own copy of this (`api/codex/mod.rs`), so a row cannot misroute the call by
+ * holding a stale address.
+ */
+const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+/**
+ * ChatGPT's own picture maker, on the subscription the user already pays for.
+ *
+ * No address and no key: both live in code, and the sign-in is the one under
+ * Providers → Codex. The row is here so the models appear in the composer and
+ * in `generate_image`'s list like any other, not because there is anything to
+ * configure.
+ *
+ * Three models rather than the full roster. `gpt-image-2.5-flare` and
+ * `-sunburst` are variants of the first, and the `-image` chat models are a
+ * different thing again (a chat model that may decide to draw, and cannot
+ * edit) — Discover lists all of them for anyone who wants one.
+ */
+export const CODEX_IMAGE_PRESET: Omit<ImageProvider, "apiKey"> = {
+  id: CODEX_IMAGE_PROVIDER_ID,
+  name: "ChatGPT",
+  baseUrl: "",
+  apiFormat: "codex-responses",
+  enabled: true,
+  builtIn: true,
+  models: [
+    {
+      id: "img-codex:gpt-image-2.5",
+      providerId: CODEX_IMAGE_PROVIDER_ID,
+      modelKey: "gpt-image-2.5",
+      label: "GPT Image 2.5",
+      canEdit: true,
+      sizes: ["1024x1024", "1024x1536", "1536x1024"],
+      defaultSize: "1024x1024",
+    },
+    {
+      id: "img-codex:gpt-image-2",
+      providerId: CODEX_IMAGE_PROVIDER_ID,
+      modelKey: "gpt-image-2",
+      label: "GPT Image 2",
+      canEdit: true,
+      sizes: ["1024x1024", "1024x1536", "1536x1024"],
+      defaultSize: "1024x1024",
+    },
+    {
+      id: "img-codex:gpt-image-1.5",
+      providerId: CODEX_IMAGE_PROVIDER_ID,
+      modelKey: "gpt-image-1.5",
+      label: "GPT Image 1.5",
+      canEdit: true,
+      sizes: ["1024x1024", "1024x1536", "1536x1024"],
+      defaultSize: "1024x1024",
+    },
+  ],
+};
+
 /**
  * Rows Aurora offers ONCE, as a starting point, and never again.
  *
@@ -275,8 +349,12 @@ export function withBuiltInImageProviders(rows: ImageProvider[]): ImageProvider[
   // arrays straight to the store lets an edit in settings mutate the constant.
   const withQwen = withMiniMax.some((row) => row.id === QWEN_IMAGE_PROVIDER_ID) ? withMiniMax :
     [...withMiniMax, { ...QWEN_IMAGE_PRESET, models: QWEN_IMAGE_PRESET.models.map((model) => ({ ...model, sizes: [...model.sizes!] })) }];
-  return withQwen.map((row) =>
-    [A6API_IMAGE_PROVIDER_ID, MINIMAX_IMAGE_PROVIDER_ID, QWEN_IMAGE_PROVIDER_ID].includes(row.id) ? { ...row, builtIn: true } : row,
+  const withCodex = withQwen.some((row) => row.id === CODEX_IMAGE_PROVIDER_ID) ? withQwen :
+    [...withQwen, { ...CODEX_IMAGE_PRESET, models: CODEX_IMAGE_PRESET.models.map((model) => ({ ...model, sizes: [...model.sizes!] })) }];
+  return withCodex.map((row) =>
+    [A6API_IMAGE_PROVIDER_ID, MINIMAX_IMAGE_PROVIDER_ID, QWEN_IMAGE_PROVIDER_ID, CODEX_IMAGE_PROVIDER_ID].includes(row.id)
+      ? { ...row, builtIn: true }
+      : row,
   );
 }
 
@@ -318,6 +396,12 @@ export const DEFAULT_IMAGE_PATHS: Record<
     generation: "/api/v1/services/aigc/multimodal-generation/generation",
     edit: "/api/v1/services/aigc/multimodal-generation/generation",
   },
+  // Fixed in code, and the same endpoint for both — the tool's `action` is
+  // what makes a call an edit. Mirrors `tools/image/codex.rs`.
+  "codex-responses": {
+    generation: CODEX_RESPONSES_URL,
+    edit: CODEX_RESPONSES_URL,
+  },
 };
 
 export const IMAGE_API_FORMAT_LABELS: Record<ImageApiFormat, string> = {
@@ -325,14 +409,27 @@ export const IMAGE_API_FORMAT_LABELS: Record<ImageApiFormat, string> = {
   a6api: "a6api",
   "minimax-native": "MiniMax native",
   "qwen-dashscope": "Qwen (DashScope)",
+  "codex-responses": "ChatGPT (Codex)",
 };
+
+/**
+ * Whether a row in this format has an address and a key of its own.
+ *
+ * Codex has neither: it reads the sign-in under Providers → Codex. A row that
+ * asked for a key would be permanently unusable with no field that could fix
+ * it, so both the readiness rule and the settings form ask this first.
+ */
+export const imageFormatUsesApiKey = (format: ImageApiFormat): boolean =>
+  format !== "codex-responses";
 
 /** The generation endpoint this provider actually posts to. */
 export const generationUrl = (provider: ImageProvider): string =>
-  joinUrl(
-    provider.baseUrl,
-    provider.generationPath?.trim() || DEFAULT_IMAGE_PATHS[provider.apiFormat].generation,
-  );
+  imageFormatUsesApiKey(provider.apiFormat)
+    ? joinUrl(
+        provider.baseUrl,
+        provider.generationPath?.trim() || DEFAULT_IMAGE_PATHS[provider.apiFormat].generation,
+      )
+    : DEFAULT_IMAGE_PATHS[provider.apiFormat].generation;
 
 /**
  * The edit endpoint, or `null` when this provider cannot edit.
@@ -342,6 +439,9 @@ export const generationUrl = (provider: ImageProvider): string =>
  * confusing 404 instead of a clear "this one only generates".
  */
 export const editUrl = (provider: ImageProvider): string | null => {
+  // Fixed in code, and the same endpoint as generation. Whether a given model
+  // can edit is still `model.canEdit` — on Codex only the `gpt-image-*` ones do.
+  if (!imageFormatUsesApiKey(provider.apiFormat)) return DEFAULT_IMAGE_PATHS[provider.apiFormat].edit;
   const configured = provider.editPath?.trim();
   // An explicit empty string means "cannot edit" and must not fall through to
   // the format's default. `undefined` — the field was never filled in — does.
@@ -356,11 +456,17 @@ export const editUrl = (provider: ImageProvider): string | null => {
 export const canEditWith = (provider: ImageProvider, model: ImageModel): boolean =>
   editUrl(provider) !== null && model.canEdit === true;
 
-/** A provider that can be used: switched on, addressed, and holding a key. */
+/**
+ * A provider that can be used: switched on, addressed, and holding a key.
+ *
+ * A format that carries neither an address nor a key needs only the switch —
+ * whether its sign-in is still good is a round trip away, and answered by the
+ * call itself rather than guessed at here. Mirrors `ImageProviderConfig::ready`.
+ */
 export const imageProviderReady = (provider: ImageProvider): boolean =>
   provider.enabled &&
-  provider.baseUrl.trim().length > 0 &&
-  (provider.apiKey ?? "").trim().length > 0;
+  (!imageFormatUsesApiKey(provider.apiFormat) ||
+    (provider.baseUrl.trim().length > 0 && (provider.apiKey ?? "").trim().length > 0));
 
 /**
  * Every image provider id carries this prefix (`useSettingsStore.addImageProvider`),
@@ -432,8 +538,19 @@ export function normalizeImageProviders(value: unknown): ImageProvider[] {
     const row = entry as Partial<ImageProvider>;
     if (typeof row.id !== "string" || !row.id.trim()) continue;
     if (typeof row.name !== "string" || !row.name.trim()) continue;
+    // Every format has to be listed here. One that is missing does not fail
+    // loudly — the row silently becomes `openai-images` on the next launch and
+    // starts posting a shape its provider refuses. That is what happened to
+    // `qwen-dashscope` between shipping it and this line.
+    const KNOWN_FORMATS: readonly ImageApiFormat[] = [
+      "openai-images",
+      "a6api",
+      "minimax-native",
+      "qwen-dashscope",
+      "codex-responses",
+    ];
     const apiFormat: ImageApiFormat =
-      row.apiFormat === "a6api" || row.apiFormat === "openai-images" || row.apiFormat === "minimax-native"
+      row.apiFormat !== undefined && KNOWN_FORMATS.includes(row.apiFormat)
         ? row.apiFormat
         : "openai-images";
     out.push({

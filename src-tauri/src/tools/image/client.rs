@@ -104,6 +104,9 @@ impl ImageClient {
         match provider.api_format {
             ImageApiFormat::MiniMax => super::minimax::validate(call, None)?,
             ImageApiFormat::Qwen => super::qwen::validate(call, None)?,
+            // Its own auth, its own endpoint, its own streamed answer — none of
+            // the shared POST applies.
+            ImageApiFormat::CodexResponses => return super::codex::run(&self.http, call, None).await,
             _ => {}
         }
         let url = provider.generation_url();
@@ -124,6 +127,9 @@ impl ImageClient {
         match provider.api_format {
             ImageApiFormat::MiniMax => super::minimax::validate(call, Some(source))?,
             ImageApiFormat::Qwen => super::qwen::validate(call, Some(source))?,
+            ImageApiFormat::CodexResponses => {
+                return super::codex::run(&self.http, call, Some(source)).await
+            }
             _ => {}
         }
         let url = provider.edit_url().ok_or_else(|| ImageError::Transport {
@@ -250,6 +256,13 @@ impl ImageClient {
         &self,
         provider: &ImageProviderConfig,
     ) -> Result<Vec<DiscoveredModel>, ImageError> {
+        if provider.api_format == ImageApiFormat::CodexResponses {
+            // The roster is fixed, but the sign-in is what Discover is really
+            // being asked about — so it is checked, and a signed-out account
+            // fails here rather than listing models it cannot use.
+            super::codex::check_sign_in().await?;
+            return Ok(super::codex::catalog());
+        }
         let url = provider.models_url();
         let response = self
             .http

@@ -81,6 +81,13 @@ import {
 import { isModalProvider } from "@/apps/agent/services/providers/modal";
 import { isMinimaxProvider } from "@/apps/agent/services/providers/minimax";
 import {
+  deepseekBaseUrlForWire,
+  deepseekWire,
+  isDeepSeekProvider,
+  DEEPSEEK_WIRES,
+  type DeepSeekWire,
+} from "@/apps/agent/services/providers/deepseek";
+import {
   arkBaseUrlForWire,
   arkWire,
   ARK_WIRES,
@@ -98,6 +105,7 @@ import { ClaudeCodeProviderCard } from "./ClaudeCodeProviderCard";
 import { KenariUsageCard } from "./KenariUsageCard";
 import { ArkUsageCard } from "./ArkUsageCard";
 import { MinimaxUsageCard } from "./MinimaxUsageCard";
+import { DeepSeekProviderCard } from "./DeepSeekProviderCard";
 import { CursorProviderCard } from "./CursorProviderCard";
 import { OpenCodeProviderCard } from "./OpenCodeProviderCard";
 import { CommandCodeProviderCard } from "./CommandCodeProviderCard";
@@ -199,12 +207,28 @@ const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = 
  * in Rust, and MiniMax's address ends in `/anthropic/v1`, so anything but
  * Messages sends the wrong body to a path that does not exist.
  *
+ * DeepSeek is here for a third reason. It genuinely serves all three shapes,
+ * but the choice belongs to the ROW: its Messages wire sits on a different
+ * path (`/anthropic`), and the row-level picker rewrites the URL to match.
+ * A per-model override would change the body without moving the address, so
+ * two of its three options would post the wrong shape to a 404 — and since
+ * both DeepSeek models accept every wire, a per-model choice buys nothing
+ * anyway.
+ *
  * OpenCode Go is excluded separately at the call site rather than added here.
  * Its wire genuinely belongs to the model — each id accepts exactly one and
  * answers 500 on the others — so the picker is hidden for a different reason:
  * `applyOpenCodeWire` has already made the choice per model.
  */
-const PINNED_WIRE_TYPES = new Set(["codex", "claude-code", "cursor", "minimax"]);
+const PINNED_WIRE_TYPES = new Set([
+  "codex",
+  "claude-code",
+  "cursor",
+  "minimax",
+  "deepseek",
+  "deepseek-messages",
+  "deepseek-responses",
+]);
 
 function hasPinnedWire(providerType: string | undefined): boolean {
   return PINNED_WIRE_TYPES.has((providerType ?? "").toLowerCase());
@@ -220,14 +244,20 @@ function apiFormatForProviderType(type: string | undefined): Exclude<EditableApi
       "kenari-messages",
       "opencode-go-messages",
       "modal-messages",
+      "deepseek-messages",
     ].includes(normalized)
   ) {
     return "messages";
   }
   if (
-    ["openai-responses", "kenari-responses", "opencode-go", "codex", "modal-responses"].includes(
-      normalized,
-    )
+    [
+      "openai-responses",
+      "kenari-responses",
+      "opencode-go",
+      "codex",
+      "modal-responses",
+      "deepseek-responses",
+    ].includes(normalized)
   ) {
     return "responses";
   }
@@ -966,11 +996,16 @@ const ModelRow: React.FC<{
       "kenari-messages",
       "opencode-go-messages",
       "modal-messages",
+      "deepseek-messages",
     ].includes(effectiveWire)
       ? "messages"
-      : ["openai-responses", "kenari-responses", "opencode-go", "modal-responses"].includes(
-            effectiveWire,
-          )
+      : [
+            "openai-responses",
+            "kenari-responses",
+            "opencode-go",
+            "modal-responses",
+            "deepseek-responses",
+          ].includes(effectiveWire)
         ? "responses"
         : ["codex", "cursor"].includes(effectiveWire)
           ? "native"
@@ -1742,6 +1777,8 @@ const ProviderDetail: React.FC<{
   // provider to this shape later is one name on this line.
   const minimax = isMinimaxProvider(provider);
   const pinnedEndpoint = minimax;
+  const deepseek = isDeepSeekProvider(provider);
+  const deepseekWireValue = deepseekWire(provider);
   const wire = kenariWire(provider);
   const arkWireValue = arkWire(provider);
   const agentrouter = isAgentRouterProvider(provider);
@@ -1851,6 +1888,20 @@ const ProviderDetail: React.FC<{
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
+      ) : deepseek ? (
+        /* Same reason as MiniMax's — the account figure is the first thing
+           worth reading and the generic head would push it below the fold —
+           but what it draws is a BALANCE, not a plan. DeepSeek bills per
+           token, so there is no window to meter and no reset to count down
+           to. It needs the key and the base URL: the key reads the account,
+           and the URL says which account, since the wire picker below rewrites
+           it and a proxied row is a different account entirely. */
+        <DeepSeekProviderCard
+          apiKey={provider.apiKey}
+          baseUrl={provider.baseUrl}
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
       ) : modal ? (
         /* Modal's card owns the whole connection — region, token, endpoint
            list and wire — because on Modal they are one decision, so the
@@ -1947,6 +1998,36 @@ const ProviderDetail: React.FC<{
             />
             <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
               {ARK_WIRES.find((w) => w.value === arkWireValue)?.detail}
+            </span>
+          </div>
+        )}
+        {/* DeepSeek answers the same account on three wires, and here the
+            choice is not a preference at all — each one drops something the
+            others have. Chat is the only one with strict tool schemas and the
+            only one that REFUSES a tool loop when the chain-of-thought is not
+            replayed. Messages returns signed thinking, so reasoning survives a
+            tool loop the way it does on Anthropic. Responses returns thinking
+            as plain text with no signature.
+
+            Writes the URL as well as the type, Ark-style: Messages lives on a
+            different PATH (`/anthropic`), so changing only the type would
+            leave the row pointed at something that 404s. */}
+        {deepseek && (
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>API format</span>
+            <AgwSegmented<DeepSeekWire>
+              ariaLabel="DeepSeek API format"
+              value={deepseekWireValue}
+              options={DEEPSEEK_WIRES.map((w) => ({ value: w.value, label: w.label }))}
+              onChange={(next) =>
+                updateProvider(provider.id, {
+                  providerType: next,
+                  baseUrl: deepseekBaseUrlForWire(next),
+                })
+              }
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {DEEPSEEK_WIRES.find((w) => w.value === deepseekWireValue)?.detail}
             </span>
           </div>
         )}

@@ -391,7 +391,6 @@ const AddServerCard: React.FC<{
                 <AgwSwitch
                   checked={autoApprove}
                   onChange={setAutoApprove}
-                  tone="success"
                   ariaLabel="Auto-approve tools"
                 />
                 <span>Auto-approve this server's tools</span>
@@ -668,7 +667,6 @@ const ServerCard: React.FC<{
                       <AgwSwitch
                         checked={config.autoApprove}
                         onChange={(v) => void updateServer({ ...config, autoApprove: v })}
-                        tone="success"
                         ariaLabel="Auto-approve all tools"
                       />
                       <span>Auto-approve all tools from this server</span>

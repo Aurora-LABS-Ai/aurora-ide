@@ -77,6 +77,48 @@ function currentAppearancePrefs(state: AppearancePrefs): AppearancePrefs {
   return out as AppearancePrefs;
 }
 
+/**
+ * Base tokens + the user's overrides, with the accent family kept together.
+ *
+ * ## Why `controlAccent` is not a plain override
+ *
+ * `controlAccent` is the tint on small controls that carry state by colour
+ * alone — a switch that is on, the pinned tack, the unread badge. It exists as
+ * its own token so a brand accent can go NEUTRAL (black, white) without an on
+ * switch becoming indistinguishable from an off one. That is a real need, and
+ * it is the only thing the separate token is for.
+ *
+ * Both built-in themes ship it equal to `accent`, and the intent written beside
+ * it is "small controls follow the brand until someone separates them". They
+ * did not follow. Changing Accent wrote one token and left the other at the
+ * shipped value, so a tan theme drew tan sliders and blue switches on the same
+ * settings page, and nobody had chosen that.
+ *
+ * So the base value behaves as a REFERENCE rather than a copy: a customized
+ * accent carries `controlAccent` with it, and only an explicit `controlAccent`
+ * override stops it. That is the same shape as a CSS `var()` default
+ * (`--control-accent: var(--primary)`, overridden only by the one palette whose
+ * brand is deliberately neutral), expressed here because Aurora's tokens are
+ * values a colour picker writes, not CSS references it could not display.
+ *
+ * Deliberately NOT part of the family:
+ * - `ring`, the focus outline, which has its own row and its own reason to stay
+ *   neutral.
+ * - `added` / `removed` / `warning`, which signal status. A status colour that
+ *   moved with the theme would stop being a signal.
+ */
+export function mergeAgentTokens(
+  baseTokens: AgentThemeTokens,
+  overrides: Partial<AgentThemeTokens> | undefined,
+): AgentThemeTokens {
+  if (!overrides) return baseTokens;
+  const tokens = { ...baseTokens, ...overrides };
+  if (overrides.accent && overrides.controlAccent === undefined) {
+    tokens.controlAccent = overrides.accent;
+  }
+  return tokens;
+}
+
 /** The base theme behind the active id: a user's own, then a built-in, then
  *  the default. Same cascade `resolveAgentTheme` uses, without the contrast
  *  pass — an export carries contrast as a PREFERENCE, so baking it into the
@@ -262,7 +304,9 @@ export const useAgentThemeStore = create<AgentThemeState>()(
           // The MERGED tokens, not the override slice. An export holding only
           // the overrides is meaningless on a machine whose base theme differs,
           // and it would silently lose every value the user never touched.
-          tokens: { ...base.tokens, ...(s.customizations[s.activeThemeId] ?? {}) },
+          // Merged through the same helper the window renders from, so the file
+          // carries the control accent the sender was actually looking at.
+          tokens: mergeAgentTokens(base.tokens, s.customizations[s.activeThemeId]),
           prefs: currentAppearancePrefs(s),
           iconPack,
         });
@@ -350,8 +394,7 @@ export function resolveAgentTheme(state: AgentThemeState): AgentTheme {
     state.customThemes[state.activeThemeId] ??
     AGENT_THEMES[state.activeThemeId] ??
     AGENT_THEMES[DEFAULT_AGENT_THEME_ID];
-  const overrides = state.customizations[state.activeThemeId];
-  const tokens = overrides ? { ...base.tokens, ...overrides } : base.tokens;
+  const tokens = mergeAgentTokens(base.tokens, state.customizations[state.activeThemeId]);
   return {
     ...base,
     tokens: applyContrast(tokens, base.appearance, state.contrast),

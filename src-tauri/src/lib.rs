@@ -67,6 +67,9 @@ mod sidecar;
 // crates under `target/__verify_phase3_*/` can mount it via
 // `#[path]` without dragging in heavy Tauri/ONNX deps.
 mod prompt_refine;
+/// Live dictation: a warm `audiocpp_cli` child that transcribes while you talk.
+/// The batch path stays in `commands::speech`.
+mod speech_stream;
 pub mod tools;
 mod typing_assist;
 mod undo_redo;
@@ -734,6 +737,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::chat_memory::chat_memory_list_facts,
             commands::chat_gallery::chat_gallery_list,
             commands::chat_gallery::chat_gallery_copy_image,
+            commands::chat_gallery::chat_gallery_save_as,
             commands::chat_video::chat_video_refresh,
             commands::chat_video::video_model_catalog,
             commands::chat_gallery::chat_gallery_thumbnail,
@@ -820,6 +824,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::kenari::kenari_disconnect,
             commands::kenari::kenari_session_status,
             commands::kenari::kenari_usage,
+            commands::deepseek::deepseek_balance_get,
             commands::minimax::minimax_usage_get,
             commands::modal::modal_workspace_models,
             commands::modal::modal_cli_status,
@@ -860,6 +865,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::speech::speech_validate_config,
             commands::speech::speech_transcribe_pcm,
             commands::speech::install_agent_media_permission_handler,
+            commands::speech_stream::speech_stream_validate,
+            commands::speech_stream::speech_stream_arm,
+            commands::speech_stream::speech_stream_write,
+            commands::speech_stream::speech_stream_stop,
+            commands::speech_stream::speech_stream_cancel,
+            commands::speech_stream::speech_stream_shutdown,
             // Git commands
             commands::git::git_is_repository,
             commands::git::git_get_status,

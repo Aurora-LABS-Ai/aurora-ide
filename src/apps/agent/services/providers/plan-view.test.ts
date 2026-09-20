@@ -15,6 +15,7 @@ import {
   codexPlanView,
   commandCodePlanView,
   cursorPlanView,
+  deepseekPlanView,
   kenariPlanView,
   limitTone,
   minimaxPlanView,
@@ -494,5 +495,46 @@ describe("cursorPlanView", () => {
     });
     expect(cursorPlanView({ ...snap([]), bonusUsd: 0 }).balance).toBeNull();
     expect(cursorPlanView(snap([])).balance).toBeNull();
+  });
+});
+
+describe("DeepSeek", () => {
+  const balance = {
+    isAvailable: true,
+    balances: [
+      { currency: "CNY", total: 13.79, granted: 0, toppedUp: 13.79 },
+      { currency: "USD", total: 8.99, granted: 0, toppedUp: 8.99 },
+    ],
+    fetchedAtMs: 0,
+  };
+
+  it("draws no meter, because there is no window to meter", () => {
+    // The one member of this family that is pay-as-you-go. A bar needs a
+    // ceiling, and the only one available is the balance itself — which would
+    // draw a full bar right up to the moment the account is empty.
+    const view = deepseekPlanView(balance, new Date("2026-09-20T02:00:00Z"));
+    expect(view?.limits).toEqual([]);
+    expect(view?.balance).toEqual({ label: "Balance", value: "¥13.79 · $8.99" });
+  });
+
+  it("says which rate the cost figures above it were priced at", () => {
+    // The whole reason this section carries a notice. Aurora prices from one
+    // catalogue rate per model and it holds the off-peak one, so during peak
+    // every cost figure in the app is half the real charge.
+    const offPeak = deepseekPlanView(balance, new Date("2026-09-20T02:00:00Z"));
+    expect(offPeak?.notice).toContain("Off-peak");
+    const peak = deepseekPlanView(balance, new Date("2026-09-21T02:00:00Z"));
+    expect(peak?.notice).toContain("double");
+  });
+
+  it("flags an exhausted account on DeepSeek's own word, not a threshold", () => {
+    // `is_available` is the difference between a low balance and an account
+    // that has already stopped serving, and only the vendor knows which.
+    expect(deepseekPlanView({ ...balance, isAvailable: false })?.flag).toBe("out of balance");
+    expect(deepseekPlanView(balance)?.flag).toBeNull();
+  });
+
+  it("renders nothing at all when the balance could not be read", () => {
+    expect(deepseekPlanView(null)).toBeNull();
   });
 });

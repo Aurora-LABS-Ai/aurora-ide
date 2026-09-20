@@ -157,9 +157,16 @@
   background: var(--agw-hover-paint);
   color: var(--agw-text-muted);
 }
+/* `role="switch"`, so it answers to the control accent like every other one —
+   it is a shortlist toggle drawn as a chip rather than a pill, and it still
+   carries its on state by colour alone. */
 .agw-prov-chat-pick[data-on] {
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
-  color: var(--agw-accent);
+  border-color: color-mix(
+    in srgb,
+    var(--agw-control-accent, var(--agw-accent)) 45%,
+    var(--agw-border)
+  );
+  color: var(--agw-control-accent, var(--agw-accent));
 }
 .agw-prov-chat-pick:focus-visible {
   box-shadow: var(--agw-focus-ring);
@@ -853,6 +860,20 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-micro);
   line-height: 1.45;
+}
+
+/* A row with nothing to fill in — a provider whose credentials live on another
+   page. Sits where an input would, so the card keeps its grid rather than
+   collapsing the column around one line of prose. */
+.agw-img-note {
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--agw-border-subtle);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface-sunken);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
 }
 
 .agw-img-toggle-row {

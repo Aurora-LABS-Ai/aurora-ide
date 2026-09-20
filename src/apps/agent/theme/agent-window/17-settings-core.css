@@ -612,16 +612,16 @@
 }
 /* The CONTROL accent, not the brand one. An on switch and an off switch differ
    by fill alone, so this is the tint that cannot be allowed to go neutral when
-   someone sets a monochrome brand colour. Falls back to the brand accent,
-   which is what both built-in themes ship it as. */
-.agw-switch[data-on][data-tone="accent"] {
+   someone sets a monochrome brand colour. It follows the brand accent unless
+   someone separates them — see `mergeAgentTokens`.
+
+   ONE on-colour, deliberately. There used to be `success` and `danger` variants
+   selected per call site; `danger` was never used and `success` was used three
+   times out of forty-five, which put a green switch next to a blue one on the
+   same page with no rule behind it. Every other switch in this window carries
+   its meaning in the label beside it, which is where meaning belongs. */
+.agw-switch[data-on] {
   background: var(--agw-control-accent, var(--agw-accent));
-}
-.agw-switch[data-on][data-tone="success"] {
-  background: var(--agw-added);
-}
-.agw-switch[data-on][data-tone="danger"] {
-  background: var(--agw-removed);
 }
 .agw-switch[data-disabled] {
   opacity: 0.45;

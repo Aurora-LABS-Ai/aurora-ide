@@ -215,7 +215,7 @@ impl StreamingApiClient for CodexAdapter {
 /// fifteen when it resets in thirty seconds wastes headroom the user paid for.
 /// Shapes vary across the backend's own error bodies, so read the ones it is
 /// known to send and fall back cleanly when none are present.
-fn reset_after_seconds(body: &str) -> Option<i64> {
+pub(crate) fn reset_after_seconds(body: &str) -> Option<i64> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     for path in [
         &["error", "resets_in_seconds"][..],

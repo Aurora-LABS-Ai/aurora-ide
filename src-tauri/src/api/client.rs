@@ -213,10 +213,16 @@ impl ProviderKind {
             // DIFFERENT PATH rather than the same one — `/api/coding/v1`,
             // against `/api/coding/v3` for the other two — so the frontend
             // rewrites the row's URL when the wire changes.
+            //
+            // `deepseek-messages` is the same account on `/anthropic`, which
+            // is a genuine Messages API: it accepts `x-api-key`, returns
+            // signed `thinking` blocks, and reports cache reads BESIDE
+            // `input_tokens` the way Anthropic does rather than inside them
+            // (measured 2026-09-20). What it does differently is said in
+            // `deepseek::apply_messages_tweaks`, not here.
             "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages"
-            | "modal-messages" | "ark-messages" | super::meta::META_MESSAGES_TYPE => {
-                ProviderKind::Anthropic
-            }
+            | "modal-messages" | "ark-messages" | super::meta::META_MESSAGES_TYPE
+            | super::deepseek::DEEPSEEK_MESSAGES_TYPE => ProviderKind::Anthropic,
             "deepseek" => ProviderKind::DeepSeek,
             // On OpenCode Go the wire belongs to the MODEL, not the row: the
             // same key and base URL answer all three formats and each model
@@ -238,10 +244,15 @@ impl ProviderKind {
             // including tool calls — NOT because it is the one to reach for.
             // It returns a reasoning SUMMARY rather than the reasoning, and
             // reports `caching: disabled`.
+            //
+            // `deepseek-responses` is the third wire onto the same account.
+            // It is the only one of DeepSeek's three that does NOT reject a
+            // tool loop when the chain-of-thought is missing (the chat wire
+            // answers 400), so it is a legitimate choice rather than a
+            // compatibility shim — see `deepseek::apply_responses_tweaks`.
             "openai-responses" | "openai_responses" | "kenari-responses" | "opencode-go"
-            | "modal-responses" | "ark-responses" | super::meta::META_RESPONSES_TYPE => {
-                ProviderKind::OpenAIResponses
-            }
+            | "modal-responses" | "ark-responses" | super::meta::META_RESPONSES_TYPE
+            | super::deepseek::DEEPSEEK_RESPONSES_TYPE => ProviderKind::OpenAIResponses,
             "codex" => ProviderKind::Codex,
             CLAUDE_CODE_PROVIDER_TYPE => ProviderKind::ClaudeCode,
             "cursor" => ProviderKind::Cursor,
@@ -415,6 +426,20 @@ mod tests {
     #[test]
     fn detect_deepseek_routes_to_dedicated_adapter() {
         assert_eq!(ProviderKind::detect("deepseek"), ProviderKind::DeepSeek);
+    }
+
+    /// One account, three wires, three adapters. The row's type is the whole
+    /// of the choice — there is no second switch anywhere that has to agree.
+    #[test]
+    fn detect_routes_each_deepseek_wire_to_its_own_adapter() {
+        assert_eq!(
+            ProviderKind::detect(super::super::deepseek::DEEPSEEK_MESSAGES_TYPE),
+            ProviderKind::Anthropic,
+        );
+        assert_eq!(
+            ProviderKind::detect(super::super::deepseek::DEEPSEEK_RESPONSES_TYPE),
+            ProviderKind::OpenAIResponses,
+        );
     }
 
     #[test]

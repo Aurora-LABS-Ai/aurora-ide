@@ -1,33 +1,44 @@
 /**
  * Agent Window — Settings · Preferences › Voice input (view).
  *
- * Speech capture already lives in this window (`useAgentSpeech` → the composer
- * mic), but its configuration only existed in the IDE's settings modal. With
- * the IDE agent retired that would have left a working feature with no way to
- * set it up, so this is that surface rebuilt on `--agw-*` primitives — the IDE
- * version is Tailwind + `--aurora-*` and would read as a foreign panel here.
+ * Speech capture lives in this window (`useAgentSpeech` → the composer mic),
+ * and this is where it is set up. Built on `--agw-*` primitives; the retired
+ * IDE version was Tailwind + `--aurora-*` and would read as a foreign panel.
  *
  * Rendered by `PreferencesSettings` next to the dictation-polish toggle, so
  * everything about talking to Aurora sits on one page.
  *
- * ONE engine: CrispASR, a child process against the user's own build — a
- * runtime folder + a .gguf model FILE + a model family. Aurora used to compile
- * a second engine in (Qwen3-ASR through `candle-core`) and offer a picker; it
- * was removed because nobody selected it and it cost roughly a third of the
- * binary plus a `cuda` cargo feature. Local models are child processes here,
- * the same way `prompt_refine` drives llama.cpp.
+ * ## Two ways to dictate
  *
- * `speechService.validateConfig` re-checks against the machine (debounced) on
- * every change, so the panel states what will actually happen rather than what
- * was typed. Controls that cannot work on this machine are not rendered at all
- * — a disabled control that silently reverts is worse than an absent one.
+ * The "Transcribe" control is the fork, and it is written as a question about
+ * *when words appear* rather than which program runs, because that is the part
+ * the user cares about:
+ *
+ * - **On stop** records everything and transcribes once at the end, through
+ *   CrispASR. The original behaviour.
+ * - **As I speak** shows words while you talk, through audio.cpp running
+ *   Confucius4-R2T2. The last word or two still arrive when you stop, because
+ *   the model will not commit to them until the next moment of audio agrees.
+ *
+ * They are different programs with different model files, so each keeps its
+ * own paths. Language is shared, since it means the same thing to both.
+ *
+ * Both check themselves against the machine (debounced) on every change, so
+ * the panel states what will actually happen rather than what was typed.
+ * Controls that cannot work here are not rendered at all — a disabled control
+ * that silently reverts is worse than an absent one.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { speechService, type SpeechValidationResult } from "@/apps/agent/services/speech/speech";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import {
+  speechStreamService,
+  toStreamConfig,
+  type SpeechStreamValidation,
+} from "@/apps/agent/services/speech/speech-stream";
+import { useSettingsStore, type SpeechMode } from "@/kernel/store/useSettingsStore";
 import {
   AgwButton,
   AgwPill,
@@ -65,12 +76,36 @@ const LANGUAGE_OPTIONS: SelectOption[] = [
   { value: "ja", label: "Japanese" },
 ];
 
+const MODE_OPTIONS = [
+  { value: "batch" as const, label: "On stop" },
+  { value: "live" as const, label: "As I speak" },
+];
+
+/**
+ * The live engine names its own backends. `gpu` is CUDA here: Vulkan exists
+ * but offering a third button for it would mean explaining the difference, and
+ * anyone who needs it can say so once we hear that they do.
+ */
+const LIVE_BACKEND_FROM_DEVICE: Record<SpeechDevice, string> = {
+  auto: "auto",
+  gpu: "cuda",
+  cpu: "cpu",
+};
+
+function deviceFromLiveBackend(backend: string): SpeechDevice {
+  if (backend === "cuda") return "gpu";
+  if (backend === "cpu") return "cpu";
+  return "auto";
+}
+
 export const SpeechSettings: React.FC = () => {
   const {
     setSpeechBackend,
     setSpeechDevicePreference,
     setSpeechEnabled,
     setSpeechLanguage,
+    setSpeechLive,
+    setSpeechMode,
     setSpeechModelPath,
     setSpeechRuntimePath,
     setSpeechThreads,
@@ -79,15 +114,20 @@ export const SpeechSettings: React.FC = () => {
     speechEnabled,
     speechEngine,
     speechLanguage,
+    speechLive,
+    speechMode,
     speechModelPath,
     speechRuntimePath,
     speechThreads,
   } = useSettingsStore();
 
+  const live = speechMode === "live";
+
   const [validation, setValidation] = useState<SpeechValidationResult | null>(null);
+  const [liveValidation, setLiveValidation] = useState<SpeechStreamValidation | null>(null);
   const [isValidating, setIsValidating] = useState(false);
 
-  const validate = useCallback(async () => {
+  const validateBatch = useCallback(async () => {
     setIsValidating(true);
     try {
       setValidation(
@@ -126,20 +166,44 @@ export const SpeechSettings: React.FC = () => {
     speechThreads,
   ]);
 
+  const validateLive = useCallback(async () => {
+    setIsValidating(true);
+    try {
+      setLiveValidation(
+        await speechStreamService.validate(toStreamConfig(speechLive, speechLanguage)),
+      );
+    } catch (error) {
+      setLiveValidation({
+        ready: false,
+        runtimeOk: false,
+        modelOk: false,
+        executablePath: null,
+        missingLibraries: [],
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setIsValidating(false);
+    }
+  }, [speechLanguage, speechLive]);
+
+  const validate = live ? validateLive : validateBatch;
+
   useEffect(() => {
-    if (!speechEnabled || !speechModelPath) return;
+    if (!speechEnabled) return;
+    if (live ? !speechLive.modelPath : !speechModelPath) return;
     const timer = window.setTimeout(() => {
       void validate();
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [speechEnabled, speechModelPath, validate]);
+  }, [live, speechEnabled, speechLive.modelPath, speechModelPath, validate]);
 
   // A GPU preference this machine cannot honour is a lie in the UI — fall
   // back to Auto as soon as validation reports no usable GPU runtime.
   useEffect(() => {
+    if (live) return;
     if (!validation || speechDevicePreference !== "gpu" || validation.gpuAvailable) return;
     setSpeechDevicePreference("auto");
-  }, [setSpeechDevicePreference, speechDevicePreference, validation]);
+  }, [live, setSpeechDevicePreference, speechDevicePreference, validation]);
 
   const chooseRuntimePath = async () => {
     const selected = await open({
@@ -160,7 +224,39 @@ export const SpeechSettings: React.FC = () => {
     if (typeof selected === "string") setSpeechModelPath(selected);
   };
 
-  const statusReady = validation?.ready ?? false;
+  const chooseLiveRuntime = async () => {
+    const selected = await open({
+      directory: false,
+      filters: [{ extensions: ["exe"], name: "audiocpp_cli" }],
+      multiple: false,
+      title: "Select audiocpp_cli",
+    });
+    if (typeof selected === "string") setSpeechLive({ runtimePath: selected });
+  };
+
+  const chooseLiveModel = async () => {
+    const selected = await open({
+      directory: false,
+      filters: [{ extensions: ["gguf"], name: "GGUF speech models" }],
+      multiple: false,
+      title: "Select the Confucius4-R2T2 model",
+    });
+    if (typeof selected === "string") setSpeechLive({ modelPath: selected });
+  };
+
+  const chooseLiveLibrary = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "Select the CUDA runtime folder",
+    });
+    if (typeof selected === "string") setSpeechLive({ libraryPath: selected });
+  };
+
+  const statusReady = (live ? liveValidation?.ready : validation?.ready) ?? false;
+  const statusMessage = live ? liveValidation?.message : validation?.message;
+  const hasChecked = live ? liveValidation !== null : validation !== null;
+
   const resolvedBackends = useMemo(
     () => validation?.availableBackends.join(", ") || null,
     [validation],
@@ -171,7 +267,7 @@ export const SpeechSettings: React.FC = () => {
   const gpuUsable = validation ? validation.gpuAvailable : speechDevicePreference === "gpu";
   const deviceOptions = useMemo(
     () =>
-      gpuUsable
+      gpuUsable || live
         ? [
             { value: "auto" as const, label: "Auto" },
             { value: "gpu" as const, label: "GPU" },
@@ -181,14 +277,16 @@ export const SpeechSettings: React.FC = () => {
             { value: "auto" as const, label: "Auto" },
             { value: "cpu" as const, label: "CPU" },
           ],
-    [gpuUsable],
+    [gpuUsable, live],
   );
 
-  const deviceHint = gpuUsable
-    ? "GPU speeds up transcription when the runtime supports it."
-    : validation?.cudaCompiled
-      ? "No compatible GPU was detected on this machine, so only CPU is offered."
-      : "This Aurora build is CPU-only — a CUDA build is needed before GPU can be offered.";
+  const deviceHint = live
+    ? "Live dictation needs a GPU to keep up with speech. On CPU it will fall behind."
+    : gpuUsable
+      ? "GPU speeds up transcription when the runtime supports it."
+      : validation?.cudaCompiled
+        ? "No compatible GPU was detected on this machine, so only CPU is offered."
+        : "This Aurora build is CPU-only — a CUDA build is needed before GPU can be offered.";
 
   const badge = !speechEnabled ? null : isValidating ? (
     <AgwPill tone="info" dot={false}>
@@ -200,7 +298,7 @@ export const SpeechSettings: React.FC = () => {
     <AgwPill tone="warning">Needs setup</AgwPill>
   );
 
-  const modelLabel = "Model file (.gguf)";
+  const idleMinutes = Math.round(speechLive.idleSeconds / 60);
 
   return (
     <SettingsSection
@@ -224,24 +322,148 @@ export const SpeechSettings: React.FC = () => {
       {speechEnabled && (
         <>
           <SettingsRow
-            alignTop
-            label={modelLabel}
-            hint="A GGUF speech model file."
+            label="Transcribe"
+            hint={
+              live
+                ? "Words appear while you talk. The last one or two arrive when you stop."
+                : "The recording is transcribed once, after you stop."
+            }
           >
-            <div className="agw-set-field-row">
-              <AgwTextInput
-                value={speechModelPath}
-                placeholder="…\\model.gguf"
-                onChange={(e) => setSpeechModelPath(e.target.value)}
-                aria-label={modelLabel}
-              />
-              <AgwButton icon="folder" onClick={() => void chooseModelPath()}>
-                Browse
-              </AgwButton>
-            </div>
+            <AgwSegmented<SpeechMode>
+              value={speechMode}
+              ariaLabel="When words appear"
+              options={MODE_OPTIONS}
+              onChange={setSpeechMode}
+            />
           </SettingsRow>
 
-          <>
+          {live ? (
+            <>
+              <SettingsRow
+                alignTop
+                label="Program"
+                hint="audiocpp_cli from your own audio.cpp build. Needs a build from 2026-09-19 or later."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechLive.runtimePath}
+                    placeholder="…\\bin\\audiocpp_cli.exe"
+                    onChange={(e) => setSpeechLive({ runtimePath: e.target.value })}
+                    aria-label="audio.cpp program"
+                  />
+                  <AgwButton icon="folder" onClick={() => void chooseLiveRuntime()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
+              <SettingsRow
+                alignTop
+                label="Model file (.gguf)"
+                hint="Confucius4-R2T2. Q8_0 or better; smaller ones are refused when loading."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechLive.modelPath}
+                    placeholder="…\\r2t2-q8_0.gguf"
+                    onChange={(e) => setSpeechLive({ modelPath: e.target.value })}
+                    aria-label="Live dictation model file"
+                  />
+                  <AgwButton icon="folder" onClick={() => void chooseLiveModel()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
+              <SettingsRow
+                alignTop
+                label="CUDA folder"
+                hint="Only for GPU. CUDA 13 keeps its files in the toolkit's bin\\x64 folder, and the program cannot start without them."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechLive.libraryPath}
+                    placeholder="…\\CUDA\\v13.2\\bin\\x64"
+                    onChange={(e) => setSpeechLive({ libraryPath: e.target.value })}
+                    aria-label="CUDA runtime folder"
+                  />
+                  <AgwButton icon="folder" onClick={() => void chooseLiveLibrary()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
+              <SettingsRow
+                label="Hold back"
+                hint="Words kept back until the model is sure of them. They appear when you stop. Lower shows text sooner but risks keeping a wrong word."
+              >
+                <input
+                  type="number"
+                  className="agw-set-input"
+                  style={{ width: 78, fontVariantNumeric: "tabular-nums" }}
+                  min={1}
+                  max={16}
+                  value={speechLive.holdBack}
+                  onChange={(e) => setSpeechLive({ holdBack: Number(e.target.value) })}
+                  aria-label="Words held back"
+                />
+              </SettingsRow>
+
+              <SettingsRow
+                label="Chunk size"
+                hint="How much audio the model takes at a time, in milliseconds. Lower reacts faster and is slightly less accurate."
+              >
+                <input
+                  type="number"
+                  className="agw-set-input"
+                  style={{ width: 90, fontVariantNumeric: "tabular-nums" }}
+                  min={80}
+                  max={2000}
+                  step={20}
+                  value={speechLive.chunkMs}
+                  onChange={(e) => setSpeechLive({ chunkMs: Number(e.target.value) })}
+                  aria-label="Chunk size in milliseconds"
+                />
+              </SettingsRow>
+
+              <SettingsRow
+                label="Release after"
+                hint="Minutes of not dictating before the model is unloaded. It holds about 2.3 GB of video memory while it waits. 0 keeps it loaded."
+              >
+                <input
+                  type="number"
+                  className="agw-set-input"
+                  style={{ width: 78, fontVariantNumeric: "tabular-nums" }}
+                  min={0}
+                  max={1440}
+                  value={idleMinutes}
+                  onChange={(e) =>
+                    setSpeechLive({ idleSeconds: Math.max(0, Number(e.target.value)) * 60 })
+                  }
+                  aria-label="Release the model after this many minutes"
+                />
+              </SettingsRow>
+            </>
+          ) : (
+            <>
+              <SettingsRow
+                alignTop
+                label="Model file (.gguf)"
+                hint="A GGUF speech model file."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechModelPath}
+                    placeholder="…\\model.gguf"
+                    onChange={(e) => setSpeechModelPath(e.target.value)}
+                    aria-label="Model file (.gguf)"
+                  />
+                  <AgwButton icon="folder" onClick={() => void chooseModelPath()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
               <SettingsRow
                 alignTop
                 label="Runtime folder"
@@ -288,19 +510,22 @@ export const SpeechSettings: React.FC = () => {
                   aria-label="CPU threads"
                 />
               </SettingsRow>
-          </>
+            </>
+          )}
 
           <SettingsRow label="Device" hint={deviceHint}>
             <AgwSegmented<SpeechDevice>
-              value={speechDevicePreference}
+              value={live ? deviceFromLiveBackend(speechLive.backend) : speechDevicePreference}
               ariaLabel="Speech device"
               options={deviceOptions}
-              onChange={setSpeechDevicePreference}
+              onChange={(device) => {
+                if (live) setSpeechLive({ backend: LIVE_BACKEND_FROM_DEVICE[device] });
+                else setSpeechDevicePreference(device);
+              }}
             />
           </SettingsRow>
 
           <SettingsRow
-            last={!validation}
             label="Language"
             hint="A hint for the recognizer. Auto detects the language of each phrase."
           >
@@ -314,12 +539,12 @@ export const SpeechSettings: React.FC = () => {
           </SettingsRow>
 
           <SettingsRow
-            last={!validation}
+            last={!hasChecked}
             label="Check setup"
             hint="Confirm the model and device are found and ready."
           >
             <div className="agw-set-inline-row">
-              {validation && (
+              {hasChecked && (
                 <AgwPill tone={statusReady ? "success" : "warning"}>
                   {statusReady ? "Ready" : "Not ready"}
                 </AgwPill>
@@ -335,7 +560,7 @@ export const SpeechSettings: React.FC = () => {
             </div>
           </SettingsRow>
 
-          {validation && (
+          {hasChecked && (
             <SettingsBlock last>
               <p
                 className="text-[12px] leading-relaxed"
@@ -343,9 +568,9 @@ export const SpeechSettings: React.FC = () => {
                   color: statusReady ? "var(--agw-text-subtle)" : "var(--agw-warning)",
                 }}
               >
-                {validation.message}
+                {statusMessage}
               </p>
-              {validation.deviceMessage && (
+              {!live && validation?.deviceMessage && (
                 <p
                   className="text-[12px] leading-relaxed"
                   style={{ color: "var(--agw-text-subtle)", marginTop: 4 }}
@@ -353,12 +578,20 @@ export const SpeechSettings: React.FC = () => {
                   {validation.deviceMessage}
                 </p>
               )}
-              {resolvedBackends && (
+              {!live && resolvedBackends && (
                 <p
                   className="text-[12px] leading-relaxed"
                   style={{ color: "var(--agw-text-subtle)", marginTop: 4 }}
                 >
                   Available engines: {resolvedBackends}
+                </p>
+              )}
+              {live && liveValidation?.executablePath && (
+                <p
+                  className="text-[12px] leading-relaxed"
+                  style={{ color: "var(--agw-text-subtle)", marginTop: 4 }}
+                >
+                  Using {liveValidation.executablePath}
                 </p>
               )}
             </SettingsBlock>

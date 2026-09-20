@@ -56,6 +56,12 @@ import {
   type CursorUsageSnapshot,
 } from "./cursor";
 import {
+  deepseekBalanceLabel,
+  deepseekRateLabel,
+  deepseekRateWindow,
+  type DeepSeekBalanceSnapshot,
+} from "./deepseek";
+import {
   kenariResetLabel,
   KENARI_WINDOWS,
   type KenariUsage,
@@ -403,6 +409,41 @@ export function minimaxPlanView(snap: MinimaxUsageSnapshot | null): PlanView | n
     balance: null,
     notice: null,
     flag: null,
+  };
+}
+
+// ── DeepSeek ─────────────────────────────────────────────────────────────────
+
+/**
+ * The only member of this family with no meter, on purpose.
+ *
+ * Every other provider here sells a window that refills and refuses requests
+ * when it empties, so a bar is the reading. DeepSeek is pay-as-you-go: there
+ * is no ceiling to fill, no reset to count down to, and running out is a 402
+ * on the next request. Drawing a bar would need a maximum, and the only
+ * honest one is the balance itself — a bar that is always full until the
+ * moment it is empty says nothing at all.
+ *
+ * So this section is a balance and a sentence. The sentence is the rate
+ * window, and it belongs here rather than on the provider card alone: the cost
+ * figures directly above it on this card are the OFF-PEAK price, and during
+ * peak hours the real charge is double them.
+ */
+export function deepseekPlanView(
+  snap: DeepSeekBalanceSnapshot | null,
+  now: Date = new Date(),
+): PlanView | null {
+  if (!snap) return null;
+  return {
+    title: "DeepSeek account",
+    // No windows. See above — this account does not meter one.
+    limits: [],
+    balance: { label: "Balance", value: deepseekBalanceLabel(snap) },
+    notice: deepseekRateLabel(deepseekRateWindow(now)),
+    // DeepSeek's own judgement, not a threshold Aurora invented. It is the
+    // difference between a low balance and an account that has already
+    // stopped serving.
+    flag: snap.isAvailable ? null : "out of balance",
   };
 }
 

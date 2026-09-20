@@ -227,6 +227,72 @@ export type TitleMakerMode = 'off' | 'local' | 'cloud';
  *  Mirrors the Rust `WorkspaceAccess`; the strings are the wire format. */
 export type WorkspaceAccess = 'workspace' | 'read' | 'full';
 
+/** When dictated words reach the composer. */
+export type SpeechMode = 'batch' | 'live';
+
+/**
+ * Live dictation settings — the user's own audio.cpp build running
+ * Confucius4-R2T2. Grouped rather than spread across the store because they
+ * configure one program, and every flat field here costs an edit in nine
+ * places across TypeScript and Rust.
+ */
+export interface SpeechLiveSettings {
+  /** `audiocpp_cli` itself, or the folder holding it. */
+  runtimePath: string;
+  /** The `.gguf` model file. */
+  modelPath: string;
+  /**
+   * Extra folder to put on the program's PATH. CUDA 13 keeps its runtime files
+   * in `bin\x64` rather than `bin`, and without them the program dies the
+   * moment it starts with no message.
+   */
+  libraryPath: string;
+  /** `auto`, `cuda`, `vulkan` or `cpu`. */
+  backend: string;
+  /** How much audio the model takes at a time, 80-2000 ms. */
+  chunkMs: number;
+  /**
+   * How many words the model keeps back until it is sure of them. They arrive
+   * when you press stop. Lower shows text sooner but risks keeping a wrong
+   * word, because text already shown is never taken back.
+   */
+  holdBack: number;
+  /**
+   * Seconds of no dictation before the loaded model is released. It holds
+   * about 2.3 GB of video memory while it waits. 0 keeps it loaded.
+   */
+  idleSeconds: number;
+}
+
+export const DEFAULT_SPEECH_LIVE: SpeechLiveSettings = {
+  runtimePath: '',
+  modelPath: '',
+  libraryPath: '',
+  backend: 'auto',
+  chunkMs: 320,
+  holdBack: 2,
+  idleSeconds: 300,
+};
+
+/** Fill in anything a stored value is missing, so an older row still loads. */
+export function normalizeSpeechLive(value: unknown): SpeechLiveSettings {
+  if (!value || typeof value !== 'object') return { ...DEFAULT_SPEECH_LIVE };
+  const raw = value as Partial<SpeechLiveSettings>;
+  const int = (n: unknown, fallback: number, min: number, max: number) =>
+    typeof n === 'number' && Number.isFinite(n)
+      ? Math.min(max, Math.max(min, Math.round(n)))
+      : fallback;
+  return {
+    runtimePath: typeof raw.runtimePath === 'string' ? raw.runtimePath : '',
+    modelPath: typeof raw.modelPath === 'string' ? raw.modelPath : '',
+    libraryPath: typeof raw.libraryPath === 'string' ? raw.libraryPath : '',
+    backend: typeof raw.backend === 'string' && raw.backend ? raw.backend : 'auto',
+    chunkMs: int(raw.chunkMs, DEFAULT_SPEECH_LIVE.chunkMs, 80, 2000),
+    holdBack: int(raw.holdBack, DEFAULT_SPEECH_LIVE.holdBack, 1, 16),
+    idleSeconds: int(raw.idleSeconds, DEFAULT_SPEECH_LIVE.idleSeconds, 0, 86_400),
+  };
+}
+
 /** Read a stored access mode, falling back to the boolean it replaced.
  *
  *  An unrecognised string is treated as unset rather than trusted, so a
@@ -649,9 +715,17 @@ interface SettingsState {
   speechEnabled: boolean;
   speechEngine: string;
   speechLanguage: string;
+  /**
+   * When words appear. `batch` records everything and transcribes on stop
+   * (CrispASR); `live` shows them while you talk (audio.cpp Confucius4-R2T2).
+   * Two different programs, so each keeps its own paths.
+   */
+  speechMode: SpeechMode;
   speechModelPath: string;
   speechRuntimePath: string;
   speechThreads: number;
+  /** Settings for live dictation. Grouped because they configure one program. */
+  speechLive: SpeechLiveSettings;
 
   // Providers
   providers: LLMProvider[];
@@ -709,6 +783,9 @@ interface SettingsState {
   setSpeechEnabled: (enabled: boolean) => void;
   setSpeechEngine: (engine: string) => void;
   setSpeechLanguage: (language: string) => void;
+  setSpeechMode: (mode: SpeechMode) => void;
+  /** Change some live-dictation settings; the rest keep their values. */
+  setSpeechLive: (patch: Partial<SpeechLiveSettings>) => void;
   setSpeechModelPath: (path: string) => void;
   setSpeechRuntimePath: (path: string) => void;
   setSpeechThreads: (threads: number) => void;
@@ -839,7 +916,10 @@ export interface LLMProvider {
   // one value that cannot disagree with itself.
   // `modal` / `modal-messages` / `modal-responses` follow the same rule: one
   // workspace token, three wires on one gateway, the wire stored as the type.
-  providerType?: "openai" | "openai-responses" | "codex" | "claude-code" | "cursor" | "fireworks" | "deepseek" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "ark" | "ark-messages" | "ark-responses" | "modal" | "modal-messages" | "modal-responses" | "meta" | "meta-messages" | "meta-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
+  // `deepseek` / `deepseek-messages` / `deepseek-responses` likewise — one
+  // `sk-` key, three shapes, and on this one the Messages wire also lives on
+  // its own path, so the picker rewrites the row's URL alongside the type.
+  providerType?: "openai" | "openai-responses" | "codex" | "claude-code" | "cursor" | "fireworks" | "deepseek" | "deepseek-messages" | "deepseek-responses" | "glm" | "anthropic" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "ark" | "ark-messages" | "ark-responses" | "modal" | "modal-messages" | "modal-responses" | "meta" | "meta-messages" | "meta-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;
@@ -1268,6 +1348,7 @@ function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
   const pricing = preset.modelPricing || {};
   const windows = preset.modelContextWindows || {};
   const reasoningByKey = preset.modelReasoning || {};
+  const visionByKey = preset.modelVision || {};
   return Array.from(new Set(keys.filter(Boolean))).map((modelKey, idx) => {
     const p = pricing[modelKey];
     return {
@@ -1287,7 +1368,11 @@ function modelsFromPreset(preset: ProviderCatalogPreset): LLMModel[] {
       // user who added OpenAI (Responses) and pasted a screenshot got nothing
       // until they hunted down the per-model toggle. A capability the
       // catalogue knows about must not need re-entering by hand.
-      supportsVision: !!preset.supportsVision,
+      //
+      // Per model where the preset says the models disagree, which is the case
+      // the provider-wide flag cannot express: DeepSeek Flash sees and V4 Pro
+      // answers 400 on an image, so one answer has to be wrong for one of them.
+      supportsVision: visionByKey[modelKey] ?? !!preset.supportsVision,
       supportsThinking: !!preset.supportsThinking,
       supportsToolStream: !!preset.supportsToolStream,
       enabled: true,
@@ -1590,6 +1675,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   speechDevicePreference: "auto",
   speechThreads: 4,
   speechLanguage: "auto",
+  speechMode: "batch" as SpeechMode,
+  speechLive: { ...DEFAULT_SPEECH_LIVE },
 
   // ============================================
   // DATABASE OPERATIONS
@@ -1960,6 +2047,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
           speechDevicePreference: appSettings.speechDevicePreference ?? "auto",
           speechThreads: appSettings.speechThreads ?? 4,
           speechLanguage: appSettings.speechLanguage ?? "auto",
+          speechMode: appSettings.speechMode === "live" ? "live" : "batch",
+          speechLive: normalizeSpeechLive(appSettings.speechLive),
           fireworksTabEnabled: appSettings.fireworksTabEnabled ?? false,
           fireworksAccountId: appSettings.fireworksAccountId ?? "",
           removedProviderIds: appSettings.removedProviderIds ?? [],
@@ -2078,6 +2167,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
         speechDevicePreference: state.speechDevicePreference,
         speechThreads: state.speechThreads,
         speechLanguage: state.speechLanguage,
+        speechMode: state.speechMode,
+        speechLive: state.speechLive,
         fireworksTabEnabled: state.fireworksTabEnabled,
         fireworksAccountId: state.fireworksAccountId,
         removedProviderIds: state.removedProviderIds,
@@ -3030,6 +3121,16 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
 
   setSpeechLanguage: (language: string) => {
     set({ speechLanguage: language || "auto" });
+    get().saveToDatabase();
+  },
+
+  setSpeechMode: (mode: SpeechMode) => {
+    set({ speechMode: mode === "live" ? "live" : "batch" });
+    get().saveToDatabase();
+  },
+
+  setSpeechLive: (patch: Partial<SpeechLiveSettings>) => {
+    set({ speechLive: normalizeSpeechLive({ ...get().speechLive, ...patch }) });
     get().saveToDatabase();
   },
 

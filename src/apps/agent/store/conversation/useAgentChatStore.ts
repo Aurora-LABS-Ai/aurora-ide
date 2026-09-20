@@ -438,7 +438,12 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // Aurora Chat filled its rail with Build's conversations and kept them,
     // because nothing lists them again when the real answer arrives.
     await whenSettingsReady();
-    await Promise.all([get().refreshThreads(), get().loadKnownProjects()]);
+    // Sequential, not concurrent: `loadKnownProjects` reads the list
+    // `refreshThreads` just fetched instead of scanning every conversation
+    // again for itself. Run together they raced, both missed, and both
+    // scanned. It costs nothing to wait — the second one does no I/O now.
+    await get().refreshThreads();
+    await get().loadKnownProjects();
   },
 
   setProject: async (projectRoot) => {
@@ -448,14 +453,24 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     set({ projectRoot: normalized, currentThreadId: null, currentThread: null });
     bindRuntimeWorkspace(normalized);
     rememberAgentWorkspace(normalized);
-    await Promise.all([get().refreshThreads(), get().loadKnownProjects()]);
+    // Sequential for the same reason as above.
+    await get().refreshThreads();
+    await get().loadKnownProjects();
   },
 
   loadKnownProjects: async () => {
     if (!isTauri()) return;
     try {
-      // List ALL threads (no scope) and collect the distinct workspace roots.
-      const all = await threadService.listThreads(null);
+      // The distinct workspace roots, taken from the unscoped list
+      // `refreshThreads` has already fetched into `allThreads`.
+      //
+      // This used to list every thread again for itself. Both run together
+      // from `setProject`, so the same scan of every conversation on disk ran
+      // twice at once, to produce a set of folder names the first one had
+      // already brought back. Only fall back to fetching when the list is
+      // genuinely empty, which means nothing has loaded it yet.
+      const loaded = get().allThreads;
+      const all = loaded.length > 0 ? loaded : await threadService.listThreads(null);
       const roots = new Set<string>();
       for (const t of all) {
         if (t.workspaceRoot && t.workspaceRoot.length > 0) roots.add(t.workspaceRoot);

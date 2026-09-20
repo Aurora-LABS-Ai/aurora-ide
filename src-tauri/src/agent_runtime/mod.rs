@@ -50,6 +50,7 @@ pub mod hooks;
 pub mod ipc;
 pub mod recovery;
 pub mod session;
+pub mod session_index;
 pub mod session_store;
 pub mod team;
 pub mod title;

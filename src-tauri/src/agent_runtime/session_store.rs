@@ -54,6 +54,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::RuntimeError;
 use super::session::{RichToolResult, Session};
+use super::session_index::{self, Fingerprint, SessionIndex};
 use super::types::{ContentBlock, ConversationMessage, MessageRole};
 
 // ============================================================================
@@ -195,6 +196,14 @@ pub struct SessionSummary {
     pub deep_research: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// One conversation the directory walk found, and the stamps that decide
+/// whether its cached summary can be reused.
+struct FoundThread {
+    id: String,
+    log: PathBuf,
+    fingerprint: Fingerprint,
 }
 
 /// How long an archived chat is retained before it is permanently purged.
@@ -430,18 +439,99 @@ impl SessionStore {
     /// in `c:/xyz` invisible from `c:/yyz`.
     ///
     /// `None` returns every thread (the IDE's global chat history).
+    /// List every thread, reading only the ones that changed since last time.
+    ///
+    /// The slow part of a listing was never the directory walk, it was that
+    /// building each summary read a whole conversation end to end. That is
+    /// work proportional to every message ever sent, repeated on every
+    /// listing, on the path that draws the rail at boot.
+    ///
+    /// So summaries are cached in [`SessionIndex`], each stamped with the size
+    /// and modified time of the conversation and its sidecar. A listing walks
+    /// the directory, compares stamps, and re-reads only what moved. The walk
+    /// itself is cheap in the flat layout because one directory read already
+    /// carries the metadata for every file in it — checking a thousand threads
+    /// costs one syscall batch, not a thousand file opens.
+    ///
+    /// The index is never trusted over the files: a stamp that does not match
+    /// means re-read, and a row whose file is gone is dropped. Anything that
+    /// fails here falls back to reading the conversations, which is what this
+    /// always did.
     pub fn list_summaries_filtered(
         &self,
         workspace_root: Option<&str>,
     ) -> Result<Vec<SessionSummary>, RuntimeError> {
+        let found = match self.scan_dir()? {
+            Some(found) => found,
+            None => return Ok(Vec::new()),
+        };
+
+        let index = SessionIndex::open(&self.dir);
+        let cached = index
+            .as_ref()
+            .map(SessionIndex::load_all)
+            .unwrap_or_default();
+
         let mut out = Vec::new();
+        let mut rebuilt: Vec<(SessionSummary, Fingerprint)> = Vec::new();
+        for thread in &found {
+            let summary = match cached.get(&thread.id) {
+                // Unchanged since it was cached: serve the row, open nothing.
+                Some(hit) if hit.fingerprint == thread.fingerprint => hit.summary.clone(),
+                _ => match self.summarize_thread(&thread.id, &thread.log) {
+                    Ok(summary) => {
+                        rebuilt.push((summary.clone(), thread.fingerprint));
+                        summary
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[SessionStore] failed to summarize {}: {err}; skipping",
+                            thread.id
+                        );
+                        continue;
+                    }
+                },
+            };
+            self.keep_summary(&mut out, summary, workspace_root);
+        }
+
+        if let Some(index) = index.as_ref() {
+            // Rows for threads that are no longer on disk — deleted through
+            // Aurora, or removed underneath it.
+            let present: std::collections::HashSet<&str> =
+                found.iter().map(|t| t.id.as_str()).collect();
+            let removed: Vec<String> = cached
+                .keys()
+                .filter(|id| !present.contains(id.as_str()))
+                .cloned()
+                .collect();
+            index.apply(&rebuilt, &removed);
+        }
+
+        // Sort newest-first by RFC3339 string compare — works because
+        // RFC3339 is lexicographically ordered.
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(out)
+    }
+
+    /// Every conversation in the store, with the stamps that say whether a
+    /// cached summary for it is still true.
+    fn scan_dir(&self) -> Result<Option<Vec<FoundThread>>, RuntimeError> {
+        let mut found = Vec::new();
         let read = match fs::read_dir(&self.dir) {
             Ok(r) => r,
             // Fresh install — store dir doesn't exist yet. Empty list,
             // not an error.
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(RuntimeError::from(e)),
         };
+
+        // Flat layout: every file lives in this one directory, so the walk
+        // collects the sidecars' stamps on the way past instead of asking for
+        // them again per thread. On Windows the metadata comes from the
+        // directory enumeration itself, so it is already paid for.
+        let mut meta_stamps: HashMap<String, (u64, i64)> = HashMap::new();
+        let mut logs: Vec<(String, PathBuf, (u64, i64))> = Vec::new();
 
         for entry in read.flatten() {
             let path = entry.path();
@@ -455,12 +545,42 @@ impl SessionStore {
                     continue;
                 };
                 let log = self.session_path(id);
-                if !log.is_file() {
+                let Ok(log_meta) = fs::metadata(&log) else {
+                    continue; // not a conversation folder
+                };
+                if !log_meta.is_file() {
                     continue;
                 }
-                let id = id.to_string();
-                self.push_summary(&mut out, &id, &log, workspace_root)?;
+                // One folder per conversation, so its sidecar is not in the
+                // directory we just read and has to be asked for. Still two
+                // stat calls against reading the whole conversation.
+                let meta_stamp = fs::metadata(self.meta_path(id))
+                    .as_ref()
+                    .map(session_index::stamp)
+                    .unwrap_or((0, 0));
+                let log_stamp = session_index::stamp(&log_meta);
+                found.push(FoundThread {
+                    id: id.to_string(),
+                    log,
+                    fingerprint: Fingerprint {
+                        log_size: log_stamp.0,
+                        log_mtime: log_stamp.1,
+                        meta_size: meta_stamp.0,
+                        meta_mtime: meta_stamp.1,
+                    },
+                });
                 continue;
+            }
+
+            // Flat layout. `<id>.meta.json` arrives in this same walk, so
+            // remember its stamp rather than stat-ing it again later.
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if let Some(id) = name.strip_suffix(".meta.json") {
+                    if let Ok(meta) = entry.metadata() {
+                        meta_stamps.insert(id.to_string(), session_index::stamp(&meta));
+                    }
+                    continue;
+                }
             }
             // Only `<thread_id>.jsonl` files are session logs. Skip
             // sidecars, tmp files, stray directories.
@@ -487,18 +607,32 @@ impl SessionStore {
                 continue;
             }
 
-            match self.push_summary(&mut out, &stem, &path, workspace_root) {
-                Ok(()) => {}
-                Err(err) => {
-                    eprintln!("[SessionStore] failed to summarize {stem}: {err}; skipping");
-                }
-            }
+            let stamp = entry
+                .metadata()
+                .as_ref()
+                .map(session_index::stamp)
+                .unwrap_or((0, 0));
+            logs.push((stem, path, stamp));
         }
 
-        // Sort newest-first by RFC3339 string compare — works because
-        // RFC3339 is lexicographically ordered.
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(out)
+        // The sidecar stamps are only complete once the whole directory has
+        // been walked, because a `.meta.json` can be enumerated after the
+        // `.jsonl` it belongs to.
+        for (id, log, log_stamp) in logs {
+            let meta_stamp = meta_stamps.get(&id).copied().unwrap_or((0, 0));
+            found.push(FoundThread {
+                id,
+                log,
+                fingerprint: Fingerprint {
+                    log_size: log_stamp.0,
+                    log_mtime: log_stamp.1,
+                    meta_size: meta_stamp.0,
+                    meta_mtime: meta_stamp.1,
+                },
+            });
+        }
+
+        Ok(Some(found))
     }
 
     /// Summarize one thread and push it onto `out`, unless it is an expired
@@ -509,35 +643,35 @@ impl SessionStore {
     /// name — and everything after that point is the same work. Keeping it in
     /// one place is what stops the retention sweep or the project filter from
     /// existing in one layout and quietly not the other.
-    fn push_summary(
+    fn keep_summary(
         &self,
         out: &mut Vec<SessionSummary>,
-        thread_id: &str,
-        jsonl_path: &Path,
+        summary: SessionSummary,
         workspace_root: Option<&str>,
-    ) -> Result<(), RuntimeError> {
-        let summary = self.summarize_thread(thread_id, jsonl_path)?;
+    ) {
         // Retention GC: an archived chat past its 15-day window is
         // purged here. Listing is the natural, frequent trigger, so
         // no background scheduler is needed. This runs before the
         // project filter so expired archives are reaped globally.
         if let Some(ts) = summary.archived_at.as_deref() {
             if archive_expired(ts) {
-                if let Err(err) = self.delete(thread_id) {
-                    eprintln!("[SessionStore] failed to purge expired archive {thread_id}: {err}");
+                if let Err(err) = self.delete(&summary.id) {
+                    eprintln!(
+                        "[SessionStore] failed to purge expired archive {}: {err}",
+                        summary.id
+                    );
                 }
-                return Ok(());
+                return;
             }
         }
         // Project scoping: when a filter is set, drop threads
         // that don't belong to it (including unscoped ones).
         if let Some(want) = workspace_root {
             if summary.workspace_root.as_deref() != Some(want) {
-                return Ok(());
+                return;
             }
         }
         out.push(summary);
-        Ok(())
     }
 
     /// Build one [`SessionSummary`] for `thread_id`. Reads the
@@ -1054,6 +1188,12 @@ impl SessionStore {
     }
 
     pub fn delete(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        // Drop the cached listing row with the files. A listing would notice
+        // the absence on its own, but only after building a list that still
+        // had the thread in it.
+        if let Some(index) = SessionIndex::open(&self.dir) {
+            index.forget(thread_id);
+        }
         // A folder conversation is one directory, assets and all. Removing it
         // is the whole deletion, and it cannot leave an orphan behind the way
         // an unlink-six-files list can once somebody adds a seventh sidecar.
@@ -1205,6 +1345,92 @@ mod tests {
         assert_eq!(entry.message_count, 2);
         assert_eq!(entry.preview, "hello there");
         assert_eq!(entry.title, "Title");
+    }
+
+    /// Listing caches its summaries so it stops reading every conversation on
+    /// every call. These three pin the only thing that makes a cache safe: it
+    /// has to notice when the files behind it move.
+    ///
+    /// Each one fails if the fingerprint stops watching the file it covers —
+    /// drop the sidecar stamp and the rename test serves the old title; drop
+    /// the conversation stamp and the new-message test serves the old count.
+    mod cached_listing {
+        use super::*;
+
+        #[test]
+        fn a_listing_fills_the_index_and_the_next_one_agrees_with_it() {
+            let (guard, store) = tmp_store();
+            store.ensure_thread("a", Some("First".into()), None).unwrap();
+            store.ensure_thread("b", Some("Second".into()), None).unwrap();
+
+            let first = store.list_summaries().unwrap();
+            let index = crate::agent_runtime::session_index::SessionIndex::open(guard.path())
+                .expect("index");
+            assert_eq!(index.len(), 2, "the listing should have cached both");
+
+            // Served from the index this time: same answer, no conversation read.
+            let second = store.list_summaries().unwrap();
+            assert_eq!(
+                serde_json::to_value(&first).unwrap(),
+                serde_json::to_value(&second).unwrap(),
+            );
+        }
+
+        #[test]
+        fn renaming_a_chat_shows_up_on_the_next_listing() {
+            // The title lives in the sidecar, which a rename rewrites without
+            // touching the conversation at all.
+            let (_g, store) = tmp_store();
+            store.ensure_thread("r", Some("Draft".into()), None).unwrap();
+            assert_eq!(store.list_summaries().unwrap()[0].title, "Draft");
+
+            store.set_title("r", "Renamed".into()).unwrap();
+
+            assert_eq!(store.list_summaries().unwrap()[0].title, "Renamed");
+        }
+
+        #[test]
+        fn a_new_message_shows_up_on_the_next_listing() {
+            let (_g, store) = tmp_store();
+            store.ensure_thread("m", Some("Chat".into()), None).unwrap();
+
+            let mut session = Session::new("m");
+            session.append_message(ConversationMessage::user_text(
+                "first question",
+                chrono::Utc::now().timestamp_millis(),
+            ));
+            session.save_to_path(store.session_path("m")).unwrap();
+            let before = store.list_summaries().unwrap();
+            assert_eq!(before[0].message_count, 1);
+            assert_eq!(before[0].preview, "first question");
+
+            session.append_message(ConversationMessage::user_text(
+                "second question",
+                chrono::Utc::now().timestamp_millis(),
+            ));
+            session.save_to_path(store.session_path("m")).unwrap();
+
+            let after = store.list_summaries().unwrap();
+            assert_eq!(after[0].message_count, 2);
+            assert_eq!(after[0].preview, "second question");
+        }
+
+        #[test]
+        fn a_thread_deleted_underneath_aurora_leaves_the_listing() {
+            // Not through `delete`, which drops the row itself — this is a
+            // file removed by hand or by a sync tool, where the only thing
+            // that can notice is the next listing.
+            let (_g, store) = tmp_store();
+            store.ensure_thread("gone", Some("Bye".into()), None).unwrap();
+            store.ensure_thread("stays", Some("Here".into()), None).unwrap();
+            assert_eq!(store.list_summaries().unwrap().len(), 2);
+
+            std::fs::remove_file(store.session_path("gone")).unwrap();
+
+            let listed = store.list_summaries().unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].id, "stays");
+        }
     }
 
     #[test]

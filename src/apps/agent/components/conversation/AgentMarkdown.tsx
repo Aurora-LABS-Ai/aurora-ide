@@ -11,12 +11,71 @@
  */
 
 import React, { useCallback, useContext, useMemo, useRef, useState } from "react";
-import { Streamdown } from "streamdown";
+import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins } from "streamdown";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useSmoothReveal } from "@/apps/agent/hooks/conversation/useSmoothReveal";
 import { selectActiveAgentTheme, useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
+
+/**
+ * Render anything tag-shaped as the text the model actually wrote.
+ *
+ * An agent that talks about code writes `<T>`, `<your-key>`, `<Component />`
+ * and Aurora's own `<repo_map>`-style tags in ordinary prose. Markdown treats
+ * every one of those as raw HTML, and the reply lost them: `Use the <date>
+ * field` rendered as "Use the  field", with only a console warning about an
+ * unrecognized tag to say anything had happened.
+ *
+ * Turning rehype's `raw` off is NOT enough, and that was the first attempt.
+ * The parser has already decided those are HTML by then, so without `raw` the
+ * nodes are dropped instead of rendered — the same hole, minus the warning.
+ * `<repo_map>` survived only because an underscore is illegal in a tag name,
+ * which is what made the real rule visible.
+ *
+ * So the conversion happens in the parse tree, before anything can act on it:
+ * every `html` node becomes a `text` node holding its own source. React then
+ * escapes it like any other text.
+ *
+ * The cost is that real HTML in a reply — a `<details>` block, a `<br>` — is
+ * shown rather than applied. Nothing here relied on that; the only tags this
+ * file maps are `pre`, `code` and `a`, which markdown produces by itself.
+ */
+function remarkTagsAsText() {
+  return (tree: unknown) => {
+    const walk = (node: unknown) => {
+      if (!node || typeof node !== "object") return;
+      const children = (node as { children?: unknown[] }).children;
+      if (!Array.isArray(children)) return;
+      for (const child of children) {
+        if (child && typeof child === "object") {
+          const typed = child as { type?: string };
+          if (typed.type === "html") typed.type = "text";
+        }
+        walk(child);
+      }
+    };
+    walk(tree);
+  };
+}
+
+const REMARK_PLUGINS = [
+  ...Object.values(defaultRemarkPlugins),
+  remarkTagsAsText,
+];
+
+/**
+ * Streamdown's own rehype set, minus `raw`.
+ *
+ * Redundant against the remark plugin above, which leaves no HTML for it to
+ * act on, and kept anyway: model output is untrusted text, and `raw` is the
+ * switch that turns it into live DOM. Streamdown's `harden` covers links and
+ * images; it does not make arbitrary HTML safe.
+ *
+ * Taken from `defaultRehypePlugins` rather than rebuilt, so KaTeX and the
+ * hardening stay in step with the package.
+ */
+const REHYPE_PLUGINS = [defaultRehypePlugins.katex, defaultRehypePlugins.harden];
 
 /** Recursively collect text from a react node tree (for code copy). */
 function collectText(node: React.ReactNode): string {
@@ -149,6 +208,8 @@ const AgentMarkdownImpl: React.FC<{
   const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
 
   // Stable tuple so Streamdown's internal memo isn't busted every render.
+  //
+  // (see REHYPE_PLUGINS above for why raw HTML is off)
   const shikiTheme = useMemo<
     ["github-light", "github-light"] | ["github-dark", "github-dark"]
   >(
@@ -170,6 +231,8 @@ const AgentMarkdownImpl: React.FC<{
       <Streamdown
         isAnimating={false}
         shikiTheme={shikiTheme}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
         components={components}
         // Drop Streamdown's built-in block controls: the download/copy bar it
         // overlays on tables (the stray icons + the phantom extra column) and on

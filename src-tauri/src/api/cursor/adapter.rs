@@ -512,6 +512,7 @@ mod tests {
         let input = history::build_turn_input(
             Some("You are Aurora's coding agent."),
             &[crate::agent_runtime::types::ConversationMessage {
+                event_id: None,
                 role: crate::agent_runtime::types::MessageRole::User,
                 blocks: vec![ContentBlock::Text {
                     text: "Refactor the parser module.".into(),

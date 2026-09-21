@@ -289,6 +289,7 @@ mod tests {
 
     fn message(role: MessageRole, blocks: Vec<ContentBlock>) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role,
             blocks,
             usage: None,

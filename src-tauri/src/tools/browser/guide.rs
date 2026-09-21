@@ -18,6 +18,15 @@ Never a separate window, never a second tab. It persists across turns, and the
 user opens and drives it themselves too — so it is very often already open on
 the page you want, showing something you did not put there.
 
+## Invoke browser tools through call_tool
+
+Every `browser_*` tool is optional. Discover its argument schema with
+`tool_search`, then execute it through `call_tool`. Examples below name the
+target operation and its arguments; they are not direct tool calls. For example,
+`browser_status` means `call_tool({"name":"browser_status","arguments":{}})`.
+Discovery returns schemas, not execution results. Reuse schemas still in context;
+use `select:exact_name` to retrieve a missing one.
+
 ## Start by finding out where you are
 
 `browser_status` first, every time you are not certain. It is read-only and

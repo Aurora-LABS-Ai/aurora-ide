@@ -1,11 +1,11 @@
-//! `index.db` — a listing cache for a conversation store.
+//! `threads.db` — a listing cache for a conversation store.
 //!
 //! **The conversation files are the truth. This is an index built from them.**
 //! Every row can be rebuilt by reading the file it describes, so a corrupt or
 //! deleted index costs a slow first listing, never history. Same rule
 //! `chats.db` states for itself in [`crate::chat_memory::schema`], and the same
-//! rule `sessions/` already lives by, where the `.jsonl` is canonical and
-//! `.meta.json` is a sidecar.
+//! rule project stores follow: `conversation.jsonl` is canonical and
+//! `meta.json` is its sidecar.
 //!
 //! ## Why it exists
 //!
@@ -46,7 +46,7 @@ const INDEX_VERSION: i32 = 1;
 /// Sits beside the conversations. In the flat layout the listing walk only
 /// counts `.jsonl` files, and in the folder layout only directories, so this
 /// file and SQLite's `-wal`/`-shm` companions are ignored by both.
-pub const INDEX_FILE: &str = "index.db";
+pub const INDEX_FILE: &str = "threads.db";
 
 /// Size and modified time of the files a row was built from. Two files,
 /// because the conversation carries the message count and preview while the

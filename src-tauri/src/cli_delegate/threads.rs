@@ -16,12 +16,12 @@
 //! requiring all 26 turns `--continue` into a copy-paste ritual.
 //!
 //! Threads are read straight from the session store — the JSONL logs and their
-//! `.meta.json` sidecars under [`crate::paths::sessions_dir`]. Deliberately
+//! `meta.json` sidecars under [`crate::paths::projects_dir`]. Deliberately
 //! not through SQLite: chat sessions are not in the database (see the schema
 //! note in `db/schema.rs`), and the sidecars are the only authority.
 
+use crate::agent_runtime::project_dir::{self, ProjectDirs};
 use crate::agent_runtime::session_store::{SessionStore, SessionSummary};
-use crate::paths;
 
 /// How many recent threads to offer when a lookup fails.
 ///
@@ -65,10 +65,28 @@ impl Threads {
     /// prefix collide with a thread from an unrelated repo and silently append
     /// this task to the wrong conversation.
     pub fn load(workspace_root: Option<&str>) -> Result<Self, ThreadError> {
-        let store = SessionStore::new(paths::sessions_dir());
-        let mut all = store
-            .list_summaries_filtered(workspace_root)
-            .map_err(|error| ThreadError::Store(error.to_string()))?;
+        Self::load_from(&project_dir::projects(), workspace_root)
+    }
+
+    fn load_from(
+        projects: &ProjectDirs,
+        workspace_root: Option<&str>,
+    ) -> Result<Self, ThreadError> {
+        let dirs = match workspace_root {
+            Some(workspace) => projects
+                .open_or_create(std::path::Path::new(workspace))
+                .map(|dir| vec![dir]),
+            None => projects.all(),
+        }
+        .map_err(|e| ThreadError::Store(e.to_string()))?;
+        let mut all = Vec::new();
+        for dir in dirs {
+            all.extend(
+                SessionStore::new_project(dir)
+                    .list_summaries()
+                    .map_err(|e| ThreadError::Store(e.to_string()))?,
+            );
+        }
 
         // Archived threads are hidden from the window's list, so offering them
         // here would surface conversations the user has already put away.
@@ -161,6 +179,35 @@ pub fn display_title(summary: &SessionSummary) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn disk_history_is_project_scoped_and_unscoped_history_merges_projects() {
+        let root = tempfile::tempdir().unwrap();
+        let projects = ProjectDirs::with_root(root.path().to_owned());
+        for (id, workspace, stamp) in [
+            ("first", r"E:\Project", "2026-09-19T12:00:00Z"),
+            ("second", "E:/Other", "2026-09-20T12:00:00Z"),
+        ] {
+            let store = SessionStore::new_project(
+                projects
+                    .open_or_create(std::path::Path::new(workspace))
+                    .unwrap(),
+            );
+            let mut metadata = store
+                .ensure_thread(id, None, Some(workspace.into()))
+                .unwrap();
+            metadata.updated_at = stamp.into();
+            std::fs::write(store.meta_path(id), serde_json::to_vec(&metadata).unwrap()).unwrap();
+        }
+        let scoped = Threads::load_from(&projects, Some("e:/project/")).unwrap();
+        assert_eq!(scoped.all.len(), 1);
+        assert_eq!(scoped.latest().unwrap().id, "first");
+        let all = Threads::load_from(&projects, None).unwrap();
+        assert_eq!(
+            all.all.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["second", "first"]
+        );
+    }
+
     fn summary(id: &str, updated_at: &str) -> SessionSummary {
         SessionSummary {
             id: id.to_string(),
@@ -220,7 +267,9 @@ mod tests {
         // `01JQ8FAAAA` is both a complete id and a prefix of itself. A user
         // who pasted the full id must never be told it was ambiguous.
         let mut history = history();
-        history.all.push(summary("01JQ8FAAAABBBB", "2026-09-01T09:00:00Z"));
+        history
+            .all
+            .push(summary("01JQ8FAAAABBBB", "2026-09-01T09:00:00Z"));
         let found = history.resolve("01JQ8FAAAA").expect("resolves");
         assert_eq!(found.id, "01JQ8FAAAA");
     }
@@ -259,7 +308,10 @@ mod tests {
 
     #[test]
     fn latest_is_the_newest_thread() {
-        assert_eq!(history().latest().map(|s| s.id.as_str()), Some("01JQ8FAAAA"));
+        assert_eq!(
+            history().latest().map(|s| s.id.as_str()),
+            Some("01JQ8FAAAA")
+        );
         assert!(Threads::default().latest().is_none());
     }
 

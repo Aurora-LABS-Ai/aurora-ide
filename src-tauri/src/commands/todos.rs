@@ -17,12 +17,16 @@ use crate::tools::shell_editor_todo::todo_store;
 /// tracked anything is the normal case, and a panel is not worth failing a
 /// window open over.
 #[tauri::command]
-pub fn todo_list_for_thread(thread_id: String) -> Result<serde_json::Value, String> {
-    let trimmed = thread_id.trim();
-    if trimmed.is_empty() {
-        return Err("thread_id must not be empty".into());
-    }
-    Ok(todo_store::read(trimmed)?.to_event_payload())
+pub async fn todo_list_for_thread(thread_id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = thread_id.trim();
+        if trimmed.is_empty() {
+            return Err("thread_id must not be empty".into());
+        }
+        Ok(todo_store::read(trimmed)?.to_event_payload())
+    })
+    .await
+    .map_err(|e| format!("Checklist loading failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -30,9 +34,10 @@ mod tests {
     use super::*;
     use todo_store::{TodoItem, TodoList, TodoStatus};
 
-    #[test]
-    fn reads_the_list_a_tool_wrote() {
+    #[tokio::test]
+    async fn reads_the_list_a_tool_wrote() {
         let thread = format!("cmd-todos-{}", uuid::Uuid::new_v4());
+        crate::agent_runtime::project_dir::test_thread(&thread);
         todo_store::write(
             &thread,
             &TodoList {
@@ -47,7 +52,7 @@ mod tests {
         )
         .expect("seed");
 
-        let payload = todo_list_for_thread(thread.clone()).expect("read");
+        let payload = todo_list_for_thread(thread.clone()).await.expect("read");
         // Ids are plain numbers since the checklist took `TaskCreate`'s shape.
         let items = payload.as_array().expect("array");
 
@@ -61,15 +66,16 @@ mod tests {
         todo_store::clear(&thread).ok();
     }
 
-    #[test]
-    fn an_untracked_thread_is_an_empty_list_not_an_error() {
+    #[tokio::test]
+    async fn an_untracked_thread_is_an_empty_list_not_an_error() {
         let payload = todo_list_for_thread(format!("never-{}", uuid::Uuid::new_v4()))
+            .await
             .expect("must not error");
         assert!(payload.as_array().expect("array").is_empty());
     }
 
-    #[test]
-    fn an_empty_thread_id_is_rejected() {
-        assert!(todo_list_for_thread("   ".into()).is_err());
+    #[tokio::test]
+    async fn an_empty_thread_id_is_rejected() {
+        assert!(todo_list_for_thread("   ".into()).await.is_err());
     }
 }

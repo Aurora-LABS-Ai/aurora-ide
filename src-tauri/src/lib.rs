@@ -73,6 +73,7 @@ mod speech_stream;
 pub mod tools;
 mod typing_assist;
 mod undo_redo;
+mod usage_ledger;
 mod websearch;
 
 use cli::{CliArgs, CliOpenRequest};
@@ -126,11 +127,16 @@ impl ProductionIdeEventSink {
         let registry = self
             .app
             .try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()?;
-        let dir = agent_runtime::session_store::tool_results_dir_in(
-            registry.store().dir(),
-            thread_id,
-            registry.store().layout(),
-        );
+        let store = registry
+            .require_store_for_thread(thread_id)
+            .map_err(|e| {
+                logging::log_warn(
+                    "shell.background",
+                    &format!("cannot locate conversation {thread_id}: {e}"),
+                );
+            })
+            .ok()?;
+        let dir = store.tool_results_dir(thread_id);
         std::fs::create_dir_all(&dir).ok()?;
 
         // Process ids are Aurora-generated (`bg-<hex>-<epoch>`), but keep the
@@ -1135,6 +1141,25 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
 
+            let usage_handle = handle.clone();
+            let usage_ledger = std::sync::Arc::new(
+                usage_ledger::UsageLedger::open(&paths::db_file(), paths::root())?
+                    .with_notifier(std::sync::Arc::new(move || {
+                        let _ = usage_handle.emit("usage-updated", ());
+                    })),
+            );
+            // Import retained history off the startup/UI thread. Profile also
+            // reconciles changed sources before reading, so interrupted imports retry.
+            let usage_import = usage_ledger.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = usage_import.reconcile() {
+                    logging::log_error(
+                        "usage_ledger",
+                        &format!("historical import failed: {error:#}"),
+                    );
+                }
+            });
+
             // Populate the shell registry. On a first run this scans the
             // machine so the agent has a verified, correctly configured shell
             // before the user ever opens settings. Runs off the startup path.
@@ -1181,12 +1206,13 @@ pub fn run_with_args(cli_args: CliArgs) {
             let agent_registry = std::sync::Arc::new(
                 commands::agent_v2::AgentRegistry::new(
                     std::sync::Arc::new(RealApiFactory),
-                    paths::sessions_dir(),
+                    paths::projects_dir(),
                 )
                 // Aurora Chat's conversations, folder per chat. A sibling of
-                // `sessions/`, never inside it — the two products' histories
+                // `projects/`, never inside it — the two products' histories
                 // are separate stores and deleting one must not reach the other.
-                .with_chat_dir(paths::chats_dir()),
+                .with_chat_dir(paths::chats_dir())
+                .with_usage_ledger(usage_ledger.clone()),
             );
 
             // Phase 3 — pre-populate the AgentRegistry's ToolRegistry
@@ -1296,7 +1322,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Lead's chat turn never blocks. Holds the live per-project run
             // status the frontend injects into the Lead every message (§17).
             app.manage(std::sync::Arc::new(
-                agent_runtime::team::TeamDispatcher::new(),
+                agent_runtime::team::TeamDispatcher::new().with_usage_ledger(usage_ledger),
             ));
 
             // Native browser-window manager. Owns the lifecycle of

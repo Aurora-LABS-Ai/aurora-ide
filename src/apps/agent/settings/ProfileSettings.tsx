@@ -3,7 +3,7 @@
  *
  * Local, private usage dashboard: lifetime token totals, a daily/weekly/
  * cumulative activity chart, streaks, longest task, and most-used tools —
- * all aggregated on demand from the session store by the Rust
+ * all aggregated from the permanent local usage ledger by the Rust
  * `usage_stats_get` command. Nothing is uploaded anywhere.
  *
  * Streak math happens HERE (not in Rust) because "today" belongs to the
@@ -12,7 +12,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { ActivityChart } from "./ActivityChart";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
@@ -320,16 +320,51 @@ export const ProfileSettings: React.FC = () => {
 
   useEffect(() => {
     let alive = true;
-    void (async () => {
+    let running = false;
+    let requested = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unlisten: (() => void) | undefined;
+    const refresh = async () => {
+      requested = true;
+      if (running || !alive) return;
+      running = true;
       try {
-        const result = await auroraInvoke<UsageStats>("usage_stats_get");
-        if (alive) setStats(result);
-      } catch (err) {
-        if (alive) setError(err instanceof Error ? err.message : String(err));
+        do {
+          requested = false;
+          try {
+            const result = await auroraInvoke<UsageStats>("usage_stats_get");
+            if (alive) {
+              setStats(result);
+              setError(null);
+            }
+          } catch (err) {
+            if (alive) setError(err instanceof Error ? err.message : String(err));
+          }
+        } while (alive && requested);
+      } finally {
+        running = false;
       }
-    })();
+    };
+    const scheduleRefresh = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void refresh(), 300);
+    };
+    void auroraListen("usage-updated", scheduleRefresh).then((dispose) => {
+      if (alive) {
+        unlisten = dispose;
+        // Cover a usage update between the first read and listener setup.
+        scheduleRefresh();
+      } else dispose();
+    }).catch((err) => {
+      console.warn("[Profile] Live usage updates unavailable; refresh on focus remains active", err);
+    });
+    window.addEventListener("focus", scheduleRefresh);
+    void refresh();
     return () => {
       alive = false;
+      clearTimeout(timer);
+      unlisten?.();
+      window.removeEventListener("focus", scheduleRefresh);
     };
   }, []);
 
@@ -350,7 +385,7 @@ export const ProfileSettings: React.FC = () => {
         ? known.name
         : p.providerId
           ? `Removed provider (${p.providerId.slice(0, 8)}…)`
-          : "Before provider was recorded";
+          : "Unattributed historical usage";
       return { ...p, label };
     });
   }, [stats, providers]);
@@ -438,7 +473,7 @@ export const ProfileSettings: React.FC = () => {
           <div>
             <h3 className="agw-set-section-title">Token activity</h3>
             <p className="agw-set-section-desc">
-              Input + output tokens across every chat on this machine. Nothing leaves your device.
+              Input + output tokens across Build and Chat, including deleted conversations.
             </p>
           </div>
           <AgwSegmented<ChartMode>
@@ -497,7 +532,7 @@ export const ProfileSettings: React.FC = () => {
             <div style={{ minWidth: 0 }}>
               <h3 className="agw-set-section-title">Most used models</h3>
               <p className="agw-set-section-desc">
-                By tokens, attributed from each chat's model.
+                By tokens, attributed to the model used for each request.
               </p>
             </div>
           </div>
@@ -508,7 +543,7 @@ export const ProfileSettings: React.FC = () => {
             return (
               <div key={m.name} className="agw-profile-tool">
                 <span className="agw-profile-tool-name" title={m.name}>
-                  {prettyModel(m.name, models)}
+                  {m.name ? prettyModel(m.name, models) : "Unattributed historical usage"}
                 </span>
                 <span className="agw-profile-tool-track">
                   <span

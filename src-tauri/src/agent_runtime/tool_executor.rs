@@ -567,7 +567,9 @@ impl ToolRegistry {
     /// only move is to guess again, and repeated guessing is how a turn
     /// burns its iteration budget on a name. This attaches the two things
     /// that make the miss recoverable in a single step: the nearest
-    /// registered name (when one is genuinely close) and the real roster.
+    /// registered name (when one is genuinely close) and the direct roster.
+    /// When discovery is installed, an unrecognized name gets an exact search
+    /// instruction: absence from the direct roster is not absence from the catalog.
     ///
     /// It also removes the need to enumerate withdrawn tools in the system
     /// prompt and ask the model not to call them. A prompt cannot enforce
@@ -576,8 +578,18 @@ impl ToolRegistry {
     pub fn unknown_tool_error(&self, name: &str) -> ToolError {
         let available = self.names();
         let suggestion = super::tool_suggest::suggest(name, available.iter().map(String::as_str));
+        let has_discovery = self.get("tool_search").is_some() && self.get("call_tool").is_some();
 
         let mut message = name.to_string();
+        if has_discovery && suggestion.is_none() {
+            let query = serde_json::json!({"query": format!("select:{name}")});
+            message.push_str(&format!(
+                ". This name is not directly callable. Optional tools are omitted from the direct \
+roster below; this error does not establish that the capability is unavailable. Run \
+tool_search({query}). If it returns a matching schema, invoke that name through \
+call_tool with arguments matching the schema ({{}} for no arguments)."
+            ));
+        }
         if let Some(best) = suggestion {
             message.push_str(&format!(". Did you mean `{best}`?"));
         }
@@ -585,7 +597,12 @@ impl ToolRegistry {
         if available.is_empty() {
             message.push_str(" No tools are registered for this session.");
         } else if available.len() <= MAX_LISTED_TOOLS {
-            message.push_str(&format!(" Available tools: {}.", available.join(", ")));
+            let label = if has_discovery {
+                "Available direct tools"
+            } else {
+                "Available tools"
+            };
+            message.push_str(&format!(" {label}: {}.", available.join(", ")));
         } else {
             // Too many to spell out (MCP servers inflate the roster). Give
             // the shape and the same-prefix neighbours, which is what a

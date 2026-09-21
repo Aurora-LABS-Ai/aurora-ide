@@ -668,41 +668,114 @@ fn select(
 // `registry.store()` and was never watched running.
 
 #[tauri::command]
-pub fn thread_artifact_list(
+pub async fn thread_artifact_list(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
-    let _guard = lock_artifacts()?;
-    load_bundle_unlocked(registry.store_for_thread(&thread_id), &thread_id)
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(ThreadArtifactBundle::empty(&thread_id));
+        };
+        let _guard = lock_artifacts()?;
+        load_bundle_unlocked(&store, &thread_id)
+    })
+    .await
+    .map_err(|e| format!("Artifact operation failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn thread_artifact_upsert(
+pub async fn thread_artifact_upsert(
     request: ArtifactUpsertRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
-    upsert(registry.store_for_thread(&request.thread_id), request)
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .require_store_for_thread(&request.thread_id)
+            .map_err(|e| e.to_string())?;
+        upsert(&store, request)
+    })
+    .await
+    .map_err(|e| format!("Artifact operation failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn thread_artifact_preview_patch(
+pub async fn thread_artifact_preview_patch(
     request: ArtifactUpsertRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<String, String> {
-    preview_patch(registry.store_for_thread(&request.thread_id), request)
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .require_store_for_thread(&request.thread_id)
+            .map_err(|e| e.to_string())?;
+        preview_patch(&store, request)
+    })
+    .await
+    .map_err(|e| format!("Artifact operation failed: {e}"))?
 }
 
 #[tauri::command]
-pub fn thread_artifact_select(
+pub async fn thread_artifact_select(
     request: ArtifactSelectRequest,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<ThreadArtifactBundle, String> {
-    select(registry.store_for_thread(&request.thread_id), request)
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .require_store_for_thread(&request.thread_id)
+            .map_err(|e| e.to_string())?;
+        select(&store, request)
+    })
+    .await
+    .map_err(|e| format!("Artifact operation failed: {e}"))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_artifacts_and_spilled_output_follow_the_conversation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_project(root.path().to_owned());
+        store.ensure_thread("thread-1", None, None).unwrap();
+        store.ensure_thread("other", None, None).unwrap();
+        upsert(&store, request("<h1>Saved artifact</h1>")).unwrap();
+        assert!(store
+            .thread_dir("thread-1")
+            .join("artifacts.json")
+            .is_file());
+        assert_eq!(
+            load_bundle_unlocked(&store, "thread-1")
+                .unwrap()
+                .artifacts
+                .len(),
+            1
+        );
+        let output = "tool output\n".repeat(2_000);
+        let response = crate::agent_runtime::tool_spill::spill_oversized(
+            &store.tool_results_dir("thread-1"),
+            "call",
+            output.clone(),
+        );
+        assert_ne!(response, output);
+        let spill = fs::read_dir(store.tool_results_dir("thread-1"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(fs::read_to_string(&spill).unwrap(), output);
+        store.delete("thread-1").unwrap();
+        assert!(!spill.exists());
+        assert!(!store.artifacts_path("thread-1").exists());
+        assert!(store.session_path("other").is_file());
+    }
 
     fn request(content: &str) -> ArtifactUpsertRequest {
         ArtifactUpsertRequest {
@@ -829,7 +902,10 @@ mod tests {
         };
         let bundle = upsert(&store, image).unwrap();
         assert_eq!(bundle.artifacts.len(), 2);
-        assert_eq!(bundle.selected_artifact_id.as_deref(), Some("image-001-generated-aurora"));
+        assert_eq!(
+            bundle.selected_artifact_id.as_deref(),
+            Some("image-001-generated-aurora")
+        );
     }
 
     #[test]

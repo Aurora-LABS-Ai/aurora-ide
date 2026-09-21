@@ -892,32 +892,28 @@ struct ThreadUsageUpdatedPayload {
 // Helpers — shared between commands
 // ============================================================================
 
-/// Which store owns `thread_id`, answered from disk.
-///
-/// Aurora has two conversation stores — `sessions/` for Build and `Chats/` for
-/// Aurora Chat — and almost every command here already names the conversation
-/// it is acting on. That name is enough: ids are UUIDs, a conversation exists
-/// in exactly one store, and asking the filesystem is one `stat`.
-///
-/// Deliberately a lookup rather than a parameter on fifteen commands. A
-/// parameter is a thing every caller has to remember, and the one that forgets
-/// does not fail loudly — it reads or deletes in the wrong store. The disk
-/// cannot forget.
-///
-/// An id in neither store (a brand-new conversation) resolves to Build, which
-/// is what every existing caller means. The two commands that genuinely cannot
-/// look it up — creating a conversation, and listing them — are told instead.
-fn store_for_thread(registry: &Arc<AgentRegistry>, thread_id: &str) -> Arc<SessionStore> {
-    registry.store_for_thread(thread_id).clone()
+/// Resolve an existing conversation without inventing an owner for a missing ID.
+fn store_for_thread(
+    registry: &Arc<AgentRegistry>,
+    thread_id: &str,
+) -> Result<Arc<SessionStore>, String> {
+    registry
+        .require_store_for_thread(thread_id)
+        .map_err(|e| e.to_string())
 }
 
-/// The store for a named surface. `"chat"` is Aurora Chat; anything else,
-/// including `None`, is Build.
-fn store_for_surface(registry: &Arc<AgentRegistry>, surface: Option<&str>) -> Arc<SessionStore> {
+/// New conversations route by surface and workspace.
+fn store_for_surface(
+    registry: &Arc<AgentRegistry>,
+    surface: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<Arc<SessionStore>, String> {
     if surface == Some("chat") {
-        registry.chat_store().clone()
+        Ok(registry.chat_store().clone())
     } else {
-        registry.store().clone()
+        registry
+            .store_for_workspace(workspace)
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -977,30 +973,41 @@ fn build_thread_summary(
 /// `title` field is persisted — message history is owned exclusively
 /// by the agent runtime.
 #[tauri::command]
-pub fn thread_save(
+pub async fn thread_save(
     thread: ThreadState,
     workspace_root: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread.id);
-    store
-        .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
-        .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
-    if !thread.title.is_empty() {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .store_for_conversation(
+                crate::agent_runtime::ipc::AgentExecutionMode::Agent,
+                &thread.id,
+                workspace_root.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
         store
-            .set_title(&thread.id, thread.title.clone())
-            .map_err(|e| format!("Failed to update title: {e}"))?;
-    }
+            .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
+            .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
+        if !thread.title.is_empty() {
+            store
+                .set_title(&thread.id, thread.title.clone())
+                .map_err(|e| format!("Failed to update title: {e}"))?;
+        }
 
-    if let Some(state) = build_thread_state(&store, &thread.id)? {
-        emit(
-            &app,
-            "thread-loaded",
-            &ThreadLoadedPayload { thread: state },
-        );
-    }
-    Ok(())
+        if let Some(state) = build_thread_state(&store, &thread.id)? {
+            emit(
+                &app,
+                "thread-loaded",
+                &ThreadLoadedPayload { thread: state },
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Materialise an empty thread and return the freshly-bootstrapped
@@ -1008,7 +1015,7 @@ pub fn thread_save(
 /// uses `thread_save` to upsert, so this command is rarely called —
 /// kept for symmetry with the historic API surface.
 #[tauri::command]
-pub fn thread_create(
+pub async fn thread_create(
     title: Option<String>,
     workspace_root: Option<String>,
     // `surface`: `"chat"` creates the conversation in Aurora Chat's store;
@@ -1022,56 +1029,61 @@ pub fn thread_create(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadState, String> {
-    let store = store_for_surface(registry.inner(), surface.as_deref());
-    let thread_id = uuid::Uuid::new_v4().to_string();
-    let meta = store
-        .ensure_thread(&thread_id, title, workspace_root)
-        .map_err(|e| format!("Failed to create thread: {e}"))?;
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_surface(&registry, surface.as_deref(), workspace_root.as_deref())?;
+        let thread_id = uuid::Uuid::new_v4().to_string();
+        let meta = store
+            .ensure_thread(&thread_id, title, workspace_root)
+            .map_err(|e| format!("Failed to create thread: {e}"))?;
 
-    // Best-effort: a conversation that failed to record its framing is still a
-    // conversation, and refusing to create it would be the worse outcome.
-    if deep_research.unwrap_or(false) {
-        if let Err(err) = store.mark_deep_research(&thread_id) {
-            crate::logging::log_warn(
-                "threads",
-                &format!("could not mark {thread_id} as deep research: {err}"),
-            );
+        // Best-effort: a conversation that failed to record its framing is still a
+        // conversation, and refusing to create it would be the worse outcome.
+        if deep_research.unwrap_or(false) {
+            if let Err(err) = store.mark_deep_research(&thread_id) {
+                crate::logging::log_warn(
+                    "threads",
+                    &format!("could not mark {thread_id} as deep research: {err}"),
+                );
+            }
         }
-    }
 
-    let ws_root = meta.workspace_root.clone();
-    let state = ThreadState {
-        id: thread_id,
-        title: meta.title,
-        summary: None,
-        messages: Vec::new(),
-        token_usage: None,
-        context_usage: None,
-        created_at: meta.created_at,
-        updated_at: meta.updated_at,
-    };
-    emit(
-        &app,
-        "thread-created",
-        &ThreadCreatedPayload {
-            thread: ThreadSummary {
-                id: state.id.clone(),
-                title: state.title.clone(),
-                message_count: 0,
-                preview: String::new(),
-                workspace_root: ws_root,
-                // A brand-new chat has no model yet — the composer resolves the
-                // user's default until a pick or a turn writes one.
-                model: None,
-                pinned: false,
-                archived_at: None,
-                deep_research: deep_research.unwrap_or(false),
-                created_at: state.created_at.clone(),
-                updated_at: state.updated_at.clone(),
+        let ws_root = meta.workspace_root.clone();
+        let state = ThreadState {
+            id: thread_id,
+            title: meta.title,
+            summary: None,
+            messages: Vec::new(),
+            token_usage: None,
+            context_usage: None,
+            created_at: meta.created_at,
+            updated_at: meta.updated_at,
+        };
+        emit(
+            &app,
+            "thread-created",
+            &ThreadCreatedPayload {
+                thread: ThreadSummary {
+                    id: state.id.clone(),
+                    title: state.title.clone(),
+                    message_count: 0,
+                    preview: String::new(),
+                    workspace_root: ws_root,
+                    // A brand-new chat has no model yet — the composer resolves the
+                    // user's default until a pick or a turn writes one.
+                    model: None,
+                    pinned: false,
+                    archived_at: None,
+                    deep_research: deep_research.unwrap_or(false),
+                    created_at: state.created_at.clone(),
+                    updated_at: state.updated_at.clone(),
+                },
             },
-        },
-    );
-    Ok(state)
+        );
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Duplicate a persisted conversation as a new, active chat. The Rust store
@@ -1083,7 +1095,7 @@ pub async fn thread_duplicate(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadSummary, String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
+    let store = store_for_thread(registry.inner(), &thread_id)?;
     let new_thread_id = uuid::Uuid::new_v4().to_string();
     let source_thread_id = thread_id.clone();
     let worker_store = store.clone();
@@ -1140,7 +1152,7 @@ pub async fn thread_copy_markdown(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
+    let store = store_for_thread(registry.inner(), &thread_id)?;
     let markdown = tokio::task::spawn_blocking(move || {
         let loaded = store
             .load(&thread_id)
@@ -1325,70 +1337,100 @@ fn usage_breakdown(thread_id: &str, messages: &[ConversationMessage]) -> ThreadU
 /// the resulting money. Tokens are Rust's truth, prices are the settings
 /// store's truth — neither layer guesses at the other's.
 #[tauri::command]
-pub fn thread_usage_breakdown(
+pub async fn thread_usage_breakdown(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Option<ThreadUsageBreakdown>, String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    let loaded = store
-        .load(&thread_id)
-        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
-    Ok(loaded.map(|loaded| usage_breakdown(&thread_id, loaded.session.messages())))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+        Ok(loaded.map(|loaded| usage_breakdown(&thread_id, loaded.session.messages())))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Read a full thread (metadata + transcript) for the chat panel.
 #[tauri::command]
-pub fn thread_load(
+pub async fn thread_load(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<Option<ThreadState>, String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    let state = build_thread_state(&store, &thread_id)?;
-    if let Some(s) = state.as_ref() {
-        emit(
-            &app,
-            "thread-loaded",
-            &ThreadLoadedPayload { thread: s.clone() },
-        );
-    }
-    Ok(state)
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let state = build_thread_state(&store, &thread_id)?;
+        if let Some(s) = state.as_ref() {
+            emit(
+                &app,
+                "thread-loaded",
+                &ThreadLoadedPayload { thread: s.clone() },
+            );
+        }
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Drop both files and clear any in-memory context for the thread.
 #[tauri::command]
-pub fn thread_delete(
+pub async fn thread_delete(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    // Drop it from the search index BEFORE the folder goes. Left behind, the
-    // index would keep returning hits for a conversation that can no longer be
-    // opened — a worse failure than a missing one, because it looks like a bug
-    // in `recall` rather than like a deleted chat.
-    //
-    // Its FACTS are deliberately untouched: a fact is about the user, not about
-    // the conversation that happened to teach it.
-    if store.dir() == registry.chat_store().dir() {
-        if let Some(memory) = crate::chat_memory::service() {
-            let _ = memory.forget_chat(&thread_id);
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        // Drop it from the search index BEFORE the folder goes. Left behind, the
+        // index would keep returning hits for a conversation that can no longer be
+        // opened — a worse failure than a missing one, because it looks like a bug
+        // in `recall` rather than like a deleted chat.
+        //
+        // Its FACTS are deliberately untouched: a fact is about the user, not about
+        // the conversation that happened to teach it.
+        if store.dir() == registry.chat_store().dir() {
+            if let Some(memory) = crate::chat_memory::service() {
+                let _ = memory.forget_chat(&thread_id);
+            }
         }
-    }
-    store
-        .delete(&thread_id)
-        .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
-    // Best-effort: drop any in-memory context engine state so a
-    // recreated thread with the same id starts fresh.
-    crate::context::manager::remove_context(&thread_id);
-    emit(
-        &app,
-        "thread-deleted",
-        &ThreadDeletedPayload {
-            thread_id: thread_id.clone(),
-        },
-    );
-    Ok(())
+        store
+            .delete(&thread_id)
+            .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
+        // Best-effort: drop any in-memory context engine state so a
+        // recreated thread with the same id starts fresh.
+        crate::context::manager::remove_context(&thread_id);
+        emit(
+            &app,
+            "thread-deleted",
+            &ThreadDeletedPayload {
+                thread_id: thread_id.clone(),
+            },
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// List threads newest-first.
@@ -1412,12 +1454,14 @@ pub async fn thread_list_summaries(
     surface: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ThreadSummary>, String> {
-    let store = store_for_surface(registry.inner(), surface.as_deref());
+    let registry = registry.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
-        let entries = store
-            .list_summaries_filtered(workspace_root.as_deref())
-            .map_err(|e| format!("Failed to list threads: {e}"))?;
+        let entries = if surface.as_deref() == Some("chat") {
+            registry.chat_store().list_summaries_filtered(workspace_root.as_deref())
+        } else {
+            registry.list_project_summaries(workspace_root.as_deref())
+        }.map_err(|e| format!("Failed to list threads: {e}"))?;
         // A slow listing is exactly what the boot-time "Not Responding"
         // freeze looked like before this ran off the main thread — keep a
         // trace so a regression names itself in the log.
@@ -1436,48 +1480,63 @@ pub async fn thread_list_summaries(
 
 /// Update the user-facing title without touching message history.
 #[tauri::command]
-pub fn thread_update_title(
+pub async fn thread_update_title(
     thread_id: String,
     title: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    store
-        .set_title(&thread_id, title)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to update title: {e}"))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_title(&thread_id, title)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to update title: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Pin / unpin a chat. Pinned chats sort to a dedicated section at the
 /// top of the rail. Persisted in the metadata sidecar; does not bump
 /// `updated_at` (pinning shouldn't reorder by recency).
 #[tauri::command]
-pub fn thread_set_pinned(
+pub async fn thread_set_pinned(
     thread_id: String,
     pinned: bool,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    store
-        .set_pinned(&thread_id, pinned)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to set pinned: {e}"))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_pinned(&thread_id, pinned)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set pinned: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Archive / unarchive a chat. Archived chats leave the rail tree for the
 /// "Archived" view and are automatically purged 15 days after archiving.
 /// Persisted in the metadata sidecar; does not bump `updated_at`.
 #[tauri::command]
-pub fn thread_set_archived(
+pub async fn thread_set_archived(
     thread_id: String,
     archived: bool,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    store
-        .set_archived(&thread_id, archived)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to set archived: {e}"))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_archived(&thread_id, archived)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set archived: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Pin a conversation to a model (`"providerId:modelKey"`), or clear it with
@@ -1489,16 +1548,21 @@ pub fn thread_set_archived(
 /// metadata sidecar; does not bump `updated_at` (choosing a model isn't
 /// activity and must not reorder the rail).
 #[tauri::command]
-pub fn thread_set_model(
+pub async fn thread_set_model(
     thread_id: String,
     model: Option<String>,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    store
-        .set_model(&thread_id, model)
-        .map(|_| ())
-        .map_err(|e| format!("Failed to set model: {e}"))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_model(&thread_id, model)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set model: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Persist usage metadata after a turn so the chat list can show
@@ -1512,47 +1576,62 @@ pub struct UpdateUsageRequest {
 }
 
 #[tauri::command]
-pub fn thread_update_usage(
+pub async fn thread_update_usage(
     request: UpdateUsageRequest,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let store = store_for_thread(registry.inner(), &request.thread_id);
-    store
-        .set_usage(
-            &request.thread_id,
-            Some(db_token_to_meta(&request.token_usage)),
-            Some(db_context_to_meta(&request.context_usage)),
-        )
-        .map_err(|e| format!("Failed to persist usage: {e}"))?;
-    emit(
-        &app,
-        "thread-usage-updated",
-        &ThreadUsageUpdatedPayload {
-            thread_id: request.thread_id,
-            token_usage: request.token_usage,
-            context_usage: request.context_usage,
-        },
-    );
-    Ok(())
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &request.thread_id)?;
+        store
+            .set_usage(
+                &request.thread_id,
+                Some(db_token_to_meta(&request.token_usage)),
+                Some(db_context_to_meta(&request.context_usage)),
+            )
+            .map_err(|e| format!("Failed to persist usage: {e}"))?;
+        emit(
+            &app,
+            "thread-usage-updated",
+            &ThreadUsageUpdatedPayload {
+                thread_id: request.thread_id,
+                token_usage: request.token_usage,
+                context_usage: request.context_usage,
+            },
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Rebuild the API-shaped message list for a thread. Used by the
 /// frontend when reseeding the in-memory context engine on
 /// thread-switch.
 #[tauri::command]
-pub fn thread_get_api_history(
+pub async fn thread_get_api_history(
     thread_id: String,
     registry: State<'_, Arc<AgentRegistry>>,
 ) -> Result<Vec<ApiMessage>, String> {
-    let store = store_for_thread(registry.inner(), &thread_id);
-    let loaded = store
-        .load(&thread_id)
-        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
-    let Some(loaded) = loaded else {
-        return Ok(Vec::new());
-    };
-    Ok(session_to_api_messages(loaded.session.messages()))
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+        let Some(loaded) = loaded else {
+            return Ok(Vec::new());
+        };
+        Ok(session_to_api_messages(loaded.session.messages()))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
 /// Cancel any in-flight turn on a thread. The new agent runtime owns
@@ -1614,6 +1693,7 @@ mod tests {
             user_msg("build it", 1),
             assistant_text("half an ans", 2),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::System,
                 blocks: vec![ContentBlock::Notice {
                     message: "This reply is cut off.".into(),
@@ -1657,6 +1737,7 @@ mod tests {
                 2,
             ),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: vec![
                     ContentBlock::ToolResult {
@@ -1733,6 +1814,7 @@ mod tests {
                 2,
             ),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: vec![
                     ContentBlock::ToolResult {
@@ -1895,6 +1977,7 @@ mod tests {
 
     fn tool_result(tool_id: &str, content: &str, ts: i64) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: tool_id.to_string(),
@@ -2228,6 +2311,7 @@ mod tests {
     #[test]
     fn a_compaction_request_is_counted_toward_the_cost() {
         let mut marker = ConversationMessage {
+            event_id: None,
             role: MessageRole::System,
             blocks: vec![ContentBlock::Compaction {
                 summary: "…".into(),
@@ -2400,6 +2484,7 @@ mod tests {
         let messages = vec![
             assistant_with_tool("c", "x", serde_json::json!({}), 1),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: vec![ContentBlock::ToolResult {
                     tool_use_id: "c".into(),
@@ -2423,6 +2508,7 @@ mod tests {
     #[test]
     fn mid_turn_injection_survives_db_and_api_reload_shapes() {
         let tool_message = ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -2472,6 +2558,7 @@ mod tests {
     fn steered_injection_reloads_display_text_and_chips() {
         use crate::agent_runtime::types::AttachedPromptChip;
         let tool_message = ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -2527,6 +2614,7 @@ mod tests {
             crate::agent_runtime::session::MID_TURN_PREAMBLE
         );
         let tool_message = ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -2578,6 +2666,7 @@ mod tests {
             crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG
         );
         let tool_message = ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -2624,6 +2713,7 @@ mod tests {
     #[test]
     fn a_reminder_beside_a_typed_message_hides_only_the_reminder() {
         let tool_message = ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -2912,85 +3002,5 @@ mod tests {
         assert!(session_to_db_messages(&messages)[0].timeline.is_none());
     }
 
-    // ------------------------------------------------------------------
-    // Which store a command acts on
-    //
-    // Aurora has two conversation stores and almost every command here is
-    // handed only a thread id. Resolving the wrong one does not fail loudly —
-    // it reads, renames, or DELETES in the wrong place — so the resolution is
-    // pinned rather than trusted.
-    // ------------------------------------------------------------------
-
-    fn two_stores() -> (tempfile::TempDir, SessionStore, SessionStore) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let build = SessionStore::new(dir.path().join("sessions"));
-        let chat = SessionStore::new_folder(dir.path().join("Chats"));
-        (dir, build, chat)
-    }
-
-    /// Mirrors `store_for_thread`'s rule without needing a Tauri `State`.
-    fn resolve<'a>(
-        build: &'a SessionStore,
-        chat: &'a SessionStore,
-        thread_id: &str,
-    ) -> &'a SessionStore {
-        if chat.exists(thread_id) {
-            chat
-        } else {
-            build
-        }
-    }
-
-    #[test]
-    fn a_chat_conversation_resolves_to_the_chat_store() {
-        let (_g, build, chat) = two_stores();
-        chat.ensure_thread("c1", Some("a chat".into()), None).unwrap();
-
-        let resolved = resolve(&build, &chat, "c1");
-        assert_eq!(resolved.dir(), chat.dir());
-        assert_eq!(resolved.load_metadata("c1").unwrap().title, "a chat");
-    }
-
-    #[test]
-    fn a_build_conversation_resolves_to_the_build_store() {
-        let (_g, build, chat) = two_stores();
-        build
-            .ensure_thread("b1", Some("a build thread".into()), None)
-            .unwrap();
-
-        let resolved = resolve(&build, &chat, "b1");
-        assert_eq!(resolved.dir(), build.dir());
-        assert_eq!(
-            resolved.load_metadata("b1").unwrap().title,
-            "a build thread"
-        );
-    }
-
-    /// A conversation that exists in neither is a brand-new one, and every
-    /// existing caller means Build by it. Chat's own creation path is told
-    /// explicitly instead (`thread_create`'s `surface`).
-    #[test]
-    fn an_unknown_id_resolves_to_build() {
-        let (_g, build, chat) = two_stores();
-        assert_eq!(resolve(&build, &chat, "never-existed").dir(), build.dir());
-    }
-
-    /// The failure this whole design avoids: deleting a chat by id must not
-    /// reach into Build, and vice versa. Ids are UUIDs so a real collision
-    /// cannot happen — this proves the resolution, not the id space.
-    #[test]
-    fn resolving_never_crosses_between_the_two_stores() {
-        let (_g, build, chat) = two_stores();
-        build.ensure_thread("b1", Some("build".into()), None).unwrap();
-        chat.ensure_thread("c1", Some("chat".into()), None).unwrap();
-
-        resolve(&build, &chat, "c1").delete("c1").unwrap();
-
-        assert!(chat.list_summaries().unwrap().is_empty(), "the chat is gone");
-        assert_eq!(
-            build.list_summaries().unwrap().len(),
-            1,
-            "the build thread was not touched"
-        );
-    }
+    // Routing is exercised against the real registry in agent_v2::tests.
 }

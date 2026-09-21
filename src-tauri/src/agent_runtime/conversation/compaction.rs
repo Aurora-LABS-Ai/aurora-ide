@@ -333,9 +333,10 @@ impl ConversationRuntime {
                 repo_map.as_deref(),
                 &session.thread_id,
                 cancel_token,
+                session,
             )
             .await;
-        let (summary, summary_usage) = match summarized {
+        let (summary, summary_usage, summary_event_id) = match summarized {
             Ok(result) => result,
             Err(failure) => {
                 emit_compaction_failed(event_sink, turn_id, seq, projected, failure).await;
@@ -358,6 +359,7 @@ impl ConversationRuntime {
 
         let now = chrono::Utc::now().timestamp_millis();
         let marker = ConversationMessage {
+            event_id: summary_event_id,
             role: MessageRole::System,
             blocks: vec![ContentBlock::Compaction {
                 summary,
@@ -446,6 +448,7 @@ impl ConversationRuntime {
         }
 
         // Commit only after every invariant passes.
+        session.record_accounting(&mut candidate[cut], true);
         session.messages = candidate;
 
         // The marker went in at `cut`, not at the end, which is an edit the
@@ -519,7 +522,8 @@ impl ConversationRuntime {
         repo_map: Option<&str>,
         session_key: &str,
         cancel_token: &CancellationToken,
-    ) -> Result<(String, TokenUsage), CompactionFailure> {
+        accounting: &Session,
+    ) -> Result<(String, TokenUsage, Option<String>), CompactionFailure> {
         // Exactly one provider request per compaction. The conversation client
         // keeps its cache-compatible request shape; a pinned summarizer uses
         // the standalone shape. There is intentionally no automatic fallback:
@@ -533,6 +537,7 @@ impl ConversationRuntime {
             session_key,
             cancel_token,
             share_cache,
+            accounting,
         )
         .await
     }
@@ -558,7 +563,8 @@ impl ConversationRuntime {
         session_key: &str,
         cancel_token: &CancellationToken,
         share_cache: bool,
-    ) -> Result<(String, TokenUsage), CompactionFailure> {
+        accounting: &Session,
+    ) -> Result<(String, TokenUsage, Option<String>), CompactionFailure> {
         // A pinned compaction model brings its own client; otherwise the
         // summary rides the conversation's provider and model.
         let (client, model) = match &self.compaction_client {
@@ -612,6 +618,7 @@ impl ConversationRuntime {
             COMPACTION_INSTRUCTION.to_string()
         };
         messages.push(ConversationMessage {
+            event_id: None,
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: instruction }],
             usage: None,
@@ -680,12 +687,19 @@ impl ConversationRuntime {
             // Strip the `<analysis>` scratchpad here, at the boundary, so the
             // drafting pass costs output tokens once and never enters context.
             Ok(Ok(turn)) => {
+                let mut charged = ConversationMessage::assistant_with_usage(
+                    Vec::new(),
+                    turn.usage.clone(),
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                charged.model = Some(model);
+                accounting.record_accounting(&mut charged, false);
                 let summary =
                     format_compact_summary(&collect_assistant_text(&turn.assistant_message));
                 if summary.trim().is_empty() {
                     Err(CompactionFailure::EmptySummary)
                 } else {
-                    Ok((summary, turn.usage))
+                    Ok((summary, turn.usage, charged.event_id))
                 }
             }
             Ok(Err(ApiError::Cancelled)) => Err(CompactionFailure::Cancelled),
@@ -1050,6 +1064,7 @@ pub(super) fn apply_compaction(
             out.insert(
                 0,
                 ConversationMessage {
+                    event_id: None,
                     role: MessageRole::User,
                     blocks: vec![ContentBlock::Text { text: preamble }],
                     usage: None,

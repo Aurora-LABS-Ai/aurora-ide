@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::db::error::DbResult;
 
 /// Database schema version
-pub const SCHEMA_VERSION: i32 = 25;
+pub const SCHEMA_VERSION: i32 = 26;
 
 /// Initialize database schema
 pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
@@ -24,6 +24,7 @@ pub fn initialize_schema(conn: &Connection) -> DbResult<()> {
     create_custom_themes_table(conn)?;
     create_checkpoints_table(conn)?;
     create_cursor_models_table(conn)?;
+    crate::usage_ledger::schema::create(conn)?;
 
     Ok(())
 }

@@ -12,7 +12,7 @@
 //!
 //! This store fixes each of those:
 //!
-//! - **Durable** — `<sessions_dir>/<thread>.todos.json`, so the list survives a
+//! - **Durable** — `<project>/<thread>/todos.json`, so the list survives a
 //!   stop, a reload, and coming back hours later.
 //! - **Stable ids** — statuses can never re-map onto the wrong task.
 //! - **Readable** — [`TodoList::cursor`] answers "where am I".
@@ -231,22 +231,39 @@ impl TodoList {
     }
 }
 
-fn path_for(thread_id: &str) -> PathBuf {
-    crate::paths::sessions_dir().join(format!("{thread_id}.todos.json"))
+fn path_for(thread_id: &str) -> Result<Option<PathBuf>, String> {
+    crate::agent_runtime::project_dir::locate(thread_id)
+        .map(|dir| dir.map(|dir| dir.join(thread_id).join("todos.json")))
+        .map_err(|e| format!("Failed to locate checklist for {thread_id}: {e}"))
 }
 
-fn read_unlocked(thread_id: &str) -> TodoList {
-    let path = path_for(thread_id);
-    let Ok(bytes) = fs::read(&path) else {
-        return TodoList::default();
+fn read_unlocked(thread_id: &str) -> Result<TodoList, String> {
+    let Some(path) = path_for(thread_id)? else {
+        return Ok(TodoList::default());
+    };
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(TodoList::default()),
+        Err(e) => return Err(format!("Failed to read checklist {}: {e}", path.display())),
     };
     // A corrupt sidecar must not break the turn; an empty list is recoverable,
     // a hard error is not.
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    match serde_json::from_slice(&bytes) {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            crate::logging::log_warn(
+                "todos",
+                &format!("Invalid checklist {}: {e}", path.display()),
+            );
+            Ok(TodoList::default())
+        }
+    }
 }
 
 fn write_unlocked(thread_id: &str, list: &TodoList) -> Result<(), String> {
-    let path = path_for(thread_id);
+    let path = path_for(thread_id)?.ok_or_else(|| {
+        format!("Conversation {thread_id} does not exist; checklist was not saved")
+    })?;
     let parent = path
         .parent()
         .ok_or_else(|| "Todo storage path has no parent".to_string())?;
@@ -267,7 +284,7 @@ fn write_unlocked(thread_id: &str, list: &TodoList) -> Result<(), String> {
 
 pub fn read(thread_id: &str) -> Result<TodoList, String> {
     let _guard = lock()?;
-    Ok(read_unlocked(thread_id))
+    read_unlocked(thread_id)
 }
 
 pub fn write(thread_id: &str, list: &TodoList) -> Result<(), String> {
@@ -281,7 +298,7 @@ where
     F: FnOnce(&mut TodoList) -> Result<(), String>,
 {
     let _guard = lock()?;
-    let mut list = read_unlocked(thread_id);
+    let mut list = read_unlocked(thread_id)?;
     mutate(&mut list)?;
     write_unlocked(thread_id, &list)?;
     Ok(list)
@@ -289,7 +306,9 @@ where
 
 pub fn clear(thread_id: &str) -> Result<(), String> {
     let _guard = lock()?;
-    let path = path_for(thread_id);
+    let Some(path) = path_for(thread_id)? else {
+        return Ok(());
+    };
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -337,6 +356,24 @@ pub fn progress_line(list: &TodoList) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checklist_lives_and_dies_with_its_conversation() {
+        let id = format!("checklist-{}", uuid::Uuid::new_v4());
+        let store = crate::agent_runtime::project_dir::test_thread(&id);
+        write(&id, &list(vec![item("1", TodoStatus::Pending)])).unwrap();
+        let path = store.thread_dir(&id).join("todos.json");
+        assert!(path.is_file());
+        assert_eq!(read(&id).unwrap().items.len(), 1);
+        store.delete(&id).unwrap();
+        assert!(!path.exists());
+        assert!(read(&id).unwrap().items.is_empty());
+        assert!(write(&id, &TodoList::default()).is_err());
+        assert!(
+            !store.thread_dir(&id).exists(),
+            "writing a deleted checklist must not resurrect its conversation"
+        );
+    }
 
     fn item(id: &str, status: TodoStatus) -> TodoItem {
         TodoItem {
@@ -468,6 +505,7 @@ mod tests {
     #[test]
     fn persists_across_reads_and_survives_a_corrupt_sidecar() {
         let thread = format!("test-thread-{}", uuid::Uuid::new_v4());
+        crate::agent_runtime::project_dir::test_thread(&thread);
         write(&thread, &list(vec![item("t1", TodoStatus::InProgress)])).expect("write");
 
         let back = read(&thread).expect("read");
@@ -475,7 +513,7 @@ mod tests {
         assert_eq!(back.cursor().active_id.as_deref(), Some("t1"));
 
         // A hand-corrupted sidecar degrades to empty rather than failing a turn.
-        fs::write(path_for(&thread), b"{not json").expect("corrupt it");
+        fs::write(path_for(&thread).unwrap().unwrap(), b"{not json").expect("corrupt it");
         assert!(read(&thread).expect("still reads").items.is_empty());
 
         clear(&thread).expect("clear");
@@ -485,6 +523,7 @@ mod tests {
     #[test]
     fn update_is_read_modify_write() {
         let thread = format!("test-thread-{}", uuid::Uuid::new_v4());
+        crate::agent_runtime::project_dir::test_thread(&thread);
         write(&thread, &list(vec![item("t1", TodoStatus::Pending)])).expect("seed");
 
         let after = update(&thread, |l| {

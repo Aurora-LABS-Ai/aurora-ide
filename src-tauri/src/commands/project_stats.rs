@@ -158,9 +158,10 @@ pub async fn project_stats_get(
     if workspace_root.trim().is_empty() {
         return Err("No project selected.".to_string());
     }
-    let store = registry.store().clone();
+    let registry = registry.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
+        let store = registry.store_for_workspace(Some(&workspace_root)).map_err(|e| e.to_string())?;
         let stats = compute_project_stats(&store, workspace_root);
         let elapsed_ms = started.elapsed().as_millis();
         if elapsed_ms > 1_000 {

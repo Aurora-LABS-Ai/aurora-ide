@@ -39,11 +39,11 @@
 //! ## Persistence layout
 //!
 //! The runtime owns the single source of truth for chat history.
-//! Sessions live under [`crate::paths::sessions_dir()`]:
+//! Build sessions live under [`crate::paths::projects_dir()`]:
 //!
 //! ```text
-//! <root>/sessions/{thread_id}.jsonl       # message log
-//! <root>/sessions/{thread_id}.meta.json   # title + usage sidecar
+//! <root>/projects/{slug}/{thread_id}/conversation.jsonl  # message log
+//! <root>/projects/{slug}/{thread_id}/meta.json          # title + usage
 //! ```
 //!
 //! See [`crate::agent_runtime::session_store::SessionStore`] for the

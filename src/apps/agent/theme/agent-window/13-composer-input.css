@@ -191,12 +191,10 @@
    cues, one story — without the cast shadow the panel sits at the same depth.
    Scoped with `:has()` so the composer is unchanged when nothing is open.
  *
- * DO NOT give this a positive z-index to achieve the same thing. It looks
- * equivalent and is not: `.agw-crail-chips` is transformed, which makes the
- * whole rail-chip cluster a stacking context at the default level, so a
- * positive z-index here lifts the input box above every rail popover
- * (background processes, tasks) and they vanish behind it. The picker moving
- * DOWN is safe; the box moving UP is not. */
+ * Keep this surface out of a stacking context so its underlight can paint
+ * behind it (see below). Content sits at z-index: 1; the transformed rail-chip
+ * cluster sits above that at z-index: 2 in 30-composer-rail.css. Raising only
+ * the popover inside that cluster cannot change its order against content. */
 .agw-composer-surface {
   /* Resting lift. The composer keeps its full border strength in every depth
      mode — it is the one control the user is always aiming at, so it stays the

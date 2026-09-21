@@ -893,6 +893,7 @@ impl MemberEventMirror {
         }
         if !blocks.is_empty() {
             let msg = ConversationMessage {
+                event_id: None,
                 role: MessageRole::Assistant,
                 blocks,
                 usage: None,
@@ -947,6 +948,7 @@ impl MemberEventMirror {
                 // requested it is already finalized — mirror it as its own
                 // tool message, exactly how the session stores it.
                 let msg = ConversationMessage {
+                    event_id: None,
                     role: MessageRole::Tool,
                     blocks: vec![ContentBlock::ToolResult {
                         tool_use_id: id,
@@ -983,6 +985,7 @@ impl MemberEventMirror {
 
 /// Everything `run_member` needs, bundled so dispatch stays readable.
 pub(crate) struct MemberRun {
+    pub usage_ledger: Option<Arc<crate::usage_ledger::UsageLedger>>,
     pub bus: Arc<TeamBus>,
     pub comms: Arc<TeamComms>,
     pub repo_path: String,
@@ -1047,9 +1050,8 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
     let registry = Arc::new(member_registry(ctx));
     let client = build_api_client(&run.provider);
     let config = RuntimeConfig {
-        // Empty: a member's model is whatever its session is pinned to, and
-        // nothing composes an id for it. See `RuntimeConfig::wire_model`.
-        wire_model: String::new(),
+        // Keep wire identity separate from accounting's provider-qualified model.
+        wire_model: run.provider.model.clone(),
         // A team member works a project. Team is a Build-side feature and has
         // no reachable path from Aurora Chat.
         execution_mode_is_chat: false,
@@ -1087,7 +1089,12 @@ async fn drive_member(run: &MemberRun, ctx: &Arc<MemberCtx>) -> MemberReport {
 
     let mut session = Session::new(format!("team-{agent_id}"))
         .with_workspace_root(run.repo_path.clone())
-        .with_model(run.provider.model.clone());
+        .with_model(if run.provider.provider_id.is_empty() {
+            run.provider.model.clone()
+        } else {
+            format!("{}:{}", run.provider.provider_id, run.provider.model)
+        });
+    session.usage_ledger = run.usage_ledger.clone();
 
     // Mailbox pump: deliver arriving messages into the session's queued slot
     // so they inject at the member's next tool-result boundary. Coalesces —

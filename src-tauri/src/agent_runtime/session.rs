@@ -222,6 +222,8 @@ pub struct Session {
     /// compaction (including an explicit manual `/compact`), never by time.
     /// Process-local: a reload is a deliberate clean slate.
     pub auto_compaction_blocked: bool,
+    /// Injected by production wiring; tests never open the user's database.
+    pub usage_ledger: Option<Arc<crate::usage_ledger::UsageLedger>>,
     /// Streams each appended message to disk. See [`Journal`]. Absent by
     /// default: a session with no journal behaves exactly as it always did,
     /// which is what every test and every non-persisting caller wants.
@@ -244,6 +246,7 @@ impl Session {
             queued_message: empty_queue_slot(),
             rich_results: empty_rich_results_slot(),
             auto_compaction_blocked: false,
+            usage_ledger: None,
             journal: Journal::default(),
         }
     }
@@ -383,10 +386,29 @@ impl Session {
     /// from `run_turn`, from the tool loop, and from three notice paths, and a
     /// rule that has to be remembered at five call sites is a rule that will be
     /// missed at one of them.
-    pub fn append_message(&mut self, message: ConversationMessage) {
+    pub fn append_message(&mut self, mut message: ConversationMessage) {
+        self.record_accounting(&mut message, true);
         self.messages.push(message);
         self.journal_last();
         self.touch();
+    }
+
+    /// Account for a completed request even if its response cannot enter history.
+    /// The same ID is reused when a visible message is subsequently appended.
+    pub fn record_accounting(&self, message: &mut ConversationMessage, visible: bool) {
+        if let Some(ledger) = &self.usage_ledger {
+            message
+                .event_id
+                .get_or_insert_with(|| Uuid::new_v4().to_string());
+            if let Err(error) = ledger.record(&self.thread_id, message, visible) {
+                // The ledger retains the pending record for retry; persisted
+                // transcripts also repair missed writes on reconciliation.
+                crate::logging::log_error(
+                    "usage_ledger",
+                    &format!("could not save usage for {}: {error:#}", self.thread_id),
+                );
+            }
+        }
     }
 
     /// Write the message just pushed, if a journal is attached and still in
@@ -710,6 +732,7 @@ mod tests {
 
     fn user_msg(text: &str) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
@@ -723,6 +746,7 @@ mod tests {
 
     fn msg(role: MessageRole, text: &str) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role,
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
@@ -884,6 +908,7 @@ mod tests {
 
     fn assistant_msg(text: &str) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role: MessageRole::Assistant,
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,

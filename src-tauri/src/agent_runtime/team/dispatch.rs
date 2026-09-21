@@ -178,6 +178,7 @@ struct RunHandles {
 /// `running` is rejected so a stray Lead call can't fork a competing run
 /// over the same brain.
 pub struct TeamDispatcher {
+    usage_ledger: Option<Arc<crate::usage_ledger::UsageLedger>>,
     runs: Mutex<HashMap<String, TeamRunStatus>>,
     handles: Mutex<HashMap<String, RunHandles>>,
     /// Live communication hubs, kept past run end so `team_reply` to a
@@ -196,10 +197,16 @@ impl TeamDispatcher {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            usage_ledger: None,
             runs: Mutex::new(HashMap::new()),
             handles: Mutex::new(HashMap::new()),
             comms: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_usage_ledger(mut self, ledger: Arc<crate::usage_ledger::UsageLedger>) -> Self {
+        self.usage_ledger = Some(ledger);
+        self
     }
 
     fn lock_runs(&self) -> std::sync::MutexGuard<'_, HashMap<String, TeamRunStatus>> {
@@ -526,6 +533,7 @@ async fn run_team_lifecycle(
         .iter()
         .map(|s| {
             tokio::spawn(run_member(MemberRun {
+                usage_ledger: dispatcher.usage_ledger.clone(),
                 bus: bus.clone(),
                 comms: comms.clone(),
                 repo_path: repo_path.to_string(),

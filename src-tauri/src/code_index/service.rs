@@ -72,7 +72,7 @@ pub struct CodeIndexService {
     /// [`invalidate`](Self::invalidate).
     dirty: DashSet<PathBuf>,
     /// Where cache files are written. `None` means the app's real
-    /// `code-index/` directory.
+    /// `projects/` directory.
     ///
     /// Exists so tests can point at a tempdir. The first version of this had no
     /// override, so every `cargo test` run wrote a dozen fixture caches into the
@@ -88,28 +88,9 @@ pub fn service() -> &'static CodeIndexService {
     SERVICE.get_or_init(CodeIndexService::default)
 }
 
-/// Stable cache filename for a workspace.
-///
-/// Uses sha2 rather than `DefaultHasher` (which `checkpoints` uses) because the
-/// std hasher's output is explicitly not stable across Rust releases — a
-/// toolchain bump would silently orphan every cache file.
-fn cache_key(workspace: &Path) -> String {
-    use sha2::{Digest, Sha256};
-    let normalized = workspace
-        .to_string_lossy()
-        .to_lowercase()
-        .replace('\\', "/");
-    let digest = Sha256::digest(normalized.as_bytes());
-    hex_16(&digest)
-}
-
-fn hex_16(bytes: &[u8]) -> String {
-    bytes.iter().take(8).map(|b| format!("{b:02x}")).collect()
-}
-
 /// One canonical in-memory key per workspace, however a caller spells the path.
 ///
-/// The same normalization [`cache_key`] applies to the FILENAME — lowercase,
+/// The same normalization project directories use for identity — lowercase,
 /// forward slashes — because the same divergence bites both places. The map
 /// used the raw `PathBuf`, and one workspace reaches this service under at
 /// least two spellings: the frontend's `projectRoot` (Settings → Rebuild, the
@@ -119,12 +100,7 @@ fn hex_16(bytes: &[u8]) -> String {
 /// fired in that workspace while working perfectly in one whose index was
 /// built through the `code` tool.
 fn map_key(workspace: &Path) -> PathBuf {
-    PathBuf::from(
-        workspace
-            .to_string_lossy()
-            .to_lowercase()
-            .replace('\\', "/"),
-    )
+    PathBuf::from(crate::agent_runtime::project_dir::normalize(workspace))
 }
 
 impl CodeIndexService {
@@ -145,12 +121,15 @@ impl CodeIndexService {
         }
     }
 
-    fn cache_path(&self, workspace: &Path) -> PathBuf {
-        let dir = match &self.cache_root {
-            Some(r) => r.clone(),
-            None => crate::paths::code_index_dir(),
+    fn cache_path(&self, workspace: &Path) -> Result<PathBuf> {
+        if !workspace.is_dir() {
+            anyhow::bail!("workspace is not a directory: {}", workspace.display());
+        }
+        let dirs = match &self.cache_root {
+            Some(root) => crate::agent_runtime::project_dir::ProjectDirs::with_root(root.clone()),
+            None => crate::agent_runtime::project_dir::projects(),
         };
-        dir.join(format!("{}.json", cache_key(workspace)))
+        Ok(dirs.open_or_create(workspace)?.join("code-index.json"))
     }
 
     /// The index for `workspace`, building it if this process has not yet.
@@ -185,8 +164,10 @@ impl CodeIndexService {
             return self.auto_rebuild(workspace, AUTO_INDEX_MAX_FILES);
         }
 
-        let cache = self.cache_path(workspace);
-        if let Ok(idx) = persist::load(&cache) {
+        if let Ok(idx) = self
+            .cache_path(workspace)
+            .and_then(|cache| persist::load(&cache))
+        {
             if !Self::is_stale(&idx, workspace) {
                 let idx = Arc::new(idx);
                 self.indexes.insert(key, idx.clone());
@@ -261,7 +242,17 @@ impl CodeIndexService {
             drop(existing);
             return !Self::is_stale_against(&idx, signature);
         }
-        match persist::load(&self.cache_path(workspace)) {
+        let cache = match self.cache_path(workspace) {
+            Ok(cache) => cache,
+            Err(e) => {
+                crate::logging::log_warn(
+                    "code_index",
+                    &format!("cannot resolve cache for {}: {e:#}", workspace.display()),
+                );
+                return false;
+            }
+        };
+        match persist::load(&cache) {
             Ok(idx) if !Self::is_stale_against(&idx, signature) => {
                 self.indexes.insert(key, Arc::new(idx));
                 true
@@ -286,20 +277,16 @@ impl CodeIndexService {
             );
         }
         let idx = Arc::new(CodeIndex::build(workspace)?);
-        let cache = self.cache_path(workspace);
         // A failed cache write must not fail the build — the index is already
         // usable in memory, and the only cost is rebuilding next launch.
-        if let Err(e) = persist::save(&idx, &cache) {
+        if let Err(e) = self
+            .cache_path(workspace)
+            .and_then(|cache| persist::save(&idx, &cache))
+        {
             crate::logging::log_warn(
                 "code_index",
                 &format!("could not cache {}: {e:#}", workspace.display()),
             );
-        }
-        // Sweep AFTER the write, so the cache just saved is the newest one and
-        // can never be the thing collected. This is the only moment the
-        // directory grows, so it is the only moment worth sweeping it.
-        if let Some(dir) = cache.parent() {
-            persist::prune(dir, persist::KEEP_CACHES);
         }
         self.indexes.insert(map_key(workspace), idx.clone());
         // A fresh build read the tree as it is now; whatever write flagged the
@@ -312,7 +299,13 @@ impl CodeIndexService {
     /// panel, which must be able to say "not built yet" rather than trigger a
     /// build just by being opened.
     pub fn status(&self, workspace: &Path) -> IndexStatus {
-        let cache = self.cache_path(workspace);
+        let cache = self.cache_path(workspace).unwrap_or_else(|e| {
+            crate::logging::log_warn(
+                "code_index",
+                &format!("cannot resolve cache for {}: {e:#}", workspace.display()),
+            );
+            PathBuf::new()
+        });
         let cache_bytes = std::fs::metadata(&cache).map(|m| m.len()).unwrap_or(0);
         match self.indexes.get(&map_key(workspace)) {
             Some(idx) => IndexStatus {
@@ -377,12 +370,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_keys_are_stable_and_path_case_insensitive_on_windows_paths() {
-        let a = cache_key(Path::new(r"E:\VOID-EDITOR\Aurora"));
-        let b = cache_key(Path::new("E:/void-editor/aurora"));
-        assert_eq!(a, b, "the same workspace must reuse one cache file");
-        assert_eq!(a.len(), 16);
-        assert_ne!(a, cache_key(Path::new("E:/other")));
+    fn building_twenty_five_projects_keeps_every_project_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let projects = root.path().join("projects");
+        let svc = CodeIndexService::with_cache_root(projects.clone());
+        let mut first = None;
+        for n in 0..25 {
+            let workspace = root.path().join(format!("workspace-{n}"));
+            std::fs::create_dir(&workspace).unwrap();
+            std::fs::write(workspace.join("a.rs"), "pub fn only() {}\n").unwrap();
+            svc.rebuild(&workspace).unwrap();
+            let cache = svc.cache_path(&workspace).unwrap();
+            assert_eq!(cache.file_name().unwrap(), "code-index.json");
+            assert_eq!(cache.parent().unwrap().parent().unwrap(), projects);
+            assert!(cache.is_file());
+            if n == 0 {
+                first = Some((cache.clone(), std::fs::read(&cache).unwrap()));
+            }
+        }
+        let (path, bytes) = first.unwrap();
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            bytes,
+            "the 25th project must not evict or rewrite the first"
+        );
+    }
+
+    #[test]
+    fn an_old_format_is_replaced_at_the_same_project_path() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let projects = root.path().join("projects");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.rs"), "pub fn current() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(projects.clone());
+        svc.rebuild(&workspace).unwrap();
+        let cache = svc.cache_path(&workspace).unwrap();
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&cache).unwrap()).unwrap();
+        old["version"] = 0.into();
+        std::fs::write(&cache, serde_json::to_vec(&old).unwrap()).unwrap();
+        let reopened = CodeIndexService::with_cache_root(projects);
+        assert_eq!(
+            reopened
+                .get_or_build(&workspace)
+                .unwrap()
+                .definitions("current")
+                .len(),
+            1
+        );
+        assert!(persist::load(&cache).is_ok());
+        let files: Vec<_> = std::fs::read_dir(cache.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            files.len(),
+            2,
+            "only project.json and the replacement cache"
+        );
     }
 
     #[test]

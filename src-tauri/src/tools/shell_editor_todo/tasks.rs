@@ -539,7 +539,9 @@ mod tests {
     }
 
     fn thread() -> String {
-        format!("tasks-{}", uuid::Uuid::new_v4())
+        let id = format!("tasks-{}", uuid::Uuid::new_v4());
+        crate::agent_runtime::project_dir::test_thread(&id);
+        id
     }
 
     fn create_tool() -> TaskCreateTool {

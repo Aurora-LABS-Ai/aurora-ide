@@ -7,9 +7,9 @@
  * never moves when a system wakes up.
  *
  * The popover deliberately reuses `.agw-menu` (the shared floating-popover
- * family: same near-opaque glass, border, radius, shadow and entrance as the
- * model selector and the context card). A bespoke surface here would read as a
- * different app.
+ * family: same surface token, border, radius and shadow as the model selector
+ * and the context card). Its fill is opaque so commands remain readable over
+ * the composer; motion below owns its entrance.
  */
 
 import React, { useEffect, useRef, useState } from "react";

@@ -48,6 +48,7 @@ pub mod error;
 pub mod events;
 pub mod hooks;
 pub mod ipc;
+pub mod project_dir;
 pub mod recovery;
 pub mod session;
 pub mod session_index;

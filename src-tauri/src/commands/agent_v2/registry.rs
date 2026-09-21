@@ -4,6 +4,7 @@
 //! Split out of `agent_v2.rs` verbatim; see `mod.rs` for the map.
 
 use super::*;
+use crate::agent_runtime::project_dir::{self, ProjectDirs};
 
 // ============================================================================
 // AgentRegistry — Tauri-managed state
@@ -51,17 +52,11 @@ pub struct AgentRegistry {
     /// [`FrontendBridgeExecutor::execute`] oneshot.
     bridge_router: Arc<BridgeRouter>,
 
-    /// Where to put the session JSONL logs and metadata sidecars.
-    /// Computed once at startup from Aurora's app-data root
-    /// (`<app_data>/agent_v2/`). Tests pass a tempdir.
-    ///
-    /// All on-disk reads/writes go through this store — there is no
-    /// other persistence layer. Frontend thread commands
-    /// (`thread_list_summaries`, `thread_load`, `thread_save`,
-    /// `thread_delete`, `thread_update_usage`, `thread_get_api_history`,
-    /// `thread_update_title`) all delegate here so the runtime and
-    /// the chat-list view stay byte-for-byte consistent.
-    store: Arc<SessionStore>,
+    /// Stores keyed by their resolved directory, including any collision suffix.
+    /// Runtime writes, thread commands and statistics share these stores.
+    projects: DashMap<PathBuf, Arc<SessionStore>>,
+    project_dirs: ProjectDirs,
+    usage_ledger: Option<Arc<crate::usage_ledger::UsageLedger>>,
     /// Aurora Chat's conversation store — folder per chat, under
     /// `paths::chats_dir()`.
     ///
@@ -79,23 +74,21 @@ impl std::fmt::Debug for AgentRegistry {
             .field("in_flight_count", &self.in_flight.len())
             .field("tool_count", &self.tools.len())
             .field("pending_bridge_calls", &self.bridge_router.pending_count())
-            .field("sessions_dir", &self.store.dir())
+            .field("projects_root", &self.project_dirs.root())
             .finish_non_exhaustive()
     }
 }
 
 impl AgentRegistry {
-    /// Build a new registry. `sessions_dir` is created on demand by
-    /// [`Session::append_to_path`] / [`Session::save_to_path`] when the
-    /// first turn actually persists.
+    /// Build a registry under an explicit projects root. Tests pass a tempdir.
     #[must_use]
-    pub fn new(api_factory: Arc<dyn ApiFactory>, sessions_dir: PathBuf) -> Self {
-        // The chat store defaults INSIDE `sessions_dir` so a caller that never
+    pub fn new(api_factory: Arc<dyn ApiFactory>, projects_root: PathBuf) -> Self {
+        // The chat store defaults INSIDE `projects_root` so a caller that never
         // names one (every test) still gets a real, self-contained store that
         // a temp-dir teardown removes. Production overrides it with
         // `paths::chats_dir()` via `with_chat_dir`, because `<root>/Chats` is
-        // the documented location and `<root>/sessions/Chats` is not.
-        let chat_dir = sessions_dir.join("Chats");
+        // the documented location and `<root>/projects/Chats` is not.
+        let chat_dir = projects_root.join("Chats");
         Self {
             sessions: DashMap::new(),
             queue_slots: DashMap::new(),
@@ -103,7 +96,9 @@ impl AgentRegistry {
             api_factory,
             tools: Arc::new(ToolRegistry::new()),
             bridge_router: Arc::new(BridgeRouter::new()),
-            store: Arc::new(SessionStore::new(sessions_dir)),
+            projects: DashMap::new(),
+            project_dirs: ProjectDirs::with_root(projects_root),
+            usage_ledger: None,
             chat_store: Arc::new(SessionStore::new_folder(chat_dir)),
         }
     }
@@ -112,8 +107,27 @@ impl AgentRegistry {
     /// [`Self::new`] for why the default is not this.
     #[must_use]
     pub fn with_chat_dir(mut self, dir: PathBuf) -> Self {
-        self.chat_store = Arc::new(SessionStore::new_folder(dir));
+        self.chat_store = Arc::new(
+            SessionStore::new_folder(dir).with_usage_ledger(self.usage_ledger.clone()),
+        );
         self
+    }
+
+    pub fn with_usage_ledger(mut self, ledger: Arc<crate::usage_ledger::UsageLedger>) -> Self {
+        self.usage_ledger = Some(ledger.clone());
+        self.chat_store = Arc::new(
+            self.chat_store.as_ref().clone().with_usage_ledger(Some(ledger.clone())),
+        );
+        for mut store in self.projects.iter_mut() {
+            *store.value_mut() = Arc::new(
+                store.value().as_ref().clone().with_usage_ledger(Some(ledger.clone())),
+            );
+        }
+        self
+    }
+
+    pub fn usage_ledger(&self) -> Option<&Arc<crate::usage_ledger::UsageLedger>> {
+        self.usage_ledger.as_ref()
     }
 
     /// Get-or-create the queued-message slot for a thread. Returns an
@@ -131,12 +145,54 @@ impl AgentRegistry {
             .clone()
     }
 
-    /// Borrow the session store so Tauri thread commands can read /
-    /// list / mutate session metadata without going through the
-    /// per-thread session lock.
-    #[must_use]
-    pub fn store(&self) -> &Arc<SessionStore> {
-        &self.store
+    /// Resolve a workspace's store; conversations without a workspace use `_unscoped`.
+    pub fn store_for_workspace(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Arc<SessionStore>, RuntimeError> {
+        let dir = match workspace {
+            Some(workspace) => self
+                .project_dirs
+                .open_or_create(std::path::Path::new(workspace))?,
+            None => self.project_dirs.unscoped()?,
+        };
+        Ok(self.project_store(dir))
+    }
+
+    fn project_store(&self, dir: PathBuf) -> Arc<SessionStore> {
+        self.projects
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                Arc::new(SessionStore::new_project(dir).with_usage_ledger(self.usage_ledger.clone()))
+            })
+            .value()
+            .clone()
+    }
+
+    /// Every Build store, including unscoped conversations, excluding Chat.
+    pub fn project_stores(&self) -> Result<Vec<Arc<SessionStore>>, RuntimeError> {
+        Ok(self
+            .project_dirs
+            .all()?
+            .into_iter()
+            .map(|dir| self.project_store(dir))
+            .collect())
+    }
+
+    pub fn list_project_summaries(
+        &self,
+        workspace: Option<&str>,
+    ) -> Result<Vec<crate::agent_runtime::session_store::SessionSummary>, RuntimeError> {
+        let stores = match workspace {
+            Some(workspace) => vec![self.store_for_workspace(Some(workspace))?],
+            None => self.project_stores()?,
+        };
+        let mut summaries = Vec::new();
+        for store in stores {
+            summaries.extend(store.list_summaries()?);
+        }
+        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(summaries)
     }
 
     /// Aurora Chat's conversation store.
@@ -151,12 +207,15 @@ impl AgentRegistry {
     /// the JSONL, the metadata, the artifacts, the spill directory — has to
     /// come from the same store, and picking it per call site is how they end
     /// up disagreeing.
-    #[must_use]
-    pub fn store_for(&self, mode: AgentExecutionMode) -> &Arc<SessionStore> {
+    pub fn store_for(
+        &self,
+        mode: AgentExecutionMode,
+        workspace: Option<&str>,
+    ) -> Result<Arc<SessionStore>, RuntimeError> {
         if mode.is_chat() {
-            &self.chat_store
+            Ok(self.chat_store.clone())
         } else {
-            &self.store
+            self.store_for_workspace(workspace)
         }
     }
 
@@ -165,15 +224,46 @@ impl AgentRegistry {
     /// For a command that is handed only a thread id — artifacts, rename,
     /// archive, delete — there is no mode to route on, and asking every caller
     /// to pass one is how the caller that forgets reads or deletes in the wrong
-    /// store without failing. A chat that is not on disk yet is nobody's; it
-    /// resolves to Build, exactly as every thread did before chat mode existed.
-    #[must_use]
-    pub fn store_for_thread(&self, thread_id: &str) -> &Arc<SessionStore> {
+    /// store without failing. A conversation absent from disk has no owner.
+    pub fn store_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<Arc<SessionStore>>, RuntimeError> {
+        project_dir::validate_thread_id(thread_id)?;
         if self.chat_store.exists(thread_id) {
-            &self.chat_store
+            Ok(Some(self.chat_store.clone()))
         } else {
-            &self.store
+            Ok(self
+                .project_dirs
+                .locate(thread_id)?
+                .map(|dir| self.project_store(dir)))
         }
+    }
+
+    pub fn require_store_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Arc<SessionStore>, RuntimeError> {
+        self.store_for_thread(thread_id)?.ok_or_else(|| {
+            RuntimeError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("conversation {thread_id} does not exist"),
+            ))
+        })
+    }
+
+    /// Existing conversations keep their owner even when a later request names
+    /// a different workspace. New IDs route using the caller's workspace.
+    pub fn store_for_conversation(
+        &self,
+        mode: AgentExecutionMode,
+        thread_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Arc<SessionStore>, RuntimeError> {
+        if let Some(store) = self.store_for_thread(thread_id)? {
+            return Ok(store);
+        }
+        self.store_for(mode, workspace)
     }
 
     /// Borrow the bridge router so the `agent_post_tool_result`
@@ -258,19 +348,12 @@ impl AgentRegistry {
 
     /// On-disk path for a given thread's session JSONL. Delegates to
     /// the [`SessionStore`] so tests and runtime see the same paths.
+    #[cfg(test)]
     #[must_use]
     pub fn session_path(&self, thread_id: &str) -> PathBuf {
-        self.store.session_path(thread_id)
-    }
-
-    /// [`Self::session_path`] for a conversation running in `mode`.
-    ///
-    /// The bare `session_path` above answers for the project store, which is
-    /// what every existing caller means. This one is for the paths that must
-    /// follow the conversation into `Chats/` instead.
-    #[must_use]
-    pub fn session_path_in(&self, mode: AgentExecutionMode, thread_id: &str) -> PathBuf {
-        self.store_for(mode).session_path(thread_id)
+        self.store_for_conversation(AgentExecutionMode::Agent, thread_id, None)
+            .expect("test session store")
+            .session_path(thread_id)
     }
 
     /// Cache hit, on-disk hit, or fresh empty session — in that order.
@@ -296,11 +379,21 @@ impl AgentRegistry {
         mode: AgentExecutionMode,
         thread_id: &str,
     ) -> Result<Arc<Mutex<Session>>, RuntimeError> {
-        let store = self.store_for(mode);
+        let store = self.store_for_conversation(mode, thread_id, None)?;
+        self.load_session_from_store(thread_id, &store)
+    }
+
+    pub fn load_session_from_store(
+        &self,
+        thread_id: &str,
+        store: &SessionStore,
+    ) -> Result<Arc<Mutex<Session>>, RuntimeError> {
+        project_dir::validate_thread_id(thread_id)?;
         if let Some(existing) = self.sessions.get(thread_id) {
             return Ok(existing.value().clone());
         }
 
+        store.preserve_usage(thread_id)?;
         let path = store.session_path(thread_id);
         let mut session = match Session::load_from_path(thread_id, &path) {
             Ok(s) => s,
@@ -348,6 +441,7 @@ impl AgentRegistry {
         // that for the first message of a fresh thread.
         let already_written = session.messages().len();
         session.attach_journal(&path, already_written);
+        session.usage_ledger = self.usage_ledger.clone();
 
         // `entry().or_insert_with(...)` makes the cache insert atomic
         // against a racing concurrent `load_or_create_session` for the

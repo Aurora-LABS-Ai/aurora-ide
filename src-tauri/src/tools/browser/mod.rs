@@ -357,8 +357,10 @@ impl ToolExecutor for BrowserGuidelinesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "browser_guidelines".into(),
-            description: "Load the rules for driving Aurora's Browser panel. Call this BEFORE \
-your first browser tool call in a conversation.
+            description: "Load the rules for driving Aurora's Browser panel. This is an optional \
+tool: invoke it with call_tool({\"name\":\"browser_guidelines\",\"arguments\":{}}) and read \
+the returned guide BEFORE your first browser interaction. A tool_search result only describes \
+this tool; it does not load the guide.
 
 It covers the mistakes the tools cannot prevent on their own, all of which fail SILENTLY: \
 guessing a CSS selector that matches the wrong element (the click then succeeds on the wrong \
@@ -396,16 +398,15 @@ pub const PANEL_TIMEOUT: crate::tools::timeout::TimeoutPolicy =
         120_000,
         5_000,
         300_000,
-        "The Browser panel stopped answering. Call `browser_status` to see where it is before          retrying the same action.",
+        "The Browser panel stopped answering. Use call_tool({\"name\":\"browser_status\",\"arguments\":{}}) to check its state before retrying. Discover browser_status with tool_search first if its schema is absent.",
     );
 
 pub fn register(reg: &mut ToolRegistry, manager: Arc<BrowserManager>) {
     // First, and NOT wrapped below: it returns compiled-in text and never
     // touches the panel, so raising the driving cue for it would be a lie in
     // the cheap direction — the indicator flashing while nothing happens.
-    // Registration order is the advertised order and part of every request's
-    // cacheable prefix (see `tools::register_builtin_tools`), so it stays here
-    // rather than moving to the end for tidiness.
+    // The per-turn registry moves the entire browser bucket into the optional
+    // catalog. The model invokes these executors through `call_tool`.
     reg.register(Arc::new(BrowserGuidelinesTool));
 
     // Everything that actually touches the panel goes on through `driven`,

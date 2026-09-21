@@ -38,6 +38,10 @@
 }
 .agw-crail-chips {
   position: absolute;
+  /* The transform creates a stacking context. Lift the whole cluster above
+     the composer's content (z-index: 1), or that content paints over the
+     popover and intercepts its clicks regardless of the popover's own z-index. */
+  z-index: 2;
   right: 2px;
   top: 50%;
   transform: translateY(-50%);
@@ -105,6 +109,11 @@
   max-width: min(420px, calc(100vw - 32px));
   transform-origin: bottom right;
   overflow: hidden;
+  background: var(--agw-popover-surface);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  /* RailChip owns the entrance; the shared menu keyframes would compete. */
+  animation: none;
 }
 /* Panel bodies inside a popover: the popover IS the open state, so the panel
    drops its own card surface and its collapse control (see the `popover`

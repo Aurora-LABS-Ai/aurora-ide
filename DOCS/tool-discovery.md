@@ -35,6 +35,12 @@ grep({"pattern":"useSettingsStore"})
 Optional work uses discovery:
 
 ```text
+tool_search({"query":"select:browser_guidelines"})
+  → the guide tool's description and argument schema
+
+call_tool({"name":"browser_guidelines","arguments":{}})
+  → the full guide; read it before interacting with the browser
+
 tool_search({"query":"browser navigate"})
   → matching names, descriptions, and parameters
 
@@ -45,10 +51,11 @@ call_tool({
   → the normal browser result
 ```
 
-The model must follow the returned schema and read `browser_guidelines` before
-its first browser interaction. Exact selection uses `select:browser_guidelines`.
-The example above illustrates the envelope; discovery remains authoritative for
-each tool's arguments. Use `{}` for tools with no arguments.
+Every browser capability, including the guide, uses `call_tool`. Discovery returns
+the schema, not the guide itself. Follow the returned schema for each tool's
+arguments and use `{}` for tools with no arguments. A direct-call failure lists
+only direct tools and supplies an exact discovery query; it does not prove the
+optional capability is unavailable. Keyword search results may also be partial.
 
 Search supports task keywords, `+required_name_fragment`, exact comma-separated
 names, and `max_results` from 1 to 20 (default 5). Results report missing exact

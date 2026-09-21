@@ -131,9 +131,24 @@ pub async fn agent_load_thread(
     state: State<'_, Arc<AgentRegistry>>,
     thread_id: String,
 ) -> Result<Vec<ConversationMessage>, String> {
-    let session = state
-        .load_or_create_session(&thread_id)
-        .map_err(|e| e.to_string())?;
+    let registry = state.inner().clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok::<_, String>(None);
+        };
+        registry
+            .load_session_from_store(&thread_id, &store)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let Some(session) = loaded else {
+        return Ok(Vec::new());
+    };
     let guard = session.lock().await;
     Ok(guard.messages().to_vec())
 }
@@ -156,8 +171,11 @@ pub async fn agent_rewind_to_user_message(
     thread_id: String,
     user_message_ordinal: usize,
 ) -> Result<usize, String> {
+    let store = state
+        .require_store_for_thread(&thread_id)
+        .map_err(|e| e.to_string())?;
     let session = state
-        .load_or_create_session(&thread_id)
+        .load_session_from_store(&thread_id, &store)
         .map_err(|e| e.to_string())?;
     // A running turn holds this mutex for its entire duration, so a
     // failed `try_lock` IS "the thread is still streaming". Awaiting the
@@ -172,7 +190,7 @@ pub async fn agent_rewind_to_user_message(
         // rewound history. `save_to_path` truncates the file, unlike
         // the append path used during a turn.
         guard
-            .save_to_path(state.session_path(&thread_id))
+            .save_to_path(store.session_path(&thread_id))
             .map_err(|e| e.to_string())?;
     }
     Ok(removed)

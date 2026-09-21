@@ -152,13 +152,23 @@ impl<E: EventEmitter> TurnDriver<E> {
         &self,
         request: AgentChatRequest,
     ) -> Result<Option<(u32, u32)>, RuntimeError> {
-        let request = request.scoped_to_mode();
+        let mut request = request.scoped_to_mode();
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
 
-        let session_arc = self
-            .registry
-            .load_or_create_session_in(request.execution_mode, &thread_id)?;
+        let store = self.registry.store_for_conversation(
+            request.execution_mode,
+            &thread_id,
+            request.workspace_path.as_deref(),
+        )?;
+        let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
+        {
+            let mut session = session_arc.lock().await;
+            if session.workspace_root.is_none() {
+                session.workspace_root = request.workspace_path.clone();
+            }
+            request.workspace_path = session.workspace_root.clone();
+        }
         let api_client = self
             .registry
             .api_factory()
@@ -189,7 +199,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             )
             // Oversized tool output lands beside the thread rather than being
             // clamped away, so the model can read the part it needs back.
-            .with_store(self.registry.store_for(request.execution_mode)),
+            .with_store(&store),
             &self.registry,
             &request,
         )?;
@@ -202,9 +212,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             }
         });
 
-        let session_path = self
-            .registry
-            .session_path_in(request.execution_mode, &thread_id);
+        let session_path = store.session_path(&thread_id);
         let result = {
             let mut session = session_arc.lock().await;
             if session.workspace_root.is_none() {
@@ -231,7 +239,6 @@ impl<E: EventEmitter> TurnDriver<E> {
             }
         }
 
-        let store = self.registry.store_for(request.execution_mode);
         let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
         let _ = store.set_workspace_and_model(
             &thread_id,
@@ -251,7 +258,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         &self,
         request: AgentChatRequest,
     ) -> Result<TurnCompletion, RuntimeError> {
-        let request = request.scoped_to_mode();
+        let mut request = request.scoped_to_mode();
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
 
@@ -266,9 +273,19 @@ impl<E: EventEmitter> TurnDriver<E> {
         }
 
         // 1. Resolve the session (cache → disk → fresh).
-        let session_arc = self
-            .registry
-            .load_or_create_session_in(request.execution_mode, &thread_id)?;
+        let store = self.registry.store_for_conversation(
+            request.execution_mode,
+            &thread_id,
+            request.workspace_path.as_deref(),
+        )?;
+        let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
+        {
+            let mut session = session_arc.lock().await;
+            if session.workspace_root.is_none() {
+                session.workspace_root = request.workspace_path.clone();
+            }
+            request.workspace_path = session.workspace_root.clone();
+        }
 
         // 2. Build the API client BEFORE registering the cancel token —
         //    if the factory fails we don't want a stale `in_flight`
@@ -318,7 +335,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                 &thread_id,
                 crate::tools::image::config::ImageTurnConfig {
                     providers: request.image_providers.clone(),
-                    store: self.registry.store_for(request.execution_mode).clone(),
+                    store: store.clone(),
                 },
             );
         }
@@ -333,7 +350,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             )
             // Oversized tool output lands beside the thread rather than being
             // clamped away, so the model can read the part it needs back.
-            .with_store(self.registry.store_for(request.execution_mode)),
+            .with_store(&store),
             &self.registry,
             &request,
         )?;
@@ -355,24 +372,17 @@ impl<E: EventEmitter> TurnDriver<E> {
         // A machine-started turn has no pasted pictures to land and no words to
         // attribute — scanning its text for image markers would only be a way
         // to misread a log line as one.
-        let started_by_process = request.user_message_origin
-            == crate::agent_runtime::types::InjectedOrigin::Process;
-        let landed = match self
-            .registry
-            .store_for(request.execution_mode)
+        let started_by_process =
+            request.user_message_origin == crate::agent_runtime::types::InjectedOrigin::Process;
+        let landed = match store
             .assets_dir(&request.thread_id)
             .filter(|_| !started_by_process)
         {
-            Some(dir) => {
-                crate::tools::image::ingest::ingest_user_images_into(
-                    &dir,
-                    &request.user_message,
-                    Some((
-                        self.registry.store_for(request.execution_mode),
-                        &request.thread_id,
-                    )),
-                )
-            }
+            Some(dir) => crate::tools::image::ingest::ingest_user_images_into(
+                &dir,
+                &request.user_message,
+                Some((&store, &request.thread_id)),
+            ),
             None => crate::tools::image::ingest::Ingested {
                 text: request.user_message.clone(),
                 stored: Vec::new(),
@@ -464,7 +474,6 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     re-introduced a duplicate-message bug. One path owns the
         //     append now.
         {
-            let store = self.registry.store_for(request.execution_mode);
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
         }
 
@@ -482,9 +491,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    chat calls on the same thread_id serialize. Different
         //    thread_ids get different Arcs and therefore different
         //    locks — they run in parallel.
-        let session_path = self
-            .registry
-            .session_path_in(request.execution_mode, &thread_id);
+        let session_path = store.session_path(&thread_id);
         let (result, turn_appended) = {
             let mut session = session_arc.lock().await;
 
@@ -558,11 +565,7 @@ impl<E: EventEmitter> TurnDriver<E> {
                     // good — the slot is take-once.
                     let rich = session.drain_rich_results();
                     if !rich.is_empty() {
-                        if let Err(rich_err) =
-                            self.registry
-                                .store_for(request.execution_mode)
-                                .append_rich_results(&thread_id, &rich)
-                        {
+                        if let Err(rich_err) = store.append_rich_results(&thread_id, &rich) {
                             crate::logging::log_error(
                                 "agent_v2.persist",
                                 &format!(
@@ -620,7 +623,6 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     an `updatedAt` bump for a turn the file does not contain
         //     advertises work the rail cannot open.
         if turn_appended && uncommitted.is_none() {
-            let store = self.registry.store_for(request.execution_mode);
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
             let _ = store.set_workspace_and_model(
                 &thread_id,
@@ -661,7 +663,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             // would be the wrong trade in both directions.
             if request.execution_mode.is_chat() {
                 if let Some(memory) = crate::chat_memory::service() {
-                    if let Err(err) = memory.index_chat(store, &thread_id) {
+                    if let Err(err) = memory.index_chat(&store, &thread_id) {
                         crate::logging::log_warn(
                             "chat_memory",
                             &format!("could not index chat {thread_id}: {err}"),

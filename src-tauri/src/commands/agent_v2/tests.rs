@@ -926,7 +926,8 @@ async fn load_or_create_session_caches_arc() {
 #[tokio::test]
 async fn load_or_create_session_restores_sticky_workspace_scope() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = SessionStore::new(dir.path().to_path_buf());
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+    let store = registry.store_for_workspace(Some("C:/project-a")).unwrap();
     store
         .ensure_thread("scoped", None, Some("C:/project-a".into()))
         .expect("metadata");
@@ -946,7 +947,7 @@ async fn load_or_create_session_restores_sticky_workspace_scope() {
 }
 
 /// A command handed only a thread id finds the store that owns it, and an
-/// unknown id is Build's — the answer every thread had before chat mode.
+/// unknown id has no store until a creation path supplies its workspace.
 #[test]
 fn store_for_thread_follows_the_conversation_to_its_own_store() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -956,22 +957,104 @@ fn store_for_thread_follows_the_conversation_to_its_own_store() {
         .ensure_thread("a-chat", Some("chat".into()), None)
         .expect("chat metadata");
     registry
-        .store()
+        .store_for_workspace(None)
+        .unwrap()
         .ensure_thread("a-build", Some("build".into()), None)
         .expect("build metadata");
 
     assert_eq!(
-        registry.store_for_thread("a-chat").dir(),
+        registry.store_for_thread("a-chat").unwrap().unwrap().dir(),
         registry.chat_store().dir()
     );
     assert_eq!(
-        registry.store_for_thread("a-build").dir(),
-        registry.store().dir()
+        registry.store_for_thread("a-build").unwrap().unwrap().dir(),
+        registry.store_for_workspace(None).unwrap().dir()
+    );
+    assert!(registry.store_for_thread("never-saved").unwrap().is_none());
+}
+
+#[test]
+fn project_routing_is_scoped_collision_safe_and_reopens() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_owned());
+    let first = registry
+        .store_for_conversation(AgentExecutionMode::Agent, "first", Some(r"E:\a\b"))
+        .unwrap();
+    first
+        .ensure_thread("first", Some("First".into()), Some(r"E:\a\b".into()))
+        .unwrap();
+    let mut meta = first.load_metadata("first").unwrap();
+    meta.updated_at = "2026-09-19T12:00:00Z".into();
+    std::fs::write(first.meta_path("first"), serde_json::to_vec(&meta).unwrap()).unwrap();
+    let second = registry.store_for_workspace(Some("e:/a-b")).unwrap();
+    second
+        .ensure_thread("second", Some("Second".into()), Some("e:/a-b".into()))
+        .unwrap();
+    let mut meta = second.load_metadata("second").unwrap();
+    meta.updated_at = "2026-09-20T12:00:00Z".into();
+    std::fs::write(
+        second.meta_path("second"),
+        serde_json::to_vec(&meta).unwrap(),
+    )
+    .unwrap();
+    assert_ne!(
+        first.dir(),
+        second.dir(),
+        "colliding slugs must not alias the registry cache"
     );
     assert_eq!(
-        registry.store_for_thread("never-saved").dir(),
-        registry.store().dir()
+        registry
+            .list_project_summaries(Some("e:/a/b/"))
+            .unwrap()
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first"]
     );
+    assert_eq!(
+        registry
+            .list_project_summaries(None)
+            .unwrap()
+            .iter()
+            .map(|t| t.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["second", "first"]
+    );
+    assert_eq!(
+        first.dir(),
+        registry.store_for_workspace(Some("e:/a/b")).unwrap().dir()
+    );
+    let reopened = AgentRegistry::new(dummy_factory(), dir.path().to_owned());
+    assert_eq!(
+        reopened.require_store_for_thread("first").unwrap().dir(),
+        first.dir()
+    );
+    first.delete("first").unwrap();
+    assert!(reopened.store_for_thread("first").unwrap().is_none());
+    assert!(!first.thread_dir("first").exists());
+    assert!(first.dir().join("project.json").is_file());
+    assert!(second.session_path("second").is_file());
+}
+
+#[test]
+#[ignore = "manual listing benchmark; creates 1,204 temporary conversations"]
+fn measure_project_listing_after_reopening_1204_threads() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = AgentRegistry::new(dummy_factory(), root.path().to_owned());
+    let store = registry.store_for_workspace(Some("E:/listing-benchmark")).unwrap();
+    for n in 0..1204 {
+        let id = format!("thread-{n}");
+        store.ensure_thread(&id, Some(format!("Conversation {n}")), Some("E:/listing-benchmark".into())).unwrap();
+        Session::append_to_path(store.session_path(&id), &ConversationMessage::user_text("Measure project history", 1)).unwrap();
+    }
+    let start = std::time::Instant::now();
+    assert_eq!(registry.list_project_summaries(Some("E:/listing-benchmark")).unwrap().len(), 1204);
+    let cold = start.elapsed();
+    drop(registry);
+    let reopened = AgentRegistry::new(dummy_factory(), root.path().to_owned());
+    let start = std::time::Instant::now();
+    assert_eq!(reopened.list_project_summaries(Some("e:/listing-benchmark")).unwrap().len(), 1204);
+    eprintln!("Temporary fixture: 1204 conversations; cold={}ms; reopened={}ms", cold.as_millis(), start.elapsed().as_millis());
 }
 
 #[tokio::test]
@@ -1010,7 +1093,8 @@ async fn later_turn_cannot_move_live_session_to_another_workspace() {
     );
     assert_eq!(
         registry
-            .store()
+            .require_store_for_thread("sticky-thread")
+            .unwrap()
             .load_metadata("sticky-thread")
             .expect("metadata")
             .workspace_root
@@ -2544,7 +2628,8 @@ async fn a_follow_up_message_is_on_disk_before_the_provider_is_called() {
     // whose file was empty, so every message after the first lived in RAM
     // until the turn ended. A kill mid-turn took the user's own words with it.
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = SessionStore::new(dir.path().to_path_buf()).session_path("existing-thread");
+    let path =
+        SessionStore::new_project(dir.path().join("_unscoped")).session_path("existing-thread");
     let mut seeded = Session::new("existing-thread");
     seeded.append_message(ConversationMessage::user_text("first question", 1));
     seeded.append_message(ConversationMessage::assistant(
@@ -2690,4 +2775,3 @@ async fn a_process_report_is_not_framed_as_anybody_speaking() {
     // about who is talking, which is the whole defect this field exists for.
     assert!(!queued.mid_turn);
 }
-

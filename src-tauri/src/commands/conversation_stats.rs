@@ -235,13 +235,18 @@ pub async fn conversation_stats_get(
     if thread_id.trim().is_empty() {
         return Err("No conversation selected.".to_string());
     }
-    let store = registry.store().clone();
+    let registry = registry.inner().clone();
     // One file, but it is deserialized line by line and a long thread is large.
     // Off the UI thread, like every other command that touches the session
     // store (see `commands/command_thread_safety.rs`).
-    tauri::async_runtime::spawn_blocking(move || compute(&store, thread_id))
-        .await
-        .map_err(|e| format!("Conversation stats task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .require_store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?;
+        compute(&store, thread_id)
+    })
+    .await
+    .map_err(|e| format!("Conversation stats task failed: {e}"))?
 }
 
 fn compute(
@@ -614,6 +619,7 @@ mod tests {
 
     fn msg(role: MessageRole, ts: i64, blocks: Vec<ContentBlock>) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role,
             blocks,
             usage: None,

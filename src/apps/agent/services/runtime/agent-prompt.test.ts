@@ -30,6 +30,34 @@ vi.mock("@/kernel/store/useSettingsStore", () => ({
 }));
 
 describe("stable optional tool discovery instructions", () => {
+  it("teaches exact discovery followed by execution of the browser guide", async () => {
+    const { systemPrompt } = await composeAgentSystemPrompt({
+      browserTools: true,
+      promptContext: { workspacePath: "E:/project", userMessage: "browse" },
+    });
+    const browserSection = systemPrompt.split("## Browser\n")[1]?.split("\n## ")[0];
+    expect(browserSection).toBeDefined();
+    const search = 'tool_search({"query":"select:browser_guidelines"})';
+    const execute = 'call_tool({"name":"browser_guidelines","arguments":{}})';
+    expect(browserSection).toContain(search);
+    expect(browserSection).toContain(execute);
+    expect(browserSection!.indexOf(search)).toBeLessThan(browserSection!.indexOf(execute));
+    expect(browserSection).toContain("Discovering its schema alone does not load the guide");
+    expect(browserSection).not.toContain("browser_guidelines({})");
+  });
+
+  it.each([
+    { browserTools: false, executionMode: "agent" as const },
+    { browserTools: true, executionMode: "chat" as const },
+  ])("omits browser entry instructions when unavailable: %o", async (options) => {
+    const { systemPrompt } = await composeAgentSystemPrompt({
+      ...options,
+      promptContext: { userMessage: "help" },
+    });
+    expect(systemPrompt).not.toContain("## Browser\n");
+    expect(systemPrompt).not.toContain("select:browser_guidelines");
+  });
+
   it("keeps the complete system prompt identical across MCP connection changes and legacy flags", async () => {
     const common = { promptContext: { workspacePath: "E:/project", userMessage: "help" } };
     const before = await composeAgentSystemPrompt({ ...common, mcpSummary: "No servers connected", deferTools: false });

@@ -428,6 +428,7 @@ impl ConversationRuntime {
 
         Ok(ToolBatchOutcome {
             message: ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: result_blocks,
                 usage: None,
@@ -633,6 +634,7 @@ pub(super) async fn emit_truncation_notice(
     // assistant message so it reloads directly beneath it.
     let now = chrono::Utc::now().timestamp_millis();
     session.append_message(ConversationMessage {
+        event_id: None,
         role: MessageRole::System,
         blocks: vec![ContentBlock::Notice {
             message: TRUNCATED_NOTICE.to_string(),

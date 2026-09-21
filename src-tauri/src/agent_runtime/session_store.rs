@@ -8,14 +8,17 @@
 //!
 //! ## On-disk layout
 //!
-//! Inside [`SessionStore::dir`] (set up by `lib.rs::setup` to point at
-//! `paths::sessions_dir()` = `<paths::root()>/sessions/`) each thread owns
-//! two files:
+//! Build stores live in `<root>/projects/<workspace-slug>/`; Chat lives in
+//! `<root>/Chats/`. Each conversation owns a folder inside its store:
 //!
 //! ```text
-//! <thread_id>.jsonl       — one ConversationMessage per line
-//! <thread_id>.meta.json   — {title, tokenUsage, contextUsage,
-//!                            createdAt, updatedAt, workspaceRoot, model}
+//! <thread_id>/conversation.jsonl — one ConversationMessage per line
+//! <thread_id>/meta.json          — title, usage, workspace, model, timestamps
+//! <thread_id>/rich.jsonl         — full tool results
+//! <thread_id>/artifacts.json     — saved canvases
+//! <thread_id>/todos.json         — Build checklist
+//! <thread_id>/tool-results/      — spilled tool output
+//! threads.db                    — disposable listing cache
 //! ```
 //!
 //! The `.jsonl` file is the canonical message history written by
@@ -56,6 +59,11 @@ use super::error::RuntimeError;
 use super::session::{RichToolResult, Session};
 use super::session_index::{self, Fingerprint, SessionIndex};
 use super::types::{ContentBlock, ConversationMessage, MessageRole};
+
+#[cfg(test)]
+thread_local! {
+    static SUMMARIZED_THREADS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 // ============================================================================
 // Metadata sidecar
@@ -229,11 +237,8 @@ fn archive_expired(archived_at: &str) -> bool {
 
 /// How a store arranges one conversation's files on disk.
 ///
-/// Two layouts, because the two products want different things. Build-mode
-/// threads are files that happen to have sidecars, and a flat directory lists
-/// fast. A chat OWNS things — its images live with it — so it owns a directory,
-/// and deleting one is removing that directory rather than remembering to
-/// unlink six stem-matched files and hoping nobody adds a seventh.
+/// Both products use a folder per conversation. Flat storage remains available
+/// for isolated fixtures and readers of the former layout.
 ///
 /// Everything above the five path methods, the listing scan and `delete` is
 /// shared: journaling, metadata, archiving, retention, artifacts and loading
@@ -245,7 +250,7 @@ pub enum StoreLayout {
     #[default]
     Flat,
     /// `<dir>/<id>/conversation.jsonl` plus fixed filenames in that folder.
-    /// Used by Aurora Chat (`paths::chats_dir()`).
+    /// Used by project stores and Aurora Chat (`paths::chats_dir()`).
     Folder,
 }
 
@@ -257,10 +262,12 @@ pub enum StoreLayout {
 pub struct SessionStore {
     dir: PathBuf,
     layout: StoreLayout,
+    owns_assets: bool,
+    usage_ledger: Option<std::sync::Arc<crate::usage_ledger::UsageLedger>>,
 }
 
 impl SessionStore {
-    /// Build a flat store rooted at `dir` — the Build-mode `sessions/` layout.
+    /// Build a flat store rooted at `dir`, for legacy readers and fixtures.
     /// The directory is created lazily on the first write, so calling `new` on
     /// a non-existent directory is fine.
     #[must_use]
@@ -268,6 +275,8 @@ impl SessionStore {
         Self {
             dir,
             layout: StoreLayout::Flat,
+            owns_assets: false,
+            usage_ledger: None,
         }
     }
 
@@ -278,7 +287,46 @@ impl SessionStore {
         Self {
             dir,
             layout: StoreLayout::Folder,
+            owns_assets: true,
+            usage_ledger: None,
         }
+    }
+
+    /// Build conversations share a project root but own no image assets.
+    #[must_use]
+    pub fn new_project(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            layout: StoreLayout::Folder,
+            owns_assets: false,
+            usage_ledger: None,
+        }
+    }
+
+    pub fn with_usage_ledger(
+        mut self,
+        ledger: Option<std::sync::Arc<crate::usage_ledger::UsageLedger>>,
+    ) -> Self {
+        self.usage_ledger = ledger;
+        self
+    }
+
+    pub fn preserve_usage(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        if let Some(ledger) = &self.usage_ledger {
+            ledger
+                .preserve_source(
+                    self.session_path(thread_id),
+                    self.meta_path(thread_id),
+                    thread_id,
+                    if self.owns_assets { "chat" } else { "build" },
+                )
+                .map_err(|error| {
+                    RuntimeError::InvalidState(format!(
+                        "could not preserve usage for {thread_id}: {error:#}"
+                    ))
+                })?;
+        }
+        Ok(())
     }
 
     /// Where the store lives on disk. Exposed for diagnostics and so
@@ -319,10 +367,8 @@ impl SessionStore {
     /// one namespace instead of guessing which of several it was handed.
     #[must_use]
     pub fn assets_dir(&self, thread_id: &str) -> Option<PathBuf> {
-        match self.layout {
-            StoreLayout::Flat => None,
-            StoreLayout::Folder => Some(self.dir.join(thread_id).join("assets")),
-        }
+        self.owns_assets
+            .then(|| self.dir.join(thread_id).join("assets"))
     }
 
     /// Create the directory `thread_id`'s files live in, if it is missing.
@@ -337,6 +383,7 @@ impl SessionStore {
     /// parents already, so the JSONL is not why this exists; the metadata
     /// sidecar and the rich-results log are.
     fn ensure_dir_for(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        super::project_dir::validate_thread_id(thread_id)?;
         fs::create_dir_all(self.thread_dir(thread_id))?;
         Ok(())
     }
@@ -667,7 +714,12 @@ impl SessionStore {
         // Project scoping: when a filter is set, drop threads
         // that don't belong to it (including unscoped ones).
         if let Some(want) = workspace_root {
-            if summary.workspace_root.as_deref() != Some(want) {
+            if summary
+                .workspace_root
+                .as_deref()
+                .map(|root| super::project_dir::normalize(Path::new(root)))
+                != Some(super::project_dir::normalize(Path::new(want)))
+            {
                 return;
             }
         }
@@ -682,6 +734,8 @@ impl SessionStore {
         thread_id: &str,
         jsonl_path: &Path,
     ) -> Result<SessionSummary, RuntimeError> {
+        #[cfg(test)]
+        SUMMARIZED_THREADS.with(|reads| reads.borrow_mut().push(thread_id.to_owned()));
         let meta = self
             .load_metadata(thread_id)
             .unwrap_or_else(|_| SessionMetadata::new(thread_id));
@@ -1188,6 +1242,9 @@ impl SessionStore {
     }
 
     pub fn delete(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        super::project_dir::validate_thread_id(thread_id)?;
+        self.preserve_usage(thread_id)?;
+        super::project_dir::forget(thread_id);
         // Drop the cached listing row with the files. A listing would notice
         // the absence on its own, but only after building a list that still
         // had the thread in it.
@@ -1286,6 +1343,33 @@ mod tests {
     use super::*;
     use crate::agent_runtime::types::ConversationMessage;
 
+    #[test]
+    fn project_conversations_have_no_assets_but_chats_still_do() {
+        let root = tempfile::tempdir().unwrap();
+        let project = SessionStore::new_project(root.path().join("project"));
+        let chat = SessionStore::new_folder(root.path().join("Chats"));
+        project
+            .ensure_thread("build", None, Some("E:/proj".into()))
+            .unwrap();
+        chat.ensure_thread("chat", None, None).unwrap();
+        assert!(project.session_path("build").is_file());
+        assert_eq!(project.assets_dir("build"), None);
+        assert!(!project.thread_dir("build").join("assets").exists());
+        assert!(chat.assets_dir("chat").unwrap().is_dir());
+    }
+
+    #[test]
+    fn scoped_listing_matches_equivalent_windows_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_project(root.path().to_owned());
+        store
+            .ensure_thread("scoped", None, Some(r"E:\Project".into()))
+            .unwrap();
+        let listed = store.list_summaries_filtered(Some("e:/project/")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "scoped");
+    }
+
     fn tmp_store() -> (tempfile::TempDir, SessionStore) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new(dir.path().to_path_buf());
@@ -1358,10 +1442,49 @@ mod tests {
         use super::*;
 
         #[test]
+        fn project_listing_ignores_shared_files_and_only_reads_changed_threads() {
+            let root = tempfile::tempdir().unwrap();
+            let store = SessionStore::new_project(root.path().to_owned());
+            fs::write(root.path().join("project.json"), "{}").unwrap();
+            fs::write(root.path().join("code-index.json"), "{}").unwrap();
+            store
+                .ensure_thread("a", Some("First".into()), None)
+                .unwrap();
+            store
+                .ensure_thread("b", Some("Second".into()), None)
+                .unwrap();
+            SUMMARIZED_THREADS.with(|reads| reads.borrow_mut().clear());
+            assert_eq!(store.list_summaries().unwrap().len(), 2);
+            assert!(root.path().join("threads.db").is_file());
+            SUMMARIZED_THREADS.with(|reads| {
+                assert_eq!(reads.borrow().len(), 2);
+                reads.borrow_mut().clear();
+            });
+            let reopened = SessionStore::new_project(root.path().to_owned());
+            assert_eq!(reopened.list_summaries().unwrap().len(), 2);
+            SUMMARIZED_THREADS.with(|reads| assert!(reads.borrow().is_empty()));
+            Session::append_to_path(
+                store.session_path("a"),
+                &ConversationMessage::user_text("new message", 1),
+            )
+            .unwrap();
+            let listed = reopened.list_summaries().unwrap();
+            assert_eq!(
+                listed.iter().find(|s| s.id == "a").unwrap().message_count,
+                1
+            );
+            SUMMARIZED_THREADS.with(|reads| assert_eq!(*reads.borrow(), vec!["a".to_string()]));
+        }
+
+        #[test]
         fn a_listing_fills_the_index_and_the_next_one_agrees_with_it() {
             let (guard, store) = tmp_store();
-            store.ensure_thread("a", Some("First".into()), None).unwrap();
-            store.ensure_thread("b", Some("Second".into()), None).unwrap();
+            store
+                .ensure_thread("a", Some("First".into()), None)
+                .unwrap();
+            store
+                .ensure_thread("b", Some("Second".into()), None)
+                .unwrap();
 
             let first = store.list_summaries().unwrap();
             let index = crate::agent_runtime::session_index::SessionIndex::open(guard.path())

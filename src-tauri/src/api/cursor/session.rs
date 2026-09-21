@@ -1135,6 +1135,7 @@ mod tests {
             .expect("a signed-in Cursor session is required");
 
         let messages = [crate::agent_runtime::types::ConversationMessage {
+            event_id: None,
             role: crate::agent_runtime::types::MessageRole::User,
             blocks: vec![crate::agent_runtime::types::ContentBlock::Text {
                 text: "Reply with exactly the word: AURORA-OK".into(),
@@ -1208,6 +1209,7 @@ mod tests {
             .expect("a signed-in Cursor session is required");
 
         let messages = [crate::agent_runtime::types::ConversationMessage {
+            event_id: None,
             role: crate::agent_runtime::types::MessageRole::User,
             blocks: vec![crate::agent_runtime::types::ContentBlock::Text {
                 text: "Read the file src/main.rs and tell me what it contains.".into(),
@@ -1303,6 +1305,7 @@ mod tests {
             .expect("a signed-in Cursor session is required");
 
         let messages = [crate::agent_runtime::types::ConversationMessage {
+            event_id: None,
             role: crate::agent_runtime::types::MessageRole::User,
             blocks: vec![crate::agent_runtime::types::ContentBlock::Text {
                 text: "Read the file src/main.rs and print its exact contents. \

@@ -13,6 +13,14 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
+fn accounting_fixture() -> (tempfile::TempDir, Arc<crate::usage_ledger::UsageLedger>) {
+    let root = tempfile::tempdir().unwrap();
+    let db = root.path().join("usage.db");
+    crate::usage_ledger::schema::create(&rusqlite::Connection::open(&db).unwrap()).unwrap();
+    let ledger = Arc::new(crate::usage_ledger::UsageLedger::open(&db, root.path().into()).unwrap());
+    (root, ledger)
+}
+
 #[path = "discovery_tests.rs"]
 mod discovery;
 
@@ -1969,6 +1977,8 @@ async fn run_turn_aggregates_usage_across_iterations() {
     let runtime = ConversationRuntime::new(api, tools, RuntimeConfig::default());
 
     let mut session = Session::new("t");
+    let (_accounting_root, ledger) = accounting_fixture();
+    session.usage_ledger = Some(ledger.clone());
     let (tx, _rx) = mpsc::channel(32);
     let cancel = CancellationToken::new();
 
@@ -1976,6 +1986,12 @@ async fn run_turn_aggregates_usage_across_iterations() {
         .run_turn(&mut session, user_msg("hi"), tx, cancel)
         .await
         .expect("ok");
+
+    let accounting = ledger.stats().unwrap();
+    assert_eq!(accounting.total_requests, 2);
+    assert_eq!(accounting.lifetime_input_tokens, 19);
+    assert_eq!(accounting.lifetime_output_tokens, 28);
+    assert_eq!(accounting.lifetime_cache_read_tokens, 2);
 
     assert_eq!(summary.usage.input_tokens, 15);
     assert_eq!(summary.usage.output_tokens, 28);
@@ -2274,6 +2290,7 @@ fn the_checklist_block_states_every_status_once() {
             status,
         });
     }
+    crate::agent_runtime::project_dir::test_thread(&thread);
     todo_store::write(&thread, &list).expect("write");
 
     let block = checklist_block(&thread).expect("a tracked list produces a block");
@@ -2309,6 +2326,7 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
         active_form: "Fixing the bug".into(),
         status: TodoStatus::InProgress,
     });
+    crate::agent_runtime::project_dir::test_thread(&thread);
     todo_store::write(&thread, &list).expect("write");
 
     // One write, then nine tool calls: silent for nine, not yet ten. No
@@ -2396,6 +2414,7 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
 #[test]
 fn checklist_silence_stops_counting_at_a_compaction_marker() {
     let marker = ConversationMessage {
+        event_id: None,
         role: MessageRole::System,
         blocks: vec![ContentBlock::Compaction {
             summary: "earlier work".into(),
@@ -2599,6 +2618,7 @@ async fn run_turn_adds_the_checklist_to_the_message_context_where_todo_exists() 
         active_form: "Fixing the bug".into(),
         status: TodoStatus::InProgress,
     });
+    crate::agent_runtime::project_dir::test_thread(&thread);
     todo_store::write(&thread, &list).expect("write");
 
     let with_todo = Arc::new(ToolRegistry::new());
@@ -3208,6 +3228,7 @@ fn trim_keeps_tool_use_and_tool_result_paired() {
         10,
     );
     let tool_result = ConversationMessage {
+        event_id: None,
         role: MessageRole::Tool,
         blocks: vec![ContentBlock::ToolResult {
             tool_use_id: "call-1".into(),
@@ -3553,6 +3574,8 @@ async fn an_empty_cache_sharing_summary_is_never_rebilled_as_a_fallback() {
     );
 
     let mut session = compactable_session();
+    let (_accounting_root, ledger) = accounting_fixture();
+    session.usage_ledger = Some(ledger.clone());
     let (tx, _rx) = mpsc::channel(64);
     let mut seq = 0;
     let result = runtime
@@ -3564,6 +3587,9 @@ async fn an_empty_cache_sharing_summary_is_never_rebilled_as_a_fallback() {
             &CancellationToken::new(),
         )
         .await;
+
+    assert_eq!(ledger.stats().unwrap().total_requests, 1,
+        "a billed empty summary must remain in permanent accounting");
 
     let seen = chat.seen.lock().expect("seen");
     assert!(result.is_none());
@@ -3649,6 +3675,7 @@ fn stripping_reasoning_leaves_tool_pairing_intact() {
             0,
         ),
         ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
@@ -4258,6 +4285,7 @@ async fn a_measurement_taken_before_a_compaction_is_not_an_anchor() {
     session.messages.insert(
         1,
         ConversationMessage {
+            event_id: None,
             role: MessageRole::System,
             blocks: vec![ContentBlock::Compaction {
                 summary: "the earlier work, summarized".into(),
@@ -4296,6 +4324,7 @@ async fn a_measurement_taken_after_a_compaction_still_anchors() {
     let runtime = bare_runtime();
     let mut session = Session::new("t-anchor-fresh");
     session.append_message(ConversationMessage {
+        event_id: None,
         role: MessageRole::System,
         blocks: vec![ContentBlock::Compaction {
             summary: "earlier work".into(),
@@ -4618,6 +4647,7 @@ fn recording_api(reply: &str) -> Arc<ModelRecordingApi> {
 /// A tool result answering `id`, successful unless `is_error` says otherwise.
 fn tool_result_for(id: &str, is_error: Option<bool>) -> ConversationMessage {
     ConversationMessage {
+        event_id: None,
         role: MessageRole::Tool,
         blocks: vec![ContentBlock::ToolResult {
             tool_use_id: id.into(),

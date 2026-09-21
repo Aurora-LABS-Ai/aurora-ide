@@ -995,6 +995,7 @@ impl ConversationRuntime {
             if !model.is_empty() {
                 assistant_message.model = Some(model.clone());
             }
+            session.record_accounting(&mut assistant_message, false);
             // A message with no blocks must never enter history. It says
             // nothing, and on the next request it serializes as an assistant
             // turn with empty content — which Anthropic rejects outright. One
@@ -1107,6 +1108,7 @@ impl ConversationRuntime {
                         .await;
                     let now = chrono::Utc::now().timestamp_millis();
                     session.append_message(ConversationMessage {
+                        event_id: None,
                         role: MessageRole::System,
                         blocks: vec![ContentBlock::Notice {
                             message: notice.to_string(),

@@ -1604,6 +1604,7 @@ mod tests {
                 1,
             ),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: vec![
                     ContentBlock::ToolResult {
@@ -1980,6 +1981,7 @@ mod rejection_tests {
     #[test]
     fn injected_image_marker_becomes_input_image_part() {
         let messages = vec![ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {

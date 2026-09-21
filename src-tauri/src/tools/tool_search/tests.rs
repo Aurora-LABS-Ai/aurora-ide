@@ -58,6 +58,83 @@ fn schema_bytes(registry: &ToolRegistry) -> Vec<u8> {
     serde_json::to_vec(&registry.schemas()).unwrap()
 }
 
+/// Regression from the storefront conversation: the model called the guide
+/// directly, treated the direct roster as complete, and skipped the guide.
+#[tokio::test]
+async fn a_direct_browser_guide_miss_leads_to_discovery_and_real_guide_execution() {
+    let registry = ToolRegistry::new();
+    install(
+        &registry,
+        vec![Arc::new(crate::tools::browser::BrowserGuidelinesTool)],
+    );
+    let before = schema_bytes(&registry);
+    let error = registry
+        .resolve_call("browser_guidelines", &json!({}))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        error.contains(r#"tool_search({"query":"select:browser_guidelines"})"#),
+        "{error}"
+    );
+    assert!(error.contains("Available direct tools:"), "{error}");
+    assert!(error.contains("call_tool"), "{error}");
+
+    let search = registry.get("tool_search").unwrap();
+    let found: Value = serde_json::from_str(
+        &search
+            .execute(json!({"query":"select:browser_guidelines"}), &context())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(found["tools"][0]["name"], "browser_guidelines");
+    assert!(found["tools"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains(r#"call_tool({"name":"browser_guidelines","arguments":{}})"#));
+    let invocation = registry
+        .resolve_call(
+            "call_tool",
+            &json!({"name": found["tools"][0]["name"], "arguments": {}}),
+        )
+        .unwrap();
+    let guide = invocation
+        .executor
+        .execute(invocation.input, &context())
+        .await
+        .unwrap();
+    assert!(guide.starts_with("# Driving the Browser panel"));
+    assert!(guide.contains("## Never invent a CSS selector"));
+    assert!(guide.contains(r#"call_tool({"name":"browser_status","arguments":{}})"#));
+    assert_eq!(
+        schema_bytes(&registry),
+        before,
+        "recovery must not expose direct tools"
+    );
+}
+
+#[tokio::test]
+async fn discovery_recovery_does_not_make_an_unavailable_browser_tool_callable() {
+    let registry = ToolRegistry::new();
+    install(&registry, vec![]);
+    let search = registry.get("tool_search").unwrap();
+    let found: Value = serde_json::from_str(
+        &search
+            .execute(json!({"query":"select:browser_guidelines"}), &context())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(found["not_found"], json!(["browser_guidelines"]));
+    assert!(registry
+        .resolve_call(
+            "call_tool",
+            &json!({"name":"browser_guidelines", "arguments":{}}),
+        )
+        .is_err());
+}
+
 /// All three from the harness rig, 2026-09-06, in the shape it reported them.
 mod harness_findings {
     use super::*;

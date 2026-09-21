@@ -79,15 +79,24 @@ pub fn checkpoints_dir() -> PathBuf {
     ensure_subdir("checkpoints")
 }
 
-/// `<root>/sessions/` — agent_v2 session JSONL + meta sidecars.
-pub fn sessions_dir() -> PathBuf {
-    ensure_subdir("sessions")
+/// `<root>/projects/` — workspace-owned conversations and code indexes.
+pub fn projects_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        static TEST_ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+        TEST_ROOT
+            .get_or_init(|| tempfile::tempdir().expect("test projects root"))
+            .path()
+            .to_path_buf()
+    }
+    #[cfg(not(test))]
+    ensure_subdir("projects")
 }
 
 /// `<root>/Chats/` — Aurora Chat conversations, one FOLDER each.
 ///
-/// Deliberately not `sessions/`, and deliberately not the same layout. A chat
-/// owns images, so it owns a directory:
+/// Separate from project history because Chat has no workspace. Its conversation
+/// folders also own their image assets:
 ///
 /// ```text
 /// Chats/
@@ -102,8 +111,7 @@ pub fn sessions_dir() -> PathBuf {
 ///
 /// The folders are the truth and `chats.db` is an index built from them, so a
 /// corrupt or deleted database costs a rebuild rather than history. Deleting a
-/// conversation is deleting one directory, which is the whole reason the layout
-/// differs from `sessions/`'s flat files plus stem-matched sidecars.
+/// conversation is deleting one directory, including its image assets.
 pub fn chats_dir() -> PathBuf {
     ensure_subdir("Chats")
 }
@@ -170,13 +178,6 @@ pub fn mcp_clients_dir() -> PathBuf {
 /// `<root>/bridge.json` — see above.
 pub fn bridge_state_file() -> PathBuf {
     root().join("bridge.json")
-}
-
-/// `<root>/code-index/` — one cached symbol index per workspace, named by the
-/// same workspace hash `checkpoints_dir` uses, plus a `.meta.json` sidecar.
-/// Disposable: deleting it costs a sub-second rebuild, never user data.
-pub fn code_index_dir() -> PathBuf {
-    ensure_subdir("code-index")
 }
 
 /// `<root>/config/` — user-facing JSON config files (e.g. mcp.json).

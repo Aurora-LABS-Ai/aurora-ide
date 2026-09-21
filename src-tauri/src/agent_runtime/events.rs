@@ -366,6 +366,7 @@ mod tests {
             iterations: 2,
             usage: TokenUsage::default(),
             assistant_messages: vec![ConversationMessage {
+                event_id: None,
                 role: MessageRole::Assistant,
                 blocks: vec![ContentBlock::Text { text: "ok".into() }],
                 usage: None,

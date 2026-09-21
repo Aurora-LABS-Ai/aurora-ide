@@ -275,6 +275,14 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [25])?;
             Ok(())
         }
+        26 => {
+            let tx = conn.unchecked_transaction()?;
+            crate::usage_ledger::schema::create(&tx)?;
+            tx.execute("DELETE FROM schema_version", [])?;
+            tx.execute("INSERT INTO schema_version (version) VALUES (26)", [])?;
+            tx.commit()?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -330,6 +338,37 @@ fn migration_v24(conn: &Connection) -> DbResult<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod usage_ledger_migration_tests {
+    use super::*;
+
+    #[test]
+    fn migration_is_additive_and_can_run_again() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE usage_events; DROP TABLE usage_threads; DROP TABLE usage_imports;",
+        ).unwrap();
+        conn.execute("UPDATE schema_version SET version=25", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO app_settings (key,value,updated_at) VALUES ('sentinel','keep','2026-09-21')",
+            [],
+        ).unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        conn.prepare("SELECT event_id FROM usage_events").unwrap();
+        assert_eq!(
+            conn.query_row("SELECT version FROM schema_version", [], |r| r.get::<_, i64>(0)).unwrap(),
+            26,
+        );
+        assert_eq!(
+            conn.query_row("SELECT value FROM app_settings WHERE key='sentinel'", [], |r| r.get::<_, String>(0)).unwrap(),
+            "keep",
+        );
+    }
 }
 
 /// v25: the provider description. Same PRAGMA sniff as its neighbours, so a

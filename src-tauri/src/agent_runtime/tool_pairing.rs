@@ -95,6 +95,7 @@ pub fn tool_use_ids(message: &ConversationMessage) -> Vec<String> {
 /// flagged as an error so the model treats it as a failure rather than output.
 pub fn synthetic_tool_results(ids: &[String], text: &str) -> ConversationMessage {
     ConversationMessage {
+        event_id: None,
         role: MessageRole::Tool,
         blocks: ids
             .iter()
@@ -227,6 +228,7 @@ mod tests {
 
     fn text(role: MessageRole, body: &str) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role,
             blocks: vec![ContentBlock::Text {
                 text: body.to_string(),
@@ -242,6 +244,7 @@ mod tests {
 
     fn assistant_calling(ids: &[&str]) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role: MessageRole::Assistant,
             blocks: ids
                 .iter()
@@ -262,6 +265,7 @@ mod tests {
 
     fn results_for(ids: &[&str]) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: ids
                 .iter()

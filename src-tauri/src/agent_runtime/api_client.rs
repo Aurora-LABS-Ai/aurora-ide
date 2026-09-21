@@ -505,6 +505,7 @@ mod tests {
                 usage: TokenUsage::default(),
                 stop_reason: "end_turn".into(),
                 assistant_message: ConversationMessage {
+                    event_id: None,
                     role: MessageRole::Assistant,
                     blocks: vec![ContentBlock::Text { text: "hi".into() }],
                     usage: None,

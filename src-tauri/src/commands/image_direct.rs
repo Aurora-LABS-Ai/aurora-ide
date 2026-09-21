@@ -131,7 +131,7 @@ async fn generate(
     let session_arc = registry
         .load_or_create_session_in(AgentExecutionMode::Chat, thread_id)
         .map_err(|e| e.to_string())?;
-    let session_path = registry.session_path_in(AgentExecutionMode::Chat, thread_id);
+    let session_path = store.session_path(thread_id);
 
     // The user's message lands first and is journaled at once, so a provider
     // that takes forty seconds and then fails still leaves the question asked.

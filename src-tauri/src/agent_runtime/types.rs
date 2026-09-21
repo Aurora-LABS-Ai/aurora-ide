@@ -332,6 +332,9 @@ pub enum InjectedOrigin {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessage {
+    /// Stable accounting identity, retained when history is copied or rewound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
     pub role: MessageRole,
     pub blocks: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -386,6 +389,7 @@ impl ConversationMessage {
     #[must_use]
     pub fn user_text(text: impl Into<String>, timestamp: i64) -> Self {
         Self {
+            event_id: None,
             role: MessageRole::User,
             blocks: vec![ContentBlock::Text { text: text.into() }],
             usage: None,
@@ -417,6 +421,7 @@ impl ConversationMessage {
         timestamp: i64,
     ) -> Self {
         Self {
+            event_id: None,
             role: MessageRole::User,
             blocks: vec![ContentBlock::ProcessEvent {
                 summary: summary.into(),
@@ -437,6 +442,7 @@ impl ConversationMessage {
     #[must_use]
     pub fn assistant(blocks: Vec<ContentBlock>, timestamp: i64) -> Self {
         Self {
+            event_id: None,
             role: MessageRole::Assistant,
             blocks,
             usage: None,
@@ -457,6 +463,7 @@ impl ConversationMessage {
         timestamp: i64,
     ) -> Self {
         Self {
+            event_id: None,
             role: MessageRole::Assistant,
             blocks,
             usage: Some(usage),

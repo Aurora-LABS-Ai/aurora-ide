@@ -671,6 +671,7 @@ impl StreamingApiClient for CommandCodeAdapter {
             usage: usage.clone(),
             stop_reason,
             assistant_message: ConversationMessage {
+                event_id: None,
                 role: MessageRole::Assistant,
                 blocks,
                 usage: Some(usage),
@@ -733,6 +734,7 @@ mod tests {
 
     fn message(role: MessageRole, blocks: Vec<ContentBlock>) -> ConversationMessage {
         ConversationMessage {
+            event_id: None,
             role,
             blocks,
             usage: None,

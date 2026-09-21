@@ -4339,6 +4339,7 @@ mod tests {
     #[test]
     fn openai_messages_emits_tool_text_then_user_image() {
         let messages = vec![ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
@@ -4398,6 +4399,7 @@ mod tests {
     #[test]
     fn openai_messages_expands_injected_image_markers() {
         let messages = vec![ConversationMessage {
+            event_id: None,
             role: MessageRole::Tool,
             blocks: vec![
                 ContentBlock::ToolResult {
@@ -5334,6 +5336,7 @@ mod tests {
                 1,
             ),
             ConversationMessage {
+                event_id: None,
                 role: MessageRole::Tool,
                 blocks: vec![
                     ContentBlock::ToolResult {

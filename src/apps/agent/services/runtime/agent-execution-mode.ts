@@ -23,9 +23,46 @@ export type AgentExecutionMode = "agent" | "plan" | "team" | "chat";
  * therefore no sub-mode of its own.
  *
  * The pair is stored rather than one combined field so that a trip through Chat
- * returns you to the Build mode you left. See `useSettingsStore.auroraSurface`.
+ * returns you to the Build mode you left. See `useAgentSettingsStore.auroraSurface`.
  */
 export type AuroraSurface = "build" | "chat";
+
+export const normalizeAuroraSurface = (value: unknown): AuroraSurface => {
+  if (value === "chat") return "chat";
+  if (typeof value === "string") {
+    let raw = value;
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") raw = parsed;
+    } catch {
+      // not JSON — fall through to the raw string
+    }
+    if (raw.toLowerCase() === "chat") return "chat";
+  }
+  return "build";
+};
+
+export const normalizeAgentExecutionMode = (
+  value: unknown,
+): AgentExecutionMode => {
+  if (value === "plan") return "plan";
+  if (value === "team") return "team";
+  if (value === "chat") return "chat";
+  if (typeof value === "string") {
+    let raw = value;
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") raw = parsed;
+    } catch {
+      // not JSON — fall through to the raw string
+    }
+    const lower = raw.toLowerCase();
+    if (lower === "plan") return "plan";
+    if (lower === "team") return "team";
+    if (lower === "chat") return "chat";
+  }
+  return "agent";
+};
 
 export const AURORA_SURFACES: readonly {
   id: AuroraSurface;
@@ -53,21 +90,6 @@ export const AURORA_SURFACES: readonly {
  */
 export const auroraSurfaceName = (surface: AuroraSurface): string =>
   (AURORA_SURFACES.find((entry) => entry.id === surface) ?? AURORA_SURFACES[1]).name;
-
-export const normalizeAuroraSurface = (value: unknown): AuroraSurface => {
-  if (value === "chat") return "chat";
-  if (typeof value === "string") {
-    let raw = value;
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === "string") raw = parsed;
-    } catch {
-      // not JSON — fall through to the raw string
-    }
-    if (raw.toLowerCase() === "chat") return "chat";
-  }
-  return "build";
-};
 
 /**
  * The mode the RUNTIME is told, from the two things the UI stores.
@@ -312,28 +334,6 @@ const MCP_WRITE_VERBS = [
   "upsert",
   "write",
 ];
-
-export const normalizeAgentExecutionMode = (
-  value: unknown,
-): AgentExecutionMode => {
-  if (value === "plan") return "plan";
-  if (value === "team") return "team";
-  if (value === "chat") return "chat";
-  if (typeof value === "string") {
-    let raw = value;
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === "string") raw = parsed;
-    } catch {
-      // not JSON — fall through to the raw string
-    }
-    const lower = raw.toLowerCase();
-    if (lower === "plan") return "plan";
-    if (lower === "team") return "team";
-    if (lower === "chat") return "chat";
-  }
-  return "agent";
-};
 
 /**
  * Next mode in the input-box cycle. Team is only part of the cycle when the

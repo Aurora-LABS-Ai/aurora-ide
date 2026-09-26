@@ -42,6 +42,8 @@ export type AppearanceTab = "theme" | "layout" | "text" | "colours" | "advanced"
  */
 export type PreferencesTab = "general" | "composer" | "chat";
 
+export type AgentSettingsTab = "general" | "code-index";
+
 interface AgentUiState {
   view: AgentView;
   settingsSection: SettingsSection;
@@ -57,6 +59,7 @@ interface AgentUiState {
   appearanceTab: AppearanceTab;
   /** Which Preferences category was open last, persisted for the same reason. */
   preferencesTab: PreferencesTab;
+  agentSettingsTab: AgentSettingsTab;
   /**
    * What the settings page is currently searched for. Lives here rather than
    * inside the page so the command center can hand a query over on the way in —
@@ -78,6 +81,7 @@ interface AgentUiState {
   setSettingsQuery: (query: string) => void;
   setAppearanceTab: (tab: AppearanceTab) => void;
   setPreferencesTab: (tab: PreferencesTab) => void;
+  setAgentSettingsTab: (tab: AgentSettingsTab) => void;
 }
 
 export const useAgentUiStore = create<AgentUiState>()(
@@ -88,6 +92,7 @@ export const useAgentUiStore = create<AgentUiState>()(
       settingsQuery: "",
       appearanceTab: "theme",
       preferencesTab: "general",
+      agentSettingsTab: "general",
       openSettings: (section, query) =>
         set((s) => ({
           view: "settings",
@@ -102,6 +107,7 @@ export const useAgentUiStore = create<AgentUiState>()(
       setSettingsQuery: (query) => set({ settingsQuery: query }),
       setAppearanceTab: (tab) => set({ appearanceTab: tab }),
       setPreferencesTab: (tab) => set({ preferencesTab: tab }),
+      setAgentSettingsTab: (tab) => set({ agentSettingsTab: tab }),
     }),
     {
       name: "aurora-agent-window-ui",
@@ -109,6 +115,7 @@ export const useAgentUiStore = create<AgentUiState>()(
         settingsSection: state.settingsSection,
         appearanceTab: state.appearanceTab,
         preferencesTab: state.preferencesTab,
+        agentSettingsTab: state.agentSettingsTab,
       }),
     },
   ),

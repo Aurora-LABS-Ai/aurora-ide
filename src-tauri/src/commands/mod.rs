@@ -1257,7 +1257,7 @@ pub async fn ripgrep_search(
         return Ok(RipgrepSearchResponse {
             counts: None,
             error: Some(format!(
-                "ripgrep search timed out after {}ms — narrow `pattern`, or scope the search with `path` / `glob`",
+                "ripgrep search timed out after {}ms — hidden files are included and build output may be in scope. Set `path` to your source folder or exclude generated/dependency folders with `glob` (for example, `!**/node_modules/**`)",
                 timeout.as_millis()
             )),
             files: None,
@@ -3538,6 +3538,20 @@ mod tests {
             .expect("runtime")
             .block_on(ripgrep_search(request))
             .expect("search ran")
+    }
+
+    #[test]
+    #[ignore = "read-only timing of the actual command against AURORA_INDEX_ROOT"]
+    fn reported_workspace_ripgrep_timing() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for (pattern, mode) in [("toErrorShape", "content"), (r"\bcn\(", "count"), ("toErrorShape", "content")] {
+            let started = std::time::Instant::now();
+            let request = RipgrepSearchRequest { case_insensitive: None, context_lines: None, glob: None, is_regex: Some(true), max_results: Some(60), output_mode: Some(mode.into()), path: root.clone(), pattern: pattern.into(), timeout_ms: None };
+            let response = runtime.block_on(ripgrep_search(request)).unwrap();
+            println!("{pattern} ({mode}): {}ms, success={}, returned={:?}, error={:?}", started.elapsed().as_millis(), response.success, response.returned, response.error);
+            assert!(response.success);
+        }
     }
 
     #[test]

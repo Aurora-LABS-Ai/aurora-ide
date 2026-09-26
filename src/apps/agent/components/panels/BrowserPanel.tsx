@@ -9,7 +9,10 @@
  *
  * Inspector picks arrive on the global `aurora:element-picked` event; we drop a
  * concise reference into the composer via `agw:compose-insert`. The webview is
- * bounds-synced on layout changes, hidden on tab switch, and closed on tab close.
+ * bounds-synced on layout changes and closed on tab close. Whether it is on
+ * screen is decided in one place, `services/browser/browser-visibility.ts`:
+ * this panel only reports that it mounted or unmounted, and overlays hold it
+ * hidden.
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -18,7 +21,12 @@ import { listen } from "@tauri-apps/api/event";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { useAgentSelectionStore } from "@/apps/agent/store/composer/useAgentSelectionStore";
-import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import {
+  AGENT_BROWSER_LABEL,
+  holdBrowserHidden,
+  reassertBrowserVisibility,
+  setBrowserPanelMounted,
+} from "@/apps/agent/services/browser/browser-visibility";
 import { DEV_SERVERS, useAgentBrowserHistory } from "@/apps/agent/store/workspace/useAgentBrowserHistory";
 import { drivingLabel, useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import {
@@ -27,21 +35,16 @@ import {
   deactivateInspector,
   evalBrowser,
   getBrowserUrl,
-  hideBrowser,
   listBrowserWindows,
   navigateBrowser,
   onPickedElement,
   refreshBrowser,
   setBrowserBounds,
-  showBrowser,
   type PickedElement,
 } from "@/apps/agent/services/browser/browser-service";
 
-const LABEL = "browser-agentwin";
+const LABEL = AGENT_BROWSER_LABEL;
 const HOST = "agent-window";
-
-/** Whether the embedded browser webview has been built this session. */
-let created = false;
 
 /**
  * Bounds updates, serialised.
@@ -106,45 +109,11 @@ function normalizeAddress(input: string): string {
 /** Tear down the embedded browser (called when the Browser tab is closed). */
 // eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
 export async function closeAgentBrowser(): Promise<void> {
-  created = false;
   boundsApplied = null;
   boundsPending = null;
   const { closeBrowserWindow } = await import("@/apps/agent/services/browser/browser-service");
   try {
     await closeBrowserWindow(LABEL);
-  } catch {
-    /* not open */
-  }
-}
-
-/**
- * Temporarily hide the native webview so a React overlay (e.g. the dock's `+`
- * menu) isn't occluded by it — a child webview always paints above the DOM.
- */
-// eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
-export async function hideAgentBrowser(): Promise<void> {
-  if (!created) return;
-  try {
-    await hideBrowser(LABEL);
-  } catch {
-    /* not open */
-  }
-}
-
-/**
- * Re-show the native webview after an overlay closes. Self-gating: only shows
- * when the dock is open AND the Browser tab is the live active surface, so any
- * caller (image modal, add-menu, address suggest) can call it blindly without
- * resurrecting the webview over another tab or a closed dock.
- */
-// eslint-disable-next-line react-refresh/only-export-components -- co-located webview lifecycle helper
-export async function showAgentBrowser(): Promise<void> {
-  if (!created) return;
-  const st = useAgentWorkspaceStore.getState();
-  const active = st.tabs.find((t) => t.id === st.activeTabId);
-  if (!st.dockOpen || active?.kind !== "browser") return;
-  try {
-    await showBrowser(LABEL);
   } catch {
     /* not open */
   }
@@ -214,10 +183,14 @@ export const BrowserPanel: React.FC = () => {
     if (!el) return;
 
     let disposed = false;
+    // On screen from here until unmount (overlays aside). Said FIRST, before
+    // any build: a build that finishes after this panel is gone must find the
+    // "hidden" decision already recorded.
+    setBrowserPanelMounted(true);
 
     // Ensure the embedded webview actually exists in the BACKEND before
-    // touching it. The module-level `created` flag can go stale (dev backend
-    // restart / host window recreated) — trusting it led to `setBounds`/`show`
+    // touching it. A frontend "it was built" flag goes stale (dev backend
+    // restart / host window recreated) — trusting one led to `setBounds`/`show`
     // throwing "unknown window 'browser-agentwin'". We check the live registry
     // and rebuild on a miss, so the browser (and its inspector) self-heal.
     const ensureBrowser = async () => {
@@ -234,8 +207,7 @@ export const BrowserPanel: React.FC = () => {
         try {
           await setBrowserBounds(LABEL, b.x, b.y, b.width, b.height);
           boundsApplied = b;
-          await showBrowser(LABEL);
-          created = true;
+          reassertBrowserVisibility();
           return;
         } catch {
           // Tracked but the webview is gone — fall through to a fresh build
@@ -250,7 +222,7 @@ export const BrowserPanel: React.FC = () => {
           embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
         });
         boundsApplied = b;
-        created = true;
+        reassertBrowserVisibility();
         // The layout may have moved during the async build (the rail was
         // mid-glide when the tab opened). Measure once more so the webview
         // sits where the panel is NOW, not where it was when the build began.
@@ -282,6 +254,7 @@ export const BrowserPanel: React.FC = () => {
       if (focusedRef.current) return;
       try {
         const u = await getBrowserUrl(LABEL);
+        if (disposed) return;
         if (u && u !== "about:blank") {
           setAddress(u);
           pushRecent(u);
@@ -297,7 +270,7 @@ export const BrowserPanel: React.FC = () => {
       ro.disconnect();
       window.removeEventListener("resize", resync);
       window.clearInterval(poll);
-      void hideBrowser(LABEL).catch(() => {});
+      setBrowserPanelMounted(false);
     };
   }, []);
 
@@ -358,13 +331,22 @@ export const BrowserPanel: React.FC = () => {
     return () => unlisten?.();
   }, []);
 
+  // The address dropdown drops into the page area, which the native webview
+  // paints over — hold the page hidden while it is open.
+  const suggestHold = useRef<(() => void) | null>(null);
+  const releaseSuggestHold = () => {
+    suggestHold.current?.();
+    suggestHold.current = null;
+  };
+  useEffect(() => releaseSuggestHold, []);
+
   const openSuggest = () => {
     setSuggestOpen(true);
-    void hideAgentBrowser(); // reveal the dropdown above the native page
+    if (!suggestHold.current) suggestHold.current = holdBrowserHidden();
   };
   const closeSuggest = () => {
     setSuggestOpen(false);
-    void showAgentBrowser();
+    releaseSuggestHold();
   };
 
   const navigateTo = (url: string) => {
@@ -372,8 +354,8 @@ export const BrowserPanel: React.FC = () => {
     void navigateBrowser(LABEL, url);
     pushRecent(url);
     setSuggestOpen(false);
+    releaseSuggestHold();
     inputRef.current?.blur();
-    void showAgentBrowser();
   };
 
   const go = () => navigateTo(normalizeAddress(address));
@@ -402,7 +384,6 @@ export const BrowserPanel: React.FC = () => {
     } catch {
       /* nothing to close */
     }
-    created = false;
     try {
       await createBrowserWindow({
         label: LABEL,
@@ -410,7 +391,7 @@ export const BrowserPanel: React.FC = () => {
         embed: { hostLabel: HOST, x: b.x, y: b.y, width: b.width, height: b.height },
       });
       boundsApplied = b;
-      created = true;
+      reassertBrowserVisibility();
       const normalized = address.trim() ? normalizeAddress(address) : "";
       if (normalized && normalized !== "about:blank") {
         await navigateBrowser(LABEL, normalized);

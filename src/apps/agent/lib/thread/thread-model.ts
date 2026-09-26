@@ -10,7 +10,7 @@
  *   1. the conversation's own pinned model (`ThreadSummary.model`, persisted on
  *      the thread's sidecar — written when the user picks one, and again by the
  *      runtime at the end of every turn);
- *   2. the user's default (`useSettingsStore.selectedModel`) — used by a draft
+ *   2. the user's default (`useAgentSettingsStore.selectedModel`) — used by a draft
  *      that has no thread yet, and by chats that predate per-conversation
  *      models or have never run a turn.
  *
@@ -20,7 +20,7 @@
  * picked last anywhere and sending silently ran on it.
  */
 
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
 import { splitCursorVariant } from "@/apps/agent/services/providers/cursor-variants";
@@ -126,7 +126,7 @@ export function applyChatShortlist(
 /**
  * Keep Aurora Build on a model that can actually write software.
  *
- * One field — `useSettingsStore.selectedModel` — is the default for both
+ * One field — `useAgentSettingsStore.selectedModel` — is the default for both
  * products, and picking a model anywhere writes it. That is what makes the
  * picker work at all on a fresh conversation, which has no thread of its own to
  * pin to yet. But Aurora Chat can be pointed at an image model, and Build
@@ -174,7 +174,7 @@ export function pinnedThreadModel(
  */
 export function resolveThreadModel(threadId: string | null | undefined): string {
   const chat = useAgentChatStore.getState();
-  const settings = useSettingsStore.getState();
+  const settings = useAgentSettingsStore.getState();
   const pinned = pinnedThreadModel(chat, threadId);
   const source = pinned ?? settings.selectedModel;
   const normalized = normalizeThreadModelSelection(source, settings.models);

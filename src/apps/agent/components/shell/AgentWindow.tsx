@@ -14,11 +14,12 @@ import { AgentThemeProvider } from "@/apps/agent/components/theme/AgentThemeProv
 import { AgentTitlebar } from "@/apps/agent/components/shell/AgentTitlebar";
 import { AgentShell } from "@/apps/agent/components/shell/AgentShell";
 import { SettingsPage } from "@/apps/agent/settings/SettingsPage";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { syncCursorModelsQuietly } from "@/apps/agent/services/providers/cursor-sync";
 import { registerQuestionHandler } from "@/apps/agent/services/tools/question-bridge";
 import { registerTeamViewOpener } from "@/apps/agent/services/team/team-view-bridge";
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
+import { useLocalProviderDetection } from "@/apps/agent/hooks/providers/useLocalProviderDetection";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
 import { useBackgroundProcessWatch } from "@/apps/agent/hooks/useBackgroundProcessWatch";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
@@ -59,6 +60,10 @@ export const AgentWindow: React.FC = () => {
   // Files open in this window's right rail, never in the IDE's editor.
   useAgentEditorOpen();
 
+  // Background-probe for local AI servers (Ollama, LM Studio) and fill in their
+  // provider rows. Agent-only: the editor carries no agent.
+  useLocalProviderDetection();
+
   // Dragging a file out of the Files panel and onto a composer. One coordinator
   // per window owns the pointer listeners for every source and drop zone in it.
   useAgentPathDrag();
@@ -88,7 +93,7 @@ export const AgentWindow: React.FC = () => {
   // Gated on the settings store having loaded. The mirror REPLACES this
   // provider's rows, so running it against a store that is still empty would
   // be overwritten moments later by the database read finishing.
-  const settingsReady = useSettingsStore((s) => s.isInitialized);
+  const settingsReady = useAgentSettingsStore((s) => s.isInitialized);
   useEffect(() => {
     if (!settingsReady) return;
     syncCursorModelsQuietly();
@@ -111,7 +116,7 @@ export const AgentWindow: React.FC = () => {
   // shown (and re-scope with the project). Off in Settings means off in the
   // window too: nothing polls, and any team surface still open is taken down —
   // including a `team` tab restored from a previous session.
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   useEffect(() => {
     if (!teamEnabled) {
       useAgentWorkspaceStore.getState().closeTeamTabs();

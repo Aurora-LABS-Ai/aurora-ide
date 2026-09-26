@@ -6,13 +6,17 @@
 //!
 //! ## How it fits together
 //!
-//! - [`auth`] — token lifecycle. Aurora keeps its OWN credential file at
-//!   `<root>/auth/claude-code-auth.json`. It never reads or writes the
-//!   user's `~/.claude` directory: a sign-in in Aurora is Aurora's, and a
-//!   sign-out in Aurora leaves Claude Code's own session untouched. The
-//!   sign-in is the manual PKCE flow — Aurora shows the authorize URL, the
-//!   user finishes in their browser, and pastes the code (or the whole
-//!   callback URL) back into the card. No loopback listener, no port.
+//! - [`accounts`] — Aurora's own list of Claude accounts at
+//!   `<root>/auth/claude-code-accounts.json`; one of them (main) serves
+//!   requests.
+//! - [`auth`] — token lifecycle. The sign-in is the manual PKCE flow —
+//!   Aurora shows the authorize URL, the user finishes in their browser, and
+//!   pastes the code (or the whole callback URL) back into the card. No
+//!   loopback listener, no port. The user can also press Import to copy what
+//!   Claude Code is signed into. Claude Code's `.credentials.json` is read
+//!   then, and again when refreshing an imported account (Claude Code may
+//!   already hold the newer pair), and is never written. Signing out in
+//!   Aurora leaves Claude Code's own session untouched.
 //! - [`adapter`] — [`ClaudeCodeAdapter`], a thin [`StreamingApiClient`]
 //!   that resolves a fresh access token per turn, sends it as
 //!   `Authorization: Bearer`, adds the OAuth beta header, keeps the
@@ -24,8 +28,10 @@
 //! [`StreamingApiClient`]: crate::agent_runtime::api_client::StreamingApiClient
 //! [`ClaudeCodeAdapter`]: adapter::ClaudeCodeAdapter
 
+pub mod accounts;
 pub mod adapter;
 pub mod auth;
+pub mod models;
 pub mod usage;
 
 /// The provider type the frontend stores on the row. Also the row id of the
@@ -38,8 +44,9 @@ pub const CLAUDE_CODE_PROVIDER_TYPE: &str = "claude-code";
 /// subscription-entitled.
 pub const CLAUDE_CODE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
-/// Where the browser sign-in starts.
-pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+/// Where the browser sign-in starts. Claude Code 2.1.282 moved it here from
+/// `claude.ai/oauth/authorize` (the `thirdparty` copy still has the old one).
+pub const CLAUDE_AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 
 /// Authorization-code and refresh-token exchange.
 pub const CLAUDE_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
@@ -80,6 +87,9 @@ pub const LOGIN_SCOPES: &[&str] = &[
 
 /// Scopes asked for on refresh. The refresh grant allows scope expansion, so
 /// this is the full subscriber set rather than whatever was first granted.
+/// If the server refuses it (`invalid_scope`), the refresh is retried once
+/// with the token's own scopes, as Claude Code 2.1.282 does. Claude Code also
+/// asks for `user:plugins`; Aurora has no use for it and leaves it out.
 pub const REFRESH_SCOPES: &[&str] = &[
     "user:profile",
     "user:inference",
@@ -94,5 +104,6 @@ pub const REFRESH_SCOPES: &[&str] = &[
 pub const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /// What the requests call themselves. The endpoint is served to Claude Code
-/// clients, and the CLI's own identifier is what it is used to seeing.
-pub const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.2 (external, cli)";
+/// clients, and the CLI's own identifier is what it is used to seeing. Same
+/// format as `utils/http.ts`; version matched to the installed 2.1.282.
+pub const CLAUDE_CODE_USER_AGENT: &str = "claude-cli/2.1.282 (external, cli)";

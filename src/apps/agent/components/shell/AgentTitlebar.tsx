@@ -15,7 +15,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { auroraSurfaceName } from "@/apps/agent/services/runtime/agent-execution-mode";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 /** Windows-style caption glyphs — tiny strokes so they stay crisp at 1px. */
 const GLYPHS = {
@@ -48,7 +48,7 @@ export const AgentTitlebar: React.FC = () => {
   // The window is titled with the product it is showing, not with the window's
   // own name. One window hosts both, and "Aurora Agent" over Aurora Chat named
   // something the user could not see anywhere else in the interface.
-  const title = auroraSurfaceName(useSettingsStore((s) => s.auroraSurface));
+  const title = auroraSurfaceName(useAgentSettingsStore((s) => s.auroraSurface));
 
   // The OS title follows the strip.
   //

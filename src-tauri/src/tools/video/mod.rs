@@ -83,7 +83,7 @@ pub fn provider<'a>(
         .find(|p| {
             Vendor::of(p.api_format).is_some_and(|v| wanted.is_none_or(|w| v == w))
                 && p.ready()
-                && id.is_none_or(|id| p.id == id || p.name == id)
+                && id.is_none_or(|id| p.is_named(id.trim()))
         })
         .ok_or_else(|| match wanted {
             Some(Vendor::Qwen) => "No ready Qwen provider. Add your DashScope API key under Settings > Providers > Image providers > Qwen. Wan 3.0 video is pay-as-you-go.".into(),
@@ -99,7 +99,7 @@ impl ToolExecutor for VideoTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema { name:self.name().into(),description:"Generate a video with native MiniMax or Qwen (Wan 3.0), list available video models, or check a saved task. Chat only. The model name decides the service and the two rosters do not overlap; Wan 3.0 models need a Qwen/DashScope key, MiniMax models need a MiniMax key. op='list' is read-only and reports configuration, not verified quota. op='generate' creates ONE billed task and returns a durable jobId; default MiniMax-Hailuo-2.3 uses the subscription-compatible v1 API (6s, 768P). Never silently switch to H3: H3/H3-Max use pay-as-you-go v2. op='query' with jobId checks progress and saves completed MP4 locally; query again later rather than generating again. A timeout during submission is ambiguous: do not automatically resubmit. First/last/reference images may name a conversation asset, its position, or a public HTTP(S) URL. Hailuo 2.3 supports text or first frame only; Fast requires first frame. H3 supports text, first/last frames or references, never frames mixed with references. H3 references: up to 9 images, 3 videos and 3 audio clips; video/audio must be public URLs or mm_file:// ids, 2-15s each and at most 15s total per kind. H3 reference images 256-5760px, ratio 0.4-2.5, at most 30MB; Hailuo images short edge >300px, ratio 0.4-2.5, under 20MB. Local images are validated; MiniMax validates remote media. Do not invent source URLs or claim to have watched generated video.".into(),input_schema:json!({"type":"object","properties":{
             "op":{"type":"string","enum":["list","generate","query"],"default":"generate"},
-            "provider":{"type":"string","description":"MiniMax provider id or name; optional when generating, queries use the saved provider."},
+            "provider":{"type":"string","description":"The video provider to call, by the id or name op='list' shows. Pass it whenever the user names one; queries use the saved provider."},
             "jobId":{"type":"string","description":"Saved job id for op=query."},
             "prompt":{"type":"string","description":"Required for generate. Up to 2000 characters for Hailuo, 7000 for H3."},
             "model":{"type":"string","enum":catalog::all_models(),"default":"MiniMax-Hailuo-2.3"},

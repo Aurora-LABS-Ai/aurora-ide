@@ -86,19 +86,45 @@ fn blank_comments_and_strings(src: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// True when this slice of code reaches Aurora's database.
+/// True when this slice of code reaches the database, the disk, or a lock that
+/// off-thread commands hold while they read the disk.
+///
+/// Only the command's own body is read. A call into a helper that reads the disk
+/// (`store::list(..)`, `explorer.refresh()`) is invisible here, which is why the
+/// explorer's shared lock is listed by name: every explorer command that walks
+/// the tree holds it, so a main-thread command waiting on it freezes the window
+/// just as surely as reading the disk itself.
 fn touches_database(code: &str) -> Option<String> {
     for marker in [
         "Mutex<Database>",
         "with_db(",
         "db.lock()",
         "database().lock()",
+        "std::fs::",
+        "fs::read",
+        "fs::write",
+        "fs::create_dir",
+        "fs::remove",
+        "File::open",
+        "File::create",
+        "lock_manager()",
     ] {
-        if code.contains(marker) {
+        if contains_name(code, marker) {
             return Some(marker.to_string());
         }
     }
     None
+}
+
+/// `code` contains `marker` where it starts a name — so `fs::read` matches
+/// `std::fs::read` but not `launch_prefs::read`.
+fn contains_name(code: &str, marker: &str) -> bool {
+    code.match_indices(marker).any(|(at, _)| {
+        !code[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// Find every plain-`fn` `#[tauri::command]` in `src` that reaches the database.
@@ -210,7 +236,8 @@ mod tests {
         assert!(
             findings.is_empty(),
             "These commands are answered on the MAIN thread and wait on the database, \
-             which freezes the window (the close button included):\n{}\n\n\
+             the disk or the explorer lock, which freezes the window (the close button \
+             included):\n{}\n\n\
              Fix by writing `#[tauri::command(async)]`, or by making the function \
              `pub async fn`. If the value is already held in memory, read it from there \
              instead — see `shell_profiles_get`.",
@@ -235,6 +262,37 @@ mod tests {
         let found = scan_source("bad.rs", bad);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].function, "shell_profiles_get");
+    }
+
+    #[test]
+    fn the_guard_catches_disk_reads_and_the_explorer_lock() {
+        // The explorer shape: the disk walk sits behind the shared lock, so the
+        // lock is the only thing visible in the body.
+        let bad = r#"
+            #[tauri::command]
+            pub fn explorer_refresh(explorer_state: State<'_, ExplorerStateHandle>) -> Result<Snap, String> {
+                let mut explorer = explorer_state.lock_manager();
+                explorer.refresh()
+            }
+
+            #[tauri::command]
+            pub fn reads_a_file(path: String) -> Result<String, String> {
+                std::fs::read_to_string(path).map_err(|e| e.to_string())
+            }
+        "#;
+        let found = scan_source("bad.rs", bad);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].evidence, "lock_manager()");
+        assert_eq!(found[1].function, "reads_a_file");
+
+        // A module whose name merely ends in `fs` is not the filesystem.
+        let unrelated = r#"
+            #[tauri::command]
+            pub fn reads_prefs() -> Prefs {
+                launch_prefs::read()
+            }
+        "#;
+        assert_eq!(scan_source("unrelated.rs", unrelated), Vec::new());
     }
 
     #[test]

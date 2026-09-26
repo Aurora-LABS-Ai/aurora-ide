@@ -16,10 +16,10 @@ import {
 import { OPENCODE_PROVIDER_ID } from "@/apps/agent/services/providers/opencode";
 import type { ProviderConfig } from "@/kernel/services/providers/types";
 import {
-  useSettingsStore,
+  useAgentSettingsStore,
   type LLMModel,
   type LLMProvider,
-} from "@/kernel/store/useSettingsStore";
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const model = (temperature?: number): LLMModel =>
   ({
@@ -155,8 +155,22 @@ describe("resolveModelRequestKnobs", () => {
 });
 
 describe("resolveModelRequest", () => {
+  it("preserves a colon inside a configured model key", () => {
+    const previous = useAgentSettingsStore.getState();
+    const row = { ...model(), modelKey: "qwen:latest" };
+    const provider = { id: "p", name: "Local", baseUrl: "http://localhost:11434", apiKey: "", model: "other", providerType: "ollama", enabled: true } as LLMProvider;
+    useAgentSettingsStore.setState({ providers: [provider], models: [row] });
+    try {
+      const resolved = resolveModelRequest("p:qwen:latest", false);
+      expect(resolved?.providerConfig.model).toBe("qwen:latest");
+      expect(resolved?.model).toBe(row);
+    } finally {
+      useAgentSettingsStore.setState({ providers: previous.providers, models: previous.models });
+    }
+  });
+
   it("keeps a fallback provider, model profile, and model-level wire together", () => {
-    const previous = useSettingsStore.getState();
+    const previous = useAgentSettingsStore.getState();
     const provider = {
       id: "active",
       name: "Mixed gateway",
@@ -184,7 +198,7 @@ describe("resolveModelRequest", () => {
       },
     };
 
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       providers: [provider],
       models: [activeModel],
       selectedModel: "active:reasoner",
@@ -204,7 +218,7 @@ describe("resolveModelRequest", () => {
         effort: "high",
       });
     } finally {
-      useSettingsStore.setState({
+      useAgentSettingsStore.setState({
         providers: previous.providers,
         models: previous.models,
         selectedModel: previous.selectedModel,

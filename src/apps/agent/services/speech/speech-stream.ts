@@ -25,7 +25,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import type { SpeechLiveSettings } from "@/kernel/store/useSettingsStore";
+import type { SpeechLiveSettings } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 /** What the Rust side needs to start the program. */
 export interface SpeechStreamConfig {

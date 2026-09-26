@@ -49,6 +49,11 @@ import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
+import { MediaRequest } from "@/apps/agent/components/tool-views/MediaRequest";
+import {
+  isMediaTool,
+  mediaRequestFacts,
+} from "@/apps/agent/components/tool-views/media-request";
 import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
 import { aspectRatioOfSize } from "@/apps/agent/services/providers/image-providers";
 import { aspectRatioOfVideoRatio } from "@/apps/agent/services/gallery/video-service";
@@ -1183,10 +1188,28 @@ const StandardToolCallCard: React.FC<{
       : aspectRatioOfSize(
           typeof parsedArgs.size === "string" ? parsedArgs.size : undefined,
         );
+  // A picture or video call shows what was asked for as a caption, not as
+  // chips (`MediaRequest`). Its title names the card on the row once settled;
+  // while it runs, the live label already quotes it.
+  const isMedia = isMediaTool(call.name);
+  const mediaPrompt = isMedia
+    ? typeof parsedArgs.prompt === "string"
+      ? parsedArgs.prompt.trim()
+      : (partialString(call.arguments, "prompt") ?? "").trim()
+    : "";
+  const mediaFacts = useMemo(
+    () => (isMedia ? mediaRequestFacts(call.name, parsedArgs, call.result ?? undefined) : []),
+    [isMedia, call.name, parsedArgs, call.result],
+  );
+  const mediaTitle =
+    isMedia && status !== "running" && typeof parsedArgs.title === "string"
+      ? parsedArgs.title.trim()
+      : "";
   const argChips = useMemo(
     () =>
       Object.entries(parsedArgs).filter(
         ([k]) =>
+          !isMedia &&
           !HIDDEN_ARG_KEYS.has(k) &&
           !(resultStatesRange && RANGE_ARG_KEYS.has(k)) &&
           !(isShellTool(call.name) && SHELL_ARG_KEYS.has(k)) &&
@@ -1195,8 +1218,9 @@ const StandardToolCallCard: React.FC<{
           // three times inside one card.
           !(k === "pattern" && searchPattern !== ""),
       ),
-    [parsedArgs, call.name, resultStatesRange, searchPattern],
+    [parsedArgs, call.name, resultStatesRange, searchPattern, isMedia],
   );
+  const hasMediaRequest = mediaPrompt !== "" || mediaFacts.length > 0;
 
   const summary = useMemo(() => {
     if (status === "running") return ""; // the shimmer line speaks for a live call
@@ -1261,7 +1285,15 @@ const StandardToolCallCard: React.FC<{
   // touched several things always has something to open even when its result
   // parsed to nothing.
   const hasDetail =
-    hasResult || isMultiTarget || argChips.length > 0 || !!streamingPreview || showLiveShell;
+    hasResult ||
+    isMultiTarget ||
+    argChips.length > 0 ||
+    hasMediaRequest ||
+    // The placeholder is the body while the picture is on its way, even
+    // before any argument worth captioning has finished streaming.
+    showImagePlaceholder ||
+    !!streamingPreview ||
+    showLiveShell;
   // Collapsed by DEFAULT in every state — running, done, and failed alike. A
   // tool card is a quiet one-line row until the reader asks for more; they click
   // it open to inspect args, the live write stream, or the result.
@@ -1402,8 +1434,13 @@ const StandardToolCallCard: React.FC<{
             </ToolTargetReel>
           </span>
         ) : (
-          (singleChip || searchPattern) && (
+          (singleChip || searchPattern || mediaTitle) && (
             <span className="agw-tool-targets">
+              {mediaTitle && (
+                <span className="agw-tool-chip agw-tool-chip-title" title={mediaTitle}>
+                  {mediaTitle}
+                </span>
+              )}
               {singleChip && (
                 <span className="agw-tool-chip">
                   {singleChip.kind === "folder" ? (
@@ -1674,6 +1711,10 @@ const StandardToolCallCard: React.FC<{
               ) : (
                 <ToolResultView parsed={parsed} activeMultiFileIndex={selectedFileIndex} />
               )}
+
+              {/* Under the picture, as its caption: the picture is the answer,
+                  the request is how it was asked for. */}
+              {hasMediaRequest && <MediaRequest prompt={mediaPrompt} facts={mediaFacts} />}
             </div>
           </motion.div>
         )}

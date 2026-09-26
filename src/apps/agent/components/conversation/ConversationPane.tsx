@@ -34,7 +34,7 @@ import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { useIdleProcessReport } from "@/apps/agent/hooks/useIdleProcessReport";
 import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { useAgentAutoScroll } from "@/apps/agent/hooks/conversation/useAgentAutoScroll";
 import {
@@ -203,9 +203,9 @@ export const ConversationPane: React.FC = () => {
   // plain-language line of what the agent is doing ("Editing LeftRail.tsx"),
   // then snaps back to the real title the instant streaming ends. Opt-out in
   // Settings → Preferences.
-  const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
+  const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
   /** Aurora Chat: no workspace, so no project-shaped header controls. */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const activity = useAgentChatStore((s) =>
     currentThreadId ? s.activityByThread[currentThreadId] : undefined,
   );
@@ -214,6 +214,11 @@ export const ConversationPane: React.FC = () => {
   // A named file/folder target renders its icon INLINE in the title (like the
   // tool cards) — the streaming matrix stays put in the glyph slot, never swapped.
   const activityName = isActivity ? activity?.name : undefined;
+  // The icon is picked from a FILE NAME, and `name` is display text: a call that
+  // reads several files says "sidecar.py +2", whose "extension" is `py +2`, so
+  // every icon pack fell back to the blank file glyph. The first target's own
+  // basename is the file the text leads with.
+  const activityIconName = isActivity ? (activity?.targets?.[0]?.name ?? activityName) : undefined;
   const messages = useMemo(
     () => currentThread?.messages ?? [],
     [currentThread],
@@ -438,10 +443,10 @@ export const ConversationPane: React.FC = () => {
                     <span style={{ flexShrink: 0 }}>{activity.verb}</span>
                   )}
                   {activity?.kind === "folder" ? (
-                    <FolderIcon name={activityName} className="agw-file-ico" />
+                    <FolderIcon name={activityIconName ?? activityName} className="agw-file-ico" />
                   ) : (
                     <FileIcon
-                      name={activityName}
+                      name={activityIconName ?? activityName}
                       path={activity?.path}
                       className="agw-file-ico"
                     />
@@ -639,6 +644,8 @@ export const ConversationPane: React.FC = () => {
                         streaming={streaming}
                         workedMs={isAssistant ? turnWorkedMs(turn) : null}
                         startedAt={isAssistant ? turn.startedAt : undefined}
+                        outputTokens={isAssistant ? turn.outputTokens : undefined}
+                        outputTokensEstimated={isAssistant ? turn.outputTokensEstimated : undefined}
                         showActions={showActions}
                         onRetry={canRetry ? () => void retryTurn(turn) : undefined}
                       />

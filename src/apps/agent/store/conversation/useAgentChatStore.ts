@@ -1,10 +1,8 @@
 /**
  * Agent Window — project-scoped chat store (feature state).
  *
- * The agent window is a SEPARATE OS window with its own JS context, so it gets
- * its own chat store rather than sharing the IDE's `useThreadStore`. This keeps
- * the two windows from fighting over a shared `currentThreadId` and enforces the
- * core architectural rule: **conversations are scoped to a project path**.
+ * The single owner of conversation state in the frontend. It enforces the core
+ * architectural rule: **conversations are scoped to a project path**.
  *
  * Everything here is keyed on `projectRoot` (the workspace the window was opened
  * for, passed in via `?ws=`):
@@ -30,7 +28,7 @@ import {
   rememberSurfaceThread,
 } from "@/apps/agent/lib/thread/surface-resume";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
-import { useSettingsStore, whenSettingsReady } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, whenAgentSettingsReady } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { databaseService } from "@/kernel/services/database";
 import { AGENT_LAST_WORKSPACE_KEY } from "@/apps/agent/adapters/window";
 import {
@@ -63,7 +61,7 @@ import type {
  * store's conversations after a switch.
  */
 function currentSurface(): AuroraSurface {
-  return useSettingsStore.getState().auroraSurface;
+  return useAgentSettingsStore.getState().auroraSurface;
 }
 
 function bindRuntimeWorkspace(projectRoot: string | null): void {
@@ -437,7 +435,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // without waiting asked the default — Build — so a window reopening on
     // Aurora Chat filled its rail with Build's conversations and kept them,
     // because nothing lists them again when the real answer arrives.
-    await whenSettingsReady();
+    await whenAgentSettingsReady();
     // Sequential, not concurrent: `loadKnownProjects` reads the list
     // `refreshThreads` just fetched instead of scanning every conversation
     // again for itself. Run together they raced, both missed, and both
@@ -537,7 +535,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       error: null,
     });
 
-    useSettingsStore.getState().setAuroraSurface(surface);
+    useAgentSettingsStore.getState().setAuroraSurface(surface);
     await get().refreshThreads();
 
     // Resume, but only if it is still RECENT. Alvan's rule: a conversation you
@@ -818,7 +816,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   noteTurnComplete: (threadId) => {
     // Respect the user's preference — off silences both the header flash and the
     // rail "done" dot. Read non-reactively (this runs once per turn end).
-    if (!useSettingsStore.getState().notifyOnTurnComplete) return;
+    if (!useAgentSettingsStore.getState().notifyOnTurnComplete) return;
     const state = get();
     // Resolve a friendly title from whatever source currently knows it.
     const listRow =
@@ -884,7 +882,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       // The seed, read at the moment of creation. From here on the
       // conversation carries its own answer and this setting is irrelevant to
       // it — which is what lets the instruction sit in the cached prefix.
-      surface === "chat" && useSettingsStore.getState().deepResearchNext,
+      surface === "chat" && useAgentSettingsStore.getState().deepResearchNext,
     );
     set({ currentThreadId: thread.id, currentThread: thread });
     return thread.id;

@@ -12,7 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { LLMProvider } from "@/kernel/store/useSettingsStore";
+import type { LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   creditsToTokens,
   deriveAtlasOrigin,

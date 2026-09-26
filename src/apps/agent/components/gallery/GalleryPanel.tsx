@@ -17,7 +17,7 @@ import {
   saveGalleryMedia,
 } from "@/apps/agent/services/gallery/gallery-actions";
 import { useGallery } from "@/apps/agent/hooks/gallery/useGallery";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
   filterGallery,
@@ -79,7 +79,7 @@ const GallerySection: React.FC<{
 
 // The guard also covers a persisted Gallery tab restored while Build is open.
 export const GalleryPanel: React.FC = () => {
-  const chat = useSettingsStore((state) => state.auroraSurface) === "chat";
+  const chat = useAgentSettingsStore((state) => state.auroraSurface) === "chat";
   return chat ? <ChatGallery /> : null;
 };
 

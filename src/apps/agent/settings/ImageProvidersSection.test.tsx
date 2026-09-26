@@ -10,8 +10,8 @@ import type { VideoCatalog } from "@/apps/agent/services/providers/video-catalog
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), addImageModel: vi.fn() }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({ auroraInvoke: mocks.invoke }));
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: (select: (state: unknown) => unknown) =>
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: (select: (state: unknown) => unknown) =>
     select({
       addImageModel: mocks.addImageModel,
       updateImageProvider: vi.fn(),

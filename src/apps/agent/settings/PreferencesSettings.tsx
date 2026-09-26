@@ -6,7 +6,7 @@
  * of this kind (notifications, status, motion) land here as they're built, so
  * they have one predictable home instead of scattering across other pages.
  *
- * All toggles read/write the shared `useSettingsStore` so they persist and stay
+ * All toggles read/write the shared `useAgentSettingsStore` so they persist and stay
  * in lockstep with the IDE.
  *
  * Divided into categories the way Appearance is, and for the same reason: the
@@ -20,8 +20,12 @@
 import React, { useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import { useSettingsStore, type TitleMakerMode } from "@/kernel/store/useSettingsStore";
-import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
+import { useAgentSettingsStore, type TitleMakerMode } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import {
+  useAgentThemeStore,
+  type TranscriptReasoning,
+  type TranscriptTextPace,
+} from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentTypingStore } from "@/apps/agent/store/composer/useAgentTypingStore";
 import {
   refineConfigured,
@@ -97,11 +101,11 @@ const TABS: { id: PreferencesTab; label: string; icon: AgentIconName }[] = [
 ];
 
 export const PreferencesSettings: React.FC = () => {
-  const notifyOnTurnComplete = useSettingsStore((s) => s.notifyOnTurnComplete);
-  const setNotifyOnTurnComplete = useSettingsStore((s) => s.setNotifyOnTurnComplete);
+  const notifyOnTurnComplete = useAgentSettingsStore((s) => s.notifyOnTurnComplete);
+  const setNotifyOnTurnComplete = useAgentSettingsStore((s) => s.setNotifyOnTurnComplete);
 
-  const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
-  const setShowActivityInTitle = useSettingsStore((s) => s.setShowActivityInTitle);
+  const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
+  const setShowActivityInTitle = useAgentSettingsStore((s) => s.setShowActivityInTitle);
 
   // Transcript layout. The two live in different stores on purpose: the spine is
   // appearance (and so resets with the rest of it), while chapters change the
@@ -111,8 +115,23 @@ export const PreferencesSettings: React.FC = () => {
   const setTranscriptSpine = useAgentThemeStore((s) => s.setTranscriptSpine);
   const transcriptStickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
   const setTranscriptStickyUser = useAgentThemeStore((s) => s.setTranscriptStickyUser);
-  const transcriptChapters = useSettingsStore((s) => s.transcriptChapters);
-  const setTranscriptChapters = useSettingsStore((s) => s.setTranscriptChapters);
+  const transcriptReasoning = useAgentThemeStore((s) => s.transcriptReasoning);
+  const setTranscriptReasoning = useAgentThemeStore((s) => s.setTranscriptReasoning);
+  const transcriptToolRunsOpen = useAgentThemeStore((s) => s.transcriptToolRunsOpen);
+  const setTranscriptToolRunsOpen = useAgentThemeStore((s) => s.setTranscriptToolRunsOpen);
+  const transcriptActionsVisible = useAgentThemeStore((s) => s.transcriptActionsVisible);
+  const setTranscriptActionsVisible = useAgentThemeStore((s) => s.setTranscriptActionsVisible);
+  const transcriptTimestamps = useAgentThemeStore((s) => s.transcriptTimestamps);
+  const setTranscriptTimestamps = useAgentThemeStore((s) => s.setTranscriptTimestamps);
+  const transcriptSmoothTools = useAgentThemeStore((s) => s.transcriptSmoothTools);
+  const setTranscriptSmoothTools = useAgentThemeStore((s) => s.setTranscriptSmoothTools);
+  const transcriptTextPace = useAgentThemeStore((s) => s.transcriptTextPace);
+  const setTranscriptTextPace = useAgentThemeStore((s) => s.setTranscriptTextPace);
+  const transcriptTurnSummary = useAgentThemeStore((s) => s.transcriptTurnSummary);
+  const setTranscriptTurnSummary = useAgentThemeStore((s) => s.setTranscriptTurnSummary);
+  const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
+  const transcriptChapters = useAgentSettingsStore((s) => s.transcriptChapters);
+  const setTranscriptChapters = useAgentSettingsStore((s) => s.setTranscriptChapters);
 
   // Startup surface. Not a store: it lives in a boot-config FILE that Rust must
   // read before the database exists, so it is loaded once on mount and written
@@ -184,13 +203,13 @@ export const PreferencesSettings: React.FC = () => {
   const setReplySuggestionsEnabled = useAgentRefineStore((s) => s.setReplySuggestionsEnabled);
 
   // Chat titles (shared store — the runtime reads these on a chat's first message).
-  const titleMode = useSettingsStore((s) => s.titleMakerMode);
-  const titleBaseUrl = useSettingsStore((s) => s.titleMakerBaseUrl);
-  const titleApiKey = useSettingsStore((s) => s.titleMakerApiKey);
-  const titleModel = useSettingsStore((s) => s.titleMakerModel);
-  const titleLocalModel = useSettingsStore((s) => s.titleMakerLocalModel);
-  const titleLocalChatFormat = useSettingsStore((s) => s.titleMakerLocalChatFormat);
-  const setTitleMaker = useSettingsStore((s) => s.setTitleMaker);
+  const titleMode = useAgentSettingsStore((s) => s.titleMakerMode);
+  const titleBaseUrl = useAgentSettingsStore((s) => s.titleMakerBaseUrl);
+  const titleApiKey = useAgentSettingsStore((s) => s.titleMakerApiKey);
+  const titleModel = useAgentSettingsStore((s) => s.titleMakerModel);
+  const titleLocalModel = useAgentSettingsStore((s) => s.titleMakerLocalModel);
+  const titleLocalChatFormat = useAgentSettingsStore((s) => s.titleMakerLocalChatFormat);
+  const setTitleMaker = useAgentSettingsStore((s) => s.setTitleMaker);
   const [showTitleKey, setShowTitleKey] = React.useState(false);
 
   // Whether titles use their OWN model. Stored as "a path, or empty" — one
@@ -853,7 +872,7 @@ export const PreferencesSettings: React.FC = () => {
       <SettingsSection
         icon="message"
         title="Transcript"
-        description="How a reply is laid out as you read it. All three are off to start, which is the layout you have today."
+        description="How a reply is laid out as you read it. Everything here starts at the layout you have today."
       >
         <SettingsRow
           label="Timeline spine"
@@ -874,6 +893,109 @@ export const PreferencesSettings: React.FC = () => {
             checked={transcriptStickyUser}
             onChange={setTranscriptStickyUser}
             ariaLabel="Pin the user message to the top while its reply scrolls"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Reasoning"
+          hint={
+            transcriptReasoning === "hidden"
+              ? "The model's reasoning isn't drawn. It still reasons, and the reply still shows it's working while it does."
+              : transcriptReasoning === "folded"
+                ? "Reasoning stays folded to its “Thought 12s” line, even while the model is thinking. Click the line to read it."
+                : "Reasoning opens while the model is thinking and folds once it moves on. Click to open or fold it yourself."
+          }
+        >
+          <AgwSegmented<TranscriptReasoning>
+            value={transcriptReasoning}
+            ariaLabel="How the model's reasoning is shown"
+            options={[
+              { value: "live", label: "Auto" },
+              { value: "folded", label: "Folded" },
+              { value: "hidden", label: "Hidden" },
+            ]}
+            onChange={setTranscriptReasoning}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Smooth tool arrival"
+          hint={
+            reduceMotion
+              ? "New tool calls appear without the fade because Reduce motion is on. A finished run still stays open for a moment before it folds."
+              : "New tool calls fade in one after another instead of all landing at once, and a finished run stays open for a moment before it folds. Helps most with fast models that call several tools together."
+          }
+        >
+          <AgwSwitch
+            checked={transcriptSmoothTools}
+            onChange={setTranscriptSmoothTools}
+            ariaLabel="Fade tool calls in one after another"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Text streaming"
+          hint={
+            transcriptTextPace === "steady"
+              ? "Text moves at the speed the model writes it, evenly, a fifth of a second behind. A burst is spread out instead of jumping in."
+              : transcriptTextPace === "instant"
+                ? "Every piece of text appears the moment it arrives, with no smoothing."
+                : "Text eases in: each burst rushes in, then slows as it catches up."
+          }
+        >
+          <AgwSegmented<TranscriptTextPace>
+            value={transcriptTextPace}
+            ariaLabel="How streamed text is revealed"
+            options={[
+              { value: "eased", label: "Eased" },
+              { value: "steady", label: "Steady" },
+              { value: "instant", label: "Instant" },
+            ]}
+            onChange={setTranscriptTextPace}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Keep tool runs open"
+          hint="A run of three or more tool calls stays expanded after it finishes, instead of folding to its “5 calls · 5 done” line. Long runs scroll inside their own box, so the reply doesn't grow."
+        >
+          <AgwSwitch
+            checked={transcriptToolRunsOpen}
+            onChange={setTranscriptToolRunsOpen}
+            ariaLabel="Keep finished tool runs expanded"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Always show message actions"
+          hint="Show Copy and Retry under each message at full strength. Off, they stay dimmed until you point at the message."
+        >
+          <AgwSwitch
+            checked={transcriptActionsVisible}
+            onChange={setTranscriptActionsVisible}
+            ariaLabel="Always show Copy and Retry at full strength"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Show reply times"
+          hint="Show when each reply started, next to how long it took: “2:14 PM · Worked 4m”. Replies from earlier days include the date."
+        >
+          <AgwSwitch
+            checked={transcriptTimestamps}
+            onChange={setTranscriptTimestamps}
+            ariaLabel="Show the time each reply started"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Turn summary"
+          hint="On the right of a finished reply's footer, across from Copy and Retry, say what the reply did: “3 files changed +148 −11 · 3 commands · 1,503 tokens generated”. Only replies that used tools, and only calls that succeeded, are counted."
+        >
+          <AgwSwitch
+            checked={transcriptTurnSummary}
+            onChange={setTranscriptTurnSummary}
+            ariaLabel="Show a summary line under each finished reply"
           />
         </SettingsRow>
 

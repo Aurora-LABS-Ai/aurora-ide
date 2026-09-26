@@ -488,3 +488,52 @@
   user-select: none;
 }
 
+/* An assistant turn's footer row: the action group on the left, the turn
+   summary (when on) pushed to the right of the SAME row. When the two no
+   longer fit side by side, the summary wraps under the actions and stays
+   right-aligned rather than squeezing either one. */
+.agw-msg-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+}
+
+/* "3 files changed +148 −11 · 3 commands · 1,503 tokens generated" at the right
+   of a finished turn's footer (Transcript → "Turn summary"). A statement, not a
+   control: no border or hover, the same quiet colour as "Worked 4m", and the
+   line counts in the diff colours every edit row already uses. */
+.agw-turn-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  margin-left: auto;
+  gap: 2px 8px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-turn-summary-add {
+  color: var(--agw-added);
+}
+.agw-turn-summary-del {
+  color: var(--agw-removed);
+}
+.agw-turn-summary-sep {
+  color: var(--agw-border-strong);
+}
+
+/* "2:14 PM" beside it (Transcript → "Show reply times"). The same quiet
+   treatment: a fact to glance at, never louder than the actions. */
+.agw-msg-time {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 2px;
+  padding: 0 2px;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+}
+

@@ -469,7 +469,7 @@ export const imageProviderReady = (provider: ImageProvider): boolean =>
     (provider.baseUrl.trim().length > 0 && (provider.apiKey ?? "").trim().length > 0));
 
 /**
- * Every image provider id carries this prefix (`useSettingsStore.addImageProvider`),
+ * Every image provider id carries this prefix (`useAgentSettingsStore.addImageProvider`),
  * so a conversation pin can be told apart from a language-model pin without
  * consulting either list. `"img-…:gpt-image-1.5"` is a picture-making chat.
  */

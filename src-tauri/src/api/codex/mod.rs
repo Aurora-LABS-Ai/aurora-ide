@@ -33,6 +33,7 @@
 pub mod accounts;
 pub mod adapter;
 pub mod auth;
+pub mod models;
 pub mod usage;
 
 /// OAuth client id registered for Codex CLI. Third-party Codex clients

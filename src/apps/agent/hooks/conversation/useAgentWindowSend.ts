@@ -28,7 +28,7 @@ import {
   type PromptOverhead,
   type ToolCallRequest,
 } from "@/apps/agent/services";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequest,
@@ -511,7 +511,7 @@ function buildMcpDirective(serverNames: string[]): string | null {
  * title wins (and on failure the derived title stands).
  */
 async function maybeGenerateTitle(threadId: string, firstMessage: string): Promise<void> {
-  const s = useSettingsStore.getState();
+  const s = useAgentSettingsStore.getState();
   if (s.titleMakerMode === "off" || !firstMessage.trim()) return;
 
   try {
@@ -738,7 +738,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
   const reject = useCallback(() => resolveApproval(false), [resolveApproval]);
   const approveAlways = useCallback(() => {
     const tool = pendingApproval?.toolName;
-    if (tool) useSettingsStore.getState().setToolApproval(tool, "auto");
+    if (tool) useAgentSettingsStore.getState().setToolApproval(tool, "auto");
     resolveApproval(true);
   }, [pendingApproval, resolveApproval]);
 
@@ -757,7 +757,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const seed = bound ? bound.getSeed() : store.currentThread;
     if (!threadId || !seed || store.liveTurns[threadId]) return;
 
-    const settings = useSettingsStore.getState();
+    const settings = useAgentSettingsStore.getState();
     // Compaction is a real model call on this conversation's history, so it
     // rides the conversation's own model — not whichever one is selected now.
     const modelSelection = resolveThreadModel(threadId);
@@ -1033,7 +1033,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         if (steeringImage) blocks.push(steeringImage);
         if (steeringSelection.explicitSkillKeys.length > 0) {
           try {
-            const s = useSettingsStore.getState();
+            const s = useAgentSettingsStore.getState();
             const resolved = await resolveSkillsForPrompt({
               enabledSkillToggles: getWorkspaceSkillToggles(s.skillToggles, steeringRoot),
               explicitSkillKeys: steeringSelection.explicitSkillKeys,
@@ -1113,7 +1113,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
     const store = useAgentChatStore.getState();
 
-    const settings = useSettingsStore.getState();
+    const settings = useAgentSettingsStore.getState();
 
     // Execution mode for this turn. The agent window has NO separate "Lead" and
     // no mode toggle — the chat model in the selector IS the Lead. So enabling
@@ -1741,6 +1741,18 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // compaction it triggered. Marking is free; the refetch happens
             // only while the card is actually open.
             context.invalidateBreakdown(threadId);
+            // The transcript's turn summary counts what this turn generated.
+            // Every request of the turn lands on this one streaming message, so
+            // they are added up here; a reload reads the same numbers back per
+            // message from the session file.
+            patchMessage(assistantId, (m) => ({
+              ...m,
+              usage: {
+                input_tokens: (m.usage?.input_tokens ?? 0) + usage.promptTokens,
+                output_tokens: (m.usage?.output_tokens ?? 0) + usage.completionTokens,
+                estimated: m.usage?.estimated === true || usage.estimated === true || undefined,
+              },
+            }));
           },
           onQueuedMessageInjected: (text, chips, origin) => {
             // The runtime drained the queue and stapled the user's text onto the

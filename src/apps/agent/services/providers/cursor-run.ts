@@ -15,7 +15,7 @@ import {
   type CursorRunOptions,
   type CursorVariantResolution,
 } from "@/apps/agent/services/providers/cursor-variants";
-import { reasoningIsOn } from "@/kernel/store/useSettingsStore";
+import { reasoningIsOn } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type { ModelReasoning } from "@/kernel/types/database";
 
 export interface CursorRunModel {

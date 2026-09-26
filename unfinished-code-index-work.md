@@ -1,5 +1,7 @@
 # Code index — 2026-08-31 session handoff
 
+Historical handoff. The former failing Dart test now passes in the code-index suite. Current project-owned local builds, source search, storage and verification are documented in `DOCS/code-index-project-builds.md` (2026-09-22). The state and limitations below describe the August session, not the current implementation.
+
 Everything changed today, what is verified, and the **one thing that is broken right now**.
 
 Nothing is committed. All changes are in the working tree.

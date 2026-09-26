@@ -37,6 +37,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
   const transcriptStickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
+  const transcriptActionsVisible = useAgentThemeStore((s) => s.transcriptActionsVisible);
 
   const theme = useMemo(
     () =>
@@ -92,6 +93,9 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
       // it rides on the root and re-styles every turn wrapper without touching
       // ConversationPane or remounting a single turn.
       data-transcript-sticky-user={transcriptStickyUser || undefined}
+      // Pure CSS, like the two above: only the resting opacity of every
+      // message's Copy / Retry row changes.
+      data-transcript-actions-visible={transcriptActionsVisible || undefined}
       style={cssVars as React.CSSProperties}
     >
       {children}

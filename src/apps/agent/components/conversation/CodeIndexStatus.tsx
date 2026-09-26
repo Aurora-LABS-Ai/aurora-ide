@@ -36,6 +36,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { buildProgress, isIndexBuilding, readIndexBuild, startIndexBuild } from "@/apps/agent/services/code-index/code-index";
 
 /** Mirrors Rust `code_index::IndexProbe` (serde camelCase). */
 interface IndexProbe {
@@ -62,15 +63,32 @@ const HOVER_OPEN_MS = 90;
 /** Hover-close delay, so a diagonal move to the button inside does not lose it. */
 const HOVER_CLOSE_MS = 140;
 
+/** Shortest gap between two probes triggered by opening the panel. */
+const RECHECK_MIN_GAP_MS = 10_000;
+
 const count = (n: number): string => n.toLocaleString();
 
-export const CodeIndexStatus: React.FC = () => {
-  const projectRoot = useAgentChatStore((s) => s.projectRoot);
+const ProjectCodeIndexStatus: React.FC<{ projectRoot: string }> = ({ projectRoot }) => {
   const [phase, setPhase] = useState<Phase>("hidden");
   const [probe, setProbe] = useState<IndexProbe | null>(null);
   const [built, setBuilt] = useState<IndexStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [progress, setProgress] = useState("");
+  const watchingJob = useRef<string | null>(null);
+  // The last finished build this control has already reacted to, and when it
+  // mounted. Together they separate "a build finished while I was here" from
+  // "a build finished before I existed", which the first probe already covers.
+  const settledJob = useRef<string | null>(null);
+  // Set by the effect below rather than here, because reading the clock during
+  // render is impure. Zero until then, and the effect writes it before
+  // anything can read it.
+  const mountedAt = useRef(0);
+  const lastRecheck = useRef(0);
+  // The phase as it is NOW, readable from inside an in-flight probe. A probe
+  // takes as long as hashing the project takes, and pressing Index project
+  // during one must not be undone by its answer arriving afterwards.
+  const phaseNow = useRef<Phase>("hidden");
 
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const hoverTimer = useRef<number | null>(null);
@@ -88,12 +106,106 @@ export const CodeIndexStatus: React.FC = () => {
     setBuilt(null);
     setError(null);
     setOpen(false);
+    // What this control has already reacted to belongs to the other project;
+    // the effect below resets it when it re-runs for the new root.
   }
+
+  /**
+   * Ask again whether this project still needs an index.
+   *
+   * The offer is a claim about the project, and this control is not the only
+   * thing that can make it false. Settings builds one, and the agent's own
+   * first message builds one without ever creating a job. Probing once at
+   * mount and never again left the header offering to index a project that
+   * had been indexed minutes earlier, with no way back except switching
+   * project or reopening the window.
+   *
+   * Not on a timer: the probe hashes every source file to answer, which is not
+   * something to repeat every second in the background. It runs when something
+   * has actually happened, or when someone opens the panel to read it.
+   */
+  const recheck = useCallback(async () => {
+    if (!projectRoot) return;
+    lastRecheck.current = Date.now();
+    const from = phaseNow.current;
+    try {
+      const [probed, snapshot] = await Promise.all([
+        invoke<IndexProbe>("code_index_probe", { workspacePath: projectRoot }),
+        readIndexBuild(projectRoot),
+      ]);
+      if (askedFor.current !== projectRoot) return;
+      setProbe(probed);
+      // This answers a question asked about one phase. If the control has
+      // since started a build, failed, or finished, that is newer than this
+      // and this has nothing to add.
+      if (phaseNow.current !== from) return;
+      if (probed.ready) {
+        // It has one now. Report that rather than vanishing under the cursor:
+        // `done` retires itself after a beat.
+        setBuilt(snapshot.index);
+        setPhase("done");
+      } else if (probed.indexableFiles > 0 && !watchingJob.current) {
+        setPhase("offer");
+      }
+    } catch {
+      // Leave the phase alone. A failed probe is not news, and replacing a
+      // truthful offer with an error would be worse than saying nothing.
+    }
+  }, [projectRoot]);
 
   useEffect(() => {
     if (!projectRoot) return;
     askedFor.current = projectRoot;
+    // Everything this control has already reacted to is about the previous
+    // root. A finished build of another project is not news here, and its
+    // timestamp would make this project's first build look like old news.
+    mountedAt.current = Date.now();
+    settledJob.current = null;
+    lastRecheck.current = 0;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const observe = async () => {
+      try {
+        const next = await readIndexBuild(projectRoot);
+        if (cancelled) return;
+        if (next.job && isIndexBuilding(next.job)) {
+          watchingJob.current = next.job.id;
+          setProgress(buildProgress(next.job));
+          setPhase("working");
+        } else if (next.job && watchingJob.current === next.job.id) {
+          watchingJob.current = null;
+          settledJob.current = next.job.id;
+          setBuilt(next.index);
+          if (next.job.phase === "complete") {
+            setPhase("done");
+            setOpen(false);
+          } else {
+            setError(buildProgress(next.job));
+            setPhase("error");
+          }
+        } else if (next.job && settledJob.current !== next.job.id) {
+          // A build this control did not start, already finished by the time
+          // the poll saw it. A full index of a normal project takes under a
+          // second, so a build begun in Settings routinely starts and finishes
+          // inside one tick of this one-second poll and is never observed as
+          // running — which is exactly how the header ends up offering to
+          // index a project that has just been indexed.
+          settledJob.current = next.job.id;
+          // A build that finished before this control existed is already
+          // accounted for by the mount probe, so only react to a newer one.
+          // `settledJob` then keeps this to one re-check per build rather than
+          // one per tick for as long as that job stays the latest.
+          if ((next.job.finishedAt ?? 0) >= mountedAt.current) void recheck();
+        }
+      } catch (e) {
+        if (!cancelled && watchingJob.current) {
+          setError(`Could not read build progress: ${String(e)}`);
+          setPhase("error");
+        }
+      }
+      if (!cancelled) timer = setTimeout(() => void observe(), 1000);
+    };
+    void observe();
 
     void (async () => {
       try {
@@ -105,7 +217,7 @@ export const CodeIndexStatus: React.FC = () => {
         // `ready` means a valid cache was adopted and the agent can already
         // answer. No readable source means an index would be empty, so there
         // is nothing here worth offering.
-        if (!next.ready && next.indexableFiles > 0) setPhase("offer");
+        if (!next.ready && next.indexableFiles > 0 && !watchingJob.current) setPhase("offer");
       } catch {
         // A failed probe is not worth a light in the header. The index is a
         // convenience, the agent still has grep, and the first turn retries.
@@ -114,8 +226,10 @@ export const CodeIndexStatus: React.FC = () => {
 
     return () => {
       cancelled = true;
+      askedFor.current = null;
+      clearTimeout(timer);
     };
-  }, [projectRoot]);
+  }, [projectRoot, recheck]);
 
   // Retire the finished state on its own. Deliberately unmounts rather than
   // returning to `offer`: the project now HAS an index, so the condition this
@@ -127,6 +241,12 @@ export const CodeIndexStatus: React.FC = () => {
       setOpen(false);
     }, DONE_LINGER_MS);
     return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  // What an in-flight probe compares itself against when it answers. Written
+  // after commit rather than during render, which is the rule for a ref.
+  useEffect(() => {
+    phaseNow.current = phase;
   }, [phase]);
 
   // Close on a click anywhere else. Bound only while open, so the window is
@@ -146,26 +266,44 @@ export const CodeIndexStatus: React.FC = () => {
     };
   }, []);
 
-  const scheduleHover = useCallback((next: boolean) => {
-    if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    hoverTimer.current = window.setTimeout(
-      () => setOpen(next),
-      next ? HOVER_OPEN_MS : HOVER_CLOSE_MS,
-    );
-  }, []);
+  /**
+   * Showing the panel is the moment its claim has to be true, so it is checked
+   * here rather than only when something else happens to notice.
+   *
+   * Rate-limited, and that is not a nicety: the probe hashes every source file
+   * in the project to answer, and hover is one of the two ways this panel
+   * opens. Crossing the header repeatedly must not re-read the project each
+   * time.
+   */
+  const revealed = useCallback(() => {
+    if (phaseNow.current !== "offer") return;
+    if (Date.now() - lastRecheck.current < RECHECK_MIN_GAP_MS) return;
+    void recheck();
+  }, [recheck]);
+
+  const scheduleHover = useCallback(
+    (next: boolean) => {
+      if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = window.setTimeout(
+        () => {
+          setOpen(next);
+          if (next) revealed();
+        },
+        next ? HOVER_OPEN_MS : HOVER_CLOSE_MS,
+      );
+    },
+    [revealed],
+  );
 
   const build = useCallback(async () => {
     if (!projectRoot) return;
     setPhase("working");
     setError(null);
     try {
-      const status = await invoke<IndexStatus>("code_index_rebuild", {
-        workspacePath: projectRoot,
-      });
+      const job = await startIndexBuild(projectRoot);
       if (askedFor.current !== projectRoot) return;
-      setBuilt(status);
-      setPhase("done");
-      setOpen(false);
+      watchingJob.current = job.id;
+      setProgress(buildProgress(job));
     } catch (e) {
       if (askedFor.current !== projectRoot) return;
       // Rust writes these for a person to read; replacing it with a generic
@@ -200,7 +338,7 @@ export const CodeIndexStatus: React.FC = () => {
   } else if (phase === "working") {
     label = "Indexing this project.";
     title = "Indexing…";
-    body = `Reading ${count(files)} files.`;
+    body = `${progress || `Reading ${count(files)} files.`} You can switch projects. Keep Aurora open.`;
   } else if (phase === "done") {
     label = "This project is indexed.";
     title = "Indexed";
@@ -231,7 +369,11 @@ export const CodeIndexStatus: React.FC = () => {
         className="agw-idxstat-btn"
         aria-label={label}
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          const next = !open;
+          setOpen(next);
+          if (next) revealed();
+        }}
       >
         {phase === "working" ? (
           <span className="agw-rail-spin agw-idxstat-spin" aria-hidden="true" />
@@ -260,4 +402,9 @@ export const CodeIndexStatus: React.FC = () => {
       )}
     </span>
   );
+};
+
+export const CodeIndexStatus: React.FC = () => {
+  const projectRoot = useAgentChatStore((s) => s.projectRoot);
+  return projectRoot ? <ProjectCodeIndexStatus key={projectRoot} projectRoot={projectRoot} /> : null;
 };

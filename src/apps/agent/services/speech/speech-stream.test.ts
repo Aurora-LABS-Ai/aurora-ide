@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_SPEECH_LIVE, normalizeSpeechLive } from "@/kernel/store/useSettingsStore";
+import { DEFAULT_SPEECH_LIVE, normalizeSpeechLive } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { toStreamConfig } from "./speech-stream";
 
 /**

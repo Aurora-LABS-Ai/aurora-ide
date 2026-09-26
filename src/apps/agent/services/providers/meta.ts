@@ -28,7 +28,7 @@
  * downloads.
  */
 
-import type { LLMProvider } from "@/kernel/store/useSettingsStore";
+import type { LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 export const META_PROVIDER_ID = "meta";
 

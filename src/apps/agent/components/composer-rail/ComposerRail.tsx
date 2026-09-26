@@ -35,7 +35,7 @@ import {
   visibleProcesses,
 } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
 import { RailChip } from "@/apps/agent/components/composer-rail/RailChip";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 export interface RailNotice {
   text: string;
@@ -65,7 +65,7 @@ export const ComposerRail: React.FC<{
   const openThreadId = useAgentChatStore((s) => s.currentThreadId);
   const threadId = boundThreadId === undefined ? openThreadId : boundThreadId;
 
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const byThread = useAgentBackgroundStore((s) => s.byThread);
   const processes = visibleProcesses(byThread, threadId);
   const running = processes.filter((entry) => entry.status === "running").length;

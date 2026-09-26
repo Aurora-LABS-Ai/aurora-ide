@@ -23,7 +23,7 @@
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 import { fmtDuration } from "@/apps/agent/lib/time/duration";
-import type { LLMProvider } from "@/kernel/store/useSettingsStore";
+import type { LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 export const MINIMAX_PROVIDER_ID = "minimax";
 

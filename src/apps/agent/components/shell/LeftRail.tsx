@@ -29,7 +29,7 @@ import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ScrollingLabel } from "@/apps/agent/shared/ScrollingLabel";
 import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
 import { RailMenu, type RailMenuItem, type RailMenuState } from "@/apps/agent/components/shell/RailMenu";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore } from "@/apps/agent/store/ui/useAgentTerminalStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
@@ -209,7 +209,7 @@ export const LeftRail: React.FC = () => {
   // Agent Team is opt-in. Off in Settings means no team surface here at all —
   // not the rail entry, and not the "has team work" badges, which exist only to
   // point at a panel that can no longer be opened.
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   /**
    * Aurora Chat has no projects, so the rail loses the Projects section, the
    * project switcher, the add-project button and the Team entry — Team is a
@@ -218,7 +218,7 @@ export const LeftRail: React.FC = () => {
    * What stays is the chat list, the search box, Pinned, Recent and Archived.
    * A chat list is still a chat list.
    */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
   // The Team lives in the right dock now ("Team" tab beside Canvas/Files).
   // Active when the dock is open on that tab.

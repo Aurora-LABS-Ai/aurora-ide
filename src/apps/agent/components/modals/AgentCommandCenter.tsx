@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { openFileDialog } from "@/kernel/lib/ipc/tauri";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type { ThreadSummary } from "@/apps/agent/services/threads/thread-service";
 import { matchesCommandShortcut, formatCommandShortcut } from "@/apps/agent/lib/command/command-shortcut";
 import { fuzzyCommandScore } from "@/apps/agent/lib/command/command-search";
@@ -78,12 +78,12 @@ export const AgentCommandCenter: React.FC = () => {
   const projectRoot = useAgentChatStore((s) => s.projectRoot);
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);
   const dockOpen = useAgentWorkspaceStore((s) => s.dockOpen);
-  const notifyOnTurnComplete = useSettingsStore((s) => s.notifyOnTurnComplete);
-  const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
-  const executionMode = useSettingsStore((s) => s.agentExecutionMode);
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const notifyOnTurnComplete = useAgentSettingsStore((s) => s.notifyOnTurnComplete);
+  const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
+  const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   /** Aurora Chat: no project, so none of the project-shaped commands. */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -226,9 +226,9 @@ export const AgentCommandCenter: React.FC = () => {
         group: "Quick switches",
         icon: "message",
         run: () =>
-          useSettingsStore
+          useAgentSettingsStore
             .getState()
-            .setNotifyOnTurnComplete(!useSettingsStore.getState().notifyOnTurnComplete),
+            .setNotifyOnTurnComplete(!useAgentSettingsStore.getState().notifyOnTurnComplete),
       },
       {
         id: "toggle-live-title",
@@ -238,9 +238,9 @@ export const AgentCommandCenter: React.FC = () => {
         group: "Quick switches",
         icon: "eye",
         run: () =>
-          useSettingsStore
+          useAgentSettingsStore
             .getState()
-            .setShowActivityInTitle(!useSettingsStore.getState().showActivityInTitle),
+            .setShowActivityInTitle(!useAgentSettingsStore.getState().showActivityInTitle),
       },
       {
         id: "toggle-mode",
@@ -250,7 +250,7 @@ export const AgentCommandCenter: React.FC = () => {
         group: "Quick switches",
         icon: executionMode === "plan" ? "book" : "facet",
         run: () =>
-          useSettingsStore
+          useAgentSettingsStore
             .getState()
             .setAgentExecutionMode(executionMode === "plan" ? "agent" : "plan"),
       },

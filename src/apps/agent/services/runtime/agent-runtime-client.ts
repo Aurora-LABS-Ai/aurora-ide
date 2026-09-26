@@ -193,7 +193,7 @@ export interface AgentChatRequest {
    * view (the persisted JSONL stays intact). `null` disables trimming —
    * the legacy "send the whole session every turn" behaviour.
    *
-   * Sourced from `useSettingsStore.getLLMConfig().contextWindow` so the
+   * Sourced from `useAgentSettingsStore.getLLMConfig().contextWindow` so the
    * runtime always uses the same value the chat header already shows.
    */
   contextWindow: number | null;

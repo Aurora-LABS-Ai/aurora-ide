@@ -5,8 +5,8 @@ import { ProfileSettings } from "./ProfileSettings";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), dispose: vi.fn() }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({ auroraInvoke: ipc.invoke, auroraListen: ipc.listen }));
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: (select: (state: { models: never[]; providers: never[] }) => unknown) =>
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: (select: (state: { models: never[]; providers: never[] }) => unknown) =>
     select({ models: [], providers: [] }),
 }));
 vi.mock("./ActivityChart", () => ({ ActivityChart: () => null }));

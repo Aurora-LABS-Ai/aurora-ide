@@ -193,6 +193,10 @@ export function claudeCodePlanView(snap: ClaudeCodeUsageSnapshot | null): PlanVi
     [snap.sevenDay, "This week"],
     [snap.sevenDayOpus, "Opus this week"],
     [snap.sevenDaySonnet, "Sonnet this week"],
+    // Fable and any other model the server names; the label is the server's.
+    ...(snap.sevenDayModels ?? []).map(
+      (m): [ClaudeCodeUsageWindow | null, string] => [m.window, `${m.model} this week`],
+    ),
   ];
   const limits: LimitLine[] = [];
   for (const [win, label] of windows) {

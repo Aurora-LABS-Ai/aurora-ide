@@ -306,13 +306,23 @@ pub(super) fn is_chat_mode_tool(name: &str) -> bool {
 
 /// Tools that exist in Aurora Chat and NOWHERE else.
 ///
-/// [`CHAT_MODE_TOOLS`] is an allow-list for one mode; most of what is on it —
-/// web search, artifacts, images, asking a question — is equally a Build tool
-/// and stays available there. These two are not. `recall` and `remember` read
-/// and write the chat memory index, which carries Aurora Chat conversations
-/// only, so offering them to Build gives the model a memory that is
-/// structurally empty of everything Build ever did.
-pub(super) const CHAT_ONLY_TOOLS: &[&str] = &["recall", "remember", "generate_video"];
+/// [`CHAT_MODE_TOOLS`] is an allow-list for one mode; some of what is on it —
+/// web search, artifacts, asking a question — is equally a Build tool and stays
+/// available there. These four are not.
+///
+/// `recall` and `remember` read and write the chat memory index, which carries
+/// Aurora Chat conversations only, so offering them to Build gives the model a
+/// memory that is structurally empty of everything Build ever did.
+///
+/// `generate_image` and `generate_video` need a turn config only a Chat turn
+/// parks, and a store with an `assets/` directory, which a Build store has not
+/// got. `generate_image` shipped missing from this list: Build advertised it on
+/// every turn, and a model mid-task called `op: "list"` and was told the tool
+/// is not available in Aurora Build — by the tool it had just been handed. The
+/// composer already knew better (`AgentComposer.tsx` hides `/image` outside
+/// chat); this list was the only place that did not.
+pub(super) const CHAT_ONLY_TOOLS: &[&str] =
+    &["recall", "remember", "generate_image", "generate_video"];
 
 pub(super) fn is_chat_only_tool(name: &str) -> bool {
     CHAT_ONLY_TOOLS.contains(&name)

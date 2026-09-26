@@ -2,6 +2,77 @@ use crate::db::error::{DbError, DbResult};
 use crate::db::models::{AppSetting, AppSettings, LLMProvider, ToolSetting};
 use rusqlite::{params, Connection};
 
+/// Every key `save_app_settings` writes, and so every key
+/// `save_app_setting_entries` accepts. A test keeps the two identical.
+pub const APP_SETTING_KEYS: &[&str] = &[
+    "selectedModel",
+    "agentExecutionMode",
+    "teamEnabled",
+    "maxTeamSize",
+    "teamLeadModel",
+    "teamMemberModel",
+    "globalInstructions",
+    "globalInstructionProfiles",
+    "activeGlobalInstructionProfileId",
+    "compactionThresholdPct",
+    "compactionSummaryBudget",
+    "compactionModel",
+    "titleMakerEnabled",
+    "titleMakerMode",
+    "titleMakerBaseUrl",
+    "titleMakerApiKey",
+    "titleMakerModel",
+    "titleMakerLocalModel",
+    "titleMakerLocalChatFormat",
+    "workspaceAccess",
+    "allowOutsideWorkspace",
+    "transcriptChapters",
+    "notifyOnTurnComplete",
+    "showActivityInTitle",
+    "browserTools",
+    "deferTools",
+    "mcpBridgeEnabled",
+    "autoApproveTools",
+    "autoAcceptChanges",
+    "explorerIconPack",
+    "fontSize",
+    "wrapMode",
+    "theme",
+    "thinkingEnabled",
+    "syntaxValidationEnabled",
+    "projectLayoutEnabled",
+    "uiFontFamily",
+    "uiScale",
+    "uiTextScale",
+    "maxTokens",
+    "temperature",
+    "autoSave",
+    "autoSaveDelay",
+    "maxToolCallsPerRequest",
+    "skillsEnabled",
+    "skillToggles",
+    "auroraSurface",
+    "chatModelShortlist",
+    "deepResearchNext",
+    "imageProviders",
+    "seededImageProviderIds",
+    "providerCategories",
+    "fireworksTabEnabled",
+    "fireworksAccountId",
+    "removedProviderIds",
+    "removedPresetModelIds",
+    "speechEnabled",
+    "speechEngine",
+    "speechRuntimePath",
+    "speechModelPath",
+    "speechBackend",
+    "speechDevicePreference",
+    "speechThreads",
+    "speechLanguage",
+    "speechMode",
+    "speechLive",
+];
+
 /// Repository for app settings operations
 pub struct SettingsRepository<'a> {
     conn: &'a Connection,
@@ -313,6 +384,10 @@ impl<'a> SettingsRepository<'a> {
                     settings.removed_provider_ids = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.removed_provider_ids.clone())
                 }
+                "removedPresetModelIds" => {
+                    settings.removed_preset_model_ids = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.removed_preset_model_ids.clone())
+                }
                 "speechEnabled" => {
                     settings.speech_enabled =
                         serde_json::from_str(&setting.value).unwrap_or(settings.speech_enabled)
@@ -587,6 +662,10 @@ impl<'a> SettingsRepository<'a> {
             &serde_json::to_string(&settings.removed_provider_ids).unwrap_or_default(),
         )?;
         self.set_setting(
+            "removedPresetModelIds",
+            &serde_json::to_string(&settings.removed_preset_model_ids).unwrap_or_default(),
+        )?;
+        self.set_setting(
             "speechEnabled",
             &serde_json::to_string(&settings.speech_enabled).unwrap_or_default(),
         )?;
@@ -626,6 +705,38 @@ impl<'a> SettingsRepository<'a> {
             "speechLive",
             &serde_json::to_string(&settings.speech_live).unwrap_or_default(),
         )?;
+        Ok(())
+    }
+
+    /// Write only the given settings, in one transaction.
+    ///
+    /// Two windows each hold a copy of the settings, and each owns different
+    /// ones: the editor its fonts and autosave, the Agent Window its providers
+    /// and modes. `save_app_settings` writes EVERY key, so whichever window
+    /// saved last put its stale copy of the other window's settings back. Each
+    /// window now writes only the keys it owns through here.
+    ///
+    /// Values arrive as JSON and are stored as their JSON text — the same text
+    /// `save_app_settings` writes and `get_app_settings` parses. A key that is
+    /// not an app setting is refused, not stored: a typo must fail loudly
+    /// rather than write a row nothing will ever read.
+    pub fn save_app_setting_entries(
+        &self,
+        entries: &[(String, serde_json::Value)],
+    ) -> DbResult<()> {
+        if let Some((key, _)) = entries
+            .iter()
+            .find(|(key, _)| !APP_SETTING_KEYS.contains(&key.as_str()))
+        {
+            return Err(DbError::InvalidData(format!(
+                "`{key}` is not an app setting"
+            )));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in entries {
+            self.set_setting(key, &value.to_string())?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -897,6 +1008,76 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         crate::db::schema::initialize_schema(&conn).expect("schema");
         conn
+    }
+
+    /// The accepted-key list must be exactly what a full save writes, or a
+    /// window saving through `save_app_setting_entries` gets refused for a key
+    /// that is real (or can write one nothing reads).
+    #[test]
+    fn app_setting_keys_match_what_a_full_save_writes() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        repo.save_app_settings(&AppSettings::default()).unwrap();
+        let mut written: Vec<String> = repo
+            .get_all_settings()
+            .unwrap()
+            .into_iter()
+            .map(|s| s.key)
+            .collect();
+        written.sort();
+        let mut listed: Vec<String> = APP_SETTING_KEYS.iter().map(|k| k.to_string()).collect();
+        listed.sort();
+        assert_eq!(written, listed);
+    }
+
+    /// A partial write changes only its own keys and reads back through the
+    /// normal loader — the editor saving its font size must leave the Agent
+    /// Window's selected model alone.
+    #[test]
+    fn a_partial_write_leaves_other_keys_alone() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        let mut full = AppSettings::default();
+        full.selected_model = "agent:model".to_string();
+        full.font_size = 12;
+        repo.save_app_settings(&full).unwrap();
+
+        repo.save_app_setting_entries(&[(
+            "fontSize".to_string(),
+            serde_json::json!(18),
+        )])
+        .unwrap();
+
+        let loaded = repo.get_app_settings().unwrap();
+        assert_eq!(loaded.font_size, 18);
+        assert_eq!(loaded.selected_model, "agent:model");
+    }
+
+    #[test]
+    fn a_partial_write_refuses_an_unknown_key_and_writes_nothing() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        let err = repo
+            .save_app_setting_entries(&[
+                ("fontSize".to_string(), serde_json::json!(20)),
+                ("fontSzie".to_string(), serde_json::json!(20)),
+            ])
+            .unwrap_err();
+        assert!(err.to_string().contains("fontSzie"), "{err}");
+        assert!(repo.get_setting("fontSize").unwrap().is_none());
+    }
+
+    #[test]
+    fn removed_preset_model_ids_survive_a_round_trip() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        let mut settings = AppSettings::default();
+        settings.removed_preset_model_ids = vec!["codex::gpt-5.5".to_string()];
+        repo.save_app_settings(&settings).unwrap();
+        assert_eq!(
+            repo.get_app_settings().unwrap().removed_preset_model_ids,
+            vec!["codex::gpt-5.5".to_string()]
+        );
     }
 
     /// The regression this pins: a field the frontend saved but the struct did

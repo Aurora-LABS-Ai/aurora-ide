@@ -26,14 +26,9 @@
  *   - The provider iteration loop and `provider.streamChat` call
  *   - `recordAssistantResponse`
  *   - `runSummarizationIfNeeded` (Phase 4 reintroduces summarization)
- *
- * `getContextState` and `clearContext` are kept as thin pass-throughs
- * to the existing `context_*` Rust commands — they remain valid (used
- * indirectly by `useContextStore` and a handful of callers) and
- * deleting them would needlessly widen the blast radius.
+ *   - `getContextState` / `clearContext` and the whole legacy `context_*`
+ *     engine (2026-09-24): the Rust runtime owns context accounting.
  */
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import { useTaskStore } from "@/apps/agent/store/tools/useTaskStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { getToolsForModel } from "@/apps/agent/tools";
 import { withReportKind } from "@/apps/agent/tools/definitions/artifact-tools";
@@ -69,18 +64,6 @@ import type {
   ToolDefinition,
 } from "@/kernel/services/providers/types";
 
-interface ContextState {
-  threadId: string;
-  totalTurns: number;
-  summarizedTurns: number;
-  usedTokens: number;
-  contextWindow: number;
-  maxOutput: number;
-  usagePercentage: number;
-  needsSummarization: boolean;
-  recentTurnsCount: number;
-}
-
 /**
  * Tools whose result the model can only act on if it accepts image
  * content blocks. We strip these from the schema we ship to the LLM
@@ -89,7 +72,7 @@ interface ContextState {
  * tool_use call whose response it can't read. As of schema v15 the
  * vision flag lives on the per-model row (`LLMModel.supportsVision`)
  * and reaches us via `ProviderConfigSnapshot.supportsVision`, which
- * `useSettingsStore.getLLMConfig()` derives from the resolved active
+ * `useAgentSettingsStore.getLLMConfig()` derives from the resolved active
  * model.
  */
 const VISION_REQUIRED_TOOLS = new Set<string>(["browser_screenshot"]);
@@ -298,7 +281,6 @@ export class AgentService {
     promptContext?: AgentPromptContext,
   ): Promise<AgentResponse> {
     this.isRunning = true;
-    let taskFinalOutcome: "completed" | "cancelled" = "cancelled";
 
     try {
       const threadId = this.requireThreadId();
@@ -410,12 +392,8 @@ export class AgentService {
           // continuing assistant text — matching what the API sees.
           // We do NOT append a separate user bubble: that would land
           // after the still-streaming assistant message and read as
-          // if the agent replied before the user spoke.
-          //
-          // Lazy import avoids the chat-store ↔ agent-service cycle.
-          void import("@/apps/agent/store/conversation/useChatStore").then(({ useChatStore }) => {
-            useChatStore.getState().clearQueuedMessageLocal();
-          });
+          // if the agent replied before the user spoke. The panel's
+          // callback also clears the queued pill (`useAgentChatStore`).
           callbacks.onQueuedMessageInjected?.(text, chips, origin);
         },
       };
@@ -460,18 +438,8 @@ export class AgentService {
       // Best-effort: persist final usage to JSONL so per-turn token
       // breakdowns survive a reload. Failure here must never bubble
       // back into the user-facing response.
-      //
-      // CRITICAL: the context-window accounting must NOT gate the usage
-      // write. The legacy context engine (`context_get_state`) is only
-      // seeded by the IDE; the agent window never seeds it, so that call
-      // THROWS there. Previously the throw landed in the catch and
-      // `updateUsage` never ran — so a usage-reporting thread
-      // (DeepSeek/Anthropic) reopened with an EMPTY context ring (no
-      // `tokenUsage` in its `.meta.json`). Compute context separately,
-      // fall back to the provider window when the engine is unavailable,
-      // and always persist `latestUsage`.
       if (latestUsage) {
-        const context = await this.computeContextUsage(latestUsage);
+        const context = this.computeContextUsage(latestUsage);
         try {
           await threadService.updateUsage(threadId, latestUsage, context);
         } catch (err) {
@@ -487,8 +455,6 @@ export class AgentService {
         content: finalContent,
         reasoning_content: finalThinking || undefined,
       } as AssistantMessage);
-
-      taskFinalOutcome = "completed";
 
       return {
         content: finalContent,
@@ -519,7 +485,6 @@ export class AgentService {
 
       throw error;
     } finally {
-      useTaskStore.getState().finalizeActiveTasks(taskFinalOutcome);
       this.isRunning = false;
       this.currentClient = null;
     }
@@ -527,29 +492,15 @@ export class AgentService {
 
   /**
    * Context-window accounting for the just-finished turn, used when
-   * persisting usage to the thread meta. Prefers the legacy context
-   * engine's view (the IDE seeds it), but that engine is never seeded for
-   * agent-window threads — `context_get_state` throws there — so we fall
-   * back to deriving the numbers from the provider-reported usage and the
-   * model's context window. Mirrors `ContextRing`'s own derivation so the
-   * persisted snapshot matches the live ring. Cursor's adapter folds its
-   * checkpoint total into these fields, preserving that measured value.
+   * persisting usage to the thread meta. Derived from the provider-reported
+   * usage and the model's context window. Mirrors `ContextRing`'s own
+   * derivation so the persisted snapshot matches the live ring. Cursor's
+   * adapter folds its checkpoint total into these fields, preserving that
+   * measured value.
    */
-  private async computeContextUsage(
+  private computeContextUsage(
     usage: TokenUsage,
-  ): Promise<{ usedTokens: number; contextWindow: number; percentage: number }> {
-    try {
-      const ctxState = await this.getContextState();
-      if (ctxState) {
-        return {
-          usedTokens: ctxState.usedTokens,
-          contextWindow: ctxState.contextWindow,
-          percentage: ctxState.usagePercentage,
-        };
-      }
-    } catch {
-      // Legacy engine not seeded (agent window) — derive from usage below.
-    }
+  ): { usedTokens: number; contextWindow: number; percentage: number } {
     const usedTokens =
       usage.promptTokens +
       usage.completionTokens +
@@ -561,33 +512,6 @@ export class AgentService {
         ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))
         : 0;
     return { usedTokens, contextWindow, percentage };
-  }
-
-  /**
-   * Pass-through to the Rust context engine for the active thread.
-   * Kept on the façade so callers (e.g. `useContextStore` consumers)
-   * don't have to know about the low-level command name.
-   */
-  public async getContextState(): Promise<ContextState | null> {
-    const threadId = this.config.threadId;
-    if (!threadId) return null;
-
-    const providerConfig = this.config.providerConfig;
-    const contextWindow = providerConfig?.contextWindow || 128000;
-    const maxOutput = providerConfig?.maxOutputTokens || 8192;
-
-    return auroraInvoke<ContextState>("context_get_state", {
-      threadId,
-      contextWindow,
-      maxOutput,
-    });
-  }
-
-  public async clearContext(): Promise<void> {
-    const threadId = this.config.threadId;
-    if (!threadId) return;
-
-    await auroraInvoke("context_clear_thread", { threadId });
   }
 
   public isActive(): boolean {

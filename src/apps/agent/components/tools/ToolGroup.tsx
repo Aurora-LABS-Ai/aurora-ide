@@ -40,6 +40,41 @@ import {
 } from "@/apps/agent/components/tools/tool-call";
 import { TOOL_GROUP_MIN } from "@/apps/agent/components/conversation/timeline";
 import { useFollowBottom } from "@/apps/agent/hooks/conversation/useFollowBottom";
+import { useLinger } from "@/apps/agent/hooks/conversation/useLinger";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
+import {
+  createArrivalStagger,
+  RUN_LINGER_MS,
+  type ArrivalStagger,
+} from "@/apps/agent/components/tools/tool-arrival";
+
+/**
+ * One step of a run, and the one place its arrival is decided.
+ *
+ * Whether it fades in, and after what delay, is fixed ONCE, when the step
+ * first mounts (a lazy state initializer, so it is free to read the clock).
+ * A step that mounts while the turn is streaming arrives; one that mounts from
+ * history, or while the setting is off, is simply there. Later re-renders
+ * never re-run the entrance, so a card patched by its result does not blink.
+ */
+const ToolStep: React.FC<{
+  animate: boolean;
+  stagger: ArrivalStagger;
+  children: React.ReactNode;
+}> = ({ animate, stagger, children }) => {
+  const [delayMs] = useState<number | null>(() =>
+    animate ? stagger.next(performance.now()) : null,
+  );
+  return (
+    <div
+      className="agw-tool-step"
+      data-enter={delayMs !== null || undefined}
+      style={delayMs ? { animationDelay: `${Math.round(delayMs)}ms` } : undefined}
+    >
+      {children}
+    </div>
+  );
+};
 
 /**
  * Renders a run of consecutive tool calls. ALWAYS used for a tools row (even a
@@ -97,12 +132,26 @@ const ToolGroupImpl: React.FC<{
     streaming: boolean;
   }>({ mode: null, streaming: isActivelyStreaming });
 
+  // Transcript → "Keep tool runs open": the run never folds on its own. An
+  // explicit click still wins, exactly as it does without the setting.
+  const keepOpen = useAgentThemeStore((s) => s.transcriptToolRunsOpen);
+
+  // Transcript → "Smooth tool arrival": steps fade in one after another, and
+  // the run stays open for `RUN_LINGER_MS` after it stops being the live edge
+  // instead of folding in the same frame the model starts writing below it.
+  // Reduce motion drops the fade (it is motion) and keeps the pause (it is not).
+  const smooth = useAgentThemeStore((s) => s.transcriptSmoothTools);
+  const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
+  const [stagger] = useState(createArrivalStagger);
+  const animateArrivals = smooth && !reduceMotion && isActivelyStreaming;
+  const liveEdge = useLinger(isActivelyStreaming && isLastRow, smooth ? RUN_LINGER_MS : 0);
+
   const mode = openState.streaming === isActivelyStreaming ? openState.mode : null;
   // Below the grouping threshold there's no header → the cards are always shown.
   // With no explicit choice on record, the run is open only while it IS the
   // live edge; anything appearing beneath it collapses it to its summary.
   const isOpen =
-    !grouped || (mode === null ? isActivelyStreaming && isLastRow : mode === "shown");
+    !grouped || (mode === null ? keepOpen || liveEdge : mode === "shown");
 
   const toggle = () =>
     setOpenState({ mode: isOpen ? "hidden" : "shown", streaming: isActivelyStreaming });
@@ -206,7 +255,7 @@ const ToolGroupImpl: React.FC<{
             // consecutive `TaskCreate` / `TaskUpdate` calls is one step,
             // because laying out a five-task plan is five calls and one
             // decision. The header above still counts the real calls.
-            <div className="agw-tool-step" key={run[0].id}>
+            <ToolStep key={run[0].id} animate={animateArrivals} stagger={stagger}>
               {isChecklistCall(run[0]) ? (
                 <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
               ) : mcpServerIdForCard(run[0]) !== null ? (
@@ -214,7 +263,7 @@ const ToolGroupImpl: React.FC<{
               ) : (
                 <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
               )}
-            </div>
+            </ToolStep>
           ))}
         </div>
       </motion.div>

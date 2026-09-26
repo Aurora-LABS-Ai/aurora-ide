@@ -119,14 +119,17 @@ pub async fn browser_set_bounds(
     state.set_bounds(&label, x, y, width, height)
 }
 
+/// Show or hide the embedded browser. `seq` must grow with every decision;
+/// a stale one is ignored (returns `false`). This is the only way the
+/// frontend changes the page's visibility — see `BrowserManager::set_visible`.
 #[tauri::command]
-pub async fn browser_show(state: State<'_, BrowserManager>, label: String) -> Result<(), String> {
-    state.show(&label)
-}
-
-#[tauri::command]
-pub async fn browser_hide(state: State<'_, BrowserManager>, label: String) -> Result<(), String> {
-    state.hide(&label)
+pub async fn browser_set_visible(
+    state: State<'_, BrowserManager>,
+    label: String,
+    visible: bool,
+    seq: u64,
+) -> Result<bool, String> {
+    state.set_visible(&label, visible, seq)
 }
 
 #[tauri::command]

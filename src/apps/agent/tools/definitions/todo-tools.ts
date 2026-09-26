@@ -6,8 +6,7 @@
  * registry's `TaskCreate` / `TaskUpdate` / `TaskList`; this definition is
  * `nativeRustOwned`, so `AgentService.buildAvailableTools` strips it before
  * the request is built and it can never reach a model as a rival `todo_write`.
- * It survives only for the legacy IDE chat path, which still renders a proposed
- * list from a `todo_write` call inline (`ToolItem` / `useChatStore`).
+ * It survives only as display/approval metadata in the definitions registry.
  */
 import type { ToolDefinition } from "@/apps/agent/tools/types";
 

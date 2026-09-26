@@ -30,7 +30,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   CURSOR_PROVIDER_ID,
   cursorAuthConnect,
@@ -275,8 +275,8 @@ export const CursorProviderCard: React.FC<{
   // A model is one row here, keyed by its own id (`cursor-grok-4.6`); the
   // effort and Fast that decorate it on the wire are choices, not separate
   // models, so there is exactly one window to edit.
-  const allModels = useSettingsStore((s) => s.models);
-  const updateModel = useSettingsStore((s) => s.updateModel);
+  const allModels = useAgentSettingsStore((s) => s.models);
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
   const cursorModels = useMemo(
     () => allModels.filter((m) => m.providerId === CURSOR_PROVIDER_ID),
     [allModels],

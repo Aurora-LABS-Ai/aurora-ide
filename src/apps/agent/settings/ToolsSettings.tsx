@@ -2,7 +2,7 @@
  * Agent Window — Settings · Tools & Approvals (view).
  *
  * agw-native rebuild of the IDE's Tool settings, reading/writing the SAME shared
- * `useSettingsStore` (one source of truth, just a different dress).
+ * `useAgentSettingsStore` (one source of truth, just a different dress).
  *
  * Layout (modelled on the Studio tools sub-page): defaults/guardrails as a tile
  * grid, then per-tool approval as COLLAPSIBLE group panels — all collapsed by
@@ -13,7 +13,7 @@
 import React, { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { useSettingsStore, type WorkspaceAccess } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type WorkspaceAccess } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { ShellSettings } from "./ShellSettings";
@@ -198,21 +198,21 @@ const ToolGroup: React.FC<{
 };
 
 export const ToolsSettings: React.FC = () => {
-  const autoApproveTools = useSettingsStore((s) => s.autoApproveTools);
-  const setAutoApproveTools = useSettingsStore((s) => s.setAutoApproveTools);
-  const autoAcceptChanges = useSettingsStore((s) => s.autoAcceptChanges);
-  const setAutoAcceptChanges = useSettingsStore((s) => s.setAutoAcceptChanges);
-  const syntaxValidationEnabled = useSettingsStore((s) => s.syntaxValidationEnabled);
-  const setSyntaxValidationEnabled = useSettingsStore((s) => s.setSyntaxValidationEnabled);
-  const projectLayoutEnabled = useSettingsStore((s) => s.projectLayoutEnabled);
-  const setProjectLayoutEnabled = useSettingsStore((s) => s.setProjectLayoutEnabled);
-  const workspaceAccess = useSettingsStore((s) => s.workspaceAccess);
-  const setWorkspaceAccess = useSettingsStore((s) => s.setWorkspaceAccess);
-  const toolApprovalSettings = useSettingsStore((s) => s.toolApprovalSettings) as Record<
+  const autoApproveTools = useAgentSettingsStore((s) => s.autoApproveTools);
+  const setAutoApproveTools = useAgentSettingsStore((s) => s.setAutoApproveTools);
+  const autoAcceptChanges = useAgentSettingsStore((s) => s.autoAcceptChanges);
+  const setAutoAcceptChanges = useAgentSettingsStore((s) => s.setAutoAcceptChanges);
+  const syntaxValidationEnabled = useAgentSettingsStore((s) => s.syntaxValidationEnabled);
+  const setSyntaxValidationEnabled = useAgentSettingsStore((s) => s.setSyntaxValidationEnabled);
+  const projectLayoutEnabled = useAgentSettingsStore((s) => s.projectLayoutEnabled);
+  const setProjectLayoutEnabled = useAgentSettingsStore((s) => s.setProjectLayoutEnabled);
+  const workspaceAccess = useAgentSettingsStore((s) => s.workspaceAccess);
+  const setWorkspaceAccess = useAgentSettingsStore((s) => s.setWorkspaceAccess);
+  const toolApprovalSettings = useAgentSettingsStore((s) => s.toolApprovalSettings) as Record<
     string,
     ApprovalMode
   >;
-  const setToolApproval = useSettingsStore((s) => s.setToolApproval);
+  const setToolApproval = useAgentSettingsStore((s) => s.setToolApproval);
 
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
   const toggleGroup = (key: string) =>

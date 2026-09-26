@@ -195,6 +195,20 @@ class DatabaseService {
     await auroraInvoke('save_app_settings', { settings });
   }
 
+  /**
+   * Save only the given app settings, leaving every other key as it is.
+   *
+   * The editor and the Agent Window each own part of the settings and each
+   * writes only its part — `saveAppSettings` writes all of them, so a window
+   * using it would put its stale copy of the other window's settings back.
+   * Unset (`undefined`) fields are skipped rather than stored as `null`.
+   */
+  public async saveAppSettingsEntries(settings: Partial<AppSettings>): Promise<void> {
+    const entries = Object.entries(settings).filter(([, value]) => value !== undefined);
+    if (entries.length === 0) return;
+    await auroraInvoke('save_app_settings_entries', { entries });
+  }
+
   // ============================================================
   // EDITOR STATE
   // ============================================================

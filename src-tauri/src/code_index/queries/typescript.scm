@@ -20,6 +20,23 @@
 (public_field_definition  name: (property_identifier) @def.field)
 (property_signature       name: (property_identifier) @def.field)
 
+; The same four declarations, spelled with a name that is not a bare
+; identifier. A member whose name needs quoting is still a member: Microsoft
+; Graph declares `'@removed'` and `'@odata.nextLink'`, and reported from a real
+; workspace on 2026-09-22, an `outline` listed every plain field of those
+; interfaces and none of the quoted ones — so the `@`-prefixed half of the API
+; contract was the half that could not be navigated to. `#` privates were
+; missing for the same reason: `property_identifier` is a different node type
+; from `private_property_identifier`, so a class body written with them read as
+; empty. extract.rs stores a quoted name without its quotes.
+(method_definition        name: (string) @def.method)
+(method_definition        name: (private_property_identifier) @def.method)
+(abstract_method_signature name: (string) @def.method)
+(abstract_method_signature name: (private_property_identifier) @def.method)
+(public_field_definition  name: (string) @def.field)
+(public_field_definition  name: (private_property_identifier) @def.field)
+(property_signature       name: (string) @def.field)
+
 ; A `const x = () => {}` is a function to every reader, so rank it as one.
 ; The bare `@def.variable` pattern below also matches it; extract.rs keeps the
 ; higher-ranked kind when two defs land on the same byte range.

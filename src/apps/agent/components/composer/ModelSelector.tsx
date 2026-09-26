@@ -23,7 +23,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { reasoningIsOn, useSettingsStore, type LLMModel } from "@/kernel/store/useSettingsStore";
+import { reasoningIsOn, useAgentSettingsStore, type LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   formatModelDisplayName,
   formatProviderNickname,
@@ -184,7 +184,7 @@ const RowBudget: React.FC<{
   maxOutputTokens?: number;
   label: string;
 }> = ({ modelId, reasoning, maxOutputTokens, label }) => {
-  const updateModel = useSettingsStore((s) => s.updateModel);
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
   const wrapRef = useRef<HTMLSpanElement | null>(null);
@@ -370,7 +370,7 @@ const RowReasoning: React.FC<{
   fastOn: boolean;
   onFastUnavailable: () => void;
 }> = ({ opt, fastOn, onFastUnavailable }) => {
-  const updateModel = useSettingsStore((s) => s.updateModel);
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
   const r = opt.reasoning;
   if (!r || !opt.id) return null;
 
@@ -515,10 +515,10 @@ export const ModelSelector: React.FC<{
   // only the default a chat falls back to when it has none of its own — reading
   // it directly is what made every chat display whichever model was picked last
   // anywhere. See `lib/thread-model`.
-  const defaultModel = useSettingsStore((s) => s.selectedModel);
-  const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
-  const providers = useSettingsStore((s) => s.providers);
-  const models = useSettingsStore((s) => s.models);
+  const defaultModel = useAgentSettingsStore((s) => s.selectedModel);
+  const setSelectedModel = useAgentSettingsStore((s) => s.setSelectedModel);
+  const providers = useAgentSettingsStore((s) => s.providers);
+  const models = useAgentSettingsStore((s) => s.models);
   const pinned = useAgentChatStore((s) => pinnedThreadModel(s, forThread));
   // Aurora Chat offers a shortlist — up to ten models ticked on the provider
   // page — and a conversation whose model leaves it falls to the next one
@@ -527,9 +527,9 @@ export const ModelSelector: React.FC<{
   //
   // `chatSurface` also gates the Agent/Plan toggle further down — those are
   // ways of working on a project and Aurora Chat has none.
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
-  const chatShortlist = useSettingsStore((s) => s.chatModelShortlist);
-  const imageProviders = useSettingsStore((s) => s.imageProviders);
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatShortlist = useAgentSettingsStore((s) => s.chatModelShortlist);
+  const imageProviders = useAgentSettingsStore((s) => s.imageProviders);
   const selectedModel = useMemo(() => {
     const normalized = normalizeThreadModelSelection(pinned ?? defaultModel, models);
     // Build shows — and runs on — a language model even when the shared default
@@ -559,12 +559,12 @@ export const ModelSelector: React.FC<{
 
   // Agent/Plan execution mode now lives inside this picker (no separate chip).
   // Same `agentExecutionMode` the settings page writes, so they never disagree.
-  const executionMode = useSettingsStore((s) => s.agentExecutionMode);
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
-  const setExecutionMode = useSettingsStore((s) => s.setAgentExecutionMode);
+  const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
+  const setExecutionMode = useAgentSettingsStore((s) => s.setAgentExecutionMode);
   /** The seed for the NEXT chat. Only meaningful when none is open. */
-  const deepResearchNext = useSettingsStore((s) => s.deepResearchNext);
-  const setDeepResearchNext = useSettingsStore((s) => s.setDeepResearchNext);
+  const deepResearchNext = useAgentSettingsStore((s) => s.deepResearchNext);
+  const setDeepResearchNext = useAgentSettingsStore((s) => s.setDeepResearchNext);
   /**
    * What the OPEN conversation is, which outranks the seed whenever there is
    * one — and cannot be changed, because deep research is fixed at creation.
@@ -631,7 +631,7 @@ export const ModelSelector: React.FC<{
   // Rich catalogue: canonical availability (respects provider-ready gating) joined
   // with the models-slice row for capabilities + reasoning + recency.
   const options = useMemo<RichOption[]>(() => {
-    const canonical = useSettingsStore.getState().getAvailableModels();
+    const canonical = useAgentSettingsStore.getState().getAvailableModels();
     // In Aurora Chat the picker offers the shortlist and nothing else — that
     // is what ticking a model on the provider page does. An empty shortlist is
     // "not curated yet", not "no models", so it offers everything; the

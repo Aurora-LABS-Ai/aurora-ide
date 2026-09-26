@@ -40,7 +40,6 @@ import { useThemeStore } from "@/apps/ide/store/useThemeStore";
 import { useWindowClose } from "@/bridge/useWindowClose";
 import { initializeSystemInfo } from "@/apps/agent/services/runtime/context-builder";
 import { installAgentIdeListeners } from "@/bridge/agent-ide-events";
-import { useLocalProviderDetection } from "@/apps/ide/hooks/useLocalProviderDetection";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 
 // Global handler to suppress Tauri stream cancellation errors
@@ -77,9 +76,8 @@ function App() {
   // one product lives in that product's surface component — see
   // `surfaces/IdeSurface.tsx` for what moved and why.
 
-  // Save all state on window close (VS Code pattern). Shared on purpose: it
-  // flushes the agent's current thread as well as the editor's workspace, so
-  // the agent window has to run it too.
+  // Save the editor's explorer and workspace state on window close (VS Code
+  // pattern). The Tauri close listener only registers in the `main` window.
   useWindowClose();
 
   useEffect(() => {
@@ -147,11 +145,6 @@ function App() {
     document.addEventListener("contextmenu", handleContextMenu);
     return () => document.removeEventListener("contextmenu", handleContextMenu);
   }, []);
-
-  // Background-probe for local AI servers (Ollama, LM Studio). Shared: the
-  // agent window needs the provider list too, and someone who works only in
-  // that window would never mount the IDE surface.
-  useLocalProviderDetection();
 
   // One surface or the other, never both.
   //

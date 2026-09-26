@@ -185,7 +185,13 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   // instance held the live PTY, so typing landed in the invisible one and the
   // terminal read as frozen. `pty` is filled in below; the entry existing at
   // all is what makes a concurrent call take the re-attach path instead.
-  runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
+  const slot = { pty: undefined as unknown as IPty, term, fit };
+  runtime.set(session.id, slot);
+  // The session was closed while we were waiting (the shell registry read is
+  // async). `disposeTerminalSession` removes the slot, so "is our slot still
+  // there" is the test. Without it the shell was spawned anyway: a live process
+  // with no tab, nothing to stop it, writing into a disposed terminal.
+  const closedMeanwhile = () => runtime.get(session.id) !== slot;
 
   const cols = term.cols || 80;
   const rows = term.rows || 24;
@@ -197,6 +203,7 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   // here. A machine with no registered shell says so and points at the place
   // that fixes it, instead of failing on a hardcoded path the user never chose.
   const cfg = await getShellSpawnConfig(session.profile);
+  if (closedMeanwhile()) return;
   if (!cfg) {
     term.writeln(
       `\r\n\x1b[31mNo ${session.profile} shell is set up.\x1b[0m\r\n` +

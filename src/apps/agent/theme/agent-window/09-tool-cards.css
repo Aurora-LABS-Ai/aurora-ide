@@ -505,6 +505,64 @@
   background: var(--agw-surface);
   color: var(--agw-text-muted);
 }
+/* generate_image / generate_video: the request as a caption under the picture
+ * (`MediaRequest.tsx`), in place of the argument chips. Prose, not code: the
+ * prompt was written as sentences and is read as sentences. */
+.agw-media-request {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 62ch;
+}
+.agw-media-prompt {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agw-media-prompt[data-clamped] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.agw-media-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+}
+.agw-media-more:hover,
+.agw-media-more:focus-visible {
+  color: var(--agw-text);
+  outline: none;
+  text-decoration: underline;
+}
+.agw-media-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+/* The picture's name on the row: prose, so the body face, not the pattern's
+ * code face. */
+.agw-tool-chip-title {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text-muted);
+}
+
 .agw-tool-result,
 .agw-diff {
   margin: 0;
@@ -1446,5 +1504,34 @@
   padding: 8px 10px;
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
+}
+
+/* ── Smooth tool arrival (opt-in) ───────────────────────────────────────
+ * Settings → Preferences → Transcript. A step that mounts during a live turn
+ * carries `data-enter` and its slot in the batch as an inline
+ * `animation-delay` (see `ToolGroup.tsx` / `tool-arrival.ts`), so a parallel
+ * batch rolls in 40ms apart instead of landing in one frame.
+ *
+ * `both` holds the start frame through the delay, so a step waiting for its
+ * slot is invisible rather than drawn and then faded. It ends on
+ * `transform: none`, which creates no containing block, so the spine markers
+ * and the sticky question are unaffected once it lands. */
+.agw-tool-step[data-enter] {
+  animation: agw-tool-arrive 0.16s ease-out both;
+}
+@keyframes agw-tool-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-tool-step[data-enter] {
+    animation: none;
+  }
 }
 

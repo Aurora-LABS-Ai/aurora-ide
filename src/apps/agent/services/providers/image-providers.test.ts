@@ -16,7 +16,7 @@ import {
   withSeededImageProviders,
   type ImageModel,
   type ImageProvider,
-} from "@/apps/agent/services/providers/image-providers";
+} from "./image-providers";
 
 const provider = (over: Partial<ImageProvider> = {}): ImageProvider => ({
   id: "p1",

@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[path = "module_resolution.rs"]
+mod module_resolution;
+pub(crate) use module_resolution::configuration_dependencies;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     /// Relative to the index root, forward-slashed, so an index stays valid if
@@ -33,6 +37,12 @@ pub struct FileEntry {
     /// need a unique owner to share library scope correctly.
     #[serde(default)]
     pub library_name: Option<String>,
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub parts: Vec<String>,
+    #[serde(default)]
+    pub part_of: Option<RawPartOf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +78,18 @@ pub struct Reference {
     pub line: u32,
     pub col: u32,
     pub from: Option<String>,
+    /// Local declaration position, including parameters that are not symbols.
+    /// It prevents imported/global names from stealing a lexically bound use.
+    #[serde(default)]
+    pub binding: Option<(u32, u32)>,
+    #[serde(default)]
+    pub receiver: Option<String>,
+    /// Receiver type written as an annotation, immutable constructor, or `this`.
+    #[serde(default)]
+    pub receiver_type: Option<String>,
+    /// Proven `import * as name` receiver, distinct from named/default objects.
+    #[serde(default)]
+    pub receiver_is_namespace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +176,8 @@ pub struct ResolutionStats {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildStats {
+    #[serde(default)]
+    pub reused_files: usize,
     pub files: usize,
     pub files_with_parse_errors: usize,
     /// Files in an indexed language that could not be read or whose parser
@@ -179,8 +203,8 @@ pub struct BuildStats {
     pub symbols: usize,
     pub refs: usize,
     pub build_ms: u128,
-    /// Fingerprint of the tree this index was built from: (file count, newest
-    /// mtime). Compared against a fresh `walk::signature` before answering, so
+    /// Fingerprint of the tree this index was built from: (file count, stable
+    /// content/configuration fingerprint). Compared against `walk::signature`, so
     /// an index can detect that it is out of date by itself.
     #[serde(default)]
     pub signature: (usize, u64),
@@ -229,6 +253,8 @@ pub struct CodeIndex {
     /// Forward-slashed relative path -> file id, for module resolution.
     #[serde(skip)]
     file_ids: HashMap<String, u32>,
+    #[serde(skip)]
+    module_config: module_resolution::ModuleConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,7 +269,7 @@ struct VisibleModule {
 }
 
 enum FileBuildOutcome {
-    Indexed(String, super::lang::Lang, u64, super::extract::FileFacts),
+    Indexed(String, super::lang::Lang, u64, String, bool, super::extract::FileFacts),
     Generated,
     Failed(String),
 }
@@ -299,7 +325,12 @@ fn rust_tail(spec: &str) -> String {
 }
 
 impl CodeIndex {
+    #[cfg(test)]
     pub fn build(root: &Path) -> Result<Self> {
+        Self::build_incremental(root, None, &|_, _, _| {})
+    }
+
+    pub fn build_incremental(root: &Path, previous: Option<&Self>, progress: &(dyn Fn(usize, usize, &str) + Sync)) -> Result<Self> {
         let started = std::time::Instant::now();
         let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
@@ -310,6 +341,9 @@ impl CodeIndex {
         // volatility signal.
         let churn = walk::churn(&root);
         let langs = LangSet::new()?;
+        let cached = super::incremental::previous_facts(previous);
+        let completed = std::sync::atomic::AtomicUsize::new(0);
+        progress(0, discovered.len(), "");
 
         // One parser per rayon worker: creating one per file is measurable at
         // repo scale, and `Parser` is Send but not Sync so it cannot simply be
@@ -323,7 +357,7 @@ impl CodeIndex {
                     .unwrap_or(&d.path)
                     .to_string_lossy()
                     .replace('\\', "/");
-                let source = match std::fs::read_to_string(&d.path) {
+                let source = match super::incremental::read_source(&d.path) {
                     Ok(source) => source,
                     Err(_) => return FileBuildOutcome::Failed(rel),
                 };
@@ -331,12 +365,22 @@ impl CodeIndex {
                     return FileBuildOutcome::Generated;
                 }
                 let bytes = source.len() as u64;
-                let Some(facts) = parse_without_taking_down_the_build(|| {
-                    extract(langs.spec(d.lang), parser, &source)
-                }) else {
-                    return FileBuildOutcome::Failed(rel);
+                let hash = super::incremental::hash(&source);
+                let reused = cached.get(&rel).filter(|(old_hash, _)| *old_hash == hash);
+                let facts = match reused {
+                    Some((_, facts)) => Some(facts.clone()),
+                    None => parse_without_taking_down_the_build(|| extract(langs.spec(d.lang), parser, &source)),
                 };
-                FileBuildOutcome::Indexed(rel, d.lang, bytes, facts)
+                match facts {
+                    Some(facts) => FileBuildOutcome::Indexed(rel, d.lang, bytes, hash, reused.is_some(), facts),
+                    None => FileBuildOutcome::Failed(rel),
+                }
+            })
+            .map(|outcome| {
+                let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let path = match &outcome { FileBuildOutcome::Indexed(path, ..) | FileBuildOutcome::Failed(path) => path.as_str(), FileBuildOutcome::Generated => "" };
+                progress(done, discovered.len(), path);
+                outcome
             })
             .collect();
 
@@ -362,13 +406,14 @@ impl CodeIndex {
             reexported_modules: HashMap::new(),
             library_members: HashMap::new(),
             file_ids: HashMap::new(),
+            module_config: module_resolution::ModuleConfig::default(),
         };
 
         let mut pending_parts: Vec<(u32, Vec<String>, Option<RawPartOf>)> = Vec::new();
 
         for outcome in per_file {
-            let (rel, lang, bytes, facts) = match outcome {
-                FileBuildOutcome::Indexed(rel, lang, bytes, facts) => (rel, lang, bytes, facts),
+            let (rel, lang, bytes, hash, reused, facts) = match outcome {
+                FileBuildOutcome::Indexed(rel, lang, bytes, hash, reused, facts) => (rel, lang, bytes, hash, reused, facts),
                 FileBuildOutcome::Generated => {
                     idx.stats.skipped_generated += 1;
                     continue;
@@ -388,6 +433,7 @@ impl CodeIndex {
                 idx.stats.files_with_parse_errors += 1;
             }
             idx.stats.bytes += bytes;
+            idx.stats.reused_files += usize::from(reused);
             let library_name = facts.library_name.clone();
             pending_parts.push((file_id, facts.parts.clone(), facts.part_of.clone()));
             idx.files.push(FileEntry {
@@ -396,6 +442,9 @@ impl CodeIndex {
                 lang: lang.name().to_string(),
                 had_parse_error: facts.had_parse_error,
                 library_name,
+                content_hash: hash,
+                parts: facts.parts.clone(),
+                part_of: facts.part_of.clone(),
             });
             idx.symbols.extend(facts.symbols.into_iter().map(
                 |RawSymbol {
@@ -426,6 +475,10 @@ impl CodeIndex {
                      line,
                      col,
                      from,
+                     binding,
+                     receiver,
+                     receiver_type,
+                     receiver_is_namespace,
                  }| Reference {
                     name,
                     kind,
@@ -433,6 +486,10 @@ impl CodeIndex {
                     line,
                     col,
                     from,
+                    binding,
+                    receiver,
+                    receiver_type,
+                    receiver_is_namespace,
                 },
             ));
             idx.imports.extend(facts.imports.into_iter().map(
@@ -521,6 +578,18 @@ impl CodeIndex {
     }
 
     fn rebuild_lookups(&mut self) {
+        self.module_config = module_resolution::ModuleConfig::read(
+            &self.root,
+            self.files
+                .iter()
+                .filter(|file| {
+                    matches!(
+                        super::lang::Lang::from_path(Path::new(&file.path)),
+                        Some(super::lang::Lang::TypeScript | super::lang::Lang::Tsx)
+                    )
+                })
+                .map(|file| file.path.clone()),
+        );
         self.by_name.clear();
         self.refs_by_name.clear();
         self.imports_by_file.clear();
@@ -676,27 +745,38 @@ impl CodeIndex {
 
     /// Which file a module specifier written in `from` points at.
     ///
-    /// Deliberately syntactic. A real module resolver reads `tsconfig` paths,
-    /// `package.json` exports, Cargo's module tree and Python's `sys.path`;
-    /// this reproduces the conventions those almost always encode, and returns
-    /// `None` the moment it is unsure. A wrong answer here would silently
-    /// mis-attribute callers, so every rule below is one that cannot be
-    /// coincidence — and `None` costs nothing, because the caller falls back to
-    /// the same-file / same-dir cascade.
+    /// JS/TS paths use the owning tsconfig/jsconfig and exact relative paths.
+    /// Other languages retain their bounded syntax-based module conventions.
     pub fn resolve_module(&self, from: u32, spec: &str) -> Option<u32> {
         let from_path = self.files.get(from as usize)?.path.as_str();
         let from_dir = from_path.rsplit_once('/').map_or("", |(d, _)| d);
+
+        if matches!(
+            super::lang::Lang::from_path(Path::new(from_path)),
+            Some(super::lang::Lang::TypeScript | super::lang::Lang::Tsx)
+        ) {
+            if spec.starts_with("./") || spec.starts_with("../") {
+                return self.resolve_js_path(&join_rel(from_dir, spec));
+            }
+            let (candidates, alias_matched) =
+                self.module_config.candidates(&self.root, from_path, spec);
+            for candidate in candidates {
+                if let Some(id) = self.resolve_js_path(&candidate) {
+                    return Some(id);
+                }
+            }
+            if alias_matched {
+                return None;
+            }
+            return self
+                .workspace_package_path(spec)
+                .and_then(|path| self.resolve_js_path(path.trim_start_matches('/')));
+        }
 
         let joined = if let Some(rest) = spec.strip_prefix("./") {
             join_rel(from_dir, rest)
         } else if spec.starts_with("../") {
             join_rel(from_dir, spec)
-        } else if let Some(rest) = spec.strip_prefix("@/") {
-            // The near-universal tsconfig alias, tried as `src/*` first
-            // because that is Aurora's own layout and a common one. It is a
-            // GUESS, and the root-relative form is tried too — see the second
-            // attempt at the end of this function.
-            format!("src/{rest}")
         } else if spec.starts_with("crate::") || spec.starts_with("self::") {
             // Rust: crate-root-relative. The crate root is not necessarily the
             // index root (Aurora's own is `src-tauri/src`), so this is matched
@@ -767,24 +847,42 @@ impl CodeIndex {
             return Some(id);
         }
 
-        // `@/*` does not always mean `src/*`.
-        //
-        // The other half of the ecosystem maps it at the project ROOT —
-        // `"paths": { "@/*": ["./*"] }`, which is what `create-next-app`
-        // writes when there is no `src/` directory. Guessing `src/` for those
-        // drops EVERY edge in the project, and the failure is silent and total:
-        // `code op:modules` answers `dependencies: 0` across every directory,
-        // which reads as "this code is not wired together" rather than as a
-        // miss. Reported from a live run on a Next.js workspace on 2026-09-04,
-        // where `outline` and `usages` worked — they resolve symbols by name
-        // and never come through here — so only the module graph was wrong.
-        //
-        // Tried second, so a project that genuinely keeps its sources under
-        // `src/` is unaffected: that lookup already returned above.
-        if let Some(rest) = spec.strip_prefix("@/") {
-            return self.resolve_joined(rest.trim_matches('/'));
-        }
         None
+    }
+
+    fn resolve_js_path(&self, path: &str) -> Option<u32> {
+        // TypeScript resolves runtime extensions to source before emitted JS.
+        for (runtime, sources) in [
+            (".js", &[".ts", ".tsx", ".d.ts", ".js", ".jsx"][..]),
+            (".jsx", &[".tsx", ".d.ts", ".jsx"][..]),
+            (".mjs", &[".mts", ".d.mts", ".mjs"][..]),
+            (".cjs", &[".cts", ".d.cts", ".cjs"][..]),
+        ] {
+            if let Some(stem) = path.strip_suffix(runtime) {
+                return sources
+                    .iter()
+                    .find_map(|suffix| self.file_ids.get(&format!("{stem}{suffix}")).copied());
+            }
+        }
+        if let Some(id) = self.file_ids.get(path) {
+            return Some(*id);
+        }
+        [
+            ".ts",
+            ".tsx",
+            ".d.ts",
+            ".js",
+            ".jsx",
+            ".mts",
+            ".cts",
+            "/index.ts",
+            "/index.tsx",
+            "/index.d.ts",
+            "/index.js",
+            "/index.jsx",
+        ]
+        .iter()
+        .find_map(|suffix| self.file_ids.get(&format!("{path}{suffix}")).copied())
     }
 
     /// Match one already-resolved path stem against the indexed files.
@@ -892,10 +990,11 @@ impl CodeIndex {
             if !visited.insert((member, name.to_string())) {
                 continue;
             }
+            let module_exports = matches!(super::lang::Lang::from_path(Path::new(self.file_path(member))), Some(super::lang::Lang::TypeScript | super::lang::Lang::Tsx));
             out.extend(
                 self.definitions(name)
                     .into_iter()
-                    .filter(|symbol| symbol.exported && symbol.file == member),
+                    .filter(|symbol| symbol.exported && symbol.file == member && (!module_exports || symbol.container.is_none())),
             );
             for reexport in self.reexported_modules.get(&member).into_iter().flatten() {
                 if reexport.bindings.is_empty() {
@@ -1042,10 +1141,10 @@ impl CodeIndex {
                     .map_or_else(Vec::new, |target| {
                         self.exported_definitions_from(target, imported)
                     });
-                if !hit.is_empty() {
-                    return (hit, Confidence::Import);
-                }
+                // An explicit external/missing import blocks name fallbacks.
+                return (hit, Confidence::Import);
             }
+            return (Vec::new(), Confidence::Import);
         }
 
         let defs = self.definitions(name);
@@ -1168,22 +1267,113 @@ impl CodeIndex {
                 continue;
             }
 
-            let (mut defs, confidence) = self.resolve(&r.name, r.file);
+            let (mut defs, confidence) = self.resolve_reference(r);
             if call_site {
                 defs.retain(|s| is_callable(&s.kind));
             }
-            if defs.len() > 1 && confidence == Confidence::Ambiguous {
+            if defs.len() > 1 || confidence == Confidence::Ambiguous {
                 unresolved += 1;
                 continue;
             }
             if defs
                 .iter()
-                .any(|s| s.file == target.file && s.line == target.line)
+                .any(|s| s.file == target.file && s.line == target.line && s.col == target.col)
             {
                 hits.push(r);
             }
         }
         (hits, unresolved)
+    }
+
+    /// Resolve a concrete source occurrence using its lexical/receiver evidence.
+    /// Name-only queries cannot see parameter shadowing or a member's receiver.
+    pub fn resolve_reference(&self, reference: &Reference) -> (Vec<&Symbol>, Confidence) {
+        if let Some(receiver) = &reference.receiver {
+            if reference.receiver_is_namespace && self.files.get(reference.file as usize).is_some_and(|file| file.lang == "rust") {
+                let specifier = match self.imports_by_file.get(&(reference.file, receiver.clone())) {
+                    Some((name, module, _)) => format!("{module}::{name}"),
+                    None => receiver.clone(),
+                };
+                if let Some(file) = self.resolve_module(reference.file, &specifier) {
+                    return (self.exported_definitions_from(file, &reference.name), Confidence::Import);
+                }
+            }
+            let type_name = reference.receiver_type.as_deref().unwrap_or(receiver);
+            let types = if reference.receiver_type.is_none() {
+                if let Some((line, col)) = reference.binding {
+                    self.definitions(type_name)
+                        .into_iter()
+                        .filter(|symbol| {
+                            symbol.file == reference.file
+                                && symbol.line == line
+                                && symbol.col == col
+                        })
+                        .collect()
+                } else {
+                    self.evidenced_definitions(type_name, reference.file)
+                }
+            } else {
+                self.evidenced_definitions(type_name, reference.file)
+            };
+            let types: Vec<_> = types
+                .into_iter()
+                .filter(|symbol| {
+                    matches!(
+                        symbol.kind.as_str(),
+                        "class" | "struct" | "interface" | "trait" | "enum"
+                    )
+                })
+                .collect();
+            if types.len() == 1 {
+                let owner = types[0];
+                let methods = self
+                    .definitions(&reference.name)
+                    .into_iter()
+                    .filter(|symbol| {
+                        symbol.file == owner.file
+                            && symbol.container.as_deref() == Some(owner.name.as_str())
+                    })
+                    .collect();
+                return (methods, Confidence::Import);
+            }
+            // `import * as api from './api'; api.save()` has a named module
+            // receiver, not an instance type. Local bindings cannot override it.
+            if reference.receiver_is_namespace {
+                if let Some((_, module, _)) = self
+                    .imports_by_file
+                    .get(&(reference.file, receiver.clone()))
+                {
+                    let definitions = self
+                        .resolve_module(reference.file, module)
+                        .map(|file| self.exported_definitions_from(file, &reference.name))
+                        .unwrap_or_default();
+                    return (definitions, Confidence::Import);
+                }
+            }
+            return (Vec::new(), Confidence::Ambiguous);
+        }
+        if let Some((line, col)) = reference.binding {
+            let definitions = self
+                .definitions(&reference.name)
+                .into_iter()
+                .filter(|symbol| {
+                    symbol.file == reference.file && symbol.line == line && symbol.col == col
+                })
+                .collect();
+            return (definitions, Confidence::SameFile);
+        }
+        let (definitions, confidence) = self.resolve(&reference.name, reference.file);
+        // One matching name somewhere in the repository (or a sibling folder)
+        // is not evidence that this occurrence refers to it.
+        if matches!(confidence, Confidence::Unique | Confidence::SameDir | Confidence::Ambiguous) {
+            return (definitions, Confidence::Ambiguous);
+        }
+        (definitions, confidence)
+    }
+
+    fn evidenced_definitions(&self, name: &str, file: u32) -> Vec<&Symbol> {
+        let (definitions, confidence) = self.resolve(name, file);
+        if matches!(confidence, Confidence::SameFile | Confidence::Import) { definitions } else { Vec::new() }
     }
 
     /// Every usage of `name`, in file order.
@@ -1259,9 +1449,7 @@ impl CodeIndex {
     /// heard of this file" is a request that could not be served, and the
     /// difference decides whether `code` reports success — see `op_outline`.
     pub fn indexes_file(&self, file_substring: &str) -> bool {
-        self.files
-            .iter()
-            .any(|f| f.path.contains(file_substring))
+        self.files.iter().any(|f| f.path.contains(file_substring))
     }
 
     pub fn outline(&self, file_substring: &str) -> Vec<(&str, &Symbol)> {
@@ -1337,6 +1525,7 @@ impl CodeIndex {
             reexported_modules: HashMap::new(),
             library_members: HashMap::new(),
             file_ids: HashMap::new(),
+            module_config: module_resolution::ModuleConfig::default(),
         };
         idx.rebuild_lookups();
         idx
@@ -1345,6 +1534,35 @@ impl CodeIndex {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn python_parameters_and_unknown_objects_do_not_steal_local_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "def save():\n    pass\ndef shadow(save):\n    save()\ndef unknown(obj):\n    obj.save()\ndef real():\n    save()\n").unwrap();
+        let index = super::CodeIndex::build(dir.path()).unwrap();
+        let hits = index.references_to(index.definitions("save")[0]).0;
+        assert_eq!(hits.iter().filter(|r| r.kind == "call").count(), 1, "{hits:?}");
+        assert!(hits.iter().any(|r| r.line == 8));
+    }
+    #[test]
+    fn unique_names_in_unrelated_modules_are_not_confirmed_callers() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ts"), "export function save() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.ts"), "export function go() { save(); }\n").unwrap();
+        let index = super::CodeIndex::build(dir.path()).unwrap();
+        let target = index.definitions("save")[0];
+        let (hits, uncertain) = index.references_to(target);
+        assert!(hits.is_empty());
+        assert!(uncertain > 0);
+    }
+
+    #[test]
+    fn unimported_receiver_types_do_not_create_confirmed_methods() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.ts"), "export class Client { save() {} }\n").unwrap();
+        std::fs::write(dir.path().join("b.ts"), "function go(c: Client) { c.save(); }\n").unwrap();
+        let index = super::CodeIndex::build(dir.path()).unwrap();
+        assert!(index.references_to(index.definitions("Client::save")[0]).0.is_empty());
+    }
     use super::*;
 
     fn fixture() -> tempfile::TempDir {
@@ -1441,15 +1659,27 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_supported_file_is_reported_as_a_coverage_gap() {
+    fn a_file_in_a_legacy_code_page_is_still_indexed() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("good.rs"), "pub fn visible() {}\n").unwrap();
-        std::fs::write(dir.path().join("broken.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+        // cp1252 em dash (0x97) in a comment: not UTF-8, still ordinary code.
+        let mut legacy = b"// probe \x97 notes\r\npub fn legacy_probe() {}\r\n".to_vec();
+        legacy.extend_from_slice(b"pub fn after_it() {}\r\n");
+        std::fs::write(dir.path().join("legacy.rs"), legacy).unwrap();
 
         let idx = CodeIndex::build(dir.path()).unwrap();
-        assert_eq!(idx.stats.files_failed, 1);
-        assert_eq!(idx.stats.failed_files, ["broken.rs"]);
+        assert_eq!(idx.stats.files_failed, 0, "{:?}", idx.stats.failed_files);
         assert_eq!(idx.definitions("visible").len(), 1);
+        let defs = idx.definitions("after_it");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].line, 3, "line numbers must survive the lossy decode");
+    }
+
+    #[test]
+    fn failed_files_are_reported_as_a_coverage_gap() {
+        let mut idx = CodeIndex::build(tempfile::tempdir().unwrap().path()).unwrap();
+        idx.stats.files_failed = 1;
+        idx.stats.failed_files = vec!["broken.rs".into()];
         let gap = idx.coverage_gap().expect("the partial build must say so");
         assert!(gap.contains("1 supported-language file"), "{gap}");
         assert!(gap.contains("broken.rs"), "{gap}");
@@ -1536,6 +1766,176 @@ mod tests {
         assert_eq!(confidence, Confidence::Import);
         assert_eq!(defs.len(), 1, "the import names exactly one: {defs:?}");
         assert_eq!(idx.file_path(defs[0].file), "src/b/client.ts");
+    }
+
+    #[test]
+    fn external_import_never_binds_to_an_unrelated_local_symbol() {
+        let (_dir, idx) = index_of(&[
+            ("local.ts", "export function save() {}\n"),
+            (
+                "consumer.ts",
+                "import { save } from 'external-sdk';\nexport function work() { save(); }\n",
+            ),
+        ]);
+        let target = idx.definitions("save")[0];
+        assert!(idx.references_to(target).0.is_empty());
+        assert!(idx
+            .resolve("save", file_id(&idx, "consumer.ts"))
+            .0
+            .is_empty());
+    }
+
+    #[test]
+    fn receiver_evidence_selects_one_method_and_unknown_receivers_select_none() {
+        let (_dir, idx) = index_of(&[("models.ts", "export class A { run() {} }\nexport class B { run() {} }\nexport function work() { const a = new A(); a.run(); }\nexport function unknown(value: any) { value.run(); }\n")]);
+        let a = idx.definitions("A::run")[0];
+        let b = idx.definitions("B::run")[0];
+        let a_calls = idx
+            .references_to(a)
+            .0
+            .into_iter()
+            .filter(|r| r.kind == "call")
+            .collect::<Vec<_>>();
+        assert_eq!(a_calls.len(), 1, "{a_calls:?}");
+        assert_eq!(a_calls[0].from.as_deref(), Some("work"));
+        assert!(idx.references_to(b).0.is_empty());
+    }
+
+    #[test]
+    fn parameters_and_nested_locals_shadow_imported_functions() {
+        let (_dir, idx) = index_of(&[
+            ("lib.ts", "export function run() {}\n"),
+            ("consumer.ts", "import { run } from './lib';\nexport function work(run: () => void) { run(); }\nexport function nested() { const run = () => {}; run(); }\nexport function normal() { run(); }\nexport function destructured({ run }: { run: () => void }) { run(); }\n")
+        ]);
+        let target = idx
+            .definitions("run")
+            .into_iter()
+            .find(|s| idx.file_path(s.file) == "lib.ts")
+            .unwrap();
+        let uses = idx
+            .references_to(target)
+            .0
+            .into_iter()
+            .filter(|r| r.kind != "import")
+            .collect::<Vec<_>>();
+        assert_eq!(uses.len(), 1, "{uses:?}");
+        assert_eq!(uses[0].from.as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn shadowed_namespace_receiver_does_not_use_the_import() {
+        let (_dir, idx) = index_of(&[
+            ("lib.ts", "export function run() {}\n"),
+            ("consumer.ts", "import * as api from './lib';\nexport function work(api: any) { api.run(); }\nexport function normal() { api.run(); }\n")
+        ]);
+        let uses = idx
+            .references_to(idx.definitions("run")[0])
+            .0
+            .into_iter()
+            .filter(|r| r.kind == "call")
+            .collect::<Vec<_>>();
+        assert_eq!(uses.len(), 1, "{uses:?}");
+        assert_eq!(uses[0].from.as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn imported_objects_and_class_members_do_not_become_module_functions() {
+        let (_dir, idx) = index_of(&[
+            ("lib.ts", "export function run() {}\nexport const service = {};\nexport class Client { save() {} }\n"),
+            ("consumer.ts", "import { service, save } from './lib';\nexport function work() { service.run(); save(); }\n")
+        ]);
+        for name in ["run", "Client::save"] {
+            assert!(idx.references_to(idx.definitions(name)[0]).0.is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn configured_alias_uses_app_directory_instead_of_guessing_src() {
+        let (_dir, idx) = index_of(&[
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["app/*"]}}}"#,
+            ),
+            ("app/service.ts", "export function run() {}\n"),
+            ("src/service.ts", "export function run() {}\n"),
+            (
+                "consumer.ts",
+                "import { run } from '@/service';\nexport function work() { run(); }\n",
+            ),
+        ]);
+        let from = file_id(&idx, "consumer.ts");
+        assert_eq!(
+            idx.resolve_module(from, "@/service"),
+            Some(file_id(&idx, "app/service.ts"))
+        );
+        let wrong = idx
+            .definitions("run")
+            .into_iter()
+            .find(|s| idx.file_path(s.file) == "src/service.ts")
+            .unwrap();
+        assert!(idx.references_to(wrong).0.is_empty());
+    }
+
+    #[test]
+    fn js_extensions_resolve_typescript_source_and_missing_relatives_stay_missing() {
+        let (_dir, idx) = index_of(&[
+            ("util.ts", "export function run() {}\n"),
+            (
+                "consumer.ts",
+                "import { run } from './util.js'; export function work() { run(); }\n",
+            ),
+            ("other/missing.ts", "export function hidden() {}\n"),
+        ]);
+        let from = file_id(&idx, "consumer.ts");
+        assert_eq!(
+            idx.resolve_module(from, "./util.js"),
+            Some(file_id(&idx, "util.ts"))
+        );
+        assert_eq!(idx.resolve_module(from, "./missing"), None);
+    }
+
+    #[test]
+    fn referenced_and_extended_jsonc_configs_preserve_alias_origins() {
+        let (_dir, idx) = index_of(&[
+            ("tsconfig.json", r#"{"files":[],"references":[{"path":"./tsconfig.app.json"}]}"#),
+            ("tsconfig.app.json", r#"{"extends":"./config/base.json","include":["app"],}"#),
+            ("config/base.json", "{ /* comment */ \"compilerOptions\": { \"baseUrl\": \"..\", \"paths\": { \"@/*\": [\"app/*\"], }, }, }"),
+            ("app/service.ts", "export function run() {}\n"),
+            ("app/consumer.ts", "import { run } from '@/service'; run();\n"),
+        ]);
+        let from = file_id(&idx, "app/consumer.ts");
+        assert_eq!(
+            idx.resolve_module(from, "@/service"),
+            Some(file_id(&idx, "app/service.ts"))
+        );
+        let deps = configuration_dependencies(&idx.root.join("tsconfig.json"));
+        assert!(deps.iter().any(|p| p.ends_with("config/base.json")));
+    }
+
+    #[test]
+    fn nearest_jsconfig_base_url_is_local_to_its_project() {
+        let (_dir, idx) = index_of(&[
+            ("jsconfig.json", r#"{"compilerOptions":{"baseUrl":"src"}}"#),
+            ("src/service.ts", "export function run() {}\n"),
+            (
+                "nested/jsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":"app"}}"#,
+            ),
+            ("nested/app/service.ts", "export function run() {}\n"),
+            (
+                "nested/consumer.ts",
+                "import { run } from 'service'; run();\n",
+            ),
+            ("consumer.ts", "import { run } from 'service'; run();\n"),
+        ]);
+        assert_eq!(
+            idx.resolve_module(file_id(&idx, "consumer.ts"), "service"),
+            Some(file_id(&idx, "src/service.ts"))
+        );
+        assert_eq!(
+            idx.resolve_module(file_id(&idx, "nested/consumer.ts"), "service"),
+            Some(file_id(&idx, "nested/app/service.ts"))
+        );
     }
 
     #[test]

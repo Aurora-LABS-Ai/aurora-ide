@@ -216,8 +216,14 @@ export const FilesPanel: React.FC = () => {
   const activeFile = useActiveFilePath();
 
   const [query, setQuery] = useState("");
-  const [index, setIndex] = useState<MentionFile[] | null>(null);
-  const indexLoading = useRef(false);
+  // The flat index, tagged with the project it was built for. Switching
+  // project keeps this panel mounted, so an untagged list went on answering
+  // the filter with the PREVIOUS project's files.
+  const [loadedIndex, setLoadedIndex] = useState<{ root: string; files: MentionFile[] } | null>(
+    null,
+  );
+  const index = loadedIndex && loadedIndex.root === projectRoot ? loadedIndex.files : null;
+  const indexLoading = useRef<string | null>(null);
   const [menu, setMenu] = useState<RailMenuState | null>(null);
 
   // Right-click on any row — the same menu surface as the left rail
@@ -289,11 +295,14 @@ export const FilesPanel: React.FC = () => {
 
   // Lazily load the flat index the first time the user filters.
   useEffect(() => {
-    if (!query.trim() || index || indexLoading.current || !projectRoot) return;
-    indexLoading.current = true;
-    void loadFileIndex(projectRoot).then((files) => {
-      setIndex(files);
-      indexLoading.current = false;
+    if (!query.trim() || index || !projectRoot || indexLoading.current === projectRoot) return;
+    const root = projectRoot;
+    indexLoading.current = root;
+    void loadFileIndex(root).then((files) => {
+      // Tagged with the root it was built for; a list for a project the
+      // panel has since left is simply never shown (see `index`).
+      setLoadedIndex({ root, files });
+      if (indexLoading.current === root) indexLoading.current = null;
     });
   }, [query, index, projectRoot]);
 

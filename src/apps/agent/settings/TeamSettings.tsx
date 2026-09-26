@@ -5,17 +5,17 @@
  * splits the project by scope, and runs peer workers under one lead you chat
  * with. This page owns everything team-shaped — enablement, size ceiling, the
  * team model, and (soon) recent runs.
- * All controls read/write the shared `useSettingsStore` so the IDE and this
+ * All controls read/write the shared `useAgentSettingsStore` so the IDE and this
  * window stay in lockstep. Reads `--agw-*` tokens exclusively.
  */
 
 import React, { useMemo } from "react";
 
 import {
-  useSettingsStore,
+  useAgentSettingsStore,
   TEAM_SIZE_HARD_CEILING,
   TEAM_SIZE_RECOMMENDED,
-} from "@/kernel/store/useSettingsStore";
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   AgwPill,
   AgwSelect,
@@ -64,16 +64,16 @@ const Stepper: React.FC<{
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export const TeamSettings: React.FC = () => {
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
-  const maxTeamSize = useSettingsStore((s) => s.maxTeamSize);
-  const setTeamEnabled = useSettingsStore((s) => s.setTeamEnabled);
-  const setMaxTeamSize = useSettingsStore((s) => s.setMaxTeamSize);
-  const teamMemberModel = useSettingsStore((s) => s.teamMemberModel);
-  const setTeamMemberModel = useSettingsStore((s) => s.setTeamMemberModel);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
+  const maxTeamSize = useAgentSettingsStore((s) => s.maxTeamSize);
+  const setTeamEnabled = useAgentSettingsStore((s) => s.setTeamEnabled);
+  const setMaxTeamSize = useAgentSettingsStore((s) => s.setMaxTeamSize);
+  const teamMemberModel = useAgentSettingsStore((s) => s.teamMemberModel);
+  const setTeamMemberModel = useAgentSettingsStore((s) => s.setTeamMemberModel);
 
-  const providers = useSettingsStore((s) => s.providers);
-  const modelSlice = useSettingsStore((s) => s.models);
-  const getAvailableModels = useSettingsStore((s) => s.getAvailableModels);
+  const providers = useAgentSettingsStore((s) => s.providers);
+  const modelSlice = useAgentSettingsStore((s) => s.models);
+  const getAvailableModels = useAgentSettingsStore((s) => s.getAvailableModels);
 
   const modelOptions = useMemo<SelectOption[]>(() => {
     const options: SelectOption[] = [

@@ -1,7 +1,7 @@
 /**
  * Agent Window — Settings · Skills (view).
  *
- * agw-native. Reads/writes the SAME shared `useSettingsStore` skill toggles the
+ * agw-native. Reads/writes the SAME shared `useAgentSettingsStore` skill toggles the
  * IDE uses, so equipping a skill here equips it for the agent everywhere.
  * Enablement is **per workspace**: capacity, cap, and toggles are all scoped to
  * the currently-open project (`useAgentChatStore.projectRoot`).
@@ -22,7 +22,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
   deleteSkillFromDisk,
@@ -152,11 +152,11 @@ const SkillCard: React.FC<{
 
 export const SkillsSettings: React.FC = () => {
   const projectRoot = useAgentChatStore((s) => s.projectRoot);
-  const skillToggles = useSettingsStore((s) => s.skillToggles);
-  const skillsEnabled = useSettingsStore((s) => s.skillsEnabled);
-  const setSkillEnabled = useSettingsStore((s) => s.setSkillEnabled);
-  const setSkillsEnabled = useSettingsStore((s) => s.setSkillsEnabled);
-  const removeSkillToggle = useSettingsStore((s) => s.removeSkillToggle);
+  const skillToggles = useAgentSettingsStore((s) => s.skillToggles);
+  const skillsEnabled = useAgentSettingsStore((s) => s.skillsEnabled);
+  const setSkillEnabled = useAgentSettingsStore((s) => s.setSkillEnabled);
+  const setSkillsEnabled = useAgentSettingsStore((s) => s.setSkillsEnabled);
+  const removeSkillToggle = useAgentSettingsStore((s) => s.removeSkillToggle);
 
   const scopeKey = useMemo(
     () => getSkillToggleScopeKey(projectRoot),

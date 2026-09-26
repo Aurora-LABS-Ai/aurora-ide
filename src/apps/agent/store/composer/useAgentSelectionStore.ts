@@ -1,11 +1,9 @@
 /**
  * Agent Window — picked-element selection store (feature state).
  *
- * Mirrors the IDE's `useChatStore.selectedElements` for the agent window: the
- * Browser tab's inspector adds elements here, the composer renders them as
+ * The Browser tab's inspector adds elements here, the composer renders them as
  * "Selected N" chips, and the send pipeline attaches them to the turn as context
- * (then clears). Kept separate from the IDE store so the two windows don't share
- * selection state.
+ * (then clears).
  */
 
 import { create } from "zustand";

@@ -39,7 +39,7 @@ pub fn explorer_open_workspace(
 }
 
 /// Refresh the full explorer tree from disk.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_refresh(
     explorer_state: State<'_, ExplorerStateHandle>,
 ) -> Result<ExplorerSnapshot, String> {
@@ -48,7 +48,7 @@ pub fn explorer_refresh(
 }
 
 /// Apply file system changes to the Rust-owned explorer tree.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_apply_fs_changes(
     paths: Vec<String>,
     kind: Option<String>,
@@ -59,7 +59,7 @@ pub fn explorer_apply_fs_changes(
 }
 
 /// Toggle a folder in the Rust-owned explorer tree.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_toggle_folder(
     folder_id: String,
     explorer_state: State<'_, ExplorerStateHandle>,
@@ -69,7 +69,7 @@ pub fn explorer_toggle_folder(
 }
 
 /// Expand a folder in the Rust-owned explorer tree.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_expand_folder(
     folder_id: String,
     explorer_state: State<'_, ExplorerStateHandle>,
@@ -79,7 +79,7 @@ pub fn explorer_expand_folder(
 }
 
 /// Select a file in the Rust-owned explorer state.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_select_file(
     file_id: Option<String>,
     explorer_state: State<'_, ExplorerStateHandle>,
@@ -89,7 +89,7 @@ pub fn explorer_select_file(
 }
 
 /// Reveal a file by expanding its parent folders in Rust.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_reveal_file(
     file_path: String,
     explorer_state: State<'_, ExplorerStateHandle>,
@@ -99,7 +99,7 @@ pub fn explorer_reveal_file(
 }
 
 /// Collapse the visible explorer tree.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_collapse_all(
     explorer_state: State<'_, ExplorerStateHandle>,
 ) -> Result<ExplorerSnapshot, String> {
@@ -130,7 +130,7 @@ pub fn explorer_save_state(
 }
 
 /// Get the current Rust-owned explorer snapshot.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn explorer_get_state(
     explorer_state: State<'_, ExplorerStateHandle>,
 ) -> Result<Option<ExplorerSnapshot>, String> {
@@ -139,11 +139,14 @@ pub fn explorer_get_state(
 }
 
 /// Clear the Rust-owned explorer workspace.
-#[tauri::command]
-pub fn explorer_clear_workspace(explorer_state: State<'_, ExplorerStateHandle>) {
+#[tauri::command(async)]
+pub fn explorer_clear_workspace(
+    explorer_state: State<'_, ExplorerStateHandle>,
+) -> Result<(), String> {
     explorer_state.clear_watcher();
     let mut explorer = explorer_state.lock_manager();
     explorer.clear_workspace();
+    Ok(())
 }
 
 fn emit_explorer_snapshot(app: &AppHandle, snapshot: &ExplorerSnapshot) {

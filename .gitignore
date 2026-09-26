@@ -74,6 +74,10 @@ example.txt
 /scratch/
 /tasks/
 
+# Extracted agent session transcripts. Raw local chat logs, not source, and
+# they quote real provider keys and machine paths.
+/temp/
+
 # Cloned third-party repos kept locally for reference/comparison (other
 # agent harnesses, SDKs). Read-only study material — never our source, and
 # vendoring someone else's git history into ours is not the intent.

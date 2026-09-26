@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { classifyError } from "@/apps/agent/lib/error-classifier";
 
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: { getState: () => ({}) },
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: { getState: () => ({}) },
 }));
 
 /**

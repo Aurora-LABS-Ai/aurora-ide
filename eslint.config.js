@@ -143,10 +143,8 @@ export default defineConfig([
       // honest. Keep it small: if something here serves ONE product, it
       // belongs in that product.
       'src/bridge/**',
-      // TODO(reorg 3.5): the 2110-line settings store still mixes agent
-      // config (providers, models, execution mode) with editor prefs.
-      // Splitting it removes this exemption. Do not add files to this list.
-      'src/kernel/store/useSettingsStore.ts',
+      // Do not add files to this list. The settings store used to sit here;
+      // its provider presets and mode types moved into kernel (2026-09-24).
     ],
     rules: NO_AGENT_FROM_IDE,
   },
@@ -160,8 +158,6 @@ export default defineConfig([
   // ── kernel is the floor: it depends on neither product ────────────────────
   {
     files: ['src/kernel/**/*.{ts,tsx}'],
-    // See the TODO(reorg 3.5) note above — same store, same reason.
-    ignores: ['src/kernel/store/useSettingsStore.ts'],
     rules: KERNEL_DEPENDS_ON_NOTHING,
   },
 ])

@@ -54,7 +54,7 @@ use super::CURSOR_API_BASE;
 /// Full RPC path for the streaming turn.
 const RUN_PATH: &str = "/agent.v1.AgentService/Run";
 
-/// The only native tool the model is allowed to see.
+/// The only native tool the model is allowed to see on a turn with no tools.
 ///
 /// `mcp_tool_call` is the oneof member carrying an MCP invocation, and Aurora's
 /// tools arrive as MCP tools. Naming it alone leaves Cursor's ~40 built-ins
@@ -62,6 +62,38 @@ const RUN_PATH: &str = "/agent.v1.AgentService/Run";
 /// runs its own tools, through its own permission gate, with its own
 /// checkpoints.
 const ALLOWED_NATIVE_TOOLS: &str = "mcp_tool_call";
+
+/// The allow-list for a turn that declares tools.
+///
+/// Cursor stopped listing MCP tool schemas in the model's prompt. A turn that
+/// carries `mcp_tools` must now also allow `get_mcp_tools_tool_call` — the
+/// model's "Exploring tools" step — or the server refuses the whole turn with
+/// `internal: Required tool GET_MCP_TOOLS not found in allTools` before a
+/// single token streams. Adding it costs one exploration step per turn, which
+/// [`build_mcp_state_reply`] answers from the definitions already in hand.
+///
+/// It is left out when there are no tools, so
+/// `cursors_own_tools_are_hidden_from_the_model` keeps testing what it says.
+const ALLOWED_NATIVE_TOOLS_WITH_TOOLS: &str = "mcp_tool_call,get_mcp_tools_tool_call";
+
+/// The allow-list this turn sends, or `None` to omit the header entirely.
+///
+/// `AURORA_CURSOR_ALLOWED_TOOLS` overrides it, and an empty value drops the
+/// header — which is how Cursor's full native registry comes back. That exists
+/// so the next protocol change can be bisected against the live account without
+/// a rebuild; the default is what ships.
+fn allowed_native_tools(has_tools: bool) -> Option<String> {
+    let default = if has_tools {
+        ALLOWED_NATIVE_TOOLS_WITH_TOOLS
+    } else {
+        ALLOWED_NATIVE_TOOLS
+    };
+    match std::env::var("AURORA_CURSOR_ALLOWED_TOOLS") {
+        Ok(value) if value.trim().is_empty() => None,
+        Ok(value) => Some(value),
+        Err(_) => Some(default.to_string()),
+    }
+}
 
 /// What one turn produces.
 #[derive(Debug, Clone, PartialEq)]
@@ -262,6 +294,48 @@ fn build_request_context_reply(
     }
 }
 
+/// Reply to the server's MCP-state handshake.
+///
+/// Cursor stopped putting every MCP tool schema in the model's prompt. The
+/// model now gets one `GET_MCP_TOOLS` tool ("Exploring tools" in Cursor's own
+/// UI) and the server asks the client, over the open stream, which servers and
+/// tools exist. Aurora answers with a single server carrying the same
+/// definitions the run request declared — the tools are Aurora's own, so there
+/// is nothing to go and ask.
+///
+/// `kick_only` is Cursor telling a real client to reconnect its servers before
+/// reporting. Aurora has no process to kick, so the answer is identical.
+fn build_mcp_state_reply(
+    id: u32,
+    exec_id: String,
+    tools: Vec<pb::McpToolDefinition>,
+) -> pb::AgentClientMessage {
+    pb::AgentClientMessage {
+        message: Some(pb::agent_client_message::Message::ExecClientMessage(
+            pb::ExecClientMessage {
+                id,
+                exec_id,
+                message: Some(pb::exec_client_message::Message::McpStateExecResult(
+                    pb::McpStateExecResult {
+                        result: Some(pb::mcp_state_exec_result::Result::Success(
+                            pb::McpStateSuccess {
+                                servers: vec![pb::McpStateServer {
+                                    server_name: super::history::TOOL_PROVIDER.to_string(),
+                                    server_identifier: super::history::TOOL_PROVIDER.to_string(),
+                                    tools,
+                                    status: Some("connected".to_string()),
+                                    ..Default::default()
+                                }],
+                            },
+                        )),
+                    },
+                )),
+                ..Default::default()
+            },
+        )),
+    }
+}
+
 /// Decode one `McpArgs.args` value — a `map<string, bytes>` whose values are
 /// each a serialized `google.protobuf.Value`.
 fn decode_arg(raw: &[u8]) -> serde_json::Value {
@@ -370,6 +444,32 @@ fn build_mcp_result(id: u32, exec_id: String, result: &BridgeToolResult) -> pb::
     }
 }
 
+/// A tool-call id Aurora can keep.
+///
+/// The id is Aurora's, not the wire's: `McpResult` correlates on the exec id,
+/// so nothing upstream reads this back. It does go into the thread's history,
+/// and grok models on Cursor answer with **two** ids joined by a literal
+/// newline (`call-<uuid>-0\nfc_<uuid>_0`). Replay that thread on Anthropic and
+/// every message is rejected for the life of the thread — `tool_use_id` there
+/// is `^[a-zA-Z0-9_-]+$`. Fold anything outside that alphabet into `_`.
+fn safe_tool_call_id(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// Assemble a tool call's arguments from the server's map.
 fn decode_args(args: &std::collections::BTreeMap<String, Vec<u8>>) -> serde_json::Value {
     serde_json::Value::Object(
@@ -426,10 +526,13 @@ pub async fn run_turn(
         reqwest::header::TE,
         reqwest::header::HeaderValue::from_static("trailers"),
     );
-    headers.insert(
-        "x-cursor-agent-allowed-tools",
-        reqwest::header::HeaderValue::from_static(ALLOWED_NATIVE_TOOLS),
-    );
+    if let Some(allowed) = allowed_native_tools(!turn.tools.is_empty()) {
+        headers.insert(
+            "x-cursor-agent-allowed-tools",
+            reqwest::header::HeaderValue::from_str(&allowed)
+                .map_err(|err| format!("invalid Cursor tool allow-list: {err}"))?,
+        );
+    }
 
     let response = tokio::select! {
         biased;
@@ -589,12 +692,15 @@ async fn handle(
                 )
                 .await?;
             }
+            Some(pb::exec_server_message::Message::McpStateExecArgs(_)) => {
+                send(
+                    body_tx,
+                    build_mcp_state_reply(exec.id, exec.exec_id, turn.tools.clone()),
+                )
+                .await?;
+            }
             Some(pb::exec_server_message::Message::McpArgs(args)) => {
-                let id = if args.tool_call_id.is_empty() {
-                    uuid::Uuid::new_v4().to_string()
-                } else {
-                    args.tool_call_id.clone()
-                };
+                let id = safe_tool_call_id(&args.tool_call_id);
                 // Cursor names client tools `mcp_aurora_<tool>` for the model,
                 // and that is the name that comes back. Aurora's executor
                 // knows `file_read` — and `mcp_aurora_file_read` would be read
@@ -661,12 +767,15 @@ async fn handle(
             // allowed-tools header. Reaching one means the header did not take
             // effect, which is worth failing loudly over rather than hanging
             // on a reply the server will wait forever for.
-            Some(_) => {
-                return Err(
-                    "Cursor asked Aurora to run one of its own built-in tools, which should be \
-                     disabled. The allowed-tools header may no longer be honoured."
-                        .to_string(),
-                );
+            Some(other) => {
+                // `{:?}` on the oneof starts with the variant name, which is
+                // the one thing worth knowing here; the payload after it can be
+                // a whole file, so keep only the head.
+                let variant: String = format!("{other:?}").chars().take(80).collect();
+                return Err(format!(
+                    "Cursor asked Aurora to run one of its own built-in tools ({variant}), which \
+                     should be disabled. The allowed-tools header may no longer be honoured."
+                ));
             }
             None => {}
         },
@@ -1061,6 +1170,102 @@ mod tests {
                 used_tokens: 42_123
             }))
         ));
+    }
+
+    /// Cursor asks who the client's MCP servers are before the model may use
+    /// them. Leave this unanswered and the turn hangs on a reply the server
+    /// waits forever for; answer it wrong and the model is told it has no
+    /// tools.
+    #[tokio::test]
+    async fn the_mcp_state_handshake_is_answered_with_auroras_tools() {
+        use crate::agent_runtime::api_client::ToolSchema;
+
+        let message = pb::AgentServerMessage {
+            message: Some(pb::agent_server_message::Message::ExecServerMessage(
+                pb::ExecServerMessage {
+                    id: 7,
+                    exec_id: "exec-7".into(),
+                    message: Some(pb::exec_server_message::Message::McpStateExecArgs(
+                        pb::McpStateExecArgs::default(),
+                    )),
+                    ..Default::default()
+                },
+            )),
+        };
+
+        let (events, _receiver) = mpsc::channel(4);
+        let (mut body_tx, mut body_rx) = futures::channel::mpsc::channel(4);
+        let mut blobs = BlobStore::new();
+        let mut turn = turn_for(
+            "cursor-grok-4.6-high",
+            TurnInput {
+                root_messages: Vec::new(),
+                user_text: "hi".into(),
+            },
+        );
+        turn.tools = crate::api::cursor::history::build_tools(&[ToolSchema {
+            name: "file_read".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({ "type": "object" }),
+        }]);
+
+        let done = handle(message, &mut blobs, &turn, &events, &mut body_tx)
+            .await
+            .expect("the handshake must be answered");
+        assert_eq!(done, None, "answering must not end the turn");
+
+        let framed = body_rx
+            .try_next()
+            .expect("a reply must have been written")
+            .expect("a reply must have been written")
+            .expect("the reply must be a frame");
+        let mut decoder = frame::FrameDecoder::new();
+        let frames = decoder.push(&framed).expect("the reply must decode");
+        let [frame::Frame::Message(payload)] = frames.as_slice() else {
+            panic!("one reply frame, carrying a message");
+        };
+        let reply = pb::AgentClientMessage::decode(payload.as_slice())
+            .expect("the reply must be an AgentClientMessage");
+
+        let Some(pb::agent_client_message::Message::ExecClientMessage(exec)) = reply.message else {
+            panic!("the reply must be an exec result");
+        };
+        assert_eq!(exec.id, 7, "the server correlates on the exec id");
+        assert_eq!(exec.exec_id, "exec-7");
+        let Some(pb::exec_client_message::Message::McpStateExecResult(result)) = exec.message
+        else {
+            panic!("the reply must be an MCP state result");
+        };
+        let Some(pb::mcp_state_exec_result::Result::Success(success)) = result.result else {
+            panic!("reporting anything but success leaves the model with no tools");
+        };
+        assert_eq!(success.servers.len(), 1, "Aurora is one server");
+        assert_eq!(
+            success.servers[0].tools.len(),
+            1,
+            "the declared tools must be the ones reported"
+        );
+        assert_eq!(success.servers[0].tools[0].tool_name, "file_read");
+        assert_eq!(
+            success.servers[0].server_identifier,
+            crate::api::cursor::history::TOOL_PROVIDER,
+            "the identifier is what Cursor prefixes every tool name with"
+        );
+    }
+
+    /// Grok on Cursor answers with two ids joined by a newline. Aurora keeps
+    /// the id in its own history, where that shape is a thread-killer.
+    #[test]
+    fn a_tool_call_id_is_kept_to_the_alphabet_other_providers_accept() {
+        assert_eq!(
+            safe_tool_call_id("call-abc-0\nfc_def_0"),
+            "call-abc-0_fc_def_0"
+        );
+        assert_eq!(safe_tool_call_id("plain_id-1"), "plain_id-1");
+        assert!(
+            !safe_tool_call_id("").is_empty(),
+            "an absent id still has to correlate"
+        );
     }
 
     /// The exact call from the session that surfaced this, end to end.

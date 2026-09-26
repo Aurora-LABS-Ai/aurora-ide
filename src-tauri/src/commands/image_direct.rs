@@ -103,7 +103,7 @@ async fn generate(
     // same readiness rules the tool does, so a row missing its key fails here
     // with the same words it would fail with in a chat turn.
     let providers = vec![request.provider.clone()];
-    let resolved = resolve_model(&providers, Some(&request.model)).map_err(|e| e.to_string())?;
+    let resolved = resolve_model(&providers, None, Some(&request.model)).map_err(|e| e.to_string())?;
     let size = match request.size.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(size) if resolved.model.sizes.is_empty() || resolved.model.sizes.iter().any(|s| s == size) => {
             Some(size.to_string())

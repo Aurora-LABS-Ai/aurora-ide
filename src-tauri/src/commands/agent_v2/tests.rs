@@ -154,7 +154,7 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
     }
 }
 
-/// The memory tools travel in one direction only.
+/// Chat's own tools travel in one direction only.
 ///
 /// `recall` and `remember` read and write an index that holds Aurora Chat
 /// conversations and nothing else, so in Build they are a memory of everything
@@ -162,19 +162,39 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
 /// beside `shell_execute`, was told `found: 0`, and reported to the user that
 /// it had no record of the previous session — which was true of the index and
 /// false of the work.
+///
+/// `generate_image` and `generate_video` need a Chat turn's parked config and a
+/// store with an `assets/` directory. `generate_image` shipped missing from
+/// [`CHAT_ONLY_TOOLS`] and the same thing happened again in a different shape:
+/// a Build turn mid-task called it with `op: "list"` and got back "this
+/// conversation was not handed any image providers … in Aurora Build the tool
+/// is not available", from a tool Build had just advertised.
+///
+/// Driven off the list rather than a copy of it, so adding a fifth entry is
+/// covered the moment it lands.
 #[test]
-fn build_modes_never_offer_chat_memory() {
+fn build_modes_never_offer_chats_own_tools() {
+    use crate::commands::agent_v2::tool_policy::CHAT_ONLY_TOOLS;
+
     for mode in [
         AgentExecutionMode::Agent,
         AgentExecutionMode::Plan,
         AgentExecutionMode::Team,
     ] {
-        for name in ["recall", "remember"] {
+        for name in CHAT_ONLY_TOOLS {
             assert!(
                 !is_tool_available_this_turn(name, mode, true, true, true),
-                "{name} is Aurora Chat's memory and must never be offered in {mode:?}"
+                "{name} is Aurora Chat's alone and must never be offered in {mode:?}"
             );
         }
+    }
+    // The two the report came in about, named as well: a refactor that empties
+    // the list must fail here rather than pass a loop over nothing.
+    for name in ["recall", "remember", "generate_image", "generate_video"] {
+        assert!(
+            !is_tool_available_this_turn(name, AgentExecutionMode::Agent, true, true, true),
+            "{name} must not reach Aurora Build"
+        );
     }
 }
 
@@ -1310,6 +1330,19 @@ async fn a_chat_turn_parks_the_image_providers_for_the_tool_and_a_build_turn_doe
     assert!(
         turn_config("img-build-thread").is_none(),
         "a Build turn hands generate_image nothing"
+    );
+    // The other half of this test's own sentence, which used to be prose only.
+    // It read "the tool is not in that roster" while checking the config and
+    // nothing else, and the roster half was false for as long as it was there.
+    assert!(
+        !is_tool_available_this_turn(
+            "generate_image",
+            AgentExecutionMode::Agent,
+            true,
+            true,
+            true
+        ),
+        "a Build turn must not advertise the tool it then refuses to run"
     );
 }
 

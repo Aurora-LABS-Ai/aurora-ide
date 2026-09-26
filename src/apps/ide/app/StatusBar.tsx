@@ -23,24 +23,18 @@
 import React from 'react';
 import { useEditorStore } from '@/kernel/store/useEditorStore';
 import { useTerminalStore } from '@/apps/ide/store/useTerminalStore';
-import { useSettingsStore } from '@/kernel/store/useSettingsStore';
 import { useWorkspaceStore } from '@/kernel/store/useWorkspaceStore';
-import { useUiStore } from '@/apps/ide/store/useUiStore';
-import { SquareTerminal, Bot, FolderTree, AlertTriangle } from 'lucide-react';
+import { SquareTerminal, FolderTree } from 'lucide-react';
 import clsx from 'clsx';
 import { AppIcon } from '@/kernel/ui/AppIcon';
 
 export const StatusBar: React.FC = () => {
   const { tabs, activeTabId } = useEditorStore();
   const { toggleTerminal, isOpen: isTerminalOpen, sessions } = useTerminalStore();
-  const getLLMConfig = useSettingsStore((s) => s.getLLMConfig);
-  const setSettingsOpen = useUiStore((s) => s.setSettingsOpen);
   const rootPath = useWorkspaceStore((s) => s.rootPath);
   const activeTab = tabs.find(t => t.id === activeTabId);
-  
+
   const hasRunningProcess = sessions.some(s => s.isRunning);
-  const llmConfig = getLLMConfig();
-  const providerReady = llmConfig !== null;
   const workspaceName = rootPath ? rootPath.split(/[/\\]/).pop() : null;
 
   const StatusDivider: React.FC = () => (
@@ -67,36 +61,6 @@ export const StatusBar: React.FC = () => {
       }}
     >
       <div className="flex items-center gap-2">
-        {/* Provider status */}
-        <button
-          onClick={() => !providerReady && setSettingsOpen(true)}
-          className={clsx(
-            statusButtonClass,
-            providerReady
-              ? 'text-text-secondary hover:text-text-primary hover:bg-input/40'
-              : 'text-warning hover:bg-input cursor-pointer',
-          )}
-          title={
-            providerReady
-              ? `Provider: ${llmConfig.name} (${llmConfig.model})`
-              : 'No AI provider configured — click to set up'
-          }
-        >
-          {providerReady ? (
-            <>
-              <AppIcon icon={Bot} size={10} className="text-primary" />
-              <span className="truncate max-w-[120px]">{llmConfig.name}</span>
-            </>
-          ) : (
-            <>
-              <AppIcon icon={AlertTriangle} size={10} />
-              <span>No Provider</span>
-            </>
-          )}
-        </button>
-
-        <StatusDivider />
-
         {/* Workspace status */}
         <div
           className={clsx(statusButtonClass, 'text-text-secondary')}

@@ -182,6 +182,12 @@ pub struct Message {
         skip_serializing_if = "Option::is_none"
     )]
     pub attached_prompt_chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
+    /// Provider-reported usage for the model request that produced this
+    /// assistant message, loaded back from the session JSONL. The transcript's
+    /// turn summary adds these up. `None` for every other role, and for
+    /// assistant messages from a request that recorded none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<crate::agent_runtime::types::TokenUsage>,
 }
 
 /// Tool call in a message
@@ -619,6 +625,13 @@ pub struct AppSettings {
     /// the seeded list. Reversible — clearing an id "restores" that provider.
     #[serde(default)]
     pub removed_provider_ids: Vec<String>,
+    /// Seeded preset MODEL ids the user deleted, as `providerId::modelKey`.
+    /// Same job as `removed_provider_ids`, one level down: a preset re-seeds its
+    /// models on launch, so a delete only sticks if the id is remembered. The
+    /// frontend always sent this; until 2026-09-24 the struct had no field for
+    /// it, so serde dropped it and every deleted preset model came back.
+    #[serde(default)]
+    pub removed_preset_model_ids: Vec<String>,
 
     // Speech input settings
     pub speech_enabled: bool,
@@ -710,6 +723,7 @@ impl Default for AppSettings {
             fireworks_tab_enabled: false,
             fireworks_account_id: String::new(),
             removed_provider_ids: Vec::new(),
+            removed_preset_model_ids: Vec::new(),
             speech_enabled: false,
             speech_engine: "crispasr-gguf".to_string(),
             speech_runtime_path: String::new(),

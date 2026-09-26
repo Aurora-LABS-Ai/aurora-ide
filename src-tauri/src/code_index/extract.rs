@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Parser, QueryCursor};
 
+#[path = "scopes.rs"]
+mod scopes;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawSymbol {
     pub name: String,
@@ -36,6 +39,14 @@ pub struct RawRef {
     /// The callable this usage appears *inside*, qualified where possible.
     /// `None` means top-level (a module-scope call, an import, a field type).
     pub from: Option<String>,
+    #[serde(default)]
+    pub binding: Option<(u32, u32)>,
+    #[serde(default)]
+    pub receiver: Option<String>,
+    #[serde(default)]
+    pub receiver_type: Option<String>,
+    #[serde(default)]
+    pub receiver_is_namespace: bool,
 }
 
 /// "this file binds `local` from module `module`".
@@ -83,13 +94,13 @@ pub struct RawImportCombinator {
     pub position: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RawPartOf {
     Uri(String),
     LibraryName(String),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FileFacts {
     pub symbols: Vec<RawSymbol>,
     pub refs: Vec<RawRef>,
@@ -151,6 +162,29 @@ fn text<'a>(node: Node<'_>, src: &'a [u8]) -> &'a str {
 /// Rust and Python paths arrive bare and pass through untouched.
 fn strip_module_quotes(raw: &str) -> &str {
     raw.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+}
+
+/// The name a declaration should be stored and looked up under.
+///
+/// Usually the name node's own text. The exception is a member declared with a
+/// quoted name — `'@odata.nextLink': string` — where the quotes are syntax
+/// rather than part of the name: the property is `@odata.nextLink`, and that
+/// is what a reader searching for it will type. Reading the `string_fragment`
+/// child rather than trimming quote characters keeps a name that legitimately
+/// begins or ends with one intact.
+fn definition_name(node: Node<'_>, src: &[u8]) -> String {
+    if node.kind() != "string" {
+        return text(node, src).to_string();
+    }
+    let mut cursor = node.walk();
+    // Bound to a local rather than returned directly: the child iterator
+    // borrows `cursor`, and as a tail expression its temporary outlives it.
+    let fragment = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == "string_fragment")
+        .map(|fragment| text(fragment, src).to_string())
+        .unwrap_or_default();
+    fragment
 }
 
 fn dotted_name(raw: &str) -> String {
@@ -295,9 +329,7 @@ fn go_type_name(node: Node<'_>, src: &[u8]) -> Option<String> {
 /// the type's SOURCE, and pasting a declaration where a name belongs is how a
 /// four-field struct came back as four copies of itself.
 fn names_a_type(text: &str) -> bool {
-    !text.is_empty()
-        && text.len() <= 128
-        && !text.contains(['{', '}', '\n', '\r'])
+    !text.is_empty() && text.len() <= 128 && !text.contains(['{', '}', '\n', '\r'])
 }
 
 /// Nearest enclosing type/class/module name, for `container`.
@@ -456,7 +488,7 @@ fn dart_signature_name(node: Node<'_>, src: &[u8], depth: u8) -> Option<String> 
         .find_map(|child| dart_signature_name(child, src, depth + 1))
 }
 
-fn callable_name(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
+fn callable_name(node: Node<'_>, src: &[u8], lang: Lang, imports: &[RawImport]) -> Option<String> {
     let bare = named_child_text(node, "name", src)
         .or_else(|| {
             if matches!(lang, Lang::C | Lang::Cpp) {
@@ -473,6 +505,28 @@ fn callable_name(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
             } else {
                 None
             }
+        })
+        .or_else(|| {
+            if !matches!(lang, Lang::TypeScript | Lang::Tsx)
+                || !matches!(node.kind(), "arrow_function" | "function_expression") {
+                return None;
+            }
+            // React wrapper callbacks belong to the component binding. Only
+            // cross wrapper syntax, never another function's executable body.
+            let mut parent = node.parent();
+            for _ in 0..8 {
+                let current = parent?;
+                if current.kind() == "variable_declarator" {
+                    let name = current.child_by_field_name("name")?;
+                    return is_react_component_wrapper_binding(name, src, imports)
+                        .then(|| text(name, src).to_owned());
+                }
+                if !matches!(current.kind(), "arguments" | "call_expression" | "parenthesized_expression" | "as_expression" | "satisfies_expression") {
+                    return None;
+                }
+                parent = current.parent();
+            }
+            None
         })
         .or_else(|| {
             if lang == Lang::Dart {
@@ -505,11 +559,11 @@ fn callable_name(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
 
 /// Which callable does this usage sit inside? This is the edge direction that
 /// makes the index a call graph instead of a mention list.
-fn enclosing_callable(node: Node<'_>, src: &[u8], lang: Lang) -> Option<String> {
+fn enclosing_callable(node: Node<'_>, src: &[u8], lang: Lang, imports: &[RawImport]) -> Option<String> {
     let mut cur = node.parent();
     while let Some(n) = cur {
         if lang.is_callable_node(n.kind()) {
-            if let Some(name) = callable_name(n, src, lang) {
+            if let Some(name) = callable_name(n, src, lang, imports) {
                 return Some(name);
             }
         }
@@ -535,6 +589,10 @@ fn is_exported(name_node: Node<'_>, src: &[u8], lang: Lang) -> bool {
             is_pub
         }
         Lang::TypeScript | Lang::Tsx => {
+            if text(name_node, src).starts_with('#')
+                || declares_keyword(name_node, src, &["private", "protected"], lang, 3) {
+                return false;
+            }
             // `export const`, `export function`, `export default class` put the
             // declaration a few levels under an `export_statement`.
             //
@@ -698,6 +756,7 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
     let tree = parser.parse(source, None)?;
     let src = source.as_bytes();
     let lang = spec.lang;
+    let scopes = scopes::Scopes::collect(tree.root_node(), src, lang);
 
     let mut facts = FileFacts {
         had_parse_error: tree.root_node().has_error(),
@@ -880,7 +939,13 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
 
     for (node, captured_kind) in defs.values() {
         let pos = node.start_position();
-        let name = text(*node, src).to_string();
+        let name = definition_name(*node, src);
+        // `{ '': 1 }` declares a member with no name at all. There is nothing
+        // to navigate to and nothing to search for, so it is left out rather
+        // than filling the outline with a blank row.
+        if name.is_empty() {
+            continue;
+        }
         let container = enclosing_container(*node, src, lang);
         // React's `memo` and `forwardRef` return callable component values, but
         // their declarations are syntactically variable declarators. Promote
@@ -919,12 +984,17 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
             continue;
         }
         let pos = node.start_position();
+        let (receiver, receiver_type, receiver_is_namespace) = scopes.receiver(node, src);
         facts.refs.push(RawRef {
             name: text(node, src).to_string(),
             kind: kind.to_string(),
             line: pos.row as u32 + 1,
             col: pos.column as u32 + 1,
-            from: enclosing_callable(node, src, lang),
+            from: enclosing_callable(node, src, lang, &facts.imports),
+            binding: scopes.binding(node, src),
+            receiver,
+            receiver_type,
+            receiver_is_namespace,
         });
     }
 
@@ -951,6 +1021,81 @@ mod tests {
             .iter()
             .find(|s| s.name == name)
             .unwrap_or_else(|| panic!("no symbol {name} in {:?}", f.symbols))
+    }
+
+    #[test]
+    fn typescript_private_and_protected_members_are_not_exported() {
+        let f = facts(Lang::TypeScript, "export class Store { private readonly pending = new Map(); protected prune() {} public take() {} get size() { return 0; } }");
+        assert!(sym(&f, "Store").exported);
+        assert!(!sym(&f, "pending").exported);
+        assert!(!sym(&f, "prune").exported);
+        assert!(sym(&f, "take").exported);
+        assert!(sym(&f, "size").exported);
+    }
+
+    /// Reported from a real Microsoft Graph workspace on 2026-09-22: an
+    /// `outline` of a file declaring `'@removed'` and `'@odata.nextLink'`
+    /// listed every plain field of those two interfaces and none of the
+    /// quoted ones, so the parts of the API contract that Graph spells with
+    /// an `@` were the only parts that could not be navigated to.
+    ///
+    /// A quoted member name is a declaration like any other; only its
+    /// spelling differs. The stored name is the property itself without the
+    /// quotes, because the quotes belong to the syntax rather than to the
+    /// name a reader would look up.
+    #[test]
+    fn typescript_quoted_and_hash_private_member_names_are_declarations() {
+        let f = facts(
+            Lang::TypeScript,
+            r#"
+export interface DeltaPage {
+  value: string[];
+  '@odata.nextLink'?: string;
+  "@odata.deltaLink"?: string;
+}
+export class Counter {
+  #hits = 0;
+  'total count' = 0;
+  'bump'() { this.#hits += 1; }
+}
+"#,
+        );
+        let field = |name: &str| {
+            let s = sym(&f, name);
+            assert_eq!(s.kind, "field", "{name} should be a field: {s:?}");
+            s
+        };
+        let container = |name: &str| field(name).container.clone();
+        assert_eq!(container("@odata.nextLink").as_deref(), Some("DeltaPage"));
+        assert_eq!(container("@odata.deltaLink").as_deref(), Some("DeltaPage"));
+        assert!(
+            field("@odata.nextLink").exported,
+            "an exported interface's members are reachable"
+        );
+        assert_eq!(container("total count").as_deref(), Some("Counter"));
+        assert_eq!(sym(&f, "bump").kind, "method");
+        assert_eq!(sym(&f, "bump").container.as_deref(), Some("Counter"));
+        // `#hits` is private to the class by the language's own rule, so it is
+        // a declaration that exists but is not part of the public surface.
+        assert_eq!(container("#hits").as_deref(), Some("Counter"));
+        assert!(!field("#hits").exported);
+    }
+
+    #[test]
+    fn react_wrapped_component_calls_belong_to_the_component() {
+        let f = facts(Lang::Tsx, r#"
+import * as React from 'react';
+import { memo as keep } from 'react';
+const Card = React.forwardRef<HTMLDivElement, Props>((props, ref) => <div className={cn('card')} />);
+const Header = keep(() => <div className={cn('header')} />);
+const Plain = () => cn('plain');
+const random = other(() => cn('other'));
+"#);
+        let callers: Vec<_> = f.refs.iter().filter(|r| r.name == "cn" && r.kind == "call").map(|r| r.from.as_deref()).collect();
+        assert!(callers.contains(&Some("Card")), "{callers:?}");
+        assert!(callers.contains(&Some("Header")), "{callers:?}");
+        assert!(callers.contains(&Some("Plain")), "{callers:?}");
+        assert!(callers.contains(&None), "unrecognized wrappers must not invent an owner: {callers:?}");
     }
 
     #[test]

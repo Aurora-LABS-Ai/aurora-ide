@@ -23,7 +23,7 @@ import { createPortal } from "react-dom";
 
 import { AgentIcon } from "../shared/AgentIcon";
 import { testProviderModel, type ProviderTestReport } from "@/apps/agent/services/providers/provider-test";
-import type { LLMModel } from "@/kernel/store/useSettingsStore";
+import type { LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 type TestState = "idle" | "running" | "pass" | "warn" | "fail";
 

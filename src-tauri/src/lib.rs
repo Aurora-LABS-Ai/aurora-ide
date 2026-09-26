@@ -44,7 +44,6 @@ pub mod cli_delegate;
 mod chat_memory;
 mod code_index;
 mod commands;
-mod context;
 mod crash;
 mod db;
 mod explorer;
@@ -702,6 +701,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Settings commands
             commands::settings::get_app_settings,
             commands::settings::save_app_settings,
+            commands::settings::save_app_settings_entries,
             commands::settings::get_global_skills_path,
             commands::settings::get_setting,
             commands::settings::set_setting,
@@ -762,6 +762,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::code_index::code_index_status,
             commands::code_index::code_index_probe,
             commands::code_index::code_index_rebuild,
+            commands::code_index::code_index_build_status,
+            commands::code_index::code_index_save_settings,
+            commands::code_index::code_index_start_build,
+            commands::code_index::code_index_cancel_build,
+            commands::code_index::code_index_list_storage,
+            commands::code_index::code_index_delete_storage,
             commands::plans::plan_get_active,
             commands::plans::plan_get,
             commands::plans::plan_list,
@@ -800,6 +806,10 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::claude_code::claude_code_auth_cancel,
             commands::claude_code::claude_code_auth_logout,
             commands::claude_code::claude_code_usage_get,
+            commands::claude_code::claude_code_accounts_list,
+            commands::claude_code::claude_code_account_set_main,
+            commands::claude_code::claude_code_account_remove,
+            commands::claude_code::claude_code_account_import_cli,
             commands::commandcode::commandcode_auth_status,
             commands::commandcode::commandcode_auth_login,
             commands::commandcode::commandcode_auth_cancel_login,
@@ -913,8 +923,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::browser::browser_set_size,
             commands::browser::browser_set_position,
             commands::browser::browser_set_bounds,
-            commands::browser::browser_show,
-            commands::browser::browser_hide,
+            commands::browser::browser_set_visible,
             commands::browser::aurora_record_picked_element,
             commands::browser::aurora_record_browser_result,
             // MCP (Model Context Protocol) commands
@@ -951,25 +960,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::aurora_websearch,
             commands::ripgrep_search,
             commands::validate_structured_document,
-            // Context Engine commands (turn-based context management)
-            context::commands::context_add_user_message,
-            context::commands::context_add_assistant_response,
-            context::commands::context_add_tool_call,
-            context::commands::context_add_tool_result,
-            context::commands::context_finalize_turn,
-            context::commands::context_discard_current_turn,
-            context::commands::context_build_messages,
-            context::commands::context_build_request_messages,
-            context::commands::context_get_state,
-            context::commands::context_needs_summarization,
-            context::commands::context_get_turn_to_summarize,
-            context::commands::context_set_turn_summary,
-            context::commands::context_get_summarization_prompt,
-            context::commands::context_clear_thread,
-            context::commands::context_init_from_thread,
-            context::commands::context_get_turns,
-            context::commands::context_update_settings,
-            context::commands::context_estimate_request_tokens,
             // Checkpoint commands (workspace file state snapshots)
             commands::checkpoints::checkpoint_init,
             commands::checkpoints::checkpoint_ensure_initialized,

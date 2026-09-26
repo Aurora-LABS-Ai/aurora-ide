@@ -1,9 +1,7 @@
-//! `code` — symbol-level questions about the workspace.
+//! `code` — structural lookups and ranked source passages for one workspace.
 //!
-//! One tool with a typed `op` rather than three tool names, matching the `todo`
-//! precedent. Every tool's schema is re-sent on every request, so each new name
-//! is a permanent per-turn cost; three closely-related lookups do not earn
-//! three entries in the catalogue.
+//! A typed `op` keeps related lookups under one schema. Local search reads only
+//! source text and never invokes a provider or changes symbol resolution.
 //!
 //! It is a **complement to `grep`, not a replacement**. `grep` finds text and
 //! is right whenever the target is text (a string literal, a comment, a config
@@ -294,7 +292,6 @@ fn candidate_list(idx: &CodeIndex, defs: &[&crate::code_index::store::Symbol]) -
 /// so ambiguity is now a structural refusal that names the way forward.
 fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
     let defs = idx.definitions(name);
-    let qualified = name.contains("::");
     let mut callable: Vec<_> = defs
         .iter()
         .copied()
@@ -373,7 +370,7 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
     // a question only they can answer — but each one's usages are now
     // individually answerable, so the list carries a caller count per
     // candidate instead of being a bare shrug.
-    if !qualified && callable.len() > 1 {
+    if callable.len() > 1 {
         // Having a container is NOT enough — the qualified names must actually
         // differ. Seven module-level `handle` functions have no container at
         // all (a real case), and nine C++ candidates for one class have the
@@ -489,8 +486,9 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
     }
     if hits.is_empty() {
         out["message"] = json!(format!(
-            "Nothing in this workspace uses `{}`. It may still be reached dynamically, by macro, \
-             or from outside the workspace — this index sees syntax only.",
+            "No confirmed usages of `{}` were found by this syntax index. Unresolved imports, \
+             dynamic calls, macros, unsupported files, or external callers may still use it. \
+             This is not proof that the symbol is unused.",
             target.qualified()
         ));
     }
@@ -566,6 +564,8 @@ fn op_modules(idx: &CodeIndex, granularity: Option<&str>) -> Value {
 
 fn op_outline(idx: &CodeIndex, path: &str) -> Value {
     let rows = idx.outline(path);
+    let files: Vec<&str> = idx.files.iter().map(|f| f.path.as_str()).filter(|p| p.contains(path)).collect();
+    if rows.is_empty() && files.len() > 1 { return digest_by_file(path, &rows, &files); }
     if rows.is_empty() {
         // Outline is the one operation handed a PATH, so it can name the exact
         // reason instead of describing the index's state. "No indexed file
@@ -645,7 +645,7 @@ fn op_outline(idx: &CodeIndex, path: &str) -> Value {
     // first few. Depth is still one call away and works perfectly: name a
     // single file and the full symbol list comes back unchanged.
     if rows.len() > MAX_OUTLINE_ROWS {
-        return digest_by_file(path, &rows);
+        return digest_by_file(path, &rows, &files);
     }
 
     json!({
@@ -653,6 +653,8 @@ fn op_outline(idx: &CodeIndex, path: &str) -> Value {
         "op": "outline",
         "path": path,
         "symbols": rows.len(),
+        "files": files.len(),
+        "filesWithoutSymbols": files.iter().filter(|file| !rows.iter().any(|(p, _)| p == *file)).take(MAX_DIGEST_FILES).collect::<Vec<_>>(),
         "outline": rows.iter().map(|(p, s)| json!({
             "file": p,
             "line": s.line,
@@ -671,16 +673,18 @@ const MAX_DIGEST_FILES: usize = 120;
 const DIGEST_NAMES_PER_FILE: usize = 6;
 
 /// One row per file: what it defines, and how much of it there is.
-fn digest_by_file(path: &str, rows: &[(&str, &crate::code_index::store::Symbol)]) -> Value {
+fn digest_by_file(path: &str, rows: &[(&str, &crate::code_index::store::Symbol)], indexed_files: &[&str]) -> Value {
     use std::collections::BTreeMap;
 
     let mut by_file: BTreeMap<&str, Vec<&crate::code_index::store::Symbol>> = BTreeMap::new();
+    for file in indexed_files { by_file.entry(file).or_default(); }
     for (p, s) in rows {
         by_file.entry(p).or_default().push(s);
     }
     let total_files = by_file.len();
 
-    let mut files: Vec<(&str, Vec<&crate::code_index::store::Symbol>)> = by_file.into_iter().collect();
+    let mut files: Vec<(&str, Vec<&crate::code_index::store::Symbol>)> =
+        by_file.into_iter().collect();
     // Biggest first. Alphabetical order is what produced the one-percent
     // answer above; symbol count at least puts the substantial modules where a
     // reader looks, and ties keep their path order so the list is stable.
@@ -714,7 +718,8 @@ fn digest_by_file(path: &str, rows: &[(&str, &crate::code_index::store::Symbol)]
                 "file": file,
                 "symbols": syms.len(),
                 "defines": names,
-                "line": syms.iter().map(|s| s.line).min().unwrap_or(0),
+                "line": syms.iter().map(|s| s.line).min(),
+                "note": if syms.is_empty() { Some("No functions, types or classes. Use file_read for constants, imports and other contents.") } else { None },
             })
         })
         .collect();
@@ -727,7 +732,7 @@ fn digest_by_file(path: &str, rows: &[(&str, &crate::code_index::store::Symbol)]
         "files": total_files,
         "byFile": entries,
         "note": format!(
-            "`{path}` holds {} symbols across {total_files} files — too many to list. This is one \
+            "`{path}` holds {} symbols across {total_files} indexed files. This is one \
              row per file, biggest first, naming what each defines. Name a single file to get its \
              full symbol list.",
             rows.len()
@@ -777,8 +782,7 @@ impl ToolExecutor for CodeTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "code".into(),
-            description: "Ask where a symbol is defined, who uses it, or what a file contains — \
-answered from an index of the whole workspace, not by searching text.
+            description: "Look up symbols, dependencies, and ranked source passages in this project's code index.
 
 Use it instead of `grep` whenever you are looking for a FUNCTION, REACT COMPONENT, CLASS, TYPE or METHOD:
   • `definition` — where is `X` defined? Returns its exact file, line, declaration signature and \
@@ -789,13 +793,18 @@ before you make it.
 line to read instead of loading a 3000-line file.
   • `modules` — how is this project wired? Which areas depend on which, what is most depended upon, \
 and which directories import each other in a circle. Use it to orient before a refactor.
+  • `search` — ranked word search across source and file names using `query`, e.g. refresh session. \
+Splits camelCase and snake_case identifiers. Returns bounded source passages, complete functions when \
+they fit, exact file/line locations, matched terms and truncation/coverage flags. Rankings are text \
+relevance, not proof of a call or dependency. Follow with definition/usages and file_read. \
+Use `in_file` to restrict paths. No model, embeddings or network requests.
+  • `refresh` — update the local index, reusing syntax from unchanged files.
 
 Keep using `grep` for text: string literals, comments, config keys, error messages, TODOs.
 
-It reads Rust, TypeScript/JavaScript, Python, C, C++, Go, Java, C#, Ruby, PHP, Kotlin and Swift. A \
-file in any other language is not in the index at all, so a miss can mean \"not written in a \
-language I read\" rather than \"does not exist\" — the answers say which. `grep` searches every \
-file whatever it is written in.
+Structural lookups read Rust, TypeScript/JavaScript (including TSX/JSX), Python, C, C++, Go, Java, \
+C#, Ruby, PHP, Kotlin, Swift and Dart/Flutter. Other source languages are not indexed; answers \
+report that gap. `grep` can search documentation and unsupported files.
 
 Usages are resolved through each file's own import statements, so callers of a same-named function \
 in another module are not counted. When one name still has several possible definitions the result \
@@ -803,22 +812,21 @@ lists them with a caller count each — re-ask with `in_file` to pick one. Do NO
 list by eye: those entries are different symbols that merely share a name, so picking the \
 biggest-looking one and carrying on produces a confident answer about the wrong code.
 
-The index keeps itself current on its own, and Aurora's own file tools (file_edit, file_write, \
-move_path, delete_path) report their writes to it — after those, the next answer already reflects \
-the change with no action from you. Call `refresh` only when files changed OUTSIDE those tools — a \
-shell command that generated or rewrote code, a git checkout — and the next answer has to be \
-certain to include them.
+Structural lookups check content freshness, including external edits, and rebuild when needed. \
+Use `refresh` to request an update. Projects with automatic indexing disabled or past the file cap \
+require Build in Settings → Agent → Code index. Search returns only matching source, never generated explanations.
 
 Limits worth knowing: the index reads syntax, not types, so it cannot tell you what something \
-RETURNS and will not catch type errors — use `read_lints` for that. It finds the files a change \
-affects; `read_lints` is what confirms which of them actually broke."
+RETURNS and will not catch type errors — use `read_lints` for that. Dynamic dispatch and unknown \
+receivers can be omitted; no usages is not proof that a symbol is unused. It identifies possible \
+affected files; `read_lints` checks for reported errors after the change."
                 .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["definition", "usages", "outline", "modules", "refresh"],
+                        "enum": ["definition", "usages", "outline", "modules", "search", "refresh"],
                         "description": "Which question to ask."
                     },
                     "granularity": {
@@ -830,13 +838,17 @@ affects; `read_lints` is what confirms which of them actually broke."
                         "type": "string",
                         "description": "For `definition` and `usages`: the symbol. Accepts a bare name (`append`) or a qualified one (`Session::append`) — qualify it when a bare name turns out to be ambiguous."
                     },
+                    "query": {
+                        "type": "string",
+                        "description": "For `search`: words, identifiers, or a file name. Local ranked text search; no model calls. Use the actual words likely to appear in code."
+                    },
                     "path": {
                         "type": "string",
-                        "description": "For `outline`: a file path, or any part of one. Name a FILE and you get its symbols with line numbers. Name a DIRECTORY and you get one row per file beneath it — what each defines and how big it is — so a directory answers at its own scale instead of listing the first few files' symbols."
+                        "description": "For `outline`: a file path, or any part of one. Name a FILE and you get its symbols with line numbers. Name a DIRECTORY with many symbols and you get one row per indexed file beneath it — what each defines and how big it is — so a directory answers at its own scale instead of listing the first few files' symbols."
                     },
                     "in_file": {
                         "type": "string",
-                        "description": "For `definition` and `usages`: pick between several definitions sharing one name by naming the file (or part of the path) that holds the one you mean. Use it when a first call returns several definitions or comes back `ambiguous`."
+                        "description": "For `search`: restrict to paths containing this text. For `definition` and `usages`: pick between several definitions sharing one name by naming the file (or part of the path) that holds the one you mean. Use it when a first call returns several definitions or comes back `ambiguous`."
                     }
                 },
                 "required": ["op"]
@@ -857,6 +869,36 @@ affects; `read_lints` is what confirms which of them actually broke."
         // read path that would hand back the very index it is replacing.
         if op == "refresh" {
             return Ok(op_refresh(ctx)?.to_string());
+        }
+
+        if op == "search" {
+            let query = input
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .ok_or_else(|| {
+                    ToolError::InvalidInput(
+                        "`search` needs a `query`, such as login session.".into(),
+                    )
+                })?
+                .to_owned();
+            let workspace = workspace_of(ctx)?;
+            let in_file = input.get("in_file").and_then(Value::as_str).map(str::to_owned);
+            let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Value> {
+                let dir = crate::code_index::service().project_index_dir(&workspace)?;
+                let settings = crate::code_index::jobs::settings(&dir)?;
+                let index = crate::code_index::service().get_or_build(&workspace)?;
+                crate::code_index::search::query(&index, &query, in_file.as_deref(), &settings)
+            })
+            .await
+            .map_err(|e| ToolError::Execution(format!("Code search stopped: {e}")))?
+            .map_err(|e| {
+                ToolError::Execution(format!(
+                    "Could not search the code index: {e:#}. Use grep or structural code lookups."
+                ))
+            })?;
+            return Ok(result.to_string());
         }
 
         let idx = index_for(ctx)?;
@@ -887,13 +929,13 @@ affects; `read_lints` is what confirms which of them actually broke."
             }
             "" => {
                 return Err(ToolError::InvalidInput(
-                    "`code` needs an `op`: \"definition\", \"usages\", \"outline\" or \"refresh\"."
+                    "`code` needs an `op`: definition, usages, outline, modules, search or refresh."
                         .into(),
                 ))
             }
             other => {
                 return Err(ToolError::InvalidInput(format!(
-                    "Unknown op `{other}`. Valid ops are \"definition\", \"usages\", \"outline\" and \"refresh\"."
+                    "Unknown op `{other}`. Valid ops are definition, usages, outline, modules, search and refresh."
                 )))
             }
         };
@@ -909,6 +951,48 @@ pub fn register(reg: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "read-only acceptance against AURORA_INDEX_ROOT containing the reported manage-emails project"]
+    fn reported_workspace_outline_visibility_and_callers() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let idx = CodeIndex::build(std::path::Path::new(&root)).unwrap();
+        let outline = op_outline(&idx, "src/main/microsoft");
+        let expected = idx.files.iter().filter(|f| f.path.contains("src/main/microsoft")).count();
+        assert_eq!(outline["files"], expected);
+        assert!(outline["byFile"].as_array().unwrap().iter().any(|r| r["file"] == "src/main/microsoft/config.ts"));
+        let pkce = op_outline(&idx, "src/main/microsoft/pkce.ts");
+        for name in ["PendingAuthStore::pending", "PendingAuthStore::prune"] {
+            let row = pkce["outline"].as_array().unwrap().iter().find(|r| r["symbol"] == name).unwrap();
+            assert_eq!(row["exported"], false, "{name}");
+        }
+        let usages = op_usages(&idx, "cn", Some("src/renderer/lib/utils.ts"));
+        let callers = usages["usedBy"].as_array().unwrap();
+        for name in ["Card", "CardHeader", "CardTitle", "CardDescription", "CardContent", "CardFooter"] {
+            assert!(callers.iter().any(|r| r["caller"] == name)
+                || usages["truncated"].is_string(), "caller absent: {name}");
+        }
+        assert!(!callers.iter().any(|r| r["caller"].as_str().is_some_and(|name| name.contains("<top level of src/renderer/components/ui/card.tsx>"))));
+
+        // The outline reported on 2026-09-22 listed every plain field of these
+        // two interfaces and none of the quoted ones, hiding the half of the
+        // Graph delta contract that Microsoft spells with an `@`.
+        let sync = op_outline(&idx, "src/main/microsoft/sync-engine.ts");
+        let rows = sync["outline"].as_array().unwrap();
+        for (name, line) in [
+            ("GraphDeltaMessage::@removed", 51),
+            ("DeltaPage::@odata.nextLink", 65),
+            ("DeltaPage::@odata.deltaLink", 66),
+        ] {
+            let row = rows
+                .iter()
+                .find(|r| r["symbol"] == name)
+                .unwrap_or_else(|| panic!("quoted member absent from outline: {name} in {sync}"));
+            assert_eq!(row["kind"], "field", "{name}");
+            assert_eq!(row["line"], line, "{name}");
+        }
+        println!("files={expected}; private members correctly hidden; quoted Graph fields present; cn totalUsages={}, distinctCallers={}", usages["totalUsages"], usages["distinctCallers"]);
+    }
     use crate::code_index::store::CodeIndex;
 
     fn fixture() -> (tempfile::TempDir, CodeIndex) {
@@ -1277,6 +1361,22 @@ mod tests {
     }
 
     #[test]
+    fn qualified_usages_still_require_one_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["a.ts", "b.ts"] {
+            std::fs::write(dir.path().join(file), "export class Client { run() {} }\n").unwrap();
+        }
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        let ambiguous = op_usages(&idx, "Client::run", None);
+        assert_eq!(ambiguous["resolved"], false, "{ambiguous}");
+        assert_eq!(ambiguous["reason"], "ambiguous");
+        assert_eq!(ambiguous["candidates"].as_array().unwrap().len(), 2);
+        assert!(ambiguous.get("usedBy").is_none());
+        let specific = op_usages(&idx, "Client::run", Some("a.ts"));
+        assert_eq!(specific["resolved"], true, "{specific}");
+    }
+
+    #[test]
     fn a_name_that_is_only_fields_and_locals_is_not_a_call_question() {
         // The real `handle` case: 23 definitions, not one of them callable.
         let dir = tempfile::tempdir().unwrap();
@@ -1381,12 +1481,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("a.ts"),
-            "export function tally() {}\nexport function go(o) { tally(); o.tally = 1; }\n",
+            "export function tally() {}\nexport function go(o) { tally(); tally = () => {}; o.tally = 1; }\n",
         )
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
         let v = op_usages(&idx, "tally", None);
         assert_eq!(v["resolved"], true, "{v}");
+        assert_eq!(
+            v["totalUsages"], 2,
+            "an unknown object's property is not a use of the standalone function: {v}"
+        );
         let kinds: Vec<&str> = v["coupling"]
             .as_array()
             .unwrap()
@@ -1581,7 +1685,10 @@ mod tests {
         }
 
         // Biggest first, and each row says what its file defines.
-        assert!(by_file[0]["file"].as_str().unwrap().ends_with("aaa_huge.rs"));
+        assert!(by_file[0]["file"]
+            .as_str()
+            .unwrap()
+            .ends_with("aaa_huge.rs"));
         let small = by_file
             .iter()
             .find(|f| f["file"].as_str().unwrap().ends_with("z07_small.rs"))
@@ -1592,7 +1699,10 @@ mod tests {
             .iter()
             .filter_map(|d| d.as_str())
             .collect();
-        assert!(defines.contains(&"S7"), "names what it defines: {defines:?}");
+        assert!(
+            defines.contains(&"S7"),
+            "names what it defines: {defines:?}"
+        );
         assert!(defines.contains(&"run_7"), "{defines:?}");
 
         // Depth is still one call away, and unchanged.
@@ -1615,6 +1725,25 @@ mod tests {
         assert!(v["outline"].is_array(), "{v}");
         assert!(v["byFile"].is_null(), "no digest when the list fits: {v}");
         assert_eq!(v["symbols"], 2);
+    }
+
+    #[test]
+    fn directory_outline_accounts_for_constant_only_and_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.ts"), "export const CLIENT_ID = 'fixture';").unwrap();
+        std::fs::write(dir.path().join("env.d.ts"), "// types supplied externally").unwrap();
+        let empty = op_outline(&CodeIndex::build(dir.path()).unwrap(), "");
+        assert_eq!(empty["files"], 2);
+        assert_eq!(empty["symbols"], 0);
+        let body = (0..MAX_OUTLINE_ROWS + 1).map(|i| format!("export function f{i}() {{}}\n")).collect::<String>();
+        std::fs::write(dir.path().join("big.ts"), body).unwrap();
+        let full = op_outline(&CodeIndex::build(dir.path()).unwrap(), "");
+        assert_eq!(full["files"], 3);
+        let rows = full["byFile"].as_array().unwrap();
+        let config = rows.iter().find(|r| r["file"] == "config.ts").unwrap();
+        assert_eq!(config["symbols"], 0);
+        assert!(config["line"].is_null());
+        assert!(config["note"].as_str().unwrap().contains("file_read"));
     }
 
     #[test]

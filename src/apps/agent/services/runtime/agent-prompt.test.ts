@@ -22,8 +22,8 @@ vi.mock("@/apps/agent/services/plans/agent-plans", () => ({
   getActivePlan: async () => null,
 }));
 
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: {
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: {
     getState: () => ({ skillToggles: {}, skillsEnabled: false }),
   },
   selectActiveGlobalInstructions: () => "",
@@ -81,6 +81,13 @@ describe("stable optional tool discovery instructions", () => {
  * until someone notices by hand. These pin the failures that actually happened.
  */
 describe("the base system prompt does not contradict the tools", () => {
+  it("teaches local source search and honest uncertainty", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toContain('op: "search"');
+    expect(BASE_AGENT_SYSTEM_PROMPT).toContain("ranked word matches");
+    expect(BASE_AGENT_SYSTEM_PROMPT).toContain("not a confirmed relationship");
+    expect(BASE_AGENT_SYSTEM_PROMPT).not.toContain("paid indexing");
+  });
+
   it("never teaches a `paths` argument, which no tool declares any more", () => {
     // `file_read` used to declare `path` AND `paths`, and the prompt taught the
     // pair. The schema could not express "exactly one of" without `oneOf` (HTTP

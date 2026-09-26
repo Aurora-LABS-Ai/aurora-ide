@@ -22,8 +22,9 @@ import { motion } from "framer-motion";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { inertWhen } from "@/kernel/lib/a11y/inert";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import { AgentThinkingBlock } from "@/apps/agent/components/conversation/AgentThinkingBlock";
 import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
@@ -36,10 +37,16 @@ import { ReconnectCard } from "@/apps/agent/components/conversation/ReconnectCar
 import {
   buildRows,
   buildSections,
+  formatReplyTime,
   formatWorkedDuration,
   type TimelineEvent,
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
+import {
+  formatTokenCount,
+  summarizeTurn,
+  type TurnSummary,
+} from "@/apps/agent/components/conversation/turn-summary";
 import { parseUserContent } from "@/apps/agent/lib/render/image-markers";
 import { attachmentDataUrl } from "@/apps/agent/store/composer/useAgentAttachmentStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
@@ -754,6 +761,81 @@ const WorkedDuration: React.FC<{
   );
 };
 
+/**
+ * "2:14 PM" in the turn footer (Transcript → "Show reply times"). The moment
+ * the user sent, which is when the reply began. Nothing when the start was
+ * never recorded, rather than a made-up time.
+ */
+const ReplyTime: React.FC<{ startedAt?: string }> = ({ startedAt }) => {
+  const at = useMemo(() => {
+    if (!startedAt) return null;
+    const parsed = new Date(startedAt);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }, [startedAt]);
+  if (!at) return null;
+  return (
+    <time className="agw-msg-time" dateTime={at.toISOString()} title={at.toLocaleString()}>
+      {formatReplyTime(at)}
+    </time>
+  );
+};
+
+/**
+ * "3 files changed +148 −11 · 3 commands · 1,503 tokens generated" under a
+ * finished turn (Transcript → "Turn summary"). Information, not a control: no
+ * border, no hover, nothing to click. Zero parts are left out rather than
+ * printed as "0 commands".
+ */
+const TurnSummaryLine: React.FC<{ summary: TurnSummary }> = ({ summary }) => {
+  const parts: React.ReactNode[] = [];
+  if (summary.files > 0) {
+    parts.push(
+      <span key="files">
+        {summary.files} {summary.files === 1 ? "file" : "files"} changed
+        {summary.added > 0 && <span className="agw-turn-summary-add"> +{summary.added}</span>}
+        {summary.removed > 0 && <span className="agw-turn-summary-del"> −{summary.removed}</span>}
+      </span>,
+    );
+  }
+  if (summary.commands > 0) {
+    parts.push(
+      <span key="commands">
+        {summary.commands} {summary.commands === 1 ? "command" : "commands"}
+      </span>,
+    );
+  }
+  if (summary.outputTokens !== undefined && summary.outputTokens > 0) {
+    parts.push(
+      <span
+        key="tokens"
+        title={
+          summary.outputTokensEstimated
+            ? "Estimated by Aurora; this provider doesn't report usage"
+            : "Tokens the model wrote across every request of this turn"
+        }
+      >
+        {summary.outputTokensEstimated ? "~" : ""}
+        {formatTokenCount(summary.outputTokens)} tokens generated
+      </span>,
+    );
+  }
+  if (parts.length === 0) return null;
+  return (
+    <div className="agw-turn-summary">
+      {parts.map((part, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && (
+            <span className="agw-turn-summary-sep" aria-hidden="true">
+              ·
+            </span>
+          )}
+          {part}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+};
+
 /** Assistant turn — ordered timeline + label + actions. */
 const AssistantTurn: React.FC<{
   copyText: string;
@@ -769,6 +851,8 @@ const AssistantTurn: React.FC<{
   workedMs?: number | null;
   /** When the live turn began, for the ticking counter. */
   startedAt?: string;
+  outputTokens?: number;
+  outputTokensEstimated?: boolean;
 }> = ({
   copyText,
   events,
@@ -781,8 +865,29 @@ const AssistantTurn: React.FC<{
   labelColor,
   workedMs,
   startedAt,
+  outputTokens,
+  outputTokensEstimated,
 }) => {
-  const rows = useMemo(() => buildRows(events), [events]);
+  // Transcript → Reasoning "Hidden" drops reasoning rows before anything else
+  // sees them, so the spine's last-row and live-row markers land on what is
+  // actually drawn. A turn that has only reasoning so far falls through to the
+  // streaming skeleton below, which is the "still working" signal.
+  const hideReasoning = useAgentThemeStore((s) => s.transcriptReasoning === "hidden");
+  const showReplyTime = useAgentThemeStore((s) => s.transcriptTimestamps);
+  const showTurnSummary = useAgentThemeStore((s) => s.transcriptTurnSummary);
+  // Settled turns only: mid-turn the counts are still moving and a tally that
+  // grows under the live frontier would read as a second progress bar.
+  const turnSummary = useMemo(
+    () =>
+      showTurnSummary && !streaming
+        ? summarizeTurn(events, outputTokens, outputTokensEstimated)
+        : null,
+    [showTurnSummary, streaming, events, outputTokens, outputTokensEstimated],
+  );
+  const rows = useMemo(() => {
+    const all = buildRows(events);
+    return hideReasoning ? all.filter((row) => row.type !== "thinking") : all;
+  }, [events, hideReasoning]);
   const lastContentId = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {
       if (rows[i].type === "content") return rows[i].id;
@@ -1061,20 +1166,31 @@ const AssistantTurn: React.FC<{
         </div>
       )}
 
-      {showActions && (copyText || onRetry || workedMs !== null) && (
-        <div className="agw-msg-actions">
-          <WorkedDuration
-            workedMs={workedMs ?? null}
-            startedAt={startedAt}
-            streaming={streaming}
-          />
-          {copyText && <CopyAction text={copyText} />}
-          {onRetry && (
-            <button type="button" className="agw-msg-action" onClick={onRetry} title="Retry">
-              <AgentIcon name="retry" size={13} />
-              <span>Retry</span>
-            </button>
+      {/* The footer: actions on the left, the turn's tally on the right of the
+          same row, so the summary fills space the row already has instead of
+          adding a line of its own above it. The tally sits OUTSIDE the action
+          group, which rests dimmed until hover; a fact dimmed to a third of an
+          already quiet colour stops being readable. */}
+      {((showActions && (copyText || onRetry || workedMs !== null)) || turnSummary) && (
+        <div className="agw-msg-foot">
+          {showActions && (copyText || onRetry || workedMs !== null) && (
+            <div className="agw-msg-actions">
+              {showReplyTime && <ReplyTime startedAt={startedAt} />}
+              <WorkedDuration
+                workedMs={workedMs ?? null}
+                startedAt={startedAt}
+                streaming={streaming}
+              />
+              {copyText && <CopyAction text={copyText} />}
+              {onRetry && (
+                <button type="button" className="agw-msg-action" onClick={onRetry} title="Retry">
+                  <AgentIcon name="retry" size={13} />
+                  <span>Retry</span>
+                </button>
+              )}
+            </div>
           )}
+          {turnSummary && <TurnSummaryLine summary={turnSummary} />}
         </div>
       )}
     </div>
@@ -1106,6 +1222,9 @@ type MessageBubbleProps = {
   workedMs?: number | null;
   /** When the turn began, so a live turn can tick rather than sit blank. */
   startedAt?: string;
+  /** Tokens generated across the turn (`AgwTurn.outputTokens`). */
+  outputTokens?: number;
+  outputTokensEstimated?: boolean;
 };
 
 /**
@@ -1130,7 +1249,7 @@ const TeamTracePill: React.FC<{ title: string; tone: "ask" | "done" }> = ({ titl
   // An old chat keeps its team traces after Agent Team is switched off, but the
   // panel they point at is gone. The record stays; it stops being a control,
   // because a button that opens nothing is worse than a plain marker.
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   const body = (
     <>
       <span className="agw-team-trace-dot" />
@@ -1179,6 +1298,8 @@ const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   labelColor,
   workedMs,
   startedAt,
+  outputTokens,
+  outputTokensEstimated,
 }) => {
   if (message.role === "user") {
     const trace = teamTrace(message.content);
@@ -1206,6 +1327,8 @@ const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
       labelColor={labelColor}
       workedMs={workedMs ?? null}
       startedAt={startedAt}
+      outputTokens={outputTokens}
+      outputTokensEstimated={outputTokensEstimated}
     />
   );
 };
@@ -1250,6 +1373,7 @@ function bubblePropsEqual(
   if (!!prev.onRetry !== !!next.onRetry) return false;
   if (prev.label !== next.label) return false;
   if (prev.labelColor !== next.labelColor) return false;
+  if (prev.outputTokens !== next.outputTokens) return false;
 
   const a = prev.message;
   const b = next.message;

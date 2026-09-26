@@ -206,6 +206,7 @@ const AgentMarkdownImpl: React.FC<{
 }> = ({ content, streaming = false }) => {
   const appearance = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance);
   const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
+  const textPace = useAgentThemeStore((s) => s.transcriptTextPace);
 
   // Stable tuple so Streamdown's internal memo isn't busted every render.
   //
@@ -221,8 +222,9 @@ const AgentMarkdownImpl: React.FC<{
   );
 
   // Even out the bursty token stream into a steady, weighty reveal. Streamdown's
-  // own per-token fade is turned OFF — this owns the motion instead.
-  const revealed = useSmoothReveal(content, streaming);
+  // own per-token fade is turned OFF — this owns the motion instead. The curve
+  // is Transcript → Text streaming.
+  const revealed = useSmoothReveal(content, streaming, textPace);
 
   if (!content) return null;
 

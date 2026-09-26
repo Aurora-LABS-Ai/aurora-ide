@@ -35,7 +35,7 @@ import {
   subscribeTeamEvents,
 } from "@/apps/agent/services/team/team-client";
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import type {
   TeamEventPayload,
@@ -248,7 +248,7 @@ function sendNow(notice: Notice): void {
 }
 
 async function deliverOrBuffer(notice: Notice): Promise<void> {
-  if (!useSettingsStore.getState().teamEnabled) return;
+  if (!useAgentSettingsStore.getState().teamEnabled) return;
   if (!acceptsSurface(notice)) return;
 
   const currentThreadId = useAgentChatStore.getState().currentThreadId;
@@ -321,7 +321,7 @@ function onTeamEvent(payload: TeamEventPayload): void {
 async function pollRunStatusOnce(): Promise<void> {
   if (pollInFlight) return;
   if (!isAuroraRuntimeAvailable()) return;
-  if (!useSettingsStore.getState().teamEnabled) return;
+  if (!useAgentSettingsStore.getState().teamEnabled) return;
   const root = useAgentChatStore.getState().projectRoot;
   if (!root) return;
   pollInFlight = true;
@@ -371,7 +371,7 @@ ${q.question}
 async function pollLeadInboxOnce(): Promise<void> {
   if (inboxPollInFlight) return;
   if (!isAuroraRuntimeAvailable()) return;
-  if (!useSettingsStore.getState().teamEnabled) return;
+  if (!useAgentSettingsStore.getState().teamEnabled) return;
   const root = useAgentChatStore.getState().projectRoot;
   if (!root) return;
   inboxPollInFlight = true;

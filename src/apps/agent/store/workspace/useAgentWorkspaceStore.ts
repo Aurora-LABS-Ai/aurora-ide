@@ -20,7 +20,7 @@ import {
   type DockSingletonKind,
   type DockTabInstance,
 } from "@/apps/agent/types";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 /** Review diff layout — side-by-side (Codex default) vs single-column. */
 export type DiffMode = "split" | "unified";
@@ -123,7 +123,7 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
             // put up a tab that is not in its roster and cannot be reached any
             // other way.
             const kind: DockSingletonKind =
-              useSettingsStore.getState().auroraSurface === "chat"
+              useAgentSettingsStore.getState().auroraSurface === "chat"
                 ? CHAT_DOCK_TABS[0]
                 : "files";
             const tab: DockTabInstance = { id: kind, kind, title: DOCK_TAB_LABELS[kind] };

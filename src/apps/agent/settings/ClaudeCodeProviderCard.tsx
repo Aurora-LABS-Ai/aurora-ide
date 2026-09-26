@@ -10,8 +10,12 @@
  * The sign-in is manual on purpose. Aurora shows a link; the user finishes in
  * whichever browser they like (even on another machine) and pastes the code
  * the page shows — or the whole address it lands on — back here. Nothing
- * opens a browser for them, nothing listens on a port, and nothing reads the
- * `~/.claude` directory Claude Code itself keeps.
+ * opens a browser for them and nothing listens on a port.
+ *
+ * The other way in is Import: it copies the account Claude Code is signed
+ * into. Claude Code's credentials are read only then, and never written.
+ * Several accounts can be stored; `ClaudeCodeAccountSwitcher` picks the one
+ * chats use.
  *
  * Reuses the `.agw-atlas-*` presentation family (head, meters, skeletons) and
  * the `.agw-codex-*` sign-in pieces so the subscription cards read as one
@@ -21,12 +25,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  claudeCodeAccountImportCli,
   claudeCodeAuthBegin,
   claudeCodeAuthCancel,
   claudeCodeAuthComplete,
   claudeCodeAuthLogout,
   claudeCodeAuthStatus,
   claudeCodePlanLabel,
+  claudeCodeSignInAgainNote,
   claudeCodeUsageGet,
   claudeCodeWindowMeta,
   CLAUDE_CODE_USAGE_URL,
@@ -36,6 +42,7 @@ import {
 } from "@/apps/agent/services/providers/claude-code";
 import { fmtRelative } from "@/apps/agent/services/providers/atlascloud";
 import { AgentIcon } from "../shared/AgentIcon";
+import { ClaudeCodeAccountSwitcher } from "./ClaudeCodeAccountSwitcher";
 import { ProviderAvatar } from "./ProviderAvatar";
 import { AgwButton, AgwPill, AgwSwitch, AgwTextInput } from "./primitives";
 
@@ -112,6 +119,17 @@ function useClaudeCode() {
     refreshStatus();
   }, [refreshStatus]);
 
+  /** Bumped whenever the stored account list may have changed. */
+  const [accountsVersion, setAccountsVersion] = useState(0);
+  const [importing, setImporting] = useState(false);
+
+  /** Re-read everything after the account list changed underneath the card. */
+  const reload = useCallback(() => {
+    setState((s) => ({ ...s, phase: "loading", usage: null, usageError: null }));
+    setAccountsVersion((n) => n + 1);
+    refreshStatus();
+  }, [refreshStatus]);
+
   const startSignIn = useCallback(() => {
     setState((s) => ({ ...s, signInError: null }));
     claudeCodeAuthBegin()
@@ -119,7 +137,11 @@ function useClaudeCode() {
         setState((s) => ({ ...s, phase: "awaiting-code", authUrl, signInError: null })),
       )
       .catch((err) =>
-        setState((s) => ({ ...s, phase: "signed-out", signInError: errorText(err) })),
+        setState((s) => ({
+          ...s,
+          phase: s.auth?.signedIn ? "ready" : "signed-out",
+          signInError: errorText(err),
+        })),
       );
   }, []);
 
@@ -127,9 +149,11 @@ function useClaudeCode() {
     (input: string) => {
       setState((s) => ({ ...s, phase: "completing", signInError: null }));
       claudeCodeAuthComplete(input)
-        .then((auth) => {
-          setState((s) => ({ ...s, phase: "ready", auth, authUrl: null, signInError: null }));
-          loadUsage();
+        .then(() => {
+          // The new account joins the list; it becomes main only if it is
+          // the first. Re-read main rather than showing the one just added.
+          setState((s) => ({ ...s, phase: "loading", authUrl: null, signInError: null }));
+          reload();
         })
         .catch((err) =>
           // Back to the code step with the input kept — the link is the same
@@ -138,30 +162,52 @@ function useClaudeCode() {
           setState((s) => ({ ...s, phase: "awaiting-code", signInError: errorText(err) })),
         );
     },
-    [loadUsage],
+    [reload],
   );
 
   const cancelSignIn = useCallback(() => {
     void claudeCodeAuthCancel();
-    setState((s) => ({ ...s, phase: "signed-out", authUrl: null, signInError: null }));
+    // Adding a second account starts from "ready"; cancelling it goes back
+    // there, not to a signed-out card that hides the account still in use.
+    setState((s) => ({
+      ...s,
+      phase: s.auth?.signedIn ? "ready" : "signed-out",
+      authUrl: null,
+      signInError: null,
+    }));
   }, []);
 
   const signOut = useCallback(() => {
     claudeCodeAuthLogout()
-      .then(() =>
-        setState((s) => ({
-          ...s,
-          phase: "signed-out",
-          auth: null,
-          usage: null,
-          usageError: null,
-          signInError: null,
-        })),
-      )
+      .then(() => {
+        setState((s) => ({ ...s, auth: null, signInError: null }));
+        // Another stored account may have just become main.
+        reload();
+      })
       .catch((err) => setState((s) => ({ ...s, signInError: errorText(err) })));
-  }, []);
+  }, [reload]);
 
-  return { ...state, loadUsage, startSignIn, completeSignIn, cancelSignIn, signOut };
+  const importFromCli = useCallback(() => {
+    setImporting(true);
+    setState((s) => ({ ...s, signInError: null }));
+    claudeCodeAccountImportCli()
+      .then(() => reload())
+      .catch((err) => setState((s) => ({ ...s, signInError: errorText(err) })))
+      .finally(() => setImporting(false));
+  }, [reload]);
+
+  return {
+    ...state,
+    importing,
+    accountsVersion,
+    loadUsage,
+    refreshStatus,
+    startSignIn,
+    completeSignIn,
+    cancelSignIn,
+    signOut,
+    importFromCli,
+  };
 }
 
 // ── Clipboard ────────────────────────────────────────────────────────────────
@@ -345,11 +391,15 @@ export const ClaudeCodeProviderCard: React.FC<{
     usageLoading,
     signInError,
     error,
+    importing,
+    accountsVersion,
     loadUsage,
+    refreshStatus,
     startSignIn,
     completeSignIn,
     cancelSignIn,
     signOut,
+    importFromCli,
   } = useClaudeCode();
   const [confirmingSignOut, setConfirmingSignOut] = useState(false);
 
@@ -425,8 +475,8 @@ export const ClaudeCodeProviderCard: React.FC<{
         <div className="agw-atlas-body agw-codex-signin">
           <div className="agw-atlas-hint">
             Chat with Claude Sonnet 5, Opus 5 and Fable 5.1 on your Claude Pro or
-            Max plan. Sign in once; Aurora keeps its own copy of the sign-in and
-            never touches what Claude Code stores on this machine.
+            Max plan. Sign in, or import the account Claude Code already uses on
+            this machine. Aurora keeps its own copy either way.
           </div>
           {signInError && (
             <div className="agw-codex-note" data-tone="error">
@@ -434,8 +484,11 @@ export const ClaudeCodeProviderCard: React.FC<{
             </div>
           )}
           <div className="agw-codex-actions">
-            <AgwButton variant="primary" onClick={startSignIn}>
+            <AgwButton variant="primary" onClick={startSignIn} disabled={importing}>
               Sign in with Claude
+            </AgwButton>
+            <AgwButton onClick={importFromCli} disabled={importing}>
+              {importing ? "Importing…" : "Import from Claude Code"}
             </AgwButton>
           </div>
         </div>
@@ -458,6 +511,17 @@ export const ClaudeCodeProviderCard: React.FC<{
               This sign-in was granted without chat access, so requests will be
               refused. Sign out and sign in again, approving everything the page
               asks for.
+            </div>
+          )}
+
+          {/* Refreshing cannot move this date; only a new sign-in can. The
+              same account signing in again replaces its tokens in place. */}
+          {claudeCodeSignInAgainNote(auth) && (
+            <div className="agw-codex-note" data-tone="error">
+              {claudeCodeSignInAgainNote(auth)}{" "}
+              <button type="button" className="agw-codex-link" onClick={startSignIn}>
+                Sign in again
+              </button>
             </div>
           )}
 
@@ -487,6 +551,9 @@ export const ClaudeCodeProviderCard: React.FC<{
               {usage.sevenDaySonnet && (
                 <WindowMeter win={usage.sevenDaySonnet} label="Weekly limit · Sonnet" />
               )}
+              {(usage.sevenDayModels ?? []).map((m) => (
+                <WindowMeter key={m.model} win={m.window} label={`Weekly limit · ${m.model}`} />
+              ))}
               {!usage.fiveHour && !usage.sevenDay && (
                 <div className="agw-atlas-note">
                   No usage reported yet — limits appear after your first chat.
@@ -503,6 +570,14 @@ export const ClaudeCodeProviderCard: React.FC<{
             </div>
           )}
 
+          {/* Below the meters: they describe the account serving chats, and
+              the list only matters once there is a second one to pick. */}
+          <ClaudeCodeAccountSwitcher
+            refreshToken={accountsVersion}
+            onAddAccount={startSignIn}
+            onChanged={refreshStatus}
+          />
+
           <div className="agw-codex-foot">
             {usage && (
               <span className="agw-atlas-updated">Updated {fmtRelative(usage.fetchedAtMs)} ago</span>
@@ -510,8 +585,8 @@ export const ClaudeCodeProviderCard: React.FC<{
             <span className="agw-codex-foot-spacer" />
             {confirmingSignOut ? (
               <span className="agw-codex-confirm">
-                Removes the sign-in from Aurora. Claude Code on this machine keeps
-                its own.
+                Removes this account from Aurora. Claude Code on this machine
+                stays signed in.
                 <button
                   type="button"
                   className="agw-codex-link"

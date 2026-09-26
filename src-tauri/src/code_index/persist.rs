@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 /// Bump when the packed layout or extraction semantics change. A cache written
 /// by an older Aurora is discarded and rebuilt rather than reused with stale
-/// facts — the rebuild is sub-second, so there is never a reason to migrate it.
+/// facts. The previous cache stays on disk until a replacement is complete.
 ///
 /// v10: React components returned by imported `memo` and `forwardRef` wrappers
 /// are extracted as functions. A v9 cache still labels them as variables, so it
@@ -46,7 +46,21 @@ use std::path::{Path, PathBuf};
 /// already-indexed Go workspace would keep serving pages of repeated struct
 /// bodies from disk however the extractor now behaves. The rebuild is the fix
 /// becoming visible.
-pub const FORMAT_VERSION: u32 = 14;
+/// v15–v17: content and configuration fingerprints, receiver/local binding
+/// evidence, per-file content hashes, and Dart directives. These landed
+/// together while the local index was being rebuilt, so the three numbers
+/// describe one change rather than three shipped formats. A v14 cache holds
+/// neither the evidence that resolution now needs nor the hashes that let an
+/// unchanged file skip re-parsing.
+///
+/// v18: TypeScript members whose names are not bare identifiers — `'@removed'`,
+/// `'@odata.nextLink'`, `#hits` — are extracted. A v17 cache of a file that
+/// declares them holds no rows for those members at all, so `outline`,
+/// `definition` and `search` would keep answering from disk as though the
+/// declarations did not exist. Because an unchanged file reuses its stored
+/// extraction facts, editing the file is not enough to recover them; the
+/// format bump is what forces the re-parse that makes the fix visible.
+pub const FORMAT_VERSION: u32 = 18;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.
@@ -63,8 +77,8 @@ pub struct Packed {
     pub kinds: Vec<String>,
     /// `[name, kind, file, line, col, container, exported, signature, docs]`
     pub symbols: Vec<[u32; 9]>,
-    /// `[name, kind, file, line, col, from]`
-    pub refs: Vec<[u32; 6]>,
+    /// `[name, kind, file, line, col, from, binding_line, binding_col, receiver, receiver_type, receiver_is_namespace]`
+    pub refs: Vec<[u32; 11]>,
     /// Import/re-export facts. Module specifiers and combinator names ride the
     /// shared table; empty local/imported ids represent module-only edges.
     #[serde(default)]
@@ -165,6 +179,11 @@ pub fn pack(idx: &CodeIndex) -> Packed {
                 r.line,
                 r.col,
                 names.put_opt(r.from.as_ref()),
+                r.binding.map(|value| value.0).unwrap_or(NONE),
+                r.binding.map(|value| value.1).unwrap_or(NONE),
+                names.put_opt(r.receiver.as_ref()),
+                names.put_opt(r.receiver_type.as_ref()),
+                u32::from(r.receiver_is_namespace),
             ]
         })
         .collect();
@@ -258,6 +277,10 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
                 line: r[3],
                 col: r[4],
                 from: get_opt(&p.names, r[5]),
+                binding: (r[6] != NONE && r[7] != NONE).then_some((r[6], r[7])),
+                receiver: get_opt(&p.names, r[8]),
+                receiver_type: get_opt(&p.names, r[9]),
+                receiver_is_namespace: r[10] != 0,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -322,21 +345,75 @@ pub fn unpack(p: Packed) -> Result<CodeIndex> {
 }
 
 pub fn save(idx: &CodeIndex, path: &Path) -> Result<u64> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     let bytes = serde_json::to_vec(&pack(idx)).context("serializing code index")?;
     let len = bytes.len() as u64;
-    // Write-then-rename so a crash mid-write cannot leave a half-file that
-    // every later load has to fail on.
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    atomic_write(path, &bytes)?;
     Ok(len)
+}
+
+/// Publish a complete file in one rename. A failed write never removes the
+/// previous file, and separate writers cannot share a temporary pathname.
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .context("index file has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let tmp = parent.join(format!(".index-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        file.write_all(bytes)
+            .context("writing index temporary file")?;
+        file.sync_all().context("syncing index temporary file")?;
+        drop(file);
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// The format a cache file claims, read from its head without parsing it.
+///
+/// `version` is [`Packed`]'s first field, so it is the first thing in the
+/// serialized object — pinned by `the_version_is_the_first_thing_written`,
+/// because this is worthless if it ever moves. Reading it costs a few bytes
+/// where deserializing the whole document to reach the same number costs a
+/// scan of every row (a real cache is hundreds of KB, the largest measured is
+/// 31 MB).
+fn claimed_version(head: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(head).ok()?;
+    let rest = text.split_once("\"version\"")?.1;
+    let digits: String = rest
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 pub fn load(path: &Path) -> Result<CodeIndex> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    // The format is checked BEFORE the rows are deserialized, and this is not
+    // belt-and-braces over the check in `unpack`: a bump that changes a row's
+    // WIDTH makes `Packed` itself unreadable, so `unpack` is never reached and
+    // its version message never runs. Measured on a real v14 cache read by a
+    // v18 build: `invalid length 6, expected an array of length 11`, which
+    // names neither the format nor the fix. The stale-cache path is the one
+    // path a user meets, so it is the one that has to explain itself.
+    if let Some(version) = claimed_version(&bytes[..bytes.len().min(64)]) {
+        if version != FORMAT_VERSION {
+            bail!("code index format v{version} (this build reads v{FORMAT_VERSION})");
+        }
+    }
     let packed: Packed = serde_json::from_slice(&bytes).context("parsing code index")?;
     unpack(packed)
 }
@@ -354,6 +431,64 @@ mod tests {
         .unwrap();
         let idx = CodeIndex::build(dir.path()).unwrap();
         (dir, idx)
+    }
+
+    #[test]
+    fn receiver_and_binding_evidence_survives_persistence() {
+        let (dir, mut index) = fixture_index();
+        let reference = index.refs.first_mut().unwrap();
+        reference.binding = Some((17, 3));
+        reference.receiver = Some("service".to_string());
+        reference.receiver_type = Some("Session".to_string());
+        reference.receiver_is_namespace = true;
+        let path = dir.path().join("structural.json");
+        save(&index, &path).unwrap();
+        let read = load(&path).unwrap();
+        assert_eq!(read.refs[0].binding, Some((17, 3)));
+        assert_eq!(read.refs[0].receiver.as_deref(), Some("service"));
+        assert_eq!(read.refs[0].receiver_type.as_deref(), Some("Session"));
+        assert!(read.refs[0].receiver_is_namespace);
+    }
+
+    #[test]
+    fn simultaneous_writes_publish_complete_files_and_leave_no_temporary_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("build.json");
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..4)
+                .map(|n| {
+                    let path = &path;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let bytes = vec![b'0' + n; 256 * 1024];
+                        barrier.wait();
+                        atomic_write(path, &bytes).unwrap();
+                    })
+                })
+                .collect();
+            for job in jobs {
+                job.join().unwrap();
+            }
+        });
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 256 * 1024);
+        assert!(bytes.iter().all(|byte| *byte == bytes[0]));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn rejected_publish_does_not_remove_the_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("structural.json");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep"), "previous data").unwrap();
+        assert!(atomic_write(&destination, b"new data").is_err());
+        assert_eq!(
+            std::fs::read_to_string(destination.join("keep")).unwrap(),
+            "previous data"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
@@ -486,6 +621,53 @@ mod tests {
         let path = dir.path().join("future.json");
         std::fs::write(&path, serde_json::to_vec(&p).unwrap()).unwrap();
         assert!(load(&path).is_err(), "must refuse an unknown layout");
+    }
+
+    /// `claimed_version` reads the head of the file instead of the document,
+    /// which only works while `version` is written first.
+    #[test]
+    fn the_version_is_the_first_thing_written() {
+        let (_dir, idx) = fixture_index();
+        let bytes = serde_json::to_vec(&pack(&idx)).unwrap();
+        assert!(
+            bytes.starts_with(format!("{{\"version\":{FORMAT_VERSION}").as_bytes()),
+            "version must stay Packed's first field: {}",
+            String::from_utf8_lossy(&bytes[..40.min(bytes.len())])
+        );
+        assert_eq!(
+            claimed_version(&bytes[..64.min(bytes.len())]),
+            Some(FORMAT_VERSION)
+        );
+    }
+
+    /// An older format whose ROW WIDTHS differ cannot reach the check inside
+    /// `unpack`, because `Packed` itself fails to deserialize first. Measured
+    /// on the owner's real v14 cache read by a v18 build: `invalid length 6,
+    /// expected an array of length 11` — a message that names neither the
+    /// format nor the one thing that fixes it.
+    #[test]
+    fn an_old_format_with_narrower_rows_names_the_format_not_the_row() {
+        let (dir, idx) = fixture_index();
+        let mut document = serde_json::to_value(pack(&idx)).unwrap();
+        document["version"] = serde_json::json!(FORMAT_VERSION - 1);
+        // The v14 shape: `[name, kind, file, line, col, from]`, before receiver
+        // and binding evidence widened it.
+        for row in document["refs"].as_array_mut().unwrap() {
+            let narrow: Vec<_> = row.as_array().unwrap().iter().take(6).cloned().collect();
+            *row = serde_json::Value::Array(narrow);
+        }
+        let path = dir.path().join("old.json");
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+        let message = format!("{:#}", load(&path).unwrap_err());
+        assert!(
+            message.contains(&format!("format v{}", FORMAT_VERSION - 1)),
+            "must name the format it found: {message}"
+        );
+        assert!(
+            !message.contains("invalid length"),
+            "must not surface a row-shape error: {message}"
+        );
     }
 
     /// Measurement harness for the cache cost of signatures and docs.

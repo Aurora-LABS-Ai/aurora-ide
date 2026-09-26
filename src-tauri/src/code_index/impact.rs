@@ -233,7 +233,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.path().join("caller.rs"),
-            "pub fn go() { core_helper(); core_helper(); }\n",
+            "use crate::core::core_helper;\npub fn go() { core_helper(); core_helper(); }\n",
         )
         .unwrap();
         let idx = build(dir.path());
@@ -261,7 +261,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.path().join("caller.rs"),
-            "pub fn call_it() { let _ = process(1); }\n",
+            "use crate::core::process;\npub fn call_it() { let _ = process(1); }\n",
         )
         .unwrap();
         let idx = build(dir.path());
@@ -365,7 +365,7 @@ mod tests {
         std::fs::write(dir.path().join("core.rs"), "pub fn core_helper() {}\n").unwrap();
         std::fs::write(
             dir.path().join("caller.rs"),
-            "pub fn go() { core_helper(); }\n",
+            "use crate::core::core_helper;\npub fn go() { core_helper(); }\n",
         )
         .unwrap();
         let idx = build(dir.path());
@@ -439,7 +439,7 @@ mod tests {
         std::fs::write(dir.path().join("core.rs"), "pub fn core_helper() {}\n").unwrap();
         std::fs::write(
             dir.path().join("caller.rs"),
-            "pub fn go() { core_helper(); }\n",
+            "use crate::core::core_helper;\npub fn go() { core_helper(); }\n",
         )
         .unwrap();
         let idx = build(dir.path());

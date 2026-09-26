@@ -27,7 +27,7 @@
 import { useEffect, useRef } from "react";
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 
@@ -57,7 +57,7 @@ function same(a: BridgeSnapshot | null, b: BridgeSnapshot): boolean {
 /** Read the current state out of the stores. */
 function snapshot(): BridgeSnapshot {
   const chat = useAgentChatStore.getState();
-  const { mcpBridgeEnabled } = useSettingsStore.getState();
+  const { mcpBridgeEnabled } = useAgentSettingsStore.getState();
 
   const threadId = chat.currentThreadId;
   const row =
@@ -120,7 +120,7 @@ export function useAuroraBridge(): void {
 
     publishNow();
     const stopChat = useAgentChatStore.subscribe(schedule);
-    const stopSettings = useSettingsStore.subscribe(schedule);
+    const stopSettings = useAgentSettingsStore.subscribe(schedule);
 
     // A reload destroys nothing, so Rust's window handler never fires for it.
     // Without this, refreshing the window would leave the file claiming an open

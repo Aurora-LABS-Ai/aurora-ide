@@ -21,7 +21,8 @@ import { ReviewPanel } from "@/apps/agent/components/files/ReviewPanel";
 import { FilesPanel } from "@/apps/agent/components/files/FilesPanel";
 import { FileViewer } from "@/apps/agent/components/files/FileViewer";
 import { TerminalPanel } from "@/apps/agent/components/panels/TerminalPanel";
-import { BrowserPanel, closeAgentBrowser, hideAgentBrowser, showAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
+import { BrowserPanel, closeAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
+import { holdBrowserHidden } from "@/apps/agent/services/browser/browser-visibility";
 import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
@@ -31,7 +32,7 @@ import { GalleryPanel } from "@/apps/agent/components/gallery/GalleryPanel";
 import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import { authorColor } from "@/apps/agent/components/team/team-ui";
@@ -163,12 +164,12 @@ const AddMenu: React.FC<{
   // Team is opt-in: with it off in Settings the entry doesn't belong in the
   // menu at all — a greyed row can't explain itself, and Settings is where
   // you'd go looking anyway.
-  const teamEnabled = useSettingsStore((s) => s.teamEnabled);
+  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   // Aurora Chat's dock is two surfaces, not five: Canvas, which is where it
   // presents, and Memory, which is what it keeps. Files, Browser, Terminal and
   // Team all address a project, and this side has none — a Files tab there
   // opens a tree of a folder the chat cannot read.
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const entries = chatSurface
     ? CHAT_ADD_MENU
     : ADD_MENU.filter((e) => e.kind !== "team" || teamEnabled);
@@ -375,7 +376,7 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
 
 export const RightDock: React.FC = () => {
   /** Aurora Chat's dock holds Canvas and Memory; see `CHAT_ADD_MENU`. */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const allTabs = useAgentWorkspaceStore((s) => s.tabs);
   const activeTabId = useAgentWorkspaceStore((s) => s.activeTabId);
   /**
@@ -412,14 +413,18 @@ export const RightDock: React.FC = () => {
     tabs.length,
   );
 
-  // Switching to a different tab is instant (no glide), so hide the native
-  // webview immediately — it paints above DOM and would otherwise cover the new
-  // tab. Dock CLOSE is handled differently: the webview slides out with the rail
-  // (BrowserPanel tracks the animating outer) and is hidden on unmount, so we do
-  // NOT hide on `!dockOpen` here — that would kill the slide-out.
-  useEffect(() => {
-    if (active?.kind !== "browser") void hideAgentBrowser();
-  }, [active?.kind]);
+  // No show/hide here: only the active tab's body is mounted, so switching away
+  // from Browser unmounts its panel and that alone hides the page
+  // (`services/browser/browser-visibility.ts`). The `+` menu drops over the
+  // page area, so it holds the page hidden while open.
+  const menuHold = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      menuHold.current?.();
+      menuHold.current = null;
+    },
+    [],
+  );
 
   return (
     <div
@@ -452,18 +457,14 @@ export const RightDock: React.FC = () => {
         <AddMenu
           onPick={openTab}
           onOpenChange={(menuOpen) => {
-            // The native browser webview paints above DOM — hide it so this
-            // menu (which drops into the body) isn't clipped behind the page.
+            // The native browser webview paints above DOM — keep it hidden
+            // while this menu (which drops into the body) is open.
             if (menuOpen) {
-              void hideAgentBrowser();
+              if (!menuHold.current) menuHold.current = holdBrowserHidden();
               return;
             }
-            // Re-show only if the browser is STILL the live active tab (reading
-            // the store, not a stale closure — picking another tab must not
-            // resurrect the webview over it).
-            const st = useAgentWorkspaceStore.getState();
-            const live = st.tabs.find((t) => t.id === st.activeTabId);
-            if (live?.kind === "browser") void showAgentBrowser();
+            menuHold.current?.();
+            menuHold.current = null;
           }}
         />
         <button

@@ -13,8 +13,8 @@ vi.mock("@/kernel/lib/ipc/runtime", () => ({
   auroraInvoke: mocks.invoke,
   isDesktopRuntime: () => false,
 }));
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: (select: (state: unknown) => unknown) =>
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: (select: (state: unknown) => unknown) =>
     select({ imageProviders: [mocks.provider] }),
 }));
 let root: Root;

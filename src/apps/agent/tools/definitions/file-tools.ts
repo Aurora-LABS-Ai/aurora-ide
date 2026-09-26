@@ -253,7 +253,8 @@ export const grepTool: ToolDefinition = {
 Usage:
 - Use for exact symbol or string searches across the codebase
 - Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
-- Respects .gitignore by default
+- Includes hidden files; respects ignore files when applicable. Unignored build output is searchable.
+- Scope source searches with path, or exclude dependency/build folders with a negated glob
 - Output modes: "content" (default), "files_with_matches", "count"
 
 Examples:

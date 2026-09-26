@@ -7,7 +7,7 @@
  * sends it to the Rust transcriber, and hands the transcript back to the caller
  * (the composer inserts it at the caret).
  *
- * Speech settings come from the shared `useSettingsStore` (the agent window and
+ * Speech settings come from the shared `useAgentSettingsStore` (the agent window and
  * the IDE read the same provider/speech config), so anything configured in the
  * IDE's Speech settings "just works" here too.
  */
@@ -21,7 +21,7 @@ import {
   SpeechStreamSession,
   toStreamConfig,
 } from "@/apps/agent/services/speech/speech-stream";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { runDictationCleanup } from "@/apps/agent/adapters/prompt-refine";
 import {
   dictationCleanupReady,
@@ -190,7 +190,7 @@ export function useAgentSpeech(
     speechMode,
     speechLive,
     setSpeechDevicePreference,
-  } = useSettingsStore();
+  } = useAgentSettingsStore();
   const live = speechMode === "live";
 
   const [isRecording, setIsRecording] = useState(false);

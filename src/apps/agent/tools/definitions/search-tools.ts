@@ -1,8 +1,8 @@
 /**
  * Search Tools - Definitions
  * Web search and page-fetch tooling. Codebase exploration is handled by
- * `grep` plus the file/workspace tools — Aurora no longer ships a semantic
- * indexer.
+ * the native `code` tool (structural lookups and ranked source search),
+ * `grep`, and the file/workspace tools. Its schema lives in Rust code_intel.
  */
 import type { ToolDefinition } from "@/apps/agent/tools/types";
 

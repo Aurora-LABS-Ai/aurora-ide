@@ -37,7 +37,11 @@
 //! | [`service`] | one index per workspace, cached per process |
 
 pub mod extract;
+pub mod search;
+pub mod inventory;
+mod incremental;
 pub mod impact;
+pub mod jobs;
 pub mod lang;
 mod metadata;
 pub mod module_graph;

@@ -29,6 +29,20 @@ pub fn save_app_settings(
         .map_err(|e| format!("Failed to save settings: {:?}", e))
 }
 
+/// Save only the given settings (`[key, jsonValue]` pairs), in one
+/// transaction. Each window writes the keys it owns through this, so neither
+/// overwrites the other's settings with a stale copy. Unknown keys are refused.
+#[tauri::command(async)]
+pub fn save_app_settings_entries(
+    entries: Vec<(String, serde_json::Value)>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    db.settings()
+        .save_app_setting_entries(&entries)
+        .map_err(|e| format!("Failed to save settings: {e}"))
+}
+
 #[tauri::command]
 pub fn get_global_skills_path() -> Result<Option<String>, String> {
     // `.agents/skills` (plural) matches the workspace convention
@@ -253,13 +267,14 @@ pub fn save_all_tool_settings(
 // database is initialised. See `launch_prefs` for the full reasoning.
 
 /// Read the surface a bare launch opens. Never fails; defaults to the IDE.
-#[tauri::command]
+/// Off the main thread: both of these read or write a file.
+#[tauri::command(async)]
 pub fn get_launch_surface() -> LaunchSurface {
     launch_prefs::read()
 }
 
 /// Persist the surface a bare launch opens. Takes effect on the next launch.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_launch_surface(surface: LaunchSurface) -> Result<(), String> {
     launch_prefs::write(surface)
 }

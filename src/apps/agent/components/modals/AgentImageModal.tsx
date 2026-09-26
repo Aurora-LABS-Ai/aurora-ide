@@ -17,7 +17,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { hideAgentBrowser, showAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
+import { holdBrowserHidden } from "@/apps/agent/services/browser/browser-visibility";
 
 type Point = [number, number];
 interface Stroke {
@@ -149,14 +149,11 @@ export const AgentImageModal: React.FC<AgentImageModalProps> = ({
 
   // The agent's embedded browser is a NATIVE webview that paints above all DOM,
   // so this modal would otherwise open BEHIND it whenever the Browser panel is
-  // showing. Hide the webview while the modal is up; `showAgentBrowser` is
-  // self-gating (only re-shows if the Browser tab is still the live surface).
+  // showing. Hold it hidden while the modal is up; releasing re-shows it only
+  // if the Browser panel is still the one on screen and nothing else holds it.
   useEffect(() => {
     if (!open) return;
-    void hideAgentBrowser();
-    return () => {
-      void showAgentBrowser();
-    };
+    return holdBrowserHidden();
   }, [open]);
 
   const toCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {

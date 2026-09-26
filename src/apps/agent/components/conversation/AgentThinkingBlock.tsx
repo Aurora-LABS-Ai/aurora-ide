@@ -26,6 +26,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
 
 const AgentThinkingBlockImpl: React.FC<{
@@ -42,7 +43,10 @@ const AgentThinkingBlockImpl: React.FC<{
   // dead for the whole time the model was thinking — exactly when a long
   // reasoning dump is most in the way and most worth folding out of sight.
   const [override, setOverride] = useState<boolean | null>(null);
-  const expanded = override ?? isGenerating;
+  // Transcript → Reasoning "Folded" drops the auto-open; the header still
+  // shimmers and ticks, and a click still opens it.
+  const autoOpen = useAgentThemeStore((s) => s.transcriptReasoning === "live");
+  const expanded = override ?? (autoOpen && isGenerating);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // A clock, not derived state: the interval only advances `now` and the

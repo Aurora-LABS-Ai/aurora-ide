@@ -23,6 +23,7 @@ import {
   listTerminalSessions,
   type TerminalSessionSummary,
 } from "@/apps/agent/services/terminal/terminal-sessions";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
 import { ComposerAurora } from "./ComposerAurora";
@@ -354,13 +355,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const pinnedModel = useAgentChatStore((s) =>
     pinnedThreadModel(s, composerThreadId),
   );
-  const defaultModel = useSettingsStore((s) => s.selectedModel);
+  const defaultModel = useAgentSettingsStore((s) => s.selectedModel);
   const composerModel = pinnedModel ?? defaultModel;
   // Aurora Chat has no workspace, so the composer's offer of one has to go with
   // it: no `@` (it searches workspace files and open terminals) and no Browser
   // row (there are no browser tools on this side). The default placeholder goes
   // too — it advertised "@ for files" in a mode with no files to reach.
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   // An image model as the conversation's model turns the box into a prompt
   // field: what you type IS the picture, and nothing before it is read. The
   // placeholder is where that is said, because it is the one place you are
@@ -448,7 +449,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // model per chat, the globally-selected one may be vision-capable while the
   // chat you're typing in is not — which would let an image attach to a model
   // that can never see it.
-  const visionSupported = useSettingsStore(
+  const visionSupported = useAgentSettingsStore(
     (s) => s.getModelFor(composerModel)?.supportsVision ?? false,
   );
   const [visionWarn, setVisionWarn] = useState<string | null>(null);
@@ -575,7 +576,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // (Build mode registers no `generate_image`) with at least one image
   // provider that is switched on, addressed and keyed. Otherwise the pill
   // would send a request the model can only apologise for.
-  const canMakeImages = useSettingsStore(
+  const canMakeImages = useAgentSettingsStore(
     (s) => chatSurface && s.imageProviders.some(imageProviderReady),
   );
   const commandResults = useMemo(() => {

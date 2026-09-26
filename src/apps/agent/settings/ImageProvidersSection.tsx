@@ -24,7 +24,7 @@ import { AgentIcon } from "@/apps/agent/shared";
 import { AgwButton, AgwSelect, AgwSwitch, AgwTextInput } from "@/apps/agent/settings/primitives";
 import { ImageProviderProbe } from "@/apps/agent/settings/ImageProviderProbe";
 import { VideoModels } from "@/apps/agent/settings/VideoModels";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   editUrl,
   generationUrl,
@@ -70,8 +70,8 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean; por
   providerCanEdit,
   portraitReference,
 }) => {
-  const updateImageModel = useSettingsStore((s) => s.updateImageModel);
-  const deleteImageModel = useSettingsStore((s) => s.deleteImageModel);
+  const updateImageModel = useAgentSettingsStore((s) => s.updateImageModel);
+  const deleteImageModel = useAgentSettingsStore((s) => s.deleteImageModel);
   const [open, setOpen] = useState(false);
 
   return (
@@ -188,9 +188,9 @@ export const ImageProviderCard: React.FC<{
    */
   standalone?: boolean;
 }> = ({ provider, initiallyOpen, standalone = false }) => {
-  const updateImageProvider = useSettingsStore((s) => s.updateImageProvider);
-  const deleteImageProvider = useSettingsStore((s) => s.deleteImageProvider);
-  const addImageModel = useSettingsStore((s) => s.addImageModel);
+  const updateImageProvider = useAgentSettingsStore((s) => s.updateImageProvider);
+  const deleteImageProvider = useAgentSettingsStore((s) => s.deleteImageProvider);
+  const addImageModel = useAgentSettingsStore((s) => s.addImageModel);
   const [open, setOpen] = useState(initiallyOpen);
   const [showKey, setShowKey] = useState(false);
   const [newModel, setNewModel] = useState("");

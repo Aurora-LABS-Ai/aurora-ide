@@ -106,13 +106,8 @@ export async function setBrowserBounds(
   });
 }
 
-export async function showBrowser(label: string): Promise<void> {
-  await auroraInvoke('browser_show', { label });
-}
-
-export async function hideBrowser(label: string): Promise<void> {
-  await auroraInvoke('browser_hide', { label });
-}
+// Showing and hiding the page is `services/browser/browser-visibility.ts`,
+// the one place that decides it.
 
 export async function navigateBrowser(label: string, url: string): Promise<void> {
   await auroraInvoke('browser_navigate', { label, url });

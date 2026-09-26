@@ -12,9 +12,9 @@
 
 import {
   reasoningIsOn,
-  useSettingsStore,
+  useAgentSettingsStore,
   type LLMModel,
-} from "@/kernel/store/useSettingsStore";
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type {
   ProviderConfig,
   ReasoningRequestConfig,
@@ -176,7 +176,7 @@ export function resolveModelRequest(
   selection: string,
   thinkingPreference: boolean,
 ): { providerConfig: ProviderConfig; model: LLMModel | null } & ResolvedModelKnobs | null {
-  const store = useSettingsStore.getState();
+  const store = useAgentSettingsStore.getState();
   const resolved = store.getLLMConfigFor(selection);
   if (!resolved) return null;
 

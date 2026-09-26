@@ -22,7 +22,7 @@ import {
   isArkWireChoice,
   type ArkWire,
 } from "./ark";
-import { resolveProviderType } from "@/kernel/store/useSettingsStore";
+import { resolveProviderType } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const row = (providerType?: string) => ({ id: "ark", providerType } as never);
 

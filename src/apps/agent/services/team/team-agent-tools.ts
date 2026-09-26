@@ -23,8 +23,7 @@ import { resolveModelRequest } from "@/apps/agent/services/runtime/model-request
 import type { ProviderConfigSnapshot } from "@/apps/agent/services/runtime/agent-runtime-client";
 import * as team from "@/apps/agent/services/team/team-client";
 import { requestOpenTeamView } from "@/apps/agent/services/team/team-view-bridge";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
-import { useThreadStore } from "@/apps/agent/store/conversation/useThreadStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import type {
@@ -90,7 +89,7 @@ function requireRepoPath(ctx?: TeamToolContext): string {
 
 /** Hard gate: the team flow only runs when the user enabled it in settings. */
 function requireTeamEnabled(): void {
-  if (!useSettingsStore.getState().teamEnabled) {
+  if (!useAgentSettingsStore.getState().teamEnabled) {
     throw new Error(
       "Agent Team is disabled. Ask the user to enable it in the Agent Window under Settings → Team, then retry.",
     );
@@ -105,7 +104,7 @@ function providerSnaps(): {
   lead: ProviderConfigSnapshot;
   member: ProviderConfigSnapshot;
 } {
-  const settings = useSettingsStore.getState();
+  const settings = useAgentSettingsStore.getState();
   const resolveTeamModel = (selection: string, role: "Lead" | "member") => {
     try {
       return resolveModelRequest(selection, settings.thinkingEnabled)?.providerConfig;
@@ -144,13 +143,8 @@ function dispatchOrigin(ctx?: TeamToolContext): TeamDispatchOrigin | undefined {
   }
 
   const agentWindowThreadId = useAgentChatStore.getState().currentThreadId;
-  if (agentWindowThreadId) {
-    return { originThreadId: agentWindowThreadId, originSurface: "agent-window" };
-  }
-
-  const mainThreadId = useThreadStore.getState().currentThreadId;
-  return mainThreadId
-    ? { originThreadId: mainThreadId, originSurface: "main-ide" }
+  return agentWindowThreadId
+    ? { originThreadId: agentWindowThreadId, originSurface: "agent-window" }
     : undefined;
 }
 
@@ -346,7 +340,7 @@ async function runDispatch(
   // separate and always present, not counted here. The Rust runtime, however,
   // counts the Lead inside `maxSize` (`ic_cap = maxSize - 1`), so we pass
   // `workers + 1` as the total and staff up to `workerCap` members.
-  const workerCap = Math.max(1, useSettingsStore.getState().maxTeamSize);
+  const workerCap = Math.max(1, useAgentSettingsStore.getState().maxTeamSize);
   const staffed = members.slice(0, workerCap);
   const origin = dispatchOrigin(ctx);
   // Reveal the embedded Team screen so the user watches the run stream in live.

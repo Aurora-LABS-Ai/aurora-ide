@@ -519,7 +519,20 @@ describe("persisted file tool results", () => {
 describe("code tool results", () => {
   // Observed on screen: every `code` row read "Done" and expanding one showed
   // only its arguments, because the JSON fell through to the generic handler.
-  // One tool answering five different questions has to say WHICH answer it is.
+  // One tool answering different questions has to say WHICH answer it is.
+  it("shows actual source passages and incomplete coverage", () => {
+    const parsed = parseToolResult("code", { op: "search" }, JSON.stringify({ op:"search", matches:1, coverageLimited:true,
+      results:[{path:"auth.ts",startLine:2,endLine:4,text:"function refreshSession() {}",truncated:true}],
+      skippedFiles:[{path:"gone.ts",reason:"Source changed"}] }));
+    expect(parsed.summary).toBe("1 code match · incomplete coverage");
+    expect(parsed.code).toContain("auth.ts:2-4 (excerpt)");
+    expect(parsed.code).toContain("function refreshSession() {}");
+    expect(parsed.code).toContain("Skipped gone.ts");
+  });
+  it("reports an empty local search", () => {
+    expect(parseToolResult("code",{op:"search"},JSON.stringify({op:"search",matches:0,results:[]})).summary).toBe("0 code matches");
+  });
+
   it("summarises an outline by symbol count and lists the symbols", () => {
     const parsed = parseToolResult(
       "code",

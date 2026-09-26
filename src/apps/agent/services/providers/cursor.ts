@@ -24,16 +24,16 @@
  */
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
-import type { ProviderCatalogPreset } from "@/apps/agent/services/providers/provider-catalog";
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import {
   toRunnableModels,
   type CursorRunnableModel,
 } from "@/apps/agent/services/providers/cursor-variants";
+import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/presets/cursor";
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
-export const CURSOR_PROVIDER_ID = "cursor";
+// The preset lives in kernel (the settings store seeds from it); re-exported so
+// agent code keeps one import for everything Cursor.
+export { CURSOR_PRESET, CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/presets/cursor";
 
 // ── Wire types (mirror Rust `commands::cursor`) ──────────────────────────────
 
@@ -211,44 +211,6 @@ export function cursorModelsSetEnabledBulk(
 export function isCursorProvider(provider: { id?: string }): boolean {
   return provider.id === CURSOR_PROVIDER_ID;
 }
-
-// ── Seeded provider preset ───────────────────────────────────────────────────
-
-/**
- * The Cursor provider row.
- *
- * `customModels` is deliberately empty: the account decides what exists, and
- * the catalogue is pulled on connect. Seeding a guess here would put models in
- * the picker that a refresh then contradicts.
- *
- * Pricing is likewise absent rather than zeroed — usage bills against the
- * Cursor plan, so there is no per-token rate to state, and a zero would render
- * as a measured `$0.00` instead of "not applicable".
- */
-export const CURSOR_PRESET: ProviderCatalogPreset = {
-  id: CURSOR_PROVIDER_ID,
-  name: "Cursor",
-  nickname: "Cursor",
-  // Informational only — the Rust adapter pins the real endpoint, so a stale
-  // preset cannot misroute a turn.
-  baseUrl: "https://api2.cursor.sh",
-  // The account's router — the one id that is always reachable, and the model
-  // the picker falls back to before anything has been switched on. It must be
-  // the id Cursor actually publishes (`cursor-default`), not the word "default":
-  // this value is sent verbatim, so a friendly-looking placeholder here would
-  // fail the very first turn of a fresh install.
-  model: "cursor-default",
-  // Replaced per-model from models.dev once the catalogue loads; this is only
-  // the floor a row starts at.
-  contextWindow: 200_000,
-  maxOutputTokens: 32_000,
-  supportsThinking: true,
-  supportsToolStream: true,
-  supportsVision: true,
-  providerType: "cursor",
-  requiresApiKey: false,
-  customModels: [],
-};
 
 // ── The catalogue, as the provider page shows it ─────────────────────────────
 

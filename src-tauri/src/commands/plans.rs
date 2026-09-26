@@ -64,21 +64,21 @@ fn workspace_path(workspace_root: &str) -> Result<PathBuf, String> {
 }
 
 /// The plan the workspace is currently working from, if any.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_get_active(workspace_root: String) -> Result<Option<PlanView>, String> {
     let workspace = workspace_path(&workspace_root)?;
     Ok(store::active(&workspace)?.map(|(path, doc)| view(path, doc)))
 }
 
 /// One specific plan, including finished ones the Canvas can still show.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_get(workspace_root: String, plan_id: String) -> Result<Option<PlanView>, String> {
     let workspace = workspace_path(&workspace_root)?;
     Ok(store::load(&workspace, &plan_id)?.map(|(path, doc)| view(path, doc)))
 }
 
 /// Every plan in the workspace, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_list(workspace_root: String) -> Result<Vec<PlanSummary>, String> {
     let workspace = workspace_path(&workspace_root)?;
     store::list(&workspace)
@@ -103,7 +103,7 @@ pub struct PlanStepStatusRequest {
 /// A user-set `in_progress` deliberately carries **no run claim** — nothing is
 /// executing it — so the Canvas shows it as paused rather than spinning. A
 /// spinner here would be a lie.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_set_step_status(request: PlanStepStatusRequest) -> Result<PlanView, String> {
     let workspace = workspace_path(&request.workspace_root)?;
     let status = match request.status.as_str() {
@@ -178,7 +178,7 @@ pub struct PlanBodyRequest {
 /// Only the prose is replaced — step statuses live in frontmatter and are left
 /// exactly as they were, so editing the wording of a step cannot silently
 /// reset work that is already done.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_save_body(request: PlanBodyRequest) -> Result<PlanView, String> {
     let workspace = workspace_path(&request.workspace_root)?;
     let body = request.body.clone();
@@ -201,7 +201,7 @@ pub struct PlanStatusRequest {
 
 /// Set the plan's own lifecycle status — used by the Canvas to abandon or
 /// reopen a plan.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn plan_set_status(request: PlanStatusRequest) -> Result<PlanView, String> {
     let workspace = workspace_path(&request.workspace_root)?;
     let status = match request.status.as_str() {

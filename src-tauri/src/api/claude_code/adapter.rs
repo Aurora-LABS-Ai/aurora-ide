@@ -7,13 +7,19 @@
 //! - auth: a fresh OAuth access token per call as `Authorization: Bearer`
 //!   (refreshed on expiry, and force-refreshed once on a 401 in case the
 //!   token was revoked early) — never `x-api-key`,
-//! - headers: the `oauth-2025-04-20` beta the token is only valid with, the
-//!   Claude Code beta beside it, and Claude Code's own user agent,
+//! - headers: Claude Code's beta set, chosen per model the way 9router's
+//!   `selectAnthropicBeta` does ([`select_betas`]), and Claude Code's own
+//!   user agent,
 //! - body: the Claude Code identity sentence as the first system block,
-//!   ahead of Aurora's prompt. The endpoint is served to Claude Code
-//!   clients and expects that opening line,
-//! - URL: fixed to `api.anthropic.com`; the provider row's base URL is
-//!   ignored on purpose so a stale preset can't misroute.
+//!   ahead of Aurora's prompt, and the tool and system cache breakpoints
+//!   held for an hour instead of five minutes,
+//! - URL: fixed to `api.anthropic.com/v1/messages?beta=true`; the provider
+//!   row's base URL is ignored on purpose so a stale preset can't misroute.
+//!
+//! Deliberately NOT taken from 9router: its "cloaking" (a forged billing
+//! header, fabricated device/account ids, renamed tools plus decoy tools,
+//! faked SDK fingerprint headers). Those exist to defeat Anthropic's
+//! detection of unlicensed subscription use, not to make requests work.
 
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
@@ -60,22 +66,63 @@ impl ClaudeCodeAdapter {
 }
 
 /// The endpoint every request goes to. The row's base URL is not consulted.
+/// `?beta=true` is how Claude Code (and 9router's `claude` provider) address
+/// the Messages API when beta flags ride along.
 pub fn messages_url() -> String {
-    build_anthropic_url(&format!("{CLAUDE_API_BASE}/v1"))
+    format!("{}?beta=true", build_anthropic_url(&format!("{CLAUDE_API_BASE}/v1")))
 }
 
-/// Headers for one subscription call.
-fn build_claude_code_headers(access: &ClaudeCodeAccess) -> Result<HeaderMap, ApiError> {
+/// Beta flags sent with every request, in 9router's order
+/// (`open-sse/providers/shared.js`, `ANTHROPIC_BETA_BASE`).
+const BETA_BASE: &[&str] = &[
+    CLAUDE_CODE_BETA,
+    OAUTH_BETA,
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "structured-outputs-2025-12-15",
+    "fast-mode-2026-02-01",
+    REDACT_THINKING_BETA,
+    "token-efficient-tools-2026-03-28",
+];
+
+/// Added for Opus and Sonnet only (9router: `ANTHROPIC_BETA_HEAVY_AGENT`).
+const BETA_HEAVY_AGENT: &[&str] = &["advanced-tool-use-2025-11-20", "effort-2025-11-24"];
+
+/// Asks for signature-only thinking. Dropped whenever the request asks for
+/// readable summaries (`thinking.display: "summarized"`), which it would
+/// otherwise blank — Aurora asks for them on every Claude 5 model.
+const REDACT_THINKING_BETA: &str = "redact-thinking-2026-02-12";
+
+/// 9router's `selectAnthropicBeta(model, body)`.
+fn select_betas(model: &str, body: &Value) -> String {
+    let wants_summaries = body
+        .pointer("/thinking/display")
+        .and_then(Value::as_str)
+        == Some("summarized");
+    let mut flags: Vec<&str> = BETA_BASE
+        .iter()
+        .copied()
+        .filter(|flag| *flag != REDACT_THINKING_BETA || !wants_summaries)
+        .collect();
+    let id = model.trim().to_ascii_lowercase();
+    if id.starts_with("claude-opus") || id.starts_with("claude-sonnet") {
+        flags.extend_from_slice(BETA_HEAVY_AGENT);
+    }
+    flags.join(",")
+}
+
+/// Headers for one subscription call. `betas` comes from [`select_betas`].
+fn build_claude_code_headers(access: &ClaudeCodeAccess, betas: &str) -> Result<HeaderMap, ApiError> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
     headers.insert(USER_AGENT, HeaderValue::from_static(CLAUDE_CODE_USER_AGENT));
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     headers.insert("x-app", HeaderValue::from_static("cli"));
-    let betas = format!("{OAUTH_BETA},{CLAUDE_CODE_BETA}");
     headers.insert(
         "anthropic-beta",
-        HeaderValue::from_str(&betas)
+        HeaderValue::from_str(betas)
             .map_err(|e| ApiError::InvalidRequest(format!("invalid beta header: {e}")))?,
     );
     let bearer = format!("Bearer {}", access.access_token);
@@ -112,7 +159,32 @@ fn build_claude_code_body(request: &ApiRequest<'_>, config: &ProviderConfigSnaps
         _ => vec![identity],
     };
     obj.insert("system".to_string(), Value::Array(system));
+    extend_prefix_cache_to_one_hour(&mut body);
     body
+}
+
+/// 9router caches the tool list and the system prompt for an hour
+/// (`cache_control: {type: "ephemeral", ttl: "1h"}`) and leaves the message
+/// breakpoint at the default five minutes. Aurora's builder already chose
+/// WHERE those breakpoints go (last tool, the static half of the system
+/// prompt — see `build_anthropic_body`); this only lengthens how long the
+/// tool and system ones live, so a pause longer than five minutes does not
+/// re-bill the whole prefix.
+///
+/// Order is safe by construction: Anthropic requires one-hour breakpoints to
+/// come before five-minute ones, and the prefix runs tools → system →
+/// messages.
+fn extend_prefix_cache_to_one_hour(body: &mut Value) {
+    for key in ["tools", "system"] {
+        let Some(Value::Array(blocks)) = body.get_mut(key) else {
+            continue;
+        };
+        for block in blocks.iter_mut() {
+            if let Some(cache) = block.get_mut("cache_control").and_then(Value::as_object_mut) {
+                cache.insert("ttl".to_string(), Value::String("1h".into()));
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -127,18 +199,20 @@ impl StreamingApiClient for ClaudeCodeAdapter {
             return Err(ApiError::Cancelled);
         }
 
-        let mut access = auth::fresh_access(false)
-            .await
-            .map_err(ApiError::Provider)?;
+        let mut access = auth::fresh_access().await.map_err(ApiError::Provider)?;
 
         let url = messages_url();
         let body = build_claude_code_body(&request, &self.config);
+        let betas = select_betas(
+            body.get("model").and_then(Value::as_str).unwrap_or(request.model),
+            &body,
+        );
 
         // One retry on 401: an unexpired-but-revoked token (password change,
         // session invalidation) only reveals itself here.
         let mut refreshed_once = false;
         let response = loop {
-            let headers = build_claude_code_headers(&access)?;
+            let headers = build_claude_code_headers(&access, &betas)?;
             let response = tokio::select! {
                 biased;
                 _ = cancel_token.cancelled() => return Err(ApiError::Cancelled),
@@ -150,7 +224,9 @@ impl StreamingApiClient for ClaudeCodeAdapter {
 
             if response.status().as_u16() == 401 && !refreshed_once {
                 refreshed_once = true;
-                access = auth::fresh_access(true).await.map_err(ApiError::Provider)?;
+                access = auth::access_after_rejection(&access)
+                    .await
+                    .map_err(ApiError::Provider)?;
                 continue;
             }
             break response;
@@ -244,9 +320,11 @@ mod tests {
     #[test]
     fn headers_carry_bearer_and_the_oauth_beta_and_never_an_api_key() {
         let access = ClaudeCodeAccess {
+            account_id: "acc-1".into(),
             access_token: "sk-ant-oat01-abc".into(),
         };
-        let headers = build_claude_code_headers(&access).expect("headers");
+        let betas = select_betas("claude-sonnet-5", &json!({}));
+        let headers = build_claude_code_headers(&access, &betas).expect("headers");
         assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer sk-ant-oat01-abc");
         assert!(headers.get("x-api-key").is_none());
         let betas = headers.get("anthropic-beta").unwrap().to_str().unwrap();
@@ -259,6 +337,66 @@ mod tests {
 
     #[test]
     fn url_is_pinned_to_anthropic_regardless_of_the_row() {
-        assert_eq!(messages_url(), "https://api.anthropic.com/v1/messages");
+        assert_eq!(messages_url(), "https://api.anthropic.com/v1/messages?beta=true");
+    }
+
+    /// 9router's `selectAnthropicBeta`: the base list for every model, the
+    /// heavy-agent pair only for Opus and Sonnet, and `redact-thinking`
+    /// withheld when summaries were asked for.
+    #[test]
+    fn betas_follow_9routers_selection() {
+        let plain = json!({});
+        let summarized = json!({ "thinking": { "type": "adaptive", "display": "summarized" } });
+
+        let sonnet = select_betas("claude-sonnet-5", &plain);
+        assert_eq!(
+            sonnet,
+            "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,\
+             context-management-2025-06-27,prompt-caching-scope-2026-01-05,\
+             structured-outputs-2025-12-15,fast-mode-2026-02-01,redact-thinking-2026-02-12,\
+             token-efficient-tools-2026-03-28,advanced-tool-use-2025-11-20,effort-2025-11-24"
+        );
+
+        let fable = select_betas("claude-fable-5-1", &summarized);
+        assert!(!fable.contains("advanced-tool-use"), "heavy-agent flags are Opus/Sonnet only");
+        assert!(!fable.contains("effort-2025-11-24"));
+        assert!(!fable.contains(REDACT_THINKING_BETA), "would blank the requested summaries");
+        assert!(fable.contains(OAUTH_BETA));
+
+        assert!(select_betas("claude-opus-5", &summarized).contains("effort-2025-11-24"));
+        assert!(select_betas("claude-haiku-4-5-20251001", &plain).contains(REDACT_THINKING_BETA));
+    }
+
+    /// Tools and system live an hour, as 9router caches them; the message
+    /// breakpoint keeps the five-minute default, which also keeps the
+    /// one-hour-before-five-minute order Anthropic requires.
+    #[test]
+    fn tool_and_system_cache_breakpoints_live_an_hour() {
+        let mut body = json!({
+            "tools": [
+                { "name": "a" },
+                { "name": "b", "cache_control": { "type": "ephemeral" } }
+            ],
+            "system": [
+                { "type": "text", "text": "id" },
+                { "type": "text", "text": "static", "cache_control": { "type": "ephemeral" } },
+                { "type": "text", "text": "dynamic" }
+            ],
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "hi", "cache_control": { "type": "ephemeral" } }
+                ]}
+            ]
+        });
+        extend_prefix_cache_to_one_hour(&mut body);
+        assert_eq!(body["tools"][1]["cache_control"], json!({ "type": "ephemeral", "ttl": "1h" }));
+        assert!(body["tools"][0].get("cache_control").is_none(), "no new breakpoints added");
+        assert_eq!(body["system"][1]["cache_control"], json!({ "type": "ephemeral", "ttl": "1h" }));
+        assert!(body["system"][2].get("cache_control").is_none());
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" }),
+            "the message breakpoint stays at five minutes"
+        );
     }
 }

@@ -153,6 +153,18 @@ export interface DbMessage {
   tools?: unknown[] | null;
   timeline?: unknown;
   toolProposal?: unknown;
+  /**
+   * Assistant only — what the model request(s) behind this message reported,
+   * in the runtime's own wire names. Reloaded from the session file, one
+   * request per message. A live turn keeps ONE message for every request it
+   * makes, so the live path adds each request's usage into it instead.
+   */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    /** Aurora's own estimate rather than provider-reported counts. */
+    estimated?: boolean | null;
+  } | null;
 }
 
 export interface DbThread {

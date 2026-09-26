@@ -102,6 +102,43 @@ pub struct BrowserManager {
     /// agents that omit/forget the label don't hit the "unknown
     /// window" error path.
     last_active_label: Arc<StdMutex<Option<String>>>,
+    /// The frontend's latest show/hide decision per label, with its sequence
+    /// number. See [`BrowserManager::set_visible`].
+    visibility: Arc<StdMutex<VisibilityLedger>>,
+}
+
+/// Ordered show/hide decisions, keyed by browser label.
+///
+/// The frontend decides whether the page is on screen, but each decision
+/// reaches Rust as its own IPC call and nothing orders two in-flight calls:
+/// a "hide" sent on a tab switch could land before an earlier "show" and
+/// leave the page painted over Files or the terminal. Every decision carries
+/// a sequence number, and one older than the last accepted is dropped.
+///
+/// A decision is kept even when the webview does not exist yet, so a page
+/// whose build finishes after the user switched away comes up hidden.
+#[derive(Debug, Default)]
+struct VisibilityLedger {
+    latest: std::collections::HashMap<String, (u64, bool)>,
+}
+
+impl VisibilityLedger {
+    /// Record `visible` for `label` if `seq` is newer than the last decision.
+    /// Returns false for a stale decision, which must not be applied.
+    fn accept(&mut self, label: &str, seq: u64, visible: bool) -> bool {
+        match self.latest.get(label) {
+            Some(&(last, _)) if seq <= last => false,
+            _ => {
+                self.latest.insert(label.to_string(), (seq, visible));
+                true
+            }
+        }
+    }
+
+    /// The last decision for `label`; `None` when the frontend has not said.
+    fn wanted(&self, label: &str) -> Option<bool> {
+        self.latest.get(label).map(|&(_, visible)| visible)
+    }
 }
 
 /// Default ceiling for two-way IPC waits. Long enough for a slow page
@@ -135,7 +172,13 @@ impl BrowserManager {
             windows: Arc::new(DashMap::new()),
             pending: Arc::new(DashMap::new()),
             last_active_label: Arc::new(StdMutex::new(None)),
+            visibility: Arc::new(StdMutex::new(VisibilityLedger::default())),
         }
+    }
+
+    /// The last show/hide decision the frontend sent for `label`.
+    fn wanted_visible(&self, label: &str) -> Option<bool> {
+        self.visibility.lock().ok()?.wanted(label)
     }
 
     /// Resolve a two-way IPC result for a previously-issued request.
@@ -205,7 +248,10 @@ impl BrowserManager {
                         embed.width.max(1.0),
                         embed.height.max(1.0),
                     ));
-                    let _ = view.show();
+                    // Only if the frontend has not since asked for it hidden.
+                    if self.wanted_visible(&label) != Some(false) {
+                        let _ = view.show();
+                    }
                 }
                 if !opts.url.is_empty() {
                     self.navigate(&label, &opts.url)?;
@@ -252,10 +298,21 @@ impl BrowserManager {
         )
         .map_err(|e| format!("failed to embed browser '{label}': {e}"))?;
 
+        // The build takes a moment, and the user can switch tabs during it. A
+        // "hide" that arrived meanwhile was recorded against this label; honour
+        // it now, or the fresh page sits on top of whatever tab is showing.
+        let start_hidden = self.wanted_visible(&label) == Some(false);
+        if start_hidden {
+            if let Ok(view) = self.window(&label) {
+                let _ = view.hide();
+            }
+        }
+
         self.windows.insert(
             label.clone(),
             BrowserWindowState {
                 current_url: opts.url.clone(),
+                hidden: start_hidden,
                 ..Default::default()
             },
         );
@@ -295,6 +352,33 @@ impl BrowserManager {
             size: LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
         })
         .map_err(|e| format!("set_bounds failed: {e}"))
+    }
+
+    /// Apply the frontend's decision to show or hide the embedded webview.
+    ///
+    /// `seq` orders decisions: one older than the last accepted is dropped and
+    /// `Ok(false)` returned. The ledger lock is held across the show/hide so two
+    /// decisions racing on different threads cannot apply out of order. A
+    /// decision for a webview that is not built yet is recorded and applied by
+    /// `create_window`, and also returns `Ok(false)`.
+    pub fn set_visible(&self, label: &str, visible: bool, seq: u64) -> Result<bool, String> {
+        let mut ledger = self
+            .visibility
+            .lock()
+            .map_err(|_| "browser visibility lock poisoned".to_string())?;
+        if !ledger.accept(label, seq, visible) {
+            return Ok(false);
+        }
+        if self.window(label).is_err() {
+            return Ok(false);
+        }
+        if visible {
+            self.show(label)?;
+        } else {
+            self.hide(label)?;
+        }
+        drop(ledger);
+        Ok(true)
     }
 
     /// Show the (embedded) browser webview.
@@ -1202,7 +1286,19 @@ impl BrowserManager {
                 let _ = window.show();
             }
             tokio::time::sleep(Duration::from_millis(180)).await;
-            match crate::services::browser_native_capture::capture_webview_png(&window).await {
+            // A webview that has not painted its first frame yet (the panel
+            // was just built) fails the capture; the same call succeeds once
+            // the frame exists. Retry briefly — 100ms apart, 2s at most — before
+            // falling back to a drawing that is not a real frame.
+            let mut attempt =
+                crate::services::browser_native_capture::capture_webview_png(&window).await;
+            let retry_until = std::time::Instant::now() + Duration::from_secs(2);
+            while attempt.is_err() && std::time::Instant::now() < retry_until {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                attempt =
+                    crate::services::browser_native_capture::capture_webview_png(&window).await;
+            }
+            match attempt {
                 Ok(Some(png_bytes)) => {
                     let mut result = match clip {
                         None => self.finalize_screenshot(png_bytes, "native"),
@@ -1232,8 +1328,12 @@ impl BrowserManager {
                     // Native attempt failed for a real reason. Log and
                     // fall back so the agent still gets *some* image
                     // instead of an opaque error.
-                    eprintln!(
-                        "[browser_native_capture] '{label}' native screenshot failed, falling back to SVG: {err}"
+                    crate::logging::log_warn(
+                        "browser.screenshot",
+                        &format!(
+                            "'{label}' native screenshot failed after retries, falling back to \
+                             an HTML redraw of the viewport: {err}"
+                        ),
                     );
                 }
             }
@@ -1243,6 +1343,11 @@ impl BrowserManager {
             Some(sel) => format!("document.querySelector({s})", s = json!(sel)),
             None => "document.body".into(),
         };
+        // A plain screenshot means "what is on screen". Drawing all of
+        // `document.body` returned the WHOLE page — thousands of pixels the
+        // panel was not showing — whenever the real capture failed. Without a
+        // selector the drawing is clipped to the viewport at the current scroll.
+        let viewport_only = element_scope.is_none();
         // The foreignObject technique inlines the live DOM into an
         // SVG, then rasterises that SVG via a hidden Image into a
         // canvas. It has known limits (cross-origin <img>, <canvas>
@@ -1252,9 +1357,15 @@ impl BrowserManager {
             r#"(async () => {{
                 const target = {target};
                 if (!target) throw new Error('screenshot target not found');
+                const viewportOnly = {viewport_only};
                 const rect = target.getBoundingClientRect();
-                const width = Math.max(1, Math.ceil(rect.width));
-                const height = Math.max(1, Math.ceil(rect.height));
+                const width = Math.max(1, Math.ceil(viewportOnly ? window.innerWidth : rect.width));
+                const height = Math.max(1, Math.ceil(viewportOnly ? window.innerHeight : rect.height));
+                // The body's box relative to the viewport (negative once
+                // scrolled), so the drawing starts where the screen does.
+                const shift = viewportOnly
+                    ? `transform:translate(${{rect.left}}px,${{rect.top}}px);`
+                    : '';
                 const dpr = window.devicePixelRatio || 1;
 
                 const clone = target.cloneNode(true);
@@ -1277,7 +1388,7 @@ impl BrowserManager {
                 const xml = new XMLSerializer().serializeToString(clone);
                 const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${{width}}' height='${{height}}'>` +
                     `<foreignObject width='100%' height='100%'>` +
-                    `<div xmlns='http://www.w3.org/1999/xhtml'>${{xml}}</div>` +
+                    `<div xmlns='http://www.w3.org/1999/xhtml' style='${{shift}}'>${{xml}}</div>` +
                     `</foreignObject></svg>`;
                 const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 
@@ -1299,9 +1410,11 @@ impl BrowserManager {
 
                 const dataUrl = canvas.toDataURL('image/png');
                 const base64 = dataUrl.split(',')[1] || '';
-                return {{ ok: true, base64, mediaType: 'image/png', width, height, capturePath: 'svg' }};
+                return {{ ok: true, base64, mediaType: 'image/png', width, height,
+                    capturePath: viewportOnly ? 'svg-viewport' : 'svg' }};
             }})()"#,
-            target = target
+            target = target,
+            viewport_only = viewport_only
         );
         let result = self.eval_with_result(label, &expr).await?;
         // Route the page-produced PNG through the same downscale + on-disk save
@@ -1392,6 +1505,41 @@ impl BrowserManager {
                         only. Scroll with browser_scroll and capture the viewport instead."
                 .into());
         }
+        // Scroll through the page first, one screen at a time, then come back.
+        //
+        // A full-page capture renders everything below the fold WITHOUT ever
+        // scrolling there, so sections that appear on scroll (reveal
+        // animations, lazy images, IntersectionObserver content — most modern
+        // landing pages) are photographed in their hidden "before" state: blank
+        // bands the model then reported as a broken page. Walking the page
+        // fires those triggers; the pause at the end lets the reveal
+        // transitions finish before the frame is taken.
+        let reveal_script = format!(
+            "(async () => {{ \
+                const se = document.scrollingElement || document.documentElement; \
+                const startX = window.scrollX, startY = window.scrollY; \
+                const step = Math.max(200, Math.floor(window.innerHeight * 0.8)); \
+                const limit = Math.min(se.scrollHeight, {max}); \
+                const pause = (ms) => new Promise((r) => setTimeout(r, ms)); \
+                for (let y = 0; y < limit; y += step) {{ \
+                    window.scrollTo({{ top: y, left: 0, behavior: 'instant' }}); \
+                    await pause(120); \
+                }} \
+                window.scrollTo({{ top: limit, left: 0, behavior: 'instant' }}); \
+                await pause(120); \
+                window.scrollTo({{ top: startY, left: startX, behavior: 'instant' }}); \
+                await pause(700); \
+                return true; \
+            }})()",
+            max = MAX_FULL_PAGE_HEIGHT
+        );
+        let revealed = self.devtools_evaluate(label, &reveal_script, 15_000).await;
+        if let Err(err) = &revealed {
+            crate::logging::log_warn(
+                "browser.screenshot",
+                &format!("'{label}' full-page scroll-through failed, capturing anyway: {err}"),
+            );
+        }
         let metrics = self
             .devtools_evaluate(
                 label,
@@ -1434,17 +1582,28 @@ impl BrowserManager {
         let mut result = self.finalize_screenshot(bytes, "native-full-page");
         if let Some(value) = result.value.as_mut().and_then(Value::as_object_mut) {
             value.insert("pageHeight".into(), json!(height.round()));
-            if height > capped {
-                value.insert(
-                    "note".into(),
-                    json!(format!(
-                        "The page is {h}px tall; this capture stops at {c}px. Scroll and capture \
-                         the viewport to see the rest.",
-                        h = height.round(),
-                        c = capped
-                    )),
-                );
+            // Said on every full-page capture: the page was scrolled through
+            // first, but some content only renders WHILE it is on screen, and a
+            // blank band here is not evidence of a broken page.
+            let mut note = String::from(
+                "A full-page capture renders parts of the page that are not on screen. The page \
+                 was scrolled through first so scroll-triggered sections could appear, but \
+                 content that only renders while visible can still show as a blank band. Before \
+                 reporting missing content, scroll to it (browser_scroll) and capture the \
+                 viewport.",
+            );
+            if revealed.is_err() {
+                note.push_str(" The scroll-through failed on this page, so blank bands are likely.");
             }
+            if height > capped {
+                note.push_str(&format!(
+                    " The page is {h}px tall; this capture stops at {c}px. Scroll and capture \
+                     the viewport to see the rest.",
+                    h = height.round(),
+                    c = capped
+                ));
+            }
+            value.insert("note".into(), json!(note));
         }
         Ok(result)
     }
@@ -1493,7 +1652,26 @@ impl BrowserManager {
         let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
             return result;
         };
-        self.finalize_screenshot(bytes, "svg")
+        let path = result
+            .value
+            .as_ref()
+            .and_then(|v| v.get("capturePath"))
+            .and_then(Value::as_str)
+            .unwrap_or("svg")
+            .to_string();
+        let mut finalized = self.finalize_screenshot(bytes, &path);
+        // Say what this is: a redraw of the page's HTML, not a captured frame.
+        // It can miss images, canvas, video and some styling, and the model
+        // must not judge the design from it as if it were real pixels.
+        if let Some(value) = finalized.value.as_mut().and_then(Value::as_object_mut) {
+            value.insert(
+                "note".into(),
+                json!("The real screen capture failed, so this is a redraw of the page's HTML. \
+                       Images, canvas, video and some styling may be missing — capture again \
+                       before judging how the page looks."),
+            );
+        }
+        finalized
     }
 
     /// Persist a screenshot under `<app_cache>/aurora-screenshots/` and
@@ -2466,6 +2644,41 @@ mod screenshot_encoding_tests {
         let (bytes, w, h) = encode_screenshot(junk.clone());
         assert_eq!(bytes, junk);
         assert_eq!((w, h), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod visibility_ledger_tests {
+    use super::VisibilityLedger;
+
+    /// The race this exists for: "show" (seq 1) and "hide" (seq 2) both in
+    /// flight, and the show lands second. It must be ignored.
+    #[test]
+    fn a_decision_older_than_the_last_one_is_dropped() {
+        let mut ledger = VisibilityLedger::default();
+        assert!(ledger.accept("browser-agentwin", 2, false));
+        assert!(!ledger.accept("browser-agentwin", 1, true));
+        assert_eq!(ledger.wanted("browser-agentwin"), Some(false));
+    }
+
+    #[test]
+    fn a_repeated_sequence_number_is_not_applied_twice() {
+        let mut ledger = VisibilityLedger::default();
+        assert!(ledger.accept("b", 5, true));
+        assert!(!ledger.accept("b", 5, false));
+        assert_eq!(ledger.wanted("b"), Some(true));
+    }
+
+    /// A hide sent before the webview exists is remembered, so the build
+    /// that finishes afterwards can start hidden.
+    #[test]
+    fn a_decision_is_kept_per_label_before_any_window_exists() {
+        let mut ledger = VisibilityLedger::default();
+        assert_eq!(ledger.wanted("b"), None);
+        assert!(ledger.accept("b", 7, false));
+        assert!(ledger.accept("other", 1, true));
+        assert_eq!(ledger.wanted("b"), Some(false));
+        assert_eq!(ledger.wanted("other"), Some(true));
     }
 }
 

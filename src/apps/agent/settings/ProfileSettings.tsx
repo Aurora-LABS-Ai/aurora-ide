@@ -14,7 +14,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { ActivityChart } from "./ActivityChart";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
 import { AgwButton, AgwSegmented } from "./primitives";
 import { formatTokens as fmtTokens, prettyModel } from "@/apps/agent/lib/thread/model-label";
@@ -314,8 +314,8 @@ export const ProfileSettings: React.FC = () => {
   const [hovered, setHovered] = useState<Bar | null>(null);
   const [exportState, setExportState] = useState<"idle" | "done" | "failed">("idle");
   const [openProviders, setOpenProviders] = useState<Set<string>>(new Set());
-  const models = useSettingsStore((s) => s.models);
-  const providers = useSettingsStore((s) => s.providers);
+  const models = useAgentSettingsStore((s) => s.models);
+  const providers = useAgentSettingsStore((s) => s.providers);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

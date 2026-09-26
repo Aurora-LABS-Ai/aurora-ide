@@ -16,6 +16,7 @@ import {
   shortenChapterTitle,
   textOf,
   turnWorkedMs,
+  formatReplyTime,
   formatWorkedDuration,
   finishCompaction,
   settleImageEvent,
@@ -633,6 +634,38 @@ describe("turn duration", () => {
       msg("assistant", "also-not-a-date"),
     ]).find((t) => t.role === "assistant")!;
     expect(turnWorkedMs(unparsable)).toBeNull();
+  });
+
+  it("adds up generated tokens across every message of a turn, never input", () => {
+    const turns = buildTurns([
+      msg("user", "2026-07-28T10:00:00.000Z"),
+      msg("assistant", "2026-07-28T10:00:05.000Z", {
+        usage: { input_tokens: 90_000, output_tokens: 400 },
+      }),
+      msg("assistant", "2026-07-28T10:00:09.000Z", {
+        usage: { input_tokens: 91_000, output_tokens: 1_103, estimated: true },
+      }),
+      // A request that reported nothing adds nothing, and is not a zero.
+      msg("assistant", "2026-07-28T10:00:12.000Z"),
+      msg("user", "2026-07-28T10:01:00.000Z"),
+      msg("assistant", "2026-07-28T10:01:04.000Z"),
+    ]);
+    const [first, second] = turns.filter((t) => t.role === "assistant");
+    expect(first.outputTokens).toBe(1_503);
+    expect(first.outputTokensEstimated).toBe(true);
+    expect(second.outputTokens).toBeUndefined();
+  });
+
+  it("dates a reply time only when it is from another day", () => {
+    const now = new Date(2026, 8, 23, 16, 0);
+    const time = (d: Date) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const today = new Date(2026, 8, 23, 14, 14);
+    expect(formatReplyTime(today, now)).toBe(time(today));
+    const earlier = new Date(2026, 8, 21, 14, 14);
+    expect(formatReplyTime(earlier, now)).not.toBe(time(earlier));
+    expect(formatReplyTime(earlier, now).endsWith(time(earlier))).toBe(true);
+    expect(formatReplyTime(earlier, now)).not.toContain("2026");
+    expect(formatReplyTime(new Date(2025, 8, 21, 14, 14), now)).toContain("2025");
   });
 
   it("formats durations at a glanceable granularity", () => {

@@ -94,6 +94,26 @@ describe("ToolCallCard streamed file targets", () => {
     expect(mountedContainer.querySelector(".agw-tool-silk")).toBeNull();
     expect(mountedContainer.textContent).toContain("List Image Models");
   });
+  it("shows an image request as a caption, not as clipped argument chips", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mountedContainer = document.createElement("div"); document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    const prompt = "Candid iPhone front camera selfie of a young adult woman indoors, arm's-length framing.";
+    const args = JSON.stringify({ op: "generate", model: "grok-imagine-image-quality", prompt, title: "APIKEY-FAN grok test", size: "1024x1536" });
+    const result = "Generated 001-x.png (1024×1536 px, image/png) with grok-imagine-image-quality via APIKEY-FAN in 7s. Saved in the conversation's assets.";
+    await act(async () => mountedRoot!.render(<ToolCallCard call={{ id: "image-done", name: "generate_image", arguments: args, result }} />));
+    // The picture's name is on the row.
+    expect(mountedContainer.querySelector(".agw-tool-chip-title")?.textContent).toBe("APIKEY-FAN grok test");
+    await act(async () => (mountedContainer!.querySelector(".agw-tool-head") as HTMLButtonElement).click());
+    expect(mountedContainer.querySelector(".agw-tool-args")).toBeNull();
+    expect(mountedContainer.textContent).not.toContain("prompt:");
+    expect(mountedContainer.textContent).not.toContain("op:");
+    // The prompt whole, and the provider that answered read off the result.
+    expect(mountedContainer.querySelector(".agw-media-prompt")?.textContent).toBe(prompt);
+    expect(mountedContainer.querySelector(".agw-media-facts")?.textContent).toBe(
+      "grok-imagine-image-quality·APIKEY-FAN·1024×1536",
+    );
+  });
   it.each([
     ['{"op":"generate","size":"832x1248"}', "832 / 1248"],
     ['{"op":"edit","size":"1280x720"}', "1280 / 720"],

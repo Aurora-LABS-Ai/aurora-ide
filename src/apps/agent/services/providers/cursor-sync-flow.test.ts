@@ -27,7 +27,7 @@ import {
 } from "@/apps/agent/services/providers/cursor-variants";
 import type { CursorModelView } from "@/apps/agent/services/providers/cursor";
 import type { ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
-import { useSettingsStore, type LLMModel } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const view = (
   modelId: string,
@@ -70,19 +70,19 @@ const catalog = {
 } as ModelsDevEntry;
 
 let originalModels: LLMModel[];
-let originalReplace: ReturnType<typeof useSettingsStore.getState>["replaceModelsForProvider"];
+let originalReplace: ReturnType<typeof useAgentSettingsStore.getState>["replaceModelsForProvider"];
 
 beforeEach(() => {
   mocks.list.mockReset();
   mocks.lookup.mockReset();
   clearCursorVariants();
-  const state = useSettingsStore.getState();
+  const state = useAgentSettingsStore.getState();
   originalModels = state.models;
   originalReplace = state.replaceModelsForProvider;
 });
 
 afterEach(() => {
-  useSettingsStore.setState({
+  useAgentSettingsStore.setState({
     models: originalModels,
     replaceModelsForProvider: originalReplace,
   });
@@ -102,14 +102,14 @@ describe("syncCursorModelsIntoStore", () => {
       }),
     );
     const replace = vi.fn();
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       models: [stored(200_000)],
       replaceModelsForProvider: replace,
     });
 
     const syncing = syncCursorModelsIntoStore();
     await vi.waitFor(() => expect(cursorVariantIndexSize()).toBe(1));
-    useSettingsStore.setState({ models: [stored(250_000)] });
+    useAgentSettingsStore.setState({ models: [stored(250_000)] });
     finishLookup(catalog);
     await syncing;
 
@@ -129,7 +129,7 @@ describe("syncCursorModelsIntoStore", () => {
     });
     mocks.lookup.mockResolvedValue(catalog);
     const replace = vi.fn();
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       models: [stored(200_000)],
       replaceModelsForProvider: replace,
     });

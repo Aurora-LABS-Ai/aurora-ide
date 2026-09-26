@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DbThread } from "@/apps/agent/services/threads/thread-service";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const { listThreadsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(async () => []),
@@ -55,7 +55,7 @@ describe("useAgentChatStore boot", () => {
     // The window has mounted and the settings read is still in flight, which is
     // exactly the state a real launch is in: `isLoading` makes the store's own
     // `initializeFromDatabase` a no-op, the way a second caller finds it.
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       isInitialized: false,
       isLoading: true,
       auroraSurface: "build",
@@ -70,14 +70,14 @@ describe("useAgentChatStore boot", () => {
     // lists them again once the real answer lands.
     expect(listThreadsMock).not.toHaveBeenCalled();
 
-    useSettingsStore.setState({ auroraSurface: "chat", isInitialized: true, isLoading: false });
+    useAgentSettingsStore.setState({ auroraSurface: "chat", isInitialized: true, isLoading: false });
     await booting;
 
     expect(listThreadsMock).toHaveBeenCalledWith(null, "chat");
   });
 
   it("goes straight through when the settings are already read", async () => {
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       isInitialized: true,
       isLoading: false,
       auroraSurface: "build",

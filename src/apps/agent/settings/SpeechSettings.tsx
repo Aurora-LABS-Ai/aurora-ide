@@ -38,7 +38,7 @@ import {
   toStreamConfig,
   type SpeechStreamValidation,
 } from "@/apps/agent/services/speech/speech-stream";
-import { useSettingsStore, type SpeechMode } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type SpeechMode } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   AgwButton,
   AgwPill,
@@ -119,7 +119,7 @@ export const SpeechSettings: React.FC = () => {
     speechModelPath,
     speechRuntimePath,
     speechThreads,
-  } = useSettingsStore();
+  } = useAgentSettingsStore();
 
   const live = speechMode === "live";
 

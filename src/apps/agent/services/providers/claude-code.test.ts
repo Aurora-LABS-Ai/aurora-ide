@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_CODE_PRESET,
   CLAUDE_CODE_PROVIDER_ID,
+  claudeCodeHighestUsedPercent,
   claudeCodePlanLabel,
   claudeCodeResetLabel,
   claudeCodeWindowMeta,
@@ -103,5 +104,40 @@ describe("CLAUDE_CODE_PRESET", () => {
     const reasoning = CLAUDE_CODE_PRESET.modelReasoning?.["claude-sonnet-5"];
     expect(reasoning?.type).toBe("effort");
     expect(reasoning?.levels).toContain("high");
+  });
+});
+
+describe("claudeCodeHighestUsedPercent", () => {
+  const win = (usedPercent: number) => ({ usedPercent, resetsAtMs: null, resetsInSeconds: null });
+  const snap = {
+    plan: "max",
+    fiveHour: win(12),
+    sevenDay: win(64),
+    sevenDayOpus: null,
+    sevenDaySonnet: win(30),
+    sevenDayModels: [{ model: "Fable", window: win(71) }],
+    extraUsage: null,
+    fetchedAtMs: 0,
+  };
+
+  it("reports the fullest window, the one that stops the account first", () => {
+    expect(claudeCodeHighestUsedPercent({ ...snap, sevenDayModels: [] })).toBe(64);
+  });
+
+  it("counts a per-model window such as Fable", () => {
+    expect(claudeCodeHighestUsedPercent(snap)).toBe(71);
+  });
+
+  it("is null when the account reported no windows or no usage loaded", () => {
+    expect(
+      claudeCodeHighestUsedPercent({
+        ...snap,
+        fiveHour: null,
+        sevenDay: null,
+        sevenDaySonnet: null,
+        sevenDayModels: [],
+      }),
+    ).toBeNull();
+    expect(claudeCodeHighestUsedPercent(null)).toBeNull();
   });
 });

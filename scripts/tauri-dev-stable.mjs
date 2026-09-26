@@ -2,6 +2,7 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const forwardedArgs = process.argv.slice(2);
 const extraArgs = forwardedArgs[0] === "--" ? forwardedArgs.slice(1) : forwardedArgs;
@@ -15,7 +16,10 @@ const recoverablePatterns = [
   /could not compile `aurora` \(lib\)/i,
 ];
 
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+// Windows cannot spawn a .cmd shim without a shell. Invoke the installed
+// Tauri Node entry directly so arguments remain literal on every platform.
+const require = createRequire(import.meta.url);
+const tauriCli = require.resolve("@tauri-apps/cli/tauri.js");
 
 const appendOutput = (buffer, chunk) => {
   const next = buffer + chunk.toString();
@@ -70,7 +74,7 @@ const cleanAuroraDebugArtifacts = () => {
 
 const runTauriDev = (attempt) =>
   new Promise((resolveRun) => {
-    const child = spawn(pnpmCommand, ["exec", "tauri", "dev", ...extraArgs], {
+    const child = spawn(process.execPath, [tauriCli, "dev", ...extraArgs], {
       cwd: rootDir,
       env: {
         ...process.env,
@@ -100,6 +104,11 @@ const runTauriDev = (attempt) =>
 
     process.once("SIGINT", forwardSignal);
     process.once("SIGTERM", forwardSignal);
+
+    child.once("error", (error) => {
+      output = appendOutput(output, `[tauri:dev] Could not start Tauri: ${error.message}\n`);
+      process.stderr.write(`[tauri:dev] Could not start Tauri: ${error.message}\n`);
+    });
 
     child.on("close", (code, signal) => {
       process.removeListener("SIGINT", forwardSignal);

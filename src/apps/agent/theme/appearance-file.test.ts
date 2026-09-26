@@ -39,6 +39,8 @@ function nonDefault(key: AppearancePrefKey): unknown {
   if (typeof spec.default === "number") return key === "contrast" ? 73 : 240;
   if (key === "uiVersion") return "v2";
   if (key === "modelSelectorPosition") return "top";
+  if (key === "transcriptReasoning") return "folded";
+  if (key === "transcriptTextPace") return "steady";
   return "changed";
 }
 

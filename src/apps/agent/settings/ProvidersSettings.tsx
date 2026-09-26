@@ -1,7 +1,7 @@
 /**
  * Agent Window — Settings · Providers & Models (view).
  *
- * agw-native. Reads/writes the SHARED `useSettingsStore` (+ the v17 `reasoning`
+ * agw-native. Reads/writes the SHARED `useAgentSettingsStore` (+ the v17 `reasoning`
  * column), so providers configured here power the IDE too.
  *
  * Layout is master–detail (not an accordion): a provider LIST on the left, the
@@ -19,10 +19,10 @@ import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 
 import {
   CHAT_SHORTLIST_MAX,
-  useSettingsStore,
+  useAgentSettingsStore,
   type LLMModel,
   type LLMProvider,
-} from "@/kernel/store/useSettingsStore";
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type {
   ReasoningReplayMode,
   ReasoningRequestMode,
@@ -77,7 +77,7 @@ import {
   agentRouterWire,
   AGENT_ROUTER_WIRES,
   type AgentRouterWire,
-} from "@/apps/agent/services/providers/agentrouter";
+} from "@/apps/agent/services/providers/presets/agentrouter";
 import { isModalProvider } from "@/apps/agent/services/providers/modal";
 import { isMinimaxProvider } from "@/apps/agent/services/providers/minimax";
 import {
@@ -726,7 +726,7 @@ const FetchModelsRow: React.FC<{
   providerType?: string;
   existing: Set<string>;
 }> = ({ providerId, baseUrl, apiKey, providerType, existing }) => {
-  const addModel = useSettingsStore((s) => s.addModel);
+  const addModel = useAgentSettingsStore((s) => s.addModel);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [found, setFound] = useState<DiscoveredModel[] | null>(null);
@@ -880,7 +880,7 @@ const AddModelRow: React.FC<{ providerId: string; providerType?: string }> = ({
   providerId,
   providerType,
 }) => {
-  const addModel = useSettingsStore((s) => s.addModel);
+  const addModel = useAgentSettingsStore((s) => s.addModel);
   const [id, setId] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -953,18 +953,18 @@ const ModelRow: React.FC<{
   /** The provider's wire format — a model-level override wins over it. */
   providerType?: string;
 }> = ({ model, active, onActivate, providerTemperature, providerType }) => {
-  const updateModel = useSettingsStore((s) => s.updateModel);
-  const deleteModel = useSettingsStore((s) => s.deleteModel);
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
+  const deleteModel = useAgentSettingsStore((s) => s.deleteModel);
   // Aurora Chat's shortlist. `selection` is the same `providerId:modelKey`
   // string the composer and the thread sidecar use, so a ticked row and a
   // pinned conversation are talking about the same thing.
   const selection = `${model.providerId}:${model.modelKey}`;
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
-  const shortlisted = useSettingsStore((s) => s.chatModelShortlist.includes(selection));
-  const shortlistFull = useSettingsStore(
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
+  const shortlisted = useAgentSettingsStore((s) => s.chatModelShortlist.includes(selection));
+  const shortlistFull = useAgentSettingsStore(
     (s) => s.chatModelShortlist.length >= CHAT_SHORTLIST_MAX,
   );
-  const toggleChatShortlistModel = useSettingsStore((s) => s.toggleChatShortlistModel);
+  const toggleChatShortlistModel = useAgentSettingsStore((s) => s.toggleChatShortlistModel);
   const [editing, setEditing] = useState(false);
   const [limitsBusy, setLimitsBusy] = useState(false);
   const [limitsNote, setLimitsNote] = useState<string | null>(null);
@@ -1748,14 +1748,14 @@ const ProviderDetail: React.FC<{
   /** Move the rail's selection — a card that creates a sibling row uses it. */
   onSelectProvider?: (id: string) => void;
 }> = ({ provider, models, selectedModel, onDeleted, onSelectProvider }) => {
-  const updateProvider = useSettingsStore((s) => s.updateProvider);
-  const removeProvider = useSettingsStore((s) => s.removeProvider);
-  const setSelectedModel = useSettingsStore((s) => s.setSelectedModel);
+  const updateProvider = useAgentSettingsStore((s) => s.updateProvider);
+  const removeProvider = useAgentSettingsStore((s) => s.removeProvider);
+  const setSelectedModel = useAgentSettingsStore((s) => s.setSelectedModel);
   // Read here rather than passed down: the detail pane is the one place a
   // provider is moved BETWEEN categories, and threading two more props through
   // for it would make every caller of this component carry them.
-  const providerCategories = useSettingsStore((s) => s.providerCategories);
-  const setProviderCategory = useSettingsStore((s) => s.setProviderCategory);
+  const providerCategories = useAgentSettingsStore((s) => s.providerCategories);
+  const setProviderCategory = useAgentSettingsStore((s) => s.setProviderCategory);
   const [showKey, setShowKey] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const atlas = isAtlasCloudProvider(provider);
@@ -2395,13 +2395,13 @@ const ImageProviderRailRow: React.FC<{
 // ── Page (master–detail) ─────────────────────────────────────────────────────
 
 export const ProvidersSettings: React.FC = () => {
-  const providers = useSettingsStore((s) => s.providers);
-  const models = useSettingsStore((s) => s.models);
-  const selectedModel = useSettingsStore((s) => s.selectedModel);
-  const addCustomProvider = useSettingsStore((s) => s.addCustomProvider);
-  const addImageProvider = useSettingsStore((s) => s.addImageProvider);
-  const imageProviders = useSettingsStore((s) => s.imageProviders);
-  const updateModel = useSettingsStore((s) => s.updateModel);
+  const providers = useAgentSettingsStore((s) => s.providers);
+  const models = useAgentSettingsStore((s) => s.models);
+  const selectedModel = useAgentSettingsStore((s) => s.selectedModel);
+  const addCustomProvider = useAgentSettingsStore((s) => s.addCustomProvider);
+  const addImageProvider = useAgentSettingsStore((s) => s.addImageProvider);
+  const imageProviders = useAgentSettingsStore((s) => s.imageProviders);
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
 
   // Seeded from the last visit, not null: leaving settings unmounts this whole
   // page, so a fresh `null` would drop you back on the first row every time.
@@ -2438,13 +2438,13 @@ export const ProvidersSettings: React.FC = () => {
   // The categories themselves come from the store (they are account facts and
   // will group the model selector too). What is local to this rail is which
   // ones are folded, and which one new providers land in.
-  const providerCategories = useSettingsStore((s) => s.providerCategories);
-  const createProviderCategory = useSettingsStore((s) => s.createProviderCategory);
-  const renameProviderCategory = useSettingsStore((s) => s.renameProviderCategory);
-  const setProviderCategoryColor = useSettingsStore((s) => s.setProviderCategoryColor);
-  const deleteProviderCategory = useSettingsStore((s) => s.deleteProviderCategory);
-  const moveProviderCategory = useSettingsStore((s) => s.moveProviderCategory);
-  const setProviderCategory = useSettingsStore((s) => s.setProviderCategory);
+  const providerCategories = useAgentSettingsStore((s) => s.providerCategories);
+  const createProviderCategory = useAgentSettingsStore((s) => s.createProviderCategory);
+  const renameProviderCategory = useAgentSettingsStore((s) => s.renameProviderCategory);
+  const setProviderCategoryColor = useAgentSettingsStore((s) => s.setProviderCategoryColor);
+  const deleteProviderCategory = useAgentSettingsStore((s) => s.deleteProviderCategory);
+  const moveProviderCategory = useAgentSettingsStore((s) => s.moveProviderCategory);
+  const setProviderCategory = useAgentSettingsStore((s) => s.setProviderCategory);
 
   const [collapsedCats, setCollapsedCats] = useState<string[]>(loadCollapsedCategories);
   const collapsedSet = useMemo(() => new Set(collapsedCats), [collapsedCats]);
@@ -2552,7 +2552,7 @@ export const ProvidersSettings: React.FC = () => {
   }, [models, updateModel]);
 
   /** Image providers are an Aurora Chat thing; Build makes software. */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
   // Shipped-with-Aurora rows first, then the user's own. Sorting is stable, so
   // providers the user added stay in the order they added them.

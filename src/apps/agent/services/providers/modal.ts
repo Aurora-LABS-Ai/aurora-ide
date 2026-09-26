@@ -27,7 +27,7 @@
  */
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
-import type { LLMModel, LLMProvider } from "@/kernel/store/useSettingsStore";
+import type { LLMModel, LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 export const MODAL_PROVIDER_ID = "modal";
 

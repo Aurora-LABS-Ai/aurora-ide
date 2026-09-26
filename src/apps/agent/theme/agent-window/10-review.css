@@ -226,7 +226,9 @@
 }
 
 .agw-msg:hover .agw-msg-actions,
-.agw-msg:focus-within .agw-msg-actions {
+.agw-msg:focus-within .agw-msg-actions,
+/* Settings → Preferences → Transcript → "Always show message actions". */
+.agw-root[data-transcript-actions-visible] .agw-msg-actions {
   opacity: 1;
 }
 .agw-msg-action {

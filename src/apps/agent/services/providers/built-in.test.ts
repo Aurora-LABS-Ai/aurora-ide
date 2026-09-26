@@ -97,7 +97,7 @@ describe("kenari", () => {
 
 describe("agentrouter wire", () => {
   it("reads the stored type as the wire, chat by default", async () => {
-    const { agentRouterWire } = await import("./agentrouter");
+    const { agentRouterWire } = await import("@/apps/agent/services/providers/presets/agentrouter");
     expect(agentRouterWire({ id: "agentrouter", providerType: "anthropic" })).toBe("anthropic");
     expect(agentRouterWire({ id: "agentrouter", providerType: "openai" })).toBe("openai");
     // A row stored before the picker existed carries the preset's own type or
@@ -109,7 +109,7 @@ describe("agentrouter wire", () => {
     // The catalog merge preserves the stored type ONLY when it is one of the
     // two wires the picker offers. A stale or foreign value must still be
     // repaired to the preset's — otherwise a bad row could never self-heal.
-    const { isAgentRouterWireChoice } = await import("./agentrouter");
+    const { isAgentRouterWireChoice } = await import("@/apps/agent/services/providers/presets/agentrouter");
     expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "anthropic" })).toBe(true);
     expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "openai" })).toBe(true);
     expect(isAgentRouterWireChoice({ id: "agentrouter", providerType: "custom" })).toBe(false);
@@ -124,7 +124,7 @@ describe("agentrouter wire", () => {
     // "no channel"). A provider-level Responses option would break every
     // non-GPT model on the row, so it is deliberately not offered here —
     // if it ever ships, it belongs on the model row.
-    const { AGENT_ROUTER_WIRES } = await import("./agentrouter");
+    const { AGENT_ROUTER_WIRES } = await import("@/apps/agent/services/providers/presets/agentrouter");
     expect(AGENT_ROUTER_WIRES.map((w) => w.value)).toEqual(["openai", "anthropic"]);
   });
 });

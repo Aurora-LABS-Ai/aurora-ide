@@ -36,7 +36,10 @@
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 import { fmtDuration } from "@/apps/agent/lib/time/duration";
-import type { LLMProvider } from "@/kernel/store/useSettingsStore";
+import type { LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
+
+// Lives in kernel because the settings store's launch merge needs it.
+export { isArkWireChoice } from "@/apps/agent/services/providers/presets/ark";
 
 export const ARK_PROVIDER_ID = "ark";
 
@@ -136,32 +139,6 @@ export function arkWire(
  */
 export function arkBaseUrlForWire(wire: ArkWire): string {
   return wire === "ark-messages" ? ARK_MESSAGES_BASE_URL : ARK_BASE_URL;
-}
-
-/**
- * Whether this stored row is carrying a deliberate Ark wire choice.
- *
- * Needed because the launch merge normally lets the catalogue's provider type
- * win, keeping a stored one only when it is a `-` suffixed variant of the
- * preset's (`resolveProviderType`). That test works for kenari, whose preset
- * type is the bare `kenari`. It does NOT work here: Ark's preset type is
- * `ark-messages`, so neither `ark` nor `ark-responses` looks like a variant of
- * it, and both would be rewritten back to Messages on the next launch — the
- * picker would appear to save, work all session, and be reset by morning.
- *
- * Same job as `isAgentRouterWireChoice`, for the mirror-image reason: that
- * provider's wires have no variant prefix to detect, this one's DEFAULT is
- * itself a variant.
- */
-export function isArkWireChoice(provider: {
-  id?: string;
-  providerType?: string;
-}): boolean {
-  return (
-    provider.providerType === "ark" ||
-    provider.providerType === "ark-messages" ||
-    provider.providerType === "ark-responses"
-  );
 }
 
 /** Whether this provider row is Volcano Ark, on any of its three wires. */

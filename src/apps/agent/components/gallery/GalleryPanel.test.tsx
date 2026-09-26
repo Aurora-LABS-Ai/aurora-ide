@@ -16,8 +16,8 @@ const state = vi.hoisted(() => ({
   save: vi.fn(),
   reveal: vi.fn(),
 }));
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: (select: (value: unknown) => unknown) =>
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: (select: (value: unknown) => unknown) =>
     select({ auroraSurface: state.surface }),
 }));
 vi.mock("@/apps/agent/hooks/gallery/useGallery", () => ({

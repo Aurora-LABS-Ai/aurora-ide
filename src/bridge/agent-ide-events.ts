@@ -3,9 +3,10 @@
  * =========================
  *
  * Subscribes to the fire-and-forget Tauri events emitted by the
- * Rust `shell_editor_todo` tools (`editor_open_file`, `read_lints`,
- * `todo_write`) and applies them to the Zustand stores so the IDE
- * UI reflects what the agent just did.
+ * Rust `shell_editor_todo` tools (`editor_open_file`, `read_lints`)
+ * and applies them to the Zustand stores so the IDE UI reflects
+ * what the agent just did. The checklist event (`agent_todo_write`)
+ * is owned by the agent window's `useAgentTaskStore`.
  *
  * Channels (matched against Rust constants in
  * `src-tauri/src/tools/shell_editor_todo/ide_event_sink.rs`):
@@ -15,8 +16,6 @@
  *   - `agent_read_lints`  → no-op for now. The Rust tool is
  *     fire-and-forget; Monaco already updates its diagnostics
  *     pane natively, so we only log the request for visibility.
- *   - `agent_todo_write`  → push the new task list into the
- *     `useTaskStore` (mirrors the legacy TS executor's behaviour).
  *
  * Lifecycle: `installAgentIdeListeners()` returns an `unlisten`
  * that detaches every channel. App-level effect calls it once on
@@ -25,7 +24,6 @@
 import { auroraListen } from "@/kernel/lib/ipc/runtime";
 import { isTauri, readFileContent } from "@/kernel/lib/ipc/tauri";
 import { useEditorStore } from "@/kernel/store/useEditorStore";
-import { useTaskStore } from "@/apps/agent/store/tools/useTaskStore";
 import { loadFileContent } from "@/kernel/store/useWorkspaceStore";
 
 interface EditorOpenPayload {
@@ -36,16 +34,6 @@ interface EditorOpenPayload {
 
 interface ReadLintsPayload {
   paths?: string[];
-}
-
-interface TodoItemPayload {
-  activeForm?: string;
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-}
-
-interface TodoWritePayload {
-  todos?: TodoItemPayload[];
 }
 
 const LARGE_FILE_THRESHOLD = 100 * 1024;
@@ -140,37 +128,6 @@ export const handleOpenInIde = async (payload: EditorOpenPayload): Promise<void>
   }
 };
 
-const handleTodoWrite = ({ todos }: TodoWritePayload): void => {
-  if (!Array.isArray(todos) || todos.length === 0) {
-    useTaskStore.getState().setTasks([]);
-    return;
-  }
-
-  const existingTasks = useTaskStore.getState().tasks;
-  const taskList = todos.map((todo, index) => {
-    const existing = existingTasks.find(
-      (task) =>
-        task.originalContent === todo.content ||
-        task.content === todo.activeForm ||
-        task.content === todo.content,
-    );
-    const id = existing?.id ?? `task_${Date.now()}_${index}`;
-    const display =
-      todo.status === "in_progress" && todo.activeForm
-        ? todo.activeForm
-        : todo.content;
-    return {
-      id,
-      activeForm: todo.activeForm,
-      content: display,
-      originalContent: todo.content,
-      status: todo.status,
-    };
-  });
-
-  useTaskStore.getState().setTasks(taskList);
-};
-
 /**
  * Wire all Rust→frontend IDE listeners. Call once at app startup;
  * dispose with the returned cleanup on unmount.
@@ -214,12 +171,6 @@ export const installAgentIdeListeners = async (): Promise<() => void> => {
           paths.length === 0 ? "all open files" : paths.join(", ")
         }`,
       );
-    }),
-  );
-
-  cleanups.push(
-    await auroraListen<TodoWritePayload>("agent_todo_write", ({ payload }) => {
-      handleTodoWrite(payload);
     }),
   );
 

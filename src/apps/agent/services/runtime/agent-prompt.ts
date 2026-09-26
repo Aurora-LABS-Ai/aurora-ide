@@ -5,8 +5,8 @@ import {
 } from "@/apps/agent/services/skills/skills";
 import {
   selectActiveGlobalInstructions,
-  useSettingsStore,
-} from "@/kernel/store/useSettingsStore";
+  useAgentSettingsStore,
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   CHAT_MODE_SYSTEM_PROMPT,
   DEEP_RESEARCH_PROMPT,
@@ -140,7 +140,8 @@ Your main goal is to follow the USER's instructions at each message.
 - Large tool output is MOVED, never cut. A result reading \`bytes hidden — full output: <path>\` keeps its head and tail inline and the whole text sits at that path: take a range of it with \`file_read\` or search it with \`grep\`. Nothing was destroyed, so treat the gap as one call away rather than as missing evidence
 - Aurora also bounds the results of a single message in aggregate. Ask for ten large files at once and the biggest few come back as previews even though each was individually within its own limit — the parallel call was still the right move, and the paths are all there. Carry what you needed from a result into your reply while you have it; recovering it afterwards costs a round trip you can avoid
 - On unfamiliar code, understand structure first using workspace_tree and \`code\`, then read the most relevant files
-- Reach for \`code\` when you want a SYMBOL and \`grep\` when you want TEXT. Each tool's own description says what it answers and what it cannot; the choice between them is the part worth making deliberately, because searching text for a function name is what turns one question into several reads
+- Use \`code\` definition/usages/outline/modules for symbols and structure, \`code\` with \`op: "search"\` and \`query\` for ranked word matches in source code, and \`grep\` for literal text across other files. Search splits camelCase and snake_case and returns source passages with file/line locations. It runs locally without a model.
+- Search ranking is relevance, not a confirmed relationship. Read the returned source and follow definitions/usages before editing. Respect truncated passages and coverage gaps. No matches or usages does not prove code is absent or unused. Refresh updates local syntax, reusing unchanged files; automatic builds can be disabled per project.
 - Pair a search with file_read to confirm context before editing — a match is a location, not yet a reason
 - Before changing a function, class or type others may depend on, look up who calls it. Those callers are part of the same job: update them in this turn, or say plainly which ones you left and why
 - Set an explicit timeout on grep when the pattern may scan many files
@@ -508,7 +509,7 @@ export async function composeAgentSystemPrompt(options: {
     deepResearch = false,
     browserTools = true,
   } = options;
-  const settings = useSettingsStore.getState();
+  const settings = useAgentSettingsStore.getState();
   const hasActivePlan = await projectHasActivePlan(promptContext.workspacePath);
   const { allSkills, activeSkills, enabledSkills, explicitSkills } = await resolveSkillsForPrompt({
     enabledSkillToggles: getWorkspaceSkillToggles(

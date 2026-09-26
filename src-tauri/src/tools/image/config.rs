@@ -199,23 +199,38 @@ fn default_true() -> bool {
 }
 
 impl ImageProviderConfig {
-    /// Switched on, addressed, and holding a key.
+    /// Switched on, addressed, and holding a key. A stored key is not a
+    /// checked one: whether it works is answered by the first call.
     #[must_use]
     pub fn ready(&self) -> bool {
+        self.not_ready_reason().is_none()
+    }
+
+    /// Why this row cannot be used, in words the user can act on.
+    #[must_use]
+    pub fn not_ready_reason(&self) -> Option<&'static str> {
         if !self.enabled {
-            return false;
+            return Some("switched off");
         }
         if !self.api_format.uses_api_key() {
             // Its address and its credentials both live in code. Whether the
             // user is actually signed in is not knowable without a round trip,
             // so it is answered by the call, in the call's own words.
-            return true;
+            return None;
         }
-        !self.base_url.trim().is_empty()
-            && self
-                .api_key
-                .as_deref()
-                .is_some_and(|key| !key.trim().is_empty())
+        if self.base_url.trim().is_empty() {
+            return Some("no address");
+        }
+        if self.api_key().is_empty() {
+            return Some("no API key");
+        }
+        None
+    }
+
+    /// `wanted` names this row: its id exactly, or its name ignoring case.
+    #[must_use]
+    pub fn is_named(&self, wanted: &str) -> bool {
+        self.id == wanted || self.name.trim().eq_ignore_ascii_case(wanted)
     }
 
     #[must_use]
@@ -288,72 +303,152 @@ pub struct ResolvedImageModel {
     pub model: ImageModelConfig,
 }
 
-/// Which model a call should use.
+/// Which provider and model a call should use.
 ///
-/// `wanted` is whatever the model or the user wrote — a model key, a label, or
-/// nothing. Matching is case-insensitive and exact against both key and label;
-/// a substring match was considered and rejected, because `gpt-image-1` is a
-/// substring of `gpt-image-1.5` and a silent upgrade is not a match.
+/// `wanted_provider` names a row by id or name; `wanted_model` is a model key,
+/// a label, or nothing. Matching is case-insensitive and exact; a substring
+/// match was considered and rejected, because `gpt-image-1` is a substring of
+/// `gpt-image-1.5` and a silent upgrade is not a match.
 ///
 /// Only READY providers count. A row missing its key is not an option the
 /// model can pick its way around, so it is not offered as one.
+///
+/// A model name alone that two ready providers both carry is refused, not
+/// guessed. Gateways resell the same model ids, and taking the first row sent
+/// a request the user meant for one gateway to another: a different bill, a
+/// different refusal, and a test result that tested nothing.
 pub fn resolve_model(
     providers: &[ImageProviderConfig],
-    wanted: Option<&str>,
+    wanted_provider: Option<&str>,
+    wanted_model: Option<&str>,
 ) -> Result<ResolvedImageModel, ResolveError> {
-    let ready: Vec<&ImageProviderConfig> = providers.iter().filter(|p| p.ready()).collect();
+    let wanted_provider = wanted_provider.map(str::trim).filter(|w| !w.is_empty());
+    let wanted_model = wanted_model.map(str::trim).filter(|w| !w.is_empty());
+    if providers.is_empty() {
+        return Err(ResolveError::NoProviders);
+    }
+    let ready: Vec<&ImageProviderConfig> = match wanted_provider {
+        Some(name) => {
+            let provider = providers.iter().find(|p| p.is_named(name)).ok_or_else(|| {
+                ResolveError::UnknownProvider {
+                    wanted: name.to_string(),
+                    ready: ready_names(providers),
+                }
+            })?;
+            if let Some(reason) = provider.not_ready_reason() {
+                return Err(ResolveError::ProviderNotReady {
+                    provider: provider.name.clone(),
+                    reason,
+                });
+            }
+            vec![provider]
+        }
+        None => providers.iter().filter(|p| p.ready()).collect(),
+    };
     if ready.is_empty() {
-        return Err(if providers.is_empty() {
-            ResolveError::NoProviders
-        } else {
-            ResolveError::NoneReady
-        });
+        return Err(ResolveError::NoneReady);
     }
     let candidates: Vec<(&ImageProviderConfig, &ImageModelConfig)> = ready
         .iter()
         .flat_map(|provider| provider.models.iter().map(move |model| (*provider, model)))
         .collect();
     if candidates.is_empty() {
-        return Err(ResolveError::NoModels);
+        return Err(ResolveError::NoModels {
+            provider: wanted_provider.map(|_| ready[0].name.clone()),
+        });
     }
-    let Some(wanted) = wanted.map(str::trim).filter(|w| !w.is_empty()) else {
+    let Some(wanted) = wanted_model else {
         let (provider, model) = candidates[0];
         return Ok(ResolvedImageModel {
             provider: provider.clone(),
             model: model.clone(),
         });
     };
-    let hit = candidates.iter().find(|(_, model)| {
-        model.model_key.eq_ignore_ascii_case(wanted)
-            || model
-                .label
-                .as_deref()
-                .is_some_and(|label| label.trim().eq_ignore_ascii_case(wanted))
-    });
-    match hit {
-        Some((provider, model)) => Ok(ResolvedImageModel {
-            provider: (*provider).clone(),
-            model: (*model).clone(),
-        }),
-        None => Err(ResolveError::UnknownModel {
+    let hits: Vec<&(&ImageProviderConfig, &ImageModelConfig)> = candidates
+        .iter()
+        .filter(|(_, model)| {
+            model.model_key.eq_ignore_ascii_case(wanted)
+                || model
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| label.trim().eq_ignore_ascii_case(wanted))
+        })
+        .collect();
+    let Some((provider, model)) = hits.first() else {
+        return Err(ResolveError::UnknownModel {
             wanted: wanted.to_string(),
+            provider: wanted_provider.map(|_| ready[0].name.clone()),
             available: candidates
                 .iter()
                 .map(|(_, model)| model.model_key.clone())
                 .collect(),
-        }),
+        });
+    };
+    let mut carriers: Vec<String> = Vec::new();
+    for (p, _) in &hits {
+        if !carriers.contains(&p.name) {
+            carriers.push(p.name.clone());
+        }
     }
+    if carriers.len() > 1 {
+        return Err(ResolveError::AmbiguousModel {
+            wanted: wanted.to_string(),
+            providers: carriers,
+        });
+    }
+    Ok(ResolvedImageModel {
+        provider: (*provider).clone(),
+        model: (*model).clone(),
+    })
+}
+
+fn ready_names(providers: &[ImageProviderConfig]) -> Vec<String> {
+    providers
+        .iter()
+        .filter(|p| p.ready())
+        .map(|p| p.name.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
     NoProviders,
     NoneReady,
-    NoModels,
+    /// `provider` is set when the caller named the row that has none.
+    NoModels {
+        provider: Option<String>,
+    },
     UnknownModel {
         wanted: String,
+        /// The row the caller named, when it named one.
+        provider: Option<String>,
         available: Vec<String>,
     },
+    UnknownProvider {
+        wanted: String,
+        ready: Vec<String>,
+    },
+    ProviderNotReady {
+        provider: String,
+        reason: &'static str,
+    },
+    /// Several ready providers carry this model name and none was named.
+    AmbiguousModel {
+        wanted: String,
+        providers: Vec<String>,
+    },
+}
+
+impl ResolveError {
+    /// A mistake in the call the model can fix itself, as opposed to settings
+    /// only the user can change.
+    #[must_use]
+    pub const fn is_caller_error(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownModel { .. } | Self::UnknownProvider { .. } | Self::AmbiguousModel { .. }
+        )
+    }
 }
 
 impl std::fmt::Display for ResolveError {
@@ -370,16 +465,53 @@ Providers → Image providers (Aurora Chat), with its address, key and at least 
 address, or has no API key. Tell the user which to check under Settings → Providers → Image \
 providers."
             ),
-            Self::NoModels => write!(
+            Self::NoModels { provider } => write!(
                 f,
-                "The image provider has no models. Tell the user to add one under Settings → \
-Providers → Image providers, or to use its Discover models button."
+                "{} has no models. Tell the user to add one under Settings → Providers → Image \
+providers, or to use its Discover models button.",
+                provider.as_deref().unwrap_or("The image provider")
             ),
-            Self::UnknownModel { wanted, available } => write!(
+            Self::UnknownModel {
+                wanted,
+                provider: Some(provider),
+                available,
+            } => write!(
+                f,
+                "{provider} has no image model called '{wanted}'. Its models: {}. Use one of \
+those, or omit `model` for its first.",
+                available.join(", ")
+            ),
+            Self::UnknownModel {
+                wanted,
+                provider: None,
+                available,
+            } => write!(
                 f,
                 "No image model called '{wanted}'. Available: {}. Use one of those, or omit \
 `model` for the default.",
                 available.join(", ")
+            ),
+            Self::UnknownProvider { wanted, ready } => {
+                if ready.is_empty() {
+                    write!(f, "No image provider called '{wanted}', and none is ready.")
+                } else {
+                    write!(
+                        f,
+                        "No image provider called '{wanted}'. Ready providers: {}.",
+                        ready.join(", ")
+                    )
+                }
+            }
+            Self::ProviderNotReady { provider, reason } => write!(
+                f,
+                "The image provider {provider} is not ready: {reason}. Tell the user to fix it \
+under Settings → Providers → Image providers, or pick another provider."
+            ),
+            Self::AmbiguousModel { wanted, providers } => write!(
+                f,
+                "'{wanted}' is offered by more than one ready provider ({}). Nothing was sent. \
+Pass `provider` to say which one; if the user did not say, ask them.",
+                providers.join(", ")
             ),
         }
     }
@@ -520,7 +652,7 @@ mod tests {
         let mut off = provider("off", &[("never", false)]);
         off.enabled = false;
         let on = provider("on", &[("first", false), ("second", true)]);
-        let resolved = resolve_model(&[off, on], None).unwrap();
+        let resolved = resolve_model(&[off, on], None, None).unwrap();
         assert_eq!(resolved.provider.id, "on");
         assert_eq!(resolved.model.model_key, "first");
     }
@@ -531,32 +663,87 @@ mod tests {
         p.models[1].label = Some("Fast".into());
         let list = [p];
         assert_eq!(
-            resolve_model(&list, Some("GPT-IMAGE-1.5")).unwrap().model.model_key,
+            resolve_model(&list, None, Some("GPT-IMAGE-1.5")).unwrap().model.model_key,
             "gpt-image-1.5"
         );
         assert_eq!(
-            resolve_model(&list, Some("fast")).unwrap().model.model_key,
+            resolve_model(&list, None, Some("fast")).unwrap().model.model_key,
             "gpt-image-1.5"
         );
         // A prefix is not a match — `gpt-image-1` must not resolve to 1.5.
         assert_eq!(
-            resolve_model(&list, Some("gpt-image-1")).unwrap().model.model_key,
+            resolve_model(&list, None, Some("gpt-image-1")).unwrap().model.model_key,
             "gpt-image-1"
+        );
+    }
+
+    /// The 2026-09-24 chat: `gpt-image-2.5-flare` was listed under both the
+    /// ChatGPT row and APIKEY-FAN, the user asked for APIKEY-FAN, and the call
+    /// went to ChatGPT because it came first.
+    #[test]
+    fn a_model_two_ready_providers_share_is_refused_until_a_provider_is_named() {
+        let chatgpt = provider("ChatGPT", &[("gpt-image-2.5-flare", true)]);
+        let fan = provider("APIKEY-FAN", &[("gpt-image-2.5-flare", true), ("gpt-image-2.5", false)]);
+        let list = [chatgpt, fan];
+
+        let err = resolve_model(&list, None, Some("gpt-image-2.5-flare")).unwrap_err();
+        assert!(err.is_caller_error());
+        let text = err.to_string();
+        assert!(text.contains("ChatGPT, APIKEY-FAN") && text.contains("Nothing was sent"), "{text}");
+
+        let picked = resolve_model(&list, Some("apikey-fan"), Some("gpt-image-2.5-flare")).unwrap();
+        assert_eq!(picked.provider.name, "APIKEY-FAN", "names match ignoring case");
+        // A name only one provider carries still needs no provider.
+        assert_eq!(
+            resolve_model(&list, None, Some("gpt-image-2.5")).unwrap().provider.name,
+            "APIKEY-FAN"
+        );
+        // A provider alone means its first model.
+        assert_eq!(
+            resolve_model(&list, Some("APIKEY-FAN"), None).unwrap().model.model_key,
+            "gpt-image-2.5-flare"
+        );
+    }
+
+    #[test]
+    fn a_named_provider_is_checked_before_anything_is_sent() {
+        let mut off = provider("CODER-PLAN", &[("gpt-image-2.5-flare-2k", true)]);
+        off.enabled = false;
+        let on = provider("APIKEY-FAN", &[("gpt-image-2.5", false)]);
+        let list = [off, on];
+
+        // Switched off: said so, with the reason, not "unknown".
+        let text = resolve_model(&list, Some("CODER-PLAN"), None).unwrap_err().to_string();
+        assert!(text.contains("CODER-PLAN is not ready: switched off"), "{text}");
+        // Unknown: the ready ones are named.
+        let text = resolve_model(&list, Some("A6"), None).unwrap_err().to_string();
+        assert!(text.contains("'A6'") && text.contains("Ready providers: APIKEY-FAN"), "{text}");
+        // A model the named provider does not carry is not borrowed from another.
+        let text = resolve_model(&list, Some("APIKEY-FAN"), Some("gpt-image-2.5-flare-2k"))
+            .unwrap_err()
+            .to_string();
+        assert!(text.starts_with("APIKEY-FAN has no image model called"), "{text}");
+        assert!(text.contains("Its models: gpt-image-2.5"), "{text}");
+        // The row id works as well as the name.
+        assert_eq!(
+            resolve_model(&list, Some("APIKEY-FAN"), None).unwrap().provider.id,
+            "APIKEY-FAN"
         );
     }
 
     /// Each failure names what to do, and an unknown model lists the real ones.
     #[test]
     fn resolve_errors_are_actionable() {
-        assert_eq!(resolve_model(&[], None), Err(ResolveError::NoProviders));
+        assert_eq!(resolve_model(&[], None, None), Err(ResolveError::NoProviders));
         let mut off = provider("p", &[("m", false)]);
         off.api_key = None;
-        assert_eq!(resolve_model(&[off], None), Err(ResolveError::NoneReady));
+        assert_eq!(off.not_ready_reason(), Some("no API key"));
+        assert_eq!(resolve_model(&[off], None, None), Err(ResolveError::NoneReady));
         assert_eq!(
-            resolve_model(&[provider("p", &[])], None),
-            Err(ResolveError::NoModels)
+            resolve_model(&[provider("p", &[])], None, None),
+            Err(ResolveError::NoModels { provider: None })
         );
-        let err = resolve_model(&[provider("p", &[("a", false), ("b", false)])], Some("zzz"))
+        let err = resolve_model(&[provider("p", &[("a", false), ("b", false)])], None, Some("zzz"))
             .unwrap_err();
         let text = err.to_string();
         assert!(text.contains("zzz") && text.contains("a, b"), "{text}");

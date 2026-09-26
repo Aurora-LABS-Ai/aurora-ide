@@ -290,6 +290,9 @@ const FILE_MODIFY_TOOLS = new Set([
   "multi_search_replace",
 ]);
 
+/** A tool that changes a file's contents (current names and historical ones). */
+export const isFileModifyTool = (name: string): boolean => FILE_MODIFY_TOOLS.has(name);
+
 const MAX_CODE = 4000;
 
 /**
@@ -1248,7 +1251,7 @@ export function parseToolResult(
     return out;
   }
 
-  // `code` — one tool, five questions, so the row has to say WHICH answer came
+  // `code` answers different questions, so the row has to say WHICH answer came
   // back. Without this it fell through to the generic "Done", which tells the
   // reader nothing and makes an expanded card show only the arguments.
   if (name === "code") {
@@ -1260,6 +1263,19 @@ export function parseToolResult(
             .filter((r): r is Record<string, unknown> => Boolean(r))
         : [];
     const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+
+    if (op === "search") {
+      const results = rows("results");
+      const total = asNum(parsed.matches) ?? results.length;
+      out.summary = `${results.length} code ${results.length === 1 ? "match" : "matches"}${parsed.truncated === true ? ` of ${total}` : ""}${parsed.coverageLimited === true ? " · incomplete coverage" : ""}`;
+      const lines = [asStr(parsed.notice) ?? "Ranked source matches."];
+      for (const result of results) {
+        lines.push("", `${asStr(result.path) ?? "?"}:${asNum(result.startLine) ?? "?"}-${asNum(result.endLine) ?? "?"}${result.truncated === true ? " (excerpt)" : ""}`, asStr(result.text) ?? "");
+      }
+      for (const skipped of rows("skippedFiles")) lines.push(`Skipped ${asStr(skipped.path) ?? "?"}: ${asStr(skipped.reason) ?? "unavailable"}`);
+      out.code = lines.join("\n");
+      return out;
+    }
 
     if (op === "definition") {
       const defs = rows("definitions");

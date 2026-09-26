@@ -31,7 +31,7 @@ import {
   composeAgentSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "@/apps/agent/services/runtime/agent-prompt";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   deleteSkillFromDisk,
   extractPreviewLines,
@@ -536,7 +536,7 @@ Use 2-space indentation.`;
   });
 
   it("injects only the ACTIVE global-instruction set, and none when none is active", async () => {
-    useSettingsStore.setState({
+    useAgentSettingsStore.setState({
       globalInstructionProfiles: [
         { id: "one", name: "Default", text: "INACTIVE-SET-RULES" },
         { id: "two", name: "Reviewer", text: "ACTIVE-SET-RULES" },
@@ -551,7 +551,7 @@ Use 2-space indentation.`;
     // The other persona exists but is switched off — it must not leak.
     expect(composed.systemPrompt).not.toContain("INACTIVE-SET-RULES");
 
-    useSettingsStore.setState({ activeGlobalInstructionProfileId: "" });
+    useAgentSettingsStore.setState({ activeGlobalInstructionProfileId: "" });
     const none = await composeAgentSystemPrompt({
       promptContext: { userMessage: "hello" },
     });

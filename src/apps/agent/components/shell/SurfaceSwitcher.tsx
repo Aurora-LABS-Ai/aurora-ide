@@ -30,7 +30,7 @@ import { createPortal } from "react-dom";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   AURORA_SURFACES,
   type AuroraSurface,
@@ -54,7 +54,7 @@ const SURFACE_ICON: Record<AuroraSurface, AgentIconName> = {
 };
 
 export const SurfaceSwitcher: React.FC = () => {
-  const surface = useSettingsStore((s) => s.auroraSurface);
+  const surface = useAgentSettingsStore((s) => s.auroraSurface);
   // `enterSurface` rather than `setAuroraSurface`: flipping the setting alone
   // would leave the rail listing the other store's conversations and the open
   // transcript belonging to a product the window is no longer showing.

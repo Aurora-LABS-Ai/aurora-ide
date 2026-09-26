@@ -2,10 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { VideoResultView } from "@/apps/agent/components/tool-views/VideoResultView";
-import {
-  hideAgentBrowser,
-  showAgentBrowser,
-} from "@/apps/agent/components/panels/BrowserPanel";
+import { holdBrowserHidden } from "@/apps/agent/services/browser/browser-visibility";
 import type { VideoData } from "@/apps/agent/services/gallery/video-service";
 
 export const GalleryVideoModal: React.FC<{
@@ -18,9 +15,9 @@ export const GalleryVideoModal: React.FC<{
   useEffect(() => {
     const previous = document.activeElement;
     close.current?.focus();
-    void hideAgentBrowser();
+    const release = holdBrowserHidden();
     return () => {
-      void showAgentBrowser();
+      release();
       if (previous instanceof HTMLElement && previous.isConnected)
         previous.focus();
     };

@@ -1,4 +1,4 @@
-import { useSettingsStore } from '@/kernel/store/useSettingsStore';
+import { useAgentSettingsStore } from '@/apps/agent/store/settings/useAgentSettingsStore';
 
 export interface ClassifiedError {
   title: string;
@@ -265,7 +265,7 @@ export function classifyError(error: Error | string): ClassifiedError {
 
 export function isProviderConfigured(): boolean {
   try {
-    const config = useSettingsStore.getState().getLLMConfig();
+    const config = useAgentSettingsStore.getState().getLLMConfig();
     return config !== null;
   } catch {
     return false;

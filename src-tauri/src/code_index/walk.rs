@@ -99,7 +99,7 @@ const ALWAYS_SKIP: &[&str] = &[
 const SKIP_SUFFIXES: &[&str] = &[".egg-info", ".xcodeproj", ".xcworkspace", ".framework"];
 const SKIP_PREFIXES: &[&str] = &["cmake-build-"];
 
-fn is_skipped_dir(name: &str) -> bool {
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
     ALWAYS_SKIP.contains(&name)
         || SKIP_SUFFIXES.iter().any(|s| name.ends_with(s))
         || SKIP_PREFIXES.iter().any(|p| name.starts_with(p))
@@ -289,31 +289,134 @@ pub fn churn(root: &Path) -> std::collections::HashMap<String, u32> {
     out
 }
 
-/// Cheap fingerprint of the indexable tree: how many files there are and the
-/// newest modification time among them.
-///
-/// This is how the index stays honest without anyone remembering to invalidate
-/// it. Hooking the five file-mutating tools would work until someone adds a
-/// sixth, or the user edits in another editor, or a `git checkout` rewrites
-/// half the tree — none of which emit a tool event. Re-walking costs a fraction
-/// of a rebuild (no file is read or parsed), so it can simply be checked before
-/// every answer.
+/// A stable fingerprint of source paths, their contents, and resolver inputs.
+/// Reading content catches external edits even when the mtime is preserved;
+/// hashing relative paths also catches renames. No parsing is performed.
 pub fn signature(root: &Path) -> (usize, u64) {
-    let (files, _) = discover(root);
-    let newest = files
-        .iter()
-        .filter_map(|d| std::fs::metadata(&d.path).ok())
-        .filter_map(|m| m.modified().ok())
-        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .max()
-        .unwrap_or(0);
-    (files.len(), newest)
+    match signature_checked(root) {
+        Ok(signature) => signature,
+        Err(error) => {
+            crate::logging::log_warn(
+                "code_index",
+                &format!("fingerprinting {}: {error:#}", root.display()),
+            );
+            (0, 0)
+        }
+    }
+}
+
+/// Services use the fallible form so an inaccessible tree cannot replace a
+/// previously valid index with an apparently complete, empty result.
+pub(crate) fn signature_checked(root: &Path) -> anyhow::Result<(usize, u64)> {
+    use anyhow::Context;
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    anyhow::ensure!(
+        root.is_dir(),
+        "workspace is not a directory: {}",
+        root.display()
+    );
+    let (files, stats) = discover(root);
+    anyhow::ensure!(
+        stats.errors.is_empty(),
+        "cannot inspect workspace: {}",
+        stats.errors.join("; ")
+    );
+    let file_count = files.len();
+    let sources: std::collections::BTreeSet<PathBuf> =
+        files.into_iter().map(|file| file.path).collect();
+    let mut paths = sources.clone();
+    for path in stats.configuration_files {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if name.starts_with("tsconfig") || name.starts_with("jsconfig") {
+            paths.extend(super::store::configuration_dependencies(&path));
+        }
+        paths.insert(path);
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"aurora-code-index-fingerprint-v2\0");
+    let mut buffer = [0u8; 64 * 1024];
+    for path in paths {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        hash.update((relative.len() as u64).to_le_bytes());
+        hash.update(relative.as_bytes());
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            // A missing optional extends/reference target is still part of the
+            // fingerprint so creating it later invalidates the index.
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && !sources.contains(&path) =>
+            {
+                hash.update(b"missing-configuration\0");
+                continue;
+            }
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        };
+        let mut content = Sha256::new();
+        loop {
+            let size = file
+                .read(&mut buffer)
+                .with_context(|| format!("hashing {}", path.display()))?;
+            if size == 0 {
+                break;
+            }
+            content.update(&buffer[..size]);
+        }
+        hash.update(content.finalize());
+    }
+    let digest = hash.finalize();
+    Ok((
+        file_count,
+        u64::from_le_bytes(digest[..8].try_into().unwrap()),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuration_changes_including_extends_and_ignore_rules_change_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.ts"), "export function a() {}\n").unwrap();
+        std::fs::write(
+            workspace.join("tsconfig.json"),
+            r#"{"extends":"../shared.json"}"#,
+        )
+        .unwrap();
+        let missing = signature_checked(&workspace).unwrap();
+        std::fs::write(
+            dir.path().join("shared.json"),
+            r#"{"compilerOptions":{"baseUrl":"."}}"#,
+        )
+        .unwrap();
+        let configured = signature_checked(&workspace).unwrap();
+        assert_ne!(missing, configured);
+        std::fs::write(
+            dir.path().join("shared.json"),
+            r#"{"compilerOptions":{"baseUrl":"src"}}"#,
+        )
+        .unwrap();
+        let changed = signature_checked(&workspace).unwrap();
+        assert_ne!(configured, changed);
+        std::fs::write(workspace.join(".gitignore"), "future-folder/\n").unwrap();
+        assert_ne!(changed, signature_checked(&workspace).unwrap());
+    }
+
+    #[test]
+    fn missing_workspace_is_a_fingerprint_error() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(signature_checked(&root.path().join("deleted")).is_err());
+    }
 
     #[test]
     fn a_bundle_is_detected_but_dense_hand_written_code_is_not() {
@@ -413,6 +516,10 @@ mod tests {
 }
 
 pub struct WalkStats {
+    /// Inputs that affect imports or which files are visible to the walker.
+    pub configuration_files: Vec<PathBuf>,
+    /// Traversal failures must prevent cache publication, not silently hide files.
+    pub errors: Vec<String>,
     pub skipped_too_large: usize,
     /// Which excluded directory names were actually hit in this workspace.
     /// Reported so an over-exclusion is visible — a walker that silently drops
@@ -440,6 +547,8 @@ pub struct WalkStats {
 /// Returns every indexable file under `root`, plus what was passed over.
 pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
     let mut out = Vec::new();
+    let mut configuration_files = Vec::new();
+    let mut errors = Vec::new();
     let mut skipped_too_large = 0;
     // `filter_entry` takes an `Fn` shared across the walk, so the tally of what
     // was excluded has to live behind a lock rather than in a local.
@@ -473,11 +582,21 @@ pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
 
     let mut unindexed: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
-    for entry in walker.flatten() {
+    for entry in walker {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(error.to_string());
+                continue;
+            }
+        };
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
         let path = entry.path();
+        if is_configuration_file(path) {
+            configuration_files.push(path.to_path_buf());
+        }
         let Some(lang) = Lang::from_path(path) else {
             // Not a language this build reads. Counted rather than dropped —
             // see `WalkStats::unindexed_extensions` for why the difference
@@ -492,7 +611,14 @@ pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
             }
             continue;
         };
-        if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                errors.push(format!("{}: {error}", path.display()));
+                continue;
+            }
+        };
+        if metadata.len() > MAX_FILE_BYTES {
             skipped_too_large += 1;
             continue;
         }
@@ -516,11 +642,35 @@ pub fn discover(root: &Path) -> (Vec<Discovered>, WalkStats) {
     (
         out,
         WalkStats {
+            configuration_files,
+            errors,
             skipped_too_large,
             skipped_dirs,
             unindexed_extensions,
         },
     )
+}
+
+fn is_configuration_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        "package.json"
+            | "Cargo.toml"
+            | "Cargo.lock"
+            | "go.mod"
+            | "go.work"
+            | "pubspec.yaml"
+            | "pyproject.toml"
+            | "composer.json"
+            | "pnpm-workspace.yaml"
+            | ".gitignore"
+            | ".ignore"
+            | ".gitmodules"
+    ) || ((name.starts_with("tsconfig") || name.starts_with("jsconfig"))
+        && (name.ends_with(".json") || name.ends_with(".jsonc")))
 }
 
 /// Is this extension plausibly source code, as opposed to an asset, a document

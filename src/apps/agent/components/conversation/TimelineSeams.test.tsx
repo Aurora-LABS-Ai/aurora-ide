@@ -12,8 +12,8 @@ type MotionOnlyProps = {
   transition?: unknown;
 };
 
-vi.mock("@/kernel/store/useSettingsStore", () => ({
-  useSettingsStore: (select: (state: { explorerIconPack: string }) => unknown) =>
+vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
+  useAgentSettingsStore: (select: (state: { explorerIconPack: string }) => unknown) =>
     select({ explorerIconPack: "material-icon-theme" }),
 }));
 

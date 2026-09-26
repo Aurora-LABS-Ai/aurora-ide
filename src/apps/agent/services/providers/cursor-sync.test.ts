@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { __test } from "./cursor-sync";
-import type { LLMModel } from "@/kernel/store/useSettingsStore";
+import type { LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type { ModelsDevEntry } from "./models-dev";
 import type { CursorModelView } from "./cursor";
 import {

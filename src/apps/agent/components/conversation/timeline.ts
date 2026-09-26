@@ -194,6 +194,24 @@ export interface AgwTurn {
    * turn.
    */
   startedBy?: "user" | "process";
+  /**
+   * Assistant only — tokens the model GENERATED across every request of this
+   * turn, from the usage each message carries. Input tokens are deliberately
+   * not summed: each request resends the whole conversation, so adding them up
+   * counts the same context once per tool round. Absent when no request of the
+   * turn reported usage.
+   */
+  outputTokens?: number;
+  /** True when any of those counts is Aurora's estimate, not the provider's. */
+  outputTokensEstimated?: boolean;
+}
+
+/** Fold one message's reported usage into the turn it belongs to. */
+function addMessageUsage(turn: AgwTurn, m: DbMessage): void {
+  const out = m.usage?.output_tokens;
+  if (typeof out !== "number" || !Number.isFinite(out) || out < 0) return;
+  turn.outputTokens = (turn.outputTokens ?? 0) + out;
+  if (m.usage?.estimated === true) turn.outputTokensEstimated = true;
 }
 
 const parseTs = (value: string | undefined): number | null => {
@@ -255,6 +273,24 @@ export function formatWorkedDuration(ms: number): string {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+/**
+ * When a reply started, for the turn footer: the time alone today ("2:14 PM"),
+ * with the date once it is from another day ("Sep 21, 2:14 PM"), and the year
+ * only when that differs too. A chat read back next week must not show times
+ * that look like this morning's. Locale-formatted, so 24-hour systems get
+ * "14:14".
+ */
+export function formatReplyTime(at: Date, now: Date = new Date()): string {
+  const time = at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === now.toDateString()) return time;
+  const date = at.toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+    ...(at.getFullYear() !== now.getFullYear() ? { year: "numeric" } : null),
+  });
+  return `${date}, ${time}`;
 }
 
 /**
@@ -721,8 +757,9 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       // Consecutive assistant messages are one turn, so the clock runs to the
       // LAST of them rather than stopping at the first reply.
       if (m.timestamp) prev.endedAt = m.timestamp;
+      addMessageUsage(prev, m);
     } else {
-      turns.push({
+      const turn: AgwTurn = {
         id: m.id,
         role: "assistant",
         content: m.content || "",
@@ -731,7 +768,9 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         startedAt: lastUserTs,
         endedAt: m.timestamp,
         startedBy: "user",
-      });
+      };
+      addMessageUsage(turn, m);
+      turns.push(turn);
     }
   }
   return turns;

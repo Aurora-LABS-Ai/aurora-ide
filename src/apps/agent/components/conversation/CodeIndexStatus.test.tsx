@@ -4,11 +4,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { CodeIndexStatus } from "@/apps/agent/components/conversation/CodeIndexStatus";
+import type { BuildSnapshot, BuildStatus } from "@/apps/agent/services/code-index/code-index";
 
-const invoke = vi.fn();
+const { invoke, readBuild, startBuild } = vi.hoisted(() => ({ invoke: vi.fn(), readBuild: vi.fn(), startBuild: vi.fn() }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({
   auroraInvoke: (...args: unknown[]) => invoke(...args),
 }));
+vi.mock("@/apps/agent/store/conversation/useAgentChatStore", async () => {
+  const { create } = await import("zustand");
+  return { useAgentChatStore: create(() => ({ projectRoot: "" })) };
+});
+vi.mock("@/apps/agent/services/code-index/code-index", () => ({
+  readIndexBuild: readBuild,
+  startIndexBuild: startBuild,
+  isIndexBuilding: (job: BuildStatus) => ["queued", "indexing", "indexing"].includes(job.phase),
+  buildProgress: (job: BuildStatus) => job.error ?? job.phase,
+}));
+
+const snapshot = (job: BuildStatus | null = null) => ({
+  settings: { autoBuild: true, searchResults: 8, searchBytes: 24000 },
+  index: { built: true, files: 716, symbols: 31153 }, job,
+}) as BuildSnapshot;
+const job = (phase: BuildStatus["phase"] = "indexing") => ({ id: "build-a", phase }) as BuildStatus;
 
 const PROJECT = "E:/work/app";
 
@@ -20,8 +37,8 @@ describe("CodeIndexStatus", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
-  const render = () => {
-    act(() => {
+  const render = async () => {
+    await act(async () => {
       root ??= createRoot(container);
       root.render(<CodeIndexStatus />);
     });
@@ -59,7 +76,7 @@ describe("CodeIndexStatus", () => {
    * The probe calls only.
    *
    * `invoke` is the window's ONE IPC entry point, so this mock also catches
-   * `useSettingsStore` bootstrapping itself — `provider_catalog_get_presets`,
+   * `useAgentSettingsStore` bootstrapping itself — `provider_catalog_get_presets`,
    * `get_app_settings`, `has_providers`, `get_all_providers` — which nothing
    * here triggers or awaits. Asserting on the total call count made this suite
    * pass alone and fail under load, because whether those had landed yet
@@ -78,6 +95,8 @@ describe("CodeIndexStatus", () => {
     // flushing reliably.
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     invoke.mockReset();
+    readBuild.mockReset().mockResolvedValue(snapshot());
+    startBuild.mockReset().mockResolvedValue(job());
     container = document.createElement("div");
     document.body.appendChild(container);
     useAgentChatStore.setState({ projectRoot: PROJECT });
@@ -93,21 +112,21 @@ describe("CodeIndexStatus", () => {
   it("shows nothing when the project already has a usable index", async () => {
     // A project indexed in an earlier session must open with a clean header.
     invoke.mockResolvedValue(probe({ ready: true }));
-    render();
+    await render();
     await probed();
     expect(wrap()).toBeNull();
   });
 
   it("shows nothing when there is no source it could read", async () => {
     invoke.mockResolvedValue(probe({ indexableFiles: 0 }));
-    render();
+    await render();
     await probed();
     expect(wrap()).toBeNull();
   });
 
   it("marks an unindexed project without opening anything", async () => {
     invoke.mockResolvedValue(probe());
-    render();
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
 
     expect(panel()).toBeNull();
@@ -122,7 +141,7 @@ describe("CodeIndexStatus", () => {
     // The glyph is amber and nothing else at rest. Colour cannot be the sole
     // carrier of a state.
     invoke.mockResolvedValue(probe());
-    render();
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
 
     const label = trigger()?.getAttribute("aria-label") ?? "";
@@ -133,7 +152,7 @@ describe("CodeIndexStatus", () => {
 
   it("opens on click as well as hover, so the keyboard can reach it", async () => {
     invoke.mockResolvedValue(probe());
-    render();
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
 
     act(() => trigger()?.click());
@@ -149,15 +168,9 @@ describe("CodeIndexStatus", () => {
   it("holds its slot through the build instead of vanishing on click", async () => {
     // If the control left the moment work started, a failure and a success
     // would look identical afterwards: an empty header.
-    let finish: (v: unknown) => void = () => {};
-    invoke.mockImplementation((cmd: string) =>
-      cmd === "code_index_probe"
-        ? Promise.resolve(probe())
-        : new Promise((resolve) => {
-            finish = resolve;
-          }),
-    );
-    render();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    invoke.mockResolvedValue(probe());
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
     act(() => trigger()?.click());
     act(() => action()?.click());
@@ -165,7 +178,8 @@ describe("CodeIndexStatus", () => {
 
     expect(container.querySelector(".agw-idxstat-spin")).not.toBeNull();
 
-    act(() => finish({ built: true, files: 716, symbols: 31153 }));
+    readBuild.mockResolvedValue(snapshot(job("complete")));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
     await waitFor(() => phase() === "done", "the build to finish");
   });
 
@@ -175,15 +189,14 @@ describe("CodeIndexStatus", () => {
     // linger timeout, because the component schedules it the moment the build
     // resolves — under whichever clock was installed then.
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    invoke.mockImplementation((cmd: string) =>
-      cmd === "code_index_probe"
-        ? Promise.resolve(probe())
-        : Promise.resolve({ built: true, files: 716, symbols: 31153 }),
-    );
-    render();
+    invoke.mockResolvedValue(probe());
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
     act(() => trigger()?.click());
     act(() => action()?.click());
+    await waitFor(() => startBuild.mock.calls.length > 0, "the job to start");
+    readBuild.mockResolvedValue(snapshot(job("complete")));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
     await waitFor(() => phase() === "done", "the build to finish");
 
     await act(async () => {
@@ -193,12 +206,9 @@ describe("CodeIndexStatus", () => {
   });
 
   it("keeps the slot and turns red when the build fails", async () => {
-    invoke.mockImplementation((cmd: string) =>
-      cmd === "code_index_probe"
-        ? Promise.resolve(probe())
-        : Promise.reject(new Error("permission denied")),
-    );
-    render();
+    invoke.mockResolvedValue(probe());
+    startBuild.mockRejectedValue(new Error("permission denied"));
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
     act(() => trigger()?.click());
     act(() => action()?.click());
@@ -215,7 +225,7 @@ describe("CodeIndexStatus", () => {
 
   it("has no dismiss control — the state is true until it is fixed", async () => {
     invoke.mockResolvedValue(probe());
-    render();
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
     act(() => trigger()?.click());
 
@@ -227,11 +237,115 @@ describe("CodeIndexStatus", () => {
     // Past the automatic cap no turn will ever build this, so the panel must
     // not imply it would happen anyway.
     invoke.mockResolvedValue(probe({ indexableFiles: 28400, overAutoCap: true }));
-    render();
+    await render();
     await waitFor(() => phase() === "offer", "the status to appear");
     act(() => trigger()?.click());
 
     expect(panel()?.textContent).toContain("Too large");
     expect(panel()?.textContent).toContain("28,400");
+  });
+
+  it("observes an existing background build after returning to its project", async () => {
+    invoke.mockResolvedValue(probe({ ready: true }));
+    readBuild.mockResolvedValue(snapshot(job("indexing")));
+    await render();
+    await waitFor(() => phase() === "working", "background build progress");
+    expect(startBuild).not.toHaveBeenCalled();
+    act(() => trigger()?.click());
+    expect(panel()?.textContent).toContain("You can switch projects");
+  });
+
+  // ── The offer has to stop being true when the project gets an index ────────
+
+  it("stops offering after a build it never saw running finishes", async () => {
+    // Reported from the running app: the header read "Not indexed · 96 files"
+    // over a project whose index had been built minutes earlier from Settings.
+    // A full build of that project takes well under a second, so it starts and
+    // finishes inside one tick of this control's one-second poll — the poll
+    // never observes a running job, and the offer, probed once at mount, never
+    // expired.
+    invoke.mockResolvedValue(probe());
+    await render();
+    await waitFor(() => phase() === "offer", "the offer to appear");
+
+    invoke.mockResolvedValue(probe({ ready: true }));
+    readBuild.mockResolvedValue(
+      snapshot({ ...job("complete"), id: "elsewhere", finishedAt: Date.now() + 1 } as BuildStatus),
+    );
+    // One tick of the one-second poll, which is where the finished job is seen.
+    await flush(1400);
+    expect(phase()).toBe("done");
+    expect(startBuild).not.toHaveBeenCalled();
+  });
+
+  it("keeps offering when a build it never saw running failed", async () => {
+    invoke.mockResolvedValue(probe());
+    await render();
+    await waitFor(() => phase() === "offer", "the offer to appear");
+    readBuild.mockResolvedValue(
+      snapshot({ ...job("failed"), id: "elsewhere", finishedAt: Date.now() + 1 } as BuildStatus),
+    );
+    await flush(1400);
+    expect(phase()).toBe("offer");
+  });
+
+  it("ignores a build that had already finished before the header existed", async () => {
+    // The mount probe is the answer for those. Re-probing would hash every
+    // source file a second time for nothing.
+    invoke.mockResolvedValue(probe());
+    readBuild.mockResolvedValue(
+      snapshot({ ...job("complete"), id: "earlier", finishedAt: Date.now() - 60_000 } as BuildStatus),
+    );
+    await render();
+    await waitFor(() => phase() === "offer", "the offer to appear");
+    const afterMount = probeCalls().length;
+    await flush(1400);
+    expect(phase()).toBe("offer");
+    expect(probeCalls().length).toBe(afterMount);
+  });
+
+  it("checks again when the offer is opened to be read", async () => {
+    // The agent's own first message builds an index without ever creating a
+    // job, so nothing in the poll can notice. Opening the panel is the moment
+    // its claim has to be true.
+    invoke.mockResolvedValue(probe());
+    await render();
+    await waitFor(() => phase() === "offer", "the offer to appear");
+    const afterMount = probeCalls().length;
+
+    invoke.mockResolvedValue(probe({ ready: true }));
+    act(() => trigger()?.click());
+    await waitFor(() => probeCalls().length > afterMount, "the re-check");
+    await waitFor(() => phase() === "done", "the offer to clear");
+  });
+
+  it("does not hash the project again on every hover", async () => {
+    invoke.mockResolvedValue(probe());
+    await render();
+    await waitFor(() => phase() === "offer", "the offer to appear");
+    act(() => trigger()?.click());
+    await waitFor(() => probeCalls().length > 1, "the first re-check");
+    const afterFirst = probeCalls().length;
+    act(() => trigger()?.click());
+    act(() => trigger()?.click());
+    await flush(30);
+    expect(probeCalls().length).toBe(afterFirst);
+  });
+
+  it("ignores a late build reply after switching projects", async () => {
+    invoke.mockResolvedValue(probe());
+    let resolveStart!: (value: BuildStatus) => void;
+    startBuild.mockReturnValue(new Promise((resolve) => { resolveStart = resolve; }));
+    await render();
+    await waitFor(() => phase() === "offer", "project A offer");
+    act(() => trigger()?.click());
+    act(() => action()?.click());
+    await waitFor(() => startBuild.mock.calls.length > 0, "project A start");
+    invoke.mockResolvedValue(probe({ ready: true }));
+    act(() => useAgentChatStore.setState({ projectRoot: "E:/work/b" }));
+    await flush(10);
+    await act(async () => resolveStart(job()));
+    expect(wrap()).toBeNull();
+    expect(startBuild.mock.calls[0]?.[0]).toBe(PROJECT);
   });
 });

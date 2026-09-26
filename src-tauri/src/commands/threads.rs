@@ -146,6 +146,7 @@ fn session_to_db_messages_rich(
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        usage: None,
                     });
                 }
                 // A runtime notice ("this reply is cut off at the output
@@ -169,6 +170,7 @@ fn session_to_db_messages_rich(
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        usage: None,
                     });
                 }
             }
@@ -198,6 +200,7 @@ fn session_to_db_messages_rich(
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        usage: None,
                     });
                     continue;
                 }
@@ -222,6 +225,7 @@ fn session_to_db_messages_rich(
                     // re-rendered above the user bubble on reopen.
                     attached_selected_elements: msg.attached_selected_elements.clone(),
                     attached_prompt_chips: msg.attached_prompt_chips.clone(),
+                    usage: None,
                 });
             }
             MessageRole::Assistant => {
@@ -343,6 +347,7 @@ fn session_to_db_messages_rich(
                     tool_proposal: None,
                     attached_selected_elements: None,
                     attached_prompt_chips: None,
+                    usage: msg.usage.clone(),
                 });
             }
             MessageRole::Tool => {
@@ -425,6 +430,7 @@ fn session_to_db_messages_rich(
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        usage: None,
                     });
                 }
 
@@ -461,6 +467,7 @@ fn session_to_db_messages_rich(
                         tool_proposal: None,
                         attached_selected_elements: None,
                         attached_prompt_chips: None,
+                        usage: None,
                     });
                 }
             }
@@ -1417,9 +1424,6 @@ pub async fn thread_delete(
         store
             .delete(&thread_id)
             .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
-        // Best-effort: drop any in-memory context engine state so a
-        // recreated thread with the same id starts fresh.
-        crate::context::manager::remove_context(&thread_id);
         emit(
             &app,
             "thread-deleted",
@@ -1634,22 +1638,19 @@ pub async fn thread_get_api_history(
     .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
-/// Cancel any in-flight turn on a thread. The new agent runtime owns
-/// turn lifecycle through `agent_cancel(turn_id)` — this command
-/// keeps the frontend's existing "Stop" button working by clearing
-/// the thread's in-memory context manager so the next request starts
-/// from the persisted JSONL only.
+/// Announce that a thread's turn was stopped. The agent runtime owns
+/// turn lifecycle through `agent_cancel(turn_id)`; this command only
+/// tells listeners (`thread-cancelled`) so the "Stop" button's effect
+/// reaches every window.
 ///
-/// Returns `Some("session")` when context was cleared, `None` when
-/// the thread had no live state. The exact return shape doesn't
-/// matter; the frontend treats it as a fire-and-forget.
+/// Always returns `Some("session")`; the frontend treats it as
+/// fire-and-forget.
 #[tauri::command]
 pub fn thread_cancel_current_turn(
     thread_id: String,
     _reason: Option<String>,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
-    crate::context::manager::remove_context(&thread_id);
     emit(
         &app,
         "thread-cancelled",
@@ -2084,6 +2085,34 @@ mod tests {
         let events = timeline.as_array().expect("array");
         assert_eq!(events.len(), 1, "adjacent thinking blocks merge");
         assert_eq!(events[0]["durationMs"], 7_500);
+    }
+
+    /// The transcript's turn summary adds up generated tokens per turn. A live
+    /// turn counts them from the stream, so losing the field here would only
+    /// show once the chat is REOPENED: the summary would drop its token count.
+    #[test]
+    fn reloaded_assistant_message_carries_its_usage() {
+        let assistant = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text {
+                text: "answer".into(),
+            }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: 90_000,
+                output_tokens: 1_503,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
+            },
+            10,
+        );
+        let user = ConversationMessage::user_text("go", 5);
+        let db = session_to_db_messages(&[user, assistant]);
+        assert!(db[0].usage.is_none(), "only assistant messages carry usage");
+        let usage = db[1].usage.as_ref().expect("assistant usage survives reload");
+        assert_eq!(usage.output_tokens, 1_503);
+        let wire = serde_json::to_value(&db[1]).expect("serializes");
+        assert_eq!(wire["usage"]["output_tokens"], 1_503);
     }
 
     // ── Cost accounting ─────────────────────────────────────────────────

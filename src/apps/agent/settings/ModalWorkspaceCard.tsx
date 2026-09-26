@@ -49,7 +49,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
-import { useSettingsStore, type LLMModel, type LLMProvider } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type LLMModel, type LLMProvider } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   fetchModalWorkspaceModels,
   fmtUsd,
@@ -131,9 +131,9 @@ export const ModalWorkspaceCard: React.FC<{
   /** Show a different provider row — used only to leave a row being folded in. */
   onSelectProvider?: (id: string) => void;
 }> = ({ provider, models, onSelectProvider }) => {
-  const updateProvider = useSettingsStore((s) => s.updateProvider);
-  const replaceModelsForProvider = useSettingsStore((s) => s.replaceModelsForProvider);
-  const removeProvider = useSettingsStore((s) => s.removeProvider);
+  const updateProvider = useAgentSettingsStore((s) => s.updateProvider);
+  const replaceModelsForProvider = useAgentSettingsStore((s) => s.replaceModelsForProvider);
+  const removeProvider = useAgentSettingsStore((s) => s.removeProvider);
 
   const [cli, setCli] = useState<ModalCliStatus | null>(null);
   const [saved, setSaved] = useState<ModalWorkspaceList>(NO_WORKSPACES);
@@ -307,7 +307,7 @@ export const ModalWorkspaceCard: React.FC<{
     if (foldedExtraRows) return;
     foldedExtraRows = true;
     void (async () => {
-      const state = useSettingsStore.getState();
+      const state = useAgentSettingsStore.getState();
       const rows = state.providers.filter((p) => isModalProvider(p));
       const keeper = rows.find((r) => r.id === MODAL_PROVIDER_ID) ?? rows[0];
       const strays = rows.filter((r) => r.id !== keeper?.id);

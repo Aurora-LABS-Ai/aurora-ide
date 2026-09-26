@@ -370,6 +370,7 @@ mod tests {
     #[test]
     fn a_next_project_rooted_without_src_is_wired_through_its_alias() {
         let (_d, idx) = build_index(&[
+            ("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["./*"]}}}"#),
             ("types/index.ts", "export type Product = { id: string };\n"),
             ("lib/data.ts", "export const products = [];\n"),
             (
@@ -402,12 +403,12 @@ mod tests {
         }
     }
 
-    /// The `src/*` reading still works — it is tried first, and a project that
-    /// keeps its sources there must not start matching root-relative paths that
+    /// The configured `src/*` mapping must not match root-relative paths that
     /// happen to share a tail.
     #[test]
     fn an_alias_rooted_at_src_still_resolves_there() {
         let (_d, idx) = build_index(&[
+            ("tsconfig.json", r#"{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}"#),
             ("src/lib/data.ts", "export const products = [];\n"),
             (
                 "src/app/page.tsx",

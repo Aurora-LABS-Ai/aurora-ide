@@ -44,7 +44,7 @@ import {
   type ModelPrices,
   type ModelUsageGroup,
 } from "@/apps/agent/lib/cost/cost";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   claudeCodeUsageGet,
   CLAUDE_CODE_PROVIDER_ID,
@@ -661,7 +661,7 @@ export const ContextRing: React.FC = () => {
   // a stable row from the models array.
   const pinnedModel = useAgentChatStore((s) => pinnedThreadModel(s, s.currentThreadId));
   // Primitive (string) selector — safe to derive from on every render.
-  const defaultModel = useSettingsStore((s) => s.selectedModel);
+  const defaultModel = useAgentSettingsStore((s) => s.selectedModel);
   const selectedModel = pinnedModel ?? defaultModel;
   // Primitive selector: the tokens, not the `{model, tokens}` record — reading
   // the object would hand zustand a fresh reference every render. The model
@@ -671,7 +671,7 @@ export const ContextRing: React.FC = () => {
     currentThreadId ? (s.contextFloorByThread[currentThreadId]?.tokens ?? 0) : 0,
   );
 
-  const contextWindow = useSettingsStore(
+  const contextWindow = useAgentSettingsStore(
     (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
   );
   const isCodex = selectedModel.startsWith(`${CODEX_PROVIDER_ID}:`);
@@ -689,7 +689,7 @@ export const ContextRing: React.FC = () => {
   // The plan's own key — the model list needs no auth, but the usage endpoint
   // is about the account. Read from the provider row rather than held here:
   // pasting a new key in Settings must change what the ring reports.
-  const openCodeKey = useSettingsStore(
+  const openCodeKey = useAgentSettingsStore(
     (s) => s.providers.find((p) => p.id === OPENCODE_PROVIDER_ID)?.apiKey ?? "",
   );
   // And the fourth: Command Code meters spend against two rolling dollar caps,
@@ -698,7 +698,7 @@ export const ContextRing: React.FC = () => {
   const isCommandCode = selectedModel.startsWith(`${COMMANDCODE_PROVIDER_ID}:`);
   // Empty is a legitimate value, unlike OpenCode's: with no key pasted, Rust
   // reads the one the Command Code CLI stored. So this is not gated on.
-  const commandCodeKey = useSettingsStore(
+  const commandCodeKey = useAgentSettingsStore(
     (s) => s.providers.find((p) => p.id === COMMANDCODE_PROVIDER_ID)?.apiKey ?? "",
   );
   // kenari is asked the same question, but it cannot be recognised by an id
@@ -710,7 +710,7 @@ export const ContextRing: React.FC = () => {
   // and refuses the request when one runs out. Recognised like kenari rather
   // than by an id prefix, because a row someone added themselves carries a
   // UUID and declares itself through `providerType`.
-  const isMinimax = useSettingsStore((s) => {
+  const isMinimax = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return false;
     const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
@@ -718,12 +718,12 @@ export const ContextRing: React.FC = () => {
   });
   // The subscription key, which is also the chat key. Read from the row so
   // pasting a new one changes what the ring reports.
-  const minimaxKey = useSettingsStore((s) => {
+  const minimaxKey = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return "";
     return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.apiKey ?? "";
   });
-  const isKenari = useSettingsStore((s) => {
+  const isKenari = useAgentSettingsStore((s) => {
     // First colon only — a provider id never contains one, a model key can.
     const split = selectedModel.indexOf(":");
     if (split <= 0) return false;
@@ -735,7 +735,7 @@ export const ContextRing: React.FC = () => {
   // week and a month, all as a share. Recognised like kenari and MiniMax rather
   // than by an id prefix, because a row someone added themselves carries a UUID
   // and declares itself through `providerType`.
-  const isArk = useSettingsStore((s) => {
+  const isArk = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return false;
     const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
@@ -746,7 +746,7 @@ export const ContextRing: React.FC = () => {
   // figures above it were priced at. Recognised like kenari's rather than by
   // an id prefix — a row someone added themselves carries a UUID, and on
   // DeepSeek its type is whichever of the three wires they chose.
-  const isDeepSeek = useSettingsStore((s) => {
+  const isDeepSeek = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return false;
     const row = s.providers.find((p) => p.id === selectedModel.slice(0, split));
@@ -754,14 +754,14 @@ export const ContextRing: React.FC = () => {
   });
   // Gated on the key, like MiniMax's: DeepSeek has nothing on disk to fall
   // back to, so with nothing pasted there is no account to ask.
-  const deepseekKey = useSettingsStore((s) => {
+  const deepseekKey = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return "";
     return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.apiKey ?? "";
   });
   // Sent along so a proxied row is asked about ITS account rather than
   // api.deepseek.com. Rust peels the wire suffix back to the root.
-  const deepseekBaseUrl = useSettingsStore((s) => {
+  const deepseekBaseUrl = useAgentSettingsStore((s) => {
     const split = selectedModel.indexOf(":");
     if (split <= 0) return "";
     return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.baseUrl ?? "";
@@ -805,7 +805,7 @@ export const ContextRing: React.FC = () => {
    * whose model has since been deleted, at today's rates and present the
    * result as measured. A miss must stay a miss so the card can disclose it.
    */
-  const models = useSettingsStore((s) => s.models);
+  const models = useAgentSettingsStore((s) => s.models);
   const priceLookup = useCallback(
     (selection: string | undefined): ModelPrices | null => {
       if (!selection) return null;

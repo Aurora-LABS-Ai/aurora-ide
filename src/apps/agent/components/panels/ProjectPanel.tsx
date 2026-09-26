@@ -27,7 +27,7 @@ import {
   getProjectStats,
   type ProjectStats,
 } from "@/apps/agent/services/workspace/agent-project-stats";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { formatTokens, prettyModel } from "@/apps/agent/lib/thread/model-label";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { AgentIcon } from "@/apps/agent/shared";
@@ -124,8 +124,8 @@ export const ProjectPanel: React.FC<{ root: string }> = ({ root }) => {
   const [loading, setLoading] = useState(false);
   const [openProviders, setOpenProviders] = useState<Set<string>>(new Set());
   const selectThread = useAgentChatStore((s) => s.selectThread);
-  const models = useSettingsStore((s) => s.models);
-  const providers = useSettingsStore((s) => s.providers);
+  const models = useAgentSettingsStore((s) => s.models);
+  const providers = useAgentSettingsStore((s) => s.providers);
 
   /**
    * Provider ROW id -> a name a person recognises. The id is a readable slug

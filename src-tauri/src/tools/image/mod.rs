@@ -113,9 +113,12 @@ Every picture is saved into the conversation and opened in the Canvas beside the
 paste it, link it, or describe its bytes — say what you made and, if useful, what you would change. \
 You will be shown the finished picture; describe what is actually in it, not what you asked for.
 
-`model` picks one of the configured image models by name; omit it for the user's default. `size` \
-is `WIDTHxHEIGHT` from the model's list; omit it for the model's default. `title` names the Canvas \
-entry — a few words — and defaults to the prompt.
+`provider` picks which configured image provider to call, by the name `list` shows. When the user \
+names a provider, always pass it: providers often sell the same model name, and a model name that \
+more than one ready provider offers is refused until `provider` says which. `model` picks one of \
+that provider's models by name; omit both for the user's default. `size` is `WIDTHxHEIGHT` from \
+the model's list; omit it for the model's default. `title` names the Canvas entry — a few words — \
+and defaults to the prompt.
 
 Each call makes ONE picture and costs the user money. Do not generate variations the user did not \
 ask for."
@@ -136,9 +139,13 @@ ask for."
                         "type": "string",
                         "description": "For 'edit': the picture to start from — its file name or its position (\"1\" is the first picture in this conversation)."
                     },
+                    "provider": {
+                        "type": "string",
+                        "description": "The image provider to call, by the name 'list' shows. Pass it whenever the user names one."
+                    },
                     "model": {
                         "type": "string",
-                        "description": "One of the configured image models, by name. Omit for the default."
+                        "description": "One of the provider's image models, by name. Omit for the provider's first model, or the default."
                     },
                     "size": {
                         "type": "string",
@@ -219,6 +226,7 @@ generate_image is an Aurora Chat tool."
                     "provider": provider.name,
                     "format": provider.api_format.label(),
                     "ready": provider.ready(),
+                    "notReady": provider.not_ready_reason(),
                     "models": provider.models.iter().map(|model| json!({
                         "model": model.model_key,
                         "label": model.label,
@@ -250,9 +258,7 @@ generate_image is an Aurora Chat tool."
                 })
             })
             .collect();
-        let default = resolve_model(&self.turn.providers, None)
-            .ok()
-            .map(|resolved| resolved.model.model_key);
+        let default = resolve_model(&self.turn.providers, None, None).ok();
         let note = if providers.is_empty() {
             Some(config::ResolveError::NoProviders.to_string())
         } else if !providers.iter().any(|p| p["ready"] == true) {
@@ -262,7 +268,10 @@ generate_image is an Aurora Chat tool."
         };
         serialize(json!({
             "op": "list",
-            "defaultModel": default,
+            "defaultModel": default.as_ref().map(|d| &d.model.model_key),
+            "defaultProvider": default.as_ref().map(|d| &d.provider.name),
+            // "ready" is read from settings: the key is stored, not checked.
+            "readyMeans": "switched on with an address and a key; the key is only checked by a real call",
             "providers": providers,
             "pictures": pictures,
             "note": note,
@@ -288,15 +297,15 @@ generate_image is an Aurora Chat tool."
                 },
             )
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| failed(&resolved, error))?;
         let output = response.images.into_iter().next().ok_or_else(|| {
-            ToolError::Execution(wire::WireError::NoImage.to_string())
+            failed(&resolved, wire::WireError::NoImage)
         })?;
         let bytes = self
             .client
             .materialize(&output, assets::MAX_ASSET_BYTES)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| failed(&resolved, error))?;
 
         let record = assets::store(
             &assets_dir,
@@ -369,7 +378,12 @@ Use op 'list' to see the pictures this conversation holds."
                 .providers
                 .iter()
                 .filter(|p| p.ready() && p.edit_url().is_some())
-                .flat_map(|p| p.models.iter().filter(|m| m.can_edit).map(|m| m.model_key.clone()))
+                .flat_map(|p| {
+                    p.models
+                        .iter()
+                        .filter(|m| m.can_edit)
+                        .map(|m| format!("{} ({})", m.model_key, p.name))
+                })
                 .collect();
             return Err(ToolError::InvalidInput(if editors.is_empty() {
                 format!(
@@ -379,7 +393,8 @@ to mark a model as able to edit under Settings → Providers → Image providers
                 )
             } else {
                 format!(
-                    "'{}' cannot edit pictures. Models that can: {}. Pass one as `model`.",
+                    "'{}' cannot edit pictures. Models that can, with their provider: {}. Pass \
+one as `model` and its provider as `provider`.",
                     resolved.model.model_key,
                     editors.join(", ")
                 )
@@ -414,15 +429,15 @@ have been deleted from the conversation's folder.",
                 },
             )
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| failed(&resolved, error))?;
         let output = response.images.into_iter().next().ok_or_else(|| {
-            ToolError::Execution(wire::WireError::NoImage.to_string())
+            failed(&resolved, wire::WireError::NoImage)
         })?;
         let bytes = self
             .client
             .materialize(&output, assets::MAX_ASSET_BYTES)
             .await
-            .map_err(|error| ToolError::Execution(error.to_string()))?;
+            .map_err(|error| failed(&resolved, error))?;
 
         let record = assets::store(
             &assets_dir,
@@ -624,11 +639,26 @@ fn resolve(
     providers: &[config::ImageProviderConfig],
     input: &Value,
 ) -> Result<ResolvedImageModel, ToolError> {
-    let wanted = input.get("model").and_then(Value::as_str);
-    resolve_model(providers, wanted).map_err(|error| match error {
-        config::ResolveError::UnknownModel { .. } => ToolError::InvalidInput(error.to_string()),
-        _ => ToolError::Execution(error.to_string()),
+    let provider = input.get("provider").and_then(Value::as_str);
+    let model = input.get("model").and_then(Value::as_str);
+    resolve_model(providers, provider, model).map_err(|error| {
+        if error.is_caller_error() {
+            ToolError::InvalidInput(error.to_string())
+        } else {
+            ToolError::Execution(error.to_string())
+        }
     })
+}
+
+/// A failed provider call, saying where it went. The wire's own words say
+/// "the image provider"; with several rows configured, which one answered is
+/// the first thing anyone needs, and a 401 blamed on the wrong key sends the
+/// user to fix a key that was never used.
+fn failed(resolved: &ResolvedImageModel, error: impl std::fmt::Display) -> ToolError {
+    ToolError::Execution(format!(
+        "{} via {}: {error}",
+        resolved.model.model_key, resolved.provider.name
+    ))
 }
 
 /// The size to ask for: the caller's, checked against the model's list when it
@@ -1003,7 +1033,50 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("run out of credit"), "{err}");
+        // Which provider answered is in the error, not just "the image provider".
+        assert!(err.to_string().contains("gpt-image-1.5 via a6api: the image provider"), "{err}");
         assert!(assets::list(&h.store.assets_dir(&h.thread_id).unwrap()).unwrap().is_empty());
+    }
+
+    /// Two gateways selling one model name: the call goes where `provider`
+    /// says, and without it nothing is sent to either.
+    #[tokio::test]
+    async fn a_named_provider_receives_the_call_and_a_shared_name_alone_sends_nothing() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png(4, 4));
+        let first = serve(vec![]).await;
+        let second = serve(vec![Canned::json(200, &format!(r#"{{"data":[{{"b64_json":"{b64}"}}]}}"#))]).await;
+        let chatgpt = provider(&first.base_url, ImageApiFormat::OpenaiImages);
+        let mut fan = provider(&second.base_url, ImageApiFormat::OpenaiImages);
+        fan.id = "p2".into();
+        fan.name = "APIKEY-FAN".into();
+        let h = harness("shared-name", vec![chatgpt, fan]);
+        let tool = GenerateImageTool::new();
+
+        let err = tool
+            .execute(json!({"prompt": "x", "model": "gpt-image-1.5"}), &h.ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidInput(_)), "{err}");
+        assert!(err.to_string().contains("a6api, APIKEY-FAN"), "{err}");
+        assert!(first.recorded().is_empty() && second.recorded().is_empty());
+
+        let out = tool
+            .execute(
+                json!({"prompt": "x", "provider": "APIKEY-FAN", "model": "gpt-image-1.5"}),
+                &h.ctx,
+            )
+            .await
+            .unwrap();
+        assert!(first.recorded().is_empty(), "the first provider was never called");
+        assert_eq!(second.recorded().len(), 1);
+        assert!(out.contains("gpt-image-1.5 via APIKEY-FAN"), "{out}");
+
+        let listed: Value = serde_json::from_str(
+            &tool.execute(json!({"op": "list"}), &h.ctx).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(listed["defaultProvider"], "a6api");
+        assert!(listed["providers"][1]["notReady"].is_null());
     }
 
     #[tokio::test]

@@ -23,6 +23,8 @@ import {
   type AppearancePrefKey,
   type AppearancePrefs,
   type ModelSelectorPosition,
+  type TranscriptReasoning,
+  type TranscriptTextPace,
   APPEARANCE_PREFS,
   defaultAppearancePrefs,
   hasAppearancePrefChanges,
@@ -56,7 +58,12 @@ export type AgentTokenKey = keyof AgentThemeTokens;
  * table; re-exported here because this store has always been where it is
  * imported from.
  */
-export type { AgentUiVersion, ModelSelectorPosition } from "@/apps/agent/theme/appearance-prefs";
+export type {
+  AgentUiVersion,
+  ModelSelectorPosition,
+  TranscriptReasoning,
+  TranscriptTextPace,
+} from "@/apps/agent/theme/appearance-prefs";
 export { DEFAULT_CONTRAST, DEFAULT_RAIL_GLIDE_MS } from "@/apps/agent/theme/appearance-prefs";
 
 /** The canonical token-key list, derived from the default theme. */
@@ -194,6 +201,13 @@ interface AgentThemeState extends AppearancePrefs {
   setCommandCenterShortcut: (shortcut: string) => void;
   setTranscriptSpine: (v: boolean) => void;
   setTranscriptStickyUser: (v: boolean) => void;
+  setTranscriptReasoning: (v: TranscriptReasoning) => void;
+  setTranscriptToolRunsOpen: (v: boolean) => void;
+  setTranscriptActionsVisible: (v: boolean) => void;
+  setTranscriptTimestamps: (v: boolean) => void;
+  setTranscriptSmoothTools: (v: boolean) => void;
+  setTranscriptTextPace: (v: TranscriptTextPace) => void;
+  setTranscriptTurnSummary: (v: boolean) => void;
   /**
    * Build the exportable appearance file for whatever is on screen: the base
    * theme's identity, the FULLY MERGED tokens, and every exportable
@@ -293,6 +307,13 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setCommandCenterShortcut: (commandCenterShortcut) => set({ commandCenterShortcut }),
       setTranscriptSpine: (v) => set({ transcriptSpine: v }),
       setTranscriptStickyUser: (v) => set({ transcriptStickyUser: v }),
+      setTranscriptReasoning: (v) => set({ transcriptReasoning: v }),
+      setTranscriptToolRunsOpen: (v) => set({ transcriptToolRunsOpen: v }),
+      setTranscriptActionsVisible: (v) => set({ transcriptActionsVisible: v }),
+      setTranscriptTimestamps: (v) => set({ transcriptTimestamps: v }),
+      setTranscriptSmoothTools: (v) => set({ transcriptSmoothTools: v }),
+      setTranscriptTextPace: (v) => set({ transcriptTextPace: v }),
+      setTranscriptTurnSummary: (v) => set({ transcriptTurnSummary: v }),
 
       buildAppearanceExport: (iconPack) => {
         const s = get();

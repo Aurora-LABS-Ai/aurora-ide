@@ -17,7 +17,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   PROVIDER_DESCRIPTION_MAX,
   normalizeProviderDescription,
-} from "@/kernel/store/useSettingsStore";
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
 
 interface ProviderDescriptionProps {

@@ -3,26 +3,30 @@
  *
  * Claude models driven through the same OAuth grant Claude Code uses and
  * metered against the user's Claude Pro/Max plan — no API key. Auth lives in
- * Rust (`api::claude_code`) in Aurora's OWN credential file; the user's
- * `~/.claude` directory is never read or written. The only way in is the
- * Sign in button on the Providers page.
+ * Rust (`api::claude_code`) in Aurora's OWN account list; several accounts
+ * can be stored and one of them (main) serves chats.
  *
- * The sign-in is a manual two-step flow: Aurora shows a link, the user
- * finishes in a browser and pastes the code the page shows (or the whole
- * callback address) back into the card.
+ * Two ways in. Sign in is a manual two-step flow: Aurora shows a link, the
+ * user finishes in a browser and pastes the code the page shows (or the whole
+ * callback address) back into the card. Import copies what Claude Code is
+ * signed into: its credentials file is read once, never written.
  *
  * This module is the frontend surface: invoke wrappers for the Tauri
- * commands, the seeded provider preset, and formatting helpers for the card.
+ * commands and formatting helpers for the card. The seeded provider preset
+ * lives in kernel (the settings store seeds from it) and is re-exported here.
  */
 
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 import { fmtDuration } from "@/apps/agent/lib/time/duration";
-import type { ModelReasoning } from "@/kernel/types/database";
-import type { ProviderCatalogPreset } from "@/apps/agent/services/providers/provider-catalog";
+import { CLAUDE_CODE_PROVIDER_ID } from "@/apps/agent/services/providers/presets/claude-code";
+
+export {
+  CLAUDE_CODE_PRESET,
+  CLAUDE_CODE_PROVIDER_ID,
+} from "@/apps/agent/services/providers/presets/claude-code";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-export const CLAUDE_CODE_PROVIDER_ID = "claude-code";
 export const CLAUDE_CODE_USAGE_URL = "https://claude.ai/settings/usage";
 
 // ── Wire types (mirror Rust `api::claude_code`) ──────────────────────────────
@@ -40,6 +44,18 @@ export interface ClaudeCodeAuthStatus {
   expiresAtMs: number | null;
   signedInAt: string | null;
   lastRefresh: string | null;
+  /** When the sign-in itself ends (refresh token expiry), when known. */
+  refreshExpiresAtMs: number | null;
+  /** Set only in the last three days before that, as Claude Code warns. */
+  signInAgainInDays: number | null;
+}
+
+/** "Sign in again within 2 days…" — null when there is nothing to warn about. */
+export function claudeCodeSignInAgainNote(status: ClaudeCodeAuthStatus | null | undefined): string | null {
+  const days = status?.signInAgainInDays;
+  if (days == null) return null;
+  const when = days <= 1 ? "within a day" : `within ${days} days`;
+  return `This sign-in ends ${when}. Sign in to this account again to keep using it.`;
 }
 
 export interface ClaudeCodeUsageWindow {
@@ -47,6 +63,12 @@ export interface ClaudeCodeUsageWindow {
   usedPercent: number;
   resetsAtMs: number | null;
   resetsInSeconds: number | null;
+}
+
+export interface ClaudeCodeModelWindow {
+  /** The server's own label, e.g. "Fable". */
+  model: string;
+  window: ClaudeCodeUsageWindow;
 }
 
 export interface ClaudeCodeExtraUsage {
@@ -63,8 +85,25 @@ export interface ClaudeCodeUsageSnapshot {
   sevenDay: ClaudeCodeUsageWindow | null;
   sevenDayOpus: ClaudeCodeUsageWindow | null;
   sevenDaySonnet: ClaudeCodeUsageWindow | null;
+  /** Other models' weekly windows (Fable), named by the server. */
+  sevenDayModels: ClaudeCodeModelWindow[];
   extraUsage: ClaudeCodeExtraUsage | null;
   fetchedAtMs: number;
+}
+
+/** How an account arrived. An import shares Claude Code's sign-in. */
+export type ClaudeCodeAccountSource = "sign-in" | "claude-code-import";
+
+export interface ClaudeCodeAccountRow {
+  id: string;
+  addedAt: string;
+  source: ClaudeCodeAccountSource;
+  /** The account chats go to. Exactly one row is true. */
+  isMain: boolean;
+  status: ClaudeCodeAuthStatus;
+  /** Null when its usage could not be read; the row still lists. */
+  usage: ClaudeCodeUsageSnapshot | null;
+  usageError: string | null;
 }
 
 // ── Commands ─────────────────────────────────────────────────────────────────
@@ -94,6 +133,25 @@ export function claudeCodeAuthLogout(): Promise<void> {
 
 export function claudeCodeUsageGet(): Promise<ClaudeCodeUsageSnapshot> {
   return invoke<ClaudeCodeUsageSnapshot>("claude_code_usage_get");
+}
+
+/** Every stored account, each with its own usage. */
+export function claudeCodeAccountsList(): Promise<ClaudeCodeAccountRow[]> {
+  return invoke<ClaudeCodeAccountRow[]>("claude_code_accounts_list");
+}
+
+export function claudeCodeAccountSetMain(id: string): Promise<void> {
+  return invoke<void>("claude_code_account_set_main", { id });
+}
+
+/** Forgets one account in Aurora. Claude Code on this machine is untouched. */
+export function claudeCodeAccountRemove(id: string): Promise<void> {
+  return invoke<void>("claude_code_account_remove", { id });
+}
+
+/** Copies the account Claude Code is signed into. Never writes Claude Code's file. */
+export function claudeCodeAccountImportCli(): Promise<ClaudeCodeAuthStatus> {
+  return invoke<ClaudeCodeAuthStatus>("claude_code_account_import_cli");
 }
 
 // ── Detection / formatting ───────────────────────────────────────────────────
@@ -129,6 +187,25 @@ export function claudeCodeResetLabel(win: ClaudeCodeUsageWindow): string | null 
 }
 
 /**
+ * The fullest window on an account, which is the one about to stop it.
+ * `null` when the account reported none.
+ */
+export function claudeCodeHighestUsedPercent(
+  usage: ClaudeCodeUsageSnapshot | null | undefined,
+): number | null {
+  if (!usage) return null;
+  const windows = [
+    usage.fiveHour,
+    usage.sevenDay,
+    usage.sevenDayOpus,
+    usage.sevenDaySonnet,
+    ...(usage.sevenDayModels ?? []).map((m) => m.window),
+  ];
+  const used = windows.filter((w): w is ClaudeCodeUsageWindow => w != null).map((w) => w.usedPercent);
+  return used.length > 0 ? Math.max(...used) : null;
+}
+
+/**
  * The one line under a meter on the provider card: how much is used and when
  * it comes back.
  */
@@ -137,62 +214,3 @@ export function claudeCodeWindowMeta(win: ClaudeCodeUsageWindow): string {
   const reset = claudeCodeResetLabel(win);
   return reset ? `${used} · ${reset}` : used;
 }
-
-// ── Seeded provider preset ───────────────────────────────────────────────────
-
-/**
- * The Claude 5 family plus Haiku 4.5. Pricing is pinned to $0 on purpose:
- * usage bills against the claude.ai plan, and a zeroed row also stops the
- * models.dev enrichment pass from backfilling platform API prices that do
- * not apply here.
- */
-const CLAUDE_CODE_SEED_MODELS = [
-  { id: "claude-sonnet-5", alias: "Claude Sonnet 5" },
-  { id: "claude-opus-5", alias: "Claude Opus 5" },
-  { id: "claude-fable-5-1", alias: "Claude Fable 5.1" },
-  { id: "claude-haiku-4-5-20251001", alias: "Claude Haiku 4.5" },
-];
-
-/**
- * The effort picker the Claude 5 family takes, seeded so the composer's
- * reasoning control works on the first chat instead of after a trip to the
- * model row. Haiku 4.5 is left to its own default: it reasons on a token
- * budget, and the composer's budget control is set per model.
- */
-const CLAUDE_5_EFFORT: ModelReasoning = {
-  type: "effort",
-  levels: ["low", "medium", "high", "xhigh", "max"],
-  default: "high",
-  supported: ["effort", "toggle"],
-  toggleable: true,
-  enabled: true,
-};
-
-export const CLAUDE_CODE_PRESET: ProviderCatalogPreset = {
-  id: CLAUDE_CODE_PROVIDER_ID,
-  name: "Claude Code (claude.ai)",
-  nickname: "Claude Code",
-  // Informational only — the Rust adapter pins the real endpoint.
-  baseUrl: "https://api.anthropic.com/v1",
-  model: CLAUDE_CODE_SEED_MODELS[0].id,
-  contextWindow: 200_000,
-  maxOutputTokens: 32_000,
-  supportsThinking: true,
-  supportsToolStream: true,
-  supportsVision: true,
-  providerType: CLAUDE_CODE_PROVIDER_ID,
-  requiresApiKey: false,
-  customModels: CLAUDE_CODE_SEED_MODELS.map((m) => m.id),
-  modelAliases: Object.fromEntries(CLAUDE_CODE_SEED_MODELS.map((m) => [m.id, m.alias])),
-  modelPricing: Object.fromEntries(
-    CLAUDE_CODE_SEED_MODELS.map((m) => [
-      m.id,
-      { cacheHitPerMtok: 0, cacheMissPerMtok: 0, outputPerMtok: 0 },
-    ]),
-  ),
-  modelReasoning: {
-    "claude-sonnet-5": CLAUDE_5_EFFORT,
-    "claude-opus-5": CLAUDE_5_EFFORT,
-    "claude-fable-5-1": CLAUDE_5_EFFORT,
-  },
-};

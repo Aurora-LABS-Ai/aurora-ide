@@ -174,6 +174,26 @@ pub async fn provider_list_models(
     api_key: String,
     provider_type: Option<String>,
 ) -> Result<Vec<DiscoveredModel>, String> {
+    // Subscription rows sign in instead of holding a key, so the key-based
+    // request below can only be refused ("x-api-key header is required").
+    // Each asks its own backend with the stored sign-in instead.
+    let signed_in_list = match provider_type.as_deref().map(str::trim) {
+        Some("codex") => Some(crate::api::codex::models::list_models().await),
+        Some(crate::api::claude_code::CLAUDE_CODE_PROVIDER_TYPE) => {
+            Some(crate::api::claude_code::models::list_models().await)
+        }
+        _ => None,
+    };
+    if let Some(listed) = signed_in_list {
+        let mut models: Vec<DiscoveredModel> = listed?
+            .into_iter()
+            .map(|(id, display_name)| DiscoveredModel { id, display_name })
+            .collect();
+        models.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase()));
+        models.dedup_by(|a, b| a.id == b.id);
+        return Ok(models);
+    }
+
     if base_url.trim().is_empty() {
         return Err("This provider has no base URL, so there is nowhere to ask.".into());
     }

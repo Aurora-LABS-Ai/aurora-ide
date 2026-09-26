@@ -1,11 +1,11 @@
 /**
  * Agent Window — per-thread task list (the agent's working checklist).
  *
- * The IDE's `useTaskStore` is a SINGLE global list — fine when only one turn can
- * run. The agent window runs turns in parallel across threads/projects, so a
+ * The agent window runs turns in parallel across threads/projects, so a single
  * global list would leak another thread's todos into whatever chat you're
  * viewing. This store keys the list by `threadId` so the docked task panel only
- * ever shows the open conversation's progress.
+ * ever shows the open conversation's progress. (The old global `useTaskStore`
+ * was deleted 2026-09-24; nothing drew it any more.)
  *
  * **Rust owns the list; this is a projection of it.** It arrives two ways, and
  * both carry the same payload: `agent_todo_write` (live, on every todo tool
@@ -22,9 +22,17 @@
 import { create } from "zustand";
 
 import { auroraInvoke, auroraListen, type AuroraUnlistenFn } from "@/kernel/lib/ipc/runtime";
-import type { Task } from "@/apps/agent/store/tools/useTaskStore";
-
-export type { Task };
+/** One checklist row as the panel draws it. */
+export interface Task {
+  /** Present-continuous wording, shown while the row is in progress. */
+  activeForm?: string;
+  /** Display text (the active form when there is one). */
+  content: string;
+  id: string;
+  /** The imperative wording the agent wrote. */
+  originalContent?: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+}
 
 /** One item exactly as Rust's `TodoList::to_event_payload` emits it. */
 export interface TodoPayloadItem {

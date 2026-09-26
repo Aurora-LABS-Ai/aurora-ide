@@ -46,6 +46,7 @@ const claudeSnap = (over: Partial<ClaudeCodeUsageSnapshot> = {}): ClaudeCodeUsag
   sevenDay: null,
   sevenDayOpus: null,
   sevenDaySonnet: null,
+  sevenDayModels: [],
   extraUsage: null,
   fetchedAtMs: 0,
   ...over,
@@ -99,6 +100,17 @@ describe("claudeCodePlanView", () => {
     );
     expect(view?.limits.map((l) => l.name)).toEqual(["Right now", "Sonnet this week"]);
     expect(view?.limits[1].tone).toBe("bad");
+  });
+
+  it("draws a server-named model window, such as Fable, after the fixed ones", () => {
+    const view = claudeCodePlanView(
+      claudeSnap({
+        sevenDay: claudeWindow(20),
+        sevenDayModels: [{ model: "Fable", window: claudeWindow(37) }],
+      }),
+    );
+    expect(view?.limits.map((l) => l.name)).toEqual(["This week", "Fable this week"]);
+    expect(view?.limits[1].value).toBe("63% left");
   });
 
   it("meters extra usage against its cap rather than as a share", () => {

@@ -27,7 +27,7 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { newChatDraftKey, useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { AgentComposer } from "@/apps/agent/components/composer/AgentComposer";
 import { ProjectSwitcher } from "@/apps/agent/components/panels/ProjectSwitcher";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useWorkspaceSummary } from "@/apps/agent/hooks/useWorkspaceSummary";
 import {
   buildStarterPrompts,
@@ -79,7 +79,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onStop,
 }) => {
   /** Aurora Chat has no workspace, so it has no project row and its own starters. */
-  const chatSurface = useSettingsStore((s) => s.auroraSurface) === "chat";
+  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   // The window KEEPS its project while you are in Chat, so Build resumes on it.
   // This view must not see it: it would key the draft to a folder the chat has
   // nothing to do with, and scan that folder to build starters nothing renders.

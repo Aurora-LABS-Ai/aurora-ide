@@ -530,6 +530,25 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 16px;
 }
+.agw-cidx {
+  container-type: inline-size;
+}
+@container (max-width: 520px) {
+  .agw-cidx .agw-set-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .agw-cidx .agw-set-row-label {
+    flex: 1 1 220px;
+    max-width: 100%;
+  }
+  .agw-cidx .agw-set-row-control {
+    max-width: 100%;
+  }
+  .agw-cidx-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .agw-cidx-stat {
   min-width: 0;
 }
@@ -566,6 +585,29 @@
 .agw-cidx-error {
   color: var(--agw-removed);
 }
+.agw-cidx-progress { margin-bottom: 10px; }
+.agw-cidx-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-cidx-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--agw-border-strong);
+}
+.agw-cidx-progress-track > span {
+  display: block;
+  height: 100%;
+  background: var(--agw-accent);
+  transition: width 180ms ease;
+}
+.agw-cidx [role="status"] { overflow-wrap: anywhere; }
 
 /* ── Switch ───────────────────────────────────────────────────────────── */
 .agw-switch {
@@ -954,4 +996,46 @@
     gap: 2px;
     margin-bottom: 8px;
   }
+}
+
+.agw-cidx-number.agw-set-input { width: 148px; max-width: 100%; font-variant-numeric: tabular-nums; }
+
+.agw-cidx-path { display: block; overflow-wrap: anywhere; }
+.agw-cidx-storage-detail { display: block; margin-top: 5px; font-variant-numeric: tabular-nums; }
+.agw-cidx-storage .agw-set-row-label { min-width: 0; }
+
+/* Saved project indexes — one row per project Aurora has ever indexed, which
+   on a long-lived install is a hundred of them. Same answer as the skill
+   catalog: a filter carrying a live count over a scroll region of fixed
+   height, so this section is the same size whatever the number is. */
+.agw-cidx-find {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* A 200px basis rather than `flex: 1`: when the panel is too narrow to hold
+   the field and the refresh control side by side, the control wraps below on
+   its own instead of squeezing the field down to a few characters. */
+.agw-cidx-find-input.agw-set-input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.agw-cidx-find-count {
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-cidx-list {
+  /* `max-height`, not `height`: four projects end after four rows instead of
+     sitting at the bottom of a tall empty frame. */
+  max-height: clamp(300px, 52vh, 600px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The last row's divider would otherwise draw a rule along the scroll edge. */
+.agw-cidx-list > .agw-set-row:last-child {
+  border-bottom: none;
 }

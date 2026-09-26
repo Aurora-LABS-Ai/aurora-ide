@@ -19,7 +19,7 @@ import React, { useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgwButton } from "@/apps/agent/settings/primitives";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   discoverImageModels,
   testImageProvider,
@@ -53,7 +53,7 @@ const fingerprint = (provider: ImageProvider): string =>
   JSON.stringify([provider.baseUrl, provider.apiKey, provider.apiFormat]);
 
 export const ImageProviderProbe: React.FC<{ provider: ImageProvider }> = ({ provider }) => {
-  const addImageModel = useSettingsStore((s) => s.addImageModel);
+  const addImageModel = useAgentSettingsStore((s) => s.addImageModel);
   const [probe, setProbe] = useState<Probe>({ kind: "idle" });
 
   // Reset during render — the React-documented way to drop state a prop

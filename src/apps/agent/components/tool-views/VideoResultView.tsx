@@ -19,7 +19,7 @@
 import React, { useEffect, useState } from "react";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { galleryFileSrc } from "@/apps/agent/services/gallery/gallery-service";
 import {
   elapsedSince,
@@ -43,7 +43,7 @@ export const VideoResultView: React.FC<{
   const video = updated?.source === initial ? updated.video : initial;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const provider = useSettingsStore((state) =>
+  const provider = useAgentSettingsStore((state) =>
     state.imageProviders?.find((row) => row.id === video.providerId),
   );
 

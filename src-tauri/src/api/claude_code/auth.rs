@@ -2,11 +2,17 @@
 //!
 //! Design rules:
 //!
-//! - **Aurora's file, nobody else's.** Tokens live at
-//!   `<root>/auth/claude-code-auth.json`. The user's `~/.claude` directory
-//!   is never opened, read, or written: whatever Claude Code itself is
-//!   signed into is its own business, and the only way into Aurora is the
-//!   Sign in button on the Providers page.
+//! - **Aurora's file, nobody else's.** Tokens live in Aurora's account list
+//!   ([`super::accounts`]). Claude Code's own `.credentials.json` is never
+//!   written. It is read by [`import_from_cli`] (the Import button) and,
+//!   for accounts that came from there, while refreshing: if Claude Code
+//!   already refreshed that account, its file holds the live pair.
+//! - **Refresh the way Claude Code does** (`utils/auth.ts`
+//!   `checkAndRefreshOAuthTokenIfNeeded` / `handleOAuth401Error`): five
+//!   minutes early, before a request; on a 401 use the stored token if a
+//!   parallel turn already replaced it, else refresh regardless of the
+//!   clock; same body and scopes; keep the old refresh token when none
+//!   comes back; re-read the profile when the plan is missing.
 //! - **Manual PKCE flow.** [`begin_login`] returns the authorize URL; the
 //!   user finishes in a browser and pastes the code (`code#state`, or the
 //!   whole callback URL) into [`complete_login`]. No loopback port to bind,
@@ -37,12 +43,19 @@ const STORE_VERSION: u32 = 1;
 /// Code uses the same five minutes.
 const REFRESH_SKEW_MS: i64 = 5 * 60 * 1000;
 
+/// A sign-in whose response did not say how long its refresh token lasts is
+/// assumed to last this long — Claude Code's own default (`bF`, 30 days).
+const DEFAULT_REFRESH_LIFETIME_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Warn this long before the refresh token runs out (Claude Code: 3 days).
+const REFRESH_WARNING_MS: i64 = 3 * 24 * 60 * 60 * 1000;
+
 /// How long a started sign-in stays valid before its PKCE secret is
 /// discarded. Long enough for a slow consent screen, short enough that a
 /// forgotten tab cannot be completed a day later.
 const PENDING_TTL_MS: i64 = 30 * 60 * 1000;
 
-const TOKEN_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const TOKEN_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 const SIGNED_OUT_MSG: &str =
     "Not signed in to Claude. Open Settings \u{2192} Providers \u{2192} Claude Code and sign in.";
@@ -62,6 +75,12 @@ pub struct StoredAuth {
     /// Epoch milliseconds. `0` means the response carried no `expires_in`.
     #[serde(default)]
     pub expires_at_ms: i64,
+    /// When the refresh token itself stops working, epoch ms; `0` unknown.
+    /// Refreshing does not necessarily move it, so past this date the account
+    /// needs a new sign-in whatever Aurora does. Claude Code 2.1.282 tracks
+    /// the same date (`refreshTokenExpiresAt`) and warns three days ahead.
+    #[serde(default)]
+    pub refresh_expires_at_ms: i64,
     #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
@@ -92,59 +111,41 @@ impl StoredAuth {
         // No expiry recorded: assume usable and let a 401 force the refresh.
         self.expires_at_ms == 0 || self.expires_at_ms - now_ms > REFRESH_SKEW_MS
     }
-}
 
-pub fn store_path() -> PathBuf {
-    crate::paths::auth_dir().join("claude-code-auth.json")
-}
-
-fn read_store() -> Result<Option<StoredAuth>, String> {
-    let path = store_path();
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(format!("Failed to read {}: {err}", path.display())),
-    };
-    match serde_json::from_str::<StoredAuth>(&raw) {
-        Ok(auth) if auth.version <= STORE_VERSION => Ok(Some(auth)),
-        // A file from a newer Aurora is left alone rather than truncated.
-        Ok(auth) => Err(format!(
-            "{} was written by a newer Aurora (version {}). Update Aurora or sign in again.",
-            path.display(),
-            auth.version
-        )),
-        Err(err) => Err(format!(
-            "{} is not readable ({err}). Sign out and sign in again.",
-            path.display()
-        )),
+    /// Whole days until the refresh token runs out, only once that is three
+    /// days or fewer away. Claude Code's `omt()`: no warning when the date is
+    /// unknown or already past, or when the access token outlives the
+    /// refresh token by more than the warning window (the date is then not
+    /// what ends the sign-in).
+    fn sign_in_again_in_days(&self, now_ms: i64) -> Option<i64> {
+        let until = self.refresh_expires_at_ms;
+        if until <= 0 {
+            return None;
+        }
+        if self.expires_at_ms > until + REFRESH_WARNING_MS {
+            return None;
+        }
+        let left = until - now_ms;
+        if left <= 0 || left > REFRESH_WARNING_MS {
+            return None;
+        }
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        Some((left + DAY_MS - 1) / DAY_MS)
     }
 }
 
-/// Write-then-rename, so a crash mid-write leaves the previous file whole.
-fn write_store(auth: &StoredAuth) -> Result<(), String> {
-    let path = store_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
-    }
-    let rendered = serde_json::to_string_pretty(auth)
-        .map_err(|err| format!("Failed to serialize credentials: {err}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, rendered)
-        .map_err(|err| format!("Failed to write {}: {err}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("Failed to replace {}: {err}", path.display())
-    })
+/// The account requests go to, as `(id, credentials)`.
+fn read_main() -> Result<Option<(String, StoredAuth)>, String> {
+    Ok(super::accounts::load()?
+        .main()
+        .map(|a| (a.id.clone(), a.auth.clone())))
 }
 
-fn remove_store() -> Result<(), String> {
-    let path = store_path();
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("Failed to remove {}: {err}", path.display())),
-    }
+fn read_account(id: &str) -> Result<StoredAuth, String> {
+    super::accounts::load()?
+        .get(id)
+        .map(|a| a.auth.clone())
+        .ok_or_else(|| format!("No stored Claude account {id}."))
 }
 
 fn now_ms() -> i64 {
@@ -173,6 +174,11 @@ pub struct ClaudeCodeAuthStatus {
     pub expires_at_ms: Option<i64>,
     pub signed_in_at: Option<String>,
     pub last_refresh: Option<String>,
+    /// When the sign-in itself ends (refresh token expiry), when known.
+    pub refresh_expires_at_ms: Option<i64>,
+    /// Set only in the last three days before that: the card asks the user
+    /// to sign in again before chats stop.
+    pub sign_in_again_in_days: Option<i64>,
 }
 
 impl ClaudeCodeAuthStatus {
@@ -188,10 +194,12 @@ impl ClaudeCodeAuthStatus {
             expires_at_ms: None,
             signed_in_at: None,
             last_refresh: None,
+            refresh_expires_at_ms: None,
+            sign_in_again_in_days: None,
         }
     }
 
-    fn from_stored(auth: &StoredAuth) -> Self {
+    pub fn from_stored(auth: &StoredAuth) -> Self {
         Self {
             signed_in: true,
             can_infer: auth.has_inference_scope(),
@@ -203,6 +211,9 @@ impl ClaudeCodeAuthStatus {
             expires_at_ms: (auth.expires_at_ms > 0).then_some(auth.expires_at_ms),
             signed_in_at: auth.signed_in_at.clone(),
             last_refresh: auth.last_refresh.clone(),
+            refresh_expires_at_ms: (auth.refresh_expires_at_ms > 0)
+                .then_some(auth.refresh_expires_at_ms),
+            sign_in_again_in_days: auth.sign_in_again_in_days(now_ms()),
         }
     }
 }
@@ -224,16 +235,149 @@ pub(super) fn plan_from_org_type(org_type: Option<&str>) -> Option<String> {
     })
 }
 
-/// Current sign-in state, straight from Aurora's store.
+/// Sign-in state of the main account, straight from Aurora's store.
 pub fn status() -> Result<ClaudeCodeAuthStatus, String> {
-    Ok(read_store()?
-        .as_ref()
-        .map_or_else(ClaudeCodeAuthStatus::signed_out, ClaudeCodeAuthStatus::from_stored))
+    Ok(read_main()?.as_ref().map_or_else(ClaudeCodeAuthStatus::signed_out, |(_, auth)| {
+        ClaudeCodeAuthStatus::from_stored(auth)
+    }))
 }
 
-/// Forget the sign-in. Only Aurora's file is removed.
+/// Forget the main account. Only Aurora's list changes; the next account,
+/// if any, becomes main.
 pub fn logout() -> Result<(), String> {
-    remove_store()
+    match read_main()? {
+        Some((id, _)) => super::accounts::remove(&id),
+        None => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Import from Claude Code
+// ---------------------------------------------------------------------------
+
+/// Claude Code's config home: `$CLAUDE_CONFIG_DIR`, else `~/.claude` — the
+/// same resolution as its `getClaudeConfigHomeDir`.
+fn claude_config_home() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    dirs::home_dir().map(|home| home.join(".claude"))
+}
+
+/// The `claudeAiOauth` block Claude Code writes to `.credentials.json`
+/// (`utils/auth.ts`, `saveOAuthTokensIfNeeded`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliOauth {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    /// Epoch milliseconds.
+    expires_at: Option<i64>,
+    /// Epoch milliseconds; written by Claude Code 2.1.x, absent in older files.
+    refresh_token_expires_at: Option<i64>,
+    #[serde(default)]
+    scopes: Vec<String>,
+    /// `max`, `pro`, `team`, `enterprise`.
+    subscription_type: Option<String>,
+    rate_limit_tier: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliCredentials {
+    claude_ai_oauth: Option<CliOauth>,
+}
+
+/// Turn Claude Code's credential file into Aurora's shape. Pure, so the
+/// parsing is testable without a real file.
+fn stored_from_cli(raw: &str) -> Result<StoredAuth, String> {
+    let creds: CliCredentials = serde_json::from_str(raw)
+        .map_err(|err| format!("Claude Code's credentials file is not readable ({err})."))?;
+    let oauth = creds
+        .claude_ai_oauth
+        .ok_or("Claude Code is not signed in to a Claude plan on this machine (it may be using an API key).")?;
+    let access_token = oauth
+        .access_token
+        .filter(|t| !t.is_empty())
+        .ok_or("Claude Code's sign-in has no access token. Run `claude` and sign in, then import again.")?;
+    let refresh_token = oauth
+        .refresh_token
+        .filter(|t| !t.is_empty())
+        .ok_or("Claude Code's sign-in has no refresh token, so Aurora could not keep it working. Use Sign in instead.")?;
+    let now = chrono::Utc::now().to_rfc3339();
+    Ok(StoredAuth {
+        version: STORE_VERSION,
+        access_token,
+        refresh_token,
+        expires_at_ms: oauth.expires_at.unwrap_or(0),
+        refresh_expires_at_ms: oauth.refresh_token_expires_at.unwrap_or(0),
+        scopes: oauth.scopes,
+        account_uuid: None,
+        email: None,
+        display_name: None,
+        organization_uuid: None,
+        // Claude Code stores `max`; the status mapping passes that through.
+        organization_type: oauth.subscription_type,
+        rate_limit_tier: oauth.rate_limit_tier,
+        signed_in_at: Some(now.clone()),
+        last_refresh: Some(now),
+    })
+}
+
+/// Copy the account Claude Code is signed into onto Aurora's list.
+///
+/// Reads Claude Code's `.credentials.json` once and never writes it. The
+/// copy shares Claude Code's sign-in: whichever app refreshes the token
+/// first may leave the other holding an outdated one. An account added with
+/// Sign in does not have that problem. Returns the status of the imported
+/// account.
+pub async fn import_from_cli() -> Result<ClaudeCodeAuthStatus, String> {
+    let path = claude_config_home()
+        .map(|dir| dir.join(".credentials.json"))
+        .ok_or("Could not find your home folder.")?;
+    let raw = match tokio::fs::read_to_string(&path).await {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "Claude Code is not signed in on this machine (no {}). On macOS it keeps the sign-in in the Keychain, which Aurora does not read.",
+                path.display()
+            ))
+        }
+        Err(err) => return Err(format!("Failed to read {}: {err}", path.display())),
+    };
+    let mut auth = stored_from_cli(&raw)?;
+    if !auth.has_inference_scope() {
+        return Err("Claude Code's sign-in cannot be used for chat (no inference access).".to_string());
+    }
+
+    // An expired token cannot read the profile, and the profile is what says
+    // which account this is. Refresh the copy first; only Aurora's copy
+    // changes.
+    if !auth.is_fresh(now_ms()) {
+        let tokens = request_refresh(&auth)
+            .await
+            .map_err(|err| format!("Claude Code's sign-in has expired and could not be refreshed: {err}. Run `claude` once, then import again."))?;
+        auth = apply_refresh(auth, &tokens);
+    }
+
+    let profile = fetch_profile(&auth.access_token)
+        .await
+        .ok_or("Couldn't read which Claude account Claude Code is signed into. Check your connection and try again.")?;
+    apply_profile(&mut auth, &profile);
+    if auth.account_uuid.is_none() {
+        return Err("Claude did not say which account this sign-in belongs to, so it was not imported.".to_string());
+    }
+
+    let status = ClaudeCodeAuthStatus::from_stored(&auth);
+    tokio::task::spawn_blocking(move || {
+        super::accounts::upsert(auth, super::accounts::AccountSource::ClaudeCodeImport)
+    })
+    .await
+    .map_err(|err| format!("Import task failed: {err}"))??;
+    Ok(status)
 }
 
 // ---------------------------------------------------------------------------
@@ -407,9 +551,38 @@ struct TokenResponse {
     access_token: String,
     refresh_token: Option<String>,
     expires_in: Option<i64>,
+    /// Seconds the refresh token lasts. Newer servers send it; Claude Code
+    /// 2.1.282 reads it on sign-in and refresh.
+    refresh_token_expires_in: Option<i64>,
     scope: Option<String>,
     account: Option<TokenAccount>,
     organization: Option<TokenOrganization>,
+}
+
+/// A token call that failed. `code` is the OAuth `error` field of a 400,
+/// which is what the `invalid_scope` retry keys on (Claude Code's `Qxr`).
+#[derive(Debug)]
+struct TokenError {
+    message: String,
+    code: Option<String>,
+}
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// The OAuth error code in a 400 body: `{"error": "invalid_scope"}`, or
+/// `{"error": {"type": "invalid_scope"}}` in Anthropic's own envelope.
+fn oauth_error_code(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let error = value.get("error")?;
+    error
+        .as_str()
+        .or_else(|| error.get("type").and_then(Value::as_str))
+        .or_else(|| error.get("code").and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 #[derive(Debug, Deserialize)]
@@ -438,7 +611,11 @@ fn http() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-async fn post_token(body: &Value) -> Result<TokenResponse, String> {
+async fn post_token(body: &Value) -> Result<TokenResponse, TokenError> {
+    let plain = |message: String| TokenError {
+        message,
+        code: None,
+    };
     let response = http()
         .post(CLAUDE_TOKEN_URL)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -446,20 +623,27 @@ async fn post_token(body: &Value) -> Result<TokenResponse, String> {
         .json(body)
         .send()
         .await
-        .map_err(|err| format!("network error: {err}"))?;
+        .map_err(|err| plain(format!("network error: {err}")))?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
-        return Err(if status.as_u16() == 401 {
-            "the code was not accepted (expired, already used, or from another sign-in)".to_string()
-        } else {
-            format!("HTTP {status}: {}", truncate(&text, 200))
+        if status.as_u16() == 401 {
+            return Err(plain(
+                "the code was not accepted (expired, already used, or from another sign-in)"
+                    .to_string(),
+            ));
+        }
+        return Err(TokenError {
+            message: format!("HTTP {status}: {}", truncate(&text, 200)),
+            code: (status.as_u16() == 400)
+                .then(|| oauth_error_code(&text))
+                .flatten(),
         });
     }
     response
         .json::<TokenResponse>()
         .await
-        .map_err(|err| format!("bad token response: {err}"))
+        .map_err(|err| plain(format!("bad token response: {err}")))
 }
 
 /// Finish a sign-in with what the user pasted. Exchanges the code, pulls
@@ -510,6 +694,11 @@ pub async fn complete_login(input: &str) -> Result<ClaudeCodeAuthStatus, String>
         access_token: tokens.access_token.clone(),
         refresh_token,
         expires_at_ms: expires_at_from(tokens.expires_in),
+        // A fresh sign-in with no stated lifetime gets Claude Code's 30 days.
+        refresh_expires_at_ms: match tokens.refresh_token_expires_in {
+            Some(secs) if secs > 0 => now_ms() + secs * 1000,
+            _ => now_ms() + DEFAULT_REFRESH_LIFETIME_MS,
+        },
         scopes: parse_scopes(tokens.scope.as_deref()),
         account_uuid: tokens.account.as_ref().and_then(|a| a.uuid.clone()),
         email: tokens
@@ -530,8 +719,9 @@ pub async fn complete_login(input: &str) -> Result<ClaudeCodeAuthStatus, String>
         apply_profile(&mut auth, &profile);
     }
 
-    write_store(&auth)?;
-    Ok(ClaudeCodeAuthStatus::from_stored(&auth))
+    let status = ClaudeCodeAuthStatus::from_stored(&auth);
+    super::accounts::upsert(auth, super::accounts::AccountSource::SignIn)?;
+    Ok(status)
 }
 
 fn expires_at_from(expires_in: Option<i64>) -> i64 {
@@ -589,6 +779,9 @@ fn apply_profile(auth: &mut StoredAuth, profile: &Value) {
 /// What the adapter needs to authenticate one request.
 #[derive(Debug, Clone)]
 pub struct ClaudeCodeAccess {
+    /// The stored account this token belongs to, so a 401 retry refreshes
+    /// that account even if the user switched main mid-turn.
+    pub account_id: String,
     pub access_token: String,
 }
 
@@ -597,7 +790,7 @@ fn refresh_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn access_of(auth: &StoredAuth) -> Result<ClaudeCodeAccess, String> {
+fn access_of(id: &str, auth: &StoredAuth) -> Result<ClaudeCodeAccess, String> {
     if !auth.has_inference_scope() {
         return Err(
             "This Claude sign-in cannot be used for chat (it was granted without inference access). Sign out and sign in again."
@@ -605,56 +798,195 @@ fn access_of(auth: &StoredAuth) -> Result<ClaudeCodeAccess, String> {
         );
     }
     Ok(ClaudeCodeAccess {
+        account_id: id.to_string(),
         access_token: auth.access_token.clone(),
     })
 }
 
-/// A valid access token, refreshing through the token endpoint when the
-/// stored one is about to expire (or `force` is set, e.g. after a 401).
-pub async fn fresh_access(force: bool) -> Result<ClaudeCodeAccess, String> {
-    let auth = read_store()?.ok_or(SIGNED_OUT_MSG)?;
-    if !force && auth.is_fresh(now_ms()) {
-        return access_of(&auth);
-    }
+fn read_entry(id: &str) -> Result<super::accounts::StoredAccount, String> {
+    super::accounts::load()?
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("No stored Claude account {id}."))
+}
 
+/// A valid access token for the main account, refreshing through the token
+/// endpoint when the stored one expires within five minutes.
+pub async fn fresh_access() -> Result<ClaudeCodeAccess, String> {
+    let (id, _) = read_main()?.ok_or(SIGNED_OUT_MSG)?;
+    fresh_access_for(&id).await
+}
+
+/// A valid access token for one named account. The account list polls every
+/// account's usage through this without making any of them main.
+pub async fn fresh_access_for(id: &str) -> Result<ClaudeCodeAccess, String> {
+    let auth = read_account(id)?;
+    if auth.is_fresh(now_ms()) {
+        return access_of(id, &auth);
+    }
+    refresh_account(id, None).await
+}
+
+/// The API answered 401 to `rejected`. Claude Code's `handleOAuth401Error`:
+/// if the stored token is already a different one (a parallel turn refreshed
+/// it), use that; otherwise refresh even though the clock says the token is
+/// still good — the server's verdict wins over the local expiry.
+pub async fn access_after_rejection(rejected: &ClaudeCodeAccess) -> Result<ClaudeCodeAccess, String> {
+    refresh_account(&rejected.account_id, Some(&rejected.access_token)).await
+}
+
+/// Refresh one account, single-flight. Mirrors Claude Code's
+/// `checkAndRefreshOAuthTokenIfNeeded`: re-read inside the lock and stop if
+/// someone else already refreshed, then refresh, then on failure re-read once
+/// more in case a parallel writer won.
+///
+/// An account imported from Claude Code shares its sign-in with Claude Code,
+/// which refreshes on its own schedule. When Claude Code has already done the
+/// refresh, its file holds the live pair and Aurora's may be dead, so the
+/// file is checked before refreshing and again after a failed refresh. That
+/// file is only read, never written.
+async fn refresh_account(id: &str, rejected: Option<&str>) -> Result<ClaudeCodeAccess, String> {
     let _guard = refresh_lock().lock().await;
 
-    // Re-read inside the lock: a parallel turn may have already rotated it.
-    let auth = read_store()?.ok_or(SIGNED_OUT_MSG)?;
-    if !force && auth.is_fresh(now_ms()) {
-        return access_of(&auth);
+    let entry = read_entry(id)?;
+    let auth = entry.auth;
+    let needs_refresh = match rejected {
+        Some(token) => auth.access_token == token,
+        None => !auth.is_fresh(now_ms()),
+    };
+    if !needs_refresh {
+        return access_of(id, &auth);
     }
-    let failed_token = auth.access_token.clone();
+    let imported = entry.source == super::accounts::AccountSource::ClaudeCodeImport;
 
-    match request_refresh(&auth.refresh_token).await {
-        Ok(tokens) => {
-            let updated = apply_refresh(auth, &tokens);
-            write_store(&updated)?;
-            access_of(&updated)
+    if imported {
+        if let Some(adopted) = adopt_from_claude_code(&auth).await {
+            super::accounts::write_auth_for(id, adopted.clone())?;
+            return access_of(id, &adopted);
         }
-        Err(err) => {
-            // Rotation race: another writer refreshed between our read and the
-            // request. Their pair is the live one.
-            if let Some(current) = read_store()? {
-                if current.access_token != failed_token && current.is_fresh(now_ms()) {
-                    return access_of(&current);
+    }
+
+    let failed_token = auth.access_token.clone();
+    match request_refresh(&auth).await {
+        Ok(tokens) => {
+            let mut updated = apply_refresh(auth, &tokens);
+            // Claude Code re-reads the profile after a refresh when the plan
+            // or tier is missing; a sign-in whose first profile read failed
+            // fills in here instead of staying "Claude plan" forever.
+            if updated.organization_type.is_none()
+                || updated.rate_limit_tier.is_none()
+                || updated.account_uuid.is_none()
+            {
+                if let Some(profile) = fetch_profile(&updated.access_token).await {
+                    apply_profile(&mut updated, &profile);
                 }
             }
-            Err(format!(
-                "Claude token refresh failed: {err}. Sign in again from Settings \u{2192} Providers \u{2192} Claude Code."
-            ))
+            super::accounts::write_auth_for(id, updated.clone())?;
+            access_of(id, &updated)
+        }
+        Err(err) => {
+            if let Ok(current) = read_account(id) {
+                if current.access_token != failed_token && current.is_fresh(now_ms()) {
+                    return access_of(id, &current);
+                }
+                if imported {
+                    // Claude Code refreshed first and our refresh token went
+                    // with it. Its file has the pair that works now.
+                    if let Some(adopted) = adopt_from_claude_code(&current).await {
+                        super::accounts::write_auth_for(id, adopted.clone())?;
+                        return access_of(id, &adopted);
+                    }
+                }
+            }
+            let hint = if imported {
+                "Run `claude` once so Claude Code refreshes it, then try again, or sign in to this account from Aurora so it has its own sign-in."
+            } else {
+                "Sign in again from Settings \u{2192} Providers \u{2192} Claude Code."
+            };
+            crate::logging::log_warn(
+                "claude_code.auth",
+                &format!("refresh failed for account {id} (imported: {imported}): {err}"),
+            );
+            Err(format!("Claude token refresh failed: {err}. {hint}"))
         }
     }
 }
 
-async fn request_refresh(refresh_token: &str) -> Result<TokenResponse, String> {
+/// Claude Code's current pair for the same account as `ours`, when it holds
+/// a newer one that is still good. `None` whenever that cannot be shown:
+/// no file, unreadable, expired too, or signed into a different account.
+async fn adopt_from_claude_code(ours: &StoredAuth) -> Option<StoredAuth> {
+    let path = claude_config_home()?.join(".credentials.json");
+    let raw = tokio::fs::read_to_string(&path).await.ok()?;
+    let theirs = stored_from_cli(&raw).ok()?;
+    if theirs.access_token == ours.access_token || !theirs.is_fresh(now_ms()) {
+        return None;
+    }
+    // Same refresh token means the same grant, so the same account. A
+    // different one could be a rotation or a different account entirely;
+    // only the profile can tell, and a mismatch or no answer means no.
+    if theirs.refresh_token != ours.refresh_token {
+        let ours_uuid = ours.account_uuid.as_deref()?;
+        let profile = fetch_profile(&theirs.access_token).await?;
+        let theirs_uuid = profile.get("account")?.get("uuid")?.as_str()?;
+        if theirs_uuid != ours_uuid {
+            return None;
+        }
+    }
+    Some(adopt_pair(ours.clone(), theirs))
+}
+
+/// Take the token pair from Claude Code's copy, keep everything else Aurora
+/// knows about the account.
+fn adopt_pair(mut ours: StoredAuth, theirs: StoredAuth) -> StoredAuth {
+    ours.access_token = theirs.access_token;
+    ours.refresh_token = theirs.refresh_token;
+    ours.expires_at_ms = theirs.expires_at_ms;
+    if theirs.refresh_expires_at_ms > 0 {
+        ours.refresh_expires_at_ms = theirs.refresh_expires_at_ms;
+    }
+    if !theirs.scopes.is_empty() {
+        ours.scopes = theirs.scopes;
+    }
+    ours.last_refresh = Some(chrono::Utc::now().to_rfc3339());
+    ours
+}
+
+async fn post_refresh(refresh_token: &str, scopes: &[String]) -> Result<TokenResponse, TokenError> {
     post_token(&serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": CLAUDE_CODE_CLIENT_ID,
-        "scope": REFRESH_SCOPES.join(" "),
+        "scope": scopes.join(" "),
     }))
     .await
+}
+
+/// Refresh with the full subscriber scope set; if the server refuses it
+/// (`invalid_scope`), retry once with the scopes this token already has —
+/// Claude Code 2.1.282's `tengu_oauth_refresh_invalid_scope_fallback`. A
+/// token that cannot be widened still refreshes instead of failing.
+async fn request_refresh(auth: &StoredAuth) -> Result<TokenResponse, String> {
+    let wanted: Vec<String> = REFRESH_SCOPES.iter().map(|s| s.to_string()).collect();
+    match post_refresh(&auth.refresh_token, &wanted).await {
+        Ok(tokens) => Ok(tokens),
+        Err(err) if should_retry_with_own_scopes(&err, &auth.scopes, &wanted) => {
+            crate::logging::log_warn(
+                "claude_code.auth",
+                "refresh refused the full scope set; retrying with the token's own scopes",
+            );
+            post_refresh(&auth.refresh_token, &auth.scopes)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Only an `invalid_scope` refusal, and only when there is a different,
+/// non-empty set to fall back to.
+fn should_retry_with_own_scopes(err: &TokenError, own: &[String], wanted: &[String]) -> bool {
+    err.code.as_deref() == Some("invalid_scope") && !own.is_empty() && own != wanted
 }
 
 fn apply_refresh(mut auth: StoredAuth, tokens: &TokenResponse) -> StoredAuth {
@@ -663,6 +995,10 @@ fn apply_refresh(mut auth: StoredAuth, tokens: &TokenResponse) -> StoredAuth {
         auth.refresh_token = refresh.to_string();
     }
     auth.expires_at_ms = expires_at_from(tokens.expires_in);
+    // Claude Code keeps the stored date when a refresh does not restate it.
+    if let Some(secs) = tokens.refresh_token_expires_in.filter(|s| *s > 0) {
+        auth.refresh_expires_at_ms = now_ms() + secs * 1000;
+    }
     let scopes = parse_scopes(tokens.scope.as_deref());
     if !scopes.is_empty() {
         auth.scopes = scopes;
@@ -746,6 +1082,7 @@ mod tests {
             access_token: "old_access".into(),
             refresh_token: "old_refresh".into(),
             expires_at_ms: 1,
+            refresh_expires_at_ms: 42,
             scopes: vec!["user:inference".into()],
             account_uuid: None,
             email: None,
@@ -762,6 +1099,7 @@ mod tests {
                 access_token: "new_access".into(),
                 refresh_token: None,
                 expires_in: Some(3600),
+                refresh_token_expires_in: None,
                 scope: None,
                 account: None,
                 organization: None,
@@ -769,9 +1107,146 @@ mod tests {
         );
         assert_eq!(updated.access_token, "new_access");
         assert_eq!(updated.refresh_token, "old_refresh");
+        assert_eq!(
+            updated.refresh_expires_at_ms, 42,
+            "a refresh that does not restate the sign-in's end keeps the stored one"
+        );
         assert!(updated.expires_at_ms > now_ms());
         assert_eq!(updated.scopes, vec!["user:inference".to_string()]);
         assert!(updated.last_refresh.is_some());
+    }
+
+    /// The shape Claude Code writes (`saveOAuthTokensIfNeeded`), including a
+    /// sibling key Aurora must ignore.
+    #[test]
+    fn reads_claude_codes_credentials_file() {
+        let auth = stored_from_cli(
+            r#"{
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat-a",
+                    "refreshToken": "sk-ant-ort-r",
+                    "expiresAt": 1790000000000,
+                    "scopes": ["user:inference", "user:profile"],
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x"
+                },
+                "mcpOAuth": {}
+            }"#,
+        )
+        .expect("parses");
+        assert_eq!(auth.access_token, "sk-ant-oat-a");
+        assert_eq!(auth.refresh_token, "sk-ant-ort-r");
+        assert_eq!(auth.expires_at_ms, 1_790_000_000_000);
+        assert!(auth.has_inference_scope());
+        let status = ClaudeCodeAuthStatus::from_stored(&auth);
+        assert_eq!(status.plan.as_deref(), Some("max"));
+        assert_eq!(status.rate_limit_tier.as_deref(), Some("default_claude_max_20x"));
+    }
+
+    /// When Claude Code refreshed an imported account first, Aurora takes
+    /// its token pair but keeps who the account is — the CLI file carries no
+    /// email or uuid, so copying it wholesale would blank the account row.
+    #[test]
+    fn adopting_claude_codes_pair_keeps_the_account_identity() {
+        let ours = StoredAuth {
+            version: STORE_VERSION,
+            access_token: "old-a".into(),
+            refresh_token: "old-r".into(),
+            expires_at_ms: 1,
+            refresh_expires_at_ms: 5,
+            scopes: vec!["user:inference".into()],
+            account_uuid: Some("acc-1".into()),
+            email: Some("dev@example.com".into()),
+            display_name: None,
+            organization_uuid: Some("org-1".into()),
+            organization_type: Some("claude_max".into()),
+            rate_limit_tier: None,
+            signed_in_at: None,
+            last_refresh: None,
+        };
+        let theirs = stored_from_cli(
+            r#"{"claudeAiOauth":{"accessToken":"new-a","refreshToken":"new-r","expiresAt":1790000000000,"refreshTokenExpiresAt":1792000000000,"scopes":["user:inference","user:profile"]}}"#,
+        )
+        .expect("parses");
+        let adopted = adopt_pair(ours, theirs);
+        assert_eq!(adopted.access_token, "new-a");
+        assert_eq!(adopted.refresh_token, "new-r");
+        assert_eq!(adopted.expires_at_ms, 1_790_000_000_000);
+        assert_eq!(adopted.refresh_expires_at_ms, 1_792_000_000_000);
+        assert_eq!(adopted.account_uuid.as_deref(), Some("acc-1"));
+        assert_eq!(adopted.email.as_deref(), Some("dev@example.com"));
+        assert_eq!(adopted.organization_type.as_deref(), Some("claude_max"));
+        assert!(adopted.last_refresh.is_some());
+    }
+
+    #[test]
+    fn refuses_a_credentials_file_it_cannot_keep_working() {
+        assert!(stored_from_cli(r#"{}"#).is_err(), "API-key mode has no oauth block");
+        assert!(
+            stored_from_cli(r#"{"claudeAiOauth":{"accessToken":"a","expiresAt":1}}"#).is_err(),
+            "no refresh token means the copy dies within hours"
+        );
+        assert!(stored_from_cli("not json").is_err());
+    }
+
+    /// Claude Code's `omt()`: warn only inside the last three days, round
+    /// up to whole days, and stay quiet when the date is unknown or past.
+    #[test]
+    fn warns_to_sign_in_again_only_in_the_last_three_days() {
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        let now = 1_000_000_000_000;
+        let mut auth = stored_from_cli(
+            r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":0,"scopes":["user:inference"]}}"#,
+        )
+        .expect("parses");
+        assert_eq!(auth.sign_in_again_in_days(now), None, "unknown end date");
+        auth.refresh_expires_at_ms = now + 10 * DAY;
+        assert_eq!(auth.sign_in_again_in_days(now), None, "too far off to mention");
+        auth.refresh_expires_at_ms = now + 3 * DAY;
+        assert_eq!(auth.sign_in_again_in_days(now), Some(3));
+        auth.refresh_expires_at_ms = now + DAY / 2;
+        assert_eq!(auth.sign_in_again_in_days(now), Some(1), "rounded up");
+        auth.refresh_expires_at_ms = now - 1;
+        assert_eq!(auth.sign_in_again_in_days(now), None, "already ended");
+        auth.refresh_expires_at_ms = now + DAY;
+        auth.expires_at_ms = now + 5 * DAY;
+        assert_eq!(
+            auth.sign_in_again_in_days(now),
+            None,
+            "the access token outlives it by more than the window"
+        );
+    }
+
+    #[test]
+    fn retries_with_its_own_scopes_only_on_invalid_scope() {
+        let wanted = vec!["user:profile".to_string(), "user:inference".to_string()];
+        let own = vec!["user:inference".to_string()];
+        let err = |code: Option<&str>| TokenError {
+            message: "HTTP 400".into(),
+            code: code.map(str::to_string),
+        };
+        assert!(should_retry_with_own_scopes(&err(Some("invalid_scope")), &own, &wanted));
+        assert!(!should_retry_with_own_scopes(&err(Some("invalid_grant")), &own, &wanted));
+        assert!(!should_retry_with_own_scopes(&err(None), &own, &wanted));
+        assert!(
+            !should_retry_with_own_scopes(&err(Some("invalid_scope")), &wanted, &wanted),
+            "same set again would fail the same way"
+        );
+        assert!(!should_retry_with_own_scopes(&err(Some("invalid_scope")), &[], &wanted));
+    }
+
+    #[test]
+    fn reads_the_oauth_error_code_in_either_envelope() {
+        assert_eq!(
+            oauth_error_code(r#"{"error":"invalid_scope","error_description":"x"}"#).as_deref(),
+            Some("invalid_scope")
+        );
+        assert_eq!(
+            oauth_error_code(r#"{"type":"error","error":{"type":"invalid_scope","message":"x"}}"#)
+                .as_deref(),
+            Some("invalid_scope")
+        );
+        assert_eq!(oauth_error_code("<html>"), None);
     }
 
     #[test]
@@ -781,6 +1256,7 @@ mod tests {
             access_token: "a".into(),
             refresh_token: "r".into(),
             expires_at_ms: 0,
+            refresh_expires_at_ms: 0,
             scopes: vec![],
             account_uuid: None,
             email: None,
@@ -806,6 +1282,7 @@ mod tests {
             access_token: "a".into(),
             refresh_token: "r".into(),
             expires_at_ms: 0,
+            refresh_expires_at_ms: 0,
             scopes: vec![],
             account_uuid: None,
             email: None,

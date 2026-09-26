@@ -20,7 +20,7 @@
  * offers.
  */
 
-import { useSettingsStore, type LLMModel } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import {
   fetchOpenCodeModels,
@@ -89,7 +89,7 @@ export async function importOpenCodeModels(): Promise<ImportResult> {
   const plan = (await fetchOpenCodeModels()).filter((model) => !model.isFree);
 
   const existing = new Set(
-    useSettingsStore
+    useAgentSettingsStore
       .getState()
       .models.filter((m) => m.providerId === OPENCODE_PROVIDER_ID)
       .map((m) => m.modelKey),
@@ -100,7 +100,7 @@ export async function importOpenCodeModels(): Promise<ImportResult> {
     missing.map(async (model) => toModelRow(model, await lookupForGo(model))),
   );
 
-  const store = useSettingsStore.getState();
+  const store = useAgentSettingsStore.getState();
   for (const row of rows) store.addModel(OPENCODE_PROVIDER_ID, row);
 
   return { added: rows.length, skipped: plan.length - missing.length };

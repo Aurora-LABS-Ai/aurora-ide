@@ -21,7 +21,7 @@
  * a toggle, or a window reload converges on the same rows.
  */
 
-import { useSettingsStore, type LLMModel } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore, type LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import type { ModelReasoning } from "@/kernel/types/database";
 import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/providers/models-dev";
 import {
@@ -184,7 +184,7 @@ export async function syncCursorModelsIntoStore(): Promise<number> {
   // returns so a context-window or reasoning change made during the refresh is
   // not overwritten by a stale pre-await snapshot.
   const existing = new Map(
-    useSettingsStore
+    useAgentSettingsStore
       .getState()
       .models.filter((model) => model.providerId === CURSOR_PROVIDER_ID)
       .map((model) => [model.modelKey, model]),
@@ -193,14 +193,14 @@ export async function syncCursorModelsIntoStore(): Promise<number> {
     toModelRow(model, existing.get(model.stem), catalogs[index]),
   );
 
-  useSettingsStore.getState().replaceModelsForProvider(CURSOR_PROVIDER_ID, rows);
+  useAgentSettingsStore.getState().replaceModelsForProvider(CURSOR_PROVIDER_ID, rows);
   return rows.length;
 }
 
 /** Drop the mirror and the index — on disconnect. */
 export function clearCursorModelsFromStore(): void {
   clearCursorVariants();
-  useSettingsStore.getState().replaceModelsForProvider(CURSOR_PROVIDER_ID, []);
+  useAgentSettingsStore.getState().replaceModelsForProvider(CURSOR_PROVIDER_ID, []);
 }
 
 /**

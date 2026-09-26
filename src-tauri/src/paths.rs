@@ -203,7 +203,7 @@ pub fn typing_assist_dir() -> PathBuf {
 }
 
 /// `<root>/auth/` — machine-managed provider credentials Aurora rotates
-/// itself (`cursor-auth.json`, `claude-code-auth.json`, `codex-accounts.json`).
+/// itself (`cursor-auth.json`, `claude-code-accounts.json`, `codex-accounts.json`).
 ///
 /// Deliberately not `config/` (nobody hand-authors these, and inviting an
 /// editor into a file holding bearer tokens is how they end up in a paste),

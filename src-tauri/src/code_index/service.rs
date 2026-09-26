@@ -12,11 +12,11 @@
 
 use super::persist;
 use super::store::CodeIndex;
-use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use anyhow::{Context, Result};
+use dashmap::DashMap;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Workspaces past this size are not indexed automatically. The build is
 /// linear in file count, so a monorepo would stall the first turn instead of
@@ -37,6 +37,7 @@ pub struct IndexStatus {
     pub skipped_dirs: Vec<String>,
     pub cache_path: String,
     pub cache_bytes: u64,
+    pub reused_files: usize,
 }
 
 /// The answer to "can this workspace be searched right now, and if not, what
@@ -64,13 +65,7 @@ pub struct IndexProbe {
 #[derive(Default)]
 pub struct CodeIndexService {
     indexes: DashMap<PathBuf, Arc<CodeIndex>>,
-    /// Workspaces a file-mutating tool has written to since their index was
-    /// built. The walk fingerprint (file count + newest mtime) has two blind
-    /// spots — an edit landing in the same second as the previously-newest
-    /// file, and a rename, which changes neither number — so a write the
-    /// tools TELL us about outranks the fingerprint. See
-    /// [`invalidate`](Self::invalidate).
-    dirty: DashSet<PathBuf>,
+    workspaces: DashMap<PathBuf, Arc<WorkspaceState>>,
     /// Where cache files are written. `None` means the app's real
     /// `projects/` directory.
     ///
@@ -80,6 +75,19 @@ pub struct CodeIndexService {
     /// by hand. A service that touches real user state must let a test say
     /// where.
     cache_root: Option<PathBuf>,
+}
+
+#[derive(Default)]
+struct WorkspaceState {
+    /// Only this project's builders wait on this lock; other projects continue.
+    build: Mutex<()>,
+    revision: Mutex<Revision>,
+}
+
+#[derive(Default)]
+struct Revision {
+    current: u64,
+    published: u64,
 }
 
 static SERVICE: OnceLock<CodeIndexService> = OnceLock::new();
@@ -116,12 +124,12 @@ impl CodeIndexService {
     pub fn with_cache_root(root: PathBuf) -> Self {
         Self {
             indexes: DashMap::new(),
-            dirty: DashSet::new(),
+            workspaces: DashMap::new(),
             cache_root: Some(root),
         }
     }
 
-    fn cache_path(&self, workspace: &Path) -> Result<PathBuf> {
+    fn project_dir(&self, workspace: &Path) -> Result<PathBuf> {
         if !workspace.is_dir() {
             anyhow::bail!("workspace is not a directory: {}", workspace.display());
         }
@@ -129,170 +137,282 @@ impl CodeIndexService {
             Some(root) => crate::agent_runtime::project_dir::ProjectDirs::with_root(root.clone()),
             None => crate::agent_runtime::project_dir::projects(),
         };
-        Ok(dirs.open_or_create(workspace)?.join("code-index.json"))
+        Ok(dirs.open_or_create(workspace)?)
     }
 
-    /// The index for `workspace`, building it if this process has not yet.
-    ///
-    /// Order: memory, then the on-disk cache, then a fresh build. The cache is
-    /// only a startup optimization — it is never trusted over an explicit
-    /// [`rebuild`](Self::rebuild), and a corrupt or outdated one is silently
-    /// replaced because losing it costs a sub-second rebuild.
-    pub fn get_or_build(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
-        let key = map_key(workspace);
-
-        // A write the tools told us about outranks every freshness check —
-        // including the cache adoption below, which would otherwise re-adopt a
-        // stale index whose fingerprint happens to still match (the
-        // same-second and rename blind spots). Cleared only after the rebuild
-        // succeeds, so a failed build retries next time instead of silently
-        // serving the stale answer.
-        if self.dirty.contains(&key) {
-            let idx = self.auto_rebuild(workspace, AUTO_INDEX_MAX_FILES)?;
-            self.dirty.remove(&key);
-            return Ok(idx);
-        }
-
-        if let Some(existing) = self.indexes.get(&key) {
-            let idx = existing.clone();
-            drop(existing);
-            if !Self::is_stale(&idx, workspace) {
-                return Ok(idx);
-            }
-            // Out of date — whoever changed the tree (the agent, the user in
-            // another editor, a git checkout) does not have to have told us.
-            return self.auto_rebuild(workspace, AUTO_INDEX_MAX_FILES);
-        }
-
-        if let Ok(idx) = self
-            .cache_path(workspace)
-            .and_then(|cache| persist::load(&cache))
-        {
-            if !Self::is_stale(&idx, workspace) {
-                let idx = Arc::new(idx);
-                self.indexes.insert(key, idx.clone());
-                return Ok(idx);
-            }
-        }
-
-        self.auto_rebuild(workspace, AUTO_INDEX_MAX_FILES)
+    /// Shared storage for this project's structural cache, build state,
+    /// settings, and optional AI results. Project metadata resolves collisions.
+    pub fn project_index_dir(&self, workspace: &Path) -> Result<PathBuf> {
+        let directory = self.project_dir(workspace)?.join("code-index");
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("creating {}", directory.display()))?;
+        Ok(directory)
     }
 
-    /// The automatic path's guarded build: refuse rather than stall a turn on
-    /// a monorepo. The count comes from the same walk `is_stale` uses, so it
-    /// reads no file contents. `cap` is a parameter only so a test does not
-    /// have to create 25,001 files.
-    fn auto_rebuild(&self, workspace: &Path, cap: usize) -> Result<Arc<CodeIndex>> {
-        let (files, _) = super::walk::signature(workspace);
-        if files > cap {
-            anyhow::bail!(
-                "workspace has {files} indexable files, past the automatic-index cap of {cap}; \
-                 build it explicitly from Settings → Agent (Rebuild index)"
-            );
-        }
-        self.rebuild(workspace)
+    fn cache_path(&self, workspace: &Path) -> Result<PathBuf> {
+        Ok(self.project_index_dir(workspace)?.join("structural.json"))
     }
 
-    /// Has the tree changed since this index was built?
-    ///
-    /// Compares a fresh walk fingerprint (file count + newest mtime) against
-    /// the one recorded at build time. The walk reads no file contents, so this
-    /// costs a small fraction of a rebuild and can run before every answer.
-    ///
-    /// mtime has one-second resolution, so an edit landing in the same second
-    /// as the previous newest file is invisible here. That residual gap is why
-    /// the `code` tool also exposes an explicit `refresh`.
-    fn is_stale(idx: &CodeIndex, workspace: &Path) -> bool {
-        Self::is_stale_against(idx, super::walk::signature(workspace))
+    fn workspace_state(&self, workspace: &Path) -> Arc<WorkspaceState> {
+        self.workspaces
+            .entry(map_key(workspace))
+            .or_default()
+            .clone()
     }
 
-    /// The comparison on its own, for callers that already paid for a walk.
-    fn is_stale_against(idx: &CodeIndex, signature: (usize, u64)) -> bool {
-        // A zero fingerprint means the index predates this field; treat it as
-        // stale once so it is rebuilt with one.
-        if idx.stats.signature == (0, 0) {
-            return true;
-        }
-        signature != idx.stats.signature
-    }
-
-    /// Is this workspace ready to answer, and if not, how big is the job?
-    ///
-    /// Walks the tree once and adopts a still-valid cache; it never parses a
-    /// source file, so it is safe to call every time a project is opened.
-    /// Adopting the cache is the point as much as the reporting is — a project
-    /// indexed in an earlier session becomes answerable here, before the first
-    /// message rather than during it.
-    pub fn probe(&self, workspace: &Path) -> IndexProbe {
-        let signature = super::walk::signature(workspace);
-        let (indexable_files, _) = signature;
-        IndexProbe {
-            ready: self.adopt_current_cache(workspace, signature),
-            indexable_files,
-            over_auto_cap: indexable_files > AUTO_INDEX_MAX_FILES,
-        }
-    }
-
-    /// True when an index for `workspace` is in memory and current, loading a
-    /// matching cache to get there. Never builds.
-    fn adopt_current_cache(&self, workspace: &Path, signature: (usize, u64)) -> bool {
-        let key = map_key(workspace);
-        if let Some(existing) = self.indexes.get(&key) {
-            let idx = existing.clone();
-            drop(existing);
-            return !Self::is_stale_against(&idx, signature);
-        }
-        let cache = match self.cache_path(workspace) {
-            Ok(cache) => cache,
-            Err(e) => {
-                crate::logging::log_warn(
-                    "code_index",
-                    &format!("cannot resolve cache for {}: {e:#}", workspace.display()),
-                );
-                return false;
+    fn load_cache(&self, workspace: &Path) -> Result<CodeIndex> {
+        let cache = self.cache_path(workspace)?;
+        // Retain the previous layout until the new file is fully written.
+        // Older extraction formats are rebuilt, never deleted or rewritten in
+        // place by migration.
+        let index = match persist::load(&cache) {
+            Ok(index) => index,
+            Err(current) => {
+                let legacy = self.project_dir(workspace)?.join("code-index.json");
+                // The CURRENT file's error is the one that explains the state,
+                // and it used to be discarded: a current cache one format
+                // behind, beside a legacy file several behind, reported only
+                // the legacy file's failure. Both are reported here, current
+                // first, because "which of the two stopped this" is the whole
+                // question.
+                persist::load(&legacy).map_err(|fallback| {
+                    current.context(format!(
+                        "and the previous {} could not be read either: {fallback:#}",
+                        legacy.display()
+                    ))
+                })?
             }
         };
-        match persist::load(&cache) {
-            Ok(idx) if !Self::is_stale_against(&idx, signature) => {
-                self.indexes.insert(key, Arc::new(idx));
-                true
+        anyhow::ensure!(
+            map_key(&index.root) == map_key(workspace),
+            "cached index belongs to another workspace"
+        );
+        Ok(index)
+    }
+
+    /// Reuse a current index or build one. Concurrent callers for one project
+    /// wait for the first builder and then reuse its published result.
+    pub fn get_or_build(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
+        let state = self.workspace_state(workspace);
+        let _build = state
+            .build
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index build lock poisoned"))?;
+        let signature = super::walk::signature_checked(workspace)?;
+        if self.adopt_current_cache(workspace, signature, &state)? {
+            return self
+                .peek(workspace)
+                .context("published index is unavailable");
+        }
+        anyhow::ensure!(super::jobs::settings(&self.project_index_dir(workspace)?)?.auto_build,
+            "Automatic indexing is off for this project. Build its index in Settings → Agent → Code index, or use grep.");
+        self.auto_rebuild_locked(workspace, AUTO_INDEX_MAX_FILES, &state)
+    }
+
+    #[cfg(test)]
+    fn auto_rebuild(&self, workspace: &Path, cap: usize) -> Result<Arc<CodeIndex>> {
+        let state = self.workspace_state(workspace);
+        let _build = state.build.lock().unwrap();
+        self.auto_rebuild_locked(workspace, cap, &state)
+    }
+
+    fn auto_rebuild_locked(
+        &self,
+        workspace: &Path,
+        cap: usize,
+        state: &WorkspaceState,
+    ) -> Result<Arc<CodeIndex>> {
+        let (files, _) = super::walk::discover(workspace);
+        if files.len() > cap {
+            anyhow::bail!(
+                "workspace has {} indexable files, past the automatic-index cap of {cap}; \
+                 build it explicitly from Settings → Agent (Rebuild index)",
+                files.len()
+            );
+        }
+        let previous = self.peek(workspace).or_else(|| self.load_cache(workspace).ok().map(Arc::new));
+        self.rebuild_locked(workspace, state, |root| CodeIndex::build_incremental(root, previous.as_deref(), &|_, _, _| {}))
+    }
+
+    fn is_stale_against(idx: &CodeIndex, signature: (usize, u64)) -> bool {
+        idx.stats.signature == (0, 0) || signature != idx.stats.signature
+    }
+
+    /// Probe content freshness without parsing or starting a build. A pending
+    /// explicit invalidation always takes precedence over a matching cache.
+    pub fn probe(&self, workspace: &Path) -> IndexProbe {
+        let signature = match super::walk::signature_checked(workspace) {
+            Ok(signature) => signature,
+            Err(error) => {
+                crate::logging::log_warn(
+                    "code_index",
+                    &format!("probing {}: {error:#}", workspace.display()),
+                );
+                return IndexProbe {
+                    ready: false,
+                    indexable_files: 0,
+                    over_auto_cap: false,
+                };
             }
-            _ => false,
+        };
+        let state = self.workspace_state(workspace);
+        // Polling a build must not wait for the build it is reporting on.
+        let ready = match state.build.try_lock() {
+            Ok(_guard) => self
+                .adopt_current_cache(workspace, signature, &state)
+                .unwrap_or_else(|error| {
+                    crate::logging::log_warn(
+                        "code_index",
+                        &format!("loading {}: {error:#}", workspace.display()),
+                    );
+                    false
+                }),
+            Err(_) => false,
+        };
+        IndexProbe {
+            ready,
+            indexable_files: signature.0,
+            over_auto_cap: signature.0 > AUTO_INDEX_MAX_FILES,
         }
     }
 
-    /// Build from source and replace whatever was cached.
-    pub fn rebuild(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
-        // A path that is not a directory cannot be a workspace, and building
-        // "successfully" from one produces an empty index whose cache file
-        // outlives the mistake. Found as real pollution: the turn-driver
-        // tests run turns with fixture roots like `C:/project-a`, and every
-        // `cargo test` wrote an empty cache for it into the user's real
-        // AppData. Refusing here protects the product the same way (a
-        // deleted project must error, not answer from an empty index).
-        if !workspace.is_dir() {
-            anyhow::bail!(
-                "workspace is not a directory: {} — nothing to index",
-                workspace.display()
-            );
+    /// Caller holds the project's build lock, preventing cache adoption from
+    /// overwriting a newer index while an explicit build publishes.
+    fn adopt_current_cache(
+        &self,
+        workspace: &Path,
+        signature: (usize, u64),
+        state: &WorkspaceState,
+    ) -> Result<bool> {
+        let revision = state
+            .revision
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index revision lock poisoned"))?;
+        if revision.current != revision.published {
+            return Ok(false);
         }
-        let idx = Arc::new(CodeIndex::build(workspace)?);
-        // A failed cache write must not fail the build — the index is already
-        // usable in memory, and the only cost is rebuilding next launch.
-        if let Err(e) = self
-            .cache_path(workspace)
-            .and_then(|cache| persist::save(&idx, &cache))
-        {
+        if let Some(existing) = self.indexes.get(&map_key(workspace)) {
+            return Ok(!Self::is_stale_against(&existing, signature));
+        }
+        let index = match self.load_cache(workspace) {
+            Ok(index) => index,
+            Err(error) => {
+                // Not ready, and previously not ready for no stated reason.
+                // "Not indexed" over a project that was indexed minutes ago is
+                // exactly the moment someone needs to know whether the cache
+                // was written by an older format, belongs elsewhere, or could
+                // not be read at all. Rebuilding is still the answer; the log
+                // is what makes it an explanation instead of a guess.
+                crate::logging::log_warn(
+                    "code_index",
+                    &format!(
+                        "saved index for {} cannot be used, a build will replace it: {error:#}",
+                        workspace.display()
+                    ),
+                );
+                return Ok(false);
+            }
+        };
+        if Self::is_stale_against(&index, signature) {
+            return Ok(false);
+        }
+        let index = Arc::new(index);
+        let cache = self.cache_path(workspace)?;
+        if !cache.is_file() {
+            // A valid legacy cache is copied forward without changing the old
+            // file. Failure is explicit and leaves its previous owner intact.
+            persist::save(&index, &cache)?;
+        }
+        self.indexes.insert(map_key(workspace), index);
+        Ok(true)
+    }
+
+    /// Build only this workspace. No active-project UI state is consulted.
+    pub fn rebuild(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
+        let state = self.workspace_state(workspace);
+        let _build = state
+            .build
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index build lock poisoned"))?;
+        let previous = self.peek(workspace).or_else(|| self.load_cache(workspace).ok().map(Arc::new));
+        self.rebuild_locked(workspace, &state, |root| CodeIndex::build_incremental(root, previous.as_deref(), &|_, _, _| {}))
+    }
+
+    /// Cancellation is checked around parsing and before publication. The
+    /// parser's worker threads finish their current build without publishing it.
+    pub fn rebuild_with_progress(
+        &self, workspace: &Path, cancel: &tokio_util::sync::CancellationToken,
+        progress: &(dyn Fn(usize, usize, &str) + Sync),
+    ) -> Result<Arc<CodeIndex>> {
+        let state = self.workspace_state(workspace);
+        let _build = state
+            .build
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index build lock poisoned"))?;
+        anyhow::ensure!(!cancel.is_cancelled(), "Build cancelled.");
+        let previous = self.peek(workspace).or_else(|| self.load_cache(workspace).ok().map(Arc::new));
+        self.rebuild_locked_checked(workspace, &state, |root| CodeIndex::build_incremental(root, previous.as_deref(), progress), || {
+            cancel.is_cancelled()
+        })
+    }
+
+    fn rebuild_locked(
+        &self,
+        workspace: &Path,
+        state: &WorkspaceState,
+        build: impl FnOnce(&Path) -> Result<CodeIndex>,
+    ) -> Result<Arc<CodeIndex>> {
+        self.rebuild_locked_checked(workspace, state, build, || false)
+    }
+
+    fn rebuild_locked_checked(
+        &self,
+        workspace: &Path,
+        state: &WorkspaceState,
+        build: impl FnOnce(&Path) -> Result<CodeIndex>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Arc<CodeIndex>> {
+        let started_revision = state
+            .revision
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index revision lock poisoned"))?
+            .current;
+        let before = super::walk::signature_checked(workspace)?;
+        let index = Arc::new(build(workspace)?);
+        // A few bad files never cost the whole project its index. The build is
+        // published and names them: `coverage_gap` tells the model which files
+        // are missing, so an absent usage there is not read as proof.
+        if index.stats.files_failed > 0 {
             crate::logging::log_warn(
                 "code_index",
-                &format!("could not cache {}: {e:#}", workspace.display()),
+                &format!(
+                    "{}: indexed without {} file(s) that could not be read or parsed: {}",
+                    workspace.display(),
+                    index.stats.files_failed,
+                    index.stats.failed_files.join(", ")
+                ),
             );
         }
-        self.indexes.insert(map_key(workspace), idx.clone());
-        // A fresh build read the tree as it is now; whatever write flagged the
-        // workspace dirty is included in it.
-        self.dirty.remove(&map_key(workspace));
-        Ok(idx)
+        let after = super::walk::signature_checked(workspace)?;
+        anyhow::ensure!(
+            before == after && index.stats.signature == after,
+            "project changed while indexing; previous index retained, rebuild again"
+        );
+        let mut revision = state
+            .revision
+            .lock()
+            .map_err(|_| anyhow::anyhow!("index revision lock poisoned"))?;
+        anyhow::ensure!(
+            revision.current == started_revision,
+            "project was edited while indexing; previous index retained, rebuild again"
+        );
+        anyhow::ensure!(!cancelled(), "Build cancelled.");
+        // Persist before changing memory, and hold the revision guard through
+        // publication. A later invalidation remains dirty for the next query.
+        persist::save(&index, &self.cache_path(workspace)?)?;
+        self.indexes.insert(map_key(workspace), index.clone());
+        revision.published = started_revision;
+        Ok(index)
     }
 
     /// What is currently known, without building anything. Drives the Settings
@@ -307,7 +427,11 @@ impl CodeIndexService {
             PathBuf::new()
         });
         let cache_bytes = std::fs::metadata(&cache).map(|m| m.len()).unwrap_or(0);
-        match self.indexes.get(&map_key(workspace)) {
+        // Settings can describe a saved index before a query adopts it. It is
+        // never inserted into the live map without a freshness check.
+        let saved = if self.peek(workspace).is_none() { self.load_cache(workspace).ok() } else { None };
+        let current = self.peek(workspace).or_else(|| saved.map(Arc::new));
+        match current {
             Some(idx) => IndexStatus {
                 workspace: workspace.display().to_string(),
                 built: true,
@@ -319,6 +443,7 @@ impl CodeIndexService {
                 skipped_dirs: idx.stats.skipped_dirs.clone(),
                 cache_path: cache.display().to_string(),
                 cache_bytes,
+                reused_files: idx.stats.reused_files,
             },
             None => IndexStatus {
                 workspace: workspace.display().to_string(),
@@ -331,28 +456,20 @@ impl CodeIndexService {
                 skipped_dirs: Vec::new(),
                 cache_path: cache.display().to_string(),
                 cache_bytes,
+                reused_files: 0,
             },
         }
     }
 
-    /// A file-mutating tool just succeeded in `workspace`: the next question
-    /// must rebuild rather than trust any freshness check.
-    ///
-    /// Wired from the write tools (`file_edit` / `file_write` /
-    /// `search_replace` / `move_path` / `delete_path`) — the seam §5.2a of the
-    /// handoff doc said was the actual work. It closes the walk fingerprint's
-    /// two blind spots: an edit landing in the same second as the
-    /// previously-newest mtime, and a rename, which changes neither the file
-    /// count nor the newest mtime.
-    ///
-    /// Deliberately a FLAG, not an eviction. The in-memory index stays — it is
-    /// what [`peek`](Self::peek) serves the edit-impact note from, and its
-    /// pre-edit state is exactly what an impact answer wants. The flag is read
-    /// by [`get_or_build`](Self::get_or_build) ahead of both the memory and
-    /// cache freshness checks, because a fingerprint that still matches is the
-    /// precise failure this exists to override.
+    /// Record a write without evicting the pre-edit index used by impact notes.
+    /// A build can only clear the revision it captured before reading source.
     pub fn invalidate(&self, workspace: &Path) {
-        self.dirty.insert(map_key(workspace));
+        let state = self.workspace_state(workspace);
+        let mut revision = state
+            .revision
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        revision.current = revision.current.wrapping_add(1);
     }
 
     /// The index already in memory for `workspace`, if any. Never loads a
@@ -363,11 +480,269 @@ impl CodeIndexService {
             .get(&map_key(workspace))
             .map(|entry| entry.clone())
     }
+
+    /// Serialize removal with automatic and manual builders; never recreate a
+    /// cache after its files were deleted by an earlier in-flight build.
+    pub fn remove_saved(&self, workspace: &Path, remove: impl FnOnce() -> Result<()>) -> Result<()> {
+        let state = self.workspace_state(workspace);
+        let _guard = state.build.try_lock().map_err(|_| anyhow::anyhow!("This project is being indexed. Try deleting after the build finishes."))?;
+        remove()?;
+        self.indexes.remove(&map_key(workspace));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Why does the header say "Not indexed" for a project that has a saved
+    /// index on disk? `probe` answers with one boolean; this prints the two
+    /// facts that boolean is made of, for a real workspace and the real saved
+    /// cache — which a test cannot otherwise reach, because the projects root
+    /// resolves to scratch space under `cfg(test)` so no test can write into
+    /// the user's data.
+    ///
+    /// ```sh
+    /// cd src-tauri
+    /// AURORA_INDEX_ROOT="C:/path/to/project" \
+    /// AURORA_PROJECTS_ROOT="$LOCALAPPDATA/AuroraIDE/projects" \
+    ///   cargo test --lib why_this_workspace_is_not_ready -- --ignored --nocapture
+    /// ```
+    ///
+    /// A signature mismatch means the tree moved since the build: the count is
+    /// how many source files are found now, and the hash covers their contents
+    /// plus the TypeScript configuration they resolve through. A load failure
+    /// names itself, an older cache format being the usual one. If both agree,
+    /// the index is fine and the panel reporting otherwise is the bug.
+    ///
+    /// Read-only: it never calls `probe`, which may copy a legacy cache
+    /// forward, and never builds.
+    #[test]
+    #[ignore = "needs AURORA_INDEX_ROOT and AURORA_PROJECTS_ROOT pointing at a real workspace and its saved indexes"]
+    fn why_this_workspace_is_not_ready() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let projects = std::env::var("AURORA_PROJECTS_ROOT").expect("set AURORA_PROJECTS_ROOT");
+        let workspace = Path::new(&root);
+        let service = CodeIndexService::with_cache_root(PathBuf::from(projects));
+
+        let signature = super::super::walk::signature_checked(workspace);
+        println!("workspace now : {signature:?}");
+        match service.cache_path(workspace) {
+            Ok(path) => println!(
+                "cache file    : {} ({})",
+                path.display(),
+                if path.is_file() { "present" } else { "MISSING" }
+            ),
+            Err(error) => println!("cache file    : unresolvable: {error:#}"),
+        }
+        match service.load_cache(workspace) {
+            Ok(index) => {
+                println!("cache says    : {:?}", index.stats.signature);
+                println!(
+                    "verdict       : {}",
+                    match signature {
+                        Ok(now) if now == index.stats.signature =>
+                            "READY — the saved index is current; a panel saying otherwise is wrong",
+                        Ok(_) => "STALE — the tree changed since the build",
+                        Err(ref error) => {
+                            println!("workspace err : {error:#}");
+                            "workspace could not be read"
+                        }
+                    }
+                );
+            }
+            Err(error) => println!("verdict       : CACHE UNUSABLE — {error:#}"),
+        }
+    }
+
+    #[test]
+    fn manual_only_never_builds_or_serves_a_changed_index_automatically() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("source"); std::fs::create_dir(&workspace).unwrap();
+        let source = workspace.join("a.ts"); std::fs::write(&source, "function first() {}\n").unwrap();
+        let service = CodeIndexService::with_cache_root(temp.path().join("projects"));
+        let directory = service.project_index_dir(&workspace).unwrap();
+        super::super::jobs::save_settings(&directory, &super::super::jobs::IndexSettings { auto_build:false, ..Default::default() }).unwrap();
+        assert!(service.get_or_build(&workspace).is_err());
+        service.rebuild(&workspace).unwrap();
+        assert!(service.get_or_build(&workspace).is_ok());
+        std::fs::write(&source, "function other() {}\n").unwrap();
+        assert!(service.get_or_build(&workspace).is_err());
+    }
+
+    #[test]
+    fn removal_is_blocked_by_an_automatic_builder_and_clears_memory_afterwards() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = CodeIndexService::with_cache_root(temp.path().join("projects"));
+        let state = service.workspace_state(temp.path());
+        let guard = state.build.lock().unwrap();
+        assert!(service.remove_saved(temp.path(), || panic!("must not delete during a build")).is_err());
+        drop(guard);
+        std::fs::write(temp.path().join("a.ts"), "function f() {}\n").unwrap();
+        service.rebuild(temp.path()).unwrap();
+        assert!(service.peek(temp.path()).is_some());
+        service.remove_saved(temp.path(), || Ok(())).unwrap();
+        assert!(service.peek(temp.path()).is_none());
+    }
+
+    #[test]
+    #[ignore = "needs AURORA_INDEX_ROOT pointing at a real workspace"]
+    fn fingerprint_cost_over_a_real_workspace() {
+        let workspace =
+            PathBuf::from(std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT"));
+        for attempt in 0..5 {
+            let start = std::time::Instant::now();
+            let signature = super::super::walk::signature_checked(&workspace).unwrap();
+            println!(
+                "fingerprint {attempt}: {} files, {} ms",
+                signature.0,
+                start.elapsed().as_millis()
+            );
+        }
+    }
+
+    #[test]
+    fn same_names_and_lossy_slug_collisions_keep_indexes_separate() {
+        let root = tempfile::tempdir().unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        let paths = ["one/shared", "two/shared", "a/b", "a-b"];
+        let mut cache_paths = std::collections::HashSet::new();
+        for (n, path) in paths.iter().enumerate() {
+            let workspace = root.path().join(path);
+            std::fs::create_dir_all(&workspace).unwrap();
+            std::fs::write(
+                workspace.join("a.rs"),
+                format!("pub fn project_{n}() {{}}\n"),
+            )
+            .unwrap();
+            let index = svc.rebuild(&workspace).unwrap();
+            assert_eq!(index.definitions(&format!("project_{n}")).len(), 1);
+            assert!(cache_paths.insert(svc.cache_path(&workspace).unwrap()));
+        }
+        for (n, path) in paths.iter().enumerate() {
+            let index = persist::load(&svc.cache_path(&root.path().join(path)).unwrap()).unwrap();
+            assert_eq!(index.definitions(&format!("project_{n}")).len(), 1);
+            assert_eq!(index.symbols.len(), 1);
+        }
+    }
+
+    #[test]
+    fn legacy_cache_is_copied_into_the_project_index_folder_without_deleting_it() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.rs"), "pub fn original() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        let legacy = svc.project_dir(&workspace).unwrap().join("code-index.json");
+        persist::save(&CodeIndex::build(&workspace).unwrap(), &legacy).unwrap();
+        let original = std::fs::read(&legacy).unwrap();
+        assert!(svc.probe(&workspace).ready);
+        assert_eq!(std::fs::read(&legacy).unwrap(), original);
+        assert!(svc.cache_path(&workspace).unwrap().is_file());
+        assert_eq!(
+            svc.peek(&workspace).unwrap().definitions("original").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn dirty_probe_and_external_rename_do_not_serve_ready() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("old.rs"), "pub fn only() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        svc.rebuild(&workspace).unwrap();
+        svc.invalidate(&workspace);
+        assert!(
+            !svc.probe(&workspace).ready,
+            "an explicit edit always makes the index dirty"
+        );
+        svc.rebuild(&workspace).unwrap();
+        std::fs::rename(workspace.join("old.rs"), workspace.join("new.rs")).unwrap();
+        assert!(
+            !svc.probe(&workspace).ready,
+            "a rename preserves mtime but changes the index"
+        );
+        let current = svc.get_or_build(&workspace).unwrap();
+        assert_eq!(current.files[0].path, "new.rs");
+    }
+
+    #[test]
+    fn failed_or_edited_build_keeps_previous_memory_and_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.rs"), "pub fn before() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        let original = svc.rebuild(&workspace).unwrap();
+        let cache = svc.cache_path(&workspace).unwrap();
+        let bytes = std::fs::read(&cache).unwrap();
+        let state = svc.workspace_state(&workspace);
+        let _guard = state.build.lock().unwrap();
+        let failed = svc.rebuild_locked(&workspace, &state, |_| anyhow::bail!("interrupted"));
+        assert!(failed.is_err());
+        let edited = svc.rebuild_locked(&workspace, &state, |path| {
+            let index = CodeIndex::build(path)?;
+            svc.invalidate(path);
+            Ok(index)
+        });
+        assert!(edited
+            .unwrap_err()
+            .to_string()
+            .contains("edited while indexing"));
+        let cancelled = svc.rebuild_locked_checked(&workspace, &state, CodeIndex::build, || true);
+        assert!(cancelled.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(std::fs::read(&cache).unwrap(), bytes);
+        assert!(Arc::ptr_eq(&original, &svc.peek(&workspace).unwrap()));
+        assert!(!svc.probe(&workspace).ready);
+    }
+
+    #[test]
+    fn an_external_write_during_a_build_rejects_the_new_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.rs"), "pub fn before() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        let original = svc.rebuild(&workspace).unwrap();
+        let state = svc.workspace_state(&workspace);
+        let _guard = state.build.lock().unwrap();
+        let result = svc.rebuild_locked(&workspace, &state, |path| {
+            let index = CodeIndex::build(path)?;
+            std::fs::write(path.join("a.rs"), "pub fn after() {}\n")?;
+            Ok(index)
+        });
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("changed while indexing"));
+        assert!(Arc::ptr_eq(&original, &svc.peek(&workspace).unwrap()));
+    }
+
+    #[test]
+    fn concurrent_automatic_queries_share_one_published_build() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.rs"), "pub fn shared() {}\n").unwrap();
+        let svc = CodeIndexService::with_cache_root(root.path().join("projects"));
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        svc.get_or_build(&workspace).unwrap()
+                    })
+                })
+                .collect();
+            let results: Vec<_> = jobs.into_iter().map(|job| job.join().unwrap()).collect();
+            assert!(results.iter().all(|index| Arc::ptr_eq(index, &results[0])));
+        });
+        assert!(svc.probe(&workspace).ready);
+    }
 
     #[test]
     fn building_twenty_five_projects_keeps_every_project_cache() {
@@ -381,8 +756,12 @@ mod tests {
             std::fs::write(workspace.join("a.rs"), "pub fn only() {}\n").unwrap();
             svc.rebuild(&workspace).unwrap();
             let cache = svc.cache_path(&workspace).unwrap();
-            assert_eq!(cache.file_name().unwrap(), "code-index.json");
-            assert_eq!(cache.parent().unwrap().parent().unwrap(), projects);
+            assert_eq!(cache.file_name().unwrap(), "structural.json");
+            assert_eq!(cache.parent().unwrap().file_name().unwrap(), "code-index");
+            assert_eq!(
+                cache.parent().unwrap().parent().unwrap().parent().unwrap(),
+                projects
+            );
             assert!(cache.is_file());
             if n == 0 {
                 first = Some((cache.clone(), std::fs::read(&cache).unwrap()));
@@ -424,11 +803,7 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
-        assert_eq!(
-            files.len(),
-            2,
-            "only project.json and the replacement cache"
-        );
+        assert_eq!(files.len(), 1, "only the replacement structural cache");
     }
 
     #[test]
@@ -534,7 +909,8 @@ mod tests {
         // A fresh service is a fresh process: memory is empty, only the cache
         // file survives.
         let next = CodeIndexService::with_cache_root(cache);
-        assert!(!next.status(dir.path()).built, "memory starts empty");
+        assert!(next.peek(dir.path()).is_none(), "memory starts empty");
+        assert!(next.status(dir.path()).built, "settings can describe the saved index");
         assert!(next.probe(dir.path()).ready, "the cache should be adopted");
         assert!(
             next.status(dir.path()).built,
@@ -594,11 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn invalidate_overrides_a_fingerprint_that_still_matches() {
-        // The blind window the flag exists for: an edit whose mtime the walk
-        // cannot distinguish from the state the index was built against.
-        // Simulated by writing new content and setting the mtime BACK — the
-        // permanent version of "landed in the same second".
+    fn an_external_edit_with_preserved_mtime_rebuilds_without_invalidation() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("a.rs");
         std::fs::write(&f, "pub fn before() {}\n").unwrap();
@@ -614,23 +986,14 @@ mod tests {
             .set_modified(original_mtime)
             .unwrap();
 
-        // Precondition: the fingerprint alone genuinely cannot see this write.
-        assert!(
-            svc.get_or_build(dir.path())
-                .unwrap()
-                .definitions("after")
-                .is_empty(),
-            "fixture broken — the fingerprint noticed the write, so this test proves nothing"
-        );
-
-        svc.invalidate(dir.path());
+        assert!(!svc.probe(dir.path()).ready);
         assert_eq!(
             svc.get_or_build(dir.path())
                 .unwrap()
                 .definitions("after")
                 .len(),
             1,
-            "a write the tools reported must beat a matching fingerprint"
+            "content hashing must detect external writes even with the original mtime"
         );
     }
 

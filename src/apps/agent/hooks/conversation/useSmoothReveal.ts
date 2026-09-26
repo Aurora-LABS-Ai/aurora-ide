@@ -12,9 +12,24 @@
  *   - gentle as it catches up (the eased tail is what reads as "smooth"),
  *   - snaps to full the moment streaming ends (no trailing lag),
  *   - honours `prefers-reduced-motion` (returns the target verbatim).
+ *
+ * `pace` (Transcript → Text streaming) picks the curve. `eased` is the one
+ * described above and the default. `steady` plays the stream back at the rate
+ * it arrived, a fifth of a second late (`steady-reveal.ts`). `instant` shows
+ * every token the frame it lands. All three snap to the full text when the
+ * segment stops streaming.
  */
 
 import { useEffect, useRef, useState } from "react";
+
+import type { TranscriptTextPace } from "@/apps/agent/theme/appearance-prefs";
+import {
+  createSteadyTrack,
+  recordArrival,
+  steadyDone,
+  steadyLength,
+  type SteadyTrack,
+} from "@/apps/agent/hooks/conversation/steady-reveal";
 
 /** Fraction of the remaining gap to close per 60fps frame. */
 const CATCH_UP_PER_FRAME = 0.2;
@@ -63,8 +78,13 @@ const prefersReducedMotion = (): boolean =>
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-export function useSmoothReveal(target: string, active: boolean): string {
-  const reduce = prefersReducedMotion();
+export function useSmoothReveal(
+  target: string,
+  active: boolean,
+  pace: TranscriptTextPace = "eased",
+): string {
+  // Instant is reduced motion by choice: no curve, the target as it stands.
+  const reduce = pace === "instant" || prefersReducedMotion();
   // Initialise to whatever text is ALREADY present, not "". A fresh streaming
   // message mounts empty and then eases as tokens arrive (smooth). But when you
   // re-open a chat whose turn has been running in the background, the message
@@ -77,6 +97,10 @@ export function useSmoothReveal(target: string, active: boolean): string {
   const rafRef = useRef<number | null>(null);
   /** Timestamp of the previous reveal frame, so the advance can be timed. */
   const lastFrameRef = useRef<number | null>(null);
+  /** Arrival record for `steady`. Rebuilt whenever the curve changes, so a
+   *  switch mid-stream starts from what is on screen, not from the start. */
+  const trackRef = useRef<SteadyTrack | null>(null);
+  const trackPaceRef = useRef<TranscriptTextPace | null>(null);
 
   useEffect(() => {
     targetRef.current = target;
@@ -88,6 +112,7 @@ export function useSmoothReveal(target: string, active: boolean): string {
         rafRef.current = null;
       }
       shownLenRef.current = target.length;
+      trackRef.current = null;
       // eslint-disable-next-line react-hooks/set-state-in-effect -- show full text when not animating
       setShown(target);
       return;
@@ -95,33 +120,63 @@ export function useSmoothReveal(target: string, active: boolean): string {
 
     // Streaming content only ever grows, so a shorter target means the content
     // was swapped (thread switch / retry) — resync from the start.
-    if (shownLenRef.current > target.length) {
+    const swapped = shownLenRef.current > target.length;
+    if (swapped) {
       shownLenRef.current = 0;
     }
 
+    if (pace === "steady") {
+      // `performance.now()` on both sides, never the rAF timestamp: arrivals are
+      // stamped here, outside any frame, and the two clocks must be the same one.
+      const now = performance.now();
+      if (swapped || trackRef.current === null || trackPaceRef.current !== pace) {
+        trackRef.current = createSteadyTrack(now, shownLenRef.current);
+      }
+      recordArrival(trackRef.current, now, target.length);
+    }
+    trackPaceRef.current = pace;
+
     if (rafRef.current != null) return; // a loop is already converging
 
-    const step = (now: number) => {
+    const step = (frameTime: number) => {
       const tgt = targetRef.current;
       const cur = shownLenRef.current;
+      const track = trackPaceRef.current === "steady" ? trackRef.current : null;
       if (cur >= tgt.length) {
         rafRef.current = null;
         lastFrameRef.current = null;
         return;
       }
-      // First frame of a run has no predecessor to measure against; assume one
-      // reference frame rather than 0, which would advance by the floor only.
-      const elapsed = lastFrameRef.current === null ? REFERENCE_FRAME_MS : now - lastFrameRef.current;
-      lastFrameRef.current = now;
-      const next = Math.min(tgt.length, cur + revealAdvance(tgt.length - cur, elapsed));
-      shownLenRef.current = next;
-      setShown(tgt.slice(0, next));
+      let next: number;
+      if (track) {
+        const now = performance.now();
+        // Never backwards: a resync or a switch of curve can leave the track
+        // behind what is already drawn, and text must not un-type itself.
+        next = Math.min(tgt.length, Math.max(cur, steadyLength(track, now)));
+        if (next === cur && steadyDone(track, now)) {
+          // Everything recorded is on screen; the next arrival restarts the loop.
+          rafRef.current = null;
+          lastFrameRef.current = null;
+          return;
+        }
+      } else {
+        // First frame of a run has no predecessor to measure against; assume
+        // one reference frame rather than 0, which would advance by the floor.
+        const elapsed =
+          lastFrameRef.current === null ? REFERENCE_FRAME_MS : frameTime - lastFrameRef.current;
+        lastFrameRef.current = frameTime;
+        next = Math.min(tgt.length, cur + revealAdvance(tgt.length - cur, elapsed));
+      }
+      if (next !== cur) {
+        shownLenRef.current = next;
+        setShown(tgt.slice(0, next));
+      }
       rafRef.current = requestAnimationFrame(step);
     };
     lastFrameRef.current = null;
     rafRef.current = requestAnimationFrame(step);
     // The loop reads targetRef, so subsequent target updates need no restart.
-  }, [target, active, reduce]);
+  }, [target, active, reduce, pace]);
 
   // Cancel any in-flight frame on unmount.
   //

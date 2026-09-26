@@ -32,8 +32,8 @@
  *   file silently rebinding someone's keyboard is a hazard, not a look.
  *
  * `reset` — does "Reset appearance" clear it? True for what the Appearance page
- *   itself owns, plus the two transcript switches that the reset already
- *   cleared before this table existed. False for the two Preferences-page
+ *   itself owns, plus the transcript switches (the first two were cleared by the
+ *   reset before this table existed; later ones follow them). False for the two Preferences-page
  *   fields it never touched, so that button keeps doing exactly what it did.
  */
 
@@ -42,6 +42,29 @@ export type AgentUiVersion = "classic" | "v2";
 
 /** Where the composer's model selector sits. */
 export type ModelSelectorPosition = "top" | "bottom";
+
+/**
+ * How the model's reasoning shows in a reply.
+ *
+ * `live` — open while the model is thinking, folded once it settles (the
+ *   shipped behaviour).
+ * `folded` — always folded to its "Thought 12s" header; click to read.
+ * `hidden` — not drawn at all. The turn label still shimmers while the model
+ *   works, so hiding the text never hides that something is happening.
+ */
+export type TranscriptReasoning = "live" | "folded" | "hidden";
+
+/**
+ * How streamed reply text is let out onto the screen.
+ *
+ * `eased` — closes a fixed share of the remaining gap every frame (the
+ *   shipped behaviour). A burst shows as a quick surge that slows to a crawl.
+ * `steady` — plays the stream back a fifth of a second late at the rate it
+ *   actually arrived, so a burst is spread over the pause before it and the
+ *   text moves at one even speed.
+ * `instant` — every token is drawn the frame it lands.
+ */
+export type TranscriptTextPace = "eased" | "steady" | "instant";
 
 /** Rail/dock glide duration when glide is on. */
 export const DEFAULT_RAIL_GLIDE_MS = 580;
@@ -164,6 +187,71 @@ export const APPEARANCE_PREFS = {
    *  scrolls underneath, so the question stays on screen through a long
    *  answer. Purely visual — off is today's look. */
   transcriptStickyUser: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** How reasoning blocks show. See `TranscriptReasoning`. */
+  transcriptReasoning: {
+    default: "live",
+    exported: true,
+    reset: true,
+    parse: oneOf(["live", "folded", "hidden"] as const),
+  } satisfies PrefSpec<TranscriptReasoning>,
+
+  /** Leave a finished run of tool calls open instead of folding it to its
+   *  "5 calls · 5 done" summary. The run's body is height-capped either way,
+   *  so an open run scrolls inside itself rather than stretching the reply. */
+  transcriptToolRunsOpen: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Draw Copy / Retry under each message at full strength instead of dimmed
+   *  until hover. For touch screens and for readers who find the dimmed row
+   *  hard to see. */
+  transcriptActionsVisible: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Show the clock time each reply started beside "Worked 4m" in its footer,
+   *  so a long chat can be read back against the day. */
+  transcriptTimestamps: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Fade each new tool call in, one after another, and keep a finished run
+   *  open for a moment before it folds, so a fast model's parallel batch does
+   *  not snap onto the screen and away again. Reduce motion drops the fade and
+   *  keeps the pause. */
+  transcriptSmoothTools: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** How streamed reply text is revealed. See `TranscriptTextPace`. */
+  transcriptTextPace: {
+    default: "eased",
+    exported: true,
+    reset: true,
+    parse: oneOf(["eased", "steady", "instant"] as const),
+  } satisfies PrefSpec<TranscriptTextPace>,
+
+  /** A one-line tally under a finished reply that used tools: files changed
+   *  with their line counts, commands run, tokens the model generated. */
+  transcriptTurnSummary: {
     default: false,
     exported: true,
     reset: true,

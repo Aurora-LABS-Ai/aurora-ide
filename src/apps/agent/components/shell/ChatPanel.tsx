@@ -38,7 +38,7 @@ import { useAgentWindowSend } from "@/apps/agent/hooks/conversation/useAgentWind
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { ConversationScopeContext } from "@/apps/agent/lib/thread/conversation-scope";
 import { threadService, type DbThread } from "@/apps/agent/services/threads/thread-service";
 
@@ -134,7 +134,7 @@ export const ChatPanel: React.FC<{
   const draft = useAgentDraftStore((s) => s.drafts[draftKey] ?? "");
   const setDraft = useAgentDraftStore((s) => s.setDraft);
 
-  const showActivityInTitle = useSettingsStore((s) => s.showActivityInTitle);
+  const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
   const activity = useAgentChatStore((s) => s.activityByThread[threadId]);
   const isActivity = streaming && showActivityInTitle && !!activity;
 
@@ -236,6 +236,8 @@ export const ChatPanel: React.FC<{
                       streaming={turnStreaming}
                       workedMs={isAssistant ? turnWorkedMs(turn) : null}
                       startedAt={isAssistant ? turn.startedAt : undefined}
+                      outputTokens={isAssistant ? turn.outputTokens : undefined}
+                      outputTokensEstimated={isAssistant ? turn.outputTokensEstimated : undefined}
                       // No per-message action row here: at dock width it would
                       // crowd the text it belongs to, and every action it offers
                       // is available on the same turn in the main view.

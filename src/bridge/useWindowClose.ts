@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 
 import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { useEditorStore } from "@/kernel/store/useEditorStore";
-import { useThreadStore } from "@/apps/agent/store/conversation/useThreadStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 
 /**
@@ -24,10 +23,10 @@ export const useWindowClose = () => {
         
         // Save workspace state (open tabs, panel sizes, workspace path)
         await useEditorStore.getState().saveWorkspace();
-        
-        // Save current thread if any
-        await useThreadStore.getState().saveCurrentThread();
-        
+
+        // Conversations are not saved here: the Rust runtime journals every
+        // message as it happens.
+
         console.log('[WindowClose] All state saved successfully');
       } catch (error) {
         console.error('[WindowClose] Failed to save state:', error);

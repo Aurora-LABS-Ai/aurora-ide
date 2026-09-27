@@ -34,17 +34,18 @@ use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_runtime::api_client::{ApiError, ApiRequest, StreamingApiClient, TurnUsage};
+use crate::agent_runtime::api_client::{
+    ApiError, ApiRequest, StreamingApiClient, ToolSchema, TurnUsage,
+};
 use crate::agent_runtime::events::AssistantEvent;
 use crate::agent_runtime::types::TokenUsage;
 
 use super::client::ProviderConfigSnapshot;
 use super::provider_kernel_adapter::{
     apply_opencode_headers, build_openai_body, build_openai_headers, build_openai_url,
-    finalize_assistant_message,
-    frame_has_done_marker, frame_payloads, map_reqwest_error, map_status_error_with_headers,
-    parse_tool_input, unprefix_model, BlockState, OpenAiStreamError, OpenAiStreamingResponse,
-    RequestOrigin, SseFrameBuffer,
+    declared_tool_name, finalize_assistant_message, frame_has_done_marker, frame_payloads,
+    map_reqwest_error, map_status_error_with_headers, parse_tool_input, unprefix_model, BlockState,
+    OpenAiStreamError, OpenAiStreamingResponse, RequestOrigin, SseFrameBuffer,
 };
 
 pub struct OpenAICompatAdapter {
@@ -150,7 +151,7 @@ impl StreamingApiClient for OpenAICompatAdapter {
             .bytes_stream()
             .map(|chunk| chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
 
-        drive_openai_stream(bytes_stream, event_sink, cancel_token).await
+        drive_openai_stream_with_tools(bytes_stream, event_sink, cancel_token, request.tools).await
     }
 }
 
@@ -169,6 +170,20 @@ pub async fn drive_openai_stream<S, B, E>(
     bytes_stream: S,
     event_sink: mpsc::Sender<AssistantEvent>,
     cancel_token: CancellationToken,
+) -> Result<TurnUsage, ApiError>
+where
+    S: Stream<Item = Result<B, E>> + Send,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
+    drive_openai_stream_with_tools(bytes_stream, event_sink, cancel_token, &[]).await
+}
+
+async fn drive_openai_stream_with_tools<S, B, E>(
+    bytes_stream: S,
+    event_sink: mpsc::Sender<AssistantEvent>,
+    cancel_token: CancellationToken,
+    tools: &[ToolSchema],
 ) -> Result<TurnUsage, ApiError>
 where
     S: Stream<Item = Result<B, E>> + Send,
@@ -405,7 +420,7 @@ where
                                 if let Some(func) = tc.function {
                                     if let Some(n) = func.name {
                                         if !n.is_empty() {
-                                            *name = n;
+                                            *name = declared_tool_name(&n, tools).to_string();
                                         }
                                     }
                                     if let Some(args) = func.arguments {
@@ -804,6 +819,104 @@ mod tests {
             CancellationToken::new(),
         )
         .await
+    }
+
+    /// 9Router's Claude path advertises Aurora's tools upstream with `_ide`
+    /// names. The 2026-09-25 thread `4d111ae7` received those names back on
+    /// the OpenAI stream, so Aurora rejected four valid calls as unknown.
+    #[tokio::test]
+    async fn leaked_proxy_tool_suffix_is_restored_before_events_and_persistence() {
+        let tools: Vec<ToolSchema> = ["shell_execute", "report_aurora_issue", "file_read"]
+            .into_iter()
+            .map(|name| ToolSchema {
+                name: name.into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type":"object"}),
+            })
+            .collect();
+        let mut body = String::new();
+        for (index, name) in [
+            "shell_execute_ide",
+            "report_aurora_issue_ide",
+            "file_read_ide",
+        ]
+        .iter()
+        .enumerate()
+        {
+            body.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                    "index":index,"id":format!("call_{index}"),
+                    "function":{"name":name,"arguments":"{}"}
+                }]}}]})
+            ));
+        }
+        body.push_str("data: [DONE]\n\n");
+
+        let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![Ok(body.into_bytes())];
+        let (tx, mut rx) = mpsc::channel(256);
+        let turn = drive_openai_stream_with_tools(
+            futures_util::stream::iter(chunks),
+            tx,
+            CancellationToken::new(),
+            &tools,
+        )
+        .await
+        .expect("stream completes");
+
+        let expected = ["shell_execute", "report_aurora_issue", "file_read"];
+        let stored: Vec<_> = turn
+            .assistant_message
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                crate::agent_runtime::types::ContentBlock::ToolUse { name, .. } => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stored, expected);
+
+        let mut previews = Vec::new();
+        let mut completed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                AssistantEvent::ToolUseDelta { name, .. } => previews.push(name),
+                AssistantEvent::ToolUse { name, .. } => completed.push(name),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            previews.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            completed.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn suffix_recovery_requires_a_declared_base_and_preserves_exact_names() {
+        let tools = ["file_read", "file_read_ide", "shell_execute"]
+            .into_iter()
+            .map(|name| ToolSchema {
+                name: name.into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type":"object"}),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(declared_tool_name("file_read_ide", &tools), "file_read_ide");
+        assert_eq!(
+            declared_tool_name("shell_execute_ide", &tools),
+            "shell_execute"
+        );
+        assert_eq!(declared_tool_name("unknown_ide", &tools), "unknown_ide");
+        assert_eq!(
+            declared_tool_name("shell_execute_ide_ide", &tools),
+            "shell_execute_ide_ide"
+        );
     }
 
     /// Some gateways restart `tool_calls[].index` at 0 for each call instead

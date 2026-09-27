@@ -2449,7 +2449,7 @@ fn openai_messages(
             }
             MessageRole::Assistant => {
                 let text = collect_text(&message.blocks);
-                let tool_calls = openai_tool_calls(&message.blocks);
+                let tool_calls = openai_tool_calls(&message.blocks, request.tools);
                 let reasoning = collect_reasoning(&message.blocks);
                 let mut payload = Map::new();
                 payload.insert("role".into(), Value::String("assistant".into()));
@@ -2618,7 +2618,23 @@ fn collect_reasoning(blocks: &[ContentBlock]) -> String {
         .join("")
 }
 
-fn openai_tool_calls(blocks: &[ContentBlock]) -> Vec<Value> {
+/// A gateway may suffix a declared tool name on its upstream wire and then
+/// leak that name back to its client. Restore only an exact `_ide` suffix whose
+/// base name was advertised in this request. An actual declared `_ide` tool
+/// always wins, and unrelated or invented names remain untouched.
+pub(crate) fn declared_tool_name<'a>(name: &'a str, tools: &[ToolSchema]) -> &'a str {
+    if tools.iter().any(|tool| tool.name == name) {
+        return name;
+    }
+    if let Some(base) = name.strip_suffix("_ide") {
+        if tools.iter().any(|tool| tool.name == base) {
+            return base;
+        }
+    }
+    name
+}
+
+fn openai_tool_calls(blocks: &[ContentBlock], tools: &[ToolSchema]) -> Vec<Value> {
     blocks
         .iter()
         .filter_map(|b| match b {
@@ -2626,7 +2642,7 @@ fn openai_tool_calls(blocks: &[ContentBlock]) -> Vec<Value> {
                 "id": id,
                 "type": "function",
                 "function": {
-                    "name": name,
+                    "name": declared_tool_name(name, tools),
                     "arguments": tool_input_for_wire(input).to_string(),
                 }
             })),
@@ -4798,6 +4814,34 @@ mod tests {
             description: "t".into(),
             input_schema: json!({"type": "object"}),
         }
+    }
+
+    #[test]
+    fn historical_leaked_tool_suffix_is_restored_on_openai_wire() {
+        let messages = [ConversationMessage::assistant(
+            vec![ContentBlock::ToolUse {
+                id: "toolu_01".into(),
+                name: "shell_execute_ide".into(),
+                input: json!({"command": "git status --short"}),
+            }],
+            0,
+        )];
+        let tools = [tool_schema("shell_execute")];
+        let request = caching_request(&messages, &tools);
+        let body = build_openai_body(&request, &thinking_config());
+
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["name"],
+            "shell_execute"
+        );
+        assert_eq!(
+            messages[0].blocks[0],
+            ContentBlock::ToolUse {
+                id: "toolu_01".into(),
+                name: "shell_execute_ide".into(),
+                input: json!({"command": "git status --short"}),
+            }
+        );
     }
 
     /// MiniMax was excluded from prompt caching on caution alone, which cost

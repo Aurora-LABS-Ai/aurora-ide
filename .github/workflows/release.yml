@@ -6,15 +6,14 @@ name: Release
 # bumping the package + pushing a matching tag is the whole release
 # ritual:
 #
-#   1. Bump `package.json` (`version: "2.0.0"`).
+#   1. Bump `package.json` (`version: "2.5.0"`).
 #   2. Commit, push to main.
-#   3. `git tag v2.0.0 && git push origin v2.0.0`.
+#   3. `git tag v2.5.0 && git push origin v2.5.0`.
 #
-# The action fetches ONNX Runtime CPU DLLs, builds the CPU-only
-# bundle, and publishes a non-draft release with the .msi/.exe
-# installers attached. `workflow_dispatch` is also exposed so a
-# maintainer can trigger a manual build from the Actions tab without
-# pushing a tag.
+# The action builds the Windows bundle and publishes a non-draft
+# release with the .msi/.exe installers attached. `workflow_dispatch`
+# is also exposed so a maintainer can trigger a manual build from the
+# Actions tab without pushing a tag.
 
 on:
   push:
@@ -23,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish (e.g. v2.0.0). Optional when re-running for an existing tag."
+        description: "Tag to publish (e.g. v2.5.0). Optional when re-running for an existing tag."
         required: false
         default: ""
 
@@ -58,16 +57,6 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # Fetch ONNX Runtime CPU DLLs into `src-tauri/runtime/onnxruntime/`.
-      # The bundle's `resources` glob picks them up at build time; the
-      # DLLs themselves aren't checked in (each developer / CI run
-      # populates the dir lazily — see `.gitignore`). Defaults to a
-      # pinned win-x64 CPU build, no DirectML / CUDA — matches the
-      # default Cargo feature set (`cpu-only`).
-      - name: Fetch ONNX Runtime (CPU)
-        shell: pwsh
-        run: node scripts/setup-onnxruntime.mjs
-
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,12 +69,12 @@ jobs:
           tagName: v__VERSION__
           releaseName: "Aurora v__VERSION__"
           releaseBody: |
-            Aurora v__VERSION__ — Windows installer (CPU-only build).
+            Aurora v__VERSION__ — Windows installer.
 
             **What's in the box:**
             - `.msi` and `.exe` installers below.
-            - CPU-only ONNX Runtime for semantic search; no GPU drivers required.
-            - Self-contained bundle (Webview2 bootstrapper, ONNX DLLs, app binary).
+            - Self-contained bundle (WebView2 bootstrapper, app binary).
+            - `aurora` and `agw` added to PATH, so the agent can be driven from a terminal.
 
             **Install:** download the `.msi` (recommended) or `.exe`, run it, follow the wizard.
             **Requires:** Windows 10/11 x64.
@@ -94,7 +83,7 @@ jobs:
           # Auto-publish — no manual "publish draft" step needed.
           releaseDraft: false
           prerelease: false
-          # `Cargo.toml` already sets `default = ["cpu-only"]`, so a
-          # plain `tauri build` produces a CPU-only bundle. No extra
-          # feature flags needed — opt-in to CUDA via the dedicated
-          # `pnpm tauri:build:cuda` script (uses --features cuda).
+          # `Cargo.toml` sets `default = ["cpu-only"]`, which no longer
+          # gates anything: speech runs out of process (CrispASR), so
+          # there is no GPU runtime to compile in and no extra feature
+          # flag for a release build.

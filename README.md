@@ -5,9 +5,10 @@ separate conversation window, with a real editor beside it.
 
 <div align="center"> 
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/Aurora-LABS-Ai/aurora-ide)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue)](https://github.com/Aurora-LABS-Ai/aurora-ide/releases/latest)
 [![License](https://img.shields.io/badge/license-Source%20Available-8b5cf6)](LICENSE)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-orange)](https://tauri.app)
+[![Download](https://img.shields.io/badge/download-Windows%2010%2F11%20installer-2ea44f)](https://github.com/Aurora-LABS-Ai/aurora-ide/releases/latest)
 
 </div> 
  
@@ -36,13 +37,16 @@ the two UIs.
 **Modes:** Agent (full tools) · Plan (inspect and write a plan, no workspace
 edits) · Team (a Lead can dispatch parallel workers).
 
-**Providers:** Fireworks, GLM, Anthropic, MiniMax, DeepSeek, OpenAI, OpenAI
-Responses, Kenari, LM Studio, Ollama, Codex (ChatGPT login), Atlas Cloud,
-AgentRouter, or a custom OpenAI-compatible row.
+**Providers:** Fireworks AI, GLM (Z.AI), Anthropic, Meta Model API, MiniMax,
+DeepSeek, OpenAI, OpenAI (Responses), Kenari, Volcano Ark, Modal, LM Studio and
+Ollama, plus Claude Code, Codex (ChatGPT login), Cursor and CommandCode
+accounts, or a custom OpenAI-compatible row.
 
 Also in the box: MCP (stdio, SSE, streamable HTTP), git checkpoints per user
-message, local speech (Qwen3-ASR; CPU default, CUDA optional), and a native
-browser the agent can drive.
+message, a local code index that never leaves the machine, and a native browser
+the agent can drive. Dictation runs out of process against a runtime you point
+it at: CrispASR when you stop, audio.cpp with a Confucius4-R2T2 model as you
+speak.
 
 <div align="center">
 
@@ -60,11 +64,18 @@ browser the agent can drive.
 
 </div>
 
+## Install
+
+Windows 10/11 x64. Download the `.msi` (recommended) or the NSIS `.exe` from
+[Releases](https://github.com/Aurora-LABS-Ai/aurora-ide/releases/latest) and run
+it. The installer carries the WebView2 bootstrapper, needs nothing installed
+first, and puts the `aurora` and `agw` commands on your PATH.
+
 ## Run it
 
-**Prerequisites:** Node 18+, [pnpm](https://pnpm.io), Rust **1.92.0**
-(pinned in `rust-toolchain.toml`), and the
-[Tauri 2 OS prerequisites](https://v2.tauri.app/start/prerequisites/).
+**Prerequisites:** Node 22 (Vite 8 needs 20.19+ or 22.12+),
+[pnpm](https://pnpm.io) 9+, Rust **1.92.0** (pinned in `rust-toolchain.toml`),
+and the [Tauri 2 OS prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 pnpm install
@@ -81,12 +92,14 @@ pnpm tauri:dev          # full app (first Rust build is slow)
 
 | Command | What it does |
 |---------|----------------|
-| `pnpm dev` | Frontend only — http://localhost:5173 |
+| `pnpm dev` | Frontend only, on http://localhost:5273 |
 | `pnpm test` | Vitest |
-| `pnpm tauri:build` | Desktop installers |
-| `pnpm tauri:dev:cuda` | Speech with NVIDIA CUDA |
+| `pnpm tauri:build` | Desktop installers (`.msi` and NSIS `.exe`) |
+| `pnpm crispasr:package` | Zip a CrispASR runtime folder for sharing |
 
-Speech models download on first use. Default builds are CPU-only.
+Dictation needs its own runtime and model picked in Settings, speech: a folder
+holding `crispasr.exe` for transcribe-on-stop, and `audiocpp_cli.exe` plus a
+Confucius4-R2T2 GGUF for live words.
 
 **First launch:** Settings → Providers (API key or local LM Studio / Ollama),
 open a workspace folder, then chat from the Agent Window.

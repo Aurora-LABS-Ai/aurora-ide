@@ -7,8 +7,8 @@ loop, providers, and tools; the frontend owns the two surfaces — the IDE and t
 
 | Tool | Version |
 |------|---------|
-| Node.js | 18+ |
-| pnpm | 8+ |
+| Node.js | 20.19+ (Vite 8 requirement; CI builds on 22) |
+| pnpm | 9+ |
 | Rust | stable (toolchain pinned to 1.92.0 via the root `rust-toolchain.toml`) |
 | Tauri prerequisites | installed for your OS ([Windows](https://v2.tauri.app/start/prerequisites/): WebView2 + MSVC build tools) |
 
@@ -22,14 +22,15 @@ pnpm tauri:dev      # full app (Rust build takes a while the first time)
 Useful commands:
 
 ```bash
-pnpm dev            # frontend only — http://localhost:5173
+pnpm dev            # frontend only — http://localhost:5273
 pnpm test           # Vitest
 pnpm build          # frontend production build
 pnpm tauri:build    # desktop installers
 ```
 
-GPU speech builds: `pnpm tauri:dev:cuda` / `pnpm tauri:build:cuda` / `pnpm cuda:check`.
-Speech models download on first use.
+Dictation runs out of process. Point Settings, speech at a CrispASR runtime
+folder holding `crispasr.exe` to transcribe on stop, or at `audiocpp_cli.exe`
+plus a Confucius4-R2T2 GGUF to see words while you speak.
 
 ## 3. First Launch
 

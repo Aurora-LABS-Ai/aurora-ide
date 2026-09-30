@@ -164,10 +164,18 @@ impl<E: EventEmitter> TurnDriver<E> {
         let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
         {
             let mut session = session_arc.lock().await;
-            if session.workspace_root.is_none() {
+            if request.execution_mode.is_chat() {
+                store.clear_chat_workspace_root(&thread_id)?;
+                // A legacy or previously misrouted Chat session must not
+                // restore a Build path after `scoped_to_mode` removed it.
+                session.workspace_root = None;
+                request.workspace_path = None;
+            } else if session.workspace_root.is_none() {
                 session.workspace_root = request.workspace_path.clone();
             }
-            request.workspace_path = session.workspace_root.clone();
+            if !request.execution_mode.is_chat() {
+                request.workspace_path = session.workspace_root.clone();
+            }
         }
         let api_client = self
             .registry
@@ -259,6 +267,13 @@ impl<E: EventEmitter> TurnDriver<E> {
         request: AgentChatRequest,
     ) -> Result<TurnCompletion, RuntimeError> {
         let mut request = request.scoped_to_mode();
+        let mut trace = crate::agent_runtime::diagnostics::TurnTrace::new(
+            &request.thread_id,
+            &request.turn_id,
+            &request.model,
+            &format!("{:?}", request.execution_mode),
+            request.workspace_access.as_deref(),
+        );
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
 
@@ -281,10 +296,16 @@ impl<E: EventEmitter> TurnDriver<E> {
         let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
         {
             let mut session = session_arc.lock().await;
-            if session.workspace_root.is_none() {
+            if request.execution_mode.is_chat() {
+                store.clear_chat_workspace_root(&thread_id)?;
+                session.workspace_root = None;
+                request.workspace_path = None;
+            } else if session.workspace_root.is_none() {
                 session.workspace_root = request.workspace_path.clone();
             }
-            request.workspace_path = session.workspace_root.clone();
+            if !request.execution_mode.is_chat() {
+                request.workspace_path = session.workspace_root.clone();
+            }
         }
 
         // 2. Build the API client BEFORE registering the cancel token —
@@ -690,6 +711,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             // as an error naming what happened. The reply is still on screen —
             // what the user needs to know is that reopening will not show it.
             Ok(_) if uncommitted.is_some() => {
+                trace.finish("not_persisted", None);
                 let detail = uncommitted.unwrap_or_default();
                 let err = RuntimeError::NotPersisted(format!(
                     "the reply is on screen but was not written to disk and will be gone if you \
@@ -701,10 +723,15 @@ impl<E: EventEmitter> TurnDriver<E> {
                 Err(err)
             }
             Ok(summary) => {
+                trace.finish("completed", Some(summary.iterations));
                 self.emitter.emit_turn_complete(&turn_id, &summary);
                 Ok(summary)
             }
             Err(err) => {
+                trace.finish(
+                    if err.is_cancellation() { "cancelled" } else { "failed" },
+                    None,
+                );
                 let payload = if err.is_cancellation() {
                     "cancelled".to_string()
                 } else {

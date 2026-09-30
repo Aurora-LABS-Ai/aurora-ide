@@ -386,8 +386,20 @@ impl MouseButton {
     }
 }
 
+/// Where to aim a DevTools mouse event for the page point `(x, y)` (CSS px).
+///
+/// `Input.dispatchMouseEvent` takes PAINTED coordinates. They equal CSS pixels
+/// only while the page is shown at actual size; a device shrunk to fit its
+/// frame, or a zoomed page, paints smaller or larger. Measured in Chromium at a
+/// 0.5 fit-scale: CSS centre missed the button, centre × 0.5 hit it.
+fn aim(x: f64, y: f64) -> (f64, f64) {
+    let scale = crate::services::browser_view::input_scale(AGENT_BROWSER_LABEL);
+    (x * scale, y * scale)
+}
+
 /// Move the real pointer to `(x, y)` in viewport CSS pixels.
 pub(super) async fn move_pointer(manager: &BrowserManager, x: f64, y: f64) -> Result<(), ToolError> {
+    let (x, y) = aim(x, y);
     manager
         .call_devtools(
             AGENT_BROWSER_LABEL,
@@ -413,6 +425,7 @@ pub(super) async fn real_click_at(
     click_count: u32,
 ) -> Result<(), ToolError> {
     move_pointer(manager, x, y).await?;
+    let (x, y) = aim(x, y);
     for count in 1..=click_count.max(1) {
         for (kind, buttons) in [("mousePressed", button.mask()), ("mouseReleased", 0)] {
             manager

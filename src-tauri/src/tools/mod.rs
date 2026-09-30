@@ -140,12 +140,14 @@ pub mod transcript;
 /// and `browser_evaluate`, after twelve real sessions showed the model with
 /// no way to type keystrokes, wait for a condition, or ask the page anything.
 /// Raised 49 -> 50 by Chat-only native MiniMax video generation and task queries.
-pub const BUILTIN_TOOL_COUNT: usize = 50;
+/// Lowered 50 -> 49 on 2026-09-29: `read_lints` removed (see
+/// `shell_editor_todo`); the model runs the project's own checks in the shell.
+pub const BUILTIN_TOOL_COUNT: usize = 49;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
-/// `sink` is shared across Sub-D's four event-firing tools
-/// (`shell_spawn`, `editor_open_file`, `read_lints`, `todo`)
+/// `sink` is shared across Sub-D's event-firing tools
+/// (`shell_spawn`, `editor_open_file`, the task tools)
 /// so they can dispatch IDE events without seeing the Tauri
 /// `AppHandle` directly. Production builds wire a Tauri-backed
 /// sink in `lib.rs::setup`; the verify crate uses a recording
@@ -277,7 +279,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 50);
+        assert_eq!(BUILTIN_TOOL_COUNT, 49);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()

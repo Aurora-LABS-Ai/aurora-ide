@@ -202,10 +202,16 @@ impl ConversationRuntime {
                             // model look erratic: it retries, rephrases, and
                             // switches tools because the error it got back does
                             // not describe what it actually did.
+                            let started = crate::agent_runtime::diagnostics::tool_started(
+                                &context, &call.name,
+                            );
                             let outcome = match &call.tool {
                                 Ok(tool) => tool.execute(call.input.clone(), &context).await,
                                 Err(error) => Err(error.clone()),
                             };
+                            crate::agent_runtime::diagnostics::tool_finished(
+                                &context, &call.name, started, &outcome,
+                            );
 
                             // This call is done — say so now. See the note on this
                             // function: the fold below is ordered because the model's

@@ -72,6 +72,33 @@ afterEach(async () => {
 });
 
 describe("ToolCallCard streamed file targets", () => {
+  /**
+   * 2026-09-28T20:15Z: a model called a tool named `read` with
+   * `path: {"item": "…"}`. The card's path helper handed the object to
+   * `basename`, `.split` threw inside render, and the agent window went
+   * blank. Arguments are the model's to get wrong; the card must draw
+   * SOMETHING for any shape.
+   */
+  it("draws a call whose path argument is an object instead of throwing", async () => {
+    const call: ToolCall = {
+      id: "bad-path",
+      name: "read",
+      arguments: JSON.stringify({
+        item: "app/src/Constants.kt",
+        path: { item: "app/src/Constants.kt" },
+        start_line: "100",
+      }),
+      result: "tool not found: read.",
+    };
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    mountedContainer = document.createElement("div");
+    document.body.append(mountedContainer);
+    mountedRoot = createRoot(mountedContainer);
+    await act(async () => mountedRoot!.render(<ToolCallCard call={call} />));
+    expect(mountedContainer.querySelector(".agw-tool-head")).not.toBeNull();
+    expect(mountedContainer.textContent?.toLowerCase()).toContain("read");
+  });
+
   it("labels model discovery without showing a generation placeholder, even during streamed JSON", () => {
     for (const args of ['{"op":"list"}', '{"op":"list",']) {
       const html = renderToStaticMarkup(<ToolCallCard isActivelyStreaming call={{ id: "image-models", name: "generate_image", arguments: args }} />);

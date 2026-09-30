@@ -117,6 +117,19 @@ fn body_form(source: &str) -> String {
     )
 }
 
+/// Only the console entries stamped at or after `page_started_at_ms`. An
+/// entry without a readable `ts`, or no page clock at all, is kept: losing a
+/// log the script wrote is worse than showing one from just before it.
+fn logged_since(entries: Vec<Value>, page_started_at_ms: Option<f64>) -> Vec<Value> {
+    let Some(start) = page_started_at_ms else {
+        return entries;
+    };
+    entries
+        .into_iter()
+        .filter(|entry| entry.get("ts").and_then(Value::as_f64).is_none_or(|ts| ts >= start))
+        .collect()
+}
+
 fn is_syntax_error(message: &str) -> bool {
     message.starts_with("SyntaxError") || message.contains("SyntaxError:")
 }
@@ -216,6 +229,22 @@ impl ToolExecutor for BrowserEvaluateTool {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .clamp(100, MAX_TIMEOUT_MS);
 
+        // The page's own clock, read before the script starts. Console
+        // entries are stamped with it, and it is the only way to keep a log
+        // from the PREVIOUS call out of this one: the fetch below asks for
+        // "the last elapsed + 50 ms", and two scripts sent in one message run
+        // back to back inside that slack, so the second used to report the
+        // first one's `console.log` as its own (harness run 2026-09-28,
+        // thread `5c20f9a3`). Best-effort: without it the slack stands.
+        let page_started_at_ms = self
+            .manager
+            .eval_with_result(AGENT_BROWSER_LABEL, "Date.now()")
+            .await
+            .ok()
+            .filter(|r| r.ok)
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_f64());
+
         let started = Instant::now();
         let mut form = "expression";
         let outcome = match self.run(&expression_form(source), timeout_ms).await {
@@ -238,6 +267,7 @@ impl ToolExecutor for BrowserEvaluateTool {
             .and_then(|r| r.value)
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default();
+        let console = logged_since(console, page_started_at_ms);
 
         match outcome {
             Ok(value) => {

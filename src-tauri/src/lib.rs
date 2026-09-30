@@ -82,9 +82,9 @@ use cli::{CliArgs, CliOpenRequest};
 // ---------------------------------------------------------------------------
 //
 // `ProductionIdeEventSink` plugs Sub-D's `shell_editor_todo` bucket into
-// real Tauri events emitted on the main `AppHandle`. The three
-// fire-and-forget editor/todo tools (`editor_open_file`,
-// `read_lints`, `todo_write`) dispatch through `AppHandle::emit`; the
+// real Tauri events emitted on the main `AppHandle`. The fire-and-forget
+// editor/todo tools (`editor_open_file`, the task tools) dispatch through
+// `AppHandle::emit`; the
 // `shell_spawn` background launcher hands its work off to a
 // `tokio::spawn` running `commands::execute_command_stream` — the
 // same loop the legacy TS executor invoked via `invoke()`.
@@ -179,14 +179,6 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             column: Option<u64>,
         }
         self.emit_payload("agent_editor_open", Payload { path, line, column })
-    }
-
-    fn emit_read_lints(&self, paths: &[String]) -> Result<(), String> {
-        #[derive(Clone, serde::Serialize)]
-        struct Payload<'a> {
-            paths: &'a [String],
-        }
-        self.emit_payload("agent_read_lints", Payload { paths })
     }
 
     fn emit_todo_write(&self, thread_id: &str, todos: &serde_json::Value) -> Result<(), String> {
@@ -920,6 +912,13 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::browser::list_browser_windows,
             commands::browser::browser_refresh,
             commands::browser::browser_get_url,
+            commands::browser::browser_page_title,
+            commands::browser::browser_local_servers,
+            commands::browser::browser_set_device,
+            commands::browser::browser_set_zoom,
+            commands::browser::browser_set_corner_radius,
+            commands::browser::browser_capture_screenshot,
+            commands::browser::browser_eval_value,
             commands::browser::browser_set_size,
             commands::browser::browser_set_position,
             commands::browser::browser_set_bounds,
@@ -1213,8 +1212,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             // own view sees the same backing map.
             //
             // The production IDE event sink emits Tauri events for the
-            // four event-firing tools (`editor_open_file`,
-            // `read_lints`, `todo_write`) and re-enters
+            // event-firing tools (`editor_open_file`, the task tools) and
+            // re-enters
             // `commands::execute_command_stream` from a `tokio::spawn`
             // for `shell_spawn`, mirroring the legacy TS executor's
             // `invoke()` shape.

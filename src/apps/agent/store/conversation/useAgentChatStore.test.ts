@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DbThread } from "@/apps/agent/services/threads/thread-service";
+import type { DbThread, ThreadSummary } from "@/apps/agent/services/threads/thread-service";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const { listThreadsMock } = vi.hoisted(() => ({
-  listThreadsMock: vi.fn(async () => []),
+  listThreadsMock: vi.fn<(_root: string | null, _surface: "chat" | "build") => Promise<ThreadSummary[]>>(async () => []),
 }));
 
 vi.mock("@/kernel/lib/ipc/tauri", () => ({ isTauri: () => true }));
@@ -86,5 +86,45 @@ describe("useAgentChatStore boot", () => {
     await useAgentChatStore.getState().init("C:/project-a");
 
     expect(listThreadsMock).toHaveBeenCalledWith(null, "build");
+  });
+});
+
+describe("surface switch requests", () => {
+  const summary = (id: string): ThreadSummary => ({
+    id, title: id, preview: "hello", messageCount: 1,
+    workspaceRoot: null, createdAt: "2026-09-27T00:00:00Z", updatedAt: "2026-09-27T00:00:00Z",
+  });
+
+  it("ignores a late Chat list after switching back to Build", async () => {
+    let resolveChat!: (threads: ThreadSummary[]) => void;
+    const slowChat = new Promise<ThreadSummary[]>((resolve) => { resolveChat = resolve; });
+    listThreadsMock.mockReset();
+    listThreadsMock.mockImplementationOnce(() => slowChat).mockResolvedValueOnce([summary("build-thread")]);
+    useAgentSettingsStore.setState({ auroraSurface: "build" });
+    useAgentChatStore.setState({ currentThreadId: null, currentThread: null, projectRoot: null, error: null });
+
+    const enteringChat = useAgentChatStore.getState().enterSurface("chat");
+    await useAgentChatStore.getState().enterSurface("build");
+    resolveChat([summary("chat-thread")]);
+    await enteringChat;
+
+    expect(useAgentChatStore.getState().allThreads.map((thread) => thread.id)).toEqual(["build-thread"]);
+  });
+
+  it("ignores a late failure from the surface that was left", async () => {
+    let rejectChat!: (reason: Error) => void;
+    const slowChat = new Promise<[]>((_, reject) => { rejectChat = reject; });
+    listThreadsMock.mockReset();
+    listThreadsMock.mockImplementationOnce(() => slowChat).mockResolvedValueOnce([]);
+    useAgentSettingsStore.setState({ auroraSurface: "build" });
+    useAgentChatStore.setState({ currentThreadId: null, currentThread: null, projectRoot: null, error: null });
+
+    const enteringChat = useAgentChatStore.getState().enterSurface("chat");
+    await useAgentChatStore.getState().enterSurface("build");
+    rejectChat(new Error("stale Chat list failed"));
+    await enteringChat;
+
+    expect(useAgentSettingsStore.getState().auroraSurface).toBe("build");
+    expect(useAgentChatStore.getState().error).toBeNull();
   });
 });

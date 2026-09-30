@@ -44,6 +44,7 @@ pub mod api_client;
 pub mod bridge;
 pub mod context_limits;
 pub mod conversation;
+pub(crate) mod diagnostics;
 pub mod error;
 pub mod events;
 pub mod hooks;

@@ -25,7 +25,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use tokio::process::Command as TokioCommand;
 
 use crate::agent_runtime::tool_executor::ToolContext;
 
@@ -340,7 +339,7 @@ async fn find_by_name(name: &str, root: &Path, ctx: &ToolContext) -> Vec<String>
         return Vec::new();
     };
 
-    let mut cmd = TokioCommand::new(&rg.path);
+    let mut cmd = crate::sidecar::ripgrep_command(rg);
     cmd.current_dir(root)
         .arg("--files")
         .arg("--null")

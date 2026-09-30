@@ -222,7 +222,7 @@ pub(super) fn is_tool_available_this_turn(
     // it was written, so the next tool anyone adds is available in chat mode by
     // default and nobody finds out until it runs.
     if execution_mode.is_chat() {
-        return is_chat_mode_tool(name);
+        return is_chat_mode_tool(name) && (name != "chapter" || chapters_enabled);
     }
     let planning = execution_mode == AgentExecutionMode::Plan;
     if planning && is_plan_mutating_tool(name) {
@@ -284,6 +284,9 @@ pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
     // highlighted series against neutral bars. A tool the roster withholds is a
     // rule the model cannot follow.
     "canvas_guidelines",
+    "chapter",
+    "aurora_skill_search",
+    "aurora_skill_load",
     // Memory. `recall` reads, `remember` writes; both are scoped to chats and
     // cannot reach `sessions/`.
     "recall",

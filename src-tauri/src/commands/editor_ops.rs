@@ -340,8 +340,6 @@ fn plan_multi_search_replace(
     let mut typography_repairs: Vec<TypographyRepair> = Vec::new();
     let mut escape_repairs: Vec<EscapeRepair> = Vec::new();
     let mut total_replacements = 0usize;
-    let mut total_lines_added = 0usize;
-    let mut total_lines_removed = 0usize;
 
     for (index, replacement) in replacements.iter().enumerate() {
         let normalized_old = normalize_line_endings(&replacement.old_string);
@@ -362,11 +360,6 @@ fn plan_multi_search_replace(
                 diagnosis: None,
             };
         }
-
-        // Lines this replacement removes per hit. It stops matching
-        // `old_string` only when an escape level came off the pattern, which
-        // changes how many lines the matched text spans.
-        let removed_lines_per_hit: usize;
 
         // SIMD-accelerated occurrence scan.
         let finder = memmem::Finder::new(normalized_old.as_bytes());
@@ -433,11 +426,9 @@ fn plan_multi_search_replace(
                 if let Some(new_text) = repair.new {
                     normalized_new = new_text;
                 }
-                removed_lines_per_hit = line_count(&repair.old);
                 occurrence_count = repair.ranges.len();
                 ranges = repair.ranges;
             } else {
-                removed_lines_per_hit = line_count(&normalized_old);
                 typography_repairs.push(TypographyRepair {
                     replacement_index: index + 1,
                     occurrences: recovered.len(),
@@ -457,7 +448,6 @@ fn plan_multi_search_replace(
                     occurrences: exact.len(),
                 };
             }
-            removed_lines_per_hit = line_count(&normalized_old);
             occurrence_count = exact.len();
             let selected: &[usize] = if replacement.replace_all {
                 &exact[..]
@@ -490,8 +480,6 @@ fn plan_multi_search_replace(
 
         let replaced_count = ranges.len();
 
-        total_lines_removed += removed_lines_per_hit * replaced_count;
-        total_lines_added += line_count(&normalized_new) * replaced_count;
         total_replacements += replaced_count;
         replacement_details.push(ReplacementDetail {
             index: index + 1,
@@ -503,6 +491,9 @@ fn plan_multi_search_replace(
     // Apply ranges back-to-front so earlier offsets remain valid.
     planned_ranges.sort_by(|a, b| b.start.cmp(&a.start));
 
+    // Kept for the line accounting below: the counts come from a diff of the
+    // file before and after, not from the replacement strings.
+    let before = normalized_original.clone();
     let mut buffer = normalized_original;
     for range in &planned_ranges {
         // Defensive: `String::replace_range` panics if `start` or `end` are
@@ -523,13 +514,20 @@ fn plan_multi_search_replace(
         buffer.replace_range(range.start..range.end, &range.new_text);
     }
 
+    // Counted the way the Review panel counts, so both ends state the same
+    // numbers. The previous per-replacement arithmetic (`old.split('\n').len()`
+    // removed, `new.split('\n').len()` added, per hit) was off by one in both
+    // directions: deleting one line read as 1 added / 2 removed, because an
+    // empty `new_string` still "has" one line and the trailing newline of the
+    // matched text counted as a second one.
+    let (lines_added, lines_removed) = line_change_counts(&before, &buffer);
     let new_content = restore_line_endings(&buffer, original_line_ending);
 
     PlanResult::Ok {
         new_content,
         line_ending_normalized,
-        lines_added: total_lines_added,
-        lines_removed: total_lines_removed,
+        lines_added,
+        lines_removed,
         total_replacements,
         replacement_details,
         typography_repairs,
@@ -592,10 +590,48 @@ fn restore_line_endings(content: &str, line_ending: &str) -> String {
     content.replace('\n', "\r\n")
 }
 
-fn line_count(value: &str) -> usize {
-    // Match the JS implementation: `value.split('\n').length`. Empty string
-    // counts as one line.
-    1 + memchr::memchr_iter(b'\n', value.as_bytes()).count()
+/// Lines added and removed between two versions of a file.
+///
+/// The one counter behind `file_edit`, `file_write` and the Review panel, so
+/// every modify tool's card header states the same −removed/+added pair. Uses
+/// the same line split as the agent window's `computeDiff`: a single trailing
+/// newline is not its own line. Diffing raw text with `TextDiff::from_lines`
+/// would count a final line that merely gained a trailing newline as one
+/// removal plus one addition.
+///
+/// The empty→content fast path is the common case (most `file_write` calls
+/// create new files) and skips a diff whose answer is known.
+pub(crate) fn line_change_counts(old_content: &str, new_content: &str) -> (usize, usize) {
+    fn to_lines(text: &str) -> Vec<&str> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if lines.last() == Some(&"") {
+            lines.pop();
+        }
+        lines
+    }
+
+    let old_lines = to_lines(old_content);
+    let new_lines = to_lines(new_content);
+    if old_lines.is_empty() {
+        return (new_lines.len(), 0);
+    }
+    if new_lines.is_empty() {
+        return (0, old_lines.len());
+    }
+    let diff = similar::TextDiff::from_slices(&old_lines, &new_lines);
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            similar::ChangeTag::Insert => added += 1,
+            similar::ChangeTag::Delete => removed += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (added, removed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1821,13 +1857,37 @@ pub fn take_pending_ide_open() -> Option<PendingIdeOpen> {
 mod tests {
     use super::*;
 
+    /// Issue 3 of the 2026-09-28 harness report: deleting one line was
+    /// reported as 1 added / 2 removed, adding one as 2 added / 1 removed.
     #[test]
-    fn line_count_matches_split_n() {
-        assert_eq!(line_count(""), 1);
-        assert_eq!(line_count("a"), 1);
-        assert_eq!(line_count("a\n"), 2);
-        assert_eq!(line_count("a\nb"), 2);
-        assert_eq!(line_count("a\nb\n"), 3);
+    fn line_counts_come_from_a_diff_of_the_file_not_the_strings() {
+        let file = "a\nb\nc\n";
+        let counts = |old: &str, new: &str| match plan_multi_search_replace(
+            file,
+            &[SearchReplaceItem {
+                old_string: old.to_string(),
+                new_string: new.to_string(),
+                replace_all: false,
+            }],
+        ) {
+            PlanResult::Ok {
+                lines_added,
+                lines_removed,
+                ..
+            } => (lines_added, lines_removed),
+            other => panic!("expected Ok, got {}", other_kind(&other)),
+        };
+        assert_eq!(counts("b\n", ""), (0, 1), "delete one line");
+        assert_eq!(counts("b\n", "b\nb2\n"), (1, 0), "add one line");
+        assert_eq!(counts("b", "B"), (1, 1), "change one line");
+        assert_eq!(counts("a\nb\nc\n", "a\nc\n"), (0, 1), "a diff, not string arithmetic");
+    }
+
+    #[test]
+    fn line_change_counts_ignore_a_trailing_newline_alone() {
+        assert_eq!(line_change_counts("", "x\ny\n"), (2, 0));
+        assert_eq!(line_change_counts("x\ny\n", ""), (0, 2));
+        assert_eq!(line_change_counts("x", "x\n"), (0, 0));
     }
 
     #[test]

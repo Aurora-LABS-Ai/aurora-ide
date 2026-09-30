@@ -10,7 +10,7 @@
  * - File: 6 (read, write, edit, move_path, delete_path, grep)
  * - Workspace: 2 (tree, folder_create)
  * - Shell: 4 (execute, spawn, kill, list_processes)
- * - Editor: 2 (open_file, read_lints)
+ * - Editor: 1 (open_file)
  * - Search: 1 (auroro_websearch)
  * - Todo: 1 (todo_write — legacy IDE chat only; the agent uses Rust's `todo`)
  * - MCP: Tools are dynamically loaded from connected servers

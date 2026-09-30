@@ -36,6 +36,7 @@ import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWor
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentFsWatch } from "@/apps/agent/hooks/window/useAgentFsWatch";
 import { useAgentBrowserOpen } from "@/apps/agent/hooks/useAgentBrowserOpen";
+import { useNewTabShortcut } from "@/apps/agent/hooks/window/useNewTabShortcut";
 import { useAgentBrowserDrivingEvents } from "@/apps/agent/hooks/useAgentBrowserDrivingEvents";
 import { subscribeToPlanChanges } from "@/apps/agent/store/artifacts/useAgentPlanStore";
 import {
@@ -71,6 +72,8 @@ export const AgentShell: React.FC = () => {
   // Track when a browser_* tool is driving that panel. Lives here, not in
   // BrowserPanel: the dock tab has to show it while another tab is on screen.
   useAgentBrowserDrivingEvents();
+  // Ctrl+T opens a New tab in the right panel, open or closed.
+  useNewTabShortcut();
 
 
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);

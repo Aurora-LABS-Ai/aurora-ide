@@ -60,9 +60,12 @@ const CONTEXT_TOKENS: &str = "8192";
 /// button past this too; this is the backend safety net. ~8k chars ≈ ~2k tokens.
 pub const MAX_INPUT_CHARS: usize = 8000;
 
-/// The refiner's instruction. Tuned to preserve intent + all concrete details
-/// (paths, @mentions, code) and emit ONLY the rewritten prompt.
-const REFINE_SYSTEM: &str = "You are a prompt refiner for a coding agent. Rewrite the user's message into a clearer, more precise, well-structured prompt WITHOUT changing its core intent, requested outcome, or scope. Preserve every concrete detail exactly as written: file paths, @mentions, code, identifiers, numbers, URLs, and constraints. Keep the user's original language. Improve only grammar, clarity, structure, and specificity. Do NOT answer, execute, or expand the request, and do NOT add requirements the user did not state. Output ONLY the refined prompt text — no preamble, no quotes, no commentary, no code fences.";
+/// Keep the system short; the user turn explicitly asks to edit the draft.
+const REFINE_SYSTEM: &str = "You edit text. Output only the rewritten text.";
+const REFINE_USER_INSTRUCTIONS: &str = concat!(
+    "Refine the text below. Fix spelling and grammar, and organize it clearly.\n",
+    "Keep the same meaning and language. Do not add anything that is not mentioned. Return only the refined text.",
+);
 
 /// The chat-title instruction, for the SAME local model. Few-shot examples are
 /// what make a 0.5B model produce consistent noun-phrase titles (smoke-tested
@@ -260,14 +263,15 @@ pub fn refine(
             "Prompt is too long to refine (over {MAX_INPUT_CHARS} characters). Refine is for instructions, not large pastes."
         ));
     }
+    let request = format!("{REFINE_USER_INSTRUCTIONS}\n\nText to refine:\n{text}");
     run_completion(
         state,
         request_id,
         REFINE_SYSTEM,
-        text,
+        &request,
         config,
         config.n_predict.clamp(16, 4096),
-        None,
+        Some("0"),
     )
 }
 
@@ -441,8 +445,8 @@ pub fn suggest_replies(
 }
 
 /// One llama-completion invocation with the given system prompt. Blocking.
-/// `temperature` of `None` keeps llama.cpp's default sampling (the tuned
-/// refine behavior); tasks needing determinism pass a low explicit value.
+/// An explicit temperature also applies the shared nucleus settings.
+/// `None` leaves llama.cpp's default sampling active.
 #[allow(clippy::too_many_arguments)]
 fn run_completion(
     state: &RefineState,
@@ -522,9 +526,8 @@ fn run_completion(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     if let Some(temp) = temperature {
-        // Qwen-recommended nucleus settings ride along with any explicit
-        // temperature (the smoke-tested combination); refine keeps llama.cpp
-        // defaults by passing None.
+        // The local-model probes used these nucleus settings with explicit
+        // temperatures; prompt refinement uses zero.
         command.args(["--temp", temp, "--top-p", "0.8", "--top-k", "20"]);
     }
 

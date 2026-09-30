@@ -162,13 +162,17 @@ export type DockTabKind =
   // One saved artifact, opened from the Canvas index. Its own tab rather than
   // a selection inside Canvas: a conversation that produced six reports and
   // diagrams is browsed, and two of them are often read side by side.
-  | "artifact";
+  | "artifact"
+  // What `+` opens: a browser New tab page that also lists Aurora's panels.
+  // Picking a panel turns this tab into it; entering an address turns it into
+  // a browser tab. Several can be open at once.
+  | "newtab";
 
 /** The singleton (one-instance) tab kinds — everything except the per-file,
- *  per-team-member, per-project, per-conversation and per-artifact tabs. */
+ *  per-team-member, per-project, per-conversation, per-artifact and New tabs. */
 export type DockSingletonKind = Exclude<
   DockTabKind,
-  "file" | "member" | "project" | "chat" | "artifact" | "session"
+  "file" | "member" | "project" | "chat" | "artifact" | "session" | "newtab"
 >;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
@@ -210,6 +214,8 @@ export interface DockTabInstance {
   projectRoot?: string;
   /** Conversation id — for `kind === "chat"` and `kind === "session"`. */
   threadId?: string;
+  /** Owning surface for a docked conversation. Missing on legacy saved tabs. */
+  threadSurface?: "chat" | "build";
   /** Saved artifact id — only for `kind === "artifact"`. */
   artifactId?: string;
   /**
@@ -220,4 +226,28 @@ export interface DockTabInstance {
    * window to another one, so its tools must stay rooted where it started.
    */
   threadProjectRoot?: string | null;
+  /**
+   * The native page behind a `browser` tab. Absent on the agent's own tab (id
+   * `browser`), which always uses `AGENT_BROWSER_LABEL`; every tab the user
+   * opens from a New tab page carries its own label, so the agent never drives
+   * a page the user opened.
+   */
+  browserLabel?: string;
+  /** The page's last known address — for a `browser` tab. Restored on reload. */
+  url?: string;
+  /**
+   * An address the panel still has to load — set when a New tab page becomes
+   * a browser tab, cleared by the panel once it has navigated.
+   */
+  pendingUrl?: string;
+  /**
+   * The device a `browser` tab shows its page as (browser tools row). Kept on
+   * the tab so closing the panel, switching tabs or restarting brings the page
+   * back as the same device. Absent = the page at its natural size.
+   */
+  device?: "iphone" | "android" | "tablet";
+  /** The page's zoom (1 = 100%). Absent = 100%. */
+  zoom?: number;
+  /** Whether the browser tools row is open on this tab. */
+  toolsOpen?: boolean;
 }

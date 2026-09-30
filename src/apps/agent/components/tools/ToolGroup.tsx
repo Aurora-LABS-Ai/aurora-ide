@@ -28,6 +28,7 @@ import React, { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { ErrorBoundary } from "@/kernel/ui/ErrorBoundary";
 import { ChecklistBeatCard, ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
 import { McpServerLane } from "@/apps/agent/components/tools/McpServerLane";
 import { mcpServerIdForCard } from "@/apps/agent/components/tools/mcp-card";
@@ -75,6 +76,20 @@ const ToolStep: React.FC<{
     </div>
   );
 };
+
+/**
+ * What a step shows when its card threw while drawing. The call itself ran
+ * and its result is in the conversation; only the picture of it is missing.
+ */
+const StepRenderFailed: React.FC<{ name: string }> = ({ name }) => (
+  <div className="agw-tool-render-failed" role="status">
+    <AgentIcon name="alert" size={13} />
+    <span>
+      Aurora could not draw this step (<code>{name}</code>). The call itself ran; the
+      error is in the log.
+    </span>
+  </div>
+);
 
 /**
  * Renders a run of consecutive tool calls. ALWAYS used for a tools row (even a
@@ -256,13 +271,24 @@ const ToolGroupImpl: React.FC<{
             // because laying out a five-task plan is five calls and one
             // decision. The header above still counts the real calls.
             <ToolStep key={run[0].id} animate={animateArrivals} stagger={stagger}>
-              {isChecklistCall(run[0]) ? (
-                <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
-              ) : mcpServerIdForCard(run[0]) !== null ? (
-                <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
-              ) : (
-                <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
-              )}
+              {/* One step's card can fail to draw (a model sends an argument in
+                  a shape no card expects). That is this step's problem, not the
+                  transcript's: the row says so and the rest of the window stays
+                  up. Retried once the call's result arrives, in case the
+                  failure was a half-streamed argument. */}
+              <ErrorBoundary
+                where={`tool step ${run[0].name}`}
+                resetKey={run[0].result ?? run[0].arguments}
+                fallback={() => <StepRenderFailed name={run[0].name} />}
+              >
+                {isChecklistCall(run[0]) ? (
+                  <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
+                ) : mcpServerIdForCard(run[0]) !== null ? (
+                  <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
+                ) : (
+                  <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
+                )}
+              </ErrorBoundary>
             </ToolStep>
           ))}
         </div>

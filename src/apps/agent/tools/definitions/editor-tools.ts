@@ -34,41 +34,12 @@ export const editorOpenFileTool: ToolDefinition = {
   },
 };
 
-// ============================================
-// READ LINTS TOOL (Monaco Diagnostics)
-// ============================================
-export const readLintsTool: ToolDefinition = {
-  type: 'function',
-  nativeRustOwned: true,
-  function: {
-    name: 'read_lints',
-    description: `Read linter/diagnostic errors from files. Returns TypeScript, JavaScript, and other language errors detected by the editor.
-
-USE THIS TOOL:
-- After making code changes to check for errors
-- When the user reports a bug or error
-- To verify your edits didn't introduce problems
-
-IMPORTANT:
-- Only call this on files you've edited or are about to edit
-- Don't call with a very wide scope (entire workspace) as it may return too many results
-- If no path provided, returns diagnostics for all open files`,
-    parameters: {
-      type: 'object',
-      properties: {
-        paths: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Array of file paths to check for lint errors. If empty, checks all open files.',
-        },
-      },
-      required: [],
-    },
-  },
-};
+// There is no `read_lints` tool any more (2026-09-29). It wrapped the
+// project's own checkers and summarised a checker that never ran as a clean
+// result. The agent runs the project's check command with `shell_execute`
+// and reads the raw output; the rule lives in the system prompt.
 
 // Export all editor tools as an array
 export const editorTools: ToolDefinition[] = [
   editorOpenFileTool,
-  readLintsTool,
 ];

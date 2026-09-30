@@ -290,6 +290,47 @@ mod tests {
     /// path resolvers enforce. Default access refuses with the one wording
     /// every tool in the bucket shares, so the model cannot tell which of
     /// them said no; Full takes the path as written and the search runs.
+    /// Issue 1 of the 2026-09-28 harness report, the `grep` half: without a
+    /// `.git` directory, `.gitignore` was not applied and matches came back
+    /// from `dist/`.
+    #[tokio::test]
+    async fn gitignore_is_honoured_without_a_git_repository() {
+        use crate::agent_runtime::tool_executor::ToolContext;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "dist/\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("dist")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("dist/app.js"), "needle\n").unwrap();
+        std::fs::write(tmp.path().join("src/app.ts"), "needle\n").unwrap();
+        assert!(!tmp.path().join(".git").exists());
+
+        let ctx = ToolContext {
+            workspace_access: Default::default(),
+            turn_id: "t".into(),
+            tool_call_id: "c".into(),
+            thread_id: "s".into(),
+            workspace_root: Some(tmp.path().to_path_buf()),
+            cancel_token: CancellationToken::new(),
+            spill_dir: None,
+        };
+        let tool: Arc<dyn ToolExecutor> = Arc::new(GrepTool);
+        let out = tool
+            .execute(json!({ "pattern": "needle", "output_mode": "files_with_matches" }), &ctx)
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let files: Vec<&str> = parsed["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(files, vec!["src/app.ts"], "{parsed}");
+    }
+
     #[tokio::test]
     async fn a_workspace_less_search_obeys_the_access_setting() {
         use crate::agent_runtime::tool_executor::WorkspaceAccess;

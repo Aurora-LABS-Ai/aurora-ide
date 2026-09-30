@@ -114,9 +114,18 @@ pub fn query(index: &CodeIndex, query: &str, in_file: Option<&str>, settings: &I
         }
         if text.is_empty() { limited = true; continue; }
         end = actual_end; remaining -= text.len();
-        let mut matched: Vec<_> = candidate.counts.keys().cloned().collect(); matched.sort();
+        // Terms are credited to the passage the reader gets, not to the file it
+        // was cut from. The file-wide list let `add()` be labelled as matching
+        // "stock" when the only "stock" sat in `remove()` further down — false
+        // evidence an agent cannot tell from true evidence.
+        let in_passage: HashSet<String> = words(&text).into_iter().filter(|w| terms.contains(w)).collect();
+        let in_name: HashSet<String> = words(&file.path).into_iter().filter(|w| terms.contains(w)).collect();
+        let mut matched: Vec<_> = in_passage.iter().cloned().collect(); matched.sort();
+        let mut matched_in_name: Vec<_> = in_name.iter().cloned().collect(); matched_in_name.sort();
+        let mut elsewhere: Vec<_> = candidate.counts.keys().filter(|t| !in_passage.contains(*t) && !in_name.contains(*t)).cloned().collect(); elsewhere.sort();
         results.push(json!({"path":file.path,"startLine":start+1,"endLine":end,"text":text,
-            "kind":kind,"truncated":start>original_start || end<full_end,"parseError":parse_error,"matchedTerms":matched,"score":candidate.score}));
+            "kind":kind,"truncated":start>original_start || end<full_end,"parseError":parse_error,
+            "matchedTerms":matched,"matchedInFileName":matched_in_name,"matchedElsewhereInFile":elsewhere,"score":candidate.score}));
         if remaining == 0 { limited = true; break; }
     }
     let skipped_count = skipped.len(); skipped.truncate(20);
@@ -124,7 +133,7 @@ pub fn query(index: &CodeIndex, query: &str, in_file: Option<&str>, settings: &I
         "truncated":limited || results.len()<matches,"results":results,"scannedFiles":scanned,
         "skippedFiles":skipped,"skippedFileCount":skipped_count,"coverageGap":index.coverage_gap(),
         "coverageLimited":limited || skipped_count>0 || index.coverage_gap().is_some(),
-        "notice":"Ranked word matches in source code and file names. Scores indicate relevance, not confirmed relationships. Unsupported languages and ignored/generated files are excluded. Missing matches do not prove code is absent."}))
+        "notice":"Ranked word matches in source code and file names. matchedTerms are the query words in the returned text; matchedElsewhereInFile are words the file has outside it, and the score ranks the whole file. Scores indicate relevance, not confirmed relationships. Unsupported languages and ignored/generated files are excluded. Missing matches do not prove code is absent."}))
 }
 
 #[cfg(test)]
@@ -163,6 +172,26 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         assert_eq!(query(&index,"refresh",None,&IndexSettings::default()).unwrap()["coverageLimited"], true);
     }
+    /// Issue 2 of the 2026-09-28 harness report: `add()` came back labelled as
+    /// matching "stock" when the only "stock" in the file was in `remove()`.
+    #[test]
+    fn matched_terms_name_the_words_in_the_passage_not_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("inventory.ts"),
+            "export function add(quantity: number) {\n  if (quantity < 0) throw new Error(\"negative\");\n}\n\nexport function remove() {\n  return stock;\n}\n",
+        )
+        .unwrap();
+        let index = CodeIndex::build(dir.path()).unwrap();
+        let result = query(&index, "stock quantity negative", None, &IndexSettings::default()).unwrap();
+        let first = &result["results"][0];
+        assert_eq!(first["kind"], "function");
+        assert!(first["text"].as_str().unwrap().starts_with("export function add"), "{first}");
+        assert_eq!(first["matchedTerms"], json!(["negative", "quantity"]));
+        assert_eq!(first["matchedElsewhereInFile"], json!(["stock"]));
+        assert_eq!(first["matchedInFileName"], json!([]));
+    }
+
     #[test]
     fn splitting_and_output_budget_are_explicit() {
         assert_eq!(words("HTTPServer refresh_token"), ["http","server","refresh","token"]);

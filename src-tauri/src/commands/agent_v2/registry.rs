@@ -261,6 +261,12 @@ impl AgentRegistry {
         workspace: Option<&str>,
     ) -> Result<Arc<SessionStore>, RuntimeError> {
         if let Some(store) = self.store_for_thread(thread_id)? {
+            if Arc::ptr_eq(&store, &self.chat_store) != mode.is_chat() {
+                return Err(RuntimeError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("conversation {thread_id} belongs to the other Aurora surface"),
+                )));
+            }
             return Ok(store);
         }
         self.store_for(mode, workspace)

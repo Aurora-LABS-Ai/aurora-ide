@@ -60,6 +60,7 @@ example.txt
 
 # Internal plan / architecture dumps. Public docs are GETTING-STARTED + theme-dev.
 /DOCS/*.md
+!/DOCS/finding.md
 !/DOCS/GETTING-STARTED.md
 !/DOCS/theme-dev.md
 /DOCS/visual-studies/

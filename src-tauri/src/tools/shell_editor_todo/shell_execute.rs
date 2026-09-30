@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::agent_safety::bash_validation::{classify_intent, BashValidationError, ExecutionMode};
-use crate::agent_safety::shell_validation::validate_for_shell;
+use crate::agent_safety::shell_validation::validate_for_shell_at;
 use crate::tools::timeout::TimeoutPolicy;
 
 use super::ide_event_sink::{IdeEventSink, ShellStreamRequest};
@@ -63,11 +63,7 @@ const TIMEOUT: TimeoutPolicy = TimeoutPolicy::new(
 /// Validation mode for shell tools — see module-level docs in
 /// [`super`]. `WorkspaceWrite` is the closest match for the agent's
 /// runtime mode (workspace-restricted writes allowed; system paths
-/// warn; destructive patterns warn). The frontend's "danger / bypass"
-/// mode is enforced one layer up by
-/// [`crate::tools::permissions::SettingsAwarePermitter`] (the
-/// permitter auto-approves before this validator runs), so we always
-/// validate against `WorkspaceWrite` here.
+/// warn; destructive patterns warn). Full access skips this pipeline entirely.
 const SHELL_EXECUTION_MODE: ExecutionMode = ExecutionMode::WorkspaceWrite;
 
 pub struct ShellExecuteTool {
@@ -160,13 +156,7 @@ impl ToolExecutor for ShellExecuteTool {
             .as_ref()
             .map_or_else(|| crate::shell::resolve_kind(requested_shell), |r| r.kind);
 
-        validate_for_shell(
-            command,
-            SHELL_EXECUTION_MODE,
-            kind,
-            ctx.workspace_root.as_deref(),
-        )
-        .map_err(map_bash_error)?;
+        validate_shell_command(command, &input, ctx, kind)?;
 
         // Tag the result with the semantic intent so the audit log /
         // chat UI can render risk-aware affordances ("destructive",
@@ -314,6 +304,35 @@ impl ToolExecutor for ShellExecuteTool {
             .to_string()),
         }
     }
+}
+
+/// Shared by foreground and background execution so access cannot differ.
+pub(super) fn validate_shell_command(
+    command: &str,
+    input: &Value,
+    ctx: &ToolContext,
+    kind: crate::shell::ShellKind,
+) -> Result<(), ToolError> {
+    if ctx.workspace_access.lifts_boundary() {
+        return Ok(());
+    }
+    let validation_cwd = input.get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            ctx.workspace_root.as_deref()
+                .unwrap_or(std::path::Path::new(""))
+                .join(path)
+        });
+    validate_for_shell_at(
+        command,
+        SHELL_EXECUTION_MODE,
+        kind,
+        ctx.workspace_root.as_deref(),
+        validation_cwd.as_deref().or(ctx.workspace_root.as_deref()),
+    )
+    .map_err(map_bash_error)
 }
 
 /// The `shell` argument, enumerated from the shells the user left enabled.
@@ -525,6 +544,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_access_bypasses_guards_for_both_shell_tools_and_keeps_cancellation() {
+        use crate::agent_runtime::tool_executor::WorkspaceAccess;
+        use super::super::ide_event_sink::RecordingIdeEventSink;
+        use super::super::shell_spawn::ShellSpawnTool;
+        let sink = RecordingIdeEventSink::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(dir.path().to_path_buf());
+        let tools: Vec<Box<dyn ToolExecutor>> = vec![
+            Box::new(ShellExecuteTool::new(sink.clone())),
+            Box::new(ShellSpawnTool::new(sink.clone())),
+        ];
+        // The recording sink never runs this command; it records dispatch only.
+        let input = json!({"command": "rm -rf /", "shell": "bash", "name": "guard test"});
+        for tool in tools {
+            for access in [WorkspaceAccess::Workspace, WorkspaceAccess::Read] {
+                context.workspace_access = access;
+                assert!(matches!(
+                    tool.execute(input.clone(), &context).await,
+                    Err(ToolError::PolicyViolation(_))
+                ));
+            }
+            context.workspace_access = WorkspaceAccess::Full;
+            assert!(tool.execute(input.clone(), &context).await.is_ok());
+            context.cancel_token.cancel();
+            assert_eq!(
+                tool.execute(input.clone(), &context).await,
+                Err(ToolError::Cancelled)
+            );
+            context.cancel_token = CancellationToken::new();
+        }
+        assert_eq!(sink.event_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn validates_paths_from_explicit_cwd_for_both_shell_tools() {
+        use super::super::ide_event_sink::RecordingIdeEventSink;
+        use super::super::shell_spawn::ShellSpawnTool;
+        let sink = RecordingIdeEventSink::new();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("child")).unwrap();
+        let mut context = ctx();
+        context.workspace_root = Some(dir.path().to_path_buf());
+        for tool in [
+            Box::new(ShellExecuteTool::new(sink.clone())) as Box<dyn ToolExecutor>,
+            Box::new(ShellSpawnTool::new(sink.clone())),
+        ] {
+            let input = json!({"command": "cat ../file", "cwd": "child", "shell": "bash", "name": "read"});
+            assert!(tool.execute(input, &context).await.is_ok());
+            let input = json!({"command": "cat ../../file", "cwd": "child", "shell": "bash", "name": "read"});
+            assert!(matches!(
+                tool.execute(input, &context).await,
+                Err(ToolError::PolicyViolation(_))
+            ));
+        }
+        assert_eq!(sink.event_count(), 2);
+    }
+
+    #[tokio::test]
     async fn requires_permission_returns_true() {
         assert!(tool().requires_permission());
     }
@@ -654,9 +732,6 @@ mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
-        fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
-            Ok(())
-        }
         fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {
             Ok(())
         }
@@ -746,9 +821,6 @@ mod tests {
             _line: Option<u64>,
             _column: Option<u64>,
         ) -> Result<(), String> {
-            Ok(())
-        }
-        fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
             Ok(())
         }
         fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {

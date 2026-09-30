@@ -54,6 +54,7 @@ export interface PromptCommand {
 
   // ── kind-specific payload (exactly one is set) ──────────────────────
   skillStorageKey?: string;
+  skillSource?: SkillDefinition["source"];
   ruleFilename?: string;
   mcpServerId?: string;
   actionId?: "compact" | "suggest";
@@ -63,6 +64,15 @@ export function isDirectiveCommand(
   command: PromptCommand,
 ): command is DirectiveCommand {
   return command.kind !== "action";
+}
+
+/** Chat has no project. Reject even a stale Build command staged before switching. */
+export function isChatPromptCommand(command: PromptCommand): boolean {
+  if (command.kind === "rule") return false;
+  if (command.kind === "skill") {
+    return command.skillSource === "builtin" || command.skillSource === "global";
+  }
+  return true;
 }
 
 const cache = new Map<string, PromptCommand[]>();
@@ -86,6 +96,7 @@ function mapSkill(skill: SkillDefinition): PromptCommand {
     sourceLabel: skillSourceLabel(skill),
     haystack: `${skill.name} ${skill.id} ${skill.description} ${skill.triggers.join(" ")}`.toLowerCase(),
     skillStorageKey: skill.storageKey,
+    skillSource: skill.source,
   };
 }
 

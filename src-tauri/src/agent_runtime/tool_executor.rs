@@ -50,10 +50,8 @@ use super::api_client::ToolSchema;
 /// [`ToolContext`]; it is read once per turn, so flipping it mid-turn affects
 /// the next one.
 ///
-/// It governs the FILE tools only. `shell_execute` accepts an absolute `cwd`
-/// in every mode — its gate is command validation plus the approval modal, not
-/// this. A mode named for the file boundary should not quietly claim to be a
-/// sandbox.
+/// Full access also bypasses tool approvals and shell command guards. The
+/// other modes retain their file boundary, command guards, and approval rules.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceAccess {
@@ -69,11 +67,8 @@ pub enum WorkspaceAccess {
     /// OS allows — the state for working across two checkouts, a global config,
     /// or a dependency's source.
     ///
-    /// The approval gate is untouched and does the guarding here:
-    /// `file_write`, `delete_path` and `shell_execute` all return
-    /// `requires_permission() == true`, and a tool with no explicit setting is
-    /// `always_ask`. Someone who has ALSO set those to `auto` has turned off
-    /// both layers deliberately.
+    /// Tools are automatically approved and shell command guards are skipped.
+    /// Input validity, cancellation, and process timeouts still apply.
     Full,
 }
 
@@ -691,7 +686,7 @@ call_tool with arguments matching the schema ({{}} for no arguments)."
         // fired — same shape as FrontendBridgeExecutor.
         ctx.bail_if_cancelled()?;
 
-        if executor.requires_permission() {
+        if executor.requires_permission() && !ctx.workspace_access.lifts_boundary() {
             if let Some(permitter) = &self.permitter {
                 let granted = permitter
                     .request(

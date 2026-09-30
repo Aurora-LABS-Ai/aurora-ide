@@ -3,19 +3,16 @@
  * =========================
  *
  * Subscribes to the fire-and-forget Tauri events emitted by the
- * Rust `shell_editor_todo` tools (`editor_open_file`, `read_lints`)
- * and applies them to the Zustand stores so the IDE UI reflects
- * what the agent just did. The checklist event (`agent_todo_write`)
- * is owned by the agent window's `useAgentTaskStore`.
+ * Rust `shell_editor_todo` tools (`editor_open_file`) and applies
+ * them to the Zustand stores so the IDE UI reflects what the agent
+ * just did. The checklist event (`agent_todo_write`) is owned by the
+ * agent window's `useAgentTaskStore`.
  *
  * Channels (matched against Rust constants in
  * `src-tauri/src/tools/shell_editor_todo/ide_event_sink.rs`):
  *
  *   - `agent_editor_open` → open file in Monaco, optionally reveal
  *     a line/column.
- *   - `agent_read_lints`  → no-op for now. The Rust tool is
- *     fire-and-forget; Monaco already updates its diagnostics
- *     pane natively, so we only log the request for visibility.
  *
  * Lifecycle: `installAgentIdeListeners()` returns an `unlisten`
  * that detaches every channel. App-level effect calls it once on
@@ -30,10 +27,6 @@ interface EditorOpenPayload {
   path: string;
   line?: number;
   column?: number;
-}
-
-interface ReadLintsPayload {
-  paths?: string[];
 }
 
 const LARGE_FILE_THRESHOLD = 100 * 1024;
@@ -159,20 +152,6 @@ export const installAgentIdeListeners = async (): Promise<() => void> => {
       }),
     );
   }
-
-  cleanups.push(
-    await auroraListen<ReadLintsPayload>("agent_read_lints", ({ payload }) => {
-      // Monaco already surfaces diagnostics natively in the gutter;
-      // the agent just used the call to nudge a refresh on its
-      // mental model. Log for debug visibility — no UI mutation.
-      const paths = payload.paths ?? [];
-      console.debug(
-        `[agent-ide-events] read_lints requested for ${
-          paths.length === 0 ? "all open files" : paths.join(", ")
-        }`,
-      );
-    }),
-  );
 
   return () => {
     for (const cleanup of cleanups) {

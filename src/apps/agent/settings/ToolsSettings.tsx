@@ -44,7 +44,7 @@ const ACCESS_OPTIONS: SegmentOption<WorkspaceAccess>[] = [
 const ACCESS_HINT: Record<WorkspaceAccess, string> = {
   workspace: "The agent reads, searches, and writes only inside the open project. Anything else is refused.",
   read: "The agent can also open a file you point it to by absolute path. Searching and writing still stay inside the project.",
-  full: "No path limit. Reading, searching, and writing all work anywhere on this computer — for a second checkout, a dependency's source, or a config outside the project. Approval prompts still apply to writes, deletes, and shell commands.",
+  full: "Read, search, and write anywhere on this computer. All tools are automatically approved, and shell command guards are disabled for foreground and background commands. Applies from the next message.",
 };
 
 interface ToolCategory {
@@ -291,8 +291,8 @@ export const ToolsSettings: React.FC = () => {
           first. */}
       <SettingsSection
         icon="folder"
-        title="File access"
-        description="How far outside the open project the file tools may reach. Shell commands are not limited by this in any mode — approval is what gates those."
+        title="Access"
+        description="Set file scope and tool permissions. Full access also disables shell command guards and overrides per-tool approval rules."
         badge={
           workspaceAccess === "full" ? (
             <AgwPill tone="danger">Whole computer</AgwPill>

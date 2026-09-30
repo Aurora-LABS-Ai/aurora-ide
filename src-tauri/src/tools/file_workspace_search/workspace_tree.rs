@@ -196,7 +196,7 @@ impl ToolExecutor for WorkspaceTreeTool {
                     "depth": { "type": "number", "default": 3, "description": "Maximum traversal depth. -1 for unlimited." },
                     "include_hidden": { "type": "boolean", "default": false, "description": "Walk into hidden directories. Top-level dot-entries are always listed; this expands them and reveals nested ones." },
                     "include_file_stats": { "type": "boolean", "default": true, "description": "Attach size / lineCount / largeFile to file nodes." },
-                    "max_nodes": { "type": "number", "default": 1200, "description": "Node ceiling. Directories are trimmed evenly to fit, and every trim is reported via `elided`." }
+                    "max_nodes": { "type": "number", "default": 500, "description": "Node ceiling. Directories are trimmed evenly to fit, and every trim is reported via `elided`." }
                 },
                 "required": [],
                 "additionalProperties": false,

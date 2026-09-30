@@ -260,6 +260,11 @@ fn best_article(html: &str, base: &str) -> Option<dom_smoothie::Article> {
             // Structure is handled by the Markdown conversion, so the
             // algorithm is asked for HTML rather than its own text rendering.
             text_mode: TextMode::Raw,
+            // Readability strips `class` attributes as part of its cleaning,
+            // and with them the `language-js` a `<code>` block carries. The
+            // classes cost nothing here — the HTML is converted to Markdown
+            // straight after — and the fence keeps its language.
+            keep_classes: true,
             ..Config::default()
         };
         Readability::new(html, Some(base), Some(cfg))
@@ -304,8 +309,61 @@ fn to_markdown(html: &str) -> String {
         ])
         .build();
 
-    let markdown = converter.convert(html).unwrap_or_default();
+    let normalized = one_code_element_per_pre(html);
+    let markdown = converter.convert(&normalized).unwrap_or_default();
     tidy(&markdown)
+}
+
+/// Give every `<pre>` the one shape the Markdown converter renders faithfully:
+/// a single `<code>` child and nothing else.
+///
+/// Documentation sites decorate code blocks. nodejs.org puts two `<code>`
+/// elements in one `<pre>` (the ESM and CommonJS flavours, switched with a
+/// checkbox) followed by a toolbar `<div>` holding the language name and a
+/// copy button. The converter fenced each `<code>` back to back, so the two
+/// fences met as ` `````` `, and the toolbar's "javascript" and "copy" came
+/// out as prose after the block. Here each `<code>` becomes its own
+/// `<pre><code>` carrying only its `language-*` class, and the decoration is
+/// dropped. A `<pre>` that already has the simple shape, or holds no `<code>`
+/// at all, is left alone.
+fn one_code_element_per_pre(html: &str) -> String {
+    if !html.contains("<pre") {
+        return html.to_string();
+    }
+    let dom = Dom::from(html);
+    for pre in dom.select("pre").nodes() {
+        let children = pre.element_children();
+        let codes: Vec<_> = children
+            .iter()
+            .filter(|c| c.node_name().as_deref() == Some("code"))
+            .collect();
+        if codes.is_empty() || (codes.len() == 1 && children.len() == 1) {
+            continue;
+        }
+        let rebuilt: Vec<String> = codes
+            .iter()
+            .map(|code| {
+                let language = code
+                    .attr("class")
+                    .and_then(|classes| {
+                        classes
+                            .split_whitespace()
+                            .find(|c| c.starts_with("language-"))
+                            .map(str::to_string)
+                    })
+                    .map(|c| format!(" class=\"{c}\""))
+                    .unwrap_or_default();
+                format!("<pre><code{language}>{}</code></pre>", code.inner_html())
+            })
+            .collect();
+        pre.replace_with_html(rebuilt.join("\n"));
+    }
+    let body = dom.select("body");
+    if body.exists() {
+        body.inner_html().to_string()
+    } else {
+        dom.html().to_string()
+    }
 }
 
 /// Collapse the runs of blank lines that dropped elements leave behind.
@@ -431,6 +489,29 @@ mod tests {
             doc.content
         );
         assert!(doc.content.contains("aurora --init"), "{}", doc.content);
+    }
+
+    /// Issue 5 of the 2026-09-28 harness report, reproduced from
+    /// nodejs.org/api/test.html: one `<pre>` holding two `<code>` flavours and
+    /// a toolbar. The fences ran together as ` `````` ` and the toolbar's
+    /// "javascript" and "copy" leaked into the prose.
+    #[test]
+    fn a_pre_with_several_code_children_becomes_one_fence_each() {
+        let html = r#"<!doctype html><html><head><title>Test runner</title></head><body>
+            <main><h1>Test runner</h1>
+            <p>The node:test module facilitates the creation of JavaScript tests. To access it:</p>
+            <pre class="shiki"><input class="js-flavor-toggle" type="checkbox"><code class="catppuccin-latte language-mjs mjs shiki"><span class="line"><span>import</span> test from 'node:test';</span></code><code class="cjs language-cjs shiki"><span class="line">const test = require('node:test');</span></code><div class="code-toolbar"><span class="code-language">javascript</span><button class="copy-button">copy</button></div></pre>
+            <p>This module is only available under the node: scheme. Tests created via the test module consist of a single function that is processed in one of three ways, and this sentence exists so the article is long enough to count.</p>
+            <pre><code>plain block</code></pre>
+            </main></body></html>"#;
+        let doc = document_from("https://nodejs.org/api/test.html", &fetched(html, "text/html"));
+        let content = &doc.content;
+        assert!(content.contains("```mjs\nimport test from 'node:test';\n```"), "{content}");
+        assert!(content.contains("```cjs\nconst test = require('node:test');\n```"), "{content}");
+        assert!(content.contains("```\nplain block\n```"), "{content}");
+        assert!(!content.contains("``````"), "{content}");
+        assert!(!content.contains("javascript"), "toolbar label leaked: {content}");
+        assert!(!content.contains("copy"), "copy button leaked: {content}");
     }
 
     #[test]
@@ -639,3 +720,4 @@ mod tests {
         );
     }
 }
+

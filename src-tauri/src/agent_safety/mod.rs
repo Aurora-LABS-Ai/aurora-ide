@@ -24,6 +24,7 @@
 pub mod bash_validation;
 pub mod paths;
 pub mod shell_validation;
+mod shell_paths;
 
 // Only `paths::*` is re-exported at the short path because file tools
 // import via `crate::agent_safety::{resolve_within_workspace,

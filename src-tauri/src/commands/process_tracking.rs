@@ -15,8 +15,14 @@
 //! answers "who is still here" by membership, not by ancestry.
 //!
 //! Deliberately NOT set: `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. The job here
-//! is a ledger, not a leash — a surviving dev server must keep running when
-//! the tracker is dropped; killing is `try_kill_pid`'s job and stays so.
+//! is a ledger first — a surviving dev server must keep running when the
+//! tracker is dropped. Killing is explicit, through [`ShellJob::kill_members`],
+//! and it is the same membership that makes it reach what `taskkill /T`
+//! cannot: on thread `1edca8e2` (2026-09-29) `shell_kill` on `npm run serve`
+//! (git-bash → npm → node) reported success while the node server kept
+//! listening, because its parent in the chain had already exited and the
+//! parent-pid walk stopped there. `TerminateJobObject` ends every member
+//! whatever its ancestry.
 //!
 //! What membership cannot see, on any design: processes launched through a
 //! broker (elevation prompts, packaged/Store apps relayed via DCOM). Those
@@ -55,7 +61,7 @@ mod windows_impl {
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
-        QueryInformationJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+        QueryInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST,
     };
 
     /// A job the shell (and so everything it starts) is assigned to.
@@ -69,8 +75,18 @@ mod windows_impl {
     }
 
     // SAFETY: a job object handle is a kernel handle; ownership can move
-    // across threads, and this type never aliases it.
+    // across threads, and this type never aliases it. Every call on it is a
+    // kernel call that is itself thread-safe, so sharing a reference is safe too.
     unsafe impl Send for ShellJob {}
+    unsafe impl Sync for ShellJob {}
+
+    impl std::fmt::Debug for ShellJob {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ShellJob")
+                .field("shell_pid", &self.shell_pid)
+                .finish_non_exhaustive()
+        }
+    }
 
     impl ShellJob {
         /// Create a job and put the just-spawned shell in it.
@@ -97,6 +113,26 @@ mod windows_impl {
                 }
                 Some(Self { handle, shell_pid })
             }
+        }
+
+        /// End every process in the job — the shell and everything it
+        /// started, through any chain of intermediates, alive or dead.
+        ///
+        /// This is what `shell_kill` and the stop button mean by "stop it".
+        /// The parent-pid walk (`try_kill_pid`) still runs beside it for a
+        /// shell that could not be adopted into a job.
+        pub fn kill_members(&self) -> Result<(), String> {
+            // SAFETY: the handle is owned by this value; the call takes no
+            // pointers and reports failure through its return value.
+            let ok = unsafe { TerminateJobObject(self.handle, 1) };
+            if ok == 0 {
+                return Err(format!(
+                    "TerminateJobObject failed for the job of pid {}: {}",
+                    self.shell_pid,
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(())
         }
 
         /// Everyone still alive in the job, except the shell itself.
@@ -216,6 +252,7 @@ mod windows_impl {
 /// still catches when handles were inherited. Honest gap, documented rather
 /// than papered over.
 #[cfg(not(target_os = "windows"))]
+#[derive(Debug)]
 pub struct ShellJob;
 
 #[cfg(not(target_os = "windows"))]
@@ -223,8 +260,51 @@ impl ShellJob {
     pub fn adopt(_shell_pid: u32, _shell_handle: ()) -> Option<Self> {
         None
     }
+    pub fn kill_members(&self) -> Result<(), String> {
+        Ok(())
+    }
     #[must_use]
     pub fn survivors(&self) -> Vec<Survivor> {
         Vec::new()
+    }
+}
+
+/// The failure `shell_kill` reported on thread `1edca8e2`, reproduced without
+/// npm: `cmd /c start /b ping …` launches ping and exits, so by the time the
+/// kill runs, ping's parent is gone and no parent-pid walk from the shell can
+/// reach it. Job membership can, and does.
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::ShellJob;
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    #[test]
+    fn kill_members_reaches_a_process_whose_parent_already_exited() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "start /b ping -n 60 127.0.0.1 >nul"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("cmd spawns");
+        let job = ShellJob::adopt(child.id(), child.as_raw_handle()).expect("job adopts the shell");
+        // The shell exits at once; ping outlives it.
+        let _ = child.wait();
+
+        let before = job.survivors();
+        assert!(
+            before.iter().any(|s| s.name.eq_ignore_ascii_case("ping.exe")),
+            "ping should have outlived its parent: {before:?}"
+        );
+
+        job.kill_members().expect("terminate the job");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let after = job.survivors();
+        assert!(
+            after.iter().all(|s| !s.name.eq_ignore_ascii_case("ping.exe")),
+            "ping must be gone after the job kill: {after:?}"
+        );
     }
 }

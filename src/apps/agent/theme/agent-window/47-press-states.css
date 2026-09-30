@@ -98,7 +98,9 @@
 .agw-files-tool:active,
 .agw-fv-back:active,
 .agw-fv-openide:active,
-.agw-tabpill:active,
+/* The tab presses when its NAME is pressed, not when its × is — pressing ×
+ * lit the whole tab just before it closed. */
+.agw-tabpill:has(.agw-tabpill-main:active),
 .agw-term-pill:active,
 .agw-br-nav:active {
   background: var(--agw-press-paint);

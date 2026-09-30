@@ -295,7 +295,24 @@
   color: var(--agw-text);
 }
 .agw-br-nav:focus-visible {
+  /* `src/index.css` outlines every focused button in the IDE's colour; the
+   * button's own inset mark is the only one it should carry. */
+  outline: none;
   box-shadow: var(--agw-focus-ring);
+}
+/* A toggle that is on (tools row open, find open). */
+.agw-br-nav[data-on] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+/* The tools button while a device or zoom is in force with the row closed. */
+.agw-br-nav[data-lit] {
+  color: var(--agw-accent);
+}
+.agw-br-nav:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: transparent;
 }
 .agw-br-address {
   flex: 1;
@@ -323,9 +340,12 @@
 .agw-br-input::placeholder {
   color: var(--agw-text-subtle);
 }
+/* No ring on the address bar — the owner's rule for every search/address box
+ * (same as the settings search, `17-settings-core.css`). The ring token is its
+ * own colour and does not follow the accent, so it read as the wrong blue.
+ * Focus is still visible: the border steps up. */
 .agw-br-address:focus-within {
-  border-color: var(--agw-ring);
-  box-shadow: var(--agw-focus-ring);
+  border-color: var(--agw-border-strong);
 }
 /* ── The halo — the agent is driving this page right now ─────────────
  *
@@ -423,9 +443,184 @@
 /* The native webview covers this; a subtle backdrop shows while it loads or on
  * non-Tauri (web preview) where the embed never attaches. */
 .agw-br-body {
+  /* The device stage and frame are placed inside it; the native page is on top. */
+  position: relative;
+  overflow: hidden;
   flex: 1;
   min-height: 0;
   background: var(--agw-conversation);
+}
+
+/* ── Browser tools row + find row ────────────────────────────────────────
+ * Rows UNDER the toolbar that push the page down — never menus over it: the
+ * page is a native window that paints above any DOM. Probe:
+ * Documents/aurora-browser-menu-designs.html, 03. */
+.agw-br-tools,
+.agw-br-find {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--agw-border);
+  background: var(--agw-dock);
+}
+.agw-br-tools .agw-seg {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.agw-br-tools-spacer {
+  flex: 1;
+}
+.agw-br-tools-notice {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  padding-right: 6px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-br-tools-notice[data-tone="error"] {
+  color: var(--agw-removed);
+}
+.agw-br-tools-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  flex-shrink: 0;
+  background: var(--agw-border-strong);
+}
+.agw-br-zoom {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.agw-br-zoom-val {
+  min-width: 46px;
+  height: 28px;
+  padding: 0 4px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  outline: none;
+}
+.agw-br-zoom-val:hover:not(:disabled) {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-br-zoom-val:focus-visible {
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-br-zoom-val:disabled {
+  cursor: default;
+}
+.agw-br-find-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-quiet);
+  border: 1px solid var(--agw-border);
+}
+/* Same as every search box here: the border steps up, no ring. */
+.agw-br-find-field:focus-within {
+  border-color: var(--agw-border-strong);
+}
+.agw-br-find-count {
+  flex-shrink: 0;
+  min-width: 64px;
+  padding: 0 4px;
+  text-align: right;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  color: var(--agw-text-subtle);
+}
+.agw-br-find-count[data-empty] {
+  color: var(--agw-removed);
+}
+
+/* ── Device stage ────────────────────────────────────────────────────────
+ * A page shown as a device: devices.css draws the frame (shrunk with a
+ * transform), this file draws the dark stage and the status bar; the native
+ * page sits on the frame's screen. Positions come from `layoutDevice`. */
+.agw-devstage {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--agw-conversation) 72%, #000);
+  pointer-events: none;
+}
+/* Carries the frame and status bar sideways with the page window during the
+ * panel's open/close glide (see `DeviceFrame`'s `slideX`). */
+.agw-devstage-slide {
+  position: absolute;
+  inset: 0;
+}
+.agw-devframe {
+  position: absolute;
+  transform-origin: top left;
+}
+/* The phone's own status bar — the strip between the island/camera and the
+ * page. Tinted from the PAGE like a real phone (theme-color, else the colour at
+ * the top of the page; set inline), with white or black ink by contrast. Its
+ * shape follows the screen's top corners. These are the device's colours, not
+ * a theme's. */
+.agw-devstatus {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  color: #111111;
+  transition: background-color 0.2s ease, color 0.2s ease;
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.agw-devstatus[data-ink="light"] {
+  color: #ffffff;
+}
+.agw-devstatus[data-device="android"] {
+  font-weight: 500;
+}
+.agw-devstatus-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+.agw-devstatus-signal {
+  width: 1.05em;
+  height: 0.7em;
+  background: currentColor;
+  clip-path: polygon(0 100%, 100% 0, 100% 100%);
+}
+.agw-devstatus-battery {
+  position: relative;
+  width: 1.5em;
+  height: 0.72em;
+  border: 0.09em solid currentColor;
+  border-radius: 0.2em;
+}
+.agw-devstatus-battery::after {
+  content: "";
+  position: absolute;
+  inset: 0.1em 0.35em 0.1em 0.1em;
+  border-radius: 0.08em;
+  background: currentColor;
 }
 
 /* ── Inspector picks in the TRANSCRIPT bubble ──────────────────────────────
@@ -520,9 +715,205 @@
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-ui);
 }
-.agw-br-sugg-label {
+
+/* ── New tab page ──────────────────────────────────────────────────────────
+ * What `+` opens: an address bar, Aurora's panels as tiles, running local
+ * servers, recent sites. Plain DOM on the conversation sheet — there is no
+ * native page behind it. Probe: Documents/aurora-dock-browser-designs.html 03. */
+.agw-ntp {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 14px 16px 24px;
+  background: var(--agw-conversation);
+}
+/* The same box as the browser's address bar, one size up. Focus steps the
+ * border up; no ring (see `.agw-br-address:focus-within`). */
+.agw-ntp-address {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 12px;
   flex-shrink: 0;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-quiet);
+  border: 1px solid var(--agw-border);
+  transition: border-color 0.12s ease;
+}
+.agw-ntp-address:focus-within {
+  border-color: var(--agw-border-strong);
+}
+.agw-ntp-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+}
+.agw-ntp-input::placeholder {
+  color: var(--agw-text-subtle);
+}
+.agw-ntp-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agw-ntp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+}
+.agw-ntp-head-aside {
+  margin-left: auto;
+  font-weight: var(--agw-fw-body);
+}
+.agw-ntp-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+}
+.agw-ntp-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 6px 12px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-family: inherit;
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.agw-ntp-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+  transition: background 0.12s ease;
+}
+.agw-ntp-tile:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-ntp-tile:hover .agw-ntp-glyph {
+  background: var(--agw-state-selected);
+}
+.agw-ntp-tile:active {
+  background: var(--agw-press-paint);
+}
+/* Keyboard focus brightens the tile the way hover does — no ring (owner's rule
+ * for the dock), and `outline: none` beats `src/index.css`'s blanket
+ * `button:focus-visible` outline. */
+.agw-ntp-tile:focus-visible {
+  outline: none;
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-ntp-tile:focus-visible .agw-ntp-glyph {
+  background: var(--agw-state-selected);
+}
+.agw-ntp-tile-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-ntp-rows {
+  display: flex;
+  flex-direction: column;
+}
+.agw-ntp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text);
+  font-family: inherit;
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.agw-ntp-row:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-ntp-row:active {
+  background: var(--agw-press-paint);
+}
+.agw-ntp-row:focus-visible {
+  outline: none;
+  background: var(--agw-hover-paint);
+}
+/* Green = something answered at this address just now. Grey = the process is
+ * running but nothing answers; the row also says so in words. */
+.agw-ntp-live {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+.agw-ntp-live[data-answering] {
+  background: var(--agw-added);
+}
+.agw-ntp-url {
+  flex-shrink: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+}
+.agw-ntp-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-ntp-meta {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
+}
+.agw-ntp-meta-url {
+  max-width: 55%;
+  font-family: var(--agw-font-code);
+}
+.agw-ntp-hint {
+  margin: 0;
+  padding: 0 4px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-ntp-hint-url {
+  font-family: var(--agw-font-code);
+  color: var(--agw-text-muted);
 }
 

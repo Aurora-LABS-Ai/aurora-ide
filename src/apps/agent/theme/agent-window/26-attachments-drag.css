@@ -17,7 +17,7 @@
    TWO states share it, and share it deliberately rather than by accident:
 
      `.agw-composer-drop`  — a file is over the window, waiting to land.
-     `.agw-composer-busy`  — recording stopped and the transcriber is running.
+     `.agw-composer-busy`  — transcription or prompt refinement is running.
 
    Both mean the same thing to the person watching: the composer has taken
    something and is not finished with it yet. The transcribe wait used to show

@@ -249,6 +249,10 @@ windows-sys = { version = "0.61", features = [
     # `AddVectoredExceptionHandler` are all gated on this one, not on
     # `Diagnostics_Debug` as their documentation placement suggests.
     "Win32_System_Kernel",
+    # `CreateRoundRectRgn` + `SetWindowRgn`: `services::browser_view` rounds a
+    # browser page's window to the device frame's screen corners. A native page
+    # is a square child window; nothing drawn in the DOM can round it.
+    "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",

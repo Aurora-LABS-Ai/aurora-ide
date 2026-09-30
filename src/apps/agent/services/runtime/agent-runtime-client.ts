@@ -492,6 +492,18 @@ export const AGENT_PERMISSION_REQUEST_CHANNEL = "agent_permission_request";
 export const AGENT_CHAT_COMMAND = "agent_chat_v2";
 export const AGENT_COMPACT_THREAD_COMMAND = "agent_compact_thread";
 export const AGENT_CANCEL_COMMAND = "agent_cancel";
+
+/** The runtime's cancellation spellings, including an IPC rejection before events arrive. */
+function runtimeError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    (error instanceof Error && error.name === "AbortError") ||
+    /^(?:(?:request|turn) (?:was )?)?cancelled$/i.test(message.trim())
+  ) {
+    return Object.assign(new Error("Request cancelled"), { name: "AbortError" });
+  }
+  return new Error(message);
+}
 export const AGENT_POST_TOOL_RESULT_COMMAND = "agent_post_tool_result";
 export const AGENT_GRANT_PERMISSION_COMMAND = "agent_grant_permission";
 
@@ -867,10 +879,7 @@ export class AgentRuntimeClient {
       ({ payload }) => {
         if (extractTurnId(payload) !== turnId) return;
         callbacks.onTurnError?.(payload);
-        const isCancelled = payload.error === "cancelled";
-        const err = isCancelled
-          ? Object.assign(new Error("Request cancelled"), { name: "AbortError" })
-          : new Error(payload.error || "agent_turn_error");
+        const err = runtimeError(payload.error || "agent_turn_error");
         settleReject(err);
       },
     );
@@ -908,9 +917,12 @@ export class AgentRuntimeClient {
       const invokePromise = auroraInvoke<void>(AGENT_CHAT_COMMAND, { request })
       .then(() => undefined)
       .catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error("[AgentRuntimeClient] agent_chat_v2 rejected:", message);
-        const wrapped = new Error(message);
+        const wrapped = runtimeError(err);
+        if (wrapped.name !== "AbortError") {
+          console.error("[AgentRuntimeClient] agent_chat_v2 rejected:", {
+            threadId, turnId, error: wrapped.message,
+          });
+        }
         settleReject(wrapped);
       });
 
@@ -1155,9 +1167,11 @@ export class AgentRuntimeClient {
       // Approval gate. MCP tools use the per-server config; Aurora
       // frontend tools auto-approve because they're all read-only
       // by construction (see `aurora-tools.ts` for the full list).
-      const autoApproved = isAuroraFrontend
-        ? shouldAutoApproveAuroraFrontendTool(toolName)
-        : shouldAutoApproveMcpTool(toolName);
+      const autoApproved = this.options.config?.workspaceAccess === "full" ||
+        this.options.config?.autoApproveTools === true ||
+        (isAuroraFrontend
+          ? shouldAutoApproveAuroraFrontendTool(toolName)
+          : shouldAutoApproveMcpTool(toolName));
       if (!autoApproved) {
         const callback = this.options.callbacks.onToolApprovalRequired;
         if (callback) {

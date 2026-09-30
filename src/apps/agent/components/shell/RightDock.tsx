@@ -1,15 +1,21 @@
 /**
  * Agent Window — right side dock [view].
  *
- * A dynamic, browser-style tab system (Codex parity, CODEX-UI-REFERENCE §12.7):
- *  - Open surfaces are tab PILLS, closeable like browser tabs.
- *  - A `+` button opens a menu: Canvas / Files / Browser / Terminal.
- *  - Files open as their own pills (titled by filename) via `openFileTab`.
- *  - An Expand toggle widens the panel toward full.
+ * The dock is a browser (probe: Documents/aurora-dock-browser-designs.html, 03):
+ *  - Open surfaces are tabs, closeable like browser tabs. Only the active one is
+ *    a filled pill; the rest are an icon and a name.
+ *  - `+` (and Ctrl+T) opens a New tab page: an address bar, Aurora's panels as
+ *    tiles, running local servers and recent sites. It turns into whatever is
+ *    picked on it.
+ *  - Browser tabs each own a native page. The agent drives one of them, the
+ *    `browser` tab; the others are the user's.
+ *  - Files open as their own tabs via `openFileTab`; an Expand toggle widens the
+ *    panel toward full.
  *
- * Bodies: Review (diff), Canvas (persistent artifacts), Files (tree + filter), per-file read-only viewer.
- * Browser / Terminal are structurally present in the `+` menu but disabled until
- * their surfaces are wired — no fake "coming soon" content is ever rendered.
+ * Closing the panel only unmounts the view: tabs stay in the store and browser
+ * pages stay alive, hidden, so reopening finds everything where it was. A
+ * tab's × is what destroys its page.
+ *
  * Themed entirely with `--agw-*`.
  */
 
@@ -21,8 +27,9 @@ import { ReviewPanel } from "@/apps/agent/components/files/ReviewPanel";
 import { FilesPanel } from "@/apps/agent/components/files/FilesPanel";
 import { FileViewer } from "@/apps/agent/components/files/FileViewer";
 import { TerminalPanel } from "@/apps/agent/components/panels/TerminalPanel";
-import { BrowserPanel, closeAgentBrowser } from "@/apps/agent/components/panels/BrowserPanel";
-import { holdBrowserHidden } from "@/apps/agent/services/browser/browser-visibility";
+import { BrowserPanel, closeBrowserPage } from "@/apps/agent/components/panels/BrowserPanel";
+import { NewTabPage } from "@/apps/agent/components/panels/NewTabPage";
+import { AGENT_BROWSER_LABEL } from "@/apps/agent/services/browser/browser-visibility";
 import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
@@ -37,8 +44,13 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
 import { authorColor } from "@/apps/agent/components/team/team-ui";
 import type { DockSingletonKind, DockTabInstance } from "@/apps/agent/types";
-import { CHAT_DOCK_TABS, DOCK_TAB_LABELS } from "@/apps/agent/types";
-import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import {
+  isTabOnSurface,
+  useAgentWorkspaceStore,
+} from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import { formatCommandShortcut } from "@/apps/agent/lib/command/command-shortcut";
+import { tabIndexForKey } from "@/apps/agent/lib/workspace/tab-keys";
+import { NEW_TAB_SHORTCUT } from "@/apps/agent/hooks/window/useNewTabShortcut";
 
 const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   review: "review",
@@ -50,24 +62,6 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   memory: "database",
   gallery: "image",
 };
-
-/** Entries in the `+` menu. `enabled:false` = structurally present, not wired. */
-const ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boolean }> = [
-  { kind: "team", enabled: true },
-  { kind: "canvas", enabled: true },
-  { kind: "files", shortcut: "Ctrl+P", enabled: true },
-  { kind: "browser", shortcut: "Ctrl+T", enabled: true },
-  { kind: "terminal", enabled: true },
-];
-
-/**
- * Aurora Chat's dock, which is a different dock rather than a subset with rows
- * greyed out. Memory is also reachable from the rail, so closing the tab is not
- * a one-way door. The roster itself lives in `types.ts` — the command palette
- * is a second door onto the same tabs and reads the same constant.
- */
-const CHAT_ADD_MENU: Array<{ kind: DockSingletonKind; shortcut?: string; enabled: boolean }> =
-  CHAT_DOCK_TABS.map((kind) => ({ kind, enabled: true }));
 
 /**
  * A chat tab's glyph — the streaming dot matrix while THAT conversation is
@@ -111,127 +105,106 @@ const TabPill: React.FC<{
   active: boolean;
   onSelect: () => void;
   onClose: () => void;
-}> = ({ tab, active, onSelect, onClose }) => (
-  <div className="agw-tabpill" data-active={active || undefined}>
-    <button type="button" className="agw-tabpill-main" onClick={onSelect} title={tab.title}>
-      {tab.kind === "file" ? (
-        <FileIcon name={tab.title} path={tab.path} className="agw-file-ico" />
-      ) : tab.kind === "member" ? (
-        // A team member's tab carries their identity color as a small dot —
-        // the same color as their name chip in the group chat.
-        <span
-          className="agw-tabpill-dot"
-          style={{ background: authorColor(tab.memberId ?? "") }}
-        />
-      ) : tab.kind === "project" ? (
-        <AgentIcon name="folder" size={13} />
-      ) : tab.kind === "session" ? (
-        // Same glyph as "Conversation details" in the rail's context menu, so
-        // the entry and the tab it produces are recognisably one thing.
-        <AgentIcon name="sliders" size={13} />
-      ) : tab.kind === "chat" ? (
-        <ChatTabGlyph threadId={tab.threadId ?? ""} />
-      ) : tab.kind === "browser" ? (
-        <BrowserTabGlyph />
-      ) : tab.kind === "artifact" ? (
-        <AgentIcon name="panel-right" size={13} />
-      ) : (
-        <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />
-      )}
-      <span className="agw-tabpill-label">{tab.title}</span>
-    </button>
-    <button
-      type="button"
-      className="agw-tabpill-close"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClose();
-      }}
-      title={`Close ${tab.title}`}
-      aria-label={`Close ${tab.title}`}
-    >
-      <AgentIcon name="close" size={12} />
-    </button>
-  </div>
-);
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
+}> = ({ tab, active, onSelect, onClose, onKeyDown }) => {
+  const pillRef = useRef<HTMLDivElement>(null);
+  const [closing, setClosing] = useState(false);
 
-const AddMenu: React.FC<{
-  onPick: (kind: DockSingletonKind) => void;
-  onOpenChange?: (open: boolean) => void;
-}> = ({ onPick, onOpenChange }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  // Team is opt-in: with it off in Settings the entry doesn't belong in the
-  // menu at all — a greyed row can't explain itself, and Settings is where
-  // you'd go looking anyway.
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
-  // Aurora Chat's dock is two surfaces, not five: Canvas, which is where it
-  // presents, and Memory, which is what it keeps. Files, Browser, Terminal and
-  // Team all address a project, and this side has none — a Files tab there
-  // opens a tree of a folder the chat cannot read.
-  const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
-  const entries = chatSurface
-    ? CHAT_ADD_MENU
-    : ADD_MENU.filter((e) => e.kind !== "team" || teamEnabled);
-
-  // Single setter so visibility changes always notify the parent (which hides
-  // the native browser webview so this menu isn't painted behind it).
-  const change = (v: boolean) => {
-    setOpen(v);
-    onOpenChange?.(v);
+  /**
+   * Close with one motion: the tab fades while its width folds to nothing, so
+   * its neighbours slide in instead of jumping a whole tab-width in one frame.
+   * The tab is removed from the store only when the fold ends. Reduced motion
+   * (or no Web Animations) removes it at once.
+   */
+  const close = () => {
+    if (closing) return;
+    const el = pillRef.current;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!el || reduced || typeof el.animate !== "function") {
+      onClose();
+      return;
+    }
+    setClosing(true);
+    const width = el.getBoundingClientRect().width;
+    const fold = el.animate(
+      [
+        { width: `${width}px`, opacity: 1, marginRight: "0px" },
+        // Also give back the strip's 3px gap, or the row settles with a hop.
+        { width: "0px", opacity: 0, marginRight: "-3px" },
+      ],
+      { duration: 150, easing: "cubic-bezier(0.2, 0, 0, 1)", fill: "forwards" },
+    );
+    fold.onfinish = onClose;
+    fold.oncancel = onClose;
   };
 
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) change(false);
-    };
-    const onEsc = (e: KeyboardEvent) => e.key === "Escape" && change(false);
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [open]);
-
   return (
-    <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
+    <div
+      ref={pillRef}
+      className="agw-tabpill"
+      data-active={active || undefined}
+      data-closing={closing || undefined}
+      data-tab-id={tab.id}
+    >
       <button
         type="button"
-        className="agw-icon-btn"
-        title="Open side panel tab"
-        aria-label="Open side panel tab"
-        aria-expanded={open}
-        onClick={() => change(!open)}
+        role="tab"
+        aria-selected={active}
+        // One Tab stop for the whole strip: the open tab. Arrows move between tabs.
+        tabIndex={active ? 0 : -1}
+        className="agw-tabpill-main"
+        onClick={onSelect}
+        onKeyDown={onKeyDown}
+        title={tab.title}
       >
-        <AgentIcon name="plus" size={16} />
+        <TabGlyph tab={tab} />
+        <span className="agw-tabpill-label">{tab.title}</span>
       </button>
-      {open && (
-        <div className="agw-addmenu" role="menu">
-          {entries.map((entry) => (
-            <button
-              key={entry.kind}
-              type="button"
-              role="menuitem"
-              className="agw-addmenu-item"
-              disabled={!entry.enabled}
-              title={entry.enabled ? undefined : "Not available yet"}
-              onClick={() => {
-                if (!entry.enabled) return;
-                onPick(entry.kind);
-                change(false);
-              }}
-            >
-              <AgentIcon name={SINGLETON_ICON[entry.kind]} size={14} />
-              <span className="agw-addmenu-label">{DOCK_TAB_LABELS[entry.kind]}</span>
-              {entry.shortcut && <span className="agw-addmenu-kbd">{entry.shortcut}</span>}
-            </button>
-          ))}
-        </div>
-      )}
+      <button
+        type="button"
+        className="agw-tabpill-close"
+        onClick={(e) => {
+          e.stopPropagation();
+          close();
+        }}
+        title={`Close ${tab.title}`}
+        aria-label={`Close ${tab.title}`}
+      >
+        <AgentIcon name="close" size={12} />
+      </button>
     </div>
   );
+};
+
+/** The icon at the start of a tab. */
+const TabGlyph: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
+  switch (tab.kind) {
+    case "file":
+      return <FileIcon name={tab.title} path={tab.path} className="agw-file-ico" />;
+    case "member":
+      // A team member's tab carries their identity color as a small dot —
+      // the same color as their name chip in the group chat.
+      return (
+        <span className="agw-tabpill-dot" style={{ background: authorColor(tab.memberId ?? "") }} />
+      );
+    case "project":
+      return <AgentIcon name="folder" size={13} />;
+    case "session":
+      // Same glyph as "Conversation details" in the rail's context menu, so
+      // the entry and the tab it produces are recognisably one thing.
+      return <AgentIcon name="sliders" size={13} />;
+    case "chat":
+      return <ChatTabGlyph threadId={tab.threadId ?? ""} />;
+    case "browser":
+      // Only the agent's page can be driven, so only its tab can pulse.
+      return tab.browserLabel ? <AgentIcon name="browser" size={13} /> : <BrowserTabGlyph />;
+    case "newtab":
+      return <AgentIcon name="browser" size={13} />;
+    case "artifact":
+      return <AgentIcon name="panel-right" size={13} />;
+    default:
+      return <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />;
+  }
 };
 
 /** Which edges of the tab strip have tabs hidden past them. */
@@ -362,7 +335,19 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
     case "terminal":
       return <TerminalPanel />;
     case "browser":
-      return <BrowserPanel />;
+      return (
+        <BrowserPanel
+          tabId={tab.id}
+          label={tab.browserLabel ?? AGENT_BROWSER_LABEL}
+          initialUrl={tab.url}
+          pendingUrl={tab.pendingUrl}
+          device={tab.device}
+          zoom={tab.zoom}
+          toolsOpen={tab.toolsOpen}
+        />
+      );
+    case "newtab":
+      return <NewTabPage tabId={tab.id} />;
     case "project":
       return <ProjectPanel root={tab.projectRoot ?? ""} />;
     case "session":
@@ -375,33 +360,17 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
 };
 
 export const RightDock: React.FC = () => {
-  /** Aurora Chat's dock holds Canvas and Memory; see `CHAT_ADD_MENU`. */
+  /** Aurora Chat's dock holds Canvas, Memory and Gallery; see `isTabOnSurface`. */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const allTabs = useAgentWorkspaceStore((s) => s.tabs);
   const activeTabId = useAgentWorkspaceStore((s) => s.activeTabId);
-  /**
-   * The tabs THIS product has.
-   *
-   * Tabs are persisted, so a Files or Terminal tab opened while working on a
-   * project stayed in the strip after switching to Aurora Chat — a surface with
-   * no files and no terminal, whose own `+` menu cannot even offer them.
-   * Filtered rather than closed: going back to Build should find the dock
-   * exactly as it was left, not emptied by a visit next door.
-   */
+  /** The tabs THIS surface shows — the rule lives with the store. */
   const tabs: DockTabInstance[] = useMemo(
-    () =>
-      chatSurface
-        ? allTabs.filter(
-            (tab) =>
-              CHAT_DOCK_TABS.includes(tab.kind as (typeof CHAT_DOCK_TABS)[number]) ||
-              tab.kind === "artifact" ||
-              tab.kind === "chat",
-          )
-        : allTabs.filter((tab) => tab.kind !== "gallery"),
+    () => allTabs.filter((tab) => isTabOnSurface(tab, chatSurface)),
     [allTabs, chatSurface],
   );
   const expanded = useAgentWorkspaceStore((s) => s.expanded);
-  const openTab = useAgentWorkspaceStore((s) => s.openTab);
+  const openNewTab = useAgentWorkspaceStore((s) => s.openNewTab);
   const setActiveTab = useAgentWorkspaceStore((s) => s.setActiveTab);
   const closeTab = useAgentWorkspaceStore((s) => s.closeTab);
   const closeDock = useAgentWorkspaceStore((s) => s.closeDock);
@@ -414,17 +383,46 @@ export const RightDock: React.FC = () => {
   );
 
   // No show/hide here: only the active tab's body is mounted, so switching away
-  // from Browser unmounts its panel and that alone hides the page
-  // (`services/browser/browser-visibility.ts`). The `+` menu drops over the
-  // page area, so it holds the page hidden while open.
-  const menuHold = useRef<(() => void) | null>(null);
-  useEffect(
-    () => () => {
-      menuHold.current?.();
-      menuHold.current = null;
-    },
-    [],
-  );
+  // from a browser tab unmounts its panel and that alone hides its page
+  // (`services/browser/browser-visibility.ts`). `+` opens a tab rather than a
+  // menu, so nothing ever drops over a live page from this strip.
+  const newTabTitle = `New tab (${formatCommandShortcut(NEW_TAB_SHORTCUT)})`;
+
+  /**
+   * Arrow keys on a focused tab (`tabIndexForKey`): Left/Right open the
+   * previous/next tab, wrapping; Home/End the first/last. Focus follows, so
+   * holding an arrow walks the strip; the active tab is scrolled into view by
+   * `useTabStripScroll`.
+   */
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const target = tabIndexForKey(event.key, index, tabs.length);
+    if (target === null) return;
+    event.preventDefault();
+    const next = tabs[target];
+    setActiveTab(next.id);
+    // The new tab's button becomes focusable on the next render.
+    requestAnimationFrame(() => {
+      stripRef.current
+        ?.querySelector<HTMLButtonElement>(
+          `[data-tab-id="${CSS.escape(next.id)}"] .agw-tabpill-main`,
+        )
+        ?.focus();
+    });
+  };
+
+  // The panel is never open on nothing. Every path that opens it — the header
+  // toggle, a rail button, a restored layout, switching to a surface whose tabs
+  // are all filtered out — ends here with no tab to show, so this one rule
+  // covers them all: open a New tab. Gated on `dockOpen` because the dock
+  // stays mounted through its closing glide, and must not grow a tab then.
+  // `ensureVisibleTab` re-checks the store when it runs: React runs effects
+  // twice in development, and checking the render's copy opened two tabs.
+  const dockOpen = useAgentWorkspaceStore((s) => s.dockOpen);
+  const ensureVisibleTab = useAgentWorkspaceStore((s) => s.ensureVisibleTab);
+  const nothingToShow = tabs.length === 0;
+  useEffect(() => {
+    if (dockOpen && nothingToShow) ensureVisibleTab(chatSurface);
+  }, [dockOpen, nothingToShow, chatSurface, ensureVisibleTab]);
 
   return (
     <div
@@ -437,36 +435,41 @@ export const RightDock: React.FC = () => {
       <div className="agw-tabstrip">
         <div
           ref={stripRef}
+          role="tablist"
+          aria-label="Panel tabs"
           className="agw-tabstrip-scroll agw-scroll"
           data-overflow={stripOverflow === "none" ? undefined : stripOverflow}
         >
-          {tabs.map((tab) => (
+          {tabs.map((tab, index) => (
             <TabPill
               key={tab.id}
               tab={tab}
               active={tab.id === active?.id}
               onSelect={() => setActiveTab(tab.id)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
               onClose={() => {
-                // Tear down the native child webview before dropping the tab.
-                if (tab.kind === "browser") void closeAgentBrowser();
+                // Tear down the tab's native page before dropping the tab.
+                if (tab.kind === "browser") {
+                  void closeBrowserPage(tab.browserLabel ?? AGENT_BROWSER_LABEL);
+                }
                 closeTab(tab.id);
+                // The last tab THIS surface shows closes the panel, like closing
+                // a browser's last tab. The store only knows when the whole list
+                // is empty; the other surface's tabs may still be in it.
+                if (tabs.length === 1) closeDock();
               }}
             />
           ))}
         </div>
-        <AddMenu
-          onPick={openTab}
-          onOpenChange={(menuOpen) => {
-            // The native browser webview paints above DOM — keep it hidden
-            // while this menu (which drops into the body) is open.
-            if (menuOpen) {
-              if (!menuHold.current) menuHold.current = holdBrowserHidden();
-              return;
-            }
-            menuHold.current?.();
-            menuHold.current = null;
-          }}
-        />
+        <button
+          type="button"
+          className="agw-icon-btn"
+          title={newTabTitle}
+          aria-label={newTabTitle}
+          onClick={openNewTab}
+        >
+          <AgentIcon name="plus" size={16} />
+        </button>
         <button
           type="button"
           className="agw-icon-btn"
@@ -489,32 +492,9 @@ export const RightDock: React.FC = () => {
         </button>
       </div>
 
-      {/* Body */}
-      {active ? (
-        <TabBody key={active.id} tab={active} />
-      ) : (
-        <div className="agw-files-empty">
-          <AgentIcon
-            name={chatSurface ? "panel-right" : "files"}
-            size={22}
-            style={{ color: "var(--agw-text-subtle)" }}
-          />
-          <div style={{ fontSize: "var(--agw-fs-ui)", color: "var(--agw-text-muted)", fontWeight: "var(--agw-fw-medium)" }}>No tab open</div>
-          <div style={{ fontSize: "var(--agw-fs-label)", color: "var(--agw-text-subtle)", maxWidth: 220 }}>
-            {chatSurface ? (
-              <>
-                Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open the
-                Canvas, or Memory to see what Aurora remembers.
-              </>
-            ) : (
-              <>
-                Use <span style={{ fontWeight: "var(--agw-fw-medium)" }}>＋</span> to open Files,
-                or review changes from a message.
-              </>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Body. Never a "no tab" message: an open panel with nothing to show
+          gets a New tab (effect above), so this is empty for one frame at most. */}
+      {active && <TabBody key={active.id} tab={active} />}
     </div>
   );
 };

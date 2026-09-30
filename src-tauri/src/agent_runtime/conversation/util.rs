@@ -110,6 +110,61 @@ pub(super) fn generate_turn_id() -> String {
 ///
 /// The returned handle resolves once `api_rx` closes; read `seq` afterwards
 /// for the next number.
+/// Whether a queued "background process ended" note repeats an ending the
+/// model has already read in THIS batch.
+///
+/// `shell_read_output` with `wait_ms` blocks until the process ends and then
+/// quotes how it ended (`running: false`, `ending: "Exited with code 7 …"`).
+/// The frontend watcher hears the same ending on `shell-process-ended` and
+/// queues a note for the running turn, so the model got the fact twice in one
+/// tool message (harness run 2026-09-28, thread `5c20f9a3`). The note is
+/// dropped only when EVERY process it names was read to its end by one of the
+/// batch's own `shell_read_output` results; a note about some other process,
+/// or one whose read stopped short of the ending, still goes through.
+pub(super) fn process_ending_already_read(
+    queued: &crate::agent_runtime::session::QueuedUserMessage,
+    results: &[ContentBlock],
+    read_output_call_ids: &[String],
+) -> bool {
+    if queued.origin != crate::agent_runtime::types::InjectedOrigin::Process {
+        return false;
+    }
+    let read_to_the_end: Vec<String> = results
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if read_output_call_ids.contains(tool_use_id) => {
+                serde_json::from_str::<serde_json::Value>(content).ok()
+            }
+            _ => None,
+        })
+        .filter(|result| result.get("running") == Some(&serde_json::Value::Bool(false)))
+        .filter_map(|result| {
+            result
+                .get("processId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    if read_to_the_end.is_empty() {
+        return false;
+    }
+    // The note names the process by id in prose: `(id bg-…)`.
+    let mentioned: Vec<&str> = queued
+        .text
+        .split_whitespace()
+        .filter(|word| word.starts_with("bg-"))
+        .map(|word| word.trim_end_matches([')', '.', ',', ';', ':']))
+        .collect();
+    !mentioned.is_empty()
+        && mentioned
+            .iter()
+            .all(|id| read_to_the_end.iter().any(|read| read == id))
+}
+
 pub(super) fn spawn_event_forwarder(
     turn_id: String,
     seq: Arc<AtomicU64>,
@@ -129,4 +184,87 @@ pub(super) fn spawn_event_forwarder(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod process_ending_tests {
+    use super::*;
+    use crate::agent_runtime::session::QueuedUserMessage;
+    use crate::agent_runtime::types::InjectedOrigin;
+
+    fn note(origin: InjectedOrigin, text: &str) -> QueuedUserMessage {
+        QueuedUserMessage {
+            text: text.into(),
+            display_text: None,
+            chips: None,
+            mid_turn: true,
+            origin,
+            queued_at_ms: 0,
+        }
+    }
+
+    fn read_result(call_id: &str, process_id: &str, running: bool) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: call_id.into(),
+            content: format!(
+                r#"{{"success":true,"processId":"{process_id}","running":{running},"output":"tick"}}"#
+            ),
+            is_error: None,
+        }
+    }
+
+    const NOTE: &str = "The background process \"Short-lived failing job\" (id bg-1894371b-1790624482646) \
+                        has ended with exit code 7. Nothing more will arrive from it.";
+
+    #[test]
+    fn a_note_about_a_process_read_to_its_end_this_batch_is_dropped() {
+        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", false)];
+        assert!(process_ending_already_read(
+            &note(InjectedOrigin::Process, NOTE),
+            &blocks,
+            &["call-1".to_string()],
+        ));
+    }
+
+    #[test]
+    fn a_read_that_stopped_short_of_the_ending_keeps_the_note() {
+        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", true)];
+        assert!(!process_ending_already_read(
+            &note(InjectedOrigin::Process, NOTE),
+            &blocks,
+            &["call-1".to_string()],
+        ));
+    }
+
+    #[test]
+    fn a_note_about_a_different_process_keeps_going() {
+        let blocks = vec![read_result("call-1", "bg-other-1", false)];
+        assert!(!process_ending_already_read(
+            &note(InjectedOrigin::Process, NOTE),
+            &blocks,
+            &["call-1".to_string()],
+        ));
+    }
+
+    /// Only results from the batch's own `shell_read_output` calls count; a
+    /// `shell_execute` that happened to print the same JSON does not.
+    #[test]
+    fn only_read_output_results_count() {
+        let blocks = vec![read_result("call-9", "bg-1894371b-1790624482646", false)];
+        assert!(!process_ending_already_read(
+            &note(InjectedOrigin::Process, NOTE),
+            &blocks,
+            &["call-1".to_string()],
+        ));
+    }
+
+    #[test]
+    fn a_persons_message_is_never_dropped() {
+        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", false)];
+        assert!(!process_ending_already_read(
+            &note(InjectedOrigin::User, NOTE),
+            &blocks,
+            &["call-1".to_string()],
+        ));
+    }
 }

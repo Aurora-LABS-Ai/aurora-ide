@@ -1506,6 +1506,29 @@
   color: var(--agw-text-subtle);
 }
 
+/* A step whose card threw while drawing (`ToolGroup` wraps each step in an
+ * ErrorBoundary). One quiet row in the step's slot: the transcript keeps its
+ * shape and the window stays up. Same tone as an empty result, with the
+ * alert mark so it is not mistaken for one. */
+.agw-tool-render-failed {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-tool-render-failed > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.agw-tool-render-failed code {
+  font-family: var(--agw-font-mono);
+  font-size: 0.92em;
+  color: var(--agw-text);
+}
+
 /* ── Smooth tool arrival (opt-in) ───────────────────────────────────────
  * Settings → Preferences → Transcript. A step that mounts during a live turn
  * carries `data-enter` and its slot in the batch as an inline

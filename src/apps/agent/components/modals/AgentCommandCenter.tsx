@@ -129,7 +129,7 @@ export const AgentCommandCenter: React.FC = () => {
       {
         id: "new-chat",
         title: "New chat",
-        subtitle: folderName(projectRoot),
+        subtitle: chatSurface ? undefined : folderName(projectRoot),
         keywords: "compose conversation create",
         group: "Actions",
         icon: "plus",
@@ -138,14 +138,16 @@ export const AgentCommandCenter: React.FC = () => {
           useAgentChatStore.getState().newChat();
         },
       },
-      {
-        id: "add-project",
-        title: "Open project folder",
-        keywords: "add workspace browse directory",
-        group: "Actions",
-        icon: "folder",
-        run: addProject,
-      },
+      ...(!chatSurface
+        ? [{
+            id: "add-project",
+            title: "Open project folder",
+            keywords: "add workspace browse directory",
+            group: "Actions" as const,
+            icon: "folder" as const,
+            run: addProject,
+          }]
+        : []),
       {
         // The only path-free way back to the editor. It matters most when the
         // agent window is the startup surface (Settings → Preferences →
@@ -195,10 +197,10 @@ export const AgentCommandCenter: React.FC = () => {
       })),
       {
         id: "toggle-rail",
-        title: "Toggle project & chat navigator",
+        title: chatSurface ? "Toggle chat navigator" : "Toggle project & chat navigator",
         subtitle: "Left rail",
         status: railOpen ? "On" : "Off",
-        keywords: "sidebar projects chats hide show",
+        keywords: chatSurface ? "sidebar chats hide show" : "sidebar projects chats hide show",
         group: "Quick switches",
         icon: "panel-left",
         run: () => {
@@ -210,7 +212,9 @@ export const AgentCommandCenter: React.FC = () => {
         id: "toggle-dock",
         title: "Toggle right dock",
         status: dockOpen ? "On" : "Off",
-        keywords: "files browser terminal panel hide show",
+        keywords: chatSurface
+          ? "canvas memory gallery panel hide show"
+          : "files browser terminal panel hide show",
         group: "Quick switches",
         icon: "panel-right",
         run: () => {
@@ -242,18 +246,20 @@ export const AgentCommandCenter: React.FC = () => {
             .getState()
             .setShowActivityInTitle(!useAgentSettingsStore.getState().showActivityInTitle),
       },
-      {
-        id: "toggle-mode",
-        title: executionMode === "plan" ? "Switch to Agent mode" : "Switch to Plan mode",
-        status: executionMode === "plan" ? "Plan" : "Agent",
-        keywords: "execution mode agent plan enable disable",
-        group: "Quick switches",
-        icon: executionMode === "plan" ? "book" : "facet",
-        run: () =>
-          useAgentSettingsStore
-            .getState()
-            .setAgentExecutionMode(executionMode === "plan" ? "agent" : "plan"),
-      },
+      ...(!chatSurface
+        ? [{
+            id: "toggle-mode",
+            title: executionMode === "plan" ? "Switch to Agent mode" : "Switch to Plan mode",
+            status: executionMode === "plan" ? "Plan" : "Agent",
+            keywords: "execution mode agent plan enable disable",
+            group: "Quick switches",
+            icon: executionMode === "plan" ? "book" : "facet",
+            run: () =>
+              useAgentSettingsStore
+                .getState()
+                .setAgentExecutionMode(executionMode === "plan" ? "agent" : "plan"),
+          } satisfies CommandItem]
+        : []),
     ];
 
     // Rebuilt as you type, because a settings result carries the term it
@@ -261,7 +267,7 @@ export const AgentCommandCenter: React.FC = () => {
     // that already runs on every keystroke.
     const settings = settingsCommands(query);
 
-    const projects = knownProjects.map<CommandItem>((root) => ({
+    const projects = (chatSurface ? [] : knownProjects).map<CommandItem>((root) => ({
       id: `project:${root}`,
       title: folderName(root),
       subtitle: root,

@@ -140,10 +140,72 @@ pub struct RipgrepSearchRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RipgrepMatch {
     pub after_context: Option<Vec<String>>,
+    /// Line number of the first `after_context` entry, so a reader can place
+    /// the context without counting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_context_start_line: Option<usize>,
     pub before_context: Option<Vec<String>>,
+    /// Line number of the first `before_context` entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_context_start_line: Option<usize>,
     pub content: String,
     pub file: String,
     pub line_number: usize,
+}
+
+/// Hand the context lines ripgrep printed between two matches (or before the
+/// first / after the last) to the matches they belong to, BY LINE NUMBER.
+///
+/// ripgrep's JSON stream is `context… match context… context… match`, with
+/// no marker saying which context lines trail the previous match and which
+/// lead the next. The old parser pooled everything since the last match and
+/// gave the whole pool to BOTH sides: with `-C1` and matches at lines 14 and
+/// 24, line 23 was reported as after-context of 14 and line 15 as
+/// before-context of 24 (harness run 2026-09-28, thread `5c20f9a3`). Context
+/// carries no line numbers of its own in the reply, so the model could not
+/// see the bleed and believed `if (!todo)` followed the first `throw`.
+///
+/// A line within `context_lines` after the previous match trails it; a line
+/// within `context_lines` before the next match leads it. Both can be true
+/// when the matches are close, and then the line belongs to both, which is
+/// exactly what `rg` prints.
+struct PendingContext {
+    lines: Vec<(usize, String)>,
+}
+
+impl PendingContext {
+    fn trailing(&self, previous_match_line: usize, context_lines: usize) -> Vec<(usize, String)> {
+        self.lines
+            .iter()
+            .filter(|(line, _)| {
+                *line > previous_match_line && *line <= previous_match_line + context_lines
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn leading(&self, next_match_line: usize, context_lines: usize) -> Vec<(usize, String)> {
+        self.lines
+            .iter()
+            .filter(|(line, _)| {
+                *line < next_match_line && *line + context_lines >= next_match_line
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+fn append_after_context(target: &mut RipgrepMatch, lines: Vec<(usize, String)>) {
+    if lines.is_empty() {
+        return;
+    }
+    if target.after_context_start_line.is_none() {
+        target.after_context_start_line = lines.first().map(|(line, _)| *line);
+    }
+    target
+        .after_context
+        .get_or_insert_with(Vec::new)
+        .extend(lines.into_iter().map(|(_, text)| text));
 }
 
 #[derive(Debug, Serialize)]
@@ -243,6 +305,12 @@ pub struct CommandStreamInfo {
     /// process printed — the live stream goes to the UI, not into the
     /// conversation.
     pub log_path: Option<String>,
+    /// The job the shell was adopted into at spawn (Windows), shared with the
+    /// streaming loop. It is how a stop reaches every process the command
+    /// started, not only the ones a parent-pid walk can still see — see
+    /// `process_tracking`. Never serialised: it is a kernel handle.
+    #[serde(skip)]
+    pub job: Option<std::sync::Arc<process_tracking::ShellJob>>,
     /// The user pressed "Run in background" on a foreground command: the tool
     /// call returns now, the process keeps running.
     ///
@@ -293,8 +361,32 @@ pub fn register_command_stream(
             stop_reason: None,
             started_at_ms,
             log_path,
+            job: None,
             detached: false,
         });
+}
+
+/// Stop a command and everything it started.
+///
+/// Two witnesses, the same pair survivor reporting uses. The job reaches every
+/// member by membership, whatever its ancestry — the `npm run serve` case on
+/// thread `1edca8e2` (2026-09-29): git-bash → npm → node, where node's parent
+/// had already exited, so `taskkill /T` from the shell's pid stopped at the
+/// gap and reported success over a server still holding its port. The
+/// parent-pid walk still runs for a shell that could not be adopted into a
+/// job, and its answer ("is the process I named gone") is the one returned.
+pub(crate) fn kill_command_tree(
+    job: Option<&process_tracking::ShellJob>,
+    pid: Option<u32>,
+) -> Result<(), String> {
+    let job_result = job.map_or(Ok(()), process_tracking::ShellJob::kill_members);
+    match pid {
+        Some(pid) => try_kill_pid(pid).map_err(|walk_error| match job_result {
+            Ok(()) => walk_error,
+            Err(job_error) => format!("{walk_error}; {job_error}"),
+        }),
+        None => job_result,
+    }
 }
 
 #[must_use]
@@ -397,8 +489,8 @@ pub fn cancel_tracked_command_stream(
         stream.stop_reason.get_or_insert(reason);
         stream.clone()
     };
-    if let Some(pid) = stream.pid {
-        try_kill_pid(pid)?;
+    if stream.pid.is_some() || stream.job.is_some() {
+        kill_command_tree(stream.job.as_deref(), stream.pid)?;
     }
     Ok(stream)
 }
@@ -1015,12 +1107,11 @@ pub async fn ripgrep_search(
         });
     };
 
-    let mut cmd = TokioCommand::new(&rg.path);
+    let mut cmd = crate::sidecar::ripgrep_command(rg);
     cmd.arg("--json")
         .arg("--line-number")
         .arg("--with-filename")
-        .arg("--hidden")
-        .arg("--no-messages");
+        .arg("--hidden");
     // NB: deliberately NO `--max-count`. That is ripgrep's PER-FILE limit, and
     // passing `max_results` to it meant a "200 result" search could collect 200
     // matches *from every file* — thousands of rows — while `files_with_matches`
@@ -1105,8 +1196,9 @@ pub async fn ripgrep_search(
     let mut matches: Vec<RipgrepMatch> = Vec::new();
     let mut files_with_matches: Vec<String> = Vec::new();
     let mut counts_by_file: BTreeMap<String, usize> = BTreeMap::new();
-    let mut pending_context_by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut pending_context_by_file: BTreeMap<String, PendingContext> = BTreeMap::new();
     let mut last_match_index_by_file: BTreeMap<String, usize> = BTreeMap::new();
+    let context_window = resolved_context_lines as usize;
     // Files ripgrep has finished with — the only point at which that file's
     // match count is final, since it streams every match before the `end` event.
     let mut files_completed: usize = 0;
@@ -1168,22 +1260,16 @@ pub async fn ripgrep_search(
                     trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
                 let pending_context = pending_context_by_file
                     .remove(&file_path)
-                    .unwrap_or_default();
+                    .unwrap_or(PendingContext { lines: Vec::new() });
 
-                if !pending_context.is_empty() {
-                    if let Some(previous_match_index) = last_match_index_by_file.get(&file_path) {
-                        if let Some(previous_match) = matches.get_mut(*previous_match_index) {
-                            let updated_after_context = previous_match
-                                .after_context
-                                .clone()
-                                .unwrap_or_default()
-                                .into_iter()
-                                .chain(pending_context.clone().into_iter())
-                                .collect::<Vec<_>>();
-                            previous_match.after_context = Some(updated_after_context);
-                        }
+                if let Some(previous_match_index) = last_match_index_by_file.get(&file_path) {
+                    if let Some(previous_match) = matches.get_mut(*previous_match_index) {
+                        let trailing =
+                            pending_context.trailing(previous_match.line_number, context_window);
+                        append_after_context(previous_match, trailing);
                     }
                 }
+                let leading = pending_context.leading(line_number, context_window);
 
                 counts_by_file
                     .entry(file_path.clone())
@@ -1197,10 +1283,12 @@ pub async fn ripgrep_search(
                 let match_index = matches.len();
                 matches.push(RipgrepMatch {
                     after_context: None,
-                    before_context: if pending_context.is_empty() {
+                    after_context_start_line: None,
+                    before_context_start_line: leading.first().map(|(line, _)| *line),
+                    before_context: if leading.is_empty() {
                         None
                     } else {
-                        Some(pending_context)
+                        Some(leading.into_iter().map(|(_, text)| text).collect())
                     },
                     content,
                     file: file_path.clone(),
@@ -1219,13 +1307,16 @@ pub async fn ripgrep_search(
                 };
                 let file_path = absolutize_rg_path(search_dir.as_ref(), file_path);
 
+                let context_line =
+                    data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as usize;
                 let context_content =
                     trim_line_endings(decode_rg_text(data.get("lines").unwrap_or(&Value::Null)));
 
                 pending_context_by_file
                     .entry(file_path)
-                    .or_default()
-                    .push(context_content);
+                    .or_insert_with(|| PendingContext { lines: Vec::new() })
+                    .lines
+                    .push((context_line, context_content));
             }
 
             if over_cap(&matches, &files_with_matches, files_completed) {
@@ -1244,11 +1335,13 @@ pub async fn ripgrep_search(
         Err(_) => true,
     };
 
-    // Stop ripgrep whether we timed out or simply have enough. Without this a
-    // capped search would leave it walking the rest of the tree for nothing.
-    let _ = child.start_kill();
-    if let Some(pid) = pid {
-        let _ = try_kill_pid(pid);
+    // Preserve the real exit status on EOF. Killing here used to race a normal
+    // exit and turn useful search failures into an unexplained killed process.
+    if timed_out || truncated {
+        let _ = child.start_kill();
+        if let Some(pid) = pid {
+            let _ = try_kill_pid(pid);
+        }
     }
     let status = child.wait().await.ok();
     let stderr = stderr_task.await.unwrap_or_default();
@@ -1289,21 +1382,11 @@ pub async fn ripgrep_search(
         }
     }
 
-    for (file_path, trailing_context) in pending_context_by_file {
-        if trailing_context.is_empty() {
-            continue;
-        }
-
+    for (file_path, pending) in pending_context_by_file {
         if let Some(last_match_index) = last_match_index_by_file.get(&file_path) {
             if let Some(last_match) = matches.get_mut(*last_match_index) {
-                let updated_after_context = last_match
-                    .after_context
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .chain(trailing_context.into_iter())
-                    .collect::<Vec<_>>();
-                last_match.after_context = Some(updated_after_context);
+                let trailing = pending.trailing(last_match.line_number, context_window);
+                append_after_context(last_match, trailing);
             }
         }
     }
@@ -1353,7 +1436,7 @@ pub async fn ripgrep_search(
         }
 
         let error_message = if stderr.is_empty() {
-            "ripgrep search failed".to_string()
+            format!("ripgrep search failed (exit code {exit_code:?}, path: {path})")
         } else {
             stderr
         };
@@ -1424,15 +1507,26 @@ pub async fn ripgrep_search(
         )
     });
 
+    let partial_error = if !stderr.trim().is_empty() {
+        Some(format!(
+            "Search returned partial results because ripgrep reported: {}",
+            stderr.trim()
+        ))
+    } else if exit_code != Some(0) {
+        Some(format!("Search returned partial results (ripgrep exit code {exit_code:?}, path: {path})"))
+    } else {
+        None
+    };
+    let complete = !truncated && partial_error.is_none();
     Ok(RipgrepSearchResponse {
         counts,
-        error: None,
+        error: partial_error.clone(),
         files,
         matches: content_matches,
         message,
         pattern,
         returned: Some(returned),
-        success: true,
+        success: partial_error.is_none(),
         tool: "grep".to_string(),
         // Totals are reported ONLY for a search that ran to completion.
         //
@@ -1442,8 +1536,8 @@ pub async fn ripgrep_search(
         // a number that looks measured and isn't. `returned` says exactly how
         // much is in hand and `truncated` says there is more; anything wanting a
         // true count must raise `max_results` or narrow the search.
-        total_files: (!truncated).then_some(total_files),
-        total_matches: (!truncated).then_some(total_matches),
+        total_files: complete.then_some(total_files),
+        total_matches: complete.then_some(total_matches),
         truncated: Some(truncated),
     })
 }
@@ -1914,6 +2008,7 @@ struct LifecycleGuard {
     app: Option<tauri::AppHandle>,
     request_id: String,
     pid: Option<u32>,
+    job: Option<std::sync::Arc<process_tracking::ShellJob>>,
     log_path: Option<String>,
     started: std::time::Instant,
 }
@@ -1929,8 +2024,8 @@ impl Drop for LifecycleGuard {
         if !self.armed {
             return;
         }
-        if let Some(pid) = self.pid {
-            let _ = try_kill_pid(pid);
+        if self.pid.is_some() || self.job.is_some() {
+            let _ = kill_command_tree(self.job.as_deref(), self.pid);
         }
         // The loop's own `ProcessLog` died with the future; append the footer
         // through a fresh handle so the log still states how the run ended.
@@ -2276,17 +2371,22 @@ pub(crate) async fn run_command_lifecycle(
     // creation refused, non-Windows) falls back to the parent-pid walk below.
     #[cfg(target_os = "windows")]
     let shell_job = match (child.id(), child.raw_handle()) {
-        (Some(shell_pid), Some(handle)) => process_tracking::ShellJob::adopt(shell_pid, handle),
+        (Some(shell_pid), Some(handle)) => {
+            process_tracking::ShellJob::adopt(shell_pid, handle).map(std::sync::Arc::new)
+        }
         _ => None,
     };
     #[cfg(not(target_os = "windows"))]
-    let shell_job: Option<process_tracking::ShellJob> = None;
+    let shell_job: Option<std::sync::Arc<process_tracking::ShellJob>> = None;
 
     let pid = child.id();
     if tracked {
         let mut streams = ACTIVE_COMMAND_STREAMS.write();
         if let Some(stream) = streams.get_mut(&request_id) {
             stream.pid = pid;
+            // Shared with the ledger so `shell_kill` and the stop button can
+            // end the whole job at once, without waiting for this loop.
+            stream.job = shell_job.clone();
         }
     }
 
@@ -2300,6 +2400,7 @@ pub(crate) async fn run_command_lifecycle(
         app: app.clone(),
         request_id: request_id.clone(),
         pid,
+        job: shell_job.clone(),
         log_path: log_path.clone(),
         started,
     };
@@ -2313,9 +2414,7 @@ pub(crate) async fn run_command_lifecycle(
         Some(stdout) => stdout,
         None => {
             guard.disarm();
-            if let Some(pid) = pid {
-                let _ = try_kill_pid(pid);
-            }
+            let _ = kill_command_tree(shell_job.as_deref(), pid);
             log.footer("Killed — stdout could not be captured", started);
             cleanup_command_stream(&request_id);
             return Err("Failed to capture stdout".to_string());
@@ -2325,9 +2424,7 @@ pub(crate) async fn run_command_lifecycle(
         Some(stderr) => stderr,
         None => {
             guard.disarm();
-            if let Some(pid) = pid {
-                let _ = try_kill_pid(pid);
-            }
+            let _ = kill_command_tree(shell_job.as_deref(), pid);
             log.footer("Killed — stderr could not be captured", started);
             cleanup_command_stream(&request_id);
             return Err("Failed to capture stderr".to_string());
@@ -2368,9 +2465,7 @@ pub(crate) async fn run_command_lifecycle(
 
     loop {
         if let Some(reason) = command_stream_stop(&request_id) {
-            if let Some(pid) = pid {
-                let _ = try_kill_pid(pid);
-            }
+            let _ = kill_command_tree(shell_job.as_deref(), pid);
             ending = reason.describe().to_string();
             break;
         }
@@ -2395,9 +2490,7 @@ pub(crate) async fn run_command_lifecycle(
 
         tokio::select! {
             _ = &mut timeout_fut => {
-                if let Some(pid) = pid {
-                    let _ = try_kill_pid(pid);
-                }
+                let _ = kill_command_tree(shell_job.as_deref(), pid);
                 flush_shell_pending(app.as_ref(), &request_id, &mut stdout_pending, &mut stderr_pending);
                 if let Some(app) = &app {
                     let _ = app.emit(
@@ -3552,6 +3645,114 @@ mod tests {
             println!("{pattern} ({mode}): {}ms, success={}, returned={:?}, error={:?}", started.elapsed().as_millis(), response.success, response.returned, response.error);
             assert!(response.success);
         }
+    }
+
+    #[test]
+    fn grep_missing_path_keeps_ripgrep_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        let response = search(&dir.path().join("missing-directory"), "content", 10);
+        assert!(!response.success);
+        let error = response.error.unwrap();
+        assert!(error.contains("missing-directory"), "{error}");
+        assert_ne!(error.trim(), "ripgrep search failed");
+    }
+
+    #[test]
+    fn grep_invalid_regex_keeps_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = RipgrepSearchRequest {
+            path: dir.path().to_string_lossy().into_owned(),
+            pattern: "[".into(),
+            is_regex: Some(true),
+            case_insensitive: None,
+            context_lines: None,
+            glob: None,
+            max_results: None,
+            output_mode: None,
+            timeout_ms: Some(30_000),
+        };
+        let response = tokio::runtime::Runtime::new().unwrap()
+            .block_on(ripgrep_search(request)).unwrap();
+        assert!(!response.success);
+        assert!(response.error.unwrap().contains("regex parse error"));
+    }
+
+    /// Issue C of the 2026-09-28 harness report (thread `5c20f9a3`): with
+    /// `-C1` and matches ten lines apart, the context between them was given
+    /// to BOTH matches, so line 23 read as what follows line 14. Each side
+    /// gets only the lines inside its own window, and says where they start.
+    #[test]
+    fn grep_context_lines_stay_with_their_own_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (1..=30)
+            .map(|n| {
+                if n == 14 || n == 24 {
+                    format!("line {n} needle\n")
+                } else {
+                    format!("line {n}\n")
+                }
+            })
+            .collect();
+        std::fs::write(dir.path().join("a.txt"), body).unwrap();
+        let request = RipgrepSearchRequest {
+            path: dir.path().to_string_lossy().into_owned(),
+            pattern: "needle".into(),
+            is_regex: Some(false),
+            case_insensitive: None,
+            context_lines: Some(1),
+            glob: None,
+            max_results: None,
+            output_mode: None,
+            timeout_ms: Some(30_000),
+        };
+        let response = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(ripgrep_search(request))
+            .unwrap();
+        let matches = response.matches.expect("matches");
+        assert_eq!(matches.len(), 2, "{matches:?}");
+
+        let first = &matches[0];
+        assert_eq!(first.line_number, 14);
+        assert_eq!(first.before_context.as_deref(), Some(&["line 13".to_string()][..]));
+        assert_eq!(first.before_context_start_line, Some(13));
+        assert_eq!(first.after_context.as_deref(), Some(&["line 15".to_string()][..]));
+        assert_eq!(first.after_context_start_line, Some(15));
+
+        let second = &matches[1];
+        assert_eq!(second.line_number, 24);
+        assert_eq!(second.before_context.as_deref(), Some(&["line 23".to_string()][..]));
+        assert_eq!(second.before_context_start_line, Some(23));
+        assert_eq!(second.after_context.as_deref(), Some(&["line 25".to_string()][..]));
+        assert_eq!(second.after_context_start_line, Some(25));
+    }
+
+    /// Two matches closer than the window share the line between them —
+    /// that is what `rg` means, and dropping it from either side would hide
+    /// real neighbouring code.
+    #[test]
+    fn grep_context_between_close_matches_belongs_to_both() {
+        let pending = PendingContext {
+            lines: vec![(6, "between".into())],
+        };
+        assert_eq!(pending.trailing(5, 1), vec![(6, "between".to_string())]);
+        assert_eq!(pending.leading(7, 1), vec![(6, "between".to_string())]);
+
+        let far = PendingContext {
+            lines: vec![(15, "after first".into()), (23, "before second".into())],
+        };
+        assert_eq!(far.trailing(14, 1), vec![(15, "after first".to_string())]);
+        assert_eq!(far.leading(24, 1), vec![(23, "before second".to_string())]);
+    }
+
+    #[test]
+    fn grep_no_matches_is_successful() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file.txt"), "nothing to match").unwrap();
+        let response = search(&dir.path().to_path_buf(), "content", 10);
+        assert!(response.success, "{:?}", response.error);
+        assert_eq!(response.returned, Some(0));
+        assert!(response.error.is_none());
     }
 
     #[test]

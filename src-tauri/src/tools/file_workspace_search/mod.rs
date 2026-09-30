@@ -240,7 +240,7 @@ pub(crate) fn resolve_path_with_access(
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
         if access.lifts_boundary() {
-            return Ok(raw.to_path_buf());
+            return Ok(native_absolute(raw));
         }
         return Err(no_workspace_refusal(path));
     };
@@ -314,12 +314,12 @@ pub(crate) fn resolve_path_for_read_with_spill(
     let raw = Path::new(path);
     if let Some(dir) = spill_dir {
         if is_inside(raw, dir) {
-            return Ok(raw.to_path_buf());
+            return Ok(native_absolute(raw));
         }
     }
     let Some(root) = workspace_root else {
         if access.reads_outside() {
-            return Ok(raw.to_path_buf());
+            return Ok(native_absolute(raw));
         }
         return Err(no_workspace_refusal(path));
     };
@@ -352,15 +352,47 @@ pub(crate) fn resolve_path_for_read_with_spill(
 
 /// Resolve a path the user explicitly allowed reading from outside the
 /// workspace. Absolute paths stay as-is; relative ones anchor to the workspace.
-/// Canonicalized when it exists so symlinks/`..` collapse, else returned verbatim
-/// (a missing file still surfaces a normal "not found" from the reader).
+/// The result is in native form whether or not it exists yet — see
+/// [`native_absolute`].
 fn resolve_outside_workspace(raw: &Path, root: &Path) -> PathBuf {
     let absolute = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
         root.join(raw)
     };
-    dunce::canonicalize(&absolute).unwrap_or(absolute)
+    native_absolute(&absolute)
+}
+
+/// One spelling for every absolute path a file tool reports or records.
+///
+/// A path that exists is canonicalized (drive-letter case, symlinks, `..`).
+/// A path that does not exist yet has its longest existing prefix
+/// canonicalized and the missing tail re-appended one component at a time,
+/// which is what makes the separators native. `resolve_within_workspace`
+/// already canonicalizes, so this covers the other branches: a destination
+/// outside the workspace, and any path taken with no workspace open.
+///
+/// Before this, those branches returned `root.join(raw)` verbatim. A model
+/// that wrote `src/x.ts` under out-of-workspace access got `fullPath` back as
+/// `E:\proj\src/x.ts`, and the read tracker stored that string. The next
+/// `file_edit` canonicalized the now-existing file to `E:\proj\src\x.ts`,
+/// found nothing under that key, and told the agent the file "has not been
+/// read this session" — a file it had just written. The mixed separators and
+/// the false refusal were the same bug.
+pub(crate) fn native_absolute(absolute: &Path) -> PathBuf {
+    // A path with no root (or, on Windows, a root but no drive) has no fixed
+    // spelling to resolve to; it is handed back as written, as before.
+    if !absolute.is_absolute() {
+        return absolute.to_path_buf();
+    }
+    let (existing, tail) = closest_existing_ancestor(absolute);
+    let base = dunce::canonicalize(&existing)
+        .unwrap_or_else(|_| existing.components().collect::<PathBuf>());
+    if tail.as_os_str().is_empty() {
+        base
+    } else {
+        base.join(tail)
+    }
 }
 
 fn resolve_missing_path_inside_workspace(path: &Path, root: &Path) -> Result<PathBuf, ToolError> {
@@ -421,7 +453,7 @@ pub(crate) fn resolve_path_for_create(
     let raw = Path::new(path);
     let Some(root) = workspace_root else {
         if access.writes_outside() {
-            return Ok(raw.to_path_buf());
+            return Ok(native_absolute(raw));
         }
         return Err(no_workspace_refusal(path));
     };
@@ -935,6 +967,65 @@ mod tests {
         let expected_parent = dunce::canonicalize(tmp.path()).unwrap();
         assert_eq!(resolved.parent().unwrap(), expected_parent);
         assert_eq!(resolved.file_name().unwrap(), "new-file.txt");
+    }
+
+    /// Issues 4 and 6 of the 2026-09-28 harness report, one cause: under
+    /// out-of-workspace access a destination that did not exist yet came back
+    /// as `root.join(raw)` verbatim (`E:\proj\src/x.ts`), and the read tracker
+    /// keyed the write under that spelling while the next `file_edit` looked
+    /// the now-existing file up under its canonical one.
+    #[test]
+    fn a_new_path_under_full_access_is_spelled_the_way_the_strict_resolver_spells_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let resolved =
+            resolve_path_for_create("src/deep/x.ts", Some(tmp.path()), WorkspaceAccess::Full)
+                .expect("ok");
+        let shown = resolved.to_string_lossy().into_owned();
+        assert!(
+            !(shown.contains('/') && shown.contains('\\')),
+            "mixed separators: {shown}"
+        );
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(tmp.path())
+                .unwrap()
+                .join("src")
+                .join("deep")
+                .join("x.ts")
+        );
+
+        std::fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+        std::fs::write(&resolved, "x").unwrap();
+        let again =
+            resolve_path_with_access("src/deep/x.ts", Some(tmp.path()), WorkspaceAccess::Full)
+                .expect("ok");
+        assert_eq!(
+            again.to_string_lossy(),
+            shown,
+            "the read tracker keys on this string; both resolvers must agree"
+        );
+    }
+
+    #[test]
+    fn a_workspace_less_absolute_path_is_spelled_natively() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let raw = format!(
+            "{}/missing/y.txt",
+            tmp.path().to_string_lossy().replace('\\', "/")
+        );
+        let resolved = resolve_path_for_create(&raw, None, WorkspaceAccess::Full).expect("ok");
+        let shown = resolved.to_string_lossy().into_owned();
+        assert!(
+            !(shown.contains('/') && shown.contains('\\')),
+            "mixed separators: {shown}"
+        );
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(tmp.path())
+                .unwrap()
+                .join("missing")
+                .join("y.txt")
+        );
     }
 
     #[test]

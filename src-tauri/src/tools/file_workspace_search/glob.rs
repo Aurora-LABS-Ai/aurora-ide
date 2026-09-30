@@ -23,7 +23,6 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use tokio::process::Command as TokioCommand;
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
@@ -123,7 +122,7 @@ impl ToolExecutor for GlobTool {
             ));
         };
 
-        let mut cmd = TokioCommand::new(&rg.path);
+        let mut cmd = crate::sidecar::ripgrep_command(rg);
         // `--files` lists candidates instead of searching them; `--glob` then
         // filters that list. `--null` separates paths with NUL so a filename
         // containing a newline cannot split one result into two.
@@ -377,6 +376,25 @@ mod tests {
             .await
             .expect_err("must fail");
         assert!(matches!(err, ToolError::InvalidInput(_)), "{err:?}");
+    }
+
+    /// Issue 1 of the 2026-09-28 harness report: in a folder that is not yet
+    /// a git repository, `.gitignore` was ignored and `node_modules` flooded
+    /// the result. ripgrep needs `--no-require-git` for that file to count.
+    #[tokio::test]
+    async fn gitignore_is_honoured_without_a_git_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "node_modules/\ndist/\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("node_modules/dep")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("dist")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("node_modules/dep/index.ts"), "x").unwrap();
+        std::fs::write(tmp.path().join("dist/app.ts"), "x").unwrap();
+        std::fs::write(tmp.path().join("src/app.ts"), "x").unwrap();
+        assert!(!tmp.path().join(".git").exists());
+
+        let parsed = run(json!({ "pattern": "**/*.ts" }), tmp.path()).await;
+        assert_eq!(files(&parsed), vec!["src/app.ts"], "{parsed}");
     }
 
     #[tokio::test]

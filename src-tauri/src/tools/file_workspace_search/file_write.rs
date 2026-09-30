@@ -174,8 +174,13 @@ impl ToolExecutor for FileWriteTool {
             Ok(old_content) => {
                 let old_normalized = old_content.replace("\r\n", "\n");
                 let new_normalized = content_for_result.replace("\r\n", "\n");
+                // The same counter `file_edit` reports through, so both tools
+                // and the Review panel state one −removed/+added pair.
                 let (lines_added, lines_removed) =
-                    line_change_counts(&old_normalized, &new_normalized);
+                    crate::commands::editor_ops::line_change_counts(
+                        &old_normalized,
+                        &new_normalized,
+                    );
                 // Fire the IDE event so the open Monaco buffer + explorer +
                 // pending-changes UI refresh. A `Created` kind is emitted
                 // when the file did not exist before the write — this lets
@@ -253,50 +258,6 @@ impl ToolExecutor for FileWriteTool {
             .unwrap()),
         }
     }
-}
-
-/// Line-change counts for a whole-file overwrite, matching what
-/// `file_edit` reports so every modify tool's card header can show the
-/// same −removed/+added pair.
-///
-/// The empty→content fast path matters twice over: it is the common case
-/// (most `file_write` calls create new files), and it skips running a
-/// diff whose answer is known — every line is an addition.
-fn line_change_counts(old_content: &str, new_content: &str) -> (usize, usize) {
-    // Same line split the agent window's `computeDiff` uses (a single trailing
-    // newline is not its own line), so both ends state the same numbers. Diffing
-    // raw text with `TextDiff::from_lines` would count a final line that merely
-    // gained a trailing newline as one removal plus one addition.
-    fn to_lines(text: &str) -> Vec<&str> {
-        if text.is_empty() {
-            return Vec::new();
-        }
-        let mut lines: Vec<&str> = text.split('\n').collect();
-        if lines.last() == Some(&"") {
-            lines.pop();
-        }
-        lines
-    }
-
-    let old_lines = to_lines(old_content);
-    let new_lines = to_lines(new_content);
-    if old_lines.is_empty() {
-        return (new_lines.len(), 0);
-    }
-    if new_lines.is_empty() {
-        return (0, old_lines.len());
-    }
-    let diff = similar::TextDiff::from_slices(&old_lines, &new_lines);
-    let mut added = 0usize;
-    let mut removed = 0usize;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            similar::ChangeTag::Insert => added += 1,
-            similar::ChangeTag::Delete => removed += 1,
-            similar::ChangeTag::Equal => {}
-        }
-    }
-    (added, removed)
 }
 
 #[cfg(test)]

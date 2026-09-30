@@ -206,7 +206,6 @@ describe("agent execution mode", () => {
         "workspace_tree",
         "shell_execute",
         "shell_spawn",
-        "read_lints",
         "code",
         "todo",
         "plan_write",
@@ -226,9 +225,18 @@ describe("agent execution mode", () => {
         "remember",
         "generate_image",
         "generate_video",
+        "aurora_skill_search",
+        "aurora_skill_load",
+        "chapter",
         "ask_question",
       ]) {
         expect(isToolAllowedForExecutionMode("chat", name)).toBe(true);
+      }
+    });
+
+    it("keeps Chat image generation out of Build", () => {
+      for (const mode of ["agent", "plan", "team"] as const) {
+        expect(isToolAllowedForExecutionMode(mode, "generate_image")).toBe(false);
       }
     });
 

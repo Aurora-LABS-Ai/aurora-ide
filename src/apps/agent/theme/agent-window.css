@@ -10,7 +10,14 @@
  *
  * Vite inlines these @imports at build time (postcss-import), so the browser
  * still receives one stylesheet.
+ *
+ * FIRST, so every Aurora rule wins a tie against it: devices.css (MIT,
+ * picturepan2) — the device frames the browser panel draws around a page shown
+ * as a phone or tablet (`components/browser/DeviceFrame.tsx`). Its rules are
+ * all under `.device`, and it forces `display:block` on every descendant, so
+ * nothing of ours is placed inside a `.device` element.
  */
+@import "devices.css/dist/devices.css";
 @import "./agent-window/01-root.css";
 @import "./agent-window/02-shell.css";
 @import "./agent-window/03-composer.css";

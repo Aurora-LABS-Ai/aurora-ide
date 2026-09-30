@@ -77,16 +77,12 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         refused += 1;
     }
     // Everything registered was refused except the tools chat mode names.
-    // Five of its eight are native executors today — `auroro_websearch`,
-    // `recall`, `remember`, `generate_image` and `canvas_guidelines`. The rest
-    // are frontend-bridged.
+    // Seven are native executors today: web search, memory, image/video
+    // generation, canvas guidelines and the preference-gated chapter tool.
+    // The remaining entries are frontend-bridged.
     //
     // Stated as an equation rather than a floor so that giving chat mode
-    // another native tool fails HERE and has to be acknowledged, instead of
-    // sliding under a threshold nobody revisits. It has already caught three:
-    // the memory bucket landing took this from 1 to 3, `generate_image` took it
-    // to 4, and `canvas_guidelines` to 5 — chat could build a live canvas and
-    // could not read the contract for one.
+    // another native tool fails HERE and has to be acknowledged.
     let named_natives = registry
         .names()
         .iter()
@@ -95,8 +91,8 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         })
         .count();
     assert_eq!(
-        named_natives, 6,
-        "auroro_websearch, recall, remember, generate_image, generate_video and canvas_guidelines are the native ones"
+        named_natives, 7,
+        "web search, memory, image/video, canvas guidelines and chapter are the native ones"
     );
     assert_eq!(
         refused,
@@ -123,7 +119,6 @@ fn chat_mode_refuses_files_and_shell_by_name() {
         "shell_execute",
         "shell_spawn",
         "shell_kill",
-        "read_lints",
         "code",
         "todo",
     ] {
@@ -145,6 +140,8 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
         "remember",
         "generate_image",
         "generate_video",
+        "aurora_skill_search",
+        "aurora_skill_load",
         "ask_question",
     ] {
         assert!(
@@ -783,6 +780,7 @@ fn chapters_are_withheld_until_the_user_asks_for_them() {
         AgentExecutionMode::Agent,
         AgentExecutionMode::Plan,
         AgentExecutionMode::Team,
+        AgentExecutionMode::Chat,
     ] {
         assert!(
             !is_tool_available_this_turn("chapter", mode, false, false, true),
@@ -991,6 +989,65 @@ fn store_for_thread_follows_the_conversation_to_its_own_store() {
         registry.store_for_workspace(None).unwrap().dir()
     );
     assert!(registry.store_for_thread("never-saved").unwrap().is_none());
+}
+
+#[test]
+fn existing_conversation_rejects_the_other_surface_mode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+    registry
+        .chat_store()
+        .ensure_thread("chat-owned", None, None)
+        .unwrap();
+    registry
+        .store_for_workspace(None)
+        .unwrap()
+        .ensure_thread("build-owned", None, None)
+        .unwrap();
+
+    for (id, wrong_mode) in [
+        ("chat-owned", AgentExecutionMode::Agent),
+        ("build-owned", AgentExecutionMode::Chat),
+    ] {
+        let error = registry
+            .store_for_conversation(wrong_mode, id, None)
+            .unwrap_err();
+        assert!(error.to_string().contains("other Aurora surface"), "{error}");
+    }
+    assert!(registry
+        .store_for_conversation(AgentExecutionMode::Chat, "chat-owned", None)
+        .is_ok());
+    assert!(registry
+        .store_for_conversation(AgentExecutionMode::Agent, "build-owned", None)
+        .is_ok());
+}
+
+#[test]
+fn contaminated_chat_metadata_loses_its_build_workspace() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+    let chat = registry.chat_store();
+    chat.ensure_thread("legacy-chat", None, Some("C:/private-build".into()))
+        .unwrap();
+    assert_eq!(
+        chat.load_metadata("legacy-chat")
+            .unwrap()
+            .workspace_root
+            .as_deref(),
+        Some("C:/private-build")
+    );
+
+    chat.clear_chat_workspace_root("legacy-chat").unwrap();
+    assert!(chat
+        .load_metadata("legacy-chat")
+        .unwrap()
+        .workspace_root
+        .is_none());
+    assert!(registry
+        .store_for_workspace(None)
+        .unwrap()
+        .clear_chat_workspace_root("legacy-chat")
+        .is_err());
 }
 
 #[test]

@@ -351,7 +351,11 @@ impl BrowserManager {
             position: LogicalPosition::new(x, y).into(),
             size: LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
         })
-        .map_err(|e| format!("set_bounds failed: {e}"))
+        .map_err(|e| format!("set_bounds failed: {e}"))?;
+        // A page shown in a device frame has rounded screen corners; its
+        // window is re-clipped for the new size (a no-op when square).
+        crate::services::browser_view::apply_corners(&view, label, width.max(1.0), height.max(1.0));
+        Ok(())
     }
 
     /// Apply the frontend's decision to show or hide the embedded webview.
@@ -505,13 +509,23 @@ impl BrowserManager {
             entry.inspector_active = false;
             entry.stagewise_active = false;
         }
+        // A device the USER chose in the panel is kept across navigation, the
+        // way DevTools' device mode is: it is re-applied, not cleared.
+        if crate::services::browser_view::reapply_after_navigate(&window, label) {
+            self.touch_active(label);
+            return Ok(());
+        }
         Self::clear_emulation_overrides(&window);
         // The browser's overrides are gone, so Aurora's record of them and the
         // device frame drawn for them have to go too — otherwise `browser_status`
         // keeps reporting a 390px viewport that no longer exists, and the panel
         // stays pinned to a phone-width frame after the user typed a new URL.
-        crate::tools::browser::state::clear_emulation();
-        self.request_browser_frame(None, None);
+        // Only for the AGENT's page: that record and frame describe it alone,
+        // and another tab navigating must not wipe them.
+        if label == crate::tools::browser::AGENT_BROWSER_LABEL {
+            crate::tools::browser::state::clear_emulation();
+            self.request_browser_frame(None, None);
+        }
         self.touch_active(label);
         Ok(())
     }
@@ -581,6 +595,7 @@ impl BrowserManager {
             let _ = view.close();
         }
         self.windows.remove(label);
+        crate::services::browser_view::forget(label);
         // Clear `last_active_label` if it pointed at the window we
         // just killed — otherwise the next label-less tool call would
         // route to a dead label.
@@ -720,6 +735,12 @@ impl BrowserManager {
     /// fallback covers any window whose webview isn't directly registered.
     /// Every downstream op (navigate / eval / with_webview / set_focus / close)
     /// is a `Webview` method, so callers don't care which kind it is.
+    /// The live webview for `label` — for the panel's view commands
+    /// (`commands::browser`), which act on the page directly.
+    pub fn webview(&self, label: &str) -> Result<Webview, String> {
+        self.window(label)
+    }
+
     fn window(&self, label: &str) -> Result<Webview, String> {
         // `get_webview` resolves from the app-wide webview registry, which holds
         // BOTH standalone window webviews and embedded child webviews under their

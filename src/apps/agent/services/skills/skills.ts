@@ -725,8 +725,18 @@ export async function searchSkillCandidates(
   }
 
   const needle = trimmedQuery.toLowerCase();
+  // Every word scores on its own, so "node test runner typescript" finds the
+  // TypeScript skill by its one matching word. The whole phrase was the only
+  // needle before, and a four-word query matched nothing in a 293-skill catalog
+  // while any one of its words would have.
+  const words = Array.from(new Set(needle.split(/\s+/).filter(Boolean)));
   const scored = candidates
-    .map((skill) => ({ score: scoreSkillMatch(skill, needle), skill }))
+    .map((skill) => ({
+      score:
+        words.reduce((sum, word) => sum + scoreSkillMatch(skill, word), 0) +
+        (words.length > 1 ? scoreSkillMatch(skill, needle) : 0),
+      skill,
+    }))
     .filter((entry) => entry.score > 0)
     .sort((left, right) =>
       right.score - left.score || left.skill.name.localeCompare(right.skill.name)

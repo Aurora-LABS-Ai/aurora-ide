@@ -14,7 +14,7 @@
 //! ## What it is not
 //!
 //! It reads **syntax, not types**. There is no type checking here and no
-//! attempt at one; that is `read_lints`' job. Resolution is by NAME, and where
+//! attempt at one; that is the project's type checker's job. Resolution is by NAME, and where
 //! a name is ambiguous the index says so rather than guessing (see
 //! [`store::ResolutionStats`]). The upside of the syntax-only choice is that it
 //! needs no toolchain installed, costs well under a second for a whole

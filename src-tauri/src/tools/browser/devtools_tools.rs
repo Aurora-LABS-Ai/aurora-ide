@@ -193,6 +193,9 @@ impl ToolExecutor for BrowserSetViewportTool {
                 )
                 .await;
             super::state::clear_emulation();
+            // The agent's reset also ends a device the user picked in the
+            // panel — the browser no longer shows it.
+            crate::services::browser_view::forget_device(AGENT_BROWSER_LABEL);
             self.manager.request_browser_frame(None, None);
 
             // Restoring the panel is a ROUND TRIP — Rust cannot resize the
@@ -319,6 +322,8 @@ Touch emulation could not be switched off ({err}), so the page may              
         // page is being rendered narrower than the panel. Without this the
         // override is invisible from the next turn onward — see
         // `state::EMULATION`.
+        // The agent's size replaces any device the user picked in the panel.
+        crate::services::browser_view::forget_device(AGENT_BROWSER_LABEL);
         super::state::set_emulation(super::state::Emulation {
             width,
             height,

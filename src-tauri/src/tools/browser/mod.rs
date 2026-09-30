@@ -91,6 +91,9 @@ mod halo;
 mod input_tools;
 /// The visible cursor that makes a click look like a click.
 mod pointer;
+/// Local servers the agent started, read from their logs, for the dock's New
+/// tab page.
+pub(crate) mod local_servers;
 /// Whether anything answers at a URL, asked over HTTP because the WebView
 /// cannot be asked at all.
 mod reachability;
@@ -108,7 +111,7 @@ mod view;
 mod wait_tools;
 
 /// The one browser the agent drives: the agent window's right-dock panel.
-const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
+pub(crate) const AGENT_BROWSER_LABEL: &str = "browser-agentwin";
 
 /// Page-outline scan. Collects the elements an agent can actually ACT on and
 /// derives a *stable, verified-unique* CSS selector for each.

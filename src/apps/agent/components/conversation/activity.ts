@@ -77,7 +77,6 @@ const TOOL_GERUND: Record<string, string> = {
   folder_delete: "Deleting",
   grep: "Searching",
   glob: "Finding",
-  read_lints: "Checking diagnostics",
   shell_execute: "Running",
   shell_spawn: "Starting",
   shell_kill: "Stopping a process",
@@ -259,7 +258,7 @@ function announcedPaths(args: Record<string, unknown>): string[] {
  */
 function pathsAreList(name: string, args: Record<string, unknown>): boolean {
   if (
-    (name === "file_read" || name === "multi_file_read" || name === "read_lints") &&
+    (name === "file_read" || name === "multi_file_read") &&
     (Array.isArray(args.path) || Array.isArray(args.paths))
   ) {
     return true;
@@ -274,7 +273,7 @@ function targetsOf(
 ): AgentActivityTarget[] {
   let paths: string[];
   if (
-    (name === "file_read" || name === "multi_file_read" || name === "read_lints") &&
+    (name === "file_read" || name === "multi_file_read") &&
     (Array.isArray(args.path) || Array.isArray(args.paths))
   ) {
     paths = pathListOf(args);

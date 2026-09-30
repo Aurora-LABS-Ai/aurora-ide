@@ -2444,6 +2444,36 @@ fn checklist_silence_stops_counting_at_a_compaction_marker() {
 }
 
 #[test]
+fn closed_checklists_stay_quiet_until_a_task_is_reopened() {
+    use crate::tools::shell_editor_todo::todo_store::{self, TodoItem, TodoList, TodoStatus};
+    let thread = format!("closed-checklist-{}", uuid::Uuid::new_v4());
+    crate::agent_runtime::project_dir::test_thread(&thread);
+    let history: Vec<_> = (0..30)
+        .map(|i| assistant_tool_uses(&[(&format!("c{i}"), "grep")]))
+        .collect();
+    let mut list = TodoList::default();
+    for status in [TodoStatus::Completed, TodoStatus::Cancelled] {
+        list.items.push(TodoItem {
+            id: status.as_str().into(),
+            content: "Finished work".into(),
+            description: String::new(),
+            active_form: String::new(),
+            status,
+        });
+        todo_store::write(&thread, &list).unwrap();
+        assert!(stale_checklist_reminder(&history, &thread).is_none());
+        assert!(checklist_block(&thread).is_none());
+    }
+    for status in [TodoStatus::Pending, TodoStatus::InProgress] {
+        list.items[0].status = status;
+        todo_store::write(&thread, &list).unwrap();
+        assert!(stale_checklist_reminder(&history, &thread).is_some());
+        assert!(checklist_block(&thread).is_some());
+    }
+    todo_store::clear(&thread).unwrap();
+}
+
+#[test]
 fn repo_map_rides_on_the_first_user_message_not_the_latest() {
     // Placement is the whole cost model. At the head it sits inside the
     // provider's cached prefix and is billed once; on the newest message it

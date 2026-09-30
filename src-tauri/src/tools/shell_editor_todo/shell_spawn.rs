@@ -22,13 +22,12 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::agent_safety::bash_validation::{classify_intent, ExecutionMode};
-use crate::agent_safety::shell_validation::validate_for_shell;
+use crate::agent_safety::bash_validation::classify_intent;
 
 use super::ide_event_sink::{IdeEventSink, ShellStreamRequest, SpawnOutcome};
 use super::shell_execute::{
-    map_bash_error, resolve_shell, resolve_working_directory, shell_argument_schema,
-    shell_required_arguments, shell_tool_description,
+    resolve_shell, resolve_working_directory, shell_argument_schema,
+    shell_required_arguments, shell_tool_description, validate_shell_command,
 };
 
 /// The lifetime cap for this spawn: an explicit `timeout`, clamped, else the
@@ -46,7 +45,6 @@ fn resolve_background_timeout(input: &Value) -> u64 {
         .unwrap_or(BACKGROUND_PROCESS_TIMEOUT_MS)
 }
 
-const SHELL_EXECUTION_MODE: ExecutionMode = ExecutionMode::WorkspaceWrite;
 /// Lifetime cap when the caller does not set one. Effectively "no cap" — a dev
 /// server is expected to outlive the turn that started it and to be stopped by
 /// `shell_kill`, not by a clock.
@@ -163,13 +161,7 @@ impl ToolExecutor for ShellSpawnTool {
         let kind = resolved
             .as_ref()
             .map_or_else(|| crate::shell::resolve_kind(requested_shell), |r| r.kind);
-        validate_for_shell(
-            command,
-            SHELL_EXECUTION_MODE,
-            kind,
-            ctx.workspace_root.as_deref(),
-        )
-        .map_err(map_bash_error)?;
+        validate_shell_command(command, &input, ctx, kind)?;
 
         let intent = classify_intent(command).as_str();
 
@@ -303,7 +295,7 @@ impl ToolExecutor for ShellSpawnTool {
             }),
             "message": format!(
                 "Background process started with ID: {process_id}. Its output is being written \
-                 to outputFile — read that to see what it printed."
+                 to outputFile; read it with shell_read_output (see readOutputWith)."
             ),
         })
         .to_string())

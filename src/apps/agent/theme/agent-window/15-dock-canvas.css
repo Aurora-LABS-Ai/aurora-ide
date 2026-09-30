@@ -1,6 +1,9 @@
-/* ── Right dock — dynamic tab strip (browser-style pills) ──────────────
- * Codex §12.7: open surfaces are closeable pills; + opens Files/Browser/
- * Terminal; Expand widens. Themed with --agw-* only. */
+/* ── Right dock — tab strip (a browser's) ─────────────────────────────
+ * Open surfaces are closeable tabs; + opens a New tab page; Expand widens.
+ * Only the active tab is a filled pill — resting tabs are an icon and a name
+ * with a hairline between neighbours, so five open tabs read as one strip
+ * with one selection instead of five buttons of equal weight.
+ * Themed with --agw-* only. */
 .agw-tabstrip {
   display: flex;
   align-items: center;
@@ -53,16 +56,15 @@
   );
 }
 
-/* A tab pill: title button + close affordance, fused into one rounded chip. */
+/* A tab: title button + close affordance, fused into one rounded chip. */
 .agw-tabpill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   height: 30px;
   padding-right: 3px;
   border-radius: var(--agw-radius-sm);
-  /* Quiet derived fill so resting tabs read as buttons on any dock colour;
-   * hover and the active pill step up from here. */
-  background: var(--agw-state-quiet);
+  background: transparent;
   color: var(--agw-text-muted);
   flex-shrink: 0;
   max-width: 200px;
@@ -70,10 +72,44 @@
 }
 .agw-tabpill:hover {
   background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+/* The hairline between two resting tabs. It steps aside for a filled tab (the
+ * active one, or the one under the pointer) so a pill never has a line
+ * running into its edge. The strip's 3px gap centres it. */
+.agw-tabpill + .agw-tabpill::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 8px;
+  bottom: 8px;
+  width: 1px;
+  background: var(--agw-border-strong);
+  pointer-events: none;
+}
+.agw-tabpill[data-active]::before,
+.agw-tabpill[data-active] + .agw-tabpill::before,
+.agw-tabpill:hover::before,
+.agw-tabpill:hover + .agw-tabpill::before {
+  opacity: 0;
 }
 .agw-tabpill[data-active] {
   background: var(--agw-state-selected);
   color: var(--agw-text);
+  /* Becoming the open tab is instant, as in a browser. A fade here ran at the
+   * same moment a closed neighbour vanished, and read as the strip wobbling. */
+  transition: none;
+}
+/* Folding shut (`TabPill.close`): the width animates to 0, so the content is
+ * clipped rather than squeezed, and the tab ignores the pointer — the cursor
+ * resting on it must not re-light it as it goes. */
+.agw-tabpill[data-closing] {
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent;
+}
+.agw-tabpill[data-closing]::before {
+  opacity: 0;
 }
 .agw-tabpill-main {
   display: inline-flex;
@@ -93,9 +129,16 @@
 .agw-tabpill[data-active] .agw-tabpill-main {
   font-weight: var(--agw-fw-strong);
 }
+/* No focus ring on a tab. Only the open tab can hold focus (the others are
+ * tabindex -1 and the arrow keys open the tab they move to), and the open tab
+ * is already the bright pill — a ring on top of it said the same thing twice,
+ * in a colour that is not the accent. Owner's call, 2026-09-29.
+ * `outline` too: `src/index.css` gives every `button:focus-visible` a 1px
+ * outline in the IDE's colour, and that selector out-ranks the base
+ * `.agw-tabpill-main { outline: none }` — it showed as two blue bars. */
 .agw-tabpill-main:focus-visible {
-  box-shadow: var(--agw-focus-ring);
-  border-radius: var(--agw-radius-sm);
+  outline: none;
+  box-shadow: none;
 }
 .agw-tabpill-label {
   min-width: 0;

@@ -122,8 +122,8 @@ export interface AgentConfig {
    * model). `undefined` summarizes on the conversation's own provider.
    */
   compactionProvider?: import("@/apps/agent/services/providers").ProviderConfig;
-  /** How far outside the project the file tools may reach:
-   *  `workspace` | `read` | `full` (Settings → Tools → File access). */
+  /** File scope. `full` also approves tools and bypasses shell command guards.
+   *  Captured per turn from Settings → Tools → Access. */
   workspaceAccess?: "workspace" | "read" | "full";
   /**
    * Advertise the `chapter` tool so the agent can name the parts of a long turn

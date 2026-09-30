@@ -1033,6 +1033,22 @@ impl SessionStore {
         Ok(meta)
     }
 
+    /// Repair a Chat sidecar that acquired a Build workspace before surface
+    /// ownership was enforced. A Chat conversation never has a workspace.
+    pub fn clear_chat_workspace_root(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        super::project_dir::validate_thread_id(thread_id)?;
+        if !self.owns_assets {
+            return Err(RuntimeError::InvalidState(
+                "cannot clear a Build conversation's workspace".into(),
+            ));
+        }
+        let mut meta = self.load_metadata(thread_id)?;
+        if meta.workspace_root.take().is_some() {
+            self.save_metadata(&meta)?;
+        }
+        Ok(())
+    }
+
     /// Pin this conversation to a model (`"providerId:modelKey"`).
     ///
     /// The counterpart to the per-turn write in [`Self::set_workspace_and_model`]:

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   BASE_AGENT_SYSTEM_PROMPT,
@@ -22,12 +22,16 @@ vi.mock("@/apps/agent/services/plans/agent-plans", () => ({
   getActivePlan: async () => null,
 }));
 
+const activeInstructions = vi.hoisted(() => ({ text: "" }));
+
 vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
   useAgentSettingsStore: {
     getState: () => ({ skillToggles: {}, skillsEnabled: false }),
   },
-  selectActiveGlobalInstructions: () => "",
+  selectActiveGlobalInstructions: () => activeInstructions.text,
 }));
+
+afterEach(() => { activeInstructions.text = ""; });
 
 describe("stable optional tool discovery instructions", () => {
   it("teaches exact discovery followed by execution of the browser guide", async () => {
@@ -71,7 +75,9 @@ describe("stable optional tool discovery instructions", () => {
   it("teaches the same wrapper contract in chat mode", async () => {
     const result = await composeAgentSystemPrompt({ executionMode: "chat", promptContext: { userMessage: "help" } });
     expect(result.systemPrompt).toContain("call_tool(");
-    expect(result.systemPrompt).toContain("Search again after compaction");
+    expect(result.systemPrompt).toContain("search again after compaction");
+    expect(result.systemPrompt).not.toContain("File operations, code search, shell");
+    expect(result.systemPrompt).not.toContain("Browser, connected MCP apps, and team tools");
   });
 });
 
@@ -314,7 +320,6 @@ describe("the chat-mode system prompt", () => {
       "file_edit",
       "file_write",
       "shell_execute",
-      "read_lints",
       "workspace_tree",
       "todo",
       "plan_write",
@@ -383,6 +388,9 @@ describe("the environment block", () => {
     expect(formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "full" })).toContain(
       "FULL FILE ACCESS",
     );
+    expect(formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "full" })).toContain(
+      "automatically approves tools and disables command guards",
+    );
     expect(formatEnvironment({ workspacePath: "E:/p", workspaceAccess: "read" })).toContain(
       "ALLOWED reading files outside this workspace",
     );
@@ -415,6 +423,20 @@ describe("the environment block", () => {
 
 describe("the composed chat prompt", () => {
   const chatOpening = CHAT_MODE_SYSTEM_PROMPT.split("\n")[0];
+
+  it("keeps an active Build instruction profile out of Chat", async () => {
+    activeInstructions.text = "PRIVATE BUILD STANDING RULE";
+    const chat = await composeAgentSystemPrompt({
+      executionMode: "chat",
+      promptContext: { userMessage: "hello", workspacePath: "E:/project" },
+    });
+    const build = await composeAgentSystemPrompt({
+      executionMode: "agent",
+      promptContext: { userMessage: "hello", workspacePath: "E:/project" },
+    });
+    expect(chat.systemPrompt).not.toContain(activeInstructions.text);
+    expect(build.systemPrompt).toContain(activeInstructions.text);
+  });
 
   it("is the chat prompt even though the caller always passes the coding one", async () => {
     const composed = await composeAgentSystemPrompt({

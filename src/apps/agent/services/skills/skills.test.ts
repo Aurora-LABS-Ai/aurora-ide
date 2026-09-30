@@ -472,6 +472,22 @@ Use 2-space indentation.`;
     expect(results[0]?.id).toBe("typescript");
   });
 
+  it("searchSkillCandidates matches any word of a multi-word query and ranks by how many hit", async () => {
+    stubWorkspaceSkills([
+      TS_SKILL,
+      {
+        id: "vitest-testing",
+        name: "Vitest testing",
+        description: "Write and run test suites with Vitest in TypeScript projects.",
+        triggers: ["test", "vitest"],
+      },
+    ]);
+    const results = await searchSkillCandidates("node test runner typescript", 30, {
+      workspacePath: "E:/repo",
+    });
+    expect(results.map((r) => r.id)).toEqual(["vitest-testing", "typescript"]);
+  });
+
   it("searchSkillCandidates returns an empty list when nothing matches", async () => {
     const results = await searchSkillCandidates("zzz-nothing-matches-this");
     expect(results).toHaveLength(0);

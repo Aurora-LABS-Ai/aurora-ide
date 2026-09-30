@@ -44,12 +44,8 @@ use std::path::Path;
 
 /// Filesystem-write authority the command is being executed under.
 ///
-/// Two states only — bypass / "danger" mode is handled by
-/// [`crate::tools::permissions::SettingsAwarePermitter`] *before*
-/// this validator runs (the permitter auto-approves the call, so we
-/// never observe a "no validation at all" mode here). Whether or
-/// not Aurora prompts the user for each call is also a permitter
-/// concern, not a validator concern.
+/// Shell tools skip this validator under Full access. In the other access
+/// modes it applies independently of the user's per-tool approval settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// No filesystem or state mutation allowed. Used for the agent's
@@ -129,6 +125,23 @@ pub fn validate_command_with_workspace(
     workspace: &Path,
 ) -> Result<(), BashValidationError> {
     match run_pipeline(input, mode, workspace) {
+        ValidationResult::Allow => Ok(()),
+        ValidationResult::Block { reason } => Err(BashValidationError::Blocked(reason)),
+        ValidationResult::Warn { message } => Err(BashValidationError::Warning(message)),
+    }
+}
+
+pub(super) fn validate_command_with_cwd(
+    command: &str,
+    mode: ExecutionMode,
+    workspace: &Path,
+    cwd: &Path,
+) -> Result<(), BashValidationError> {
+    if cwd == workspace {
+        return validate_command_with_workspace(command, mode, workspace);
+    }
+    validate_command(command, mode)?;
+    match validate_paths_at(command, workspace, cwd) {
         ValidationResult::Allow => Ok(()),
         ValidationResult::Block { reason } => Err(BashValidationError::Blocked(reason)),
         ValidationResult::Warn { message } => Err(BashValidationError::Warning(message)),
@@ -709,61 +722,6 @@ fn validate_sed(command: &str, mode: ExecutionMode) -> ValidationResult {
 // pathValidation
 // ---------------------------------------------------------------------------
 
-/// One shell word, stripped of quoting, redirects and chain punctuation.
-///
-/// Not a shell parser — it only has to be good enough to find the words that
-/// could be paths, which is what [`validate_paths`] resolves.
-///
-/// Shared with [`super::shell_validation`], which had its own substring test
-/// for `../` and refused traversal that resolved back inside the workspace —
-/// the bug this pair already fixed on the POSIX side.
-pub(super) fn path_like_words(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')'))
-        .map(|word| word.trim_matches(|c: char| matches!(c, '"' | '\'' | '`')))
-        .map(|word| word.trim_start_matches(['>', '<', '1', '2', '&']))
-        .filter(|word| !word.is_empty())
-}
-
-/// Walk a relative path's components, answering how far ABOVE its starting
-/// directory it ends up, or `None` if it never climbs out.
-///
-/// Purely lexical, which is the point: the command has not run, nothing may be
-/// touched to answer the question, and a symlink is not this guard's problem.
-fn climbs_above_start(relative: &str) -> bool {
-    let mut depth: i32 = 0;
-    for component in relative.split(['/', '\\']) {
-        match component {
-            "" | "." => {}
-            ".." => {
-                depth -= 1;
-                if depth < 0 {
-                    return true;
-                }
-            }
-            _ => depth += 1,
-        }
-    }
-    false
-}
-
-/// Does this word climb out of the workspace?
-///
-/// Only words that actually contain a `..` component are asked. An ABSOLUTE
-/// word is not this check's business — [`command_targets_outside_workspace`]
-/// and the system-path list own those — so it is left alone here.
-pub(super) fn escapes_workspace(word: &str, workspace: &Path) -> bool {
-    let normalized = word.replace('\\', "/");
-    if !normalized.split('/').any(|component| component == "..") {
-        return false;
-    }
-    if normalized.starts_with('/') || normalized.chars().nth(1) == Some(':') {
-        let joined = workspace.join(word);
-        return !joined.starts_with(workspace);
-    }
-    climbs_above_start(&normalized)
-}
-
 /// Validate that command paths don't climb out of the workspace.
 ///
 /// Corresponds to upstream `tools/BashTool/pathValidation.ts`.
@@ -793,13 +751,15 @@ pub(super) fn escapes_workspace(word: &str, workspace: &Path) -> bool {
 /// still refused — now naming where it actually lands.
 #[must_use]
 fn validate_paths(command: &str, workspace: &Path) -> ValidationResult {
-    if let Some(escaping) = path_like_words(command).find(|word| escapes_workspace(word, workspace))
-    {
+    validate_paths_at(command, workspace, workspace)
+}
+
+fn validate_paths_at(command: &str, workspace: &Path, cwd: &Path) -> ValidationResult {
+    if let Some(escaping) = super::shell_paths::escaping_path(command, workspace, cwd, true) {
         return ValidationResult::Warn {
             message: format!(
-                "`{escaping}` resolves outside the workspace ({}). Re-issue the command against a \
-                 path inside it — paths are relative to the workspace root, so a sibling directory \
-                 of the root is not reachable.",
+                "`{escaping}` may resolve outside the workspace ({}). Use a path inside it; \
+                 relative paths are checked from `cwd` and each literal directory change.",
                 workspace.display()
             ),
         };

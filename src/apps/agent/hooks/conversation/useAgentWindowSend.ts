@@ -84,6 +84,7 @@ import {
   composerCommands,
   useAgentCommandStore,
 } from "@/apps/agent/store/composer/useAgentCommandStore";
+import { isChatPromptCommand } from "@/apps/agent/adapters/prompt-commands";
 import { loadProjectRules } from "@/apps/agent/services/runtime/context-builder";
 import { appendImageMarkers } from "@/apps/agent/lib/render/image-markers";
 import {
@@ -935,6 +936,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
   ) => {
     const content = raw.trim();
     if (!content) return;
+    const scopedFileChips =
+      useAgentSettingsStore.getState().auroraSurface === "chat" ? [] : fileChips;
 
     // Did a person press send, or is the pipeline resubmitting on their behalf?
     // Only a human send consumes what a composer staged and may queue mid-turn.
@@ -967,23 +970,30 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       const chat = useAgentChatStore.getState();
       const liveThreadId = target?.threadId ?? chat.currentThreadId;
       if (liveThreadId && chat.liveTurns[liveThreadId]) {
-        const steeringCommands = composerCommands(
+        const liveMode = chat.liveModes[liveThreadId];
+        const chatSteering =
+          liveMode === "chat" ||
+          (!liveMode && useAgentSettingsStore.getState().auroraSurface === "chat");
+        const queuedCommands = composerCommands(
           useAgentCommandStore.getState(),
           stageKey,
         ).filter(isDirectiveCommand);
+        const steeringCommands = queuedCommands.filter(
+          (command) => !chatSteering || isChatPromptCommand(command),
+        );
         const steeringSelection = buildCommandSelection(steeringCommands);
         const steeringCommandChips = steeringCommands.map((c) => ({
           kind: c.kind,
           title: c.title,
         } satisfies AttachedPromptChip));
-        if (steeringCommands.length > 0) {
+        if (queuedCommands.length > 0) {
           useAgentCommandStore.getState().clear(stageKey);
         }
 
         // Inspector picks: full context to the model (below), a compact pill
         // per element on the queued card and the injected row. Consumed now —
         // leaving them staged is what made them leak onto the next turn.
-        const steeringPicks = useAgentSelectionStore.getState().selected;
+        const steeringPicks = chatSteering ? [] : useAgentSelectionStore.getState().selected;
         const steeringPickChips = steeringPicks.map((entry) => ({
           kind: "element" as const,
           title: `<${entry.element.tagName}> ${(entry.element.text ?? "").trim().slice(0, 24)}`.trim(),
@@ -996,7 +1006,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         } satisfies AttachedPromptChip));
         if (steeringPicks.length > 0) useAgentSelectionStore.getState().clear();
 
-        const chips = [...fileChips, ...steeringCommandChips, ...steeringPickChips];
+        const chips = [...scopedFileChips, ...steeringCommandChips, ...steeringPickChips];
 
         // Staged image attachments ride the injection as `<aurora_image>`
         // markers — the same wire path `browser_screenshot` uses, so a
@@ -1016,7 +1026,15 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         // Resolve directive content the same way a fresh turn does. The
         // system prompt of an in-flight turn can't change, so the resolved
         // blocks ride inside the injected message instead of ideContext.
-        const steeringRoot = target?.projectRoot ?? chat.projectRoot;
+        const steeringSettings = useAgentSettingsStore.getState();
+        const steeringRoot = effectiveProjectRoot(
+          liveMode ??
+            effectiveExecutionMode(
+              steeringSettings.auroraSurface,
+              steeringSettings.agentExecutionMode,
+            ),
+          chat.liveProjects[liveThreadId] ?? target?.projectRoot ?? chat.projectRoot,
+        );
         const blocks: string[] = [];
         // Same block a fresh turn sends via ideContext — selector, tag, text
         // and clipped HTML per element, so the model can locate the source.
@@ -1087,18 +1105,24 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // Still window-global, unlike the trays above: there is ONE inspector (the
     // browser panel), so its picks belong to whichever composer sends next
     // rather than to a particular conversation.
-    const picks = fromComposer ? useAgentSelectionStore.getState().selected : [];
+    const picks =
+      fromComposer && useAgentSettingsStore.getState().auroraSurface !== "chat"
+        ? useAgentSelectionStore.getState().selected
+        : [];
     const selectionPills = buildSelectionPills(picks);
     if (picks.length > 0) useAgentSelectionStore.getState().clear();
 
     // Snapshot the staged `/` directives (skills / rules / MCP) for THIS turn,
     // then clear the chips so they don't ride along on the next message. Skills
     // thread through `explicitSkillKeys`; rules + MCP become context blocks below.
-    const stagedCommands = fromComposer
+    const allStagedCommands = fromComposer
       ? composerCommands(useAgentCommandStore.getState(), stageKey).filter(
           isDirectiveCommand,
         )
       : [];
+    const stagedCommands = allStagedCommands.filter((command) =>
+      useAgentSettingsStore.getState().auroraSurface !== "chat" || isChatPromptCommand(command),
+    );
     const commandSelection = buildCommandSelection(stagedCommands);
     // Compact chips snapshotted for the user bubble (display only — the
     // directive's effect rides to the model via ideContext / explicitSkillKeys).
@@ -1106,8 +1130,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       kind: c.kind,
       title: c.title,
     } satisfies AttachedPromptChip));
-    const promptChips = [...fileChips, ...commandChips];
-    if (stagedCommands.length > 0) {
+    const promptChips = [...scopedFileChips, ...commandChips];
+    if (allStagedCommands.length > 0) {
       useAgentCommandStore.getState().clear(stageKey);
     }
 
@@ -1589,9 +1613,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // simply never there, which the agent reported verbatim: "this turn didn't
     // include the <open_files> block".
     const dock = useAgentWorkspaceStore.getState();
-    const fileTabs = dock.tabs.filter(
-      (tab) => tab.kind === "file" && typeof tab.path === "string" && tab.path,
-    );
+    const fileTabs =
+      executionMode === "chat"
+        ? []
+        : dock.tabs.filter(
+            (tab) => tab.kind === "file" && typeof tab.path === "string" && tab.path,
+          );
     const activeFilePath =
       fileTabs.find((tab) => tab.id === dock.activeTabId)?.path ?? null;
     const openFilesBlock = buildOpenFilesContext(

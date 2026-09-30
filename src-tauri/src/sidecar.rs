@@ -128,6 +128,25 @@ fn is_executable_file(path: &Path) -> bool {
         .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
+/// A ripgrep invocation carrying the flags every Aurora search shares.
+///
+/// The one that matters is `--no-require-git`. ripgrep honours `.gitignore`
+/// only inside a git repository unless told otherwise, so in a fresh project
+/// with no `.git` yet, `glob` answered `**/*.{ts,json}` with 234 paths, nearly
+/// all under `node_modules`, and `grep` searched `dist/` too — while both
+/// tools describe themselves as honouring `.gitignore`. With this flag that
+/// is true whether or not `git init` has run, and it matches the code index,
+/// whose own walker already sets `require_git(false)`.
+///
+/// Every spawn of ripgrep (`glob`, `grep`, and the path-recovery lookup) is
+/// built here, so the three cannot drift on which files exist.
+#[must_use]
+pub fn ripgrep_command(rg: &ResolvedBinary) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(&rg.path);
+    cmd.arg("--no-require-git");
+    cmd
+}
+
 /// The error a caller shows when ripgrep cannot be found at all.
 ///
 /// Names the real cause (Aurora's own copy is missing, so this is an install

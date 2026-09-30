@@ -165,7 +165,7 @@ export const AgentGeneralSettings: React.FC = () => {
       <SettingsSection
         icon="message"
         title="Global instructions"
-        description="Standing rules for the agent, applied to every workspace before any work. Keep up to three named sets — one persona each — and switch on the one you want; only that set is sent. Used by both this window and the IDE agent."
+        description="Standing rules for Aurora Build and the IDE agent, applied across Build workspaces. Keep up to three named sets and activate one at a time. Aurora Chat does not receive these instructions."
       >
         <SettingsBlock last searchTerms="global instructions persona instruction set active rules">
           <div className="agw-gi-head">
@@ -207,7 +207,7 @@ export const AgentGeneralSettings: React.FC = () => {
                     onDoubleClick={() => startGiRename(profile.id, profile.name)}
                     title={
                       profile.id === giActiveId
-                        ? `${profile.name} — sent with every chat`
+                        ? `${profile.name} — sent with every Build turn`
                         : profile.name
                     }
                   >
@@ -251,11 +251,11 @@ export const AgentGeneralSettings: React.FC = () => {
                   <AgwSwitch
                     checked={giIsActive}
                     onChange={(on) => setGiActive(on ? giSelected.id : null)}
-                    ariaLabel={`Use "${giSelected.name}" in every chat`}
+                    ariaLabel={`Use "${giSelected.name}" in every Build turn`}
                   />
                   <span className="agw-gi-state" data-on={giIsActive || undefined}>
                     {giIsActive
-                      ? "Sent with every chat"
+                      ? "Sent with every Build turn"
                       : "Not sent — switch on to use this set"}
                   </span>
                 </div>

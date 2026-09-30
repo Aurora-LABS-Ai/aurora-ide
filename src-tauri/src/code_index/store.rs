@@ -61,6 +61,23 @@ pub struct Symbol {
     pub documentation: Option<String>,
 }
 
+/// Split a symbol name into its container and bare name.
+///
+/// The index stores `Container::name`, which is how a Rust caller spells it.
+/// A TypeScript, Python or Java caller spells the same thing `Inventory.remove`,
+/// and Ruby docs spell it `Inventory#remove`; a lookup that refused those
+/// answered "no definition" for a method that was there. `::` wins when
+/// present, then the last `.` or `#`. A bare name comes back with no container.
+pub fn split_qualified(name: &str) -> (Option<&str>, &str) {
+    if let Some((container, bare)) = name.rsplit_once("::") {
+        return (Some(container), bare);
+    }
+    match name.rfind(['.', '#']) {
+        Some(at) if at > 0 && at + 1 < name.len() => (Some(&name[..at]), &name[at + 1..]),
+        _ => (None, name),
+    }
+}
+
 impl Symbol {
     pub fn qualified(&self) -> String {
         match &self.container {
@@ -722,10 +739,11 @@ impl CodeIndex {
             .unwrap_or("<unknown>")
     }
 
-    /// Definitions of `name`. Matches the bare name and the `Container::name`
-    /// form, so `Session::append` and `append` both find the method.
+    /// Definitions of `name`. Matches the bare name and the qualified forms
+    /// [`split_qualified`] accepts, so `Session::append`, `Session.append` and
+    /// `append` all find the method.
     pub fn definitions(&self, name: &str) -> Vec<&Symbol> {
-        if let Some((container, bare)) = name.split_once("::") {
+        if let (Some(container), bare) = split_qualified(name) {
             return self
                 .by_name
                 .get(bare)
@@ -1127,7 +1145,7 @@ impl CodeIndex {
     /// the same shape and reached the same conclusion about refusing rather
     /// than guessing on call edges.
     pub fn resolve(&self, name: &str, from_file: u32) -> (Vec<&Symbol>, Confidence) {
-        let bare = name.rsplit("::").next().unwrap_or(name);
+        let (_, bare) = split_qualified(name);
 
         // References use the local spelling. Resolve the imported spelling
         // before looking at same-file or unique-name candidates, otherwise
@@ -1378,7 +1396,7 @@ impl CodeIndex {
 
     /// Every usage of `name`, in file order.
     pub fn references(&self, name: &str) -> Vec<&Reference> {
-        let bare = name.rsplit("::").next().unwrap_or(name);
+        let (_, bare) = split_qualified(name);
         let mut out: Vec<&Reference> = self
             .refs_by_name
             .get(bare)
@@ -2655,5 +2673,29 @@ mod tests {
         let idx = CodeIndex::build(dir.path()).unwrap();
         assert_eq!(idx.definitions("run").len(), 2, "bare name is ambiguous");
         assert_eq!(idx.definitions("A::run").len(), 1, "qualified name is not");
+    }
+
+    /// Friction item from the 2026-09-28 harness report: the index took
+    /// `Inventory::remove` but answered "no definition" to `Inventory.remove`,
+    /// the form a TypeScript caller writes.
+    #[test]
+    fn a_dotted_qualified_name_finds_the_same_method() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("inventory.ts"),
+            "export class Inventory {\n  remove() {}\n}\nexport class Cart {\n  remove() {}\n}\n",
+        )
+        .unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+        assert_eq!(idx.definitions("remove").len(), 2);
+        assert_eq!(idx.definitions("Inventory.remove").len(), 1);
+        assert_eq!(idx.definitions("Inventory#remove").len(), 1);
+        assert_eq!(
+            idx.definitions("Inventory.remove")[0].qualified(),
+            idx.definitions("Inventory::remove")[0].qualified()
+        );
+        assert_eq!(split_qualified("a.b::c"), (Some("a.b"), "c"));
+        assert_eq!(split_qualified(".hidden"), (None, ".hidden"));
+        assert_eq!(split_qualified("plain"), (None, "plain"));
     }
 }

@@ -487,6 +487,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       return;
     }
     const { projectRoot } = get();
+    const surface = currentSurface();
     set({ listLoading: true, error: null });
     try {
       // One unscoped fetch powers BOTH the multi-project rail tree
@@ -497,8 +498,10 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       // Aurora Chat's conversations live in their own store and carry no
       // workspace, so the project filter below is skipped rather than applied:
       // filtering them by project would match none of them and empty the rail.
-      const surface = currentSurface();
       const all = await threadService.listThreads(null, surface);
+      // A slower request from the previous surface or project must not put
+      // its conversations back into the rail after the user has switched.
+      if (currentSurface() !== surface || get().projectRoot !== projectRoot) return;
       const withMessages = all.filter((t) => (t.messageCount ?? 0) > 0);
       const scoped =
         surface === "chat" || !projectRoot
@@ -506,6 +509,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
           : withMessages.filter((t) => t.workspaceRoot === projectRoot);
       set({ threads: scoped, allThreads: withMessages, listLoading: false });
     } catch (err) {
+      if (currentSurface() !== surface || get().projectRoot !== projectRoot) return;
       console.error("[agent-chat] failed to list threads:", err);
       set({ listLoading: false, error: String(err) });
     }
@@ -537,6 +541,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
     useAgentSettingsStore.getState().setAuroraSurface(surface);
     await get().refreshThreads();
+    if (currentSurface() !== surface) return;
 
     // Resume, but only if it is still RECENT. Alvan's rule: a conversation you
     // left more than two hours ago is not what you came back for, and dropping

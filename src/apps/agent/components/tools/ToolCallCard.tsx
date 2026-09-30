@@ -447,7 +447,15 @@ function streamedShellArg(argsJson: string): string | null {
   return first?.complete ? first.value : null;
 }
 
-function basename(p: string): string {
+/**
+ * Last path segment. Takes `unknown` on purpose: every value that reaches
+ * here came from a model's tool arguments, and a model once sent
+ * `path: {"item": "…"}`. Calling `.split` on that threw inside render and,
+ * with no boundary above, blanked the agent window (2026-09-28T20:15Z).
+ * Anything that is not a string is drawn as nothing, never thrown on.
+ */
+function basename(p: unknown): string {
+  if (typeof p !== "string") return "";
   const parts = p.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? p;
 }
@@ -545,9 +553,8 @@ function toolIcon(name: string): AgentIconName {
   if (lower === "shell_kill") return "process-stop";
   if (lower === "shell_list_processes") return "process-list";
   if (lower === "shell_read_output") return "shell-output";
-  if (lower === "read_lints") return "diagnostics";
-  // Reporting a fault in Aurora itself — the alert mark, not the diagnostics
-  // one: `read_lints` inspects the user's code, this one is about the tool.
+  // Reporting a fault in Aurora itself — the alert mark: this one is about
+  // the tool, not the user's code.
   if (lower === "report_aurora_issue") return "alert";
   // Both doctrine tools — they hand over the rules for building a surface, so
   // they share the guides mark rather than the generic file glyph.
@@ -590,13 +597,11 @@ function pathOf(args: Record<string, unknown>): string {
     const first = args.path.find((entry) => typeof entry === "string" && entry.trim());
     return typeof first === "string" ? first : "";
   }
-  return (
-    (args.path as string) ||
-    (args.file_path as string) ||
-    (args.filePath as string) ||
-    (args.target as string) ||
-    ""
-  );
+  // Strings only. The `as string` casts this used to carry were a promise
+  // the arguments never made: an object here is what crashed the window.
+  const asStr = (value: unknown): string =>
+    typeof value === "string" && value.trim() ? value : "";
+  return asStr(args.path) || asStr(args.file_path) || asStr(args.filePath) || asStr(args.target);
 }
 
 const DOT_ICON: Record<ToolStatus, AgentIconName | null> = {

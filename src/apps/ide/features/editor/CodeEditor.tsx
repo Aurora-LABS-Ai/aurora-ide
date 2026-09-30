@@ -123,14 +123,9 @@ export const CodeEditor: React.FC = () => {
 
   // Configure Monaco to disable semantic validation (we don't have project type definitions)
   // This prevents false red squiggles for imports, types, etc.
-  // Also set Monaco instance for read_lints tool
   useEffect(() => {
     if (monaco && !diagnosticsConfigured.current) {
       diagnosticsConfigured.current = true;
-
-      // The Rust `read_lints` tool emits a fire-and-forget event;
-      // Monaco already surfaces diagnostics natively in the gutter,
-      // so no JS-side bridging is required.
 
       try {
         // Access the typescript language service (may be under languages.typescript or directly)

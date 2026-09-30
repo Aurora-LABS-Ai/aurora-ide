@@ -10,16 +10,18 @@
  * Files or the terminal; a show gated on the SAVED active tab resurrected the
  * page over Aurora Chat's Canvas, whose dock filters the Browser tab out.
  *
- * Now there is one rule and one writer:
+ * Now there is one rule and one writer, per page:
  *
- *     visible  ⇔  the Browser panel is mounted  ∧  no overlay holds it hidden
+ *     visible(page)  ⇔  that page's panel is mounted  ∧  no overlay holds pages hidden
  *
  * "Mounted" is the real test of "on screen": the dock renders only the tab it
- * is showing, so the panel is mounted exactly when the user is looking at it —
- * including after the Chat surface filters tabs, and including the slide-out
- * glide (the dock unmounts when the glide ends). Overlays take a hold
- * (`holdBrowserHidden`) and release it; two overlays at once keep the page
- * hidden until both are gone.
+ * is showing, so a page's panel is mounted exactly when the user is looking at
+ * it — including after the Chat surface filters tabs, and including the
+ * slide-out glide (the dock unmounts when the glide ends). The dock holds
+ * several browser tabs, one native page each; switching tabs unmounts one
+ * panel and mounts the other, so exactly one page is on screen. Overlays take a
+ * hold (`holdBrowserHidden`) and release it; a hold hides EVERY page, and two
+ * overlays at once keep them hidden until both are gone.
  *
  * Every decision is sent with a growing sequence number and Rust drops a stale
  * one (`BrowserManager::set_visible`), so the order calls arrive in no longer
@@ -28,12 +30,17 @@
  */
 import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 
-/** The Agent Window's only browser webview. */
+/**
+ * The page the agent's browser tools drive. Its tab is the dock's `browser`
+ * tab; every other browser tab the user opens gets its own label
+ * (`userBrowserLabel` in `lib/browser/browser-tabs.ts`) and is never touched
+ * by the agent.
+ */
 export const AGENT_BROWSER_LABEL = "browser-agentwin";
 
-let panelMounted = false;
+const mounted = new Set<string>();
 let holds = 0;
-let lastSent: boolean | null = null;
+const lastSent = new Map<string, boolean>();
 let lastSeq = 0;
 
 /**
@@ -49,49 +56,61 @@ function nextSeq(): number {
   return lastSeq;
 }
 
-function apply(force: boolean): void {
-  const visible = panelMounted && holds === 0;
-  if (!force && visible === lastSent) return;
-  lastSent = visible;
+function apply(label: string, force: boolean): void {
+  const visible = mounted.has(label) && holds === 0;
+  if (!force && visible === lastSent.get(label)) return;
+  lastSent.set(label, visible);
   if (!isAuroraRuntimeAvailable()) return;
   void auroraInvoke<boolean>("browser_set_visible", {
-    label: AGENT_BROWSER_LABEL,
+    label,
     visible,
     seq: nextSeq(),
   }).catch((error) => {
     // Not fatal: the next decision, or the next build, re-applies the rule.
-    console.warn("[agent-browser] could not change browser visibility:", error);
+    console.warn(`[agent-browser] could not change visibility of ${label}:`, error);
   });
 }
 
-/** The Browser panel mounted (true) or unmounted (false). */
-export function setBrowserPanelMounted(mounted: boolean): void {
-  panelMounted = mounted;
-  apply(false);
+/** Every page this module has ever decided about — a hold affects them all. */
+function applyAll(): void {
+  for (const label of new Set([...mounted, ...lastSent.keys()])) apply(label, false);
+}
+
+/** A browser panel mounted (true) or unmounted (false) for page `label`. */
+export function setBrowserPanelMounted(isMounted: boolean, label = AGENT_BROWSER_LABEL): void {
+  if (isMounted) mounted.add(label);
+  else mounted.delete(label);
+  apply(label, false);
 }
 
 /**
- * Keep the page hidden while an overlay (menu, dropdown, modal) is open over
+ * Keep every page hidden while an overlay (menu, dropdown, modal) is open over
  * the panel. Returns the release; calling it more than once is harmless.
  */
 export function holdBrowserHidden(): () => void {
   holds += 1;
-  apply(false);
+  applyAll();
   let released = false;
   return () => {
     if (released) return;
     released = true;
     holds = Math.max(0, holds - 1);
-    apply(false);
+    applyAll();
   };
 }
 
-/** Re-send the current decision — after the webview was built or rebuilt. */
-export function reassertBrowserVisibility(): void {
-  apply(true);
+/** Re-send the current decision for `label` — after its webview was built or rebuilt. */
+export function reassertBrowserVisibility(label = AGENT_BROWSER_LABEL): void {
+  apply(label, true);
 }
 
-/** Is the page meant to be on screen right now? */
-export function isBrowserMeantVisible(): boolean {
-  return panelMounted && holds === 0;
+/** Is page `label` meant to be on screen right now? */
+export function isBrowserMeantVisible(label = AGENT_BROWSER_LABEL): boolean {
+  return mounted.has(label) && holds === 0;
+}
+
+/** The tab closed and its page is gone: stop tracking it. */
+export function forgetBrowser(label: string): void {
+  mounted.delete(label);
+  lastSent.delete(label);
 }

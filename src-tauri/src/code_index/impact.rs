@@ -3,7 +3,7 @@
 //!
 //! The agent's most expensive class of mistake is editing a definition and
 //! never checking its call sites: the edit succeeds, the tool result says so,
-//! and the break surfaces two turns later in `read_lints` — or ships. The
+//! and the break surfaces two turns later in the type checker — or ships. The
 //! index already knows every cross-file reference, so a successful
 //! `file_edit`/`file_write` can carry one sentence naming the symbols other
 //! files depend on, at the exact moment the model decides what to do next.

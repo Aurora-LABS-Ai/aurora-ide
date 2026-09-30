@@ -124,7 +124,7 @@ Your main goal is to follow the USER's instructions at each message.
 ## Code Change Guidelines
 - Read existing files before editing them unless you are creating a new file
 - Prefer targeted edits with \`file_edit\` (one edit, or many atomic edits via its \`edits\` array) over full-file \`file_write\` rewrites unless the change is broad enough to justify replacement
-- After edits, run \`read_lints\` on the touched files and fix the issues you introduced if the next step is clear. It runs the project's real checkers (\`tsc\`, \`cargo check\`, \`ruff\`), so it is not instant and it reports the whole project — run it once after a related group of edits, not after every single one, and ignore pre-existing findings in files you did not touch
+- Before you call the work done, run the project's own checks with \`shell_execute\`: the type check, lint, or test command the project defines (its \`package.json\` scripts, \`cargo check\`, \`ruff\`, \`pytest\`). Run once after a related group of edits, not after every single one. Read the raw output yourself: a runner that prints a banner or an install hint instead of diagnostics has checked nothing, so say that rather than reporting clean. Fix the issues you introduced; ignore pre-existing findings in files you did not touch. Report what the checks printed, not what you expected
 - Preserve existing project patterns, structure, and theming conventions
 - Do NOT add comments that merely narrate the code (\`// import the module\`, \`// loop over items\`, \`// handle the error\`). Comments explain non-obvious intent, trade-offs, or constraints — never the mechanics, and NEVER the edit you just made
 - \`old_string\` and \`new_string\` carry the file's literal text, exactly as \`file_read\` printed it. Do not escape it for transport: send the quote the file has, not \`\\"\`, and a real line break, not the two characters \`\\\` \`n\`. The only backslashes that belong in them are the ones the file itself contains. Same rule as shell commands below — the argument reaches the file untouched
@@ -260,6 +260,12 @@ const DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
 - Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
 - Search results can be partial. If a needed name is absent, use \`select:exact_name\` before concluding it is unavailable. If a direct call to an optional tool returns "tool not found", recover through exact discovery and \`call_tool\` before reporting a missing capability.
 - Reuse a schema while it remains in context. Search again after compaction removes it, when you need a different capability, or when a tool becomes unavailable. An empty result means no matching optional tool is currently available.`;
+
+const CHAT_DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
+- Call the core tools in your tool list directly, including research, memory, canvas, images, and skills.
+- Connected MCP apps are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn.
+- Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
+- Search results can be partial. If a needed name is absent, use \`select:exact_name\` before concluding it is unavailable. Reuse a schema while it remains in context; search again after compaction removes it.`;
 
 /**
  * The canvas pointer — two lines, on purpose.
@@ -463,7 +469,7 @@ export function formatEnvironment(input: {
 const WORKSPACE_ACCESS_RULES: Record<string, string> = {
   workspace: "",
   read: "The user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Searching, edits and new files still stay inside the workspace.",
-  full: "The user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why.",
+  full: "The user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why. Full access also automatically approves tools and disables command guards for shell_execute and shell_spawn.",
 };
 
 export async function composeAgentSystemPrompt(options: {
@@ -510,16 +516,18 @@ export async function composeAgentSystemPrompt(options: {
     browserTools = true,
   } = options;
   const settings = useAgentSettingsStore.getState();
-  const hasActivePlan = await projectHasActivePlan(promptContext.workspacePath);
+  const chatMode = executionMode === "chat";
+  const workspacePath = chatMode ? null : promptContext.workspacePath;
+  const hasActivePlan = chatMode ? false : await projectHasActivePlan(workspacePath);
   const { allSkills, activeSkills, enabledSkills, explicitSkills } = await resolveSkillsForPrompt({
     enabledSkillToggles: getWorkspaceSkillToggles(
       settings.skillToggles,
-      promptContext.workspacePath,
+      workspacePath,
     ),
     explicitSkillKeys: promptContext.explicitSkillKeys,
     skillsEnabled: settings.skillsEnabled,
     userMessage: promptContext.userMessage,
-    workspacePath: promptContext.workspacePath,
+    workspacePath,
   });
 
   // ── Static half ────────────────────────────────────────────────────────
@@ -536,7 +544,6 @@ export async function composeAgentSystemPrompt(options: {
   // A caller that passed its OWN prompt still wins, in either mode. Only the
   // default is swapped, which is what `AgentService` sends when nobody
   // overrode it.
-  const chatMode = executionMode === "chat";
   const requested = basePrompt?.trim();
   // Both sides TRIMMED. `AgentService`'s defaults set `systemPrompt` to the
   // coding prompt verbatim, and that constant ends in a newline — so comparing
@@ -554,7 +561,7 @@ export async function composeAgentSystemPrompt(options: {
     // Where the work happens. Session-fixed, so it sits in the cached half
     // rather than being re-sent with the things that actually change.
     const environment = formatEnvironment({
-      workspacePath: promptContext.workspacePath,
+      workspacePath,
       workspaceAccess: settings.workspaceAccess,
     });
     if (environment) sections.push(environment);
@@ -573,9 +580,8 @@ export async function composeAgentSystemPrompt(options: {
   // that side is for, and `present_artifact` is on its roster.
   sections.push(CANVAS_INSTRUCTIONS);
   if (!chatMode) {
-    // Skills reach chat mode only when the user names one with `/`, so a
-    // roster and a "go and look for skills" instruction would be describing a
-    // system the model cannot drive from there.
+    // Build has an enabled-skill catalog. Chat can load an explicitly attached
+    // global skill, but it never receives Build's enabled-skill catalog.
     sections.push(SKILL_SYSTEM_INSTRUCTIONS);
   }
   // In the STATIC half deliberately: the flag is fixed at creation, so this
@@ -601,16 +607,18 @@ export async function composeAgentSystemPrompt(options: {
   }
 
   // The wrappers are always advertised, including with an empty catalog.
-  sections.push(DEFERRED_TOOL_INSTRUCTIONS);
+  sections.push(chatMode ? CHAT_DEFERRED_TOOL_INSTRUCTIONS : DEFERRED_TOOL_INSTRUCTIONS);
 
   // Global user instructions: the ACTIVE one of the user's named instruction
   // sets (Settings → Agent — up to three, at most one active). Applies to
   // every workspace and turn, so it rides high in the prompt (right after the
   // base identity), framed as standing rules that yield only to the user's
   // explicit message this turn. Stable for the session, so it stays static.
-  const globalInstructions = selectActiveGlobalInstructions(settings).trim();
-  if (globalInstructions) {
-    sections.splice(1, 0, formatGlobalInstructions(globalInstructions));
+  if (!chatMode) {
+    const globalInstructions = selectActiveGlobalInstructions(settings).trim();
+    if (globalInstructions) {
+      sections.splice(1, 0, formatGlobalInstructions(globalInstructions));
+    }
   }
 
   // ── Dynamic half ───────────────────────────────────────────────────────

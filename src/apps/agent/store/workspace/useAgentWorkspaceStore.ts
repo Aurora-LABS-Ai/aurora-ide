@@ -5,11 +5,11 @@
  * tabbed dock. Persisted so the agent window reopens in the same arrangement.
  * Independent of `useUiStore` so the agent layout never fights the IDE's panels.
  *
- * The dock is a DYNAMIC, browser-style tab system (Codex parity, §12.7): open
- * surfaces are tab pills (closeable like browser tabs), a `+` menu opens Files /
- * Browser / Terminal, files open as their own pills, and an Expand toggle widens
- * the panel. Only singleton tabs persist — file tabs are session-only (their
- * paths are project-specific).
+ * The dock is a browser: open surfaces are tabs (closeable like browser tabs),
+ * `+` opens a New tab page that loads an address or turns into one of Aurora's
+ * panels, browser tabs each own a native page, files open as their own tabs,
+ * and an Expand toggle widens the panel. File and member tabs are
+ * session-only; everything else persists.
  */
 
 import { create } from "zustand";
@@ -20,10 +20,37 @@ import {
   type DockSingletonKind,
   type DockTabInstance,
 } from "@/apps/agent/types";
-import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import { addressTitle, userBrowserLabel } from "@/apps/agent/lib/browser/browser-tabs";
 
 /** Review diff layout — side-by-side (Codex default) vs single-column. */
 export type DiffMode = "split" | "unified";
+
+/**
+ * Does `tab` belong in the strip of the surface being shown?
+ *
+ * Tabs are persisted, so a Files or Terminal tab opened while working on a
+ * project stayed in the strip after switching to Aurora Chat — a surface with
+ * no files and no terminal. Filtered rather than closed: going back to Build
+ * should find the dock exactly as it was left, not emptied by a visit next
+ * door. A New tab adapts to whichever surface shows it.
+ */
+export function isTabOnSurface(tab: DockTabInstance, chatSurface: boolean): boolean {
+  if (tab.kind === "newtab") return true;
+  if (chatSurface) {
+    return (
+      CHAT_DOCK_TABS.includes(tab.kind as (typeof CHAT_DOCK_TABS)[number]) ||
+      tab.kind === "artifact" ||
+      (tab.kind === "chat" && tab.threadSurface === "chat")
+    );
+  }
+  return tab.kind !== "gallery" && (tab.kind !== "chat" || tab.threadSurface === "build");
+}
+
+/** A fresh New tab page — ids are unique so several can be open at once. */
+function newTab(): DockTabInstance {
+  const id = `newtab:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return { id, kind: "newtab", title: "New tab" };
+}
 
 function basename(p: string): string {
   const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
@@ -80,7 +107,36 @@ interface AgentWorkspaceState {
    * chat beside the main one, so two models can be watched answering at once
    * instead of switching back and forth between them.
    */
-  openChatTab: (threadId: string, title: string, projectRoot: string | null) => void;
+  openChatTab: (
+    threadId: string,
+    title: string,
+    projectRoot: string | null,
+    surface: "chat" | "build",
+  ) => void;
+  /** Open a New tab page (what `+` and Ctrl+T do) and show it. */
+  openNewTab: () => void;
+  /**
+   * Open a New tab only if the surface being shown has no tab at all. Checks
+   * the store at the moment it runs, so calling it twice opens one tab.
+   */
+  ensureVisibleTab: (chatSurface: boolean) => void;
+  /**
+   * Turn New tab `id` into what was picked on it, in place.
+   *
+   * - a panel: the tab becomes that panel. When the panel is already open
+   *   elsewhere in the strip, the New tab closes and that tab is focused
+   *   instead — panels are one-per-dock.
+   * - an address: the tab becomes a browser tab. The first browser tab is the
+   *   AGENT's (id `browser`), so the page you open is the page the agent can
+   *   see, as it always was; with that tab already open, the New tab gets a
+   *   page of its own.
+   */
+  resolveNewTab: (id: string, target: { panel: DockSingletonKind } | { url: string }) => void;
+  /** Record what a browser tab's page is showing now, or how it is being viewed. */
+  updateBrowserTab: (
+    id: string,
+    patch: Partial<Pick<DockTabInstance, "url" | "title" | "pendingUrl" | "device" | "zoom" | "toolsOpen">>,
+  ) => void;
   /** Activate an existing tab by id. */
   setActiveTab: (id: string) => void;
   /** Close a tab; activates a neighbor, or closes the dock if it was the last. */
@@ -116,17 +172,11 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         set((s) => {
           if (s.dockOpen) return { dockOpen: false, expanded: false };
           if (s.tabs.length === 0) {
-            // What the dock opens on has to be a tab THIS product has. Files is
-            // the right first tab on the Build side, where the dock is mostly a
-            // way into the workspace — but Aurora Chat has no files at all
-            // (`CHAT_DOCK_TABS` is Canvas and Memory), so opening the dock there
-            // put up a tab that is not in its roster and cannot be reached any
-            // other way.
-            const kind: DockSingletonKind =
-              useAgentSettingsStore.getState().auroraSurface === "chat"
-                ? CHAT_DOCK_TABS[0]
-                : "files";
-            const tab: DockTabInstance = { id: kind, kind, title: DOCK_TAB_LABELS[kind] };
+            // An empty dock opens on a New tab — the page that offers every
+            // panel and the browser — never on a "No tab open" message. The New
+            // tab adapts to the surface, so this is right on Build and on
+            // Aurora Chat alike.
+            const tab = newTab();
             return { dockOpen: true, tabs: [tab], activeTabId: tab.id };
           }
           return { dockOpen: true, activeTabId: s.activeTabId ?? s.tabs[0].id };
@@ -201,14 +251,18 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 
-      openChatTab: (threadId, title, projectRoot) =>
+      openChatTab: (threadId, title, projectRoot, surface) =>
         set((s) => {
           const id = `chat:${threadId}`;
           const exists = s.tabs.some((t) => t.id === id);
           const tabs = exists
             ? // Re-opening refocuses and re-titles (the chat may have been
               // renamed, or auto-titled since it was docked).
-              s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
+              s.tabs.map((t) =>
+                t.id === id
+                  ? { ...t, title, threadProjectRoot: projectRoot, threadSurface: surface }
+                  : t,
+              )
             : [
                 ...s.tabs,
                 {
@@ -217,9 +271,74 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
                   title,
                   threadId,
                   threadProjectRoot: projectRoot,
+                  threadSurface: surface,
                 },
               ];
           return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      openNewTab: () =>
+        set((s) => {
+          const tab = newTab();
+          return { dockOpen: true, activeTabId: tab.id, tabs: [...s.tabs, tab] };
+        }),
+
+      ensureVisibleTab: (chatSurface) =>
+        set((s) => {
+          if (s.tabs.some((t) => isTabOnSurface(t, chatSurface))) return s;
+          const tab = newTab();
+          return { activeTabId: tab.id, tabs: [...s.tabs, tab] };
+        }),
+
+      resolveNewTab: (id, target) =>
+        set((s) => {
+          const idx = s.tabs.findIndex((t) => t.id === id && t.kind === "newtab");
+          if (idx < 0) return s;
+          const replaceWith = (tab: DockTabInstance) => {
+            const tabs = [...s.tabs];
+            tabs[idx] = tab;
+            return { tabs, activeTabId: tab.id, dockOpen: true };
+          };
+
+          if ("panel" in target) {
+            const kind = target.panel;
+            if (s.tabs.some((t) => t.id === kind)) {
+              return { tabs: s.tabs.filter((t) => t.id !== id), activeTabId: kind, dockOpen: true };
+            }
+            return replaceWith({ id: kind, kind, title: DOCK_TAB_LABELS[kind] });
+          }
+
+          const url = target.url;
+          const title = addressTitle(url);
+          if (!s.tabs.some((t) => t.id === "browser")) {
+            return replaceWith({ id: "browser", kind: "browser", title, url, pendingUrl: url });
+          }
+          const browserLabel = userBrowserLabel();
+          return replaceWith({
+            id: `browser:${browserLabel}`,
+            kind: "browser",
+            title,
+            browserLabel,
+            url,
+            pendingUrl: url,
+          });
+        }),
+
+      updateBrowserTab: (id, patch) =>
+        set((s) => {
+          const tab = s.tabs.find((t) => t.id === id);
+          if (!tab) return s;
+          const next: DockTabInstance = { ...tab, ...patch };
+          // An `undefined` in the patch REMOVES that field — "no device", "no
+          // pending load" — so the saved tab carries no stale key.
+          for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
+            if (patch[key] === undefined) delete next[key];
+          }
+          const changed = (Object.keys(patch) as (keyof typeof patch)[]).some(
+            (key) => next[key] !== tab[key] || (key in tab) !== (key in next),
+          );
+          if (!changed) return s;
+          return { tabs: s.tabs.map((t) => (t.id === id ? next : t)) };
         }),
 
       setActiveTab: (id) => set({ activeTabId: id, dockOpen: true }),
@@ -267,7 +386,14 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
       // After rehydrate, make sure activeTabId still points at a surviving tab.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<AgentWorkspaceState>;
-        const tabs = p.tabs ?? [];
+        // Older chat tabs have no surface owner. Their thread ids cannot be
+        // safely inferred from a nullable project root, so require a reopen.
+        const tabs = (p.tabs ?? []).filter(
+          (tab) =>
+            tab.kind !== "chat" ||
+            tab.threadSurface === "chat" ||
+            tab.threadSurface === "build",
+        );
         const activeTabId =
           p.activeTabId && tabs.some((t) => t.id === p.activeTabId)
             ? p.activeTabId

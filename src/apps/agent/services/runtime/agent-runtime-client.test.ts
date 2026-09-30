@@ -743,6 +743,21 @@ describe("AgentRuntimeClient.chat — bridge round-trip", () => {
     await promise;
   });
 
+  it("Full access approves bridged tools without asking", async () => {
+    shouldAutoApproveMcpToolMock.mockReturnValue(false);
+    const onToolApprovalRequired = vi.fn(async () => false);
+    const client = buildClient({ onToolApprovalRequired }, { config: { workspaceAccess: "full" } });
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+    dispatch(AGENT_TOOL_PENDING_CHANNEL, {
+      turnId, toolUseId: "full-access", name: "mcp_database_query", input: {},
+    });
+    await vi.waitFor(() => expect(executeMcpToolMock).toHaveBeenCalledOnce());
+    expect(onToolApprovalRequired).not.toHaveBeenCalled();
+    dispatch(AGENT_TURN_COMPLETE_CHANNEL, { turnId, stop_reason: "end_turn", iterations: 1 });
+    await promise;
+  });
+
   it("denies a non-MCP tool that falls through to the frontend bridge", async () => {
     const client = buildClient();
     const promise = client.chat(sampleInput);
@@ -1019,6 +1034,43 @@ describe("AgentRuntimeClient.chat — completion + cleanup", () => {
     dispatch(AGENT_TURN_ERROR_CHANNEL, { turnId, error: "cancelled" });
 
     await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it.each(["cancelled", "request was cancelled", "turn was cancelled"])(
+    "treats IPC cancellation '%s' as an abort without logging an error",
+    async (message) => {
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+      invokeMock.mockRejectedValueOnce(message);
+      await expect(buildClient().chat(sampleInput)).rejects.toMatchObject({ name: "AbortError" });
+      expect(errorLog).not.toHaveBeenCalled();
+      errorLog.mockRestore();
+    },
+  );
+
+  it("preserves real IPC errors that mention cancellation", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    invokeMock.mockRejectedValueOnce("failed to persist cancelled turn");
+    await expect(buildClient().chat(sampleInput)).rejects.toMatchObject({
+      name: "Error", message: "failed to persist cancelled turn",
+    });
+    expect(errorLog).toHaveBeenCalledOnce();
+    errorLog.mockRestore();
+  });
+
+  it("does not log the late IPC rejection after a cancellation event", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    let rejectInvoke!: (reason: string) => void;
+    invokeMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectInvoke = reject; }));
+    const client = buildClient();
+    const promise = client.chat(sampleInput);
+    const { turnId } = await awaitChatInvocation();
+    dispatch(AGENT_TURN_ERROR_CHANNEL, { turnId, error: "cancelled" });
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    rejectInvoke("turn was cancelled");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(errorLog).not.toHaveBeenCalled();
+    errorLog.mockRestore();
   });
 
   it("cancel() invokes agent_cancel with the active turn id", async () => {

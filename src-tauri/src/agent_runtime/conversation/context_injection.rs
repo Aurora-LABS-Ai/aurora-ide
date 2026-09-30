@@ -348,7 +348,8 @@ pub(super) fn fold_message_context(messages: &[ConversationMessage]) -> Vec<Conv
 pub(super) fn checklist_block(thread_id: &str) -> Option<String> {
     // A failure here is a missing convenience, never a broken turn.
     let list = crate::tools::shell_editor_todo::todo_store::read(thread_id).ok()?;
-    if list.items.is_empty() {
+    // Closed work needs no maintenance, however long the conversation continues.
+    if list.items.iter().all(|item| item.status.is_terminal()) {
         return None;
     }
     Some(format!(
@@ -425,6 +426,9 @@ pub(super) fn stale_checklist_reminder(
         return None;
     }
     let list = crate::tools::shell_editor_todo::todo_store::read(thread_id).ok()?;
+    if !list.items.is_empty() && list.items.iter().all(|item| item.status.is_terminal()) {
+        return None;
+    }
     let body = if list.items.is_empty() {
         "You have not used the checklist in this conversation. If the work has \
          several steps, lay them out with `TaskCreate` so the user can follow your progress; if it \

@@ -9,8 +9,12 @@
 //!    `crate::commands::*` and gates `shell_execute` /
 //!    `shell_spawn` through
 //!    [`crate::agent_safety::bash_validation::validate_command`].
-//! 2. **Editor** (`editor_open_file`, `read_lints`) — opens files through
-//!    Tauri events and runs native project checkers for diagnostics.
+//! 2. **Editor** (`editor_open_file`) — opens files through Tauri events.
+//!    There is no diagnostics tool: `read_lints` wrapped the project's own
+//!    checkers and twice summarised a checker that never ran as a clean
+//!    result (harness runs 2026-08-21 and 2026-09-28). The model now runs
+//!    the project's check command itself with `shell_execute` and reads
+//!    the raw output; the rule lives in the system prompt.
 //! 3. **Todo** (`todo`) — ONE tool with a typed `op` (set / update /
 //!    read) over the durable per-thread checklist in
 //!    [`todo_store`]. It was three tools (`todo_write`, `todo_update`,
@@ -50,9 +54,8 @@
 //! Per contract §4 / Sub-D's hard rules:
 //!
 //! - `shell_execute`, `shell_spawn` → `requires_permission() == true`
-//! - `shell_kill`, `shell_list_processes`, `editor_open_file`,
-//!   `read_lints`, `todo` → default `false` (read/UI/own-process
-//!   ops are safe).
+//! - `shell_kill`, `shell_list_processes`, `editor_open_file`, `todo` →
+//!   default `false` (read/UI/own-process ops are safe).
 
 #![allow(dead_code)]
 
@@ -62,7 +65,6 @@ use crate::agent_runtime::tool_executor::ToolRegistry;
 
 pub mod editor_open_file;
 pub mod ide_event_sink;
-pub mod read_lints;
 pub mod shell_execute;
 pub mod shell_kill;
 pub mod shell_list_processes;
@@ -93,7 +95,6 @@ pub const TOOL_NAMES: &[&str] = &[
     "shell_kill",
     "shell_list_processes",
     "shell_read_output",
-    "read_lints",
     "TaskCreate",
     "TaskUpdate",
     "TaskList",
@@ -122,7 +123,6 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     // The executor and its `agent_editor_open` event remain compiled because
     // the Agent Window still listens on that channel to open files in its
     // right rail.
-    reg.register(Arc::new(read_lints::ReadLintsTool::new(sink.clone())));
     // The checklist, in Claude Code's shape: one task per create, one task per
     // update, and a read. Several calls ride in one message — see `tasks`.
     reg.register(Arc::new(tasks::TaskCreateTool::new(sink.clone())));

@@ -24,7 +24,7 @@
 use std::path::Path;
 
 use super::bash_validation::{
-    validate_command, validate_command_with_workspace, BashValidationError, ExecutionMode,
+    validate_command, validate_command_with_cwd, BashValidationError, ExecutionMode,
 };
 use crate::shell::ShellKind;
 
@@ -38,16 +38,28 @@ pub fn validate_for_shell(
     kind: ShellKind,
     workspace: Option<&Path>,
 ) -> Result<(), BashValidationError> {
+    validate_for_shell_at(command, mode, kind, workspace, workspace)
+}
+
+pub fn validate_for_shell_at(
+    command: &str,
+    mode: ExecutionMode,
+    kind: ShellKind,
+    workspace: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Result<(), BashValidationError> {
     if kind.is_posix() {
         if let Some(reason) = bash_would_mangle_powershell_payload(command) {
             return Err(BashValidationError::Blocked(reason));
         }
         return match workspace {
-            Some(workspace) => validate_command_with_workspace(command, mode, workspace),
+            Some(workspace) => {
+                validate_command_with_cwd(command, mode, workspace, cwd.unwrap_or(workspace))
+            }
             None => validate_command(command, mode),
         };
     }
-    validate_windows_shell(command, mode, kind, workspace)
+    validate_windows_shell(command, mode, kind, workspace, cwd)
 }
 
 /// PowerShell variables that only mean something to PowerShell. A bash
@@ -126,6 +138,7 @@ fn validate_windows_shell(
     mode: ExecutionMode,
     kind: ShellKind,
     workspace: Option<&Path>,
+    cwd: Option<&Path>,
 ) -> Result<(), BashValidationError> {
     let normalized = normalize(command);
 
@@ -141,7 +154,7 @@ fn validate_windows_shell(
         )));
     }
 
-    if let Some(warning) = path_warning(&normalized, mode, workspace) {
+    if let Some(warning) = path_warning(command, &normalized, mode, workspace, cwd) {
         return Err(BashValidationError::Warning(warning));
     }
 
@@ -579,7 +592,13 @@ fn mentions_marker(normalized: &str, marker: &str) -> bool {
     })
 }
 
-fn path_warning(normalized: &str, mode: ExecutionMode, workspace: Option<&Path>) -> Option<String> {
+fn path_warning(
+    command: &str,
+    normalized: &str,
+    mode: ExecutionMode,
+    workspace: Option<&Path>,
+    cwd: Option<&Path>,
+) -> Option<String> {
     if mode == ExecutionMode::ReadOnly {
         return None;
     }
@@ -601,19 +620,15 @@ fn path_warning(normalized: &str, mode: ExecutionMode, workspace: Option<&Path>)
         );
     }
 
-    // Traversal is RESOLVED, not matched. `Copy-Item src\..\src\a.ts dst` ends
-    // up inside the workspace and was refused anyway, which is the same defect
-    // the POSIX validator fixed in `validate_paths` — so this borrows that
-    // one's word splitter and its lexical `..` walk instead of keeping a
-    // second, worse copy. A refusal now names the path it is refusing.
+    // Use the shared directory-aware traversal check, preserving the original
+    // quoted paths rather than the lowercased command-matching copy.
     if let Some(root) = workspace {
-        if let Some(escaping) = super::bash_validation::path_like_words(normalized)
-            .find(|word| super::bash_validation::escapes_workspace(word, root))
+        if let Some(escaping) =
+            super::shell_paths::escaping_path(command, root, cwd.unwrap_or(root), false)
         {
             return Some(format!(
-                "`{escaping}` resolves outside the workspace ({}). Re-issue the command against a \
-                 path inside it — paths are relative to the workspace root, so a sibling \
-                 directory of the root is not reachable.",
+                "`{escaping}` may resolve outside the workspace ({}). Use a path inside it; \
+                 relative paths are checked from `cwd` and each literal directory change.",
                 root.display()
             ));
         }

@@ -22,6 +22,8 @@
 
 import { lazy, Suspense, useEffect } from "react";
 
+import { ErrorBoundary } from "@/kernel/ui/ErrorBoundary";
+
 // The router is the one file that legitimately knows about both products, and
 // it now knows about them LAZILY. Importing both statically put the whole IDE
 // and the whole agent app in one chunk, so each window downloaded and parsed
@@ -99,8 +101,8 @@ function App() {
   }, [isAgentWindow]);
 
   // Subscribe to the Rust agent's IDE-event bus once the app mounts.
-  // These listeners wire `agent_editor_open` → Monaco, `agent_todo_write`
-  // → task store, and `agent_read_lints` → debug log. Without them the
+  // These listeners wire `agent_editor_open` → Monaco and `agent_todo_write`
+  // → task store. Without them the
   // Rust `editor_open_file` / `todo_write` tools are no-ops in the UI.
   useEffect(() => {
     let dispose: (() => void) | null = null;
@@ -165,8 +167,75 @@ function App() {
         />
       }
     >
-      {isAgentWindow ? <AgentWindow /> : <IdeSurface />}
+      {/* The last line of defence. Every surface has its own boundaries
+          (each tool step in the transcript, for one); this one exists so a
+          render error anywhere else leaves a sentence and a button instead
+          of a blank window. Inline styles on purpose: this must draw even
+          when the surface's own stylesheet is what failed. */}
+      <ErrorBoundary
+        where={isAgentWindow ? "agent window" : "editor window"}
+        fallback={(error) => <WindowRenderFailed message={error.message} />}
+      >
+        {isAgentWindow ? <AgentWindow /> : <IdeSurface />}
+      </ErrorBoundary>
     </Suspense>
+  );
+}
+
+function WindowRenderFailed({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        height: "100%",
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        boxSizing: "border-box",
+        background: "var(--aurora-editor-background, #0d0d0d)",
+        color: "var(--aurora-editor-foreground, #d4d4d4)",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: 14,
+        lineHeight: 1.5,
+      }}
+    >
+      <div style={{ maxWidth: 440 }}>
+        <p style={{ margin: 0, fontWeight: 600 }}>Aurora hit an error while drawing this window.</p>
+        <p style={{ margin: "8px 0 0", opacity: 0.8 }}>
+          Your conversations are saved on disk and nothing was lost. The error has been
+          logged. Reload to bring the window back.
+        </p>
+        <p
+          style={{
+            margin: "8px 0 0",
+            fontFamily: "ui-monospace, monospace",
+            fontSize: 12,
+            opacity: 0.6,
+            wordBreak: "break-word",
+          }}
+        >
+          {message}
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          style={{
+            marginTop: 16,
+            padding: "6px 14px",
+            borderRadius: 6,
+            border: "1px solid currentColor",
+            background: "transparent",
+            color: "inherit",
+            font: "inherit",
+            cursor: "pointer",
+          }}
+        >
+          Reload window
+        </button>
+      </div>
+    </div>
   );
 }
 

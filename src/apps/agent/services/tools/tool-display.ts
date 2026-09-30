@@ -15,7 +15,6 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // NAME, the other by CONTENT, and a user scanning a transcript needs to tell
   // the two apart at a glance.
   glob: "Find Files",
-  read_lints: "Read Diagnostics",
   // Legacy file/folder names — kept so historic threads render cleanly.
   file_create: "Create New File",
   file_delete: "Delete File",

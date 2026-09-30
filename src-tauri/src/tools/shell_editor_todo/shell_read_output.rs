@@ -417,9 +417,6 @@ mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
-        fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
-            Ok(())
-        }
         fn emit_todo_write(&self, _thread_id: &str, _todos: &Value) -> Result<(), String> {
             Ok(())
         }

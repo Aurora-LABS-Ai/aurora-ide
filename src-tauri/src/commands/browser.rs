@@ -18,6 +18,8 @@ use crate::services::browser_runtime::{
     BrowserManager, BrowserResultPayload, BrowserThemeTokens, BrowserWindowSummary,
     CreateBrowserWindow, PickedElementPayload,
 };
+use crate::services::browser_view;
+use crate::tools::browser::local_servers;
 
 #[tauri::command]
 pub async fn create_browser_webview(
@@ -83,6 +85,136 @@ pub async fn browser_get_url(
         .live_url(&label)
         .await
         .ok_or_else(|| format!("no browser window '{label}'"))
+}
+
+/// The page's `document.title`, for its tab in the dock. `None` while the page
+/// has no title or is mid-navigation — the tab then keeps showing the address.
+#[tauri::command]
+pub async fn browser_page_title(
+    state: State<'_, BrowserManager>,
+    label: String,
+) -> Result<Option<String>, String> {
+    let result = state.eval_with_result(&label, "document.title").await?;
+    Ok(result
+        .value
+        .filter(|_| result.ok)
+        .and_then(|value| value.as_str().map(|title| title.trim().to_string()))
+        .filter(|title| !title.is_empty()))
+}
+
+/// Local servers that background processes announced in their output, each
+/// checked for an answer. Feeds "Running" on the dock's New tab page.
+#[tauri::command]
+pub async fn browser_local_servers() -> Result<Vec<local_servers::LocalServer>, String> {
+    let processes = crate::commands::shell_background_processes()
+        .into_iter()
+        .map(|row| local_servers::ProcessLog {
+            process_id: row.process_id,
+            name: row.name,
+            command: row.command,
+            started_at_ms: row.started_at_ms,
+            output_file: row.output_file,
+        })
+        .collect();
+    Ok(local_servers::find(processes).await)
+}
+
+/// Show a page as a device (the panel's device buttons), or at its natural
+/// size with `None`. On the agent's page the agent's own emulation record is
+/// kept in step, so its tools report the size the page really has.
+#[tauri::command]
+pub async fn browser_set_device(
+    state: State<'_, BrowserManager>,
+    label: String,
+    device: Option<browser_view::DeviceSpec>,
+) -> Result<(), String> {
+    let webview = state.webview(&label)?;
+    browser_view::set_device(&webview, &label, device.clone()).await?;
+    if label == crate::tools::browser::AGENT_BROWSER_LABEL {
+        match device {
+            Some(d) => crate::tools::browser::state::set_emulation(crate::tools::browser::state::Emulation {
+                width: d.width,
+                height: d.height,
+                scale: d.device_scale_factor,
+                mobile: d.mobile,
+            }),
+            None => crate::tools::browser::state::clear_emulation(),
+        }
+    }
+    Ok(())
+}
+
+/// The browser's own zoom for a page. Returns the zoom actually applied
+/// (clamped to 25%–500%).
+#[tauri::command]
+pub async fn browser_set_zoom(
+    state: State<'_, BrowserManager>,
+    label: String,
+    zoom: f64,
+) -> Result<f64, String> {
+    let webview = state.webview(&label)?;
+    browser_view::set_zoom(&webview, &label, zoom)
+}
+
+/// Round a page window's bottom corners (a device frame's screen), or square
+/// them with 0. Applied now at the page's current size, and again by every
+/// later move or resize.
+#[tauri::command]
+pub async fn browser_set_corner_radius(
+    state: State<'_, BrowserManager>,
+    label: String,
+    radius: f64,
+) -> Result<(), String> {
+    let webview = state.webview(&label)?;
+    browser_view::set_corner_radius(&label, radius);
+    let scale = webview.window().scale_factor().unwrap_or(1.0);
+    let size = webview.size().map_err(|err| format!("page size unavailable: {err}"))?;
+    browser_view::apply_corners(
+        &webview,
+        &label,
+        f64::from(size.width) / scale,
+        f64::from(size.height) / scale,
+    );
+    Ok(())
+}
+
+/// A screenshot of a page as base64 PNG, for the composer — the page exactly
+/// as painted in the panel.
+///
+/// Deliberately NOT DevTools' `Page.captureScreenshot` for a device, although
+/// that one returns the phone's full resolution: with a fit-scale in force,
+/// Chromium re-renders the view at full size for the capture and shrinks it
+/// back, and the user watched the phone lurch in and out on every click
+/// (2026-09-29). The page's own layout never changed (no resize reached it —
+/// checked in Edge); it was the compositor. The native capture reads the
+/// surface as it is and moves nothing, at the size the device is drawn.
+#[tauri::command]
+pub async fn browser_capture_screenshot(
+    state: State<'_, BrowserManager>,
+    label: String,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    let webview = state.webview(&label)?;
+    match crate::services::browser_native_capture::capture_webview_png(&webview).await? {
+        Some(png) => Ok(base64::engine::general_purpose::STANDARD.encode(png)),
+        None => Err("screenshots are not available on this platform".into()),
+    }
+}
+
+/// Evaluate `script` in a page and return its value — for the panel's find
+/// bar, which needs the match count back.
+#[tauri::command]
+pub async fn browser_eval_value(
+    state: State<'_, BrowserManager>,
+    label: String,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let result = state.eval_with_result(&label, &script).await?;
+    if result.ok {
+        Ok(result.value.unwrap_or(serde_json::Value::Null))
+    } else {
+        Err(result.error.unwrap_or_else(|| "the page could not run the script".into()))
+    }
 }
 
 #[tauri::command]

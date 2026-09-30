@@ -158,7 +158,6 @@ mod tests {
         "TaskCreate",
         "TaskUpdate",
         "TaskList",
-        "read_lints",
         "browser_navigate",
         "browser_click",
         "browser_fill",

@@ -703,7 +703,12 @@ export const LeftRail: React.FC = () => {
             icon: "panel-right",
             label: "Open in side panel",
             onSelect: () =>
-              openChatTab(thread.id, thread.title, thread.workspaceRoot ?? null),
+              openChatTab(
+                thread.id,
+                thread.title,
+                thread.workspaceRoot ?? null,
+                chatSurface ? "chat" : "build",
+              ),
           },
           {
             // Directly under "Open in side panel", and the second entry that

@@ -141,6 +141,9 @@ export const CHAT_MODE_TOOLS: ReadonlySet<string> = new Set([
   // `tool_policy.rs`. Without it Chat could build one and could not read the
   // rules for one.
   "canvas_guidelines",
+  "chapter",
+  "aurora_skill_search",
+  "aurora_skill_load",
   "recall",
   "remember",
   "generate_image",
@@ -166,11 +169,10 @@ export const isChatModeTool = (name: string): boolean =>
  *
  * `CHAT_MODE_TOOLS` above is an allow-list for one mode; most of what is on it
  * — web search, artifacts, images, asking a question — is equally a Build tool.
- * These two are not. `recall` and `remember` reach the chat memory index, which
- * holds Aurora Chat conversations only, so in Build they are a memory with
- * nothing of Build's in it.
+ * `recall` and `remember` reach the Chat memory index. Image generation also
+ * needs a Chat turn's provider config and asset store. Build has neither.
  */
-export const CHAT_ONLY_TOOLS: ReadonlySet<string> = new Set(["recall", "remember", "generate_video"]);
+export const CHAT_ONLY_TOOLS: ReadonlySet<string> = new Set(["recall", "remember", "generate_image", "generate_video"]);
 
 export const isChatOnlyTool = (name: string): boolean => CHAT_ONLY_TOOLS.has(name);
 

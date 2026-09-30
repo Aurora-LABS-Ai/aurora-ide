@@ -107,6 +107,10 @@ impl ToolExecutor for PermissionGuardedExecutor {
         // fired. Mirrors the `FrontendBridgeExecutor` short-circuit.
         ctx.bail_if_cancelled()?;
 
+        if ctx.workspace_access.lifts_boundary() {
+            return self.inner.execute(input, ctx).await;
+        }
+
         eprintln!(
             "[PermissionGuardedExecutor] consulting permitter for tool={} turn={} tool_use_id={}",
             self.inner.name(),
@@ -255,5 +259,30 @@ mod tests {
         assert!(matches!(err, ToolError::Cancelled));
         // Permitter never consulted because cancel fired first.
         assert_eq!(permitter.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn full_access_bypasses_denials_but_other_modes_keep_them() {
+        use crate::agent_runtime::tool_executor::WorkspaceAccess;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(CountingTool {
+            permission_required: true,
+            call_count: counter.clone(),
+        });
+        let permitter = Arc::new(MockPermitter::denying());
+        let guard = PermissionGuardedExecutor::new(inner, permitter.clone());
+        let mut context = ctx();
+        context.workspace_access = WorkspaceAccess::Full;
+        assert_eq!(guard.execute(serde_json::json!({}), &context).await.unwrap(), "ran");
+        assert_eq!(permitter.call_count(), 0);
+        for access in [WorkspaceAccess::Workspace, WorkspaceAccess::Read] {
+            context.workspace_access = access;
+            assert!(matches!(
+                guard.execute(serde_json::json!({}), &context).await,
+                Err(ToolError::PermissionDenied(_))
+            ));
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(permitter.call_count(), 2);
     }
 }

@@ -817,9 +817,9 @@ Use `refresh` to request an update. Projects with automatic indexing disabled or
 require Build in Settings → Agent → Code index. Search returns only matching source, never generated explanations.
 
 Limits worth knowing: the index reads syntax, not types, so it cannot tell you what something \
-RETURNS and will not catch type errors — use `read_lints` for that. Dynamic dispatch and unknown \
-receivers can be omitted; no usages is not proof that a symbol is unused. It identifies possible \
-affected files; `read_lints` checks for reported errors after the change."
+RETURNS and will not catch type errors — run the project's type checker for that. Dynamic dispatch \
+and unknown receivers can be omitted; no usages is not proof that a symbol is unused. It identifies \
+possible affected files; the project's own check command reports errors after the change."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -836,7 +836,7 @@ affected files; `read_lints` checks for reported errors after the change."
                     },
                     "name": {
                         "type": "string",
-                        "description": "For `definition` and `usages`: the symbol. Accepts a bare name (`append`) or a qualified one (`Session::append`) — qualify it when a bare name turns out to be ambiguous."
+                        "description": "For `definition` and `usages`: the symbol. Accepts a bare name (`append`) or a qualified one (`Session::append`, `Session.append`) — qualify it when a bare name turns out to be ambiguous."
                     },
                     "query": {
                         "type": "string",

@@ -32,9 +32,6 @@ use serde_json::Value;
 /// Tauri event channel emitted by [`crate::tools::shell_editor_todo::editor_open_file`].
 pub const EDITOR_OPEN_EVENT: &str = "agent_editor_open";
 
-/// Tauri event channel emitted by [`crate::tools::shell_editor_todo::read_lints`].
-pub const READ_LINTS_EVENT: &str = "agent_read_lints";
-
 /// Tauri event channel emitted by [`crate::tools::shell_editor_todo::todo_write`].
 pub const TODO_WRITE_EVENT: &str = "agent_todo_write";
 
@@ -289,9 +286,6 @@ pub enum RecordedEvent {
         line: Option<u64>,
         column: Option<u64>,
     },
-    ReadLints {
-        paths: Vec<String>,
-    },
     TodoWrite {
         thread_id: String,
         todos: Value,
@@ -327,10 +321,6 @@ pub trait IdeEventSink: Send + Sync + 'static {
         line: Option<u64>,
         column: Option<u64>,
     ) -> Result<(), String>;
-
-    /// Emit the `"agent_read_lints"` Tauri event with the paths to
-    /// re-lint.
-    fn emit_read_lints(&self, paths: &[String]) -> Result<(), String>;
 
     /// Emit the `"agent_todo_write"` Tauri event with the new task list.
     ///
@@ -398,10 +388,6 @@ impl IdeEventSink for NoopIdeEventSink {
         _line: Option<u64>,
         _column: Option<u64>,
     ) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn emit_read_lints(&self, _paths: &[String]) -> Result<(), String> {
         Ok(())
     }
 
@@ -510,12 +496,6 @@ impl IdeEventSink for RecordingIdeEventSink {
         })
     }
 
-    fn emit_read_lints(&self, paths: &[String]) -> Result<(), String> {
-        self.record(RecordedEvent::ReadLints {
-            paths: paths.to_vec(),
-        })
-    }
-
     fn emit_todo_write(&self, thread_id: &str, todos: &Value) -> Result<(), String> {
         self.record(RecordedEvent::TodoWrite {
             thread_id: thread_id.to_string(),
@@ -556,7 +536,6 @@ mod tests {
     fn noop_sink_is_silent() {
         let sink = NoopIdeEventSink;
         assert!(sink.emit_editor_open("p", None, None).is_ok());
-        assert!(sink.emit_read_lints(&[]).is_ok());
         assert!(sink
             .emit_todo_write("thread-1", &serde_json::json!([]))
             .is_ok());
@@ -566,8 +545,6 @@ mod tests {
     fn recording_sink_captures_in_order() {
         let sink = RecordingIdeEventSink::new();
         sink.emit_editor_open("foo.rs", Some(10), Some(2)).unwrap();
-        sink.emit_read_lints(&vec!["a.rs".into(), "b.rs".into()])
-            .unwrap();
         sink.emit_todo_write(
             "thread-1",
             &serde_json::json!([{"content":"hi","activeForm":"saying hi","status":"pending"}]),
@@ -575,15 +552,12 @@ mod tests {
         .unwrap();
 
         let events = sink.events();
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 2);
         assert!(
             matches!(&events[0], RecordedEvent::EditorOpen { path, line, column } if path == "foo.rs" && line == &Some(10) && column == &Some(2))
         );
         assert!(
-            matches!(&events[1], RecordedEvent::ReadLints { paths } if paths == &vec!["a.rs".to_string(), "b.rs".to_string()])
-        );
-        assert!(
-            matches!(&events[2], RecordedEvent::TodoWrite { thread_id, .. } if thread_id == "thread-1")
+            matches!(&events[1], RecordedEvent::TodoWrite { thread_id, .. } if thread_id == "thread-1")
         );
     }
 

@@ -91,7 +91,6 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   editor_open_file: 'low',         // UI operation
   editor_get_active_file: 'low',   // Read operation
   editor_get_selection: 'low',     // Read operation
-  read_lints: 'low',               // Read operation - get diagnostics
   editor_insert_text: 'low',       // Changed from 'medium' - auto-approve
   editor_get_open_tabs: 'low',     // Read operation
   editor_close_tab: 'low',         // UI operation

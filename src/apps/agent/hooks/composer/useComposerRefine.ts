@@ -2,8 +2,8 @@
  * Agent Window — composer prompt-refine (controller hook).
  *
  * Drives the ✦ button: serialize the composer, send it to the local
- * llama-completion child process, and stream the rewritten prompt back into the
- * editor with a quick typewriter reveal — keeping the original for one-click
+ * llama-completion child process, and fade the complete rewrite into the
+ * editor — keeping the original for one-click
  * undo. Refine is for an INSTRUCTION, so it refuses over-long inputs (a pasted
  * console log / whole file) up front instead of overflowing the model context.
  *
@@ -49,25 +49,14 @@ function placeCaretAtEnd(el: HTMLElement): void {
   sel?.addRange(range);
 }
 
-/** Reveal `text` into `el` with a short typewriter animation. */
-function typewrite(el: HTMLElement, text: string): Promise<void> {
-  return new Promise((resolve) => {
-    el.innerHTML = "";
-    const total = text.length;
-    const duration = Math.min(700, Math.max(240, total * 3));
-    const start = performance.now();
-    const step = () => {
-      const t = Math.min(1, (performance.now() - start) / duration);
-      el.textContent = text.slice(0, Math.floor(t * total));
-      if (t < 1) {
-        requestAnimationFrame(step);
-      } else {
-        el.textContent = text;
-        placeCaretAtEnd(el);
-        resolve();
-      }
-    };
-    requestAnimationFrame(step);
+/** Replace once so the existing ComposerBody height transition never collapses. */
+function fadeInText(el: HTMLElement, text: string): Animation | null {
+  el.textContent = text;
+  placeCaretAtEnd(el);
+  if (typeof el.animate !== "function") return null;
+  return el.animate([{ opacity: 0 }, { opacity: 1 }], {
+    duration: 280,
+    easing: "cubic-bezier(0.2, 0, 0, 1)",
   });
 }
 
@@ -89,6 +78,7 @@ export function useComposerRefine(
   const originalHtmlRef = useRef<string | null>(null);
   const reqIdRef = useRef<string | null>(null);
   const cancelledRef = useRef(false);
+  const revealRef = useRef<Animation | null>(null);
   const noticeTimer = useRef<number | null>(null);
 
   const flashNotice = useCallback((msg: string) => {
@@ -122,25 +112,34 @@ export function useComposerRefine(
 
     void runRefine(reqId, text, config)
       .then(async (refined) => {
-        if (cancelledRef.current) {
+        if (cancelledRef.current || reqIdRef.current !== reqId) return;
+        // Sending, switching drafts, or editing during the request must win.
+        if (editorRef.current !== el || serialize(el).trim() !== text) {
+          reqIdRef.current = null;
+          originalHtmlRef.current = null;
           setPhase("idle");
           return;
         }
         const clean = refined.trim();
         if (!clean) {
           flashNotice("The model returned nothing to apply.");
+          reqIdRef.current = null;
           setPhase("idle");
           return;
         }
-        await typewrite(el, clean);
+        const reveal = fadeInText(el, clean);
+        revealRef.current = reveal;
         afterChange();
+        if (reveal) await reveal.finished;
+        if (cancelledRef.current || reqIdRef.current !== reqId) return;
+        revealRef.current = null;
+        reqIdRef.current = null;
         setPhase("refined");
       })
       .catch((err) => {
-        if (cancelledRef.current) {
-          setPhase("idle");
-          return;
-        }
+        if (cancelledRef.current || reqIdRef.current !== reqId) return;
+        reqIdRef.current = null;
+        revealRef.current = null;
         const msg = err instanceof Error ? err.message : String(err);
         flashNotice(msg || "Refine failed.");
         setPhase("idle");
@@ -158,12 +157,22 @@ export function useComposerRefine(
     flashNotice,
   ]);
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback((restoreDraft = true) => {
     cancelledRef.current = true;
     const id = reqIdRef.current;
+    reqIdRef.current = null;
     if (id) void cancelRefine(id);
+    if (revealRef.current) {
+      revealRef.current.cancel();
+      revealRef.current = null;
+      const el = editorRef.current;
+      if (restoreDraft && el && originalHtmlRef.current !== null) {
+        el.innerHTML = originalHtmlRef.current;
+        afterChange();
+      }
+    }
     setPhase("idle");
-  }, []);
+  }, [editorRef, afterChange]);
 
   const undo = useCallback(() => {
     const el = editorRef.current;
@@ -175,24 +184,29 @@ export function useComposerRefine(
   }, [editorRef, afterChange]);
 
   const onUserEdit = useCallback(() => {
-    if (phase === "refined") {
+    if (phase === "refining") cancel(false);
+    if (phase !== "idle") {
       originalHtmlRef.current = null;
       setPhase("idle");
     }
-  }, [phase]);
+  }, [phase, cancel]);
 
   // If the feature is turned off mid-flight, drop any pending state.
   useEffect(() => {
     if (!enabled && phase !== "idle") {
-      cancelledRef.current = true;
       // eslint-disable-next-line react-hooks/set-state-in-effect -- reset when the feature is turned off
-      setPhase("idle");
+      cancel();
     }
-  }, [enabled, phase]);
+  }, [enabled, phase, cancel]);
 
   useEffect(
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
+      cancelledRef.current = true;
+      const id = reqIdRef.current;
+      reqIdRef.current = null;
+      if (id) void cancelRefine(id);
+      revealRef.current?.cancel();
     },
     [],
   );

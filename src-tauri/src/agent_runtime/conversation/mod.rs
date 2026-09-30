@@ -1204,6 +1204,15 @@ impl ConversationRuntime {
                 return Err(RuntimeError::Cancelled);
             }
 
+            // The `shell_read_output` calls in this batch, so a background
+            // process ending the model has just READ is not announced to it a
+            // second time (see `process_ending_already_read`).
+            let read_output_calls: Vec<String> = pending_tools
+                .iter()
+                .filter(|call| call.name == "shell_read_output")
+                .map(|call| call.id.clone())
+                .collect();
+
             let batch = self
                 .execute_tool_calls(
                     pending_tools,
@@ -1249,7 +1258,9 @@ impl ConversationRuntime {
             // chat list — the model sees the merged user-role message
             // on the next API call, the human sees it as a normal
             // message in the timeline.
-            if let Some(queued) = session.take_queued_message() {
+            if let Some(queued) = session.take_queued_message().filter(|queued| {
+                !process_ending_already_read(queued, &tool_msg.blocks, &read_output_calls)
+            }) {
                 // Two things ride this slot, and they are not the same kind of
                 // thing. A person's message goes in as text on the tool message
                 // — that is a message, and it belongs in the conversation as

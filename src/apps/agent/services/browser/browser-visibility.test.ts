@@ -59,6 +59,46 @@ describe("browser visibility", () => {
     expect(v.isBrowserMeantVisible()).toBe(true);
   });
 
+  it("shows only the tab being looked at when two browser tabs exist", async () => {
+    const v = await load();
+    v.setBrowserPanelMounted(true, "browser-tab-a");
+    // Switching tabs: the first panel unmounts, the second mounts.
+    v.setBrowserPanelMounted(false, "browser-tab-a");
+    v.setBrowserPanelMounted(true, "browser-tab-b");
+    expect(v.isBrowserMeantVisible("browser-tab-a")).toBe(false);
+    expect(v.isBrowserMeantVisible("browser-tab-b")).toBe(true);
+    expect(sent().map((s) => [s.label, s.visible])).toEqual([
+      ["browser-tab-a", true],
+      ["browser-tab-a", false],
+      ["browser-tab-b", true],
+    ]);
+  });
+
+  it("an overlay hides whichever page is showing, and only that one comes back", async () => {
+    const v = await load();
+    v.setBrowserPanelMounted(true, "browser-tab-a");
+    v.setBrowserPanelMounted(false, "browser-tab-a");
+    v.setBrowserPanelMounted(true, "browser-tab-b");
+    invoke.mockClear();
+    const release = v.holdBrowserHidden();
+    release();
+    // tab-a was already hidden, so nothing is re-sent for it.
+    expect(sent().map((s) => [s.label, s.visible])).toEqual([
+      ["browser-tab-b", false],
+      ["browser-tab-b", true],
+    ]);
+  });
+
+  it("a closed tab's page is forgotten, so a later overlay sends nothing for it", async () => {
+    const v = await load();
+    v.setBrowserPanelMounted(true, "browser-tab-a");
+    v.setBrowserPanelMounted(false, "browser-tab-a");
+    v.forgetBrowser("browser-tab-a");
+    invoke.mockClear();
+    v.holdBrowserHidden()();
+    expect(sent()).toEqual([]);
+  });
+
   it("sends strictly increasing sequence numbers, and a re-assert even when nothing changed", async () => {
     const v = await load();
     v.setBrowserPanelMounted(true);

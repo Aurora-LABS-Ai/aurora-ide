@@ -34,6 +34,7 @@ import {
   type PlusMenuItem,
 } from "@/apps/agent/components/composer/ComposerPlusMenu";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import { serializeEditor } from "@/apps/agent/lib/composer/serialize-editor";
 import { ComposerRail } from "@/apps/agent/components/composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
@@ -45,6 +46,7 @@ import {
 import {
   invalidatePromptCommands,
   loadPromptCommands,
+  isChatPromptCommand,
   rankCommands,
   type PromptCommand,
   type PromptCommandKind,
@@ -199,71 +201,6 @@ function buildSelectionPill(entry: SelectedEntry): HTMLSpanElement {
   return pill;
 }
 
-/** Serialize the contenteditable to plain text: pills → `@rel`, <br>/blocks → \n. */
-function serializeEditor(root: HTMLElement, forSend = false): string {
-  let out = "";
-  const walk = (node: ChildNode) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      out += node.textContent ?? "";
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
-    const el = node as HTMLElement;
-    if (el.dataset.ghost) return; // inline typing-assist ghost text — never sent
-    if (el.dataset.cmd) {
-      // Inline `/` command pill. Its EFFECT threads via the command store,
-      // but its POSITION is part of the sentence — "no MX record for
-      // [server-chip]; …" loses its object if the pill vanishes. On send it
-      // serializes as `/title` so the model reads a coherent sentence and
-      // the bubble can re-pill it in place. Draft/emptiness/refine reads
-      // (`forSend` false) keep the old contract: a command-only composer is
-      // still "empty".
-      if (forSend && el.dataset.cmdTitle) out += `/${el.dataset.cmdTitle}`;
-      return;
-    }
-    if (el.dataset.term) {
-      // Inline `@terminal` pill. Serializes to the session id so the model can
-      // hand it straight to `terminal_read` — a POINTER, not a paste. The
-      // terminal's output can be tens of thousands of lines and changes while
-      // the turn runs; the id stays true and the tool fetches what is needed.
-      if (forSend) out += `@terminal:${el.dataset.term}`;
-      return;
-    }
-    if (el.dataset.sel) {
-      // Inline inspector pick. Same doctrine as the `/` pill above: its FULL
-      // context threads via the selection store, but its POSITION is part of
-      // the sentence — "make [pill] match the header" loses its object if the
-      // pill vanishes. It used to serialize to NOTHING: the sent text kept a
-      // hole where the pill sat, and the bubble hoisted the chip to the top.
-      // On send it serializes as `@element:N`, so the model reads a coherent
-      // sentence (the `<selected_elements>` block defines index N) and the
-      // bubble re-pills it in place. N is read from the STORE at send time —
-      // indices renumber when a pick is removed, so the DOM cannot cache one.
-      if (forSend && el.dataset.sel) {
-        const entry = useAgentSelectionStore
-          .getState()
-          .selected.find((e) => e.id === el.dataset.sel);
-        if (entry) out += `@element:${entry.index}`;
-      }
-      return;
-    }
-    if (el.dataset.rel) {
-      out += `@${el.dataset.rel}`;
-      return;
-    }
-    if (el.tagName === "BR") {
-      out += "\n";
-      return;
-    }
-    // Block elements a browser may inject → newline-separated.
-    const isBlock = el.tagName === "DIV" || el.tagName === "P";
-    if (isBlock && out.length > 0 && !out.endsWith("\n")) out += "\n";
-    el.childNodes.forEach(walk);
-  };
-  root.childNodes.forEach(walk);
-  return out;
-}
-
 /** True for the four inline pill kinds: `@` file, `@terminal`, `/` directive, inspector pick. */
 function isPill(node: ChildNode | null): node is HTMLElement {
   if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
@@ -381,7 +318,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // The project whose files `@` searches and whose rules/skills `/` lists.
   const windowProjectRoot = useAgentChatStore((s) => s.projectRoot);
   const composerProjectRoot =
-    projectRoot === undefined ? windowProjectRoot : projectRoot;
+    chatSurface ? null : (projectRoot === undefined ? windowProjectRoot : projectRoot);
 
   const editorRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -473,7 +410,11 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // element, since the inspector itself lives inside that panel.
   const openTab = useAgentWorkspaceStore((s) => s.openTab);
   // Elements picked with the Browser inspector — inline pills, attached on send.
-  const selected = useAgentSelectionStore((s) => s.selected);
+  const storedSelected = useAgentSelectionStore((s) => s.selected);
+  const selected = useMemo(
+    () => (chatSurface ? [] : storedSelected),
+    [chatSurface, storedSelected],
+  );
   const removeSelected = useAgentSelectionStore((s) => s.remove);
 
   // Picks arrive asynchronously from the inspector, so the store leads and the
@@ -584,12 +525,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const available = commandIndex.filter(
       (command) =>
         (command.kind !== "action" || Boolean(onActionCommand)) &&
-        (command.kind !== "image" || canMakeImages),
+        (command.kind !== "image" || canMakeImages) &&
+        (!chatSurface || isChatPromptCommand(command)),
     );
     return rankCommands(available, slash.query, 8);
-  }, [slash, commandIndex, onActionCommand, canMakeImages]);
+  }, [slash, commandIndex, onActionCommand, canMakeImages, chatSurface]);
 
-  const syncEmpty = () => {
+  const syncEmpty = useCallback(() => {
     const el = editorRef.current;
     if (!el) return;
     // A file or terminal pill counts as content; a `/` command pill does NOT
@@ -601,7 +543,24 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const text = serializeEditor(el).trim();
     setIsEmpty(!hasSendablePill && text === "");
     setBlank(!hasVisiblePill && text === "");
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!chatSurface) return;
+    // A Build draft can survive a surface switch in this window. Remove its
+    // workspace references and project directives before Chat can submit them.
+    const editor = editorRef.current;
+    editor?.querySelectorAll("[data-rel], [data-term]").forEach((pill) => pill.remove());
+    const commands = composerCommands(useAgentCommandStore.getState(), stageKey);
+    const allowed = new Set(commands.filter(isChatPromptCommand).map((command) => command.key));
+    editor?.querySelectorAll<HTMLElement>("[data-cmd]").forEach((pill) => {
+      if (!allowed.has(pill.dataset.cmd ?? "")) pill.remove();
+    });
+    for (const command of commands) {
+      if (!allowed.has(command.key)) removeCommandAt(stageKey, command.key);
+    }
+    syncEmpty();
+  }, [chatSurface, stageKey, removeCommandAt, syncEmpty]);
 
   // The pickers re-run on every keyup and click — including the keyup of the
   // arrow key that just moved the highlight. Resetting the highlight there is
@@ -722,7 +681,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       const domSel = new Set(
         Array.from(el.querySelectorAll<HTMLElement>("[data-sel]")).map((n) => n.dataset.sel),
       );
-      for (const entry of useAgentSelectionStore.getState().selected) {
+      for (const entry of selected) {
         if (!domSel.has(entry.id)) removeSelected(entry.id);
       }
     }
@@ -987,11 +946,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     el.focus();
   };
 
-  // Classify dropped/picked paths: folders → folder pill, images → attachment
-  // (vision-gated), else a `@path` mention so the agent can read the file with
-  // its tools. The Files panel says `isDir` at press time; an OS drop or picker
-  // pick is a bare path string, so those are stat'ed. The native composer_drop
-  // bridge and file picker grant these exact paths to the plugin-fs scope.
+  // Build can reference local files and folders by path. Chat accepts images
+  // as uploaded attachments and rejects other paths because it has no file
+  // reader. The Files panel knows whether a drag is a directory; OS drops and
+  // picker results are stat'ed here before either route is chosen.
   const handlePaths = (paths: string[], meta?: { isDir?: boolean }) => {
     setAttachmentError(null);
     void (async () => {
@@ -1005,6 +963,15 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             // Unreadable/missing → treat as a file; the pill still points at it.
             isDir = false;
           }
+        }
+        // A slow stat may finish after a Build → Chat switch. Recheck the
+        // current surface before creating any path pill.
+        const nowChat = chatSurface || useAgentSettingsStore.getState().auroraSurface === "chat";
+        if (nowChat && (isDir || !isImagePath(p))) {
+          setAttachmentError(
+            "Aurora Chat accepts images here. Use Aurora Build for files and folders.",
+          );
+          continue;
         }
         if (isDir) {
           insertPathPill(p, true);
@@ -1034,11 +1001,16 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const isDragOver = isOsDragOver || isPathDragOver;
 
   // The `+` affordance: open the OS file picker and route the picks through the
-  // same handler as a drag-drop — images attach (vision-gated), other files
-  // become `@path` mentions the agent can read with its tools.
+  // same handler as a drag-drop. In Chat the dialog is limited to images;
+  // the handler still rejects non-images if the OS returns one anyway.
   const openFilePicker = async () => {
     try {
-      const picked = await openFileDialog({ multiple: true });
+      const picked = await openFileDialog({
+        multiple: true,
+        ...(chatSurface
+          ? { filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"] }] }
+          : {}),
+      });
       if (!picked) return;
       const paths = (Array.isArray(picked) ? picked : [picked]).filter(
         (p): p is string => typeof p === "string" && p.length > 0,
@@ -1064,7 +1036,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       syncEmpty();
       placeCaretAtEnd(el);
     }
-  }, [value, clearTyping]);
+  }, [value, clearTyping, syncEmpty]);
 
   // Takes focus when this composer is the one a person is about to type into.
   //
@@ -1158,11 +1130,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     () =>
       [
         {
-          // Attaching from this computer is an UPLOAD, not a workspace read, so
-          // it survives into chat — and it is how a picture reaches a chat.
+          // Chat uploads pictures; Build can also attach project file paths.
           id: "files",
-          label: "Files & images",
-          hint: "Pick from this computer",
+          label: chatSurface ? "Images" : "Files & images",
+          hint: chatSurface ? "Pick a picture" : "Pick from this computer",
           icon: "upload" as const,
           run: () => void openFilePicker(),
         },
@@ -1231,12 +1202,24 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     // The send gate reads the DRAFT serialization (command pills excluded):
     // a command pill still needs an accompanying message, same as before.
     // What actually sends is the forSend form, with `/title` tokens in place.
-    const bare = serializeEditor(el).trim();
-    const text = serializeEditor(el, true).trim();
+    // The model may have changed since an image was staged in this draft.
+    if (images.length > 0 && !visionSupported) {
+      warnNoVision();
+      return;
+    }
+    const chatCommandKeys = chatSurface
+      ? new Set(
+          composerCommands(useAgentCommandStore.getState(), stageKey)
+            .filter(isChatPromptCommand)
+            .map((command) => command.key),
+        )
+      : undefined;
+    const bare = serializeEditor(el, false, !chatSurface, chatCommandKeys).trim();
+    const text = serializeEditor(el, true, !chatSurface, chatCommandKeys).trim();
     if (!bare || !text || !onSubmit) return;
-    const fileChips: AttachedPromptChip[] = Array.from(
-      el.querySelectorAll<HTMLElement>("[data-rel]"),
-    ).map((pill) => ({
+    const fileChips: AttachedPromptChip[] = (chatSurface
+      ? []
+      : Array.from(el.querySelectorAll<HTMLElement>("[data-rel]"))).map((pill) => ({
       kind: pill.dataset.kind === "dir" ? "folder" : "file",
       title: pill.textContent?.trim() || basenameOf(pill.dataset.rel ?? ""),
       value: pill.dataset.rel ?? "",
@@ -1247,9 +1230,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     // directory just burns a failed tool call. One line names what it is and
     // what was wanted, appended once no matter how many folders came in — the
     // user sees exactly what the model was told, because it is the same text.
-    const terminalChips: AttachedPromptChip[] = Array.from(
-      el.querySelectorAll<HTMLElement>("[data-term]"),
-    ).map((pill) => ({
+    const terminalChips: AttachedPromptChip[] = (chatSurface
+      ? []
+      : Array.from(el.querySelectorAll<HTMLElement>("[data-term]"))).map((pill) => ({
       kind: "terminal" as const,
       title: pill.dataset.termTitle ?? "terminal",
       value: pill.dataset.term ?? "",
@@ -1394,7 +1377,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       }${
         /* Same travelling border as a drag: the composer is holding something
            and is not done with it. See `26-attachments-drag.css`. */
-        micTranscribing ? " agw-composer-busy" : ""
+        micTranscribing || refine.phase === "refining" ? " agw-composer-busy" : ""
       }`}
     >
       {/* @-mention file picker — floats above the input. */}

@@ -14,6 +14,7 @@ pub mod api_converter;
 pub mod browser_devtools;
 pub mod browser_native_capture;
 pub mod browser_runtime;
+pub mod browser_view;
 pub mod browser_search;
 pub mod composer_drop;
 pub mod local_page;

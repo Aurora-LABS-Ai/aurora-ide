@@ -35,7 +35,6 @@ import { useAgentTerminalStore } from "@/apps/agent/store/ui/useAgentTerminalSto
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { useTeamHistoryStore } from "@/apps/agent/store/team/useTeamHistoryStore";
 import { useTeamStore } from "@/apps/agent/store/team/useTeamStore";
-import { PHASE_LABEL, isActivePhase, teamProgress } from "@/apps/agent/components/team/team-ui";
 import {
   threadService,
   type DbThread,
@@ -220,21 +219,9 @@ export const LeftRail: React.FC = () => {
    */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
-  // The Team lives in the right dock now ("Team" tab beside Canvas/Files).
-  // Active when the dock is open on that tab.
-  const teamTabActive = useAgentWorkspaceStore(
-    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "team",
-  );
-  /** Same rule for Memory, which occupies the same slot on the Chat side. */
-  const memoryTabActive = useAgentWorkspaceStore(
-    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "memory",
-  );
-  const galleryTabActive = useAgentWorkspaceStore(
-    (s) => s.dockOpen && s.tabs.find((t) => t.id === s.activeTabId)?.kind === "gallery",
-  );
-
-  // Live team run for the current project (kept warm in AgentWindow). Drives the
-  // Team entry's tag; `null`/inactive → no tag.
+  // Live team run for the current project (kept warm in AgentWindow); its phase
+  // drives the team badges on the rows below. The Team, Memory and Gallery
+  // entries themselves live on the icon rail now (`IconRail.tsx`).
   const teamSnapshot = useTeamStore((s) => s.snapshot);
 
   // Cross-project "has team work" index: which chats (and projects) have ever
@@ -246,15 +233,6 @@ export const LeftRail: React.FC = () => {
   const refreshTeamHistory = useTeamHistoryStore((s) => s.refresh);
   const chatHasTeamWork = (id: string) => teamEnabled && !!teamThreadIds[id];
   const projectHasTeamWork = (root: string) => teamEnabled && !!teamProjectSet[root];
-
-  const teamTag =
-    teamSnapshot?.initialized && isActivePhase(teamSnapshot.team.phase)
-      ? (() => {
-          const { done, total } = teamProgress(teamSnapshot);
-          const label = PHASE_LABEL[teamSnapshot.team.phase] ?? teamSnapshot.team.phase;
-          return total > 0 ? `${label} ${done}/${total}` : label;
-        })()
-      : null;
 
   const projectRoot = useAgentChatStore((s) => s.projectRoot);
   const knownProjects = useAgentChatStore((s) => s.knownProjects);
@@ -1138,53 +1116,6 @@ export const LeftRail: React.FC = () => {
           padding: "4px 8px 12px",
         }}
       >
-        {/* Team — a center-column takeover for the current project, opened from
-            here (above Pinned). Active state reflects the open team screen.
-            Absent until Agent Team is switched on in Settings, so the rail never
-            offers a door into a feature the agent isn't allowed to use. */}
-        {/* Memory — Aurora Chat's equivalent of the Team entry, in the same
-            slot and the same shape. It is the page that makes the memory
-            trustworthy: everything the model saved about you, visible and
-            editable. */}
-        {chatSurface && (
-          <button
-            type="button"
-            className="agw-rail-team"
-            data-active={galleryTabActive || undefined}
-            onClick={() => useAgentWorkspaceStore.getState().openTab("gallery")}
-            title="Open gallery"
-          >
-            <AgentIcon name="image" size={15} />
-            <span>Gallery</span>
-          </button>
-        )}
-        {chatSurface && (
-          <button
-            type="button"
-            className="agw-rail-team"
-            data-active={memoryTabActive || undefined}
-            onClick={() => useAgentWorkspaceStore.getState().openTab("memory")}
-            title="What Aurora remembers about you"
-          >
-            <AgentIcon name="database" size={15} />
-            <span>Memory</span>
-          </button>
-        )}
-
-        {teamEnabled && !chatSurface && (
-          <button
-            type="button"
-            className="agw-rail-team"
-            data-active={teamTabActive || undefined}
-            onClick={() => useAgentWorkspaceStore.getState().openTab("team")}
-            title="Open the team panel for this project"
-          >
-            <AgentIcon name="users" size={15} />
-            <span>Team</span>
-            {teamTag && <span className="agw-rail-team-tag">{teamTag}</span>}
-          </button>
-        )}
-
         {/* Pinned (global, across projects). Forced open while searching, the
             same way Projects is — a pinned chat that matches must not stay
             hidden behind a fold you shut yesterday. */}

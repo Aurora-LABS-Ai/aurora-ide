@@ -8,7 +8,8 @@
  * (`resolveNewTab`). Typing filters all three lists.
  *
  * Aurora Chat has no project, so its New tab offers only its own panels —
- * Canvas, Memory and Gallery — and no browser.
+ * Canvas and Memory — and no browser. (The gallery is the Library page on the
+ * icon rail now, reachable from either product.)
  *
  * This page is plain DOM with no native webview behind it, so nothing here
  * needs to hold a browser page hidden.
@@ -43,7 +44,6 @@ const PANEL_ICON: Record<DockSingletonKind, AgentIconName> = {
   terminal: "terminal",
   team: "users",
   memory: "database",
-  gallery: "image",
 };
 
 /** Build's panels, in the order they are reached for. Team only when it is on. */

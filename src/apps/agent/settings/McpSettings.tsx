@@ -24,11 +24,11 @@ import {
   useMcpStore,
   type McpServerConfig,
   type McpServerState,
-  type McpServerStatus,
   type McpTransportType,
 } from "@/apps/agent/store/tools/useMcpStore";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
+import { statusDotTone, statusLabel, TRANSPORT_SUMMARY } from "./mcp-status";
 import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
 // Three transports fit the pill only with short labels, so the segmented
@@ -51,14 +51,6 @@ const URL_PLACEHOLDER: Record<string, string> = {
 // Picking the wrong one of these two fails with a bare HTTP status, so the
 // difference has to be readable at the moment of choosing rather than
 // discoverable afterwards.
-// Shown on the collapsed card. The two HTTP transports are named apart so a
-// server's transport is legible without opening the editor.
-const TRANSPORT_SUMMARY: Record<McpTransportType, string> = {
-  stdio: "Local process",
-  http: "Streamable HTTP",
-  sse: "HTTP+SSE",
-};
-
 const TRANSPORT_HINT: Record<string, string> = {
   http: "Streamable HTTP. Most hosted servers use this — their setup snippets call it httpUrl.",
   sse: "Legacy HTTP+SSE. Only for older servers that publish a separate event stream.",
@@ -77,41 +69,8 @@ const EXAMPLE_JSON = `{
   }
 }`;
 
-// ── status → presentation (no accent/blue — green / amber / red / grey) ───────
-
-function statusDotTone(status: McpServerStatus): string {
-  switch (status) {
-    case "connected":
-      return "ready";
-    case "connecting":
-      return "busy";
-    case "error":
-      return "error";
-    case "disconnected":
-      return "off";
-    default: {
-      const _exhaustive: never = status;
-      return _exhaustive;
-    }
-  }
-}
-
-function statusLabel(status: McpServerStatus): string {
-  switch (status) {
-    case "connected":
-      return "Connected";
-    case "connecting":
-      return "Connecting";
-    case "error":
-      return "Error";
-    case "disconnected":
-      return "Disconnected";
-    default: {
-      const _exhaustive: never = status;
-      return _exhaustive;
-    }
-  }
-}
+// Status words and dot tones live in `./mcp-status.ts`, shared with the
+// Plugins page (no accent/blue — green / amber / red / grey).
 
 // ── KEY=VALUE (one per line) ⇄ Record<string,string> ─────────────────────────
 
@@ -239,26 +198,42 @@ const ConnectionFields: React.FC<{
 
 // ── Add-server draft card (form + raw JSON) ──────────────────────────────────
 
-const AddServerCard: React.FC<{
+/**
+ * A config to open the add form WITH, instead of blank — the Plugins page's
+ * directory hands one over. Mount the card with a `key` per template: the
+ * values are read once, on mount, the way a form draft should be.
+ */
+export interface AddServerSeed {
+  config: Omit<McpServerConfig, "id">;
+  /** One line above the form: what still has to be filled in. */
+  note?: string;
+}
+
+export const AddServerCard: React.FC<{
   onCancel: () => void;
   onAdded: (firstName: string) => void;
-}> = ({ onCancel, onAdded }) => {
+  seed?: AddServerSeed;
+}> = ({ onCancel, onAdded, seed }) => {
   const addServer = useMcpStore((s) => s.addServer);
   const [mode, setMode] = useState<"form" | "json">("form");
   const [busy, setBusy] = useState(false);
 
-  const [form, setForm] = useState<ServerForm>({
-    name: "",
-    transport: "stdio",
-    command: "",
-    args: "",
-    url: "",
-    env: "",
-    headers: "",
-  });
+  const [form, setForm] = useState<ServerForm>(() =>
+    seed
+      ? {
+          name: seed.config.name,
+          transport: seed.config.transport,
+          command: seed.config.command ?? "",
+          args: seed.config.args.join(" "),
+          url: seed.config.url ?? "",
+          env: stringifyKv(seed.config.env),
+          headers: stringifyKv(seed.config.headers),
+        }
+      : { name: "", transport: "stdio", command: "", args: "", url: "", env: "", headers: "" },
+  );
   const patch = (p: Partial<ServerForm>) => setForm((f) => ({ ...f, ...p }));
-  const [autoStart, setAutoStart] = useState(false);
-  const [autoApprove, setAutoApprove] = useState(true);
+  const [autoStart, setAutoStart] = useState(seed?.config.autoStart ?? false);
+  const [autoApprove, setAutoApprove] = useState(seed?.config.autoApprove ?? true);
 
   const [json, setJson] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
@@ -379,6 +354,11 @@ const AddServerCard: React.FC<{
       </div>
 
       <div className="agw-mcp-card-body">
+        {seed?.note && mode === "form" && (
+          <div className="agw-set-notice" style={{ marginBottom: 12 }}>
+            <span>{seed.note}</span>
+          </div>
+        )}
         {mode === "form" ? (
           <div className="agw-mcp-form">
             <ConnectionFields form={form} patch={patch} />
@@ -439,7 +419,7 @@ const AddServerCard: React.FC<{
 
 // ── Server card (collapsed row + expandable body with read / edit) ───────────
 
-const ServerCard: React.FC<{
+export const ServerCard: React.FC<{
   server: McpServerState;
   open: boolean;
   onToggle: () => void;

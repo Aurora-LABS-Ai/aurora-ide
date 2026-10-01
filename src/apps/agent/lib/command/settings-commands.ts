@@ -14,7 +14,10 @@
 
 import { SETTINGS_CATALOG } from "@/apps/agent/settings/settings-catalog";
 import { matchedSearchTerm } from "@/apps/agent/settings/settings-search";
-import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
+import { sectionHome, useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
+
+/** Where an entry takes you, as the subtitle says it. */
+const HOME_LABEL = { plugins: "Plugins", providers: "Providers" } as const;
 import type { AgentIconName } from "@/apps/agent/shared/AgentIcon";
 
 export interface SettingsCommand {
@@ -39,10 +42,15 @@ export interface SettingsCommand {
 export function settingsCommands(query: string): SettingsCommand[] {
   return SETTINGS_CATALOG.map((section) => {
     const term = matchedSearchTerm(section, query);
+    // MCP, Skills and Providers answer from pages of their own now; the
+    // subtitle says where the entry will take you, not where it used to.
+    const page = sectionHome(section.id);
+    const home =
+      page === "plugins" || page === "providers" ? HOME_LABEL[page] : "Settings";
     return {
       id: `settings:${section.id}`,
       title: section.title,
-      subtitle: term ? `Settings · ${term}` : "Settings",
+      subtitle: term ? `${home} · ${term}` : home,
       group: "Settings" as const,
       icon: section.icon,
       run: () => useAgentUiStore.getState().openSettings(section.id, term ?? ""),

@@ -103,6 +103,11 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const alive = useRef(true);
+  // Whether the pointer or focus is on the control RIGHT NOW. A result that
+  // lands after the user has moved on used to stay on screen for good: the
+  // only close was "leave", and leave was ignored while the test ran.
+  const hovered = useRef(false);
+  const focused = useRef(false);
 
   const attachRoot = useCallback((element: HTMLSpanElement | null) => {
     if (element) {
@@ -181,6 +186,9 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
       setFailure(err instanceof Error ? err.message : String(err));
       setState("fail");
     }
+    // The verdict stays only while someone is looking at the control. The
+    // icon keeps the colour, so hovering back shows the words again.
+    if (!hovered.current && !focused.current) setOpen(false);
   }, [selection, show, state]);
 
   const hasResult = report !== null || failure !== null;
@@ -207,6 +215,9 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
       return;
     }
     setDismissed(false);
+    // A click puts the pointer on the control whether or not an enter event
+    // preceded it (synthetic clicks, touch); leaving afterwards still clears it.
+    hovered.current = true;
     void run();
   }, [showing, hasResult, dismiss, run]);
 
@@ -220,8 +231,14 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
     <span
       ref={attachRoot}
       className="agw-prov-test"
-      onMouseEnter={() => hasResult && !dismissed && show()}
-      onMouseLeave={leave}
+      onMouseEnter={() => {
+        hovered.current = true;
+        if (hasResult && !dismissed) show();
+      }}
+      onMouseLeave={() => {
+        hovered.current = false;
+        leave();
+      }}
     >
       <button
         ref={buttonRef}
@@ -229,8 +246,14 @@ export const ModelTestButton: React.FC<{ model: LLMModel }> = ({ model }) => {
         className="agw-prov-icon-btn agw-prov-test-btn"
         data-state={state}
         onClick={handleClick}
-        onFocus={() => hasResult && !dismissed && show()}
-        onBlur={leave}
+        onFocus={() => {
+          focused.current = true;
+          if (hasResult && !dismissed) show();
+        }}
+        onBlur={() => {
+          focused.current = false;
+          leave();
+        }}
         // Escape closes the panel without spending a request — the keyboard
         // equivalent of the dismissing click.
         onKeyDown={(e) => {

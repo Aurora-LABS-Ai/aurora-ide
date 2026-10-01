@@ -1,0 +1,85 @@
+/* ═══ Icon rail — app-level navigation on the window's left edge ═══════════
+ *
+ * See `components/shell/IconRail.tsx`. A 48px column present on every view;
+ * paints the RAIL token like the titlebar and the shell gutters, so it is part
+ * of the frame rather than a panel of its own (no dividing line: the surface
+ * contrast with the recessed sheet does the layering, as everywhere else).
+ *
+ * Every cell is one primitive, `.agw-iconrail-btn`. Rest, hover, active,
+ * pressed and focus all live here — pressed AFTER hover in this file, which
+ * is the one rule that makes a press paint at equal specificity.
+ */
+
+.agw-iconrail {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 48px;
+  min-height: 0;
+  padding: 6px 0 8px;
+  background: var(--agw-rail-paint);
+}
+
+.agw-iconrail-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.agw-iconrail-btn:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-iconrail-btn[data-active] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-iconrail-btn:active {
+  background: var(--agw-press-paint);
+  color: var(--agw-text);
+}
+/* Focus is the cell's own edge. `outline: none` belongs INSIDE this rule:
+   `src/index.css` gives every `button:focus-visible` an outline at (0,1,1),
+   which out-ranks a base `.x { outline: none }` at (0,1,0). */
+.agw-iconrail-btn:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+  box-shadow: var(--agw-focus-ring);
+}
+
+.agw-iconrail-divider {
+  width: 24px;
+  height: 1px;
+  margin: 5px 0;
+  background: var(--agw-border-strong);
+}
+
+.agw-iconrail-grow {
+  flex: 1;
+}
+
+/* Something is happening behind this cell (a team run in progress). Ringed
+   in the rail paint so it reads as sitting on the glyph, not stuck to it. */
+.agw-iconrail-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--agw-accent);
+  box-shadow: 0 0 0 2px var(--agw-rail-paint);
+}

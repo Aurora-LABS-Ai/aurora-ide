@@ -47,6 +47,19 @@
   cursor: pointer;
   outline: none;
 }
+/* The toggle is the row's flexible member (`flex: 1; min-width: 0`), so when
+   the scope, sort and collapse buttons beside it need the room it SHRINKS — and
+   without these two rules its label kept painting past its own box into the
+   next button ("PROJECTSShow less"). The box clips and the label ellipsizes. */
+.agw-rail-section-toggle {
+  overflow: hidden;
+}
+.agw-rail-section-toggle > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agw-rail-section-toggle:hover {
   color: var(--agw-text);
 }

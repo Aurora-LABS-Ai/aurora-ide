@@ -1219,3 +1219,188 @@
   }
 }
 
+/* ═══ The provider's page: band, tabs, panels ═══════════════════════════
+ * `ProviderDetail` as it renders on the Providers page (Plugins shape): a
+ * header band that says who this is and whether it works, then three tabs —
+ * Models first, Connection and Advanced behind it. Picked from probe
+ * `aurora-provider-page-designs.html`, card 03.
+ */
+.agw-prov-band {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 0 16px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-prov-band > .agw-prov-avatar {
+  width: 40px;
+  height: 40px;
+}
+.agw-prov-band-titles {
+  flex: 1;
+  min-width: 0;
+}
+.agw-prov-band-name {
+  margin: 0;
+  font-size: 20px;
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-prov-band-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 2px;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+}
+.agw-prov-band-sub > .agw-prov-status-dot {
+  flex: none;
+}
+.agw-prov-status-dot[data-tone="warn"] {
+  background: var(--agw-warning);
+}
+.agw-prov-band-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.agw-prov-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-prov-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.agw-prov-tab:hover {
+  color: var(--agw-text);
+}
+.agw-prov-tab[aria-selected="true"] {
+  color: var(--agw-text);
+  border-bottom-color: var(--agw-text);
+}
+.agw-prov-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+  border-radius: var(--agw-radius-sm) var(--agw-radius-sm) 0 0;
+}
+.agw-prov-tab-n {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one line of the user's own words, where the old head's name used to be. */
+.agw-prov-detail-about {
+  margin-bottom: 14px;
+}
+/* Advanced: the editor grid, headers, then the danger line. */
+.agw-prov-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.agw-prov-advanced > .agw-prov-detail-note,
+.agw-prov-advanced > .agw-prov-detail-danger {
+  padding-top: 16px;
+}
+.agw-prov-advanced code {
+  font-family: var(--agw-font-code, ui-monospace, monospace);
+  font-size: 0.92em;
+}
+
+/* ── One model's own page (under the Models tab) ─────────────────────────
+ * The row is the header; the sections below take the panel's width in two
+ * columns, with the wide ones (pricing, reasoning, gateway, body) spanning
+ * both. Each section keeps the `.agw-prov-edit-field` anatomy, and
+ * `.agw-model-sec-grid` decides how many fields sit on a line. */
+.agw-model-page .agw-plug-crumbs {
+  margin: 0 0 12px;
+}
+.agw-prov-model[data-editing] {
+  background: transparent;
+}
+.agw-model-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 22px 32px;
+  padding: 18px 16px 10px;
+  margin-top: 6px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-model-sec[data-wide] {
+  grid-column: 1 / -1;
+}
+@media (max-width: 900px) {
+  .agw-model-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.agw-model-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agw-model-sec-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-model-sec-meta {
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--agw-text-muted);
+}
+.agw-model-sec-hint {
+  margin: -4px 0 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+}
+/* The field grids inside a section start flush: `.agw-prov-edit` used to be the
+   row's own expand panel and brought a top rule and padding with it. */
+.agw-model-sec > .agw-prov-edit,
+.agw-model-sec > .agw-prov-reason {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.agw-model-sec-grid[data-cols="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.agw-model-sec-grid[data-cols="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 720px) {
+  .agw-model-sec-grid[data-cols="3"],
+  .agw-model-sec-grid[data-cols="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+

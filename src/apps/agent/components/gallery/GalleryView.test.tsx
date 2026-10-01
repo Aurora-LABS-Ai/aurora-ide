@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GalleryPanel } from "./GalleryPanel";
+import { GalleryView } from "./GalleryView";
 import type { GalleryImage } from "@/apps/agent/services/gallery/gallery-service";
 
 const state = vi.hoisted(() => ({
@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   warnings: [] as string[],
   refresh: vi.fn(),
   selectThread: vi.fn(),
+  enterSurface: vi.fn(),
   copyImage: vi.fn(),
   save: vi.fn(),
   reveal: vi.fn(),
@@ -24,7 +25,9 @@ vi.mock("@/apps/agent/hooks/gallery/useGallery", () => ({
   useGallery: () => state,
 }));
 vi.mock("@/apps/agent/store/conversation/useAgentChatStore", () => ({
-  useAgentChatStore: { getState: () => ({ selectThread: state.selectThread }) },
+  useAgentChatStore: {
+    getState: () => ({ selectThread: state.selectThread, enterSurface: state.enterSurface }),
+  },
 }));
 vi.mock("@/apps/agent/services/gallery/gallery-actions", () => ({
   copyGalleryImage: state.copyImage,
@@ -83,7 +86,7 @@ afterEach(async () => {
   host.remove();
   vi.unstubAllGlobals();
 });
-const render = () => act(async () => root.render(<GalleryPanel />));
+const render = () => act(async () => root.render(<GalleryView />));
 
 describe("Chat gallery", () => {
   it("keeps edits with generated images and pasted images in their own section", async () => {
@@ -124,10 +127,22 @@ describe("Chat gallery", () => {
     );
     expect(state.selectThread).toHaveBeenCalledWith("chat-1", null);
   });
-  it("does not render the gallery in Build", async () => {
+  it("renders in Build too, and enters Aurora Chat before opening a picture's chat", async () => {
+    // The Library is on the icon rail, reachable from either product; pictures
+    // are Chat conversations, so opening one from Build walks over first.
     state.surface = "build";
     await render();
-    expect(host.innerHTML).toBe("");
+    expect(host.textContent).toContain("Generated scene");
+    await act(async () =>
+      (host.querySelector('[aria-label="Open Generated scene"]') as HTMLButtonElement).click(),
+    );
+    await act(async () =>
+      [...host.querySelectorAll("button")]
+        .find((button) => button.textContent === "Open chat")!
+        .click(),
+    );
+    expect(state.enterSurface).toHaveBeenCalledWith("chat");
+    expect(state.selectThread).toHaveBeenCalledWith("chat-1", null);
   });
   it("keeps loaded images visible when a refresh fails", async () => {
     state.error = "Could not read image manifest";

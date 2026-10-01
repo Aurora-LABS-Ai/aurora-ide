@@ -148,7 +148,6 @@ export type DockTabKind =
   // Aurora Chat's own surface: what Aurora remembers about the user. Opened
   // from the rail, like Team.
   | "memory"
-  | "gallery"
   | "file"
   | "member"
   | "project"
@@ -183,7 +182,6 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   terminal: "Terminal",
   team: "Team",
   memory: "Memory",
-  gallery: "Gallery",
 };
 
 /**
@@ -196,7 +194,7 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
  * `+` menu and the command palette), which is exactly why the roster is one
  * constant rather than a list written out twice.
  */
-export const CHAT_DOCK_TABS: readonly DockSingletonKind[] = ["canvas", "memory", "gallery"];
+export const CHAT_DOCK_TABS: readonly DockSingletonKind[] = ["canvas", "memory"];
 
 /** A live tab in the dock's strip. Singletons use their kind as the id; file
  *  tabs use `file:<absolutePath>`, team-member tabs `member:<agentId>` and

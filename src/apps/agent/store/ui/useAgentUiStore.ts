@@ -14,7 +14,46 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type AgentView = "chat" | "settings";
+/**
+ * The window's full-surface views. `chat` is Home (the chat list and the
+ * conversation); `images` and `library` are destinations the icon rail opens;
+ * `settings` has its own opener because it also carries a section.
+ */
+export type AgentView = "chat" | "settings" | "images" | "library" | "plugins" | "providers";
+
+/** The views the rail opens directly, without a section. */
+export type AgentPageView = Exclude<AgentView, "settings">;
+
+/** The two panes of the Plugins page. */
+export type PluginsTab = "mcp" | "skills";
+
+/**
+ * Settings sections that moved out to pages of their own: MCP and Skills to
+ * the Plugins page, Providers to its own page (it carries its own list on the
+ * left, and inside Settings that made two sidebars). They stay in the settings
+ * catalog so both searches still find them, but every door that names one —
+ * the nav, a search result, the command palette, an old persisted section —
+ * lands on the page through `openSettings`. One thing, one home; the redirect
+ * lives in the store because the store is the one place every door already
+ * goes through.
+ */
+const SECTION_HOMES: Partial<Record<SettingsSection, AgentPageView>> = {
+  mcp: "plugins",
+  skills: "plugins",
+  providers: "providers",
+};
+const PAGE_SECTIONS: Partial<Record<SettingsSection, PluginsTab>> = {
+  mcp: "mcp",
+  skills: "skills",
+};
+
+/** The page a settings section now lives on, or null when it is still a settings page. */
+export const sectionHome = (section: SettingsSection): AgentPageView | null =>
+  SECTION_HOMES[section] ?? null;
+
+/** The Plugins pane a settings section now lives on, or null. */
+export const sectionPluginsTab = (section: SettingsSection): PluginsTab | null =>
+  PAGE_SECTIONS[section] ?? null;
 
 /** Settings sections that were moved into the agent window. */
 export type SettingsSection =
@@ -60,6 +99,8 @@ interface AgentUiState {
   /** Which Preferences category was open last, persisted for the same reason. */
   preferencesTab: PreferencesTab;
   agentSettingsTab: AgentSettingsTab;
+  /** Which pane the Plugins page was on last; persisted like the tabs above. */
+  pluginsTab: PluginsTab;
   /**
    * What the settings page is currently searched for. Lives here rather than
    * inside the page so the command center can hand a query over on the way in —
@@ -77,11 +118,16 @@ interface AgentUiState {
   openSettings: (section?: SettingsSection, query?: string) => void;
   /** Return to the conversation workspace. */
   closeSettings: () => void;
+  /** Show a rail destination (Images, Library) or Home. */
+  openView: (view: AgentPageView) => void;
+  /** Back to the chat list and the conversation, from any view. */
+  goHome: () => void;
   setSection: (section: SettingsSection) => void;
   setSettingsQuery: (query: string) => void;
   setAppearanceTab: (tab: AppearanceTab) => void;
   setPreferencesTab: (tab: PreferencesTab) => void;
   setAgentSettingsTab: (tab: AgentSettingsTab) => void;
+  setPluginsTab: (tab: PluginsTab) => void;
 }
 
 export const useAgentUiStore = create<AgentUiState>()(
@@ -93,13 +139,26 @@ export const useAgentUiStore = create<AgentUiState>()(
       appearanceTab: "theme",
       preferencesTab: "general",
       agentSettingsTab: "general",
+      pluginsTab: "mcp",
       openSettings: (section, query) =>
-        set((s) => ({
-          view: "settings",
-          settingsSection: section ?? s.settingsSection,
-          settingsQuery: query ?? "",
-        })),
+        set((s) => {
+          const target = section ?? s.settingsSection;
+          const home = sectionHome(target);
+          // A section that lives on a page of its own opens that page. The
+          // search query does not travel: those pages have no results view.
+          if (home) {
+            const pluginsTab = sectionPluginsTab(target);
+            return pluginsTab
+              ? { view: home, pluginsTab, settingsQuery: "" }
+              : { view: home, settingsQuery: "" };
+          }
+          return { view: "settings", settingsSection: target, settingsQuery: query ?? "" };
+        }),
       closeSettings: () => set({ view: "chat", settingsQuery: "" }),
+      // Leaving settings by any door ends its search, for the same reason
+      // closeSettings does: a search is a moment, not a place to come back to.
+      openView: (view) => set({ view, settingsQuery: "" }),
+      goHome: () => set({ view: "chat", settingsQuery: "" }),
       // Choosing a section is choosing to look at that page, so it ends the
       // search. Without this the nav would appear dead while results are up:
       // the click lands, and the content area still shows the old results.
@@ -108,6 +167,7 @@ export const useAgentUiStore = create<AgentUiState>()(
       setAppearanceTab: (tab) => set({ appearanceTab: tab }),
       setPreferencesTab: (tab) => set({ preferencesTab: tab }),
       setAgentSettingsTab: (tab) => set({ agentSettingsTab: tab }),
+      setPluginsTab: (tab) => set({ pluginsTab: tab }),
     }),
     {
       name: "aurora-agent-window-ui",
@@ -116,6 +176,7 @@ export const useAgentUiStore = create<AgentUiState>()(
         appearanceTab: state.appearanceTab,
         preferencesTab: state.preferencesTab,
         agentSettingsTab: state.agentSettingsTab,
+        pluginsTab: state.pluginsTab,
       }),
     },
   ),

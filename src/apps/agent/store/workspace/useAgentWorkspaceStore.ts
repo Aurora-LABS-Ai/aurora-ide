@@ -43,7 +43,7 @@ export function isTabOnSurface(tab: DockTabInstance, chatSurface: boolean): bool
       (tab.kind === "chat" && tab.threadSurface === "chat")
     );
   }
-  return tab.kind !== "gallery" && (tab.kind !== "chat" || tab.threadSurface === "build");
+  return tab.kind !== "chat" || tab.threadSurface === "build";
 }
 
 /** A fresh New tab page — ids are unique so several can be open at once. */
@@ -390,9 +390,12 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         // safely inferred from a nullable project root, so require a reopen.
         const tabs = (p.tabs ?? []).filter(
           (tab) =>
-            tab.kind !== "chat" ||
-            tab.threadSurface === "chat" ||
-            tab.threadSurface === "build",
+            // The gallery was a dock tab until the Library page took it over;
+            // a tab of that kind saved by an older build has nothing to render.
+            (tab.kind as string) !== "gallery" &&
+            (tab.kind !== "chat" ||
+              tab.threadSurface === "chat" ||
+              tab.threadSurface === "build"),
         );
         const activeTabId =
           p.activeTabId && tabs.some((t) => t.id === p.activeTabId)

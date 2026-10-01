@@ -20,6 +20,49 @@ describe("useAgentUiStore settings section persistence", () => {
   });
 });
 
+describe("useAgentUiStore sections that moved to the Plugins page", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.resetModules();
+  });
+
+  it("opens the Plugins page on the matching pane instead of settings", async () => {
+    // Every door into MCP or Skills — nav, search result, palette, an old
+    // persisted section — goes through openSettings, so one redirect covers all.
+    const store = (await import("@/apps/agent/store/ui/useAgentUiStore")).useAgentUiStore;
+    store.getState().openSettings("skills", "equip");
+    expect(store.getState().view).toBe("plugins");
+    expect(store.getState().pluginsTab).toBe("skills");
+    expect(store.getState().settingsQuery).toBe("");
+
+    store.getState().openSettings("mcp");
+    expect(store.getState().pluginsTab).toBe("mcp");
+    // The settings section itself is left alone: coming back to Settings lands
+    // where the user last was in Settings, not on a page that is no longer there.
+    expect(store.getState().settingsSection).toBe("preferences");
+  });
+
+  it("opens Providers as its own page, so its list is the only sidebar", async () => {
+    const store = (await import("@/apps/agent/store/ui/useAgentUiStore")).useAgentUiStore;
+    store.getState().openSettings("providers", "api key");
+    expect(store.getState().view).toBe("providers");
+    expect(store.getState().settingsQuery).toBe("");
+  });
+
+  it("names the pages and panes that left settings, and nothing else", async () => {
+    const { sectionHome, sectionPluginsTab } = await import(
+      "@/apps/agent/store/ui/useAgentUiStore"
+    );
+    expect(sectionHome("mcp")).toBe("plugins");
+    expect(sectionHome("skills")).toBe("plugins");
+    expect(sectionHome("providers")).toBe("providers");
+    expect(sectionHome("appearance")).toBeNull();
+    expect(sectionPluginsTab("mcp")).toBe("mcp");
+    expect(sectionPluginsTab("skills")).toBe("skills");
+    expect(sectionPluginsTab("providers")).toBeNull();
+  });
+});
+
 describe("useAgentUiStore settings search hand-off", () => {
   beforeEach(() => {
     localStorage.clear();

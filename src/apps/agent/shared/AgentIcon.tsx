@@ -50,6 +50,7 @@ export type AgentIconName =
   | "panel-right"
   | "chevrons-left"
   | "chevron-down"
+  | "chevron-right"
   | "plus"
   | "search"
   | "zoom-in"
@@ -136,7 +137,13 @@ export type AgentIconName =
   | "facet"
   | "bolt"
   | "book-open"
-  | "image";
+  | "image"
+  | "home"
+  | "user"
+  | "images"
+  | "library"
+  | "puzzle"
+  | "cpu";
 
 /**
  * Rendered size, as a CSS length that follows Appearance → Interface text size.
@@ -203,6 +210,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
 
   // Disclosure chevron.
   "chevron-down": <path d="M5.5 9.5l6.5 6 6.5-6" />,
+  // Breadcrumb separator.
+  "chevron-right": <path d="M9.5 5.5l6 6.5-6 6.5" />,
 
   // Agent mode — an original faceted mark (a cut crystal / entity). Bespoke,
   // not a stock glyph. Pairs with `book` (Plan mode).
@@ -1001,6 +1010,63 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <path d="M3.5 16.2l4.6-4.4 3.6 3.4 3.1-2.6 5.7 4.6" />
       <circle cx="15.6" cy="9.1" r="1.7" data-part="pulse" />
     </>
+  ),
+
+  // Home — the icon rail's first cell: the chat list and the conversation. A
+  // roof over a door, not a chat bubble (`chat` is the transcript's own mark).
+  home: (
+    <>
+      <path d="M3.75 11.4 12 4.25l8.25 7.15" />
+      <path d="M5.9 9.9v8.35A1.5 1.5 0 0 0 7.4 19.75h2.6V14.5h4v5.25h2.6a1.5 1.5 0 0 0 1.5-1.5V9.9" />
+    </>
+  ),
+
+  // User — one person: the account cell at the foot of the icon rail. `users`
+  // (two figures) is the agent team and must not be reused for the owner.
+  user: (
+    <>
+      <circle cx="12" cy="8.2" r="3.4" />
+      <path d="M5 20a7 7 0 0 1 14 0" />
+    </>
+  ),
+
+  // Images — the rail's Images page: two photographs, one behind the other.
+  // `image` (one frame) stays the tool glyph; a PLACE where pictures are made
+  // and kept reads as a stack, not a single picture.
+  images: (
+    <>
+      <path d="M7.75 6.75V5.5A1.75 1.75 0 0 1 9.5 3.75h9A1.75 1.75 0 0 1 20.25 5.5v9a1.75 1.75 0 0 1-1.75 1.75H17" />
+      <rect x="3.75" y="7.5" width="13.25" height="12.75" rx="1.9" />
+      <path d="M3.75 17.2l3.7-3.5 2.7 2.5 2.3-2 4.55 3.6" />
+      <circle cx="12.4" cy="11.3" r="1.35" />
+    </>
+  ),
+
+  // Library — three books on a shelf, the third leaning. `book` (one closed
+  // book) stays the skills glyph.
+  library: (
+    <>
+      <rect x="3.5" y="4.5" width="4" height="15.5" rx="1" />
+      <rect x="9.5" y="4.5" width="4" height="15.5" rx="1" />
+      <path d="m15.1 6.2 3.5-1a1 1 0 0 1 1.25.7l3.4 12.5a1 1 0 0 1-.7 1.25l-3.5 1a1 1 0 0 1-1.25-.7L14.4 7.45a1 1 0 0 1 .7-1.25z" />
+    </>
+  ),
+
+  // CPU — the Providers page: the engines that run the models, with their
+  // keys. A chip with pins, not `providers` (two server trays), which reads
+  // as "servers" next to the MCP page and says nothing about models.
+  cpu: (
+    <>
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+      <rect x="10" y="10" width="4" height="4" rx="0.8" />
+      <path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3" />
+    </>
+  ),
+
+  // Puzzle — the Plugins page: things that fit into the agent. `plug` (a wall
+  // plug) stays the MCP transport glyph inside that page.
+  puzzle: (
+    <path d="M10.25 4.5a1.75 1.75 0 0 1 3.5 0V6h3.25A1.5 1.5 0 0 1 18.5 7.5v3.25H17a1.75 1.75 0 0 0 0 3.5h1.5v3.25a1.5 1.5 0 0 1-1.5 1.5h-3.25V17.5a1.75 1.75 0 0 0-3.5 0V19H7A1.5 1.5 0 0 1 5.5 17.5v-3.25H7a1.75 1.75 0 0 0 0-3.5H5.5V7.5A1.5 1.5 0 0 1 7 6h3.25z" />
   ),
 
   // Plan mode — an OPEN book: two pages meeting at a single vertical centre

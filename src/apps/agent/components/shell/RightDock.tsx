@@ -35,7 +35,6 @@ import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
 import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
 import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
-import { GalleryPanel } from "@/apps/agent/components/gallery/GalleryPanel";
 import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
@@ -60,7 +59,6 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   terminal: "terminal",
   team: "users",
   memory: "database",
-  gallery: "image",
 };
 
 /**
@@ -315,8 +313,6 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <TeamPanel />;
     case "memory":
       return <MemoryPanel />;
-    case "gallery":
-      return <GalleryPanel />;
     case "member":
       return <MemberPanel agentId={tab.memberId ?? ""} />;
     case "chat":
@@ -360,7 +356,7 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
 };
 
 export const RightDock: React.FC = () => {
-  /** Aurora Chat's dock holds Canvas, Memory and Gallery; see `isTabOnSurface`. */
+  /** Aurora Chat's dock holds Canvas and Memory; see `isTabOnSurface`. */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
   const allTabs = useAgentWorkspaceStore((s) => s.tabs);
   const activeTabId = useAgentWorkspaceStore((s) => s.activeTabId);

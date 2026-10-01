@@ -13,6 +13,11 @@ import { AgentDragGhost } from "@/apps/agent/components/composer/AgentDragGhost"
 import { AgentThemeProvider } from "@/apps/agent/components/theme/AgentThemeProvider";
 import { AgentTitlebar } from "@/apps/agent/components/shell/AgentTitlebar";
 import { AgentShell } from "@/apps/agent/components/shell/AgentShell";
+import { IconRail } from "@/apps/agent/components/shell/IconRail";
+import { ImagesPage } from "@/apps/agent/components/images/ImagesPage";
+import { LibraryPage } from "@/apps/agent/components/library/LibraryPage";
+import { PluginsPage } from "@/apps/agent/components/plugins/PluginsPage";
+import { ProvidersPage } from "@/apps/agent/components/providers/ProvidersPage";
 import { SettingsPage } from "@/apps/agent/settings/SettingsPage";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { syncCursorModelsQuietly } from "@/apps/agent/services/providers/cursor-sync";
@@ -151,7 +156,26 @@ export const AgentWindow: React.FC = () => {
       <AgentThemeProvider>
         {/* Frameless window — the themed titlebar replaces the native caption. */}
         <AgentTitlebar />
-        {view === "settings" ? <SettingsPage /> : <AgentShell />}
+        {/* The icon rail is on every view; the view beside it is one of Home
+            (the shell: chat list + conversation), a rail destination, or
+            settings. A destination replaces the shell outright, so the chat
+            list folds with it and comes back with Home. */}
+        <div className="agw-window-body">
+          <IconRail />
+          {view === "settings" ? (
+            <SettingsPage />
+          ) : view === "images" ? (
+            <ImagesPage />
+          ) : view === "library" ? (
+            <LibraryPage />
+          ) : view === "plugins" ? (
+            <PluginsPage />
+          ) : view === "providers" ? (
+            <ProvidersPage />
+          ) : (
+            <AgentShell />
+          )}
+        </div>
         <AgentCommandCenter />
         {/* Follows the cursor during a file drag; renders nothing otherwise. */}
         <AgentDragGhost />

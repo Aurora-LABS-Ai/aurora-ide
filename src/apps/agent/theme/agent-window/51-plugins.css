@@ -1,0 +1,398 @@
+/* ═══ Plugins page — installed tiles, the Add directory, the sidebar list ═══
+ *
+ * See `components/plugins/`. Lives inside `.agw-settings` chrome, so the
+ * settings density tokens and card aliases (`--agw-card-paint`,
+ * `--agw-card-line`, `--agw-set-shadow`) are already in force. Everything
+ * here is the settings MCP card's vocabulary at a smaller size; the status
+ * dot IS `.agw-mcp-card-dot`, with one extra tone for "the config has a
+ * problem", which is not a connection state.
+ */
+
+.agw-plug {
+  /* `.agw-settings-content[data-full-bleed]` is a flex ROW; without claiming
+     the space the pane shrank to its content and left the right of a wide
+     window empty. */
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+/* The reading column. The page fills the window, the content does not: the
+   same 1080px the wide settings pages use, centred, with air on both sides. */
+.agw-plug-col {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+/* The Skills pane is the settings component in the padded content area; its
+   own panels get the same column so the two panes line up. */
+.agw-plugins .agw-settings-content:not([data-full-bleed]) > * {
+  max-width: 1080px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.agw-plug-head {
+  padding: 18px 32px 14px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-plug-head-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A server's own page. */
+.agw-plug-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 16px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-plug-crumb {
+  padding: 3px 6px;
+  margin-left: -6px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+.agw-plug-crumb:hover {
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+}
+.agw-plug-crumb:active {
+  background: var(--agw-press-paint);
+}
+.agw-plug-crumb:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-plug-crumb-here {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-plug-titles {
+  flex: 1;
+  min-width: 0;
+}
+.agw-plug-title {
+  margin: 0;
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+}
+.agw-plug-sub {
+  margin: 2px 0 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+}
+.agw-plug-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 200px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text-subtle);
+}
+.agw-plug-search:focus-within {
+  border-color: var(--agw-border-strong);
+}
+.agw-plug-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+}
+.agw-plug-search input::placeholder {
+  color: var(--agw-text-subtle);
+}
+
+.agw-plug-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 32px 28px;
+}
+.agw-plug-add {
+  margin-bottom: 18px;
+}
+
+/* Section heads: a title, a count beside it, the attention toggle at the end. */
+.agw-plug-sec {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 18px 0 10px;
+}
+.agw-plug-sec:first-child,
+.agw-plug-add + section .agw-plug-sec {
+  margin-top: 0;
+}
+.agw-plug-sec h3 {
+  margin: 0;
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+.agw-plug-n {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-plug-attn {
+  margin-left: auto;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-warning);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+.agw-plug-attn:hover {
+  background: color-mix(in srgb, var(--agw-warning) 12%, transparent);
+}
+.agw-plug-attn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--agw-warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--agw-warning) 40%, transparent);
+}
+.agw-plug-attn:active {
+  background: color-mix(in srgb, var(--agw-warning) 22%, transparent);
+}
+.agw-plug-attn:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-plug-empty {
+  margin: 6px 0 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-ui);
+}
+
+/* Installed tiles: as many 220px columns as fit. */
+.agw-plug-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.agw-plug-tile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-card-paint);
+  box-shadow: var(--agw-set-shadow);
+  color: var(--agw-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+.agw-plug-tile:hover {
+  background: var(--agw-hover-paint);
+  border-color: var(--agw-border-strong);
+}
+.agw-plug-tile:active {
+  background: var(--agw-press-paint);
+}
+.agw-plug-tile:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+
+/* The mark: two letters in a tile, with the status dot pinned to its corner. */
+.agw-plug-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.02em;
+}
+.agw-plug-mark > .agw-mcp-card-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  border: 2px solid var(--agw-card-paint);
+}
+.agw-plug-mark-dir {
+  width: 34px;
+  height: 34px;
+}
+/* A tile whose mark is a provider's own avatar (brand mark or initials): the
+   avatar paints itself, so the mark box goes transparent and only keeps the
+   dot's corner. */
+.agw-plug-mark-avatar {
+  border: none;
+  background: transparent;
+}
+.agw-plug-mark-avatar > .agw-prov-avatar {
+  width: 32px;
+  height: 32px;
+}
+/* The one tone the connection states do not have: the config itself is wrong. */
+.agw-mcp-card-dot[data-tone="warn"] {
+  background: var(--agw-warning);
+}
+
+.agw-plug-tile-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.agw-plug-tile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-plug-tile-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-plug-tile-line[data-issue] {
+  color: var(--agw-warning);
+}
+.agw-plug-tile-line[data-issue="error"] {
+  color: var(--agw-removed);
+}
+
+/* The Add directory: two columns of rows, grouped by category. */
+.agw-plug-cat + .agw-plug-cat {
+  margin-top: 12px;
+}
+.agw-plug-cat-label {
+  margin: 0 0 4px 6px;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-plug-dir {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 2px 16px;
+}
+.agw-plug-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 7px 6px;
+  border-radius: var(--agw-radius-md);
+}
+.agw-plug-row:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-plug-plus {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+}
+.agw-plug-plus:hover {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-plug-plus:active {
+  background: var(--agw-press-paint);
+}
+.agw-plug-plus:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+  box-shadow: var(--agw-focus-ring);
+}
+
+/* Sidebar: the count on the MCP pane, and the installed list with dots. */
+.agw-plug-nav-count {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+.agw-plug-side {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.agw-plug-side:hover {
+  color: var(--agw-text);
+  background: var(--agw-set-nav-hover-bg);
+}
+.agw-plug-side:active {
+  background: color-mix(in srgb, var(--agw-set-nav-hover-bg) 88%, var(--agw-text) 12%);
+}
+.agw-plug-side[data-active] {
+  color: var(--agw-set-nav-active-fg);
+  background: var(--agw-set-nav-active-bg);
+}
+.agw-plug-side:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-plug-side > .agw-mcp-card-dot {
+  width: 7px;
+  height: 7px;
+}
+.agw-plug-side-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

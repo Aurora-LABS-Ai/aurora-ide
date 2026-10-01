@@ -29,7 +29,6 @@ import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMa
 import { buildTurns, turnWorkedMs, type AgwTurn } from "@/apps/agent/components/conversation/timeline";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { useIdleProcessReport } from "@/apps/agent/hooks/useIdleProcessReport";
@@ -149,7 +148,6 @@ export const ConversationPane: React.FC = () => {
   const toggleRail = useAgentWorkspaceStore((s) => s.toggleRail);
   const dockOpen = useAgentWorkspaceStore((s) => s.dockOpen);
   const toggleDock = useAgentWorkspaceStore((s) => s.toggleDock);
-  const openSettings = useAgentUiStore((s) => s.openSettings);
 
   const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
   const currentThread = useAgentChatStore((s) => s.currentThread);
@@ -501,15 +499,8 @@ export const ConversationPane: React.FC = () => {
             Absent in Aurora Chat, which has no project to index — it was
             offering to build a code index for a folder the chat cannot read. */}
         {!chatSurface && <CodeIndexStatus />}
-        <button
-          type="button"
-          className="agw-icon-btn"
-          title="Settings"
-          aria-label="Open settings"
-          onClick={() => openSettings()}
-        >
-          <AgentIcon name="settings" size={16} />
-        </button>
+        {/* Settings moved to the icon rail's foot, where it is reachable from
+            every view; a second gear here would be the same door twice. */}
         <button
           type="button"
           className="agw-icon-btn"

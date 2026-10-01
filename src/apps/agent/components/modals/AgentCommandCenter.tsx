@@ -13,6 +13,11 @@ import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWor
 import { settingsCommands } from "@/apps/agent/lib/command/settings-commands";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { CHAT_DOCK_TABS, type DockSingletonKind } from "@/apps/agent/types";
+import {
+  DESTINATIONS,
+  openDestination,
+  openDockSurface,
+} from "@/apps/agent/lib/navigation/destinations";
 
 type CommandGroup = "Actions" | "Navigate" | "Settings" | "Quick switches";
 
@@ -39,7 +44,6 @@ const DOCK_ICONS: Partial<Record<DockSingletonKind, AgentIconName>> = {
   review: "diff",
   canvas: "panel-right",
   memory: "database",
-  gallery: "image",
 };
 
 /** Build's dock surfaces. Chat's roster is `CHAT_DOCK_TABS` in `types.ts`. */
@@ -164,6 +168,17 @@ export const AgentCommandCenter: React.FC = () => {
           void openIdeWindow();
         },
       },
+      // The icon rail's destinations, from the list the rail itself draws, so
+      // the palette can never name a place the rail does not have.
+      ...DESTINATIONS.map<CommandItem>((destination) => ({
+        id: `go:${destination.id}`,
+        title: destination.id === "home" ? "Go home" : `Go to ${destination.label}`,
+        subtitle: destination.hint,
+        keywords: destination.keywords,
+        group: "Navigate",
+        icon: destination.icon,
+        run: () => openDestination(destination.id),
+      })),
       // Only while Agent Team is on — the palette must not list a way into a
       // feature that is switched off.
       ...(teamEnabled && !chatSurface
@@ -174,10 +189,7 @@ export const AgentCommandCenter: React.FC = () => {
               keywords: "parallel lead agents",
               group: "Navigate",
               icon: "users",
-              run: () => {
-                useAgentUiStore.getState().closeSettings();
-                useAgentWorkspaceStore.getState().openTab("team");
-              },
+              run: () => openDockSurface("team"),
             } satisfies CommandItem,
           ]
         : []),
@@ -190,10 +202,7 @@ export const AgentCommandCenter: React.FC = () => {
         keywords: `right dock panel ${kind}`,
         group: "Navigate" as const,
         icon: DOCK_ICONS[kind] ?? "panel-right",
-        run: () => {
-          useAgentUiStore.getState().closeSettings();
-          useAgentWorkspaceStore.getState().openTab(kind);
-        },
+        run: () => openDockSurface(kind),
       })),
       {
         id: "toggle-rail",

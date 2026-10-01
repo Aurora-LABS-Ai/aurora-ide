@@ -173,6 +173,38 @@ describe("ModelTestButton", () => {
     expect(panel()).toBeNull();
   });
 
+  it("closes a verdict that lands after the pointer has already left", async () => {
+    // The sequence that left a panel on screen for good: click, move away
+    // while the provider takes its seven seconds, result arrives. Leaving was
+    // ignored while running, and nothing else ever closed it.
+    let finish!: (report: ProviderTestReport) => void;
+    testProviderModel.mockReturnValue(
+      new Promise<ProviderTestReport>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render();
+
+    act(() => button()!.click());
+    expect(panel()).not.toBeNull();
+    const wrapper = agwRoot.querySelector<HTMLElement>(".agw-prov-test")!;
+    act(() =>
+      wrapper.dispatchEvent(
+        new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }),
+      ),
+    );
+    // Still running, so the panel rightly stays while the request is out.
+    expect(panel()).not.toBeNull();
+
+    await act(async () => finish(PASS_REPORT));
+    await waitFor(() => button()!.dataset.state === "pass", "the pass verdict");
+    expect(panel()).toBeNull();
+
+    // The verdict is not lost: hovering back shows it again.
+    act(() => wrapper.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(panel()).not.toBeNull();
+  });
+
   it("reports a failed test with the provider's error", async () => {
     testProviderModel.mockResolvedValue({
       ...PASS_REPORT,

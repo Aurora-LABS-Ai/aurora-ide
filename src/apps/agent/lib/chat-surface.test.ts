@@ -15,7 +15,9 @@ import { CHAT_MODE_TOOLS } from "@/apps/agent/services/runtime/agent-execution-m
  */
 describe("Aurora Chat's dock", () => {
   it("offers only what this side of the app can act on", () => {
-    expect([...CHAT_DOCK_TABS]).toEqual(["canvas", "memory", "gallery"]);
+    // The gallery left the dock for the Library page on the icon rail: the
+    // LIST of pictures is something the whole app wants, not one side of it.
+    expect([...CHAT_DOCK_TABS]).toEqual(["canvas", "memory"]);
   });
 
   it("names nothing that addresses a project", () => {

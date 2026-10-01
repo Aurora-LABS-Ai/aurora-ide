@@ -281,6 +281,155 @@
   border-color: transparent;
   background: var(--agw-added);
 }
+/* The tick is a BUTTON now (equip), while the stretched hit opens the skill.
+   It sits above the hit, paints no button chrome of its own, and brightens
+   on approach so it reads as the control it is. */
+.agw-skill-card-check {
+  z-index: 1;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.agw-skill-card-check:hover {
+  border-color: var(--agw-border-strong);
+  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+}
+.agw-skill-card[data-on] .agw-skill-card-check:hover {
+  background: color-mix(in srgb, var(--agw-added) 85%, var(--agw-text) 15%);
+}
+.agw-skill-card-check:disabled {
+  cursor: default;
+}
+.agw-skill-card-check:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-skill-card-hit {
+  cursor: pointer;
+}
+
+/* ── One skill, opened from its card (SkillDetailDialog) ─────────────── */
+/* Two classes: `.agw-confirm-dialog` (27-modals.css) loads after this file
+   and would otherwise hold it at 360px. */
+.agw-confirm-dialog.agw-skill-dialog {
+  width: 680px;
+  max-width: 92vw;
+  max-height: 84vh;
+  gap: 6px;
+  padding: 16px 18px 14px;
+}
+.agw-skill-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.agw-skill-dialog-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.agw-skill-dialog-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.agw-skill-dialog-equip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-skill-dialog-title {
+  margin: 4px 0 0;
+  font-size: var(--agw-fs-title);
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: -0.01em;
+  color: var(--agw-text);
+}
+.agw-skill-dialog-desc {
+  margin: 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-ui);
+  line-height: 1.5;
+}
+.agw-skill-dialog-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 8px 0 4px;
+  font-size: var(--agw-fs-label);
+}
+.agw-skill-dialog-meta dt {
+  color: var(--agw-text-subtle);
+}
+.agw-skill-dialog-meta dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--agw-text-muted);
+}
+.agw-skill-dialog-meta code {
+  font-family: var(--agw-font-code, ui-monospace, monospace);
+  font-size: 0.92em;
+}
+.agw-skill-dialog-triggers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.agw-skill-dialog-body {
+  flex: 1;
+  min-height: 120px;
+  margin: 6px 0 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-code-surface, var(--agw-surface));
+  color: var(--agw-text);
+  font-family: var(--agw-font-code, ui-monospace, monospace);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agw-skill-dialog-foot {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 6px;
+}
+.agw-skill-dialog-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-removed);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+}
+.agw-skill-dialog-delete:hover {
+  background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+}
+.agw-skill-dialog-delete:active {
+  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
+}
+.agw-skill-dialog-delete:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
 .agw-skill-card-badge {
   display: inline-flex;
   align-items: center;

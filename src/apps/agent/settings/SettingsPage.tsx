@@ -16,14 +16,15 @@
 import React, { useEffect, useMemo, useRef } from "react";
 
 import { AgentIcon } from "../shared/AgentIcon";
-import { useAgentUiStore, type SettingsSection } from "@/apps/agent/store/ui/useAgentUiStore";
+import {
+  sectionHome,
+  useAgentUiStore,
+  type SettingsSection,
+} from "@/apps/agent/store/ui/useAgentUiStore";
 import { ProfileSettings } from "./ProfileSettings";
-import { ProvidersSettings } from "./ProvidersSettings";
 import { ToolsSettings } from "./ToolsSettings";
 import { AgentSettings } from "./AgentSettings";
 import { TeamSettings } from "./TeamSettings";
-import { McpSettings } from "./McpSettings";
-import { SkillsSettings } from "./SkillsSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { PreferencesSettings } from "./PreferencesSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
@@ -39,12 +40,16 @@ type SectionDef = SettingsCatalogEntry & { render: () => React.ReactNode };
 /** The component behind each catalog entry. A missing id simply never renders. */
 const SECTION_VIEWS: Partial<Record<SettingsSection, () => React.ReactNode>> = {
   profile: () => <ProfileSettings />,
-  providers: () => <ProvidersSettings />,
+  providers: () => null,
   tools: () => <ToolsSettings />,
   execution: () => <AgentSettings />,
   team: () => <TeamSettings />,
-  mcp: () => <McpSettings />,
-  skills: () => <SkillsSettings />,
+  // MCP and Skills render on the Plugins page (`components/plugins/`) and
+  // Providers on its own page (`components/providers/`). They keep a registry
+  // entry so search still finds them and offers them as a destination; the nav
+  // hides them and opening one leaves settings (`sectionHome`).
+  mcp: () => null,
+  skills: () => null,
   preferences: () => <PreferencesSettings />,
   appearance: () => <AppearanceSettings />,
   diagnostics: () => <DiagnosticsSettings />,
@@ -58,6 +63,7 @@ const SECTION_REGISTRY: SectionDef[] = SETTINGS_CATALOG.flatMap((entry) => {
 export const SettingsPage: React.FC = () => {
   const active = useAgentUiStore((s) => s.settingsSection);
   const setSection = useAgentUiStore((s) => s.setSection);
+  const openSettings = useAgentUiStore((s) => s.openSettings);
   const closeSettings = useAgentUiStore((s) => s.closeSettings);
   // The query lives in the store so the command center can hand one over on the
   // way in; see `settingsQuery` there.
@@ -65,9 +71,13 @@ export const SettingsPage: React.FC = () => {
   const setFilter = useAgentUiStore((s) => s.setSettingsQuery);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Fall back to the first registered section if the stored one isn't built yet.
+  // Fall back to the first registered section if the stored one isn't built
+  // yet — or if it has since moved to the Plugins page (a section persisted by
+  // an older build).
   const current =
-    SECTION_REGISTRY.find((s) => s.id === active) ?? SECTION_REGISTRY[0];
+    SECTION_REGISTRY.find((s) => s.id === active && !sectionHome(s.id)) ??
+    SECTION_REGISTRY.find((s) => !sectionHome(s.id)) ??
+    SECTION_REGISTRY[0];
 
   // The nav is NOT filtered. It is how you navigate, and a sidebar that
   // rearranges itself while you type removes the map exactly when you are lost.
@@ -75,6 +85,7 @@ export const SettingsPage: React.FC = () => {
   const groups = useMemo(() => {
     const byGroup = new Map<string, SectionDef[]>();
     for (const s of SECTION_REGISTRY) {
+      if (sectionHome(s.id)) continue;
       const arr = byGroup.get(s.group) ?? [];
       arr.push(s);
       byGroup.set(s.group, arr);
@@ -202,7 +213,10 @@ export const SettingsPage: React.FC = () => {
                   <button
                     type="button"
                     className="agw-settings-result-head"
-                    onClick={() => setSection(s.id)}
+                    // `openSettings` sends a section that has its own page to
+                    // that page; `setSection` would select it here and render
+                    // nothing.
+                    onClick={() => (sectionHome(s.id) ? openSettings(s.id) : setSection(s.id))}
                     title={`Open ${s.title}`}
                   >
                     <AgentIcon name={s.icon} size={13} />

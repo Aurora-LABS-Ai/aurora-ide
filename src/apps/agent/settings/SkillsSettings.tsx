@@ -40,6 +40,7 @@ import {
   type SkillSource,
 } from "@/apps/agent/services/skills/skills";
 import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
+import { SkillDetailDialog } from "./SkillDetailDialog";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
 import { AgwButton, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
@@ -92,8 +93,10 @@ const SkillCard: React.FC<{
   enabled: boolean;
   disabled: boolean;
   onToggle: (skill: SkillDefinition, next: boolean) => void;
+  /** Open the skill's own view (description, path, triggers, the playbook). */
+  onOpen: (skill: SkillDefinition) => void;
   onDelete?: (skill: SkillDefinition) => void;
-}> = ({ skill, enabled, disabled, onToggle, onDelete }) => {
+}> = ({ skill, enabled, disabled, onToggle, onOpen, onDelete }) => {
   const meta = SOURCE_META[skill.source];
   const equipLabel = enabled ? `Unequip ${skill.name}` : `Equip ${skill.name}`;
   return (
@@ -102,18 +105,26 @@ const SkillCard: React.FC<{
       data-on={enabled || undefined}
       data-disabled={disabled || undefined}
     >
+      {/* The card opens the skill; the tick in its corner equips it. One click
+          to read, one click to equip, and neither hides the other. */}
       <button
         type="button"
         className="agw-skill-card-hit"
+        aria-label={`Open ${skill.name}`}
+        onClick={() => onOpen(skill)}
+        title={`Open ${skill.name}`}
+      />
+      <button
+        type="button"
+        className="agw-skill-card-check"
         aria-pressed={enabled}
         aria-label={equipLabel}
         disabled={disabled}
         onClick={() => onToggle(skill, !enabled)}
         title={equipLabel}
-      />
-      <span className="agw-skill-card-check" aria-hidden={!enabled}>
+      >
         {enabled && <AgentIcon name="check" size={12} />}
-      </span>
+      </button>
       <span className="agw-skill-card-badge">
         <AgentIcon name={meta.icon} size={12} />
         {meta.label}
@@ -175,6 +186,7 @@ export const SkillsSettings: React.FC = () => {
   const [capWarning, setCapWarning] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [pendingDelete, setPendingDelete] = useState<SkillDefinition | null>(null);
+  const [openSkill, setOpenSkill] = useState<SkillDefinition | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteNotice, setDeleteNotice] = useState<{
     text: string;
@@ -499,6 +511,7 @@ export const SkillsSettings: React.FC = () => {
                     enabled={enabled}
                     disabled={!skillsEnabled || (capReached && !enabled)}
                     onToggle={handleToggle}
+                    onOpen={setOpenSkill}
                     onDelete={deletable ? setPendingDelete : undefined}
                   />
                 );
@@ -523,6 +536,24 @@ export const SkillsSettings: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {openSkill && (
+        <SkillDetailDialog
+          skill={openSkill}
+          enabled={isSkillEnabled(openSkill, workspaceToggles, true)}
+          disabled={!skillsEnabled || capReached}
+          onToggle={(next) => handleToggle(openSkill, next)}
+          onDelete={
+            resolveSkillDeleteTarget(openSkill, deleteRoots) !== null
+              ? () => {
+                  setOpenSkill(null);
+                  setPendingDelete(openSkill);
+                }
+              : undefined
+          }
+          onClose={() => setOpenSkill(null)}
+        />
+      )}
 
       <AgentConfirm
         open={pendingDelete !== null}

@@ -6,7 +6,7 @@
   width: 100%;
   /* Calm fade-in only — NO translate pop (the pop read as cheap/cartoonish).
    * The node mounts once (stable key) so it plays a single time. */
-  animation: agw-row-in 0.28s ease;
+  animation: agw-row-in var(--agw-dur-slow) ease;
 }
 
 @keyframes agw-row-in {
@@ -387,7 +387,7 @@
   cursor: pointer;
   font-size: var(--agw-fs-ui);
   text-align: left;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-tool-head:hover {
@@ -427,7 +427,7 @@
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease;
+  transition: border-color var(--agw-dur-base) ease, background var(--agw-dur-base) ease;
 }
 /* Colour-only on hover, per the restraint rule — the card must not move under
  * the cursor while it is being read. */
@@ -539,7 +539,7 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
-  transition: color 0.15s ease;
+  transition: color var(--agw-dur-base) ease;
 }
 .agw-canvas-launch:hover:not(:disabled) .agw-canvas-launch-open {
   color: var(--agw-accent);
@@ -565,7 +565,7 @@
   background-image: linear-gradient(90deg, transparent, var(--agw-accent), transparent);
   background-repeat: no-repeat;
   background-size: 42% 100%;
-  animation: agw-canvas-rail 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: agw-canvas-rail 1.9s var(--agw-ease-standard) infinite;
 }
 @keyframes agw-canvas-rail {
   from {
@@ -774,7 +774,7 @@
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.14s ease, background 0.14s ease;
+  transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-plan-launch:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));

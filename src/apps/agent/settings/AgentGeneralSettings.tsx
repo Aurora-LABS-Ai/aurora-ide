@@ -15,7 +15,7 @@
  * next to Prompt refine (they can share the same local model).
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 import {
   useAgentSettingsStore,
@@ -37,8 +37,8 @@ import {
   SettingsRow,
   SettingsSection,
   type SegmentOption,
-  type SelectOption,
 } from "./primitives";
+import { SAME_AS_CHAT, useModelOptions } from "./useModelOptions";
 
 type Mode = "agent" | "plan";
 
@@ -133,26 +133,7 @@ export const AgentGeneralSettings: React.FC = () => {
   const compactionModel = useAgentSettingsStore((s) => s.compactionModel);
   const setCompactionModel = useAgentSettingsStore((s) => s.setCompactionModel);
 
-  const providers = useAgentSettingsStore((s) => s.providers);
-  const modelSlice = useAgentSettingsStore((s) => s.models);
-  const getAvailableModels = useAgentSettingsStore((s) => s.getAvailableModels);
-
-  // Same shape as the Team page's picker: a leading "inherit" row, then every
-  // configured model keyed by `providerId:modelKey`.
-  const modelOptions = useMemo<SelectOption[]>(() => {
-    const options: SelectOption[] = [
-      { value: "", label: "Same as chat model", meta: "default" },
-    ];
-    for (const m of getAvailableModels()) {
-      options.push({
-        value: `${m.providerId}:${m.model}`,
-        label: m.label,
-        meta: m.providerName,
-      });
-    }
-    return options;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers, modelSlice, getAvailableModels]);
+  const modelOptions = useModelOptions(SAME_AS_CHAT);
 
   const mode: Mode = executionMode === "plan" ? "plan" : "agent";
   const giText = giSelected?.text ?? "";

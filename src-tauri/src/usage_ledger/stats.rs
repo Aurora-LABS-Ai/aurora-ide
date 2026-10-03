@@ -82,6 +82,34 @@ pub struct ModelUsage {
     pub tokens: u64,
 }
 
+/// One model's lifetime use, summed across EVERY provider it was reached
+/// through.
+///
+/// `ModelUsage` keys on the full `provider:model` selection, so a model used
+/// through seven gateways was seven rows that all read "GPT-5.6 Sol" on the
+/// Profile page. This is the same usage keyed on the model alone, with the
+/// providers kept as a list so the page can say "via 7 providers" and can merge
+/// two keys the catalog labels the same without double-counting a provider.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTotal {
+    /// Model key with the provider prefix stripped (`gpt-5.6-sol`).
+    pub model: String,
+    /// Provider row ids that served it, sorted.
+    pub providers: Vec<String>,
+    pub requests: u32,
+    /// Input (incl. cache writes) + output.
+    pub tokens: u64,
+}
+
+/// Usage recorded before the runtime saved which model answered.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnattributedUsage {
+    pub requests: u32,
+    pub tokens: u64,
+}
+
 /// Exact API-request counts for one model.
 ///
 /// A "request" is one call to the provider — NOT one thing the user asked
@@ -141,6 +169,10 @@ pub struct UsageStats {
     pub top_tools: Vec<ToolUsage>,
     /// Most-used models, by tokens descending, capped at 8.
     pub top_models: Vec<ModelUsage>,
+    /// Every model ever used, merged across providers, by tokens descending.
+    /// Excludes unattributed usage, which is reported on its own.
+    pub models: Vec<ModelTotal>,
+    pub unattributed: UnattributedUsage,
     /// Exact API-request counts, by provider, each with its models nested.
     /// Descending by request count.
     pub requests_by_provider: Vec<ProviderRequestUsage>,
@@ -253,6 +285,45 @@ impl RequestTally {
     }
 }
 
+/// Running per-model totals keyed on the model alone (see `ModelTotal`).
+#[derive(Default)]
+struct ModelTotals {
+    by_model: HashMap<String, (std::collections::BTreeSet<String>, u32, u64)>,
+    unattributed: UnattributedUsage,
+}
+
+impl ModelTotals {
+    fn record(&mut self, selection: Option<&str>, tokens: u64) {
+        let (provider_id, model) = split_model_selection(selection);
+        if model.is_empty() {
+            self.unattributed.requests = self.unattributed.requests.saturating_add(1);
+            self.unattributed.tokens += tokens;
+            return;
+        }
+        let entry = self.by_model.entry(model).or_default();
+        if !provider_id.is_empty() {
+            entry.0.insert(provider_id);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        entry.2 += tokens;
+    }
+
+    fn finish(self) -> (Vec<ModelTotal>, UnattributedUsage) {
+        let mut out: Vec<ModelTotal> = self
+            .by_model
+            .into_iter()
+            .map(|(model, (providers, requests, tokens))| ModelTotal {
+                model,
+                providers: providers.into_iter().collect(),
+                requests,
+                tokens,
+            })
+            .collect();
+        out.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.model.cmp(&b.model)));
+        (out, self.unattributed)
+    }
+}
+
 /// Split a `"{provider_id}:{model_key}"` selection into its two halves.
 ///
 /// Only the FIRST colon separates them: a provider id never contains one, a
@@ -292,6 +363,7 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
     let mut tools = HashMap::<String, u32>::new();
     let mut models = HashMap::<String, (std::collections::HashSet<String>, u64)>::new();
     let mut requests = RequestTally::default();
+    let mut totals = ModelTotals::default();
     let mut total_messages = 0;
     let mut lifetime_input = 0;
     let mut lifetime_output = 0;
@@ -372,6 +444,7 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         lifetime_output += output;
         lifetime_cache_read += cache;
         requests.record(Some(&selection), &usage, &mut providers_in_thread);
+        totals.record(Some(&selection), input + output);
         let entry = models.entry(selection).or_default();
         entry.0.insert(thread);
         entry.1 += input + output;
@@ -417,6 +490,7 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         .collect();
     top_models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.name.cmp(&b.name)));
     top_models.truncate(8);
+    let (model_totals, unattributed) = totals.finish();
     Ok(UsageStats {
         user_name: std::env::var("USERNAME")
             .or_else(|_| std::env::var("USER"))
@@ -429,6 +503,8 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         days,
         top_tools,
         top_models,
+        models: model_totals,
+        unattributed,
         total_requests: requests.total(),
         requests_by_provider: requests.into_providers(),
         longest_task,
@@ -516,6 +592,28 @@ mod tests {
             split_model_selection(Some("   ")),
             (String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn one_model_through_many_providers_is_one_row() {
+        // The Profile page listed gpt-5.6-sol once per gateway, so the same
+        // name appeared three times. Keyed on the model, it is one row that
+        // knows every provider it came through.
+        let mut totals = ModelTotals::default();
+        totals.record(Some("kenari:gpt-5.6-sol"), 100);
+        totals.record(Some("codex:gpt-5.6-sol"), 50);
+        totals.record(Some("kenari:gpt-5.6-sol"), 10);
+        totals.record(Some("kenari:glm-5.3"), 20);
+        totals.record(None, 7);
+        let (models, unattributed) = totals.finish();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model, "gpt-5.6-sol");
+        assert_eq!(models[0].tokens, 160);
+        assert_eq!(models[0].requests, 3);
+        assert_eq!(models[0].providers, vec!["codex".to_string(), "kenari".to_string()]);
+        // No recorded model is reported apart, never as a model row.
+        assert_eq!(unattributed.requests, 1);
+        assert_eq!(unattributed.tokens, 7);
     }
 
     #[test]

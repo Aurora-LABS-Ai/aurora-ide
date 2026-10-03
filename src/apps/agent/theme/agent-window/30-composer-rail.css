@@ -70,7 +70,7 @@
   font-size: var(--agw-fs-micro);
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-crail-chip:hover {
   background: var(--agw-hover-paint);
@@ -104,7 +104,7 @@
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
-  z-index: 50;
+  z-index: var(--agw-z-popover);
   width: 380px;
   max-width: min(420px, calc(100vw - 32px));
   transform-origin: bottom right;

@@ -44,6 +44,19 @@ export type AgentUiVersion = "classic" | "v2";
 export type ModelSelectorPosition = "top" | "bottom";
 
 /**
+ * How the 48px icon rail is set apart from the sidebar beside it. Both paint
+ * the frame colour, so with nothing between them they read as one slab.
+ *
+ * `line`  — a 1px border on the rail's right edge (the default).
+ * `shade` — the rail and titlebar step toward the sheet colour, so the sidebar
+ *   reads as a panel between the rail and the content. No line.
+ * `none`  — one continuous frame, as before this setting existed.
+ *
+ * Probe: Documents/aurora-icon-rail-separation-designs.html.
+ */
+export type RailEdge = "line" | "shade" | "none";
+
+/**
  * How the model's reasoning shows in a reply.
  *
  * `live` — open while the model is thinking, folded once it settles (the
@@ -122,6 +135,14 @@ export const APPEARANCE_PREFS = {
     reset: true,
     parse: bool,
   } satisfies PrefSpec<boolean>,
+
+  /** How the icon rail is set apart from the sidebar. See `RailEdge`. */
+  railEdge: {
+    default: "line",
+    exported: true,
+    reset: true,
+    parse: oneOf(["line", "shade", "none"] as const),
+  } satisfies PrefSpec<RailEdge>,
 
   /** Which design generation the window draws. Composes with every theme. */
   uiVersion: {

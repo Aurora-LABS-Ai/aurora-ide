@@ -101,6 +101,7 @@ export type AgentIconName =
   | "close"
   | "check"
   | "copy"
+  | "wrap"
   | "retry"
   | "help"
   | "external"
@@ -812,6 +813,16 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     <>
       <rect x="9" y="9" width="11" height="11" rx="2.2" />
       <path d="M5.5 15H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4h8A1.5 1.5 0 0 1 14.5 5.5V6" />
+    </>
+  ),
+
+  // Wrap — a line that runs to the margin and turns back under itself
+  // (code block: wrap long lines instead of scrolling them).
+  wrap: (
+    <>
+      <path d="M4 7h10a3.5 3.5 0 0 1 0 7H8" />
+      <path d="M10.5 11.5 8 14l2.5 2.5" />
+      <path d="M20.5 5v14" />
     </>
   ),
 

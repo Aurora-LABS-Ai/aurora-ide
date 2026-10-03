@@ -26,7 +26,7 @@
   box-shadow: var(--agw-set-shadow);
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, box-shadow var(--agw-dur-fast) ease;
 }
 .agw-appr-card:hover {
   background: var(--agw-hover-paint);
@@ -81,7 +81,7 @@
   font-size: var(--agw-fs-ui);
   line-height: 1.45;
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-appr-drop:hover {
   color: var(--agw-text);

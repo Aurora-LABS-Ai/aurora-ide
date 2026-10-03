@@ -79,7 +79,7 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-sort:hover {
@@ -102,11 +102,11 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-collapse-all svg {
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
 }
 .agw-rail-collapse-all:hover {
   background: var(--agw-hover-paint);
@@ -122,7 +122,7 @@
   align-items: center;
   width: 100%;
   border-radius: var(--agw-radius-md);
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
 }
 .agw-rail-project:hover {
   background: var(--agw-hover-paint);
@@ -221,7 +221,7 @@
 .agw-rail-project-caret {
   flex-shrink: 0;
   color: var(--agw-text-subtle);
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
 }
 .agw-rail-project-name {
   flex: 1;
@@ -245,7 +245,7 @@
   color: var(--agw-text-subtle);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-project:hover .agw-rail-newchat {
@@ -287,7 +287,7 @@
   font-weight: var(--agw-fw-medium);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-scope:hover {
@@ -456,7 +456,7 @@
   min-width: 0;
   padding: 5px 8px 5px 10px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text-subtle);
   font-family: inherit;
@@ -464,9 +464,9 @@
   line-height: 1.4;
   cursor: pointer;
   transition:
-    background 0.13s ease,
-    border-color 0.13s ease,
-    color 0.13s ease;
+    background var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease,
+    color var(--agw-dur-fast) ease;
 }
 .agw-projsw:hover,
 .agw-projsw[data-open] {
@@ -505,8 +505,8 @@
   flex: none;
   color: var(--agw-text-subtle);
   transition:
-    color 0.13s ease,
-    transform 0.13s ease;
+    color var(--agw-dur-fast) ease,
+    transform var(--agw-dur-fast) ease;
 }
 .agw-projsw:hover .agw-projsw-chev,
 .agw-projsw:focus-visible .agw-projsw-chev {
@@ -522,7 +522,7 @@
  * rather than sitting in it, hence a popover shadow and a SOLID fill. */
 .agw-projmenu {
   position: fixed;
-  z-index: 60;
+  z-index: var(--agw-z-popover);
   max-height: min(52vh, 420px);
   display: flex;
   flex-direction: column;
@@ -530,8 +530,8 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: 10px;
   background: var(--agw-surface-elevated);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 42%);
-  animation: agw-projmenu-in 0.12s ease-out both;
+  box-shadow: var(--agw-shadow-menu);
+  animation: agw-projmenu-in var(--agw-dur-fast) ease-out both;
 }
 .agw-projmenu:focus {
   outline: none;
@@ -675,7 +675,7 @@
     animation: none;
   }
   .agw-projsw-chev {
-    transition: color 0.13s ease;
+    transition: color var(--agw-dur-fast) ease;
   }
 }
 
@@ -731,7 +731,7 @@
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-body);
   cursor: pointer;
-  transition: color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-suggestion:last-child {

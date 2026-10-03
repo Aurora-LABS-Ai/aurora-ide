@@ -140,7 +140,7 @@
   font-weight: var(--agw-fw-medium);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-settings-nav-item + .agw-settings-nav-item {
@@ -204,7 +204,7 @@
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
   box-shadow: var(--agw-set-shadow-soft);
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-settings-back:hover {
   color: var(--agw-text);
@@ -304,7 +304,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
-  transition: color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease;
 }
 .agw-settings-result-head:hover,
 .agw-settings-result-head:focus-visible {
@@ -321,7 +321,7 @@
   opacity: 0;
   letter-spacing: normal;
   text-transform: none;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-settings-result-head:hover .agw-settings-result-open,
 .agw-settings-result-head:focus-visible .agw-settings-result-open {
@@ -391,13 +391,13 @@
   background: transparent;
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
   transition:
-    color 0.12s ease,
-    background-color 0.12s ease;
+    color var(--agw-dur-fast) ease,
+    background-color var(--agw-dur-fast) ease;
 }
 .agw-set-tab:hover {
   background: var(--agw-hover);
@@ -554,7 +554,7 @@
 }
 .agw-cidx-stat-value {
   font-size: 21px;
-  font-weight: 500;
+  font-weight: var(--agw-fw-medium);
   line-height: 1.15;
   letter-spacing: -0.02em;
   color: var(--agw-text);
@@ -598,14 +598,14 @@
 .agw-cidx-progress-track {
   height: 4px;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: var(--agw-radius-2xs);
   background: var(--agw-border-strong);
 }
 .agw-cidx-progress-track > span {
   display: block;
   height: 100%;
   background: var(--agw-accent);
-  transition: width 180ms ease;
+  transition: width var(--agw-dur-base) ease;
 }
 .agw-cidx [role="status"] { overflow-wrap: anywhere; }
 
@@ -620,7 +620,7 @@
   border-radius: var(--agw-radius-pill);
   background: var(--agw-control-muted);
   cursor: pointer;
-  transition: background 0.18s ease;
+  transition: background var(--agw-dur-base) ease;
   outline: none;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 8%, transparent);
 }
@@ -632,11 +632,11 @@
   height: 18px;
   border-radius: var(--agw-radius-pill);
   background: var(--agw-text);
-  box-shadow: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
+  box-shadow: var(--agw-shadow-thumb);
   transition:
-    transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1),
-    width 0.12s cubic-bezier(0.34, 1.4, 0.6, 1),
-    background 0.18s ease;
+    transform var(--agw-dur-base) var(--agw-ease-spring),
+    width var(--agw-dur-fast) var(--agw-ease-spring),
+    background var(--agw-dur-base) ease;
 }
 .agw-switch[data-on] .agw-switch-knob {
   transform: translateX(18px);
@@ -708,15 +708,15 @@
   transform: translateX(var(--agw-seg-thumb-x, 0));
   border-radius: var(--agw-radius-pill);
   background: var(--agw-state-selected);
-  box-shadow: 0 1px 3px color-mix(in srgb, #000 28%, transparent);
+  box-shadow: var(--agw-shadow-thumb);
   pointer-events: none;
 }
 /* Set one frame after the first measurement. Without it the pill animates from
    the left edge to its resting place every time Settings mounts. */
 .agw-seg-thumb[data-ready] {
   transition:
-    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
-    width 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+    transform var(--agw-dur-slow) var(--agw-ease-enter),
+    width var(--agw-dur-slow) var(--agw-ease-enter);
 }
 .agw-root[data-reduce-motion] .agw-seg-thumb {
   transition: none;
@@ -737,7 +737,7 @@
   cursor: pointer;
   /* box-shadow rides the same curve so the active pill's shadow fades in
      with its background instead of popping on a frame. */
-  transition: background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, box-shadow var(--agw-dur-fast) ease;
   outline: none;
   /* Labels stay on one line; when space runs out the buttons shrink and
      ellipsize inside their pill instead of clipping outside it. */

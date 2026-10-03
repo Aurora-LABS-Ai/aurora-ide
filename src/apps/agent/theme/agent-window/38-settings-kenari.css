@@ -30,7 +30,7 @@
 .agw-kenari-window-label {
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
-  color: var(--agw-text-dim);
+  color: var(--agw-text-muted);
 }
 
 /* Tabular figures so a percentage ticking up does not shuffle the row it sits
@@ -65,7 +65,7 @@
   color: var(--agw-text-subtle);
 }
 .agw-kenari-note[data-tone="error"] {
-  color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
 }
 
 .agw-kenari-foot {
@@ -100,7 +100,7 @@
   cursor: pointer;
   font: inherit;
   font-size: var(--agw-fs-micro);
-  color: var(--agw-text-dim);
+  color: var(--agw-text-muted);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -108,10 +108,12 @@
   color: var(--agw-text);
 }
 .agw-kenari-link[data-tone="danger"] {
-  color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
 }
+/* Same mark as every other inline link (`.agw-rv-link`): the shared inset
+   ring, not an outline drawn outside the text. */
 .agw-kenari-link:focus-visible {
-  outline: 2px solid var(--agw-focus, var(--agw-accent));
-  outline-offset: 2px;
-  border-radius: var(--agw-radius-sm);
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+  border-radius: var(--agw-radius-xs);
 }

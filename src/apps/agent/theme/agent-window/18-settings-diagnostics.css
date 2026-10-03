@@ -52,7 +52,7 @@
   text-align: left;
   cursor: pointer;
   border-radius: var(--agw-radius-sm);
-  transition: background-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+  transition: background-color var(--agw-dur-base) var(--agw-ease-out);
 }
 .agw-diag-head:hover {
   background: var(--agw-hover);
@@ -197,7 +197,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, opacity var(--agw-dur-fast) ease;
   box-shadow: var(--agw-set-shadow-soft);
   outline: none;
   /* A button label never breaks inside its fixed-height pill; in tight flex
@@ -309,7 +309,7 @@
   font-size: var(--agw-fs-ui);
   font-family: var(--agw-font-ui);
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease;
 }
 .agw-set-input::placeholder {
   color: var(--agw-text-subtle);
@@ -341,7 +341,7 @@
   background: var(--agw-canvas);
   color: var(--agw-text-muted);
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-fontpick-btn:hover,
 .agw-fontpick-btn[data-open] {
@@ -417,7 +417,7 @@
   font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-fontpick-rescan:hover:not(:disabled) {
   background: var(--agw-hover-paint);

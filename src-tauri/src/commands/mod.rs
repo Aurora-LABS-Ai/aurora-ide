@@ -2557,6 +2557,18 @@ pub(crate) async fn run_command_lifecycle(
                 }
             }
             status = &mut wait_fut => {
+                // A stop kills the tree from the caller's side, so the shell's
+                // death lands HERE, before the loop comes back round to the
+                // stop check at the top. Treating it as a natural exit reported
+                // the kill as "Failed · exit 1" (the code Windows hands a
+                // terminated process), which woke the idle conversation with a
+                // failure and the agent restarted the very thing the user had
+                // just stopped. The stop flag is set before the kill, so it is
+                // always visible by the time this branch runs.
+                if let Some(reason) = command_stream_stop(&request_id) {
+                    ending = reason.describe().to_string();
+                    break;
+                }
                 let (exit_code, success) = match status {
                     Ok(s) => (s.code(), Some(s.success())),
                     Err(_) => (None, None),

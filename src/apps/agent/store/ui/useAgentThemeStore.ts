@@ -23,6 +23,7 @@ import {
   type AppearancePrefKey,
   type AppearancePrefs,
   type ModelSelectorPosition,
+  type RailEdge,
   type TranscriptReasoning,
   type TranscriptTextPace,
   APPEARANCE_PREFS,
@@ -61,6 +62,7 @@ export type AgentTokenKey = keyof AgentThemeTokens;
 export type {
   AgentUiVersion,
   ModelSelectorPosition,
+  RailEdge,
   TranscriptReasoning,
   TranscriptTextPace,
 } from "@/apps/agent/theme/appearance-prefs";
@@ -191,6 +193,7 @@ interface AgentThemeState extends AppearancePrefs {
    */
   resetTypography: () => void;
   setTranslucentSidebar: (v: boolean) => void;
+  setRailEdge: (v: RailEdge) => void;
   setUiVersion: (v: AgentUiVersion) => void;
   setContrast: (v: number) => void;
   setReduceMotion: (v: boolean) => void;
@@ -296,6 +299,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
         }),
 
       setTranslucentSidebar: (v) => set({ translucentSidebar: v }),
+      setRailEdge: (v) => set({ railEdge: v }),
       setUiVersion: (v) => set({ uiVersion: v }),
       setContrast: (v) => set({ contrast: Math.max(0, Math.min(100, Math.round(v))) }),
       setReduceMotion: (v) => set({ reduceMotion: v }),

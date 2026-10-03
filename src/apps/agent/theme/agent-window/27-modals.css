@@ -2,7 +2,7 @@
 .agw-confirm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 13500;
+  z-index: var(--agw-z-dialog);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -21,7 +21,7 @@
   border-radius: var(--agw-radius-lg, 14px);
   border: 1px solid var(--agw-border-strong);
   background: var(--agw-surface-elevated, var(--agw-surface));
-  box-shadow: 0 18px 50px color-mix(in srgb, #000 45%, transparent);
+  box-shadow: var(--agw-shadow-dialog);
 }
 /* Dialog title takes the display face; the message under it does not. A
    confirmation is read, the title is scanned. */
@@ -52,7 +52,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-confirm-btn:hover {
   background: var(--agw-hover-paint);
@@ -69,8 +69,8 @@
   background: var(--agw-accent-hover);
 }
 .agw-confirm-danger {
-  background: var(--agw-removed);
-  color: #fff;
+  background: var(--agw-danger);
+  color: var(--agw-on-danger);
 }
 .agw-confirm-danger:hover {
   background: color-mix(in srgb, var(--agw-removed) 88%, #000);
@@ -83,7 +83,7 @@
 .agw-mic-perm-overlay {
   position: fixed;
   inset: 0;
-  z-index: 13600;
+  z-index: var(--agw-z-permission);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -104,8 +104,8 @@
   border-radius: var(--agw-radius-lg, 14px);
   border: 1px solid var(--agw-border-strong);
   background: var(--agw-surface-elevated, var(--agw-surface));
-  box-shadow: 0 20px 56px color-mix(in srgb, #000 48%, transparent);
-  animation: agw-mic-perm-rise 0.18s ease-out;
+  box-shadow: var(--agw-shadow-dialog);
+  animation: agw-mic-perm-rise var(--agw-dur-base) ease-out;
 }
 @keyframes agw-mic-perm-rise {
   from {
@@ -174,7 +174,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, filter var(--agw-dur-fast) ease;
 }
 .agw-mic-perm-btn:hover {
   background: var(--agw-hover-paint);
@@ -211,7 +211,7 @@
   max-height: 78vh;
   border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--agw-shadow-dialog);
   touch-action: none;
 }
 .agw-img-toolbar {
@@ -363,7 +363,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-bubble-more:hover {
   color: var(--agw-text);
@@ -374,7 +374,7 @@
   box-shadow: var(--agw-focus-ring);
 }
 .agw-bubble-more svg {
-  transition: transform 0.16s ease;
+  transition: transform var(--agw-dur-base) ease;
 }
 .agw-bubble-more[data-expanded] svg {
   transform: rotate(180deg);

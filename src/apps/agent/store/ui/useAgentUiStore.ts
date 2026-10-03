@@ -142,7 +142,12 @@ export const useAgentUiStore = create<AgentUiState>()(
       pluginsTab: "mcp",
       openSettings: (section, query) =>
         set((s) => {
-          const target = section ?? s.settingsSection;
+          // "Reopen where I was" never means a section that moved to its own
+          // page. A persisted `providers` (saved before Providers left
+          // Settings) made the Settings rail cell open the Providers page, so
+          // from Providers the click looked dead.
+          const target =
+            section ?? (sectionHome(s.settingsSection) ? "preferences" : s.settingsSection);
           const home = sectionHome(target);
           // A section that lives on a page of its own opens that page. The
           // search query does not travel: those pages have no results view.

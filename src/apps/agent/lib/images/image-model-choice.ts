@@ -58,6 +58,36 @@ export function saveImageModelChoice(selection: string): void {
   }
 }
 
+const SIZE_KEY = "agw-images-size";
+
+/**
+ * The size last chosen for each model, by selection. Per model, because a
+ * size one model offers is not a size the next one takes.
+ */
+function readSizes(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadImageSizeChoice(selection: string): string | null {
+  const size = readSizes()[selection];
+  return typeof size === "string" ? size : null;
+}
+
+export function saveImageSizeChoice(selection: string, size: string): void {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify({ ...readSizes(), [selection]: size }));
+  } catch {
+    /* private mode / quota — the page still works for this session */
+  }
+}
+
 /** The remembered pick while it is still ready; otherwise the first ready model; otherwise none. */
 export function pickImageModel(
   models: readonly ReadyImageModel[],

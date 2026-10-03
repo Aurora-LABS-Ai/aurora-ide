@@ -108,7 +108,7 @@
   gap: 18px;
   padding: 14px 18px;
   border-bottom: 1px solid var(--agw-border);
-  transition: opacity 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-shell-list > .agw-shell-row:last-child {
   border-bottom: none;
@@ -176,7 +176,7 @@
   gap: 12px;
   margin-top: 8px;
   opacity: 0.55;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-shell-row:hover .agw-shell-actions,
 .agw-shell-row:focus-within .agw-shell-actions {
@@ -192,7 +192,7 @@
   font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
   cursor: pointer;
-  transition: color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease;
 }
 .agw-shell-action:hover {
   color: var(--agw-text);
@@ -222,7 +222,7 @@
   background: none;
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
 }
 .agw-shell-tools-head:hover,
 .agw-shell-tools-head:focus-visible {
@@ -358,7 +358,7 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-set-foot-btn:hover {
@@ -379,7 +379,7 @@
   background: var(--agw-card-paint);
   overflow: hidden;
   box-shadow: var(--agw-set-shadow);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, box-shadow var(--agw-dur-fast) ease;
 }
 .agw-set-group[data-open] {
   border-color: var(--agw-border-strong);
@@ -395,7 +395,7 @@
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-set-group-head:hover {
@@ -404,7 +404,7 @@
 .agw-set-group-chev {
   display: inline-flex;
   color: var(--agw-text-subtle);
-  transition: transform 0.18s ease;
+  transition: transform var(--agw-dur-base) ease;
 }
 .agw-set-group-chev[data-open] {
   transform: rotate(180deg);

@@ -101,7 +101,7 @@
 .agw-mcp-tile[data-row] {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--agw-radius-xs);
   font-size: 8px;
 }
 /* A server reached over the network. Not a status — a fact about where the
@@ -137,7 +137,7 @@
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  transition: color 0.3s ease;
+  transition: color var(--agw-dur-slow) ease;
 }
 .agw-tool-dot-done {
   /* Softened toward muted — a full-saturation check on every settled row makes
@@ -197,6 +197,16 @@
 .agw-tool-chip svg {
   flex-shrink: 0;
   color: var(--agw-text-subtle);
+}
+/* A name inside a chip: one line, clipped with an ellipsis, full text in the
+   chip's title. Every chip label wears this — the summary of a one-file list
+   was a bare text node and a long name broke the chip onto two lines. */
+.agw-tool-chip-label {
+  min-width: 0;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* What a `grep`/`glob` searched FOR, beside the chip saying where it searched.
  *
@@ -322,7 +332,7 @@
 /* Selectable chip variant — switches the active file in the expanded result. */
 .agw-tool-chip-btn {
   cursor: pointer;
-  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-tool-chip-btn:hover {
   border-color: var(--agw-accent);
@@ -383,7 +393,7 @@
   flex: 0 0 auto;
 }
 .agw-chip-stack > * {
-  border-radius: 2px;
+  border-radius: var(--agw-radius-2xs);
 }
 
 /* ── The target reel ───────────────────────────────────────────────────────
@@ -410,7 +420,7 @@
      0.18s is the drum's own time (`.agw-suggest-item`, further down); it must
      stay in step with `REEL_GLIDE_S`, which drives the cells riding through
      this same width. */
-  transition: width 0.18s cubic-bezier(0.25, 0.1, 0.25, 1);
+  transition: width var(--agw-dur-base) ease;
 }
 .agw-tool-reel-cell {
   position: absolute;
@@ -604,7 +614,7 @@
   overflow: hidden;
   max-width: 100%;
   line-height: 0;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease;
 }
 .agw-tool-shot-btn:hover {
   border-color: var(--agw-accent);
@@ -637,7 +647,7 @@
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: color 0.15s ease;
+  transition: color var(--agw-dur-base) ease;
 }
 .agw-tool-shot-canvas:hover,
 .agw-tool-shot-canvas:focus-visible {
@@ -828,7 +838,7 @@
     black 66%,
     transparent 100%
   );
-  animation: agw-pop-in 0.14s ease;
+  animation: agw-pop-in var(--agw-dur-fast) ease;
 }
 .agw-suggest-item {
   position: absolute;
@@ -848,7 +858,7 @@
   cursor: pointer;
   transform-origin: center;
   backface-visibility: hidden;
-  transition: transform 0.18s ease, opacity 0.18s ease, color 0.12s ease;
+  transition: transform var(--agw-dur-base) ease, opacity var(--agw-dur-base) ease, color var(--agw-dur-fast) ease;
 }
 .agw-suggest-item[data-active]:hover {
   color: var(--agw-text);
@@ -1132,6 +1142,71 @@
   color: var(--agw-text-muted);
 }
 
+/* ── Live tail under a running command's row (ShellLiveTail) ──────────
+ * Same indent and left rule as `.agw-tool-body`, so it reads as the card's
+ * own content, with the rule in the accent to say it is live. Height is fixed
+ * at five lines (the top one under the fade), so output arriving never moves
+ * the transcript; only folding away at the end does. */
+.agw-shell-tail {
+  margin: 2px 0 4px 8px;
+  padding: 4px 0 4px 13px;
+  border-left: 1px solid color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  height: calc(5 * 1.5 * var(--agw-fs-label) + 8px);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 36%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 36%);
+}
+.agw-shell-tail pre {
+  margin: 0;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-muted);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Copy buttons on a shell card (ShellCopyButton) ───────────────────
+ * The `.agw-code-copy` button from fenced code, at 22px. One on the command
+ * row; one pinned to the output's top-right corner, outside the scroller so it
+ * stays put while the output scrolls. */
+.agw-shell-copy {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+.agw-shell-command .agw-shell-copy {
+  margin: -1px -4px -1px 0;
+}
+.agw-shell-copy[data-state="copied"] {
+  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+}
+.agw-shell-copy[data-state="failed"] {
+  color: var(--agw-removed);
+}
+.agw-shell-out-area {
+  position: relative;
+}
+/* Wrapped output stops short of the button instead of running under it. */
+.agw-shell-out-area .agw-shell-out {
+  padding-right: 40px;
+}
+.agw-shell-out-area > .agw-shell-copy {
+  position: absolute;
+  top: 6px;
+  /* Clears a thin scrollbar. */
+  right: 12px;
+  /* Opaque, so output scrolling under it never shows through the icon. */
+  background: var(--agw-code-surface);
+}
+.agw-shell-out-area > .agw-shell-copy:hover {
+  background: color-mix(in srgb, var(--agw-text) 8%, var(--agw-code-surface));
+}
+
 /* ── "Run in background" ──────────────────────────────────────────────
  * On the tool ROW, in the elapsed clock's slot, replacing it after ten seconds.
  * Not in the expanded body: cards are collapsed by default in every state, so a
@@ -1154,7 +1229,7 @@
   line-height: 1.6;
   white-space: nowrap;
   cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-shell-bg-btn:hover:not(:disabled) {
   color: var(--agw-text);
@@ -1524,7 +1599,7 @@
   margin-top: 2px;
 }
 .agw-tool-render-failed code {
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: 0.92em;
   color: var(--agw-text);
 }
@@ -1540,7 +1615,7 @@
  * `transform: none`, which creates no containing block, so the spine markers
  * and the sticky question are unaffected once it lands. */
 .agw-tool-step[data-enter] {
-  animation: agw-tool-arrive 0.16s ease-out both;
+  animation: agw-tool-arrive var(--agw-dur-base) ease-out both;
 }
 @keyframes agw-tool-arrive {
   from {

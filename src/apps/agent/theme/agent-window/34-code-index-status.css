@@ -30,11 +30,11 @@
   height: 26px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--agw-radius-sm);
   background: none;
   color: var(--agw-warning);
   cursor: pointer;
-  transition: background-color 0.14s ease;
+  transition: background-color var(--agw-dur-fast) ease;
 }
 /* The window's hover alias, not a white literal: white at 5% is a hover on the
    dark theme and nothing at all on Daylight. */
@@ -68,7 +68,7 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 30;
+  z-index: var(--agw-z-popover);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -78,7 +78,7 @@
   border-radius: 10px;
   /* Solid, never translucent: the transcript scrolls directly beneath this. */
   background: var(--agw-surface-elevated);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 42%);
+  box-shadow: var(--agw-shadow-menu);
 }
 
 /* Bridges the 6px gap between trigger and panel. That strip belongs to neither
@@ -127,7 +127,7 @@
   flex: none;
   padding: 6px 13px;
   border: 1px solid var(--agw-border-strong);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: transparent;
   color: var(--agw-text);
   font-size: var(--agw-fs-label);
@@ -138,8 +138,8 @@
   /* Colour only — movement on hover is the template fingerprint this window
      avoids everywhere else. */
   transition:
-    color 0.14s ease,
-    border-color 0.14s ease;
+    color var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease;
 }
 .agw-idxstat-go:hover,
 .agw-idxstat-go:focus-visible {

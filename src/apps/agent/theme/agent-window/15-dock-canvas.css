@@ -68,7 +68,7 @@
   color: var(--agw-text-muted);
   flex-shrink: 0;
   max-width: 200px;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-tabpill:hover {
   background: var(--agw-hover-paint);
@@ -167,7 +167,7 @@
   color: var(--agw-text-subtle);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-tabpill:hover .agw-tabpill-close,
 .agw-tabpill[data-active] .agw-tabpill-close {
@@ -593,7 +593,7 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
-  transition: filter 0.12s ease;
+  transition: filter var(--agw-dur-fast) ease;
 }
 
 /* Feedback on the picture itself — there is no frame to recolour. */
@@ -994,7 +994,7 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 40;
+  z-index: var(--agw-z-popover);
   /* Wide enough for a shell name AND its version on one line — the terminal
      picker lists both, and at 184px the two collided. */
   min-width: 244px;
@@ -1004,7 +1004,7 @@
   background: var(--agw-popover-surface);
   border: 1px solid var(--agw-border);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.13s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-enter);
 }
 @keyframes agw-pop-in {
   from {
@@ -1031,7 +1031,7 @@
   font-weight: var(--agw-fw-medium);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-addmenu-item:hover:not(:disabled) {

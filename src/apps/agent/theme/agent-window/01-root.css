@@ -222,6 +222,92 @@
   --agw-fs-h4: 0.875em;
   --agw-fs-code: 0.8em; /* inline code chips */
 
+  /* ── Motion ──────────────────────────────────────────────────────────────
+   * Three durations for UI state changes (hover, open, slide) and five named
+   * curves. Before these existed the partials spelled 404 durations and 14
+   * different cubic-beziers by hand; the same "a quick fade" was .12s in one
+   * file and .14s, .15s or 160ms in the next, which nobody chose.
+   *
+   * `fast` is the hover/press/colour tier and covers almost everything.
+   * `base` is for things that travel — a panel opening, a chevron turning.
+   * `slow` is for larger reveals. Choreographed animations (spinners, ambient
+   * loops, staged entrances at .35s and up) keep their own literal timing,
+   * because each is tuned to its own keyframes, not to the window.
+   *
+   * The CSS keywords `ease` / `linear` / `ease-out` stay as written: they are
+   * the platform's own named curves. These five are the custom ones.
+   * `enter`  long expo tail — content arriving, settling in.
+   * `pop`    quick start, soft stop — popovers and menus appearing.
+   * `out`    plain decelerate — things leaving or resizing.
+   * `standard` accelerate-then-decelerate — moves between two resting places.
+   * `spring` slight overshoot — a toggle or thumb snapping into place. */
+  --agw-dur-fast: 0.12s;
+  --agw-dur-base: 0.16s;
+  --agw-dur-slow: 0.24s;
+  --agw-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --agw-ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1);
+  --agw-ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --agw-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --agw-ease-spring: cubic-bezier(0.34, 1.4, 0.6, 1);
+
+  /* ── Layers ──────────────────────────────────────────────────────────────
+   * Global stacking roles, lowest to highest. Only things that float over
+   * OTHER components get one; a small integer that orders siblings inside a
+   * single component (a ::before under its label, a hit area under its pin)
+   * stays a literal, because it only means something next to its neighbours.
+   *
+   * The order is the order these had as raw numbers (20 … 13600), so nothing
+   * changed places when they were named. The four popover values that existed
+   * (30/40/50/60) are one layer: only one popover is open at a time, and each
+   * lives in its own stacking context anyway. `popover-raised` is for the two
+   * popovers that must clear a sibling layer inside a scrolled settings page.
+   * `permission` sits over `dialog` because the microphone prompt can open
+   * from inside a confirmation. */
+  --agw-z-notice: 20;
+  --agw-z-popover: 60;
+  --agw-z-popover-raised: 1000;
+  --agw-z-overlay: 1200;
+  --agw-z-lightbox: 13000;
+  --agw-z-dialog: 13500;
+  --agw-z-permission: 13600;
+  /* Above everything: a toast confirms what was just done in any layer. */
+  --agw-z-toast: 13700;
+
+  /* ── Small radii ─────────────────────────────────────────────────────────
+   * Below `sm`, for shapes nested two deep (a chip inside a card row, a
+   * progress track, a focus mark on an inline link). DERIVED from `sm` so a
+   * user who changes the corner scale in Appearance moves these with it:
+   * 4px and 2px at the shipped 6px. */
+  --agw-radius-xs: calc(var(--agw-radius-sm) * 2 / 3);
+  --agw-radius-2xs: calc(var(--agw-radius-sm) / 3);
+  /* Above `lg`, for a large reading surface inside the transcript (a fenced
+   * code block). Derived from `lg` the same way: 18px at the shipped 12px. */
+  --agw-radius-xl: calc(var(--agw-radius-lg) * 3 / 2);
+
+  /* ── Elevation beyond popovers ───────────────────────────────────────────
+   * `--agw-shadow-pop` (a theme token) stays the shadow for the popover
+   * family. These name the other recipes that were being retyped:
+   * `float`  a button floating over the transcript (jump-to-latest).
+   * `menu`   the two older menus not yet on the popover recipe (project
+   *          switcher, code-index status) — kept separate so moving them onto
+   *          `--agw-shadow-pop` later is one deliberate change.
+   * `dialog` full-window dialogs over a scrim.
+   * `thumb`  the contact shadow under a switch knob or segmented thumb. */
+  --agw-shadow-float: 0 6px 18px rgb(0 0 0 / 28%);
+  --agw-shadow-menu: 0 12px 32px rgb(0 0 0 / 42%);
+  --agw-shadow-dialog: 0 18px 50px color-mix(in srgb, #000 45%, transparent);
+  --agw-shadow-thumb: 0 1px 2px color-mix(in srgb, #000 35%, transparent);
+
+  /* ── Status roles ────────────────────────────────────────────────────────
+   * `--agw-danger` had been referenced by sixteen rules and defined by none,
+   * so each fell back to its own hardcoded `#e5484d` — or, in the plan
+   * partial, to nothing at all: no red on errors, a transparent badge. It is
+   * the theme's `removed` colour, so errors follow the theme like diffs do.
+   * `--agw-on-danger` is the label on a solid danger fill (the window close
+   * button, a confirmed delete). */
+  --agw-danger: var(--agw-removed);
+  --agw-on-danger: #ffffff;
+
   height: 100%;
   width: 100%;
   display: flex;
@@ -418,19 +504,19 @@
   gap: 6px;
   padding: 6px 12px;
   border: 1px solid var(--agw-border);
-  border-radius: 999px;
+  border-radius: var(--agw-radius-pill);
   background: var(--agw-surface-elevated);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 6px 18px rgb(0 0 0 / 28%);
+  box-shadow: var(--agw-shadow-float);
   transition:
-    color 0.12s ease,
-    border-color 0.12s ease,
-    transform 0.12s ease;
-  animation: agw-jumplatest-in 0.16s ease-out both;
+    color var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease,
+    transform var(--agw-dur-fast) ease;
+  animation: agw-jumplatest-in var(--agw-dur-base) ease-out both;
 }
 .agw-jumplatest:hover {
   color: var(--agw-text);
@@ -447,7 +533,7 @@
 .agw-jumplatest:focus-visible {
   outline: none;
   box-shadow:
-    0 6px 18px rgb(0 0 0 / 28%),
+    var(--agw-shadow-float),
     var(--agw-focus-ring);
 }
 .agw-jumplatest-label {
@@ -505,7 +591,7 @@
   scrollbar-width: none;
   z-index: 4;
   opacity: 0.5;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-jumprail::-webkit-scrollbar {
   display: none;
@@ -523,7 +609,7 @@
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
-  transition: width 0.12s ease, background 0.12s ease;
+  transition: width var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-jumprail-pin[data-hot="true"] {
   background: var(--agw-accent);

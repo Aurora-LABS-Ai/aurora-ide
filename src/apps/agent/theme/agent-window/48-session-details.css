@@ -85,7 +85,7 @@
   margin-left: auto;
   text-transform: none;
   letter-spacing: 0;
-  font-weight: 400;
+  font-weight: var(--agw-fw-body);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -124,11 +124,11 @@
   max-width: 22px;
   padding: 0;
   border: none;
-  border-radius: 2px;
+  border-radius: var(--agw-radius-2xs);
   background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
   cursor: pointer;
   outline: none;
-  transition: background 0.1s ease;
+  transition: background var(--agw-dur-fast) ease;
 }
 .agw-sess-bar:hover,
 .agw-sess-bar[data-on] {
@@ -241,7 +241,7 @@
 .agw-sess-sw {
   width: 8px;
   height: 8px;
-  border-radius: 2px;
+  border-radius: var(--agw-radius-2xs);
   background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
 }
 .agw-sess-sw[data-fail] {

@@ -18,7 +18,7 @@
   font-size: var(--agw-fs-md);
   cursor: pointer;
   text-align: left;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-item:hover {
@@ -145,7 +145,7 @@
 }
 .agw-rail-action-notice {
   position: absolute;
-  z-index: 20;
+  z-index: var(--agw-z-notice);
   left: 10px;
   right: 10px;
   bottom: 10px;
@@ -234,7 +234,7 @@
   color: var(--agw-text-subtle);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-rail-item:hover .agw-rail-pin {
@@ -341,7 +341,7 @@
   border-radius: 50%;
   background: var(--agw-control-accent, var(--agw-accent));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 22%, transparent);
-  animation: agw-done-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: agw-done-pop var(--agw-dur-slow) var(--agw-ease-enter);
 }
 @keyframes agw-done-pop {
   from {

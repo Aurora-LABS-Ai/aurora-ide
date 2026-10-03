@@ -272,6 +272,31 @@ impl AgentRegistry {
         self.store_for(mode, workspace)
     }
 
+    /// The store a plain `thread_save` writes to: the one that already owns the
+    /// conversation, or the Build store for a conversation that does not exist
+    /// yet (Aurora Chat conversations are born through `thread_create`).
+    ///
+    /// `thread_save` used to route as if every conversation were a Build one.
+    /// For an Aurora Chat conversation that is "belongs to the other Aurora
+    /// surface", and Retry hit it after the rewind had already cut the history:
+    /// the turn vanished and nothing was sent again.
+    pub fn store_for_save(
+        &self,
+        thread_id: &str,
+        workspace: Option<&str>,
+    ) -> Result<Arc<SessionStore>, RuntimeError> {
+        match self.store_for_thread(thread_id)? {
+            Some(store) => Ok(store),
+            None => self.store_for(AgentExecutionMode::Agent, workspace),
+        }
+    }
+
+    /// Whether `store` is Aurora Chat's store.
+    #[must_use]
+    pub fn is_chat_store(&self, store: &Arc<SessionStore>) -> bool {
+        Arc::ptr_eq(store, &self.chat_store)
+    }
+
     /// Borrow the bridge router so the `agent_post_tool_result`
     /// command can resolve oneshots.
     #[must_use]

@@ -1,14 +1,32 @@
 /* ═══ Icon rail — app-level navigation on the window's left edge ═══════════
  *
  * See `components/shell/IconRail.tsx`. A 48px column present on every view;
- * paints the RAIL token like the titlebar and the shell gutters, so it is part
- * of the frame rather than a panel of its own (no dividing line: the surface
- * contrast with the recessed sheet does the layering, as everywhere else).
+ * paints the frame like the titlebar and the shell gutters.
+ *
+ * The rail and the sidebar beside it both paint the frame colour, so with
+ * nothing between them they read as one slab. Appearance → Icon rail edge
+ * (`data-rail-edge` on `.agw-root`, `railEdge` in appearance-prefs.ts) picks
+ * how they part: `line` (default) a 1px border on the rail's right edge;
+ * `shade` the rail and titlebar step toward the sheet so the sidebar reads as a
+ * panel between them; `none` one continuous frame. Probe:
+ * Documents/aurora-icon-rail-separation-designs.html.
  *
  * Every cell is one primitive, `.agw-iconrail-btn`. Rest, hover, active,
  * pressed and focus all live here — pressed AFTER hover in this file, which
  * is the one rule that makes a press paint at equal specificity.
  */
+
+/* The rail's own paint. Declared on the root beside `--agw-rail-paint` so it
+   resolves against whatever that alias is there — translucent mode included. */
+.agw-root {
+  --agw-iconrail-paint: var(--agw-rail-paint);
+}
+.agw-root[data-rail-edge="shade"] {
+  --agw-iconrail-paint: color-mix(in srgb, var(--agw-rail-paint) 55%, var(--agw-conversation));
+}
+.agw-root[data-rail-edge="shade"] .agw-titlebar {
+  background: var(--agw-iconrail-paint);
+}
 
 .agw-iconrail {
   flex: none;
@@ -19,7 +37,10 @@
   width: 48px;
   min-height: 0;
   padding: 6px 0 8px;
-  background: var(--agw-rail-paint);
+  background: var(--agw-iconrail-paint);
+}
+.agw-root[data-rail-edge="line"] .agw-iconrail {
+  box-shadow: inset -1px 0 0 var(--agw-border);
 }
 
 .agw-iconrail-btn {
@@ -35,8 +56,8 @@
   color: var(--agw-text-muted);
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--agw-dur-fast) ease,
+    color var(--agw-dur-fast) ease;
 }
 .agw-iconrail-btn:hover {
   background: var(--agw-hover-paint);
@@ -81,5 +102,5 @@
   height: 7px;
   border-radius: 50%;
   background: var(--agw-accent);
-  box-shadow: 0 0 0 2px var(--agw-rail-paint);
+  box-shadow: 0 0 0 2px var(--agw-iconrail-paint);
 }

@@ -283,6 +283,110 @@ pub async fn chat_gallery_copy_image(
     .map_err(|e| e.to_string())?
 }
 
+/// The largest picture "Edit this image" reads; mirrors `EDIT_IMAGE_MAX_BYTES`.
+const EDIT_READ_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A conversation's picture as base64, for "Edit this image".
+///
+/// Through Rust, not `plugin-fs`: the fs scope holds only paths the user
+/// picked, and a conversation's own asset is never one of them, so the
+/// webview read failed as a forbidden path. Same ownership check as copy.
+#[tauri::command]
+pub async fn chat_gallery_read_image(
+    state: State<'_, Arc<AgentRegistry>>,
+    thread_id: String,
+    name: String,
+) -> Result<String, String> {
+    let store = state.chat_store().clone();
+    tauri::async_runtime::spawn_blocking(move || read_image(&store, &thread_id, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn read_image(store: &SessionStore, thread_id: &str, name: &str) -> Result<String, String> {
+    use base64::Engine;
+    let dir = conversation_assets(store, thread_id)?;
+    if !assets::list(&dir)?.iter().any(|asset| asset.name == name) {
+        return Err("This image no longer belongs to the conversation".into());
+    }
+    let path = asset_path(&dir, name)?;
+    let size = std::fs::metadata(&path)
+        .map_err(|e| format!("Could not read the picture: {e}"))?
+        .len();
+    if size > EDIT_READ_MAX_BYTES {
+        return Err(format!(
+            "That picture is {} MB; edits take up to {} MB.",
+            size / 1024 / 1024,
+            EDIT_READ_MAX_BYTES / 1024 / 1024
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("Could not read the picture: {e}"))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+/// Keep a picture out of sight (drawn blurred in Images and Library), or bring
+/// it back. Stored on the picture's manifest entry, so it is remembered.
+#[tauri::command]
+pub async fn chat_gallery_set_hidden(
+    state: State<'_, Arc<AgentRegistry>>,
+    thread_id: String,
+    name: String,
+    hidden: bool,
+) -> Result<(), String> {
+    let store = state.chat_store().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = conversation_assets(&store, &thread_id)?;
+        assets::set_hidden(&dir, &name, hidden)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete one picture or video for good.
+///
+/// A picture loses its manifest entry, file, thumbnail and Canvas card. A video
+/// loses its task record and file — but only once it has finished: a video
+/// still being made would have its record written back by the next poll, and
+/// "deleted" coming back is worse than "wait for it to finish".
+#[tauri::command]
+pub async fn chat_gallery_delete(
+    state: State<'_, Arc<AgentRegistry>>,
+    thread_id: String,
+    name: String,
+) -> Result<(), String> {
+    let store = state.chat_store().clone();
+    tauri::async_runtime::spawn_blocking(move || delete(&store, &thread_id, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn delete(store: &SessionStore, thread_id: &str, name: &str) -> Result<(), String> {
+    let dir = conversation_assets(store, thread_id)?;
+    if let Some(job_id) = name.strip_suffix(".mp4") {
+        let videos = dir.join("videos");
+        let record = videos.join(format!("{job_id}.json"));
+        if record.is_file() {
+            let bytes = std::fs::read(&record).map_err(|e| format!("Could not read the video: {e}"))?;
+            let job = crate::tools::video::jobs::decode(&bytes, job_id)?;
+            if !matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled" | "unknown") {
+                return Err("This video is still being made. Delete it once it has finished.".into());
+            }
+            std::fs::remove_file(&record).map_err(|e| format!("Could not delete the video: {e}"))?;
+            let _ = std::fs::remove_file(videos.join(name));
+            return Ok(());
+        }
+    }
+    let record = assets::remove(&dir, name)?;
+    if let Err(error) =
+        crate::commands::artifacts::remove(store, thread_id, &assets::artifact_id_for(&record.name))
+    {
+        // The picture is already gone; a Canvas card left behind is worth a
+        // log line, not a failed delete the user would retry into an error.
+        crate::logging::log_warn("chat_gallery", &format!("deleted {name} but not its Canvas card: {error}"));
+    }
+    Ok(())
+}
+
 /// Copy one gallery file to where the user chose to keep it.
 ///
 /// The copy happens here rather than through `plugin-fs` because the fs scope
@@ -464,6 +568,64 @@ mod tests {
         let partial = list(&store).unwrap();
         assert_eq!(partial.images.len(), 2);
         assert_eq!(partial.warnings.len(), 1);
+    }
+
+    #[test]
+    fn hiding_is_remembered_and_delete_removes_the_picture_its_file_and_thumbnail() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_folder(temp.path().to_path_buf());
+        let dir = store.assets_dir("chat-one").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(temp.path().join("chat-one/conversation.jsonl"), "").unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(64, 32).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        for _ in 0..2 {
+            assets::store(&dir, NewAsset { source: AssetSource::Generated, hint: "pic".into(), ..Default::default() }, bytes.get_ref()).unwrap();
+        }
+        let names: Vec<String> = list(&store).unwrap().images.iter().map(|i| i.asset.name.clone()).collect();
+
+        assets::set_hidden(&dir, &names[0], true).unwrap();
+        let listed = list(&store).unwrap();
+        let hidden: Vec<bool> = names
+            .iter()
+            .map(|n| listed.images.iter().find(|i| &i.asset.name == n).unwrap().asset.hidden)
+            .collect();
+        assert_eq!(hidden, vec![true, false]);
+
+        let thumb = thumbnail(&store, "chat-one", &names[0]).unwrap();
+        delete(&store, "chat-one", &names[0]).unwrap();
+        let after = list(&store).unwrap();
+        assert_eq!(after.images.len(), 1);
+        assert_eq!(after.images[0].asset.name, names[1]);
+        assert!(!dir.join(&names[0]).exists(), "the file goes with it");
+        assert!(!Path::new(&thumb).exists(), "and so does its thumbnail");
+        assert!(delete(&store, "chat-one", &names[0]).is_err(), "a second delete says it is gone");
+        assert!(delete(&store, "../other", "x.png").is_err());
+    }
+
+    #[test]
+    fn edit_reads_only_a_conversations_own_picture_as_its_original_bytes() {
+        use base64::Engine;
+        let temp = tempfile::tempdir().unwrap();
+        let store = SessionStore::new_folder(temp.path().to_path_buf());
+        let dir = store.assets_dir("chat-one").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(temp.path().join("chat-one/conversation.jsonl"), "").unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let record = assets::store(
+            &dir,
+            NewAsset { source: AssetSource::Generated, hint: "pic".into(), ..Default::default() },
+            bytes.get_ref(),
+        )
+        .unwrap();
+
+        let read = read_image(&store, "chat-one", &record.name).unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(read).unwrap(), *bytes.get_ref());
+        // Not in the manifest, or outside the conversation: refused.
+        std::fs::write(dir.join("stray.png"), bytes.get_ref()).unwrap();
+        assert!(read_image(&store, "chat-one", "stray.png").is_err());
+        assert!(read_image(&store, "../chat-one", &record.name).is_err());
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 /* Header activity narrator — the streaming title line. Each new phase / tool
  * remounts the span (keyed) so it cross-fades softly instead of snapping. */
 .agw-activity-title {
-  animation: agw-activity-fade 0.22s ease;
+  animation: agw-activity-fade var(--agw-dur-slow) ease;
 }
 @keyframes agw-activity-fade {
   from {
@@ -227,7 +227,7 @@
 /* A non-zero exit is the one ending worth colouring — the run is over either
    way, but this is the one you may need to act on. */
 .agw-bgtask-state[data-fail] {
-  color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
 }
 /* Stop / dismiss — sized to the row, not to a card header. */
 .agw-bgtask-stop,
@@ -244,7 +244,7 @@
   color: var(--agw-text-muted);
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-bgtask-stop:hover:not(:disabled) {
   background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
@@ -326,7 +326,7 @@
   color: var(--agw-text-muted);
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-tasks-x:hover {
   background: var(--agw-hover-paint);
@@ -359,7 +359,7 @@
   flex: 0 0 auto;
   display: inline-flex;
   color: var(--agw-text-muted);
-  transition: transform 0.18s ease;
+  transition: transform var(--agw-dur-base) ease;
 }
 .agw-tasks-chev[data-collapsed] {
   transform: rotate(-90deg);
@@ -501,7 +501,7 @@
   color: var(--agw-text-muted);
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-taskind:hover,
 .agw-taskind[data-open] {
@@ -590,7 +590,7 @@
   border-radius: var(--agw-radius-md);
   cursor: help;
   outline: none;
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
 }
 .agw-ctx-ring:hover {
   background: var(--agw-hover-paint);
@@ -620,7 +620,7 @@
   max-width: calc(300px * var(--agw-ui-text-scale, 1));
   padding: 10px 11px;
   border-radius: var(--agw-radius-md);
-  animation: agw-ctx-pop 0.12s ease-out;
+  animation: agw-ctx-pop var(--agw-dur-fast) ease-out;
 }
 @keyframes agw-ctx-pop {
   from {

@@ -102,7 +102,7 @@
 }
 .agw-codex-accounts-summary .agw-icon {
   color: var(--agw-text-subtle);
-  transition: transform 200ms var(--agw-ease-out, ease-out);
+  transition: transform var(--agw-dur-slow) var(--agw-ease-out, ease-out);
 }
 .agw-codex-accounts[data-open] .agw-codex-accounts-summary .agw-icon {
   transform: rotate(180deg);
@@ -259,7 +259,7 @@
 .agw-command-overlay {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  z-index: var(--agw-z-overlay);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -267,7 +267,7 @@
   background: var(--agw-overlay);
   backdrop-filter: var(--agw-modal-blur);
   -webkit-backdrop-filter: var(--agw-modal-blur);
-  animation: agw-command-backdrop 120ms ease-out;
+  animation: agw-command-backdrop var(--agw-dur-fast) ease-out;
 }
 
 .agw-command-center {
@@ -281,7 +281,7 @@
   background: color-mix(in srgb, var(--agw-surface-elevated) 96%, transparent);
   box-shadow: 0 28px 80px color-mix(in srgb, var(--agw-canvas) 72%, transparent), var(--agw-shadow-pop);
   color: var(--agw-text);
-  animation: agw-command-rise 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: agw-command-rise var(--agw-dur-base) var(--agw-ease-enter);
 }
 
 .agw-command-search {

@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  cachedGalleryList,
   listGallery,
+  rememberGalleryList,
   type GalleryResult,
 } from "@/apps/agent/services/gallery/gallery-service";
 
 export function useGallery() {
-  const [data, setData] = useState<GalleryResult>({ images: [], warnings: [] });
+  // Start from the last list this session read: switching Images ↔ Library
+  // paints the wall at once, and the fetch below only revalidates it.
+  const [data, setData] = useState<GalleryResult>(
+    () => cachedGalleryList() ?? { images: [], warnings: [] },
+  );
   const [loading, setLoading] = useState(true);
+  /** A first answer (list or error) has arrived; later polls are not "loading the page". */
+  const [loaded, setLoaded] = useState(() => cachedGalleryList() !== null);
   const [error, setError] = useState("");
   const requests = useRef({ generation: 0, pending: false });
   const refresh = useCallback(async () => {
@@ -18,6 +26,7 @@ export function useGallery() {
     try {
       const result = await listGallery();
       if (request !== state.generation) return;
+      rememberGalleryList(result);
       setData(result);
       setError("");
     } catch (cause) {
@@ -26,6 +35,7 @@ export function useGallery() {
       if (request === state.generation) {
         state.pending = false;
         setLoading(false);
+        setLoaded(true);
       }
     }
   }, []);
@@ -46,5 +56,5 @@ export function useGallery() {
     };
   }, [refresh]);
 
-  return { ...data, loading, error, refresh };
+  return { ...data, loading, loaded, error, refresh };
 }

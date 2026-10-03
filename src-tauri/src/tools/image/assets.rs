@@ -70,6 +70,12 @@ pub struct AssetRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     pub created_at: String,
+    /// The person chose to keep this picture out of sight (Images and Library
+    /// draw it blurred). A property of the picture rather than of a page, so
+    /// every place that shows it agrees and it survives a reinstall of the UI
+    /// state. Absent in older manifests, which reads as `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// What a caller knows about a picture before it has a name.
@@ -202,6 +208,7 @@ pub fn store(assets_dir: &Path, new: NewAsset, bytes: &[u8]) -> Result<AssetReco
         remote_url: new.remote_url,
         parent: new.parent,
         created_at: chrono::Utc::now().to_rfc3339(),
+        hidden: false,
     };
     manifest.assets.push(record.clone());
     if let Err(error) = save_manifest(assets_dir, &manifest) {
@@ -209,6 +216,53 @@ pub fn store(assets_dir: &Path, new: NewAsset, bytes: &[u8]) -> Result<AssetReco
         // `next_name` would step over; remove it so the failure is clean.
         let _ = fs::remove_file(&path);
         return Err(error);
+    }
+    Ok(record)
+}
+
+/// Keep a picture out of sight, or bring it back.
+pub fn set_hidden(assets_dir: &Path, name: &str, hidden: bool) -> Result<(), String> {
+    let mut manifest = load_manifest(assets_dir)?;
+    let record = manifest
+        .assets
+        .iter_mut()
+        .find(|record| record.name == name)
+        .ok_or_else(|| format!("'{name}' is not a picture in this conversation"))?;
+    if record.hidden == hidden {
+        return Ok(());
+    }
+    record.hidden = hidden;
+    save_manifest(assets_dir, &manifest)
+}
+
+/// Delete a picture: its manifest entry first, then its file and the gallery
+/// thumbnail made from it.
+///
+/// Manifest first on purpose. If a file cannot be removed (held open by a
+/// viewer on Windows), the picture is still gone from every list and the
+/// leftover file is an orphan `next_name` steps over — whereas a manifest
+/// entry whose file was deleted would be a broken tile.
+pub fn remove(assets_dir: &Path, name: &str) -> Result<AssetRecord, String> {
+    let mut manifest = load_manifest(assets_dir)?;
+    let index = manifest
+        .assets
+        .iter()
+        .position(|record| record.name == name)
+        .ok_or_else(|| format!("'{name}' is not a picture in this conversation"))?;
+    let record = manifest.assets.remove(index);
+    save_manifest(assets_dir, &manifest)?;
+    for leftover in [
+        assets_dir.join(&record.name),
+        assets_dir.join("gallery-previews").join(format!("{}.png", record.name)),
+    ] {
+        match fs::remove_file(&leftover) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => crate::logging::log_warn(
+                "image_assets",
+                &format!("deleted {} but could not remove {}: {error}", record.name, leftover.display()),
+            ),
+        }
     }
     Ok(record)
 }

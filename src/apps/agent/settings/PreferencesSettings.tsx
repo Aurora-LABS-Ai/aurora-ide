@@ -30,9 +30,18 @@ import { useAgentTypingStore } from "@/apps/agent/store/composer/useAgentTypingS
 import {
   refineConfigured,
   refinePathsConfigured,
+  replySuggestModelReady,
   useAgentRefineStore,
   type RefineDevice,
 } from "@/apps/agent/store/composer/useAgentRefineStore";
+import { useModelOptions } from "./useModelOptions";
+
+/** The default row of the reply-suggestion picker: the local model. */
+const LOCAL_SUGGEST_MODEL = {
+  value: "",
+  label: "Local model",
+  meta: "Prompt refine",
+};
 import {
   asChatFormat,
   CHAT_FORMAT_LABELS,
@@ -201,6 +210,10 @@ export const PreferencesSettings: React.FC = () => {
   const setDictationCleanupEnabled = useAgentRefineStore((s) => s.setDictationCleanupEnabled);
   const replySuggestionsEnabled = useAgentRefineStore((s) => s.replySuggestionsEnabled);
   const setReplySuggestionsEnabled = useAgentRefineStore((s) => s.setReplySuggestionsEnabled);
+  const replySuggestModel = useAgentRefineStore((s) => s.replySuggestModel);
+  const setReplySuggestModel = useAgentRefineStore((s) => s.setReplySuggestModel);
+  const replySuggestReady = useAgentRefineStore(replySuggestModelReady);
+  const replySuggestOptions = useModelOptions(LOCAL_SUGGEST_MODEL);
 
   // Chat titles (shared store — the runtime reads these on a chat's first message).
   const titleMode = useAgentSettingsStore((s) => s.titleMakerMode);
@@ -656,8 +669,8 @@ export const PreferencesSettings: React.FC = () => {
         title="Composer assists"
         description={
           refinePathsReady
-            ? "Writing help that runs on the model configured under Prompt refine. Everything stays on this computer."
-            : "Writing help that runs on a local model. Set the llama.cpp folder and model under Prompt refine to turn these on."
+            ? "Writing help that runs on the model configured under Prompt refine, on this computer. Quick replies can use one of your configured models instead."
+            : "Writing help that runs on a local model. Set the llama.cpp folder and model under Prompt refine to turn these on. Quick replies can use one of your configured models instead."
         }
       >
         <SettingsRow
@@ -673,15 +686,33 @@ export const PreferencesSettings: React.FC = () => {
         </SettingsRow>
 
         <SettingsRow
-          last
           label="Suggest quick replies"
-          hint="After each response, show up to three tappable replies. Tapping one fills the message box; press Enter to send."
+          hint="After each response, show a few tappable replies. Tapping one fills the message box; press Enter to send."
         >
           <AgwSwitch
             checked={replySuggestionsEnabled}
             onChange={setReplySuggestionsEnabled}
-            disabled={!refinePathsReady}
+            disabled={!replySuggestReady}
             ariaLabel="Suggest quick replies after each response"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          last
+          label="Quick reply model"
+          hint={
+            replySuggestModel
+              ? "Runs on this model after every response, so each set of replies is a small paid request to its provider. Your message and the reply are sent to it."
+              : refinePathsReady
+                ? "Runs on the local model set under Prompt refine. Nothing leaves this computer."
+                : "Set up the local model under Prompt refine, or pick one of your configured models."
+          }
+        >
+          <AgwSelect
+            value={replySuggestModel}
+            options={replySuggestOptions}
+            onChange={setReplySuggestModel}
+            ariaLabel="Model that writes quick replies"
           />
         </SettingsRow>
       </SettingsSection>

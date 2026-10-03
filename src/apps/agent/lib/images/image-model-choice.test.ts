@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   loadImageModelChoice,
+  loadImageSizeChoice,
   pickImageModel,
   readyImageModels,
   saveImageModelChoice,
+  saveImageSizeChoice,
 } from "./image-model-choice";
 import type { ImageModel, ImageProvider } from "@/apps/agent/services/providers/image-providers";
 
@@ -72,5 +74,24 @@ describe("the remembered pick", () => {
     expect(loadImageModelChoice()).toBeNull();
     saveImageModelChoice("img-a:two");
     expect(loadImageModelChoice()).toBe("img-a:two");
+  });
+});
+
+describe("the remembered size", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("is kept per model, so switching back brings that model's own size", () => {
+    saveImageSizeChoice("a:one", "1024x1024");
+    saveImageSizeChoice("b:two", "1536x1024");
+    expect(loadImageSizeChoice("a:one")).toBe("1024x1024");
+    expect(loadImageSizeChoice("b:two")).toBe("1536x1024");
+    expect(loadImageSizeChoice("c:none")).toBeNull();
+  });
+
+  it("survives a corrupt entry by starting over", () => {
+    localStorage.setItem("agw-images-size", "not json");
+    expect(loadImageSizeChoice("a:one")).toBeNull();
+    saveImageSizeChoice("a:one", "1024x1024");
+    expect(loadImageSizeChoice("a:one")).toBe("1024x1024");
   });
 });

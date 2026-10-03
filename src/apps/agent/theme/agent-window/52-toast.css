@@ -1,0 +1,73 @@
+/* ── Toasts (AgentToaster) ───────────────────────────────────────────────
+ * Short confirmations from anywhere in the window ("Prompt copied"). Bottom
+ * centre, above every layer including the image preview and dialogs, out of
+ * the layout, gone on their own. Not interactive: the pointer passes through,
+ * so a toast never covers something you are about to click. */
+.agw-toaster {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: var(--agw-z-toast);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  translate: -50% 0;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.agw-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 8px 14px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-surface-elevated);
+  box-shadow: var(--agw-shadow-float);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  /* Rises in, holds, fades — over the toast's own duration, set inline. */
+  animation: agw-toast var(--agw-toast-duration, 2200ms) var(--agw-ease-enter) both;
+}
+.agw-toast span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-toast svg {
+  flex: none;
+  color: var(--agw-text-muted);
+}
+/* Error: a tinted edge and icon, never red text — under dark themes the
+   danger colour is too dim to read as text on this surface. */
+.agw-toast[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--agw-danger) 55%, var(--agw-border-strong));
+}
+.agw-toast[data-tone="error"] svg {
+  color: color-mix(in srgb, var(--agw-danger) 60%, var(--agw-text));
+}
+@keyframes agw-toast {
+  0% {
+    opacity: 0;
+    translate: 0 8px;
+  }
+  8%,
+  86% {
+    opacity: 1;
+    translate: 0 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.agw-root[data-reduce-motion] .agw-toast {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-toast {
+    animation: none;
+  }
+}

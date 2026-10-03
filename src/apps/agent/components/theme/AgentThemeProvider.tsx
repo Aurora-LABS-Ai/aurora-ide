@@ -33,6 +33,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   const customizations = useAgentThemeStore((s) => s.customizations);
   const contrast = useAgentThemeStore((s) => s.contrast);
   const translucentSidebar = useAgentThemeStore((s) => s.translucentSidebar);
+  const railEdge = useAgentThemeStore((s) => s.railEdge);
   const uiVersion = useAgentThemeStore((s) => s.uiVersion);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
@@ -78,6 +79,8 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
       data-agent-theme={theme.id}
       data-appearance={theme.appearance}
       data-translucent={translucentSidebar || undefined}
+      // How the icon rail is set apart from the sidebar (49-icon-rail.css).
+      data-rail-edge={railEdge}
       // The design generation. It re-points paint aliases and re-lays-out the
       // densest pages, but never touches a colour of its own — so it composes
       // with whatever theme and token overrides resolved above rather than

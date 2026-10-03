@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GalleryView } from "./GalleryView";
 import type { GalleryImage } from "@/apps/agent/services/gallery/gallery-service";
+import { useAgentToastStore } from "@/apps/agent/store/ui/useAgentToastStore";
 
 const state = vi.hoisted(() => ({
   surface: "chat",
@@ -87,44 +88,46 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 const render = () => act(async () => root.render(<GalleryView />));
+const menuItem = async (tileName: string, item: string) => {
+  await act(async () =>
+    host
+      .querySelector(`[aria-label="Open ${tileName}"]`)!
+      .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 30, clientY: 40 })),
+  );
+  await act(async () =>
+    [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((button) => button.textContent === item)!
+      .click(),
+  );
+};
 
 describe("Chat gallery", () => {
-  it("keeps edits with generated images and pasted images in their own section", async () => {
+  it("shows one wall per filter, edits counted with generated pictures", async () => {
     await render();
-    expect(
-      host.querySelector('[aria-label="Generated"]')?.textContent,
-    ).toContain("Edited scene");
-    expect(
-      host.querySelector('[aria-label="Generated"]')?.textContent,
-    ).not.toContain("Pasted screenshot");
-    expect(
-      [...host.querySelectorAll("section")].map((item) =>
-        item.getAttribute("aria-label"),
-      ),
-    ).toEqual(["Generated", "Pasted & uploaded", "Videos"]);
-    expect(host.querySelectorAll("section")[1]?.textContent).toContain(
-      "Pasted screenshot",
-    );
+    const wall = () => host.querySelector('[role="region"]');
+    expect(wall()?.getAttribute("aria-label")).toBe("All");
+    expect(wall()?.textContent).toContain("Pasted screenshot");
+    // Grouped under the day they were made.
+    expect(host.querySelector(".agw-wall-day")).not.toBeNull();
     const filter = [...host.querySelectorAll("button")].find(
       (button) => button.textContent === "Generated",
     )!;
     await act(async () => filter.click());
-    expect(host.querySelector('[aria-label="Pasted & uploaded"]')).toBeNull();
+    expect(wall()?.getAttribute("aria-label")).toBe("Generated");
+    expect(wall()?.textContent).toContain("Edited scene");
+    expect(wall()?.textContent).not.toContain("Pasted screenshot");
   });
-  it("opens the chat that owns a selected picture", async () => {
+  it("opens the full picture on a single click, with no details strip", async () => {
     await render();
     await act(async () =>
-      (
-        host.querySelector(
-          '[aria-label="Open Generated scene"]',
-        ) as HTMLButtonElement
-      ).click(),
+      (host.querySelector('[aria-label="Open Generated scene"]') as HTMLButtonElement).click(),
     );
-    await act(async () =>
-      [...host.querySelectorAll("button")]
-        .find((button) => button.textContent === "Open chat")!
-        .click(),
-    );
+    expect(host.querySelector('[aria-label="Image preview"]')).not.toBeNull();
+    expect(host.querySelector('[aria-label="Selected media"]')).toBeNull();
+  });
+  it("opens the chat that owns a picture from its menu", async () => {
+    await render();
+    await menuItem("Generated scene", "Open chat");
     expect(state.selectThread).toHaveBeenCalledWith("chat-1", null);
   });
   it("renders in Build too, and enters Aurora Chat before opening a picture's chat", async () => {
@@ -133,16 +136,16 @@ describe("Chat gallery", () => {
     state.surface = "build";
     await render();
     expect(host.textContent).toContain("Generated scene");
-    await act(async () =>
-      (host.querySelector('[aria-label="Open Generated scene"]') as HTMLButtonElement).click(),
-    );
-    await act(async () =>
-      [...host.querySelectorAll("button")]
-        .find((button) => button.textContent === "Open chat")!
-        .click(),
-    );
+    await menuItem("Generated scene", "Open chat");
     expect(state.enterSurface).toHaveBeenCalledWith("chat");
     expect(state.selectThread).toHaveBeenCalledWith("chat-1", null);
+  });
+  it("asks before deleting, without repeating the prompt", async () => {
+    await render();
+    await menuItem("Generated scene", "Delete image…");
+    const dialog = document.querySelector(".agw-confirm-dialog");
+    expect(dialog?.textContent).toContain("Delete this picture?");
+    expect(dialog?.textContent).not.toContain("Generated scene");
   });
   it("keeps loaded images visible when a refresh fails", async () => {
     state.error = "Could not read image manifest";
@@ -185,12 +188,15 @@ describe("Chat gallery", () => {
     ];
     expect(items.map((item) => item.textContent)).toEqual([
       "Open image",
+      "Edit this image",
       "Copy image",
       "Save as...",
       "Show in folder",
       "Copy file path",
       "Copy prompt",
       "Open chat",
+      "Blur image",
+      "Delete image…",
     ]);
     expect(document.activeElement).toBe(items[0]);
     await act(async () =>
@@ -200,7 +206,7 @@ describe("Chat gallery", () => {
     );
     expect(document.activeElement).toBe(items[1]);
     state.copyImage.mockRejectedValueOnce(new Error("Clipboard unavailable"));
-    await act(async () => items[1].click());
+    await act(async () => items[2].click());
     expect(state.copyImage).toHaveBeenCalledWith(state.images[0]);
     expect(host.querySelector('[role="alert"]')?.textContent).toContain(
       "Clipboard unavailable",
@@ -229,7 +235,9 @@ describe("Chat gallery", () => {
     );
     expect(state.save).toHaveBeenCalledWith(state.images[0]);
     expect(document.activeElement).toBe(tile);
-    expect(host.textContent).toContain("Saved");
+    // A window toast, not a line of text in the page.
+    expect(useAgentToastStore.getState().toasts.map((entry) => entry.text)).toContain("Saved");
+    expect(host.textContent).not.toContain("Saved");
   });
   it("shows only videos in the Videos tab and opens video playback", async () => {
     const clip: GalleryImage = {
@@ -254,10 +262,7 @@ describe("Chat gallery", () => {
         .find((button) => button.textContent === "Videos")!
         .click(),
     );
-    expect(host.querySelectorAll("section")).toHaveLength(1);
-    expect(host.querySelector("section")?.getAttribute("aria-label")).toBe(
-      "Videos",
-    );
+    expect(host.querySelector('[role="region"]')?.getAttribute("aria-label")).toBe("Videos");
     expect(
       host.querySelector('[aria-label="Open Generated scene"]'),
     ).toBeNull();

@@ -390,7 +390,8 @@ const ProcessRow: React.FC<{
             (process.outputFile
               ? `; its log ends with a line recording the stop: ${process.outputFile}`
               : "") +
-            ".",
+            ". This was the user's decision: do not restart it, and do not treat the stop " +
+            "as a failure to fix, unless they ask.",
         },
       )
       .catch(() => undefined);

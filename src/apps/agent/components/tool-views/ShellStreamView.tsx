@@ -14,7 +14,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { hasAnsi, parseAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
+import { hasAnsi, parseAnsi, stripAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
+import { ShellCopyButton } from "@/apps/agent/components/tool-views/ShellCopyButton";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
 import { ShellMark } from "@/apps/agent/components/tool-views/ShellMark";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
@@ -145,12 +146,18 @@ export const ShellStreamView: React.FC<{
         >
           <span aria-hidden>{shell?.prompt ?? "$"}</span>
           <code>{command}</code>
+          <ShellCopyButton label="Copy command" getText={() => command} />
         </div>
       )}
 
       {text ? (
-        <div ref={bodyRef} onScroll={handleScroll} className="agw-rv-body agw-scroll">
-          <pre className="agw-shell-out">{ansiSpans ? <AnsiText spans={ansiSpans} /> : text}</pre>
+        // Same corner copy as the finished view, so it does not move when the
+        // command ends. It copies what has printed so far.
+        <div className="agw-shell-out-area">
+          <div ref={bodyRef} onScroll={handleScroll} className="agw-rv-body agw-scroll">
+            <pre className="agw-shell-out">{ansiSpans ? <AnsiText spans={ansiSpans} /> : text}</pre>
+          </div>
+          <ShellCopyButton label="Copy output" getText={() => stripAnsi(output)} />
         </div>
       ) : (
         // A command that prints nothing until it finishes — `pnpm lint` is the

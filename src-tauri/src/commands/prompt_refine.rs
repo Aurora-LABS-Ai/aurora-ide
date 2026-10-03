@@ -93,3 +93,102 @@ pub async fn prompt_refine_suggest(
     .await
     .map_err(|e| format!("suggest task failed: {e}"))?
 }
+
+/// How long a cloud suggestion call may take before it is dropped. The chips
+/// are only useful while the user is still deciding what to type.
+const CLOUD_SUGGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Room for four short numbered lines, with slack for a model that adds a
+/// sentence before the list.
+const CLOUD_SUGGEST_MAX_TOKENS: u32 = 300;
+
+/// Reply suggestions from one of the user's configured models instead of the
+/// local llama.cpp one.
+///
+/// Same instruction, same input, and same filtering as the local path
+/// ([`prompt_refine::suggestion_exchange`] / [`prompt_refine::parse_suggestions`]),
+/// so switching model changes who writes the chips, not what they look like.
+/// Goes through [`crate::api::build_api_client`], the factory a real turn uses,
+/// so every provider kind works here, including the OAuth ones. Reasoning is
+/// off: four short replies do not need it, and it is the expensive part.
+#[tauri::command]
+pub async fn reply_suggest_cloud(
+    config: crate::api::client::ProviderConfigSnapshot,
+    model: String,
+    user_text: String,
+    text: String,
+) -> Result<Vec<String>, String> {
+    use crate::agent_runtime::api_client::{ApiRequest, ReasoningRequest};
+    use crate::agent_runtime::events::AssistantEvent;
+    use crate::agent_runtime::types::{ContentBlock, ConversationMessage};
+
+    if model.trim().is_empty() {
+        return Err("no model selected for reply suggestions".to_string());
+    }
+    let exchange = prompt_refine::suggestion_exchange(&user_text, &text)?;
+
+    let client = crate::api::build_api_client(&config);
+    let messages = vec![ConversationMessage::user_text(&exchange, 0)];
+    let request = ApiRequest {
+        model: &model,
+        system_prompt: Some(prompt_refine::suggestion_system_prompt()),
+        messages: &messages,
+        tools: &[],
+        tool_choice: Default::default(),
+        temperature: Some(0.7),
+        max_output_tokens: CLOUD_SUGGEST_MAX_TOKENS,
+        reasoning: ReasoningRequest::disabled(),
+        tool_bridge: None,
+        // Belongs to no conversation, so no cache-affinity key.
+        session_key: None,
+    };
+
+    // Drain the sink concurrently: the adapters `.send().await` into it, so a
+    // full buffer would deadlock the stream against itself.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AssistantEvent>(64);
+    let collector = tokio::spawn(async move {
+        let mut streamed = String::new();
+        while let Some(event) = rx.recv().await {
+            if let AssistantEvent::TextDelta { delta } = event {
+                streamed.push_str(&delta);
+            }
+        }
+        streamed
+    });
+
+    let outcome = tokio::time::timeout(
+        CLOUD_SUGGEST_TIMEOUT,
+        client.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+    )
+    .await;
+    let streamed = collector.await.unwrap_or_default();
+
+    let usage = match outcome {
+        Err(_) => {
+            return Err(format!(
+                "no reply within {}s",
+                CLOUD_SUGGEST_TIMEOUT.as_secs()
+            ))
+        }
+        Ok(Err(err)) => return Err(err.to_string()),
+        Ok(Ok(usage)) => usage,
+    };
+
+    // Prefer the assembled message; fall back to the raw deltas for a provider
+    // that only streams and returns an empty final message.
+    let assembled: String = usage
+        .assistant_message
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let raw = if assembled.trim().is_empty() {
+        streamed
+    } else {
+        assembled
+    };
+    Ok(prompt_refine::parse_suggestions(&raw))
+}

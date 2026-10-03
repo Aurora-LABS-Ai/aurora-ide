@@ -144,12 +144,26 @@ const PreBlock: React.FC<React.HTMLAttributes<HTMLPreElement>> = ({ children }) 
     if (fromTree.trim().length > 0) return fromTree;
     return codeRef.current?.textContent ?? "";
   }, [children]);
+  // Long lines scroll by default, so code keeps its real shape; wrapping is
+  // the reader's call per block, for prose-like blocks (prompts, logs).
+  const [wrap, setWrap] = useState(false);
 
   return (
-    <div className="agw-codeblock group/code">
+    <div className="agw-codeblock group/code" data-wrap={wrap ? "" : undefined}>
       <div className="agw-codeblock-head">
         <span className="agw-codeblock-lang">{language}</span>
-        <CodeCopy getText={getText} />
+        <span className="agw-codeblock-actions">
+          <button
+            type="button"
+            className="agw-code-copy"
+            onClick={() => setWrap((on) => !on)}
+            aria-pressed={wrap}
+            title={wrap ? "Don't wrap lines" : "Wrap lines"}
+          >
+            <AgentIcon name="wrap" size={13} />
+          </button>
+          <CodeCopy getText={getText} />
+        </span>
       </div>
       <pre ref={codeRef} className="agw-codeblock-pre agw-scroll">
         <PreContext.Provider value={true}>{children}</PreContext.Provider>

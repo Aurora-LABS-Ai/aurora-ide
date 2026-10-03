@@ -34,8 +34,8 @@
   background: var(--agw-state-selected);
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: opacity 0.14s ease, color 0.2s ease,
-    transform 0.14s cubic-bezier(0.2, 0, 0, 1);
+  transition: opacity var(--agw-dur-fast) ease, color var(--agw-dur-slow) ease,
+    transform var(--agw-dur-fast) var(--agw-ease-out);
 }
 .agw-send:hover:not(:disabled) {
   /* Slight dim only — no scale. The lift (scale 1.04) read as a jitter/shake on
@@ -71,8 +71,8 @@
   backdrop-filter: none;
   box-shadow: none;
   color: var(--agw-conversation);
-  transition: background 0.22s ease, box-shadow 0.22s ease,
-    -webkit-backdrop-filter 0.22s ease, backdrop-filter 0.22s ease;
+  transition: background var(--agw-dur-slow) ease, box-shadow var(--agw-dur-slow) ease,
+    -webkit-backdrop-filter var(--agw-dur-slow) ease, backdrop-filter var(--agw-dur-slow) ease;
 }
 .agw-send-stream .agw-send-stream-matrix,
 .agw-send-stream .agw-send-stream-stop {
@@ -81,7 +81,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.2s ease;
+  transition: opacity var(--agw-dur-slow) ease;
 }
 .agw-send-stream .agw-send-stream-matrix {
   opacity: 1;
@@ -127,7 +127,7 @@
  * enabled icon is the highest-contrast colour available on this surface by
  * definition, in any theme and under any customization. */
 .agw-send:not(.agw-send-stream) svg {
-  transition: filter 0.2s ease;
+  transition: filter var(--agw-dur-slow) ease;
 }
 .agw-send:not(.agw-send-stream):not(:disabled) {
   color: var(--agw-text);
@@ -184,7 +184,7 @@
      snapped to wherever the JS animation had already travelled. That handoff
      was the jolt. One owner; this family opts out. */
   animation: none;
-  transition: height 0.15s cubic-bezier(0, 0, 0.2, 1);
+  transition: height var(--agw-dur-base) var(--agw-ease-out);
 }
 /* The input box is the front object: the picker paints under it (`z-index: -1`
    above), and while one is open the box casts a short shadow down onto it. Two
@@ -203,7 +203,7 @@
      this outright while the @ / menu is open: at that moment the box must cast
      UP onto the panel behind it, not sit on its own. */
   box-shadow: var(--agw-card-lift);
-  transition: box-shadow 0.17s cubic-bezier(0, 0, 0.2, 1);
+  transition: box-shadow var(--agw-dur-base) var(--agw-ease-out);
 }
 
 /* The recording visualiser paints between this box's fill and its content, so
@@ -283,8 +283,8 @@
   justify-content: flex-end;
   min-width: 0;
   overflow: clip;
-  transition: height var(--agw-composer-resize-duration, 180ms)
-    cubic-bezier(0.2, 0, 0, 1);
+  transition: height var(--agw-composer-resize-duration, var(--agw-dur-base))
+    var(--agw-ease-out);
 }
 .agw-composer-body-content {
   flex: 0 0 auto;
@@ -318,7 +318,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-attach-x:hover {
   background: var(--agw-hover-paint);
@@ -398,7 +398,7 @@
   user-select: none;
   white-space: pre-wrap;
   /* Fade in a new suggestion; continuing the same word stays visible. */
-  animation: agw-ghost-in 150ms ease-out;
+  animation: agw-ghost-in var(--agw-dur-base) ease-out;
 }
 .agw-ghost::before {
   /* A prediction may wrap, but must never pull the user's word with it.
@@ -552,7 +552,7 @@
   font-size: var(--agw-fs-md);
   line-height: 1.4;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-qp-opt:hover {
   background: var(--agw-hover-paint);
@@ -581,7 +581,7 @@
   line-height: 1;
   color: var(--agw-text-subtle);
   flex-shrink: 0;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-qp-opt.is-selected .agw-qp-letter {
   border-color: var(--agw-accent);
@@ -609,7 +609,7 @@
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease;
 }
 .agw-qp-other::placeholder {
   color: var(--agw-text-subtle);
@@ -642,7 +642,7 @@
  * turn settles in once as it arrives. A tiny 4px rise — quieter than the
  * tool-card glide — because a whole turn is a larger object to move. */
 .agw-turn-enter {
-  animation: agw-turn-in 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: agw-turn-in var(--agw-dur-slow) var(--agw-ease-enter);
 }
 
 @keyframes agw-turn-in {

@@ -51,7 +51,22 @@ beforeEach(() => {
 });
 
 describe("useAgentImagesStore.generate", () => {
-  it("makes an Aurora Chat conversation, sends the picture request into it, then drops the job and ticks the revision", async () => {
+  it("keeps a finished picture in its slot until the gallery lists it, then lets it go", async () => {
+    mocks.generateImageDirect.mockResolvedValue({ asset: "001.png", path: "C:/a/001.png", width: 1024, height: 768 });
+    await useAgentImagesStore.getState().generate(input);
+    const [job] = useAgentImagesStore.getState().jobs;
+    expect(job).toMatchObject({
+      status: "done",
+      resultKey: "chat-9/001.png",
+      result: { path: "C:/a/001.png", width: 1024, height: 768 },
+    });
+    useAgentImagesStore.getState().settle(new Set(["chat-9/other.png"]));
+    expect(useAgentImagesStore.getState().jobs).toHaveLength(1);
+    useAgentImagesStore.getState().settle(new Set(["chat-9/001.png"]));
+    expect(useAgentImagesStore.getState().jobs).toEqual([]);
+  });
+
+  it("makes an Aurora Chat conversation, sends the picture request into it, then marks the job done and ticks the revision", async () => {
     await useAgentImagesStore.getState().generate(input);
 
     // Always the Chat store, no project: pictures are a Chat capability
@@ -65,23 +80,23 @@ describe("useAgentImagesStore.generate", () => {
       size: "1536x1024",
       modelSelection: "img-a:banana",
     });
-    expect(useAgentImagesStore.getState().jobs).toEqual([]);
+    expect(useAgentImagesStore.getState().jobs.map((job) => job.status)).toEqual(["done"]);
     expect(useAgentImagesStore.getState().revision).toBe(1);
     expect(mocks.refreshThreads).toHaveBeenCalledTimes(1);
   });
 
   it("holds a pending tile at the picture's aspect while the provider works", async () => {
-    let finish!: () => void;
-    mocks.generateImageDirect.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    let finish!: (value: unknown) => void;
+    mocks.generateImageDirect.mockReturnValue(new Promise((resolve) => (finish = resolve)));
     const running = useAgentImagesStore.getState().generate({ ...input, size: "1024x1024" });
     await Promise.resolve();
     const [job] = useAgentImagesStore.getState().jobs;
     expect(job.status).toBe("pending");
     expect(job.aspectRatio).toBe("1024 / 1024");
     expect(job.modelLabel).toBe("Nano Banana Pro");
-    finish();
+    finish({ asset: "001.png", path: "C:/a/001.png", width: 1024, height: 1024 });
     await running;
-    expect(useAgentImagesStore.getState().jobs).toEqual([]);
+    expect(useAgentImagesStore.getState().jobs.map((entry) => entry.status)).toEqual(["done"]);
   });
 
   it("keeps a failed job on screen with the provider's own words", async () => {
@@ -109,6 +124,18 @@ describe("useAgentImagesStore.generate", () => {
     expect(mocks.createThread).not.toHaveBeenCalled();
     expect(useAgentImagesStore.getState().jobs).toEqual([]);
   });
+
+  it("sends an attached picture as a marker after the text, the shape a chat attachment takes", async () => {
+    const source = { id: "s1", name: "fox.png", mediaType: "image/png", base64: "iVBORw0KGgo=" };
+    await useAgentImagesStore.getState().generate({ ...input, prompt: "make the sky purple", source });
+    expect(mocks.generateImageDirect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'make the sky purple\n\n<aurora_image media_type="image/png">iVBORw0KGgo=</aurora_image>',
+      }),
+    );
+    // The chat is titled from what was asked, never from the picture's bytes.
+    expect(mocks.createThread.mock.calls[0][0]).not.toContain("aurora_image");
+  });
 });
 
 describe("useAgentImagesStore.retry / dismiss", () => {
@@ -123,19 +150,19 @@ describe("useAgentImagesStore.retry / dismiss", () => {
     expect(mocks.generateImageDirect).toHaveBeenLastCalledWith(
       expect.objectContaining({ threadId: "chat-9" }),
     );
-    expect(useAgentImagesStore.getState().jobs).toEqual([]);
+    expect(useAgentImagesStore.getState().jobs.map((job) => job.status)).toEqual(["done"]);
     expect(useAgentImagesStore.getState().revision).toBe(1);
   });
 
   it("only retries jobs that failed", async () => {
-    let finish!: () => void;
-    mocks.generateImageDirect.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    let finish!: (value: unknown) => void;
+    mocks.generateImageDirect.mockReturnValue(new Promise((resolve) => (finish = resolve)));
     const running = useAgentImagesStore.getState().generate(input);
     await Promise.resolve();
     const [pending] = useAgentImagesStore.getState().jobs;
     await useAgentImagesStore.getState().retry(pending.id);
     expect(mocks.generateImageDirect).toHaveBeenCalledTimes(1);
-    finish();
+    finish({ asset: "001.png", path: "C:/a/001.png", width: 1, height: 1 });
     await running;
   });
 

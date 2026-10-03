@@ -12,6 +12,7 @@ import { MotionConfig } from "framer-motion";
 import { AgentDragGhost } from "@/apps/agent/components/composer/AgentDragGhost";
 import { AgentThemeProvider } from "@/apps/agent/components/theme/AgentThemeProvider";
 import { AgentTitlebar } from "@/apps/agent/components/shell/AgentTitlebar";
+import { AgentToaster } from "@/apps/agent/components/shell/AgentToaster";
 import { AgentShell } from "@/apps/agent/components/shell/AgentShell";
 import { IconRail } from "@/apps/agent/components/shell/IconRail";
 import { ImagesPage } from "@/apps/agent/components/images/ImagesPage";
@@ -179,6 +180,8 @@ export const AgentWindow: React.FC = () => {
         <AgentCommandCenter />
         {/* Follows the cursor during a file drag; renders nothing otherwise. */}
         <AgentDragGhost />
+        {/* "Prompt copied" and friends, from anywhere: `toast()`. */}
+        <AgentToaster />
       </AgentThemeProvider>
     </MotionConfig>
   );

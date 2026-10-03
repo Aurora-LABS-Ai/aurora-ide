@@ -15,7 +15,7 @@
 }
 
 .agw-cursor-error {
-  color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
   font-size: var(--agw-fs-ui);
   line-height: 1.5;
 }
@@ -32,7 +32,7 @@
   margin: 0;
   font-size: var(--agw-fs-ui);
   line-height: 1.55;
-  color: var(--agw-text-dim);
+  color: var(--agw-text-muted);
   max-width: 62ch;
 }
 .agw-cursor-hint {
@@ -42,8 +42,8 @@
 .agw-cursor-hint code {
   padding: 1px 5px;
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-surface-raised);
-  font-family: var(--agw-font-mono);
+  background: var(--agw-code-surface);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
 }
 
@@ -66,11 +66,11 @@
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
-  transition: color 160ms var(--agw-ease-out, ease);
+  transition: color var(--agw-dur-base) var(--agw-ease-out, ease);
 }
 .agw-cursor-signout:hover,
 .agw-cursor-signout:focus-visible {
-  color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
   outline: none;
 }
 .agw-cursor-signout:disabled {
@@ -111,7 +111,7 @@
    sentence, and a pill around a sentence reads as a control. */
 .agw-cursor-usage-notice {
   font-size: var(--agw-fs-label);
-  color: #d9a441;
+  color: var(--agw-warning);
 }
 
 .agw-cursor-usage-row {
@@ -140,10 +140,10 @@
 /* Matched to the meter fill exactly, so the number and its bar never disagree
    about how bad the situation is. */
 .agw-cursor-usage-value[data-tone="warn"] {
-  color: #d9a441;
+  color: var(--agw-warning);
 }
 .agw-cursor-usage-value[data-tone="danger"] {
-  color: #e5534b;
+  color: var(--agw-danger);
 }
 
 .agw-cursor-usage-empty,

@@ -23,6 +23,7 @@ import React, { useState } from "react";
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgwButton, AgwSelect, AgwSwitch, AgwTextInput } from "@/apps/agent/settings/primitives";
 import { ImageProviderProbe } from "@/apps/agent/settings/ImageProviderProbe";
+import { ImageSizesEditor } from "@/apps/agent/settings/ImageSizesEditor";
 import { VideoModels } from "@/apps/agent/settings/VideoModels";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
@@ -121,30 +122,17 @@ const ImageModelRow: React.FC<{ model: ImageModel; providerCanEdit: boolean; por
               onChange={(e) => updateImageModel(model.id, { label: e.target.value })}
             />
           </Field>
-          <Field
-            label="Sizes"
-            hint="Comma separated, e.g. 1024x1024, 1536x1024. 1024x1024 is not universal."
-          >
-            <AgwTextInput
-              value={(model.sizes ?? []).join(", ")}
-              placeholder="1024x1024"
-              onChange={(e) =>
-                updateImageModel(model.id, {
-                  sizes: e.target.value
-                    .split(",")
-                    .map((size) => size.trim())
-                    .filter(Boolean),
-                })
-              }
+          {/* A div, not the `Field` label: the editor holds several buttons,
+              and a <label> forwards a click anywhere inside it to its first
+              control. Spans the grid — chips need the row's full width. */}
+          <div className="agw-img-field agw-img-field-wide">
+            <span className="agw-img-field-label">Sizes</span>
+            <ImageSizesEditor
+              sizes={model.sizes ?? []}
+              defaultSize={model.defaultSize}
+              onChange={(next) => updateImageModel(model.id, next)}
             />
-          </Field>
-          <Field label="Default size">
-            <AgwTextInput
-              value={model.defaultSize ?? ""}
-              placeholder={model.sizes?.[0] ?? "1024x1024"}
-              onChange={(e) => updateImageModel(model.id, { defaultSize: e.target.value })}
-            />
-          </Field>
+          </div>
           <Field label="Price per image" hint="Leave blank if you do not know it.">
             <AgwTextInput
               value={model.pricePerImage === undefined ? "" : String(model.pricePerImage)}

@@ -124,13 +124,13 @@
   height: 100%;
   border-radius: var(--agw-radius-pill);
   background: var(--agw-accent);
-  transition: width 0.3s ease;
+  transition: width var(--agw-dur-slow) ease;
 }
 .agw-atlas-meter-fill[data-tone="warn"] {
-  background: #d9a441;
+  background: var(--agw-warning);
 }
 .agw-atlas-meter-fill[data-tone="danger"] {
-  background: #e5534b;
+  background: var(--agw-danger);
 }
 .agw-atlas-meter-legend {
   display: flex;
@@ -194,7 +194,7 @@
 }
 .agw-atlas-track {
   display: flex;
-  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--agw-dur-slow) var(--agw-ease-standard);
 }
 .agw-atlas-slide {
   flex: 0 0 100%;
@@ -347,8 +347,8 @@
   background: color-mix(in srgb, var(--agw-text) 22%, transparent);
   cursor: pointer;
   transition:
-    width 0.2s ease,
-    background 0.2s ease;
+    width var(--agw-dur-slow) ease,
+    background var(--agw-dur-slow) ease;
 }
 .agw-atlas-dot[data-on] {
   width: 16px;

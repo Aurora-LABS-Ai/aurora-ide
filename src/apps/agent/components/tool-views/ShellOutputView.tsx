@@ -10,7 +10,8 @@
 import React, { useMemo } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { hasAnsi, parseAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
+import { hasAnsi, parseAnsi, stripAnsi, type AnsiSpan } from "@/apps/agent/components/tool-views/ansi";
+import { ShellCopyButton } from "@/apps/agent/components/tool-views/ShellCopyButton";
 import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
 import { ShellMark } from "@/apps/agent/components/tool-views/ShellMark";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
@@ -124,6 +125,7 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
         <div className="agw-shell-command" title={data.cwd ? `Working directory: ${data.cwd}` : undefined}>
           <span aria-hidden>{shell?.prompt ?? "$"}</span>
           <code>{data.command}</code>
+          <ShellCopyButton label="Copy command" getText={() => data.command ?? ""} />
         </div>
       )}
 
@@ -136,10 +138,16 @@ export const ShellOutputView: React.FC<{ data: ShellOutputData }> = ({ data }) =
       )}
 
       {text ? (
-        <div className="agw-rv-body agw-scroll">
-          <pre className="agw-shell-out">
-            {ansiSpans ? <AnsiText spans={ansiSpans} /> : text}
-          </pre>
+        // The copy sits outside the scroller so it stays in the corner while
+        // the output scrolls. It copies everything the result holds, not only
+        // the trimmed tail on screen, with colour codes removed.
+        <div className="agw-shell-out-area">
+          <div className="agw-rv-body agw-scroll">
+            <pre className="agw-shell-out">
+              {ansiSpans ? <AnsiText spans={ansiSpans} /> : text}
+            </pre>
+          </div>
+          <ShellCopyButton label="Copy output" getText={() => stripAnsi(data.output ?? "")} />
         </div>
       ) : null}
     </div>

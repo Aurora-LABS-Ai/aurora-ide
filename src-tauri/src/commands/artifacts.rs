@@ -472,6 +472,29 @@ pub(crate) fn duplicate_thread_artifacts(
     save_bundle(store, &bundle)
 }
 
+/// Drop one artifact — the Canvas card of a picture that was deleted, so the
+/// Canvas does not keep a card pointing at a file that is gone. `Ok(false)`
+/// when the conversation has no such artifact (a pasted picture never placed,
+/// or one removed earlier). Clears the selection if it was the selected one.
+pub(crate) fn remove(store: &SessionStore, thread_id: &str, artifact_id: &str) -> Result<bool, String> {
+    let _guard = lock_artifacts()?;
+    if !store.artifacts_path(thread_id).exists() && !store.artifacts_backup_path(thread_id).exists() {
+        return Ok(false);
+    }
+    let mut bundle = load_bundle_unlocked(store, thread_id)?;
+    let before = bundle.artifacts.len();
+    bundle.artifacts.retain(|artifact| artifact.id != artifact_id);
+    if bundle.artifacts.len() == before {
+        return Ok(false);
+    }
+    if bundle.selected_artifact_id.as_deref() == Some(artifact_id) {
+        bundle.selected_artifact_id = None;
+        bundle.selected_version_tag = None;
+    }
+    save_bundle(store, &bundle)?;
+    Ok(true)
+}
+
 /// Create or version an artifact. `pub(crate)` for the one in-process writer
 /// besides the command — `generate_image`, which lands every picture it makes
 /// in the Canvas as an [`ArtifactKind::Image`].

@@ -3,8 +3,9 @@
  *
  * Read from each Aurora Chat conversation's asset manifest by Rust
  * (`chat_gallery_list`), so it is a view over disk, not a store of its own.
- * Three sections (Generated, Pasted & uploaded, Videos), a search over
- * prompts and names, and the shared media actions from `useGalleryActions`.
+ * One wall (`MediaWall`: justified rows grouped by day, newest first), a
+ * filter (All, Generated, Pasted & uploaded, Videos), a search over prompts
+ * and names, and the shared media actions from `useGalleryActions`.
  *
  * Hosted by the Library page. It used to be a dock tab that only existed on
  * the Chat side; pictures are Chat conversations, but the LIST of them is
@@ -13,77 +14,60 @@
 
 import React, { useId, useMemo, useState } from "react";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { GalleryTile } from "./GalleryTile";
-import { GallerySelection } from "./GallerySelection";
+import { GalleryDeleteConfirm } from "./GalleryDeleteConfirm";
+import { GalleryViewer } from "./GalleryViewer";
+import { MediaWall, type WallEntry } from "./MediaWall";
 import { RailMenu } from "@/apps/agent/components/shell/RailMenu";
 import { useGallery } from "@/apps/agent/hooks/gallery/useGallery";
-import {
-  useGalleryActions,
-  type GalleryMenuEvent,
-} from "@/apps/agent/hooks/gallery/useGalleryActions";
+import { useGalleryActions } from "@/apps/agent/hooks/gallery/useGalleryActions";
 import {
   filterGallery,
   galleryImageId,
   type GalleryImage,
 } from "@/apps/agent/services/gallery/gallery-service";
 
-const PAGE_SIZE = 36;
+type Section = "all" | "generated" | "attached" | "videos";
 
-const GallerySection: React.FC<{
-  title: string;
-  images: GalleryImage[];
-  onOpen: (image: GalleryImage) => void;
-  onPreview: (image: GalleryImage) => void;
-  onMenu: (event: GalleryMenuEvent, image: GalleryImage) => void;
-}> = ({ title, images, onOpen, onPreview, onMenu }) => {
-  const [limit, setLimit] = useState(PAGE_SIZE);
-  return (
-    <section className="agw-gallery-section" aria-label={title}>
-      <h3>
-        {title} <span>{images.length}</span>
-      </h3>
-      {images.length ? (
-        <div className="agw-gallery-grid">
-          {images.slice(0, limit).map((image) => (
-            <GalleryTile
-              key={galleryImageId(image)}
-              image={image}
-              onOpen={() => onOpen(image)}
-              onPreview={() => onPreview(image)}
-              onMenu={(event) => onMenu(event, image)}
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="agw-gallery-empty">
-          {title === "Videos" ? "No videos yet." : `No ${title.toLowerCase()} images.`}
-        </p>
-      )}
-      {images.length > limit && (
-        <button
-          type="button"
-          className="agw-gallery-more"
-          onClick={() => setLimit((count) => count + PAGE_SIZE)}
-        >
-          Show more ({images.length - limit})
-        </button>
-      )}
-    </section>
-  );
+const SECTIONS: readonly (readonly [Section, string])[] = [
+  ["all", "All"],
+  ["generated", "Generated"],
+  ["attached", "Pasted & uploaded"],
+  ["videos", "Videos"],
+];
+
+const inSection = (image: GalleryImage, section: Section): boolean =>
+  section === "all" ||
+  (section === "videos"
+    ? !!image.video
+    : section === "attached"
+      ? image.source === "attached"
+      : image.source !== "attached" && !image.video);
+
+const EMPTY: Record<Section, string> = {
+  all: "No images or videos yet.",
+  generated: "No generated images yet.",
+  attached: "No pasted or uploaded images yet.",
+  videos: "No videos yet.",
 };
 
 export const GalleryView: React.FC<{ title?: string }> = ({ title = "Gallery" }) => {
   const tabId = useId();
-  const { images, warnings, loading, error, refresh } = useGallery();
+  const { images, warnings, loading, loaded, error, refresh } = useGallery();
   const [query, setQuery] = useState("");
-  const [section, setSection] = useState<"all" | "generated" | "attached" | "videos">("all");
-  const actions = useGalleryActions(images);
-  const { selected, openError, notice, menu, closeMenu, selectImage, showPreview, openMenu } =
+  const [section, setSection] = useState<Section>("all");
+  const actions = useGalleryActions(images, refresh);
+  const { selected, openError, menu, closeMenu, showPreview, openMenu, visible } =
     actions;
-  const matches = useMemo(() => filterGallery(images, query), [images, query]);
-  const generated = matches.filter((image) => image.source !== "attached" && !image.video);
-  const attached = matches.filter((image) => image.source === "attached");
-  const videos = matches.filter((image) => image.video);
+  const entries = useMemo<WallEntry[]>(
+    () =>
+      visible(filterGallery(images, query))
+        .filter((image) => inSection(image, section))
+        .map((image) => ({ kind: "image", key: galleryImageId(image), image })),
+    [images, query, section, visible],
+  );
+  const emptyText = query.trim()
+    ? "Nothing matches this search."
+    : EMPTY[section];
 
   return (
     <div className="agw-gallery">
@@ -112,14 +96,7 @@ export const GalleryView: React.FC<{ title?: string }> = ({ title = "Gallery" })
           />
         </label>
         <div className="agw-gallery-filters" role="tablist" aria-label="Gallery filter">
-          {(
-            [
-              ["all", "All"],
-              ["generated", "Generated"],
-              ["attached", "Pasted & uploaded"],
-              ["videos", "Videos"],
-            ] as const
-          ).map(([value, label]) => (
+          {SECTIONS.map(([value, label]) => (
             <button
               key={value}
               id={`${tabId}-${value}`}
@@ -162,11 +139,6 @@ export const GalleryView: React.FC<{ title?: string }> = ({ title = "Gallery" })
           </button>
         </p>
       )}
-      {notice && (
-        <p className="agw-gallery-notice" role="status">
-          {notice}
-        </p>
-      )}
       {openError && (
         <p className="agw-gallery-error" role="alert">
           {openError}
@@ -188,57 +160,35 @@ export const GalleryView: React.FC<{ title?: string }> = ({ title = "Gallery" })
         id={`${tabId}-panel`}
         aria-labelledby={`${tabId}-${section}`}
         tabIndex={0}
-        aria-busy={loading && images.length === 0}
       >
-        {loading && images.length === 0 ? (
-          <p className="agw-gallery-empty" role="status">
-            Loading gallery...
-          </p>
-        ) : images.length === 0 ? (
-          <p className="agw-gallery-empty">No images or videos yet.</p>
-        ) : matches.length === 0 ? (
-          <p className="agw-gallery-empty" role="status">
-            No images or videos match this search.
-          </p>
-        ) : (
-          <>
-            {(section === "all" || section === "generated") && (
-              <GallerySection
-                key={`generated:${query}`}
-                title="Generated"
-                images={generated}
-                onOpen={selectImage}
-                onPreview={showPreview}
-                onMenu={openMenu}
-              />
-            )}
-            {(section === "all" || section === "attached") && (
-              <GallerySection
-                key={`attached:${query}`}
-                title="Pasted & uploaded"
-                images={attached}
-                onOpen={selectImage}
-                onPreview={showPreview}
-                onMenu={openMenu}
-              />
-            )}
-            {(section === "all" || section === "videos") && (
-              <GallerySection
-                key={`videos:${query}`}
-                title="Videos"
-                images={videos}
-                onOpen={selectImage}
-                onPreview={showPreview}
-                onMenu={openMenu}
-              />
-            )}
-          </>
-        )}
+        {/* Keyed by filter: switching tabs is a different set, drawn fresh
+            rather than hundreds of tiles flying to new places. A search
+            narrowing the same set glides. */}
+        <MediaWall
+          key={section}
+          label={SECTIONS.find(([value]) => value === section)![1]}
+          entries={entries}
+          loading={!loaded}
+          empty={emptyText}
+          selectedKey={selected ? galleryImageId(selected) : null}
+          isHidden={actions.isHidden}
+          onOpen={showPreview}
+          onPreview={showPreview}
+          onMenu={openMenu}
+          onToggleHidden={(image) => void actions.toggleHidden(image)}
+          onDelete={actions.requestDelete}
+        />
       </div>
-      {selected && (
-        <GallerySelection selected={selected} actions={actions} onRefresh={() => void refresh()} />
+      {selected && actions.preview && (
+        <GalleryViewer
+          image={selected}
+          items={entries.flatMap((entry) => (entry.kind === "image" ? [entry.image] : []))}
+          actions={actions}
+          onRefresh={() => void refresh()}
+        />
       )}
       {menu && <RailMenu menu={menu} onClose={closeMenu} />}
+      <GalleryDeleteConfirm actions={actions} />
     </div>
   );
 };

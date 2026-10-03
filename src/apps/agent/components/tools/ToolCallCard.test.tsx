@@ -354,6 +354,21 @@ describe("ToolCallCard streamed file targets", () => {
 
       expect(mountedContainer.querySelector("[data-live]")).toBeNull();
       expect(mountedContainer.textContent).toContain("5 files");
+
+      // Once the summary has ridden in, the reel is gone: no cell, leaving or
+      // otherwise, can stay drawn on top of the count.
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(mountedContainer.querySelector(".agw-tool-reel")).toBeNull();
+      expect(mountedContainer.querySelectorAll(".agw-tool-reel-cell")).toHaveLength(0);
+      // The reel's hand-written width must leave with the reel. Reconciled
+      // instead of remounted, the icon stack inherited it and a live read
+      // landed with its name shoved to the far end of a wide chip.
+      const chip = mountedContainer.querySelector(".agw-tool-chip-count");
+      expect(chip?.querySelector<HTMLElement>(".agw-chip-stack")?.style.width).toBe("");
+      expect(mountedContainer.textContent).toContain("5 files");
+      expect(mountedContainer.textContent).not.toContain("a.ts");
     } finally {
       vi.useRealTimers();
     }

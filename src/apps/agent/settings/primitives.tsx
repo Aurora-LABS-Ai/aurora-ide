@@ -271,8 +271,15 @@ export function AgwSegmented<T extends string>({
       }
       const box = group.getBoundingClientRect();
       const target = active.getBoundingClientRect();
-      const x = target.left - box.left - group.clientLeft;
-      const w = target.width;
+      // Bounding rects include CSS transforms; the pill is placed in LAYOUT
+      // pixels. Inside a container that opens with a scale animation (the model
+      // menu enters at 0.98) the first measurement is taken mid-scale and the
+      // pill lands short — and a transform change fires no ResizeObserver, so
+      // nothing ever corrects it. Dividing by the rendered/layout ratio undoes
+      // whatever scale an ancestor carries at the moment of measuring.
+      const scale = group.offsetWidth > 0 ? box.width / group.offsetWidth : 1;
+      const x = (target.left - box.left) / scale - group.clientLeft;
+      const w = target.width / scale;
       // Same numbers must not produce a new object — this runs on every render
       // and on every observed resize, and a fresh object each time would spin.
       setPill((prev) => (prev && prev.x === x && prev.w === w ? prev : { x, w }));

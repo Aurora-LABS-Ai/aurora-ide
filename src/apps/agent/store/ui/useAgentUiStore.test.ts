@@ -18,6 +18,21 @@ describe("useAgentUiStore settings section persistence", () => {
     expect(restored.getState().settingsSection).toBe("appearance");
     expect(restored.getState().view).toBe("chat");
   });
+
+  it("opens Settings from Providers even when the saved section moved out", async () => {
+    // Saved before Providers left Settings. Reopening "where I was" used to
+    // redirect straight back to the Providers page, so the Settings rail cell
+    // did nothing while Providers was open.
+    localStorage.setItem(
+      "aurora-agent-window-ui",
+      JSON.stringify({ state: { settingsSection: "providers" }, version: 0 }),
+    );
+    const store = (await import("@/apps/agent/store/ui/useAgentUiStore")).useAgentUiStore;
+    store.getState().openView("providers");
+    store.getState().openSettings();
+    expect(store.getState().view).toBe("settings");
+    expect(store.getState().settingsSection).toBe("preferences");
+  });
 });
 
 describe("useAgentUiStore sections that moved to the Plugins page", () => {

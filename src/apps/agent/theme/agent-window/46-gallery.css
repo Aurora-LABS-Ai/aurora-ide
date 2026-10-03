@@ -17,7 +17,7 @@
 .agw-gallery-header h2 {
   margin: 0;
   font-size: 18px;
-  font-weight: 600;
+  font-weight: var(--agw-fw-strong);
 }
 .agw-gallery button {
   font: inherit;
@@ -67,7 +67,7 @@
   background: transparent;
   color: var(--agw-text);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--agw-fs-label);
 }
 .agw-gallery-search input:focus,
 .agw-gallery-search input:focus-visible {
@@ -84,7 +84,7 @@
   border: 0;
   border-radius: var(--agw-radius-sm);
   background: transparent;
-  font-size: 12px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-muted);
 }
 .agw-gallery-filters button[aria-selected="true"] {
@@ -108,149 +108,390 @@
   padding: 0 16px 20px;
   scrollbar-gutter: stable;
 }
-.agw-gallery-section + .agw-gallery-section {
-  margin-top: 24px;
-}
-.agw-gallery-section h3 {
-  display: flex;
-  gap: 8px;
-  margin: 4px 0 12px;
-  font-size: 13px;
-  font-weight: 500;
-}
-.agw-gallery-section h3 span {
-  color: var(--agw-text-subtle);
-  font-variant-numeric: tabular-nums;
-}
-.agw-gallery-grid {
-  column-count: 2;
-  column-gap: 10px;
-}
-.agw-gallery-item {
-  break-inside: avoid;
-  margin-bottom: 10px;
-}
-.agw-gallery-tile {
+/* ═══ The media wall (MediaWall / WallTile) ═══════════════════════════════════
+ * Justified rows grouped by day, shared by Images and Library. Every tile is
+ * absolutely placed by `transform` and glides when the layout changes; new
+ * tiles fade in, deleted ones fade out where they stood. Design:
+ * Documents/aurora-image-wall-designs.html, variant 03. */
+.agw-wall-host {
   position: relative;
-  display: block;
   width: 100%;
-  padding: 0;
-  border: 1px solid var(--agw-border);
-  border-radius: 8px;
+}
+.agw-wall {
+  position: relative;
+}
+.agw-wall-day {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+  margin: 0;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+.agw-wall-day span {
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.agw-wall-slot {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+/* Only once the wall has painted: its arrival is instant, changes glide. */
+.agw-wall[data-settled] .agw-wall-slot {
+  transition:
+    transform var(--agw-dur-slow) var(--agw-ease-enter),
+    width var(--agw-dur-slow) var(--agw-ease-enter),
+    height var(--agw-dur-slow) var(--agw-ease-enter);
+}
+/* `scale` (the individual property), not `transform`, so the entrance composes
+   with the translate that places the tile instead of overriding it. */
+.agw-wall-slot[data-enter] {
+  animation: agw-wall-enter var(--agw-dur-slow) var(--agw-ease-enter) both;
+}
+.agw-wall-leaving {
+  pointer-events: none;
+  animation: agw-wall-leave var(--agw-dur-slow) ease forwards;
+}
+@keyframes agw-wall-enter {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+@keyframes agw-wall-leave {
+  to {
+    opacity: 0;
+    scale: 0.96;
+  }
+}
+
+/* Loading: a slow sheen across the surface, the same for a skeleton slot, a
+   skeleton day heading and a real tile whose thumbnail has not arrived. */
+.agw-wall-skeleton,
+.agw-wall-day-skeleton,
+.agw-wall-tile[data-state="loading"] {
+  background: linear-gradient(
+    110deg,
+    var(--agw-surface) 35%,
+    color-mix(in srgb, var(--agw-surface) 88%, var(--agw-text)) 50%,
+    var(--agw-surface) 65%
+  );
+  background-size: 240% 100%;
+  animation: agw-wall-sheen 1.4s linear infinite;
+}
+.agw-wall-skeleton {
+  border-radius: var(--agw-radius-md);
+}
+.agw-wall-day-skeleton {
+  width: 96px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: var(--agw-radius-pill);
+}
+@keyframes agw-wall-sheen {
+  to {
+    background-position: -140% 0;
+  }
+}
+
+.agw-wall-tile {
+  position: relative;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-md);
   background: var(--agw-surface);
 }
-.agw-gallery-tile img,
-.agw-gallery-tile video {
+/* Selected: the tile's own edge takes the accent — no ring outside it. */
+.agw-wall-tile[data-selected] {
+  border-color: color-mix(in srgb, var(--agw-accent) 65%, transparent);
+}
+.agw-wall-open {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
-.agw-gallery-tile video {
+.agw-wall-open:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+/* The row layout already gives each tile its picture's shape, so `cover` only
+   trims the sub-pixel difference rounding leaves. Fades in once decoded. */
+.agw-wall-open img,
+.agw-wall-open video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition:
+    opacity var(--agw-dur-base) ease,
+    filter var(--agw-dur-base) ease;
+}
+.agw-wall-open video {
   pointer-events: none;
 }
-.agw-gallery-video-badge {
+.agw-wall-tile[data-state="ready"] .agw-wall-open img,
+.agw-wall-tile[data-state="ready"] .agw-wall-open video {
+  opacity: 1;
+}
+/* Hidden: just the blur. Scaled up a little so the blur has no soft halo at
+   the tile's edge, and no label — nothing on the tile says it is hidden. */
+.agw-wall-tile[data-hidden] .agw-wall-open img {
+  filter: blur(26px) saturate(0.7);
+  transform: scale(1.12);
+}
+
+/* The prompt along the bottom, on hover or keyboard focus. Text over media,
+   so the scrim is literal black (the one legitimate fixed colour here). */
+.agw-wall-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 20px 9px 7px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 68%));
+  color: #fff;
+  font-size: var(--agw-fs-micro);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--agw-dur-fast) ease;
+}
+.agw-wall-tile:hover .agw-wall-caption,
+.agw-wall-tile:focus-within .agw-wall-caption,
+.agw-wall-tile[data-state="pending"] .agw-wall-caption {
+  opacity: 1;
+}
+
+/* Hide and delete, top right, on hover or keyboard focus. */
+.agw-wall-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--agw-dur-fast) ease;
+}
+.agw-wall-tile:hover .agw-wall-actions,
+.agw-wall-tile:focus-within .agw-wall-actions {
+  opacity: 1;
+}
+.agw-wall-action {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  cursor: pointer;
+  transition: background var(--agw-dur-fast) ease;
+}
+.agw-wall-action:hover {
+  background: rgb(0 0 0 / 75%);
+}
+.agw-wall-action:active {
+  background: rgb(0 0 0 / 88%);
+}
+.agw-wall-action:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+
+.agw-wall-badge {
   position: absolute;
   top: 7px;
   left: 7px;
-  padding: 3px 5px;
-  background: var(--agw-surface);
-  color: var(--agw-text);
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: var(--agw-radius-pill);
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  font-size: var(--agw-fs-micro);
 }
-.agw-gallery-tile:focus-visible {
-  border-color: var(--agw-text);
+.agw-wall-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
 }
-.agw-gallery-placeholder {
+.agw-wall-silk {
+  position: absolute;
+  inset: 0;
+}
+/* A picture being made carries the composer's "working on it" light: the same
+   two comets travelling the edge as `.agw-composer-busy` (26-attachments-drag
+   owns the keyframes and the registered angle). Drawn just inside the tile —
+   the tile clips its overflow — over a border made transparent so the shine
+   IS the edge. */
+.agw-wall-tile[data-state="pending"] {
+  border-color: transparent;
+}
+.agw-wall-tile[data-state="pending"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 2;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--agw-drop-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 55deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 80deg,
+    transparent 110deg,
+    transparent 180deg,
+    color-mix(in srgb, var(--agw-accent) 45%, transparent) 235deg,
+    color-mix(in srgb, var(--agw-accent) 80%, white) 260deg,
+    transparent 290deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation:
+    agw-drop-arm var(--agw-dur-slow) ease-out both,
+    agw-drop-beam 3.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-wall-tile[data-state="pending"]::after {
+    animation: none;
+  }
+}
+.agw-root[data-reduce-motion] .agw-wall-tile[data-state="pending"]::after {
+  animation: none;
+}
+.agw-wall-tile[data-state="failed"] {
+  border-color: color-mix(in srgb, var(--agw-danger) 40%, var(--agw-border));
+}
+.agw-wall-failed {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  overflow: auto;
+}
+.agw-wall-failed p {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  overflow-wrap: anywhere;
+}
+.agw-wall-failed-actions {
+  display: flex;
+  gap: 6px;
+}
+.agw-wall-failed-actions button,
+.agw-wall-retry,
+.agw-wall-more {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
-  color: var(--agw-text-subtle);
-}
-.agw-gallery-placeholder span {
-  font-size: 11px;
-}
-.agw-gallery-caption {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 8px;
-  background: var(--agw-surface-elevated);
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: var(--agw-surface);
   color: var(--agw-text);
-  font-size: 12px;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0;
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  transition: background var(--agw-dur-fast) ease;
 }
-.agw-gallery-tile:hover .agw-gallery-caption,
-.agw-gallery-tile:focus-visible .agw-gallery-caption {
-  opacity: 1;
+.agw-wall-failed-actions button:hover,
+.agw-wall-retry:hover,
+.agw-wall-more:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-wall-failed-actions button:active,
+.agw-wall-retry:active,
+.agw-wall-more:active {
+  background: var(--agw-press-paint);
+}
+.agw-wall-failed-actions button:focus-visible,
+.agw-wall-retry:focus-visible,
+.agw-wall-more:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-wall-retry {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  translate: -50% 0;
+}
+.agw-wall-more {
+  margin: 16px auto 0;
+  display: flex;
+}
+.agw-wall-empty {
+  padding: 28px 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+.agw-root[data-reduce-motion] .agw-wall-slot,
+.agw-root[data-reduce-motion] .agw-wall-skeleton,
+.agw-root[data-reduce-motion] .agw-wall-day-skeleton,
+.agw-root[data-reduce-motion] .agw-wall-tile,
+.agw-root[data-reduce-motion] .agw-wall-open img {
+  transition: none;
+  animation: none;
 }
 .agw-gallery-empty {
   margin: 16px 0;
-  font-size: 13px;
+  font-size: var(--agw-fs-label);
   color: var(--agw-text-muted);
 }
 .agw-gallery-error,
 .agw-gallery-warnings {
   margin: 0 16px 12px;
-  font-size: 12px;
+  font-size: var(--agw-fs-micro);
   overflow-wrap: anywhere;
 }
 .agw-gallery-error {
   color: var(--agw-removed);
 }
-.agw-gallery-notice {
-  margin: 0 16px 10px;
-  font-size: 12px;
-  color: var(--agw-text-muted);
-}
-.agw-gallery-retry,
-.agw-gallery-more,
 .agw-gallery-actions button,
 .agw-gallery-error button {
   border: 0;
   background: var(--agw-surface);
   border-radius: var(--agw-radius-sm);
   padding: 7px 9px;
-  font-size: 12px;
-}
-.agw-gallery-selection {
-  border-top: 1px solid var(--agw-border);
-  padding: 12px 16px;
-  /* `min-height: 0` is load-bearing, not tidying. This is a column flex item,
-   * so its automatic minimum size is its CONTENT height, and a minimum beats a
-   * maximum in the cascade — with a video inside, the automatic minimum was
-   * ~700px, `max-height` never applied, and the strip grew until it pushed
-   * itself off the bottom of the dock. */
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 38%;
-  overflow-y: auto;
-  overflow-wrap: anywhere;
-}
-.agw-gallery-selection > .agw-gallery-icon {
-  float: right;
-}
-.agw-gallery-selection p {
-  margin: 0 0 7px;
-  font-size: 12px;
-  color: var(--agw-text-muted);
-}
-.agw-gallery-selection .agw-gallery-selected-title {
-  color: var(--agw-text);
-  max-height: 4.5em;
-  overflow-y: auto;
+  font-size: var(--agw-fs-micro);
 }
 .agw-gallery-actions {
   display: flex;
@@ -273,7 +514,7 @@
   width: 100%;
   max-height: 65vh;
   background: var(--agw-surface);
-  border-radius: 4px;
+  border-radius: var(--agw-radius-xs);
 }
 
 /* ── The reserved hole, while the task is still running ──────────────────
@@ -307,7 +548,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--agw-fs-micro);
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
@@ -391,7 +632,7 @@
   flex-wrap: wrap;
   gap: 6px 12px;
   margin: 8px 0;
-  font-size: 12px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-text-muted);
 }
 .agw-video-result > button {
@@ -401,7 +642,7 @@
   border: 1px solid var(--agw-border);
   background: var(--agw-surface);
   color: var(--agw-text);
-  border-radius: 4px;
+  border-radius: var(--agw-radius-xs);
   padding: 6px 9px;
   font: inherit;
   cursor: pointer;
@@ -412,51 +653,11 @@
 }
 .agw-video-result > p {
   margin: 8px 0;
-  font-size: 12px;
+  font-size: var(--agw-fs-micro);
   color: var(--agw-removed);
 }
 .agw-gallery-video-dialog {
   width: min(1080px, calc(100vw - 40px));
   padding-top: 32px;
   background: var(--agw-conversation);
-}
-.agw-gallery-selection .agw-video-result {
-  padding: 0 0 8px;
-}
-/* In the details strip the player is a PREVIEW; "View video" opens the modal
- * for real playback. `65vh` belongs to the transcript, where the card owns the
- * column width — here a portrait clip at `width: 100%` is taller than the dock
- * it lives in. Sizing by height and letting width follow keeps every aspect
- * inside the strip instead of letterboxing a tall clip into a wide black box. */
-.agw-gallery-selection .agw-video-result video,
-.agw-gallery-selection .agw-video-hole {
-  width: auto;
-  max-width: 100%;
-  max-height: 180px;
-  margin-inline: auto;
-}
-@container (max-width: 239px) {
-  .agw-gallery-grid {
-    column-count: 1;
-  }
-}
-@container (min-width: 520px) {
-  .agw-gallery-grid {
-    column-count: 3;
-  }
-}
-@container (min-width: 760px) {
-  .agw-gallery-grid {
-    column-count: 4;
-  }
-}
-@container (min-width: 1040px) {
-  .agw-gallery-grid {
-    column-count: 5;
-  }
-}
-@container (min-width: 1280px) {
-  .agw-gallery-grid {
-    column-count: 6;
-  }
 }

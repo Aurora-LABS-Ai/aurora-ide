@@ -15,7 +15,7 @@
  * `[error]`/`[rejected]` sentinel = failed; anything else = done.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { CanvasCategoryMark } from "@/apps/agent/components/tools/CanvasCategoryMark";
@@ -48,6 +48,7 @@ import { shellMeta } from "@/apps/agent/components/tool-views/shell-meta";
 import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
+import { ShellLiveTail } from "@/apps/agent/components/tool-views/ShellLiveTail";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { MediaRequest } from "@/apps/agent/components/tool-views/MediaRequest";
 import {
@@ -287,6 +288,24 @@ const ToolTargetReel: React.FC<{
   const cellKey = showSummary || !active ? " summary" : `${index}:${active.path}`;
 
   /**
+   * The summary has ridden in and the glide is over: from here the row is
+   * plain content, exactly what a historical card renders.
+   *
+   * Without this the reel stayed an `AnimatePresence` for the life of the
+   * card, and an exit interrupted by a fast re-render (a multi-edit streaming
+   * its last paths as the call settled) could leave the leaving cell mounted
+   * for good — the last filename drawn on top of "4 files" in the same box.
+   * Dropping the presence once the work is done means no leftover cell can
+   * outlive the call, whatever framer-motion did with it.
+   */
+  const [landed, setLanded] = useState(false);
+  useEffect(() => {
+    if (!narrates || !showSummary || landed) return;
+    const timer = window.setTimeout(() => setLanded(true), REEL_GLIDE_S * 1000 + 80);
+    return () => window.clearTimeout(timer);
+  }, [narrates, showSummary, landed]);
+
+  /**
    * The cells are absolutely stacked, so the reel owns its own width — and
    * animating it is what stops `error.tsx` → `ToolCallCard.tsx` from snapping
    * the row ninety pixels wider between two frames. Measured on the cell's
@@ -304,7 +323,14 @@ const ToolTargetReel: React.FC<{
   };
 
   // Every hook above runs either way; only the rendering below differs.
-  if (!narrates) return <>{children}</>;
+  //
+  // The two branches carry different keys so landing REMOUNTS instead of
+  // reconciling. Unkeyed, React reused the reel's `<span>` for the first child
+  // (the icon stack, also a `<span>`) and kept the `style.width` that `measure`
+  // wrote by hand: a live one-file read landed with its icon stack the whole
+  // reel's width, the name shoved to the far end of the chip. A reloaded card
+  // never had a reel, which is why history looked right.
+  if (!narrates || landed) return <Fragment key="plain">{children}</Fragment>;
 
   const glide = reduceMotion
     ? { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } }
@@ -315,7 +341,7 @@ const ToolTargetReel: React.FC<{
       };
 
   return (
-    <span className="agw-tool-reel">
+    <span key="reel" className="agw-tool-reel">
       {/* `initial={false}`: the first cell is the chip appearing, and a settled
           card's first cell is its summary — neither should ride in. */}
       <AnimatePresence initial={false}>
@@ -340,7 +366,7 @@ const ToolTargetReel: React.FC<{
                   className="agw-file-ico"
                 />
               )}
-              <span>{basename(active.path) || active.name}</span>
+              <span className="agw-tool-chip-label">{basename(active.path) || active.name}</span>
             </>
           )}
         </motion.span>
@@ -1433,9 +1459,11 @@ const StandardToolCallCard: React.FC<{
               {/* A one-path list keeps saying that path's NAME. "1 file" is a
                   worse answer to the same question, and the reel has just
                   spent its whole run establishing the name. */}
-              {activityTargets.length === 1 && activityTargets[0]
-                ? basename(activityTargets[0].path) || activityTargets[0].name
-                : countLabel(activityTargets)}
+              <span className="agw-tool-chip-label">
+                {activityTargets.length === 1 && activityTargets[0]
+                  ? basename(activityTargets[0].path) || activityTargets[0].name
+                  : countLabel(activityTargets)}
+              </span>
             </ToolTargetReel>
           </span>
         ) : (
@@ -1457,15 +1485,7 @@ const StandardToolCallCard: React.FC<{
                       className="agw-file-ico"
                     />
                   )}
-                  <span
-                    style={{
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {singleChip.name}
-                  </span>
+                  <span className="agw-tool-chip-label">{singleChip.name}</span>
                   {(singleChip.added || singleChip.removed) && (
                     <span className="agw-chip-stat">
                       {singleChip.removed ? (
@@ -1569,6 +1589,24 @@ const StandardToolCallCard: React.FC<{
           </span>
         )}
       </button>
+
+      {/* The newest lines of a running command, without opening the card
+          (probe 03, aurora-shell-live-output-designs.html). Fixed height while
+          it prints; it folds away when the command ends or the card opens,
+          because the full view then shows the same output. */}
+      <AnimatePresence initial={false}>
+        {showLiveShell && !open && liveShellOutput && (
+          <motion.div
+            key="shell-tail"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            style={{ overflow: "hidden" }}
+          >
+            <ShellLiveTail output={liveShellOutput} />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence initial={false}>
         {open && hasDetail && (

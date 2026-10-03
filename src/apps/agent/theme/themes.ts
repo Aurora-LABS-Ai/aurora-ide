@@ -1,10 +1,11 @@
 /**
  * Agent Window — built-in themes.
  *
- * The default dark theme is sampled DIRECTLY from the Codex desktop app (the
- * agreed design target): a uniform near-black canvas (#101010) with a single
- * lighter composer/card fill (#2E2E2E) whose contrast against the canvas does
- * the work of a border (no glow). Aurora's iris accent is retained for brand.
+ * The default dark theme started from a sample of the Codex desktop app: a
+ * near-black frame (#161616) around a darker recessed sheet (#0f0f0f), with a
+ * single lighter composer/card fill (#2E2E2E) whose contrast against the
+ * canvas does the work of a border (no glow). Aurora's iris accent is retained
+ * for brand.
  * Values live here (not read from JSON) because the agent-window theme is
  * intentionally isolated — it owns its own `--agw-*` set and can diverge per
  * user choice without touching the IDE theme.

@@ -95,7 +95,7 @@
 .agw-prov-endpoint-chev {
   flex: none;
   transform: rotate(-90deg);
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
   color: var(--agw-text-subtle);
 }
 .agw-prov-endpoint[open] .agw-prov-endpoint-chev {
@@ -150,7 +150,7 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-prov-chat-pick:hover:not(:disabled) {
@@ -191,7 +191,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-prov-icon-btn:hover {
@@ -291,7 +291,7 @@
   flex-shrink: 0;
   border-radius: 50%;
   border: 2px solid var(--agw-border-strong);
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-prov-model-radio[data-on] {
   border-color: var(--agw-added);
@@ -400,7 +400,7 @@
  * not a surface to interact with. */
 .agw-prov-test-pop {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--agw-z-popover-raised);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -414,7 +414,7 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-pop);
   text-align: left;
   white-space: normal;
 }
@@ -559,7 +559,7 @@
 .agw-prov-field-note-btn:focus-visible {
   outline: 1px solid var(--agw-accent);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: var(--agw-radius-2xs);
 }
 .agw-prov-field-note-btn:disabled {
   cursor: default;
@@ -597,7 +597,7 @@
 .agw-prov-wire-toggle svg {
   flex-shrink: 0;
   transform: rotate(-90deg);
-  transition: transform 0.16s ease;
+  transition: transform var(--agw-dur-base) ease;
 }
 .agw-prov-wire-toggle[aria-expanded="true"] svg {
   transform: rotate(0deg);
@@ -637,7 +637,7 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
   outline: none;
   /* Whole pills wrap to the next line (see -toggles); the label itself
      never breaks inside its fixed-height pill. */
@@ -729,7 +729,7 @@
 .agw-img-section-count {
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
-  font-weight: var(--agw-fw-regular);
+  font-weight: var(--agw-fw-body);
 }
 
 .agw-img-section-body {
@@ -861,6 +861,133 @@
   font-size: var(--agw-fs-micro);
   line-height: 1.45;
 }
+.agw-img-field-hint[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+/* A field that needs the whole row (the size chips). */
+.agw-img-field-wide {
+  grid-column: 1 / -1;
+}
+
+/* ── Image model sizes (ImageSizesEditor) ─────────────────────────────────────
+   The model's sizes as chips (click = default, ✕ = remove), then common sizes
+   it lacks as one-click additions, then a custom field. */
+.agw-img-sizes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agw-img-sizes-list,
+.agw-img-sizes-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.agw-img-size {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-quiet);
+}
+/* The default is the one choice that matters at send time, so it alone takes
+   the accent — every other chip stays neutral. */
+.agw-img-size[data-default] {
+  border-color: color-mix(in srgb, var(--agw-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+}
+.agw-img-size-pick,
+.agw-img-size-remove,
+.agw-img-size-preset {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
+}
+.agw-img-size-pick {
+  gap: 6px;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border-radius: var(--agw-radius-pill) 0 0 var(--agw-radius-pill);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+}
+.agw-img-size-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--agw-fw-medium);
+}
+.agw-img-size-ratio {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+.agw-img-size-default {
+  color: var(--agw-accent);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-img-size-remove {
+  justify-content: center;
+  width: 24px;
+  height: 26px;
+  border-radius: 0 var(--agw-radius-pill) var(--agw-radius-pill) 0;
+  color: var(--agw-text-subtle);
+}
+.agw-img-size-pick:hover,
+.agw-img-size-remove:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-img-size-pick:active,
+.agw-img-size-remove:active,
+.agw-img-size-preset:active {
+  background: var(--agw-press-paint);
+}
+.agw-img-size-pick:focus-visible,
+.agw-img-size-remove:focus-visible,
+.agw-img-size-preset:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-img-sizes-presets-label {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  margin-right: 2px;
+}
+/* Suggestions, not settings: dashed and quiet until pointed at. */
+.agw-img-size-preset {
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border: 1px dashed var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+.agw-img-size-preset:hover {
+  border-style: solid;
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-img-sizes-custom {
+  display: flex;
+  gap: 8px;
+  max-width: 340px;
+}
+.agw-img-sizes-custom .agw-set-input {
+  flex: 1;
+  min-width: 0;
+}
+.agw-img-sizes-empty {
+  margin: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+}
 
 /* A row with nothing to fill in — a provider whose credentials live on another
    page. Sits where an input would, so the card keeps its grid rather than
@@ -868,9 +995,9 @@
 .agw-img-note {
   margin: 0;
   padding: 7px 10px;
-  border: 1px solid var(--agw-border-subtle);
+  border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-sm);
-  background: var(--agw-surface-sunken);
+  background: var(--agw-state-quiet);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-micro);
   line-height: 1.5;
@@ -988,7 +1115,7 @@
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-img-probe-add:hover,
 .agw-img-probe-add:focus-visible {

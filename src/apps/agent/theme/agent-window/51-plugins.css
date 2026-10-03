@@ -208,8 +208,8 @@
   text-align: left;
   cursor: pointer;
   transition:
-    border-color 0.12s ease,
-    background 0.12s ease;
+    border-color var(--agw-dur-fast) ease,
+    background var(--agw-dur-fast) ease;
 }
 .agw-plug-tile:hover {
   background: var(--agw-hover-paint);
@@ -368,8 +368,8 @@
   text-align: left;
   cursor: pointer;
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--agw-dur-fast) ease,
+    color var(--agw-dur-fast) ease;
 }
 .agw-plug-side:hover {
   color: var(--agw-text);

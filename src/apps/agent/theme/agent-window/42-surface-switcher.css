@@ -112,7 +112,7 @@
   white-space: nowrap;
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-micro);
-  font-weight: 400;
+  font-weight: var(--agw-fw-body);
 }
 
 .agw-surfacemenu-row[data-current] .agw-surfacemenu-tagline {

@@ -9,7 +9,7 @@
  * window stay in lockstep. Reads `--agw-*` tokens exclusively.
  */
 
-import React, { useMemo } from "react";
+import React from "react";
 
 import {
   useAgentSettingsStore,
@@ -22,8 +22,8 @@ import {
   AgwSwitch,
   SettingsRow,
   SettingsSection,
-  type SelectOption,
 } from "./primitives";
+import { SAME_AS_CHAT, useModelOptions } from "./useModelOptions";
 
 // ── Stepper (team size) ──────────────────────────────────────────────────────
 
@@ -71,24 +71,7 @@ export const TeamSettings: React.FC = () => {
   const teamMemberModel = useAgentSettingsStore((s) => s.teamMemberModel);
   const setTeamMemberModel = useAgentSettingsStore((s) => s.setTeamMemberModel);
 
-  const providers = useAgentSettingsStore((s) => s.providers);
-  const modelSlice = useAgentSettingsStore((s) => s.models);
-  const getAvailableModels = useAgentSettingsStore((s) => s.getAvailableModels);
-
-  const modelOptions = useMemo<SelectOption[]>(() => {
-    const options: SelectOption[] = [
-      { value: "", label: "Same as chat model", meta: "default" },
-    ];
-    for (const m of getAvailableModels()) {
-      options.push({
-        value: `${m.providerId}:${m.model}`,
-        label: m.label,
-        meta: m.providerName,
-      });
-    }
-    return options;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providers, modelSlice, getAvailableModels]);
+  const modelOptions = useModelOptions(SAME_AS_CHAT);
 
   return (
     <div className="agw-set-wide">

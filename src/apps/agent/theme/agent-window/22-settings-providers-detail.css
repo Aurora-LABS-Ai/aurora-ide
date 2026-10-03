@@ -114,7 +114,7 @@
   height: 1px;
   margin: 0 2px;
   background: var(--agw-border);
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
 }
 .agw-prov-group-label:hover::after {
   background: var(--agw-border-strong);
@@ -159,9 +159,9 @@
   opacity: 0;
   cursor: pointer;
   transition:
-    opacity 0.12s ease,
-    color 0.12s ease,
-    background-color 0.12s ease;
+    opacity var(--agw-dur-fast) ease,
+    color var(--agw-dur-fast) ease,
+    background-color var(--agw-dur-fast) ease;
 }
 .agw-prov-group-label:hover .agw-prov-group-add,
 .agw-prov-group-add:focus-visible {
@@ -175,7 +175,7 @@
 }
 .agw-prov-group-caret {
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
 }
 @media (prefers-reduced-motion: reduce) {
   .agw-prov-group-caret {
@@ -481,7 +481,7 @@
   background: color-mix(in srgb, var(--agw-text) 2.5%, transparent);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-prov-item + .agw-prov-item {
   margin-top: 3px;
@@ -531,7 +531,7 @@
   color: var(--agw-text-subtle);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-prov-item:hover .agw-prov-pin {
@@ -631,7 +631,7 @@
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-prov-kind-btn:hover,
 .agw-prov-kind-btn:focus-visible {
@@ -672,16 +672,16 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-sm);
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition: color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-prov-remove-btn:hover {
-  color: var(--agw-danger, #e5484d);
-  border-color: var(--agw-danger, #e5484d);
+  color: var(--agw-danger);
+  border-color: var(--agw-danger);
 }
 .agw-prov-remove-btn[data-confirm] {
-  color: #fff;
-  background: var(--agw-danger, #e5484d);
-  border-color: var(--agw-danger, #e5484d);
+  color: var(--agw-on-danger);
+  background: var(--agw-danger);
+  border-color: var(--agw-danger);
 }
 .agw-prov-list-foot .agw-set-btn {
   width: 100%;
@@ -860,7 +860,7 @@
   border: 0;
   background: none;
   padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: var(--agw-radius-xs);
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
   cursor: pointer;
@@ -888,7 +888,7 @@
   align-items: center;
   gap: 8px;
   padding: 5px 4px;
-  border-radius: 4px;
+  border-radius: var(--agw-radius-xs);
   font-size: var(--agw-fs-label);
   color: var(--agw-text);
   cursor: pointer;
@@ -909,7 +909,7 @@
 /* The id is the wire value, so it gets the mono face and never wraps — a
    model id broken across two lines is a different-looking string. */
 .agw-prov-fetch-id {
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -993,9 +993,9 @@
   font: inherit;
   cursor: pointer;
   transition:
-    color 0.12s ease,
-    background-color 0.12s ease,
-    opacity 0.12s ease;
+    color var(--agw-dur-fast) ease,
+    background-color var(--agw-dur-fast) ease,
+    opacity var(--agw-dur-fast) ease;
 }
 .agw-prov-desc-edit {
   flex-shrink: 0;
@@ -1071,7 +1071,7 @@
   cursor: pointer;
   white-space: nowrap;
   outline: none;
-  transition: border-color 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease;
 }
 .agw-csel-trigger:disabled {
   opacity: 0.5;
@@ -1119,7 +1119,7 @@
   font-size: var(--agw-fs-ui);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-csel-item:hover {
@@ -1150,6 +1150,33 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
 }
+/* A provider (or other) heading between runs of options; not focusable. */
+.agw-csel-group {
+  padding: 8px 10px 4px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-csel-group:first-child {
+  padding-top: 4px;
+}
+/* A capability mark beside the label (the image picker's pencil "Edits"). */
+.agw-csel-mark {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-micro);
+}
 
 /* ── Composer reasoning picker ────────────────────────────────────────── */
 /* ── Shared composer pill ────────────────────────────────────────────────
@@ -1171,7 +1198,7 @@
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-composer-pill:hover {
@@ -1201,7 +1228,6 @@
  * covers popover menus) did nothing to it. It now follows the popover family
  * like every other non-composer menu. */
 .agw-model-menu,
-.agw-bud-pop,
 .agw-mention,
 .agw-dock-card {
   /* Matches the popover family's 95% tint — see the note on `.agw-menu`.
@@ -1212,7 +1238,6 @@
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-model-menu,
-  .agw-bud-pop,
   .agw-mention,
   .agw-dock-card {
     background: var(--agw-composer-surface);
@@ -1290,7 +1315,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-prov-tab:hover {
   color: var(--agw-text);

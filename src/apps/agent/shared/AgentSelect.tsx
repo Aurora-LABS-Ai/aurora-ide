@@ -2,12 +2,19 @@ import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { AgentIcon } from "./AgentIcon";
+import { AgentIcon, type AgentIconName } from "./AgentIcon";
 
 export interface AgentSelectOption {
   value: string;
   label: string;
   meta?: string;
+  /**
+   * A heading drawn above this option when it differs from the previous
+   * option's — options sharing a group must be adjacent.
+   */
+  group?: string;
+  /** A small icon-and-word mark beside the label, e.g. a pencil and "Edits". */
+  mark?: { icon: AgentIconName; label: string };
 }
 
 interface MenuRect {
@@ -27,7 +34,12 @@ interface AgentSelectProps {
   disabled?: boolean;
   className?: string;
   minMenuWidth?: number;
+  /** An icon in the trigger before the selected label. */
+  leadingIcon?: AgentIconName;
 }
+
+const ROW_HEIGHT = 34;
+const GROUP_HEIGHT = 26;
 
 export const AgentSelect: React.FC<AgentSelectProps> = ({
   value,
@@ -37,6 +49,7 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
   disabled = false,
   className,
   minMenuWidth = 0,
+  leadingIcon,
 }) => {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -62,7 +75,11 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
 
     const gap = 6;
     const margin = 12;
-    const estimatedHeight = Math.min(300, options.length * 34 + 10);
+    const groups = options.filter(
+      (option, index) => option.group && option.group !== options[index - 1]?.group,
+    ).length;
+    // Past 300px the list scrolls inside the popover.
+    const estimatedHeight = Math.min(300, options.length * ROW_HEIGHT + groups * GROUP_HEIGHT + 10);
     const below = window.innerHeight - trigger.bottom - gap;
     const above = trigger.top - gap;
     const up = below < estimatedHeight && above > below;
@@ -85,7 +102,7 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
       maxHeight: Math.max(80, Math.min(estimatedHeight, available - margin)),
       up,
     });
-  }, [minMenuWidth, options.length]);
+  }, [minMenuWidth, options]);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -157,6 +174,7 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
           show(event.key === "ArrowDown" ? selectedIndex : Math.max(0, selectedIndex - 1));
         }}
       >
+        {leadingIcon && <AgentIcon name={leadingIcon} size={14} style={{ flexShrink: 0 }} />}
         <span className="agw-csel-label">{selected?.label}</span>
         <AgentIcon
           name="chevron-down"
@@ -194,8 +212,14 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
                 }}
               >
                 {options.map((option, index) => (
+                  <React.Fragment key={option.value || "__default__"}>
+                  {option.group && option.group !== options[index - 1]?.group && (
+                    <div className="agw-csel-group" role="presentation" aria-hidden="true">
+                      {option.group}
+                    </div>
+                  )}
                   <button
-                    key={option.value || "__default__"}
+                    title={option.group ? `${option.label} · ${option.group}` : undefined}
                     ref={(element) => {
                       optionRefs.current[index] = element;
                     }}
@@ -229,9 +253,16 @@ export const AgentSelect: React.FC<AgentSelectProps> = ({
                     }}
                   >
                     <span className="agw-csel-item-label">{option.label}</span>
+                    {option.mark && (
+                      <span className="agw-csel-mark">
+                        <AgentIcon name={option.mark.icon} size={12} />
+                        {option.mark.label}
+                      </span>
+                    )}
                     {option.meta && <span className="agw-csel-meta">{option.meta}</span>}
                     {option.value === value && <AgentIcon name="check" size={13} />}
                   </button>
+                  </React.Fragment>
                 ))}
               </motion.div>
             )}

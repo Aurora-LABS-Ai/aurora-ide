@@ -172,7 +172,7 @@
   right: 0;
   width: 216px;
   padding: 4px;
-  z-index: 30;
+  z-index: var(--agw-z-popover);
 }
 .agw-tp-dd-label {
   font-size: var(--agw-fs-micro);
@@ -268,14 +268,14 @@
   line-height: 1.5;
   padding: 9px 12px;
   border-radius: var(--agw-radius-md);
-  border: 1px solid color-mix(in srgb, #3fb950 40%, var(--agw-border));
-  background: color-mix(in srgb, #3fb950 10%, var(--agw-canvas));
+  border: 1px solid color-mix(in srgb, var(--agw-added) 40%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-added) 10%, var(--agw-canvas));
   color: var(--agw-text);
   overflow-wrap: anywhere;
 }
 .agw-team-status[data-fail] {
-  border-color: color-mix(in srgb, #e5534b 45%, var(--agw-border));
-  background: color-mix(in srgb, #e5534b 10%, var(--agw-canvas));
+  border-color: color-mix(in srgb, var(--agw-danger) 45%, var(--agw-border));
+  background: color-mix(in srgb, var(--agw-danger) 10%, var(--agw-canvas));
 }
 
 /* Team chat + member transcript — both render through the REAL conversation

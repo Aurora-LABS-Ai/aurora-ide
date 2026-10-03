@@ -401,6 +401,30 @@ pub fn suggest_replies(
     assistant_text: &str,
     config: &RefineConfig,
 ) -> Result<Vec<String>, String> {
+    let exchange = suggestion_exchange(user_text, assistant_text)?;
+    let raw = run_completion(
+        state,
+        request_id,
+        SUGGEST_SYSTEM,
+        &exchange,
+        config,
+        SUGGEST_N_PREDICT,
+        Some("0.7"),
+    )?;
+    Ok(parse_suggestions(&raw))
+}
+
+/// The instruction every suggestion model gets, local or cloud.
+#[must_use]
+pub fn suggestion_system_prompt() -> &'static str {
+    SUGGEST_SYSTEM
+}
+
+/// The exchange a suggestion model reads: the user's message and the
+/// assistant's reply, flattened to prose and labelled exactly like the
+/// few-shot examples in [`SUGGEST_SYSTEM`]. Shared by the local and cloud
+/// paths so both models see the same input.
+pub fn suggestion_exchange(user_text: &str, assistant_text: &str) -> Result<String, String> {
     let assistant = plain_prose(assistant_text);
     if assistant.is_empty() {
         return Err("nothing to suggest from".to_string());
@@ -413,20 +437,16 @@ pub fn suggest_replies(
     let user = plain_prose(user_text);
     let user_head: String = user.chars().take(SUGGEST_USER_INPUT_CHARS).collect();
 
-    // Labels match the few-shot examples in SUGGEST_SYSTEM exactly.
-    let exchange = format!(
+    Ok(format!(
         "Developer's message:\n{user_head}\n\nAssistant's reply:\n{assistant_tail}\n\nSuggestions:"
-    );
-    let raw = run_completion(
-        state,
-        request_id,
-        SUGGEST_SYSTEM,
-        &exchange,
-        config,
-        SUGGEST_N_PREDICT,
-        Some("0.7"),
-    )?;
+    ))
+}
 
+/// Turn a suggestion model's numbered list into up to 4 clean, distinct
+/// replies. Lines are filtered and deduped one by one, so the result may hold
+/// fewer entries (possibly zero).
+#[must_use]
+pub fn parse_suggestions(raw: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(4);
     for line in raw.lines() {
         let reply = sanitize_suggestion(line);
@@ -441,7 +461,7 @@ pub fn suggest_replies(
             break;
         }
     }
-    Ok(out)
+    out
 }
 
 /// One llama-completion invocation with the given system prompt. Blocking.
@@ -838,6 +858,36 @@ fn clean_output(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cloud model writes the same numbered list the local one does, often
+    /// with a lead-in sentence. Only the replies survive, deduped, at most 4.
+    #[test]
+    fn parsed_suggestions_keep_only_distinct_replies() {
+        let raw = "Here are some options:\n\
+                   1. Yes, guard the signup form too\n\
+                   2. Show me the diff first\n\
+                   3. Show me the diff first\n\
+                   4. Which test covers the empty email case?\n\
+                   5. Run the full suite once more\n\
+                   6. One more beyond the cap";
+        let parsed = parse_suggestions(raw);
+        assert!(parsed.len() <= 4, "{parsed:?}");
+        assert!(parsed.iter().any(|s| s.contains("signup form")), "{parsed:?}");
+        assert_eq!(
+            parsed.iter().filter(|s| s.contains("diff first")).count(),
+            1,
+            "duplicates collapse: {parsed:?}"
+        );
+        assert!(parsed.iter().all(|s| !s.starts_with(char::is_numeric)), "{parsed:?}");
+    }
+
+    #[test]
+    fn the_suggestion_exchange_needs_a_reply_to_answer() {
+        assert!(suggestion_exchange("hi", "```\nonly code\n```").is_err());
+        let exchange = suggestion_exchange("fix the login", "Fixed it. Want tests too?").unwrap();
+        assert!(exchange.starts_with("Developer's message:\nfix the login"));
+        assert!(exchange.ends_with("Suggestions:"));
+    }
 
     /// `Auto` must keep doing exactly what this module did before the setting
     /// existed, because every install that predates it has `Auto` and none of

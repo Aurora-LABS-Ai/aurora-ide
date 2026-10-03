@@ -70,8 +70,8 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
   cursor: pointer;
-  transition: color 160ms var(--agw-ease-out, ease),
-    border-color 160ms var(--agw-ease-out, ease);
+  transition: color var(--agw-dur-base) var(--agw-ease-out, ease),
+    border-color var(--agw-dur-base) var(--agw-ease-out, ease);
 }
 /* Same treatment the inputs get: focus is a border step, never a halo. */
 .agw-modelcat-fold:hover,
@@ -107,13 +107,13 @@
   gap: 10px;
   padding: 8px;
   border-radius: var(--agw-radius-sm);
-  transition: background-color 160ms var(--agw-ease-out, ease);
+  transition: background-color var(--agw-dur-base) var(--agw-ease-out, ease);
 }
 .agw-modelcat-row + .agw-modelcat-row {
-  box-shadow: inset 0 1px 0 var(--agw-border-faint, var(--agw-border));
+  box-shadow: inset 0 1px 0 var(--agw-border);
 }
 .agw-modelcat-row:hover {
-  background: var(--agw-surface-raised);
+  background: var(--agw-hover-paint);
 }
 .agw-modelcat-row[data-on] .agw-modelcat-name {
   color: var(--agw-text);
@@ -134,7 +134,7 @@
   outline: none;
 }
 .agw-modelcat-row:has(.agw-modelcat-hit:focus-visible) {
-  background: var(--agw-surface-raised);
+  background: var(--agw-state-selected);
 }
 .agw-modelcat-row:has(.agw-modelcat-hit:focus-visible) .agw-modelcat-check {
   border-color: var(--agw-accent);
@@ -154,9 +154,9 @@
   height: 16px;
   border: 1px solid var(--agw-border-strong, var(--agw-border));
   border-radius: 5px;
-  color: var(--agw-accent-contrast, #fff);
-  transition: background-color 160ms var(--agw-ease-out, ease),
-    border-color 160ms var(--agw-ease-out, ease);
+  color: var(--agw-on-accent);
+  transition: background-color var(--agw-dur-base) var(--agw-ease-out, ease),
+    border-color var(--agw-dur-base) var(--agw-ease-out, ease);
 }
 .agw-modelcat-row[data-on] .agw-modelcat-check {
   background: var(--agw-accent);
@@ -175,13 +175,13 @@
 .agw-modelcat-name {
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
-  color: var(--agw-text-dim);
+  color: var(--agw-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .agw-modelcat-id {
-  font-family: var(--agw-font-mono);
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   overflow: hidden;
@@ -209,7 +209,7 @@
 /* Facts rather than capabilities — context size, variant count. Same shape,
    no accent, so the coloured chips stay meaningful. */
 .agw-modelcat-tag-quiet {
-  background: var(--agw-surface-raised);
+  background: var(--agw-chip-surface);
   color: var(--agw-text-subtle);
   font-variant-numeric: tabular-nums;
 }
@@ -260,8 +260,8 @@
   pointer-events: auto;
   opacity: 0;
   transition:
-    opacity 160ms var(--agw-ease-out, ease),
-    color 160ms var(--agw-ease-out, ease);
+    opacity var(--agw-dur-base) var(--agw-ease-out, ease),
+    color var(--agw-dur-base) var(--agw-ease-out, ease);
 }
 .agw-modelcat-row:hover .agw-modelcat-window-edit,
 .agw-modelcat-window-edit:focus-visible,
@@ -272,7 +272,7 @@
 .agw-modelcat-window-edit:focus-visible,
 .agw-modelcat-window-save:hover {
   color: var(--agw-text);
-  background: var(--agw-surface-raised);
+  background: var(--agw-hover-paint);
   outline: none;
 }
 .agw-modelcat-window-save {

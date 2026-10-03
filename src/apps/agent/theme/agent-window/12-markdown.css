@@ -118,7 +118,7 @@
 .agw-codeblock {
   position: relative;
   margin: 0 0 12px;
-  border-radius: var(--agw-radius-md);
+  border-radius: var(--agw-radius-xl);
   background: var(--agw-code-surface);
   border: 1px solid var(--agw-code-border);
   overflow: hidden;
@@ -130,7 +130,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 6px 4px 14px;
+  /* Right inset matches the larger corner so the buttons sit clear of it. */
+  padding: 6px 10px 6px 16px;
   border-bottom: 1px solid var(--agw-code-border);
   background: color-mix(in srgb, var(--agw-text) 3%, transparent);
 }
@@ -158,6 +159,19 @@
   font-family: var(--agw-font-code);
   background: transparent;
   white-space: pre;
+}
+/* Wrap lines (header toggle). Shiki's own <pre> sits inside ours, so both
+ * levels give up `pre`; `anywhere` breaks a long path or URL with no spaces. */
+.agw-codeblock[data-wrap] .agw-codeblock-pre,
+.agw-codeblock[data-wrap] .agw-codeblock-pre pre,
+.agw-codeblock[data-wrap] .agw-codeblock-pre code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agw-codeblock-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 /* Syntax highlighting OFF — neutralise the inline colours Shiki sets on its
  * token spans (CSS !important beats non-important inline styles) so fenced
@@ -187,14 +201,25 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-code-copy:hover {
   color: var(--agw-text);
   background: var(--agw-hover-paint);
 }
+/* Wrap is on: the glyph holds full text colour, no ring. */
+.agw-code-copy[aria-pressed="true"] {
+  color: var(--agw-text);
+}
+/* Rounded like the other reading containers. `border-collapse: collapse`
+ * ignores border-radius, so the table is SEPARATE with no spacing: it owns
+ * the outer border and corners, each cell draws only its right and bottom
+ * edge, and the last column / row drop theirs so no line doubles the frame. */
 .agw-md table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-lg);
   margin: 0 0 12px;
   font-size: var(--agw-fs-md);
   /* Fill Streamdown's full-width table wrapper. `display:block` shrank the
@@ -207,7 +232,9 @@
 }
 .agw-md th,
 .agw-md td {
-  border: 1px solid var(--agw-border);
+  border: 0;
+  border-right: 1px solid var(--agw-border);
+  border-bottom: 1px solid var(--agw-border);
   padding: 6px 10px;
   text-align: left;
   /* Dense tables must stay inside the conversation measure. Long content may
@@ -225,6 +252,25 @@
 .agw-md th {
   background: var(--agw-surface);
   font-weight: var(--agw-fw-medium);
+}
+.agw-md th:last-child,
+.agw-md td:last-child {
+  border-right: 0;
+}
+.agw-md tr:last-child > td,
+.agw-md tr:last-child > th {
+  border-bottom: 0;
+}
+/* A header-only table: the header row is also the last row. */
+.agw-md thead:has(+ tbody) tr:last-child > th {
+  border-bottom: 1px solid var(--agw-border);
+}
+/* The header fill must follow the frame's corners; the cell paints under it. */
+.agw-md tr:first-child > th:first-child {
+  border-top-left-radius: calc(var(--agw-radius-lg) - 1px);
+}
+.agw-md tr:first-child > th:last-child {
+  border-top-right-radius: calc(var(--agw-radius-lg) - 1px);
 }
 
 /* ── Thinking / reasoning block ─────────────────────────────────────
@@ -259,7 +305,7 @@
   );
   opacity: 0.64;
   pointer-events: none;
-  transition: opacity 0.14s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-think-toggle:hover .agw-timeline-rule,
 .agw-tool-group-head:hover .agw-timeline-rule {

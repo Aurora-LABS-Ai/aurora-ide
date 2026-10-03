@@ -1,6 +1,7 @@
 # Agent Window token system: Codex map and hardening plan
 
-Status: **proposed, nothing implemented** (2026-10-01). Resume from "Phases".
+Status (2026-10-01): **Phase 1 done**, needs a `pnpm tauri:dev` look. Phases 2–3
+not started. Resume from "Phase 2".
 
 Reference material: `thirdparty/codex-ui-design/` (Codex 26.928 CSS, tokens, assets) and the
 restored Codex theme engine at
@@ -144,6 +145,40 @@ Add to `01-root.css`, then replace literals partial by partial:
 
 Verify: tsc, eslint, vitest, and a `pnpm tauri:dev` pass comparing screenshots before and
 after on Home, a conversation with tool cards, Settings and a popover.
+
+**Phase 1 result.** 425 literals swapped by exact rule (durations, curves, layers, radius,
+weight, gallery font sizes) plus about 40 hand fixes. The audit turned up a worse problem
+than hardcoding: **ten `--agw-*` names were referenced and never defined**, so their
+declarations were silently dropped. Fixed:
+
+- `--agw-danger` (16 uses): now defined as `var(--agw-removed)`. Errors had been a fixed
+  `#e5484d` in every theme, and in `31-plan.css` (no fallback) they had no red at all.
+- `--agw-text-dim` ×11 → `text-muted`; `--agw-font-mono` ×5 → `font-code` (code wasn't mono);
+  `--agw-surface-raised` ×7 → `hover-paint` / `state-selected` / `chip-surface` /
+  `code-surface` by role. The model-catalogue rows had **no hover and no keyboard-focus
+  fill** because of this one.
+- `--agw-fw-normal` / `-regular` → `fw-body`; `--agw-border-subtle` / `-faint` → `border`;
+  `--agw-surface-sunken` → `state-quiet`; `--agw-accent-contrast` → `on-accent`.
+- `--agw-focus`: the Kenari link drew an OUTER 2px outline. Now the shared inset
+  `--agw-focus-ring`, like `.agw-rv-link`.
+- Status hexes (`#3fb950`, `#e5534b`, `#d9a441`) in Team, Atlas and Cursor → `added` /
+  `danger` / `warning`. Gallery font sizes now follow Interface text size.
+
+Expected visible changes, all small: error red follows the theme (dark `#f48771`, light
+`#cf222e`); ~60 transitions shift by ≤40ms (two 0.3s ones by 60ms); the four 30/40/50/60
+popover layers became one; mic-permission and image-preview dialogs share the confirm
+dialog's shadow; the segmented thumb shares the switch knob's shadow.
+
+Guards added to `appearance-token-coverage.test.ts`, both shown failing on the old CSS:
+undefined `--agw-*` references, and raw UI durations / global z-indexes.
+
+Left as literals, on purpose: media overlays (`#000`/`#fff` over images and video),
+mask gradients, the phone status-bar mimic (`.agw-devstatus`), "mix toward black" press
+recipes, 8/9/11px glyph and badge sizes, display sizes over 17px, the 1/3/5/7/10px radii
+(Phase 3 decides those with spacing), and the white tick on the green skill check.
+Follow-ups: `.agw-projmenu` and `.agw-idxstat-pop` are popovers but not on the popover
+recipe (10px radius, own shadow); `.agw-term-pill[data-active]` has a hardcoded bluish
+border `rgba(176,199,217,.16)`.
 
 ### Phase 2: derived theme (custom themes only)
 

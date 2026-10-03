@@ -121,7 +121,7 @@
   border: 1px solid transparent;
   border-radius: var(--agw-radius-md);
   background: var(--agw-accent);
-  color: #fff;
+  color: var(--agw-on-accent);
   font: inherit;
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);

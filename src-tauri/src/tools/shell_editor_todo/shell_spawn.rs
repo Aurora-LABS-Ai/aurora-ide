@@ -122,7 +122,9 @@ impl ToolExecutor for ShellSpawnTool {
                 "Start a long-running process in the background (a dev server, a watcher), typed \
                  exactly as you would at the shell's prompt, and return a process ID. Its output \
                  is written to a file you can follow with shell_read_output; list it with \
-                 shell_list_processes and stop it with shell_kill.",
+                 shell_list_processes and stop it with shell_kill. When it exits, Aurora tells \
+                 you with its exit code, so do not poll it to learn whether it finished; read its \
+                 output only when you need what it printed, such as confirming a server came up.",
             ),
             input_schema: json!({
                 "type": "object",
@@ -295,7 +297,9 @@ impl ToolExecutor for ShellSpawnTool {
             }),
             "message": format!(
                 "Background process started with ID: {process_id}. Its output is being written \
-                 to outputFile; read it with shell_read_output (see readOutputWith)."
+                 to outputFile; read it with shell_read_output (see readOutputWith) when you need \
+                 what it printed. Do not poll it: when it exits, Aurora tells you with its exit \
+                 code."
             ),
         })
         .to_string())

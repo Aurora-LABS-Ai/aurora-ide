@@ -317,6 +317,82 @@ describe("agent appearance token coverage", () => {
   });
 
   /**
+   * Every `--agw-*` a partial reads is declared somewhere.
+   *
+   * A custom property that nothing defines does not fail loudly: the whole
+   * declaration is dropped, so the text inherits, the fill goes transparent and
+   * the font falls back to the UI face. Ten names had drifted that way —
+   * `--agw-danger`, `--agw-text-dim`, `--agw-surface-raised`, `--agw-font-mono`
+   * and others, borrowed from other design systems — and the model-catalogue
+   * rows lost both their hover and their keyboard-focus fill to it.
+   *
+   * A fallback does not make a reference exempt: `var(--agw-danger, #e5484d)`
+   * was a hardcoded red that ignored the theme. The only exemption is the
+   * `--agw-ansi-*` family, which is a deliberate override hook that ships unset.
+   */
+  it("references only --agw-* properties that are defined", () => {
+    const defined = new Set<string>(
+      AGENT_TOKEN_KEYS.map(
+        (key) => `--agw-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}`,
+      ),
+    );
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const match of code.matchAll(/(--agw-[a-z0-9-]+)\s*:/g)) defined.add(match[1]);
+    // Set from components at runtime (geometry the CSS cannot know).
+    const runtime = (readdirSync(`${cwd}/src/apps/agent`, { recursive: true }) as string[])
+      .filter((name) => /\.tsx?$/.test(name) && !name.includes(".test."))
+      .map((name) => readFileSync(`${cwd}/src/apps/agent/${name}`, "utf8"))
+      .join("\n");
+    for (const match of runtime.matchAll(/["'`](--agw-[a-z0-9-]+)["'`]/g)) defined.add(match[1]);
+
+    const missing = [
+      ...new Set(
+        [...code.matchAll(/var\(\s*(--agw-[a-z0-9-]+)/g)]
+          .map((match) => match[1])
+          .filter((name) => !defined.has(name) && !name.startsWith("--agw-ansi-")),
+      ),
+    ];
+    expect(missing, `read but never defined: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  /**
+   * UI timing and global stacking go through their tokens.
+   *
+   * Durations between 0.1s and 0.3s are state changes (hover, open, slide) and
+   * read `--agw-dur-*`; longer ones are choreographed loops and may stay
+   * literal. A z-index of 20 or more floats over other components and reads
+   * `--agw-z-*`; smaller integers order siblings inside one component and stay
+   * literal. Both scales and their reasons live in 01-root.css.
+   */
+  it("routes UI durations and global z-indexes through tokens", () => {
+    const offenders: string[] = [];
+    for (const name of (readdirSync(partialsDir) as string[])
+      .filter((n) => n.endsWith(".css"))
+      .sort()) {
+      const text: string = readFileSync(`${partialsDir}/${name}`, "utf8");
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, (comment: string) =>
+        comment.replace(/[^\n]/g, " "),
+      );
+      const lineOf = (index: number) => code.slice(0, index).split("\n").length;
+      // Whole declarations, not lines: a multi-property transition spans several.
+      for (const decl of code.matchAll(/(?<![\w-])(transition|animation)(-duration)?\s*:([^;{}]+);/g)) {
+        for (const time of decl[3].matchAll(/(?<![\w.-])(\d*\.?\d+)(ms|s)(?![\w-])/g)) {
+          const seconds = Number(time[1]) / (time[2] === "ms" ? 1000 : 1);
+          if (seconds >= 0.1 && seconds <= 0.3) {
+            offenders.push(`${name}:${lineOf(decl.index ?? 0)} ${time[0]}`);
+          }
+        }
+      }
+      for (const decl of code.matchAll(/(?<![\w-])z-index\s*:\s*(\d+)\s*;/g)) {
+        if (Number(decl[1]) >= 20) {
+          offenders.push(`${name}:${lineOf(decl.index ?? 0)} z-index ${decl[1]}`);
+        }
+      }
+    }
+    expect(offenders, `raw values that have a token: ${offenders.join(", ")}`).toEqual([]);
+  });
+
+  /**
    * The send button's two states cannot invert.
    *
    * Its enabled icon used `--agw-on-accent`, the label colour for text sitting

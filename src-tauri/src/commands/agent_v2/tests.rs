@@ -1022,6 +1022,33 @@ fn existing_conversation_rejects_the_other_surface_mode() {
         .is_ok());
 }
 
+/// Retry in Aurora Chat rewinds, then saves the thread. The save used to route
+/// as a Build conversation and fail with "other Aurora surface", after the
+/// rewind had already cut the history, so the turn vanished unretried.
+#[test]
+fn saving_a_conversation_writes_to_the_store_that_owns_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = AgentRegistry::new(dummy_factory(), dir.path().to_path_buf());
+    registry
+        .chat_store()
+        .ensure_thread("chat-owned", None, None)
+        .unwrap();
+    registry
+        .store_for_workspace(None)
+        .unwrap()
+        .ensure_thread("build-owned", None, None)
+        .unwrap();
+
+    let chat = registry.store_for_save("chat-owned", None).unwrap();
+    assert!(registry.is_chat_store(&chat), "a chat conversation saves to the chat store");
+
+    let build = registry.store_for_save("build-owned", None).unwrap();
+    assert!(!registry.is_chat_store(&build));
+
+    let new = registry.store_for_save("brand-new", None).unwrap();
+    assert!(!registry.is_chat_store(&new), "a new conversation is a Build one");
+}
+
 #[test]
 fn contaminated_chat_metadata_loses_its_build_workspace() {
     let dir = tempfile::tempdir().expect("tempdir");

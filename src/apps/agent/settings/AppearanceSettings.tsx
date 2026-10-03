@@ -32,6 +32,7 @@ import {
   useAgentThemeStore,
   type AgentUiVersion,
   type AgentTokenKey,
+  type RailEdge,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
 import {
   AGENT_THEMES,
@@ -384,6 +385,7 @@ export const AppearanceSettings: React.FC = () => {
   const customThemes = useAgentThemeStore((s) => s.customThemes);
   const customizations = useAgentThemeStore((s) => s.customizations);
   const translucentSidebar = useAgentThemeStore((s) => s.translucentSidebar);
+  const railEdge = useAgentThemeStore((s) => s.railEdge);
   const uiVersion = useAgentThemeStore((s) => s.uiVersion);
   const contrast = useAgentThemeStore((s) => s.contrast);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
@@ -432,6 +434,7 @@ export const AppearanceSettings: React.FC = () => {
   const resetCustomizations = useAgentThemeStore((s) => s.resetCustomizations);
   const resetTypography = useAgentThemeStore((s) => s.resetTypography);
   const setTranslucentSidebar = useAgentThemeStore((s) => s.setTranslucentSidebar);
+  const setRailEdge = useAgentThemeStore((s) => s.setRailEdge);
   const setUiVersion = useAgentThemeStore((s) => s.setUiVersion);
   const setContrast = useAgentThemeStore((s) => s.setContrast);
   const setReduceMotion = useAgentThemeStore((s) => s.setReduceMotion);
@@ -892,12 +895,27 @@ export const AppearanceSettings: React.FC = () => {
         <SettingsRow
           label="Translucent sidebar"
           hint="Frosted, semi-transparent rail and dock."
-          last
         >
           <AgwSwitch
             checked={translucentSidebar}
             onChange={setTranslucentSidebar}
             ariaLabel="Translucent sidebar"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Icon rail edge"
+          hint="How the icon strip on the left is set apart from the sidebar beside it. Line draws a thin border; Shade darkens the strip and the title bar a step; None runs them together as one frame."
+          last
+        >
+          <AgwSegmented<RailEdge>
+            value={railEdge}
+            ariaLabel="Icon rail edge"
+            options={[
+              { value: "line", label: "Line" },
+              { value: "shade", label: "Shade" },
+              { value: "none", label: "None" },
+            ]}
+            onChange={setRailEdge}
           />
         </SettingsRow>
       </SettingsSection>

@@ -9,8 +9,7 @@ vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
   useAgentSettingsStore: (select: (state: { models: never[]; providers: never[] }) => unknown) =>
     select({ models: [], providers: [] }),
 }));
-vi.mock("./ActivityChart", () => ({ ActivityChart: () => null }));
-vi.mock("../shared/AgentIcon", () => ({ AgentIcon: () => null }));
+vi.mock("@/apps/agent/shared/AgentIcon", () => ({ AgentIcon: () => null }));
 vi.mock("./primitives", () => ({
   AgwSegmented: () => null,
   AgwButton: (props: { children: React.ReactNode; disabled?: boolean; onClick?: () => void }) =>
@@ -20,7 +19,8 @@ vi.mock("./primitives", () => ({
 const stats = (input: number) => ({
   userName: "Local user", totalThreads: 3, totalMessages: 5,
   lifetimeInputTokens: input, lifetimeOutputTokens: 2, lifetimeCacheReadTokens: 0,
-  days: [], topTools: [], topModels: [], requestsByProvider: [], totalRequests: 1, longestTask: null,
+  days: [], models: [], unattributed: { requests: 0, tokens: 0 }, requestsByProvider: [],
+  totalRequests: 1,
 });
 
 describe("Profile permanent usage", () => {
@@ -30,7 +30,7 @@ describe("Profile permanent usage", () => {
   const render = (view: React.ReactNode) => {
     act(() => { root = createRoot(host); root.render(view); });
   };
-  const lifetime = () => [...host.querySelectorAll(".agw-profile-tile")]
+  const lifetime = () => [...host.querySelectorAll(".agw-profile-fact")]
     .find((tile) => tile.textContent?.includes("Lifetime tokens"))?.textContent;
 
   beforeEach(() => {
@@ -77,13 +77,38 @@ describe("Profile permanent usage", () => {
     render(<ProfileSettings />);
     await act(async () => { await vi.advanceTimersByTimeAsync(350); });
     expect(host.textContent).toContain("Historical usage import failed");
-    ipc.invoke.mockResolvedValue({ ...stats(40), requestsByProvider: [{
-      providerId: "", requests: 1, estimatedRequests: 0, inputTokens: 40, outputTokens: 2,
-      cacheReadTokens: 0, threads: 1, models: [],
-    }] });
+    ipc.invoke.mockResolvedValue({ ...stats(40), unattributed: { requests: 1, tokens: 42 } });
     act(() => window.dispatchEvent(new Event("focus")));
     await act(async () => { await vi.advanceTimersByTimeAsync(350); });
     expect(host.textContent).not.toContain("Historical usage import failed");
-    expect(host.textContent).toContain("Unattributed historical usage");
+    // Usage with no recorded model is stated, never ranked as if it were a model.
+    expect(host.querySelector(".agw-profile-foot")?.textContent).toContain(
+      "recorded before Aurora saved which model answered",
+    );
+    expect(host.querySelectorAll(".agw-profile-rank")).toHaveLength(0);
+  });
+
+  it("caps each list at six and folds removed providers into one row", async () => {
+    const providerRow = (providerId: string, requests: number) => ({
+      providerId, requests, estimatedRequests: 0, inputTokens: requests, outputTokens: 0,
+      cacheReadTokens: 0, threads: 1, models: [],
+    });
+    ipc.invoke.mockResolvedValue({
+      ...stats(40),
+      // The mocked store knows no providers, so all eight read as removed:
+      // the panel must not list a single id.
+      requestsByProvider: Array.from({ length: 8 }, (_, i) => providerRow(`gone-${i}`, 10 - i)),
+      models: Array.from({ length: 9 }, (_, i) => ({
+        model: `model-${i}`, providers: ["a"], requests: 1, tokens: 100 - i,
+      })),
+    });
+    render(<ProfileSettings />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+    const panels = host.querySelectorAll(".agw-profile-panel");
+    expect(panels[0].querySelectorAll(".agw-profile-rank")).toHaveLength(6);
+    expect(panels[0].textContent).toContain("All 9 models");
+    expect(panels[1].querySelectorAll(".agw-profile-rank")).toHaveLength(0);
+    expect(host.textContent).not.toContain("gone-");
+    expect(host.querySelector(".agw-profile-foot")?.textContent).toContain("8 providers you've removed");
   });
 });

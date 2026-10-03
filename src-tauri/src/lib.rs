@@ -736,6 +736,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::chat_gallery::chat_gallery_list,
             commands::chat_gallery::chat_gallery_copy_image,
             commands::chat_gallery::chat_gallery_save_as,
+            commands::chat_gallery::chat_gallery_read_image,
+            commands::chat_gallery::chat_gallery_set_hidden,
+            commands::chat_gallery::chat_gallery_delete,
             commands::chat_video::chat_video_refresh,
             commands::chat_video::video_model_catalog,
             commands::chat_gallery::chat_gallery_thumbnail,
@@ -1037,6 +1040,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::editor_ops::open_ide_window,
             commands::prompt_refine::prompt_refine_dictation,
             commands::prompt_refine::prompt_refine_suggest,
+            commands::prompt_refine::reply_suggest_cloud,
             commands::prompt_refine::prompt_refine_cancel,
         ])
         // The IDE window is created INVISIBLE (`"visible": false` in

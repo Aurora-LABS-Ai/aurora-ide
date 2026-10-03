@@ -41,6 +41,7 @@ function nonDefault(key: AppearancePrefKey): unknown {
   if (key === "modelSelectorPosition") return "top";
   if (key === "transcriptReasoning") return "folded";
   if (key === "transcriptTextPace") return "steady";
+  if (key === "railEdge") return "shade";
   return "changed";
 }
 

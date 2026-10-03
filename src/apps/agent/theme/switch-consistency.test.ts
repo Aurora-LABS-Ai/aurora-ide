@@ -58,8 +58,9 @@ describe("switch consistency", () => {
 
   it("paints every switch's on state from the control accent", () => {
     // Collected from `role="switch"`, so this covers the shared primitive and
-    // the two controls that are switches without using it — the composer's
-    // reasoning pill and the chat shortlist chip.
+    // the control that is a switch without using it — the chat shortlist chip.
+    // (The composer's own mini switch is gone: the model menu's Fast toggle is
+    // the shared `AgwSwitch` now.)
     const classes = new Set<string>();
     for (const { src } of sources) {
       for (const match of src.matchAll(/role="switch"[\s\S]{0,400}?className="([^"{]+)"/g)) {
@@ -69,7 +70,7 @@ describe("switch consistency", () => {
     }
     // A regex that silently matches nothing would make this test a no-op, and
     // it is the kind that passes forever after a refactor renames an attribute.
-    expect(classes.size).toBeGreaterThanOrEqual(3);
+    expect(classes.size).toBeGreaterThanOrEqual(2);
 
     for (const name of classes) {
       // The element's OWN on-rule, not a descendant like the knob: the

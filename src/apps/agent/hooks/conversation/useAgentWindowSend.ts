@@ -58,10 +58,12 @@ import {
 import { asChatFormat, runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { imageModelFromSelection } from "@/apps/agent/services/providers/image-providers";
+import { runCloudReplySuggestions } from "@/apps/agent/services/providers/reply-suggest-cloud";
 import { runDirectImageTurn } from "./direct-image-turn";
 import {
   refineConfig,
   refinePathsConfigured,
+  replySuggestModelReady,
   replySuggestionsReady,
   useAgentRefineStore,
 } from "@/apps/agent/store/composer/useAgentRefineStore";
@@ -577,8 +579,9 @@ async function maybeGenerateTitle(threadId: string, firstMessage: string): Promi
 const runningAgents = new Map<string, AgentService>();
 
 /**
- * Reply suggestions — after a turn settles, ask the local prompt-refine model
- * for up to 3 short replies the user could tap instead of typing. Fire-and-
+ * Reply suggestions — after a turn settles, ask the picked model (the local
+ * prompt-refine model unless a configured one is chosen in Preferences) for
+ * up to 4 short replies the user could tap instead of typing. Fire-and-
  * forget (the ~4s of model calls must never delay turn teardown); the
  * assistant text is captured synchronously because the live turn closes right
  * after this is invoked. Results are dropped if a new turn started meanwhile,
@@ -602,12 +605,14 @@ function generateSuggestionsFrom(
     .find((m) => m.role === "user" && (m.content ?? "").trim());
   const userText = (lastUser?.content ?? "").trim();
 
-  void runReplySuggestions(
-    `suggest_${threadId}_${Date.now()}`,
-    userText,
-    text,
-    refineConfig(refine),
-  )
+  // A picked model writes them in the cloud; none picked means the local
+  // llama.cpp model, as before.
+  const cloudModel = refine.replySuggestModel.trim();
+  const request = cloudModel
+    ? runCloudReplySuggestions(cloudModel, userText, text)
+    : runReplySuggestions(`suggest_${threadId}_${Date.now()}`, userText, text, refineConfig(refine));
+
+  void request
     .then((suggestions) => {
       // A newer turn owns the conversation now — these chips describe a
       // message that's no longer the latest.
@@ -627,12 +632,12 @@ function maybeSuggestReplies(threadId: string): void {
 
 /**
  * Manual `/suggest` trigger from the composer. Explicit intent — gated only
- * on the local model being configured, NOT on the auto-suggestions toggle,
+ * on a suggestion model being ready, NOT on the auto-suggestions toggle,
  * and reads the SETTLED thread (live turns have already closed by the time
  * the user can type a slash command).
  */
 export function requestReplySuggestions(threadId: string): void {
-  if (!refinePathsConfigured(useAgentRefineStore.getState())) return;
+  if (!replySuggestModelReady(useAgentRefineStore.getState())) return;
   if (runningAgents.has(threadId)) return; // mid-turn — chips would be stale
   const messages = useAgentChatStore.getState().currentThread?.messages ?? [];
   generateSuggestionsFrom(threadId, messages);
@@ -1202,7 +1207,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     if (directImage) {
       await runDirectImageTurn({
         threadId,
-        prompt: content,
+        // WITH the attached picture's marker: the tray was already cleared
+        // above, so sending bare `content` here silently dropped the picture.
+        // The image command splits it off and edits it.
+        prompt: contentForModel,
         provider: directImage.provider,
         model: directImage.model,
         modelSelection,

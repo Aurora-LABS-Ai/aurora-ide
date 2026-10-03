@@ -48,7 +48,7 @@
   box-shadow:
     0 8px 26px -8px color-mix(in srgb, var(--agw-accent) 11%, transparent),
     0 16px 56px -10px color-mix(in srgb, var(--agw-accent) 5%, transparent);
-  animation: agw-drop-arm 200ms ease-out both;
+  animation: agw-drop-arm var(--agw-dur-slow) ease-out both;
 }
 
 /* The shine itself: a conic gradient masked down to a 1.5px border band
@@ -87,7 +87,7 @@
     linear-gradient(#000 0 0);
   mask-composite: exclude;
   animation:
-    agw-drop-arm 200ms ease-out both,
+    agw-drop-arm var(--agw-dur-slow) ease-out both,
     agw-drop-beam 3.2s linear infinite;
 }
 
@@ -129,7 +129,7 @@
   position: fixed;
   left: 0;
   top: 0;
-  z-index: 1200;
+  z-index: var(--agw-z-overlay);
   pointer-events: none;
   will-change: transform;
 }
@@ -156,7 +156,7 @@
   opacity: 0.95;
   transform: rotate(1.5deg);
   transform-origin: 20% 20%;
-  animation: agw-ghost-pickup 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: agw-ghost-pickup var(--agw-dur-fast) var(--agw-ease-pop) both;
 }
 @keyframes agw-ghost-pickup {
   from {
@@ -234,7 +234,7 @@ body[data-agw-dragging] * {
   color: #fff;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-attach-card:hover .agw-attach-x {
   opacity: 1;
@@ -294,7 +294,7 @@ body[data-agw-dragging] * {
   cursor: zoom-in;
   line-height: 0;
   /* Colour only, per the house hover language — the tile never moves. */
-  transition: border-color 0.15s cubic-bezier(0, 0, 0.2, 1);
+  transition: border-color var(--agw-dur-base) var(--agw-ease-out);
 }
 .agw-bubble-image:hover {
   border-color: var(--agw-border-strong);
@@ -317,7 +317,7 @@ body[data-agw-dragging] * {
 .agw-img-overlay {
   position: fixed;
   inset: 0;
-  z-index: 13000;
+  z-index: var(--agw-z-lightbox);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -30,7 +30,7 @@
   white-space: nowrap;
   transform: translateX(0);
   /* Shorthand, so the return leg resets the delay the hover leg sets. */
-  transition: transform 0.2s cubic-bezier(0, 0, 0.2, 1);
+  transition: transform var(--agw-dur-slow) var(--agw-ease-out);
 }
 [data-slide-host]:hover .agw-slide-inner,
 .agw-slide:hover .agw-slide-inner {
@@ -54,7 +54,7 @@
    * but now at the moment the text is already sliding, where it cannot be seen.
    * The hint only ever moved that cost forward to a moment of stillness. */
   transform: translateX(var(--agw-slide-shift, 0px));
-  transition-duration: var(--agw-slide-dur, 0.2s);
+  transition-duration: var(--agw-slide-dur, var(--agw-dur-slow));
   transition-timing-function: linear;
   /* Hover intent: stay a second, and the title reads itself out to you. */
   transition-delay: var(--agw-slide-delay, 1s);

@@ -274,9 +274,19 @@
    * "…GPT 5.6 Sol") differ at the END — exactly what an ellipsis removes. */
   width: 440px;
   max-width: min(520px, calc(100vw - 24px));
-  max-height: 420px;
+  /* Set inline by ModelSelector from the same constant its up/down placement
+     uses, so the two cannot disagree. */
+  max-height: var(--agw-model-menu-max-h);
   padding: 0;
   overflow: hidden;
+  z-index: var(--agw-z-popover);
+}
+.agw-model-trigger-chevron {
+  flex-shrink: 0;
+  transition: transform var(--agw-dur-base) ease;
+}
+.agw-model-trigger[data-open] .agw-model-trigger-chevron {
+  transform: rotate(180deg);
 }
 .agw-model-head {
   display: flex;
@@ -343,8 +353,8 @@
   font-size: var(--agw-fs-label);
   cursor: pointer;
   transition:
-    color 0.12s ease,
-    border-color 0.12s ease;
+    color var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease;
 }
 .agw-model-tab:hover {
   color: var(--agw-text);
@@ -396,7 +406,7 @@
 }
 button.agw-model-group-label {
   cursor: pointer;
-  transition: color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease;
 }
 button.agw-model-group-label:hover:not(:disabled) {
   color: var(--agw-text);
@@ -411,7 +421,10 @@ button.agw-model-group-label:focus-visible {
 }
 .agw-model-group-caret {
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
+}
+.agw-model-group-label[aria-expanded="false"] > .agw-model-group-caret {
+  transform: rotate(-90deg);
 }
 @media (prefers-reduced-motion: reduce) {
   .agw-model-group-caret {
@@ -442,13 +455,21 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-text);
   text-align: left;
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 
-.agw-model-item:hover {
+.agw-model-item:hover,
+/* The row the arrow keys are on. Focus stays in the search box, so this is the
+   keyboard's only mark — the same fill as hover, because the mouse moves the
+   same marker. */
+.agw-model-item[data-kbd-active] {
   background: var(--agw-hover-paint);
   color: var(--agw-text);
+}
+.agw-model-check {
+  flex-shrink: 0;
+  color: var(--agw-accent);
 }
 .agw-model-item[data-active] {
   /* Calm, neutral selected fill (no accent box) — the accent check is the only
@@ -502,116 +523,134 @@ button.agw-model-group-label:focus-visible {
 .agw-model-cap svg {
   color: var(--agw-text-muted);
 }
-/* Right cluster — inline reasoning control + active check. */
+/* Right cluster — exception glyphs + the check. */
 .agw-model-controls {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
 }
-.agw-model-reason {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-/* Effort chip — shows the current level; click cycles it. */
-.agw-model-effort {
-  height: 18px;
-  padding: 0 7px;
-  border: 1px solid var(--agw-border);
-  border-radius: var(--agw-radius-pill);
-  background: transparent;
-  color: var(--agw-accent);
-  font-size: var(--agw-fs-micro);
-  font-weight: var(--agw-fw-strong);
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
-  outline: none;
-}
-.agw-model-effort:hover {
-  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--agw-accent) 40%, transparent);
-}
-/* Focus is carried by the chip's OWN border and fill rather than by a ring
-   floating around it — a detached halo on an 18px pill inside a dense row
-   reads as a second element rather than as this one being focused. */
-.agw-model-effort:focus-visible {
-  background: color-mix(in srgb, var(--agw-accent) 18%, transparent);
-  border-color: var(--agw-accent);
-}
-/* Toggle chips (Cursor's Fast lane) use the same pill so row heights match.
-   Unlike the effort chip — which always states a live value — this one has an
-   off position, and off must not look like an accent-coloured setting that is
-   already doing something. */
-.agw-model-effort[aria-pressed="false"] {
-  color: var(--agw-text-subtle);
-  border-color: var(--agw-border);
-}
-.agw-model-effort[aria-pressed="false"]:hover {
-  color: var(--agw-text-dim);
-  background: var(--agw-surface-raised);
-  border-color: var(--agw-border-strong, var(--agw-border));
-}
-.agw-model-effort[data-on] {
-  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
-}
-.agw-model-effort[data-unavailable] {
-  color: var(--agw-warning);
-  border-color: color-mix(in srgb, var(--agw-warning) 42%, transparent);
-  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
-}
-.agw-model-effort[data-unavailable]:hover,
-.agw-model-effort[data-unavailable]:focus-visible {
-  color: var(--agw-warning);
-  border-color: var(--agw-warning);
-  background: color-mix(in srgb, var(--agw-warning) 16%, transparent);
-}
-/* Budget models: the chip is the same `.agw-model-effort` pill (so budget and
-   effort rows keep identical heights); this wrapper just anchors its popover. */
-.agw-model-reason-wrap {
-  display: inline-flex;
-  align-items: center;
-}
 
-/* ── Thinking-budget popover ─────────────────────────────────────────────────
- * PORTALED to `.agw-root` (`.agw-model-menu` clips with `overflow: hidden`, so
- * an in-row absolute panel would be cut off). Member of the composer popover
- * family — the tint rule below gives it the same premium glass as the model
- * and mention pickers. */
-.agw-bud-pop {
-  z-index: 1000;
-  padding: 12px;
-  /* Same glass + entrance as `.agw-menu` / `.agw-mention`; the composer-family
-     rule near the end of this file supplies the tint. */
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
-  backdrop-filter: blur(24px) saturate(140%);
-  border: 1px solid var(--agw-border-strong);
-  border-radius: var(--agw-radius-lg);
-  background: var(--agw-popover-surface);
-  box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
-  cursor: default;
+/* ── The selected model card ──────────────────────────────────────────────────
+ * Top of the menu: the model you are on and the settings it accepts (effort
+ * steps, a thinking budget, Cursor's Fast). The rows below hold no controls.
+ * Label column + control, one line per setting, so effort and budget models
+ * line up the same way. */
+.agw-model-now {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--agw-border);
 }
-.agw-bud-head {
+.agw-model-now-top {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 10px;
+  min-width: 0;
 }
-.agw-bud-title {
-  font-size: var(--agw-fs-ui);
+.agw-model-now-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-md);
   font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
-.agw-bud-value {
-  font-family: var(--agw-font-code);
-  font-size: var(--agw-fs-md);
-  color: var(--agw-accent);
+.agw-model-now-prov {
+  flex: 0 1000000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-model-now-caps {
+  margin-left: auto;
+  display: inline-flex;
+  align-self: center;
+  gap: 8px;
+  color: var(--agw-text-subtle);
+}
+.agw-model-now-ctl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.agw-model-now-lbl {
+  flex: 0 0 68px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-muted);
+}
+/* The live budget value sits in the label column beside the slider. */
+.agw-model-now-val {
+  color: var(--agw-text);
   font-variant-numeric: tabular-nums;
 }
+.agw-model-now-steps {
+  flex: 1;
+  min-width: 0;
+}
+/* The shared segmented control, stretched to the row: each level gets an equal
+   share so the steps read as a scale from faster to smarter. */
+.agw-model-now-steps .agw-seg {
+  display: flex;
+  width: 100%;
+}
+.agw-model-now-steps .agw-seg-btn {
+  flex: 1;
+  min-width: 0;
+  /* The settings pill pads 14px a side for two or three words; here up to six
+     levels share one row, so the room goes to the label instead. */
+  padding: 0 6px;
+}
+/* Many levels (Off … X-High, Max): the label moves above so the steps get the
+   card's full width rather than what is left beside a 68px label column. */
+.agw-model-now-ctl[data-dense] {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.agw-model-now-ctl[data-dense] .agw-model-now-lbl {
+  flex: none;
+}
+.agw-model-now-ctl[data-dense] .agw-model-now-steps {
+  flex: none;
+}
+.agw-model-now-ctl .agw-bud-presets {
+  flex: 1;
+  margin: 0;
+}
+.agw-model-now-ctl .agw-bud-range {
+  flex: 1;
+}
+.agw-model-now-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+.agw-model-now-hint[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+.agw-model-now-note {
+  margin: 0 0 0 78px;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+.agw-model-now-note[data-tone="warn"] {
+  color: var(--agw-warning);
+}
+/* A picture model has no label column to align with. */
+.agw-model-now-top + .agw-model-now-note {
+  margin-left: 0;
+}
+
 /* The track paints its own fill from `--agw-bud-pct` (set inline) so the filled
    portion reads as "spent" without relying on `accent-color`, which can't be
    split into two colors. */
@@ -643,7 +682,7 @@ button.agw-model-group-label:focus-visible {
   border-radius: 50%;
   background: var(--agw-text);
   box-shadow: 0 1px 3px color-mix(in srgb, var(--agw-text) 30%, transparent);
-  transition: transform 0.12s ease;
+  transition: transform var(--agw-dur-fast) ease;
 }
 .agw-bud-range:hover::-webkit-slider-thumb {
   transform: scale(1.15);
@@ -656,14 +695,6 @@ button.agw-model-group-label:focus-visible {
    is the one control every platform already marks with an outer halo. */
 .agw-bud-range:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px var(--agw-ring);
-}
-.agw-bud-scale {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 4px;
-  font-family: var(--agw-font-code);
-  font-size: var(--agw-fs-micro);
-  color: var(--agw-text-subtle);
 }
 .agw-bud-presets {
   display: flex;
@@ -682,7 +713,7 @@ button.agw-model-group-label:focus-visible {
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
   outline: none;
-  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-bud-preset:hover {
   background: var(--agw-hover-paint);
@@ -694,57 +725,6 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-accent);
 }
 .agw-bud-preset:focus-visible {
-  box-shadow: var(--agw-focus-ring);
-}
-.agw-bud-hint {
-  margin: 10px 0 0;
-  font-size: var(--agw-fs-label);
-  line-height: 1.45;
-  color: var(--agw-text-subtle);
-}
-.agw-bud-hint[data-tone="warn"] {
-  color: var(--agw-warning);
-}
-
-/* Compact reasoning switch — same token scheme as .agw-switch, smaller. */
-.agw-mswitch {
-  position: relative;
-  flex-shrink: 0;
-  width: 30px;
-  height: 17px;
-  padding: 0;
-  border: none;
-  border-radius: var(--agw-radius-pill);
-  background: var(--agw-control-muted);
-  cursor: pointer;
-  transition: background 0.18s ease;
-  outline: none;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agw-text) 6%, transparent);
-}
-.agw-mswitch-knob {
-  position: absolute;
-  top: 2.5px;
-  left: 2.5px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--agw-text);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--agw-text) 30%, transparent);
-  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.6, 1), background 0.18s ease;
-}
-/* The CONTROL accent, like `.agw-switch` — this is the same object at 30px, and
-   it was reading the BRAND accent, so the composer's reasoning switch and the
-   settings switches would part company the moment a brand went neutral. A
-   17px-tall pill that says on or off by fill alone is exactly what the control
-   accent exists to keep coloured. */
-.agw-mswitch[data-on] {
-  background: var(--agw-control-accent, var(--agw-accent));
-}
-.agw-mswitch[data-on] .agw-mswitch-knob {
-  transform: translateX(13px);
-  background: var(--agw-on-accent);
-}
-.agw-mswitch:focus-visible {
   box-shadow: var(--agw-focus-ring);
 }
 /* Agent/Plan mode toggle in the picker header — a compact 2-segment control.
@@ -771,7 +751,7 @@ button.agw-model-group-label:focus-visible {
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-model-mode-btn svg {
@@ -815,13 +795,6 @@ button.agw-model-group-label:focus-visible {
   font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
-.agw-model-foot {
-  flex: 0 0 auto;
-  padding: 8px 13px;
-  border-top: 1px solid var(--agw-border);
-  font-size: var(--agw-fs-label);
-  color: var(--agw-text-subtle);
-}
 
 /* Composer textarea + rail search placeholders use the muted token. */
 .agw-root textarea::placeholder,
@@ -837,7 +810,7 @@ button.agw-model-group-label:focus-visible {
   background: transparent;
   color: var(--agw-text);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-menu-item:hover {

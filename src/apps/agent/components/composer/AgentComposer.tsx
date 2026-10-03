@@ -25,7 +25,7 @@ import {
 } from "@/apps/agent/services/terminal/terminal-sessions";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
-import { ModelSelector } from "@/apps/agent/components/composer/ModelSelector";
+import { ModelSelector } from "@/apps/agent/components/composer/model-selector/ModelSelector";
 import { ComposerAurora } from "./ComposerAurora";
 import { ComposerBody } from "./ComposerBody";
 import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
@@ -35,6 +35,7 @@ import {
 } from "@/apps/agent/components/composer/ComposerPlusMenu";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { serializeEditor } from "@/apps/agent/lib/composer/serialize-editor";
+import { deletePillBeforeCaret } from "@/apps/agent/lib/composer/pill-backspace";
 import { ComposerRail } from "@/apps/agent/components/composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
@@ -53,6 +54,8 @@ import {
 } from "@/apps/agent/adapters/prompt-commands";
 import { composerCommands, useAgentCommandStore } from "@/apps/agent/store/composer/useAgentCommandStore";
 import {
+  canEditWith,
+  imageModelFromSelection,
   imageProviderReady,
   isImageModelSelection,
 } from "@/apps/agent/services/providers/image-providers";
@@ -80,6 +83,7 @@ import {
   basenameOf,
   blobToAttachment,
   dataUrlToAttachmentParts,
+  imageFileForEdit,
   imageFileToAttachment,
   isImagePath,
 } from "@/apps/agent/lib/render/image-utils";
@@ -201,13 +205,6 @@ function buildSelectionPill(entry: SelectedEntry): HTMLSpanElement {
   return pill;
 }
 
-/** True for the four inline pill kinds: `@` file, `@terminal`, `/` directive, inspector pick. */
-function isPill(node: ChildNode | null): node is HTMLElement {
-  if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
-  const el = node as HTMLElement;
-  return !!(el.dataset.rel || el.dataset.cmd || el.dataset.sel || el.dataset.term);
-}
-
 /**
  * Pills that make the editor worth SENDING — each one carries a reference the
  * model receives even with no prose around it.
@@ -223,43 +220,6 @@ const SENDABLE_PILLS = "[data-rel],[data-term]";
  * painted straight over the chip.
  */
 const VISIBLE_PILLS = "[data-rel],[data-term],[data-cmd]";
-
-/**
- * Delete the pill immediately before a collapsed caret. Returns whether one was
- * removed, so the caller can decide to preventDefault.
- *
- * Pills carry `user-select: none`, which makes Chromium refuse to extend a
- * selection over them — so the native "Backspace removes the whole widget"
- * behavior silently no-ops and the caret parks against the pill forever. That
- * is the "I had to Ctrl+A" symptom: every keystroke did nothing, with no
- * feedback explaining why. Deleting it ourselves restores the contract the
- * pills were designed around.
- */
-function deletePillBeforeCaret(root: HTMLElement): boolean {
-  const s = window.getSelection();
-  if (!s || !s.isCollapsed || s.rangeCount === 0) return false;
-  const { startContainer, startOffset } = s.getRangeAt(0);
-  if (!root.contains(startContainer)) return false;
-
-  let target: ChildNode | null = null;
-  if (startContainer.nodeType === Node.ELEMENT_NODE) {
-    // Caret sits between children — the pill would be the one just before it.
-    target = startOffset > 0 ? startContainer.childNodes[startOffset - 1] : null;
-  } else if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
-    // Caret at the very start of a text node (typically the emptied space that
-    // followed the pill) — the pill is its previous sibling.
-    target = startContainer.previousSibling;
-  }
-  if (!isPill(target)) return false;
-
-  const range = document.createRange();
-  range.setStartBefore(target);
-  range.collapse(true);
-  target.remove();
-  s.removeAllRanges();
-  s.addRange(range);
-  return true;
-}
 
 function placeCaretAtEnd(el: HTMLElement): void {
   const range = document.createRange();
@@ -386,9 +346,19 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   // model per chat, the globally-selected one may be vision-capable while the
   // chat you're typing in is not — which would let an image attach to a model
   // that can never see it.
-  const visionSupported = useAgentSettingsStore(
+  const visionModel = useAgentSettingsStore(
     (s) => s.getModelFor(composerModel)?.supportsVision ?? false,
   );
+  // A picture-making conversation whose model can EDIT takes one picture too:
+  // the image command turns it into the edit's source. `getModelFor` only knows
+  // language models, so without this an image model read as "can't see
+  // images" and the picture to change could never be attached.
+  const imageEditable = useAgentSettingsStore((s) => {
+    const picked = imageModelFromSelection(composerModel, s.imageProviders);
+    return !!picked && canEditWith(picked.provider, picked.model);
+  });
+  const imageModelChat = isImageModelSelection(composerModel);
+  const visionSupported = visionModel || imageEditable;
   const [visionWarn, setVisionWarn] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [annotateId, setAnnotateId] = useState<string | null>(null);
@@ -401,7 +371,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
   const warnNoVision = () => {
     setVisionWarn(
-      "This model can't see images. Switch to a vision model to attach images.",
+      imageModelChat
+        ? "This picture model can't edit pictures. Pick one marked with a pencil to change a picture."
+        : "This model can't see images. Switch to a vision model to attach images.",
     );
     window.setTimeout(() => setVisionWarn(null), 4000);
   };
@@ -980,7 +952,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             warnNoVision();
             continue;
           }
-          void imageFileToAttachment(p)
+          // A picture to EDIT goes at full quality; the vision copy is shrunk
+          // to 1024px JPEG, which would degrade the picture being changed.
+          void (imageEditable ? imageFileForEdit(p) : imageFileToAttachment(p))
             .then(addImage)
             .catch((err) => {
               console.error("[agent-window] read dropped image failed:", p, err);

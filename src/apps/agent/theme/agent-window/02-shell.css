@@ -9,7 +9,7 @@
   overflow: hidden;
   /* Duration is driven by Appearance → Motion (glide on/off + speed). 0ms
    * (glide off) collapses to an instant open/close. */
-  transition: width var(--agw-rail-anim, 580ms) cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width var(--agw-rail-anim, 580ms) var(--agw-ease-standard);
 }
 /* No transition mid-drag so a manual resize tracks the cursor exactly. */
 .agw-shell-flex[data-agw-dragging="true"] .agw-shell-side {
@@ -64,7 +64,7 @@
   border: none;
   background: transparent;
   color: var(--agw-text-muted);
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-titlebar-btn:hover {
   background: var(--agw-hover-paint);
@@ -72,8 +72,8 @@
 }
 /* Close keeps the platform convention: destructive red fill on hover. */
 .agw-titlebar-btn-close:hover {
-  background: var(--agw-removed);
-  color: #ffffff;
+  background: var(--agw-danger);
+  color: var(--agw-on-danger);
 }
 
 /* ── Two-layer shell: frame + recessed content sheet ─────────────────
@@ -108,7 +108,7 @@
   background: transparent;
   cursor: col-resize;
   position: relative;
-  transition: background 0.12s ease;
+  transition: background var(--agw-dur-fast) ease;
   touch-action: none;
 }
 .agw-shell-handle::after {
@@ -135,7 +135,7 @@
   color: var(--agw-text-muted);
   border-radius: var(--agw-radius-sm);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
   outline: none;
 }
 .agw-icon-btn:hover {
@@ -223,7 +223,7 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in 0.12s cubic-bezier(0.2, 0.9, 0.3, 1);
+  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-pop);
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-menu,

@@ -33,6 +33,12 @@ interface AgentRefineState {
   dictationCleanupEnabled: boolean;
   /** Offer tappable reply chips after each settled turn. */
   replySuggestionsEnabled: boolean;
+  /**
+   * Who writes the reply chips. Empty is the local llama.cpp model above;
+   * otherwise a configured model as `providerId:modelKey`, the same selection
+   * format the Compaction model picker stores.
+   */
+  replySuggestModel: string;
 
   setEnabled: (v: boolean) => void;
   setLlamaDir: (v: string) => void;
@@ -41,6 +47,7 @@ interface AgentRefineState {
   setDevice: (v: RefineDevice) => void;
   setDictationCleanupEnabled: (v: boolean) => void;
   setReplySuggestionsEnabled: (v: boolean) => void;
+  setReplySuggestModel: (v: string) => void;
 }
 
 export const useAgentRefineStore = create<AgentRefineState>()(
@@ -53,6 +60,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       device: "gpu",
       dictationCleanupEnabled: false,
       replySuggestionsEnabled: false,
+      replySuggestModel: "",
 
       setEnabled: (v) => set({ enabled: v }),
       setLlamaDir: (v) => set({ llamaDir: v }),
@@ -61,6 +69,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       setDevice: (v) => set({ device: v }),
       setDictationCleanupEnabled: (v) => set({ dictationCleanupEnabled: v }),
       setReplySuggestionsEnabled: (v) => set({ replySuggestionsEnabled: v }),
+      setReplySuggestModel: (v) => set({ replySuggestModel: v }),
     }),
     { name: "aurora-agent-window-refine" },
   ),
@@ -97,7 +106,12 @@ export function dictationCleanupReady(s: AgentRefineState): boolean {
   return s.dictationCleanupEnabled && refinePathsConfigured(s);
 }
 
-/** Reply suggestions should actually run: its switch is on AND the model is set up. */
+/** Reply suggestions have a model to run on: a chosen cloud model, or the local one set up. */
+export function replySuggestModelReady(s: AgentRefineState): boolean {
+  return s.replySuggestModel.trim() !== "" || refinePathsConfigured(s);
+}
+
+/** Reply suggestions should actually run: its switch is on AND a model is ready. */
 export function replySuggestionsReady(s: AgentRefineState): boolean {
-  return s.replySuggestionsEnabled && refinePathsConfigured(s);
+  return s.replySuggestionsEnabled && replySuggestModelReady(s);
 }

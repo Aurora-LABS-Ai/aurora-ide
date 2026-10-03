@@ -53,10 +53,6 @@
 .agw-mention-item:active {
   background: var(--agw-press-paint);
 }
-/* Matches the specificity of the `[aria-pressed="false"]` hover it must beat. */
-.agw-model-effort[aria-pressed="false"]:active {
-  background: var(--agw-press-paint);
-}
 
 /* ── Left rail ─────────────────────────────────────────────────────────── */
 .agw-rail-newchat:active,

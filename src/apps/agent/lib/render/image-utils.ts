@@ -114,6 +114,41 @@ export async function imageFileToAttachment(path: string): Promise<ImageAttachme
   };
 }
 
+/**
+ * Formats an image provider's edit endpoint takes, and the size Aurora will
+ * store as a conversation asset (`assets::MAX_ASSET_BYTES` in Rust).
+ */
+const EDIT_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
+export const EDIT_IMAGE_MAX_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Read an image file AS IT IS, for an image model to edit.
+ *
+ * `imageFileToAttachment` shrinks to 1024px JPEG, which is right for a vision
+ * model reading a screenshot and wrong for a picture someone wants changed: it
+ * throws away resolution and paints transparency white before the edit model
+ * ever sees it. This keeps the original bytes. Throws, in words for the user,
+ * when the file is a format or size the edit path cannot take.
+ */
+export async function imageFileForEdit(path: string): Promise<ImageAttachment> {
+  const ext = extOf(path);
+  if (!EDIT_IMAGE_EXTENSIONS.has(ext)) {
+    throw new Error("Edits take PNG, JPEG, WebP or GIF pictures.");
+  }
+  const bytes = await readFile(path);
+  if (bytes.byteLength > EDIT_IMAGE_MAX_BYTES) {
+    throw new Error(
+      `That picture is ${Math.round(bytes.byteLength / 1024 / 1024)} MB; edits take up to ${EDIT_IMAGE_MAX_BYTES / 1024 / 1024} MB.`,
+    );
+  }
+  return {
+    id: genId(),
+    name: basenameOf(path),
+    mediaType: IMAGE_EXT_TO_MIME[ext] ?? "image/png",
+    base64: bytesToBase64(bytes),
+  };
+}
+
 /** Convert a clipboard/file blob (pasted image) into an attachment. */
 export async function blobToAttachment(
   blob: Blob,

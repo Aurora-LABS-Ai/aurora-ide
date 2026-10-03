@@ -46,7 +46,7 @@
 .agw-chapter-time {
   flex: none;
   font-size: var(--agw-fs-ui);
-  font-weight: var(--agw-fw-normal);
+  font-weight: var(--agw-fw-body);
   color: var(--agw-text-subtle);
   letter-spacing: normal;
   text-transform: none;
@@ -57,7 +57,7 @@
   /* A model can always write a longer title than the pane is wide; wrap it
    * rather than clip a heading the user is meant to read. */
   overflow-wrap: anywhere;
-  transition: color 0.12s ease;
+  transition: color var(--agw-dur-fast) ease;
 }
 .agw-row:first-child .agw-chapter {
   padding-top: 0;
@@ -96,7 +96,7 @@
 }
 .agw-chapter-chev {
   color: var(--agw-text-subtle);
-  transition: transform 0.15s ease, color 0.12s ease;
+  transition: transform var(--agw-dur-base) ease, color var(--agw-dur-fast) ease;
 }
 /* The rows under a chapter. Restates the message column's own gap because the
  * body is a new flex context between it and the rows. */

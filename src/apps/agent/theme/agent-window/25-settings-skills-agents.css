@@ -19,7 +19,7 @@
       transparent 55%
     ),
     var(--agw-card-paint);
-  transition: opacity 0.18s ease;
+  transition: opacity var(--agw-dur-base) ease;
 }
 .agw-skill-hero[data-off] {
   opacity: 0.62;
@@ -75,7 +75,7 @@
   height: 100%;
   border-radius: var(--agw-radius-pill);
   background: var(--agw-added);
-  transition: width 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition: width var(--agw-dur-slow) var(--agw-ease-pop);
 }
 .agw-skill-meter[data-full] > span {
   background: var(--agw-warning);
@@ -133,7 +133,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-skill-chip:hover {
   background: color-mix(in srgb, var(--agw-added) 18%, transparent);
@@ -212,7 +212,7 @@
   background: var(--agw-card-paint);
   box-shadow: var(--agw-set-shadow);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease, box-shadow var(--agw-dur-fast) ease;
 }
 /* Hover reads through colour only — no translateY lift. A card that jumps on
  * hover makes a dense grid feel unstable as the pointer crosses it. */
@@ -288,7 +288,7 @@
   z-index: 1;
   padding: 0;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
 }
 .agw-skill-card-check:hover {
   border-color: var(--agw-border-strong);
@@ -490,7 +490,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition: color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-skill-card-del:hover {
   color: var(--agw-removed);
@@ -597,7 +597,7 @@
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease;
+  transition: color var(--agw-dur-base) ease, background-color var(--agw-dur-base) ease;
 }
 .agw-gi-tab:hover {
   color: var(--agw-text);
@@ -649,7 +649,7 @@
   background: transparent;
   color: var(--agw-text-subtle);
   cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease;
+  transition: color var(--agw-dur-base) ease, background-color var(--agw-dur-base) ease;
 }
 .agw-gi-add:hover {
   color: var(--agw-text);
@@ -712,7 +712,7 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
   cursor: pointer;
-  transition: color 0.15s ease, background-color 0.15s ease;
+  transition: color var(--agw-dur-base) ease, background-color var(--agw-dur-base) ease;
 }
 .agw-gi-actbtn:hover {
   color: var(--agw-text);

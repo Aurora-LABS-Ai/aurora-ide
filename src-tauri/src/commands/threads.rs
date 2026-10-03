@@ -989,12 +989,15 @@ pub async fn thread_save(
     let registry = registry.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let store = registry
-            .store_for_conversation(
-                crate::agent_runtime::ipc::AgentExecutionMode::Agent,
-                &thread.id,
-                workspace_root.as_deref(),
-            )
+            .store_for_save(&thread.id, workspace_root.as_deref())
             .map_err(|e| e.to_string())?;
+        // An Aurora Chat conversation has no workspace; stamping one would
+        // contaminate its metadata (see `clear_chat_workspace_root`).
+        let workspace_root = if registry.is_chat_store(&store) {
+            None
+        } else {
+            workspace_root
+        };
         store
             .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
             .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;

@@ -3,9 +3,8 @@
  *
  * One leading row that stands for the default, then every configured model
  * keyed by `providerId:modelKey` — the selection format
- * `resolveModelRequest` reads. Compaction, Team members and reply suggestions
- * all pick a model this way, so they share one list instead of three copies
- * that drift apart.
+ * `resolveModelRequest` reads. Compaction and reply suggestions both pick a
+ * model this way, so they share one list instead of copies that drift apart.
  */
 
 import { useMemo } from "react";

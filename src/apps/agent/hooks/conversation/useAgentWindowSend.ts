@@ -2,7 +2,7 @@
  * Agent Window — send pipeline (P4).
  *
  * The IDE's `useAgentSend` is welded to ~10 IDE stores (chat, thread, audit,
- * checkpoint, context, team broadcast, live preview …). The agent window is a
+ * checkpoint, context, live preview …). The agent window is a
  * separate OS window with its own isolated chat store, so it gets its OWN, much
  * thinner pipeline that:
  *
@@ -787,13 +787,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       compactionProvider = undefined;
     }
 
-    // Chat wins outright: Team is a Build-side feature, and a chat conversation
-    // must never be promoted into one because the team switch happens to be on.
+    // Chat wins outright over the Build mode the window was left in.
     const executionMode = effectiveExecutionMode(
       settings.auroraSurface,
-      settings.teamEnabled && settings.agentExecutionMode !== "plan"
-        ? "team"
-        : settings.agentExecutionMode,
+      settings.agentExecutionMode,
     );
     // A docked chat compacts against ITS project, not the window's current
     // scope — the window may have been re-scoped since the tab was opened. A
@@ -1144,13 +1141,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
     const settings = useAgentSettingsStore.getState();
 
-    // Execution mode for this turn. The agent window has NO separate "Lead" and
-    // no mode toggle — the chat model in the selector IS the Lead. So enabling
-    // Team in Settings is the whole opt-in: the model runs in Team mode (which is
-    // what exposes the `team_*` tools + the Lead guidance so it can actually
-    // dispatch a team), except in read-only Plan mode where mutations are off.
-    // A per-turn override outranks the window's setting, and is how
-    // `aurora agent --plan` gets read-only tools. It has to be per-turn: the
+    // Execution mode for this turn. A per-turn override outranks the window's
+    // setting, and is how `aurora agent --plan` gets read-only tools. It has to be per-turn: the
     // global setter would leave the window in plan mode after the dispatch
     // finished, and two concurrent dispatches in different modes would each
     // overwrite the other's.
@@ -1158,10 +1150,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // `aurora agent --plan` can override the Build mode for one turn, but it
     // cannot reach across into Chat: a CLI task addresses a project, and Chat
     // has none. So the surface is applied AFTER the override, not before.
-    const executionMode = effectiveExecutionMode(
-      settings.auroraSurface,
-      settings.teamEnabled && requestedMode !== "plan" ? "team" : requestedMode,
-    );
+    const executionMode = effectiveExecutionMode(settings.auroraSurface, requestedMode);
 
     // Bootstrap the thread (create-on-first-send) BEFORE touching the UI so a
     // failed creation doesn't leave a half-rendered turn. Only the main pane can
@@ -1599,17 +1588,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       commandSelection.ruleFilenames,
     );
 
-    // Team policy: when this turn runs in Team mode, the Lead (this model) must
-    // KNOW its live worker ceiling — it can't read settings on its own, so
-    // without this it can only guess from the last dispatch's echo. `maxTeamSize`
-    // is the number of parallel WORKERS the Lead may staff; the Lead is separate.
-    const teamBlock =
-      executionMode === "team"
-        ? `<team_policy>\nAgent Team is ENABLED and you are the Lead. When you convene a team with team_dispatch you may staff UP TO ${settings.maxTeamSize} worker${
-            settings.maxTeamSize === 1 ? "" : "s"
-          } in parallel — this is the user's current "Maximum workers" setting. You (the Lead) are separate and always present, never counted in that number. If a task needs more workers than that, tell the user to raise it in Settings → Team; do not exceed it. Define each worker's role, task, and scope in the dispatch call.\n</team_policy>`
-        : null;
-
     // What the user actually has open in the right dock. Rides on every turn
     // (it changes as they browse) and costs one line per file, because it
     // carries names and never content.
@@ -1638,7 +1616,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // attention is and what they attached to it. The runtime saves it on the
     // message as its `aurora_context`, the model reads it after the user's
     // words, and it never changes again. Standing facts (rules, skills, the
-    // team policy, the mode) are in the system prompt — putting them here
+    // mode) are in the system prompt — putting them here
     // meant a copy of the project rules in every message's saved context.
     const ideContext =
       [openFilesBlock, selectionBlock, ruleBlock, mcpBlock, imageBlock]
@@ -2034,10 +2012,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             commandSelection.explicitSkillKeys.length > 0
               ? commandSelection.explicitSkillKeys
               : undefined,
-          // Standing facts for the system prompt: the project's rules and,
-          // in Team mode, the worker ceiling.
+          // Standing facts for the system prompt: the project's rules.
           projectRules: autoRulesBlock,
-          teamPolicy: teamBlock,
           // Persist the inspector chips natively onto the user message in the
           // session JSONL so they re-render above the bubble on reopen.
           attachedSelectedElements: selectionPills.length > 0 ? selectionPills : null,

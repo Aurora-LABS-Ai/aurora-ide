@@ -54,9 +54,6 @@ import {
   type RuntimeToolDefinitionLike,
 } from "@/apps/agent/services/runtime/agent-runtime-client";
 import { getMcpToolDefinitions } from "@/apps/agent/services/tools/mcp-tools";
-import { getTeamState, getRunStatus } from "@/apps/agent/services/team/team-client";
-import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
-import type { TeamProjectState, TeamRunStatus } from "@/kernel/types/team";
 import type { ProviderConfig } from "@/apps/agent/services/providers";
 import type {
   AssistantMessage,
@@ -76,98 +73,6 @@ import type {
  * model.
  */
 const VISION_REQUIRED_TOOLS = new Set<string>(["browser_screenshot"]);
-
-/**
- * Build the `<active_team_context>` IDE-context block for Team mode, or `null`
- * when there's nothing to report.
- *
- * This is the **"pull" re-engage** mechanism (ground truth §17): the team runs
- * in its own background engine, so instead of pushing a turn back into the chat
- * when it finishes, we inject the live run status into the Lead's context on
- * **every** user message. The moment the user pings the Lead, the Lead already
- * knows whether the team is still working (and in which phase), finished, or
- * failed — and can report back without guessing.
- *
- * The brain is keyed by **workspace** (`projectId`), not by conversation, so a
- * brand-new conversation in Team mode is talking to whatever team exists for
- * this workspace. This block also guards against the Lead re-dispatching a
- * still-running effort.
- */
-async function buildActiveTeamContext(
-  repoPath: string | null,
-): Promise<string | null> {
-  if (!repoPath || !isAuroraRuntimeAvailable()) return null;
-
-  let state: TeamProjectState;
-  let run: TeamRunStatus | null = null;
-  try {
-    // A small channel tail lets us surface the recent group chat to the Lead.
-    state = await getTeamState(repoPath, 14);
-  } catch {
-    return null;
-  }
-  try {
-    run = await getRunStatus(repoPath);
-  } catch {
-    run = null;
-  }
-
-  const runState = run?.state ?? "idle";
-  // Nothing has ever happened for this workspace — no context to inject.
-  if (!state.initialized && runState === "idle") return null;
-
-  const phase = state.team.phase;
-  const total = state.tasks.tasks.length;
-  const done = state.tasks.tasks.filter((t) => t.status === "done").length;
-  const agents = state.team.agents
-    .map((a) => {
-      const name = a.role?.trim() || a.id;
-      return `${name}${a.model ? ` (${a.model})` : ""}: ${a.status}`;
-    })
-    .join("; ");
-  const inProgress = state.tasks.tasks
-    .filter((t) => t.status === "in_progress")
-    .map((t) => `${t.title}${t.owner ? ` (owner: ${t.owner})` : ""}`);
-  const contracts = state.scopeMap.assignments
-    .flatMap((a) => a.ownedContracts)
-    .filter(Boolean);
-  const recentChat = state.channel
-    .slice(-8)
-    .map((e) => `- ${e.author}: ${e.body.replace(/\s+/g, " ").slice(0, 160)}`);
-
-  // The run-status line is the headline — it's what tells the Lead what to do.
-  let runLine: string;
-  let guidance: string;
-  if (runState === "running") {
-    runLine = `Run status: RUNNING — phase: ${run?.phase ?? phase}${run?.goal ? ` (goal: "${run.goal}")` : ""}`;
-    guidance = `- The team is STILL WORKING in the background. Do NOT call team_dispatch again for this effort — it would fork a competing run over the same brain. Tell the user it's in progress (name the phase). Use team_status / team_chat to check details.`;
-  } else if (runState === "done") {
-    runLine = `Run status: DONE — the background workers finished their assigned work${run?.goal ? ` (goal: "${run.goal}")` : ""}.`;
-    guidance = `- The team FINISHED. Report what they built to the user (call team_chat for the details of what each member did, and team_status for the roster/task summary). Only call team_dispatch again for a genuinely NEW effort the user asks for.`;
-  } else if (runState === "failed") {
-    runLine = `Run status: FAILED — ${run?.error ?? "the background run errored"}.`;
-    guidance = `- The team run FAILED. Tell the user what failed (above) and offer to retry team_dispatch or handle it yourself. Do not pretend it succeeded.`;
-  } else if (phase === "done") {
-    runLine = `Run status: a previous team run for this workspace is complete (phase: Done).`;
-    guidance = `- Call team_status / team_chat to inspect it. Only call team_dispatch to start a genuinely new effort.`;
-  } else if (phase === "disbanded") {
-    return null; // stopped and nothing running — nothing to coordinate
-  } else {
-    runLine = `Run status: a team exists for this workspace (phase: ${phase}) but no background run is active.`;
-    guidance = `- Use team_status / team_chat to inspect it. Call team_dispatch to (re)start work if the user wants it.`;
-  }
-
-  return `<active_team_context authoritative="true">
-The Aurora Agent Team runs peer workers in its own background engine and persists across conversations (shown in the Team screen, embedded in this window). You are the Lead; you do NOT write the team's code — the ICs do. This status is live as of THIS message.
-${runLine}
-- Brain phase: ${phase}
-- Agents: ${agents || "(none yet)"}
-- Tasks: ${done}/${total} done${inProgress.length ? `\n- In progress: ${inProgress.join("; ")}` : ""}${contracts.length ? `\n- Published contracts: ${contracts.join(", ")}` : ""}${recentChat.length ? `\n- Recent team chat:\n${recentChat.join("\n")}` : ""}
-Guidance for you (the Lead) right now:
-${guidance}
-- The Team screen is available in this window; team_show reveals it.
-</active_team_context>`;
-}
 
 const SENSIBLE_DEFAULTS: AgentConfig = {
   systemPrompt: BASE_AGENT_SYSTEM_PROMPT,
@@ -323,7 +228,7 @@ export class AgentService {
       // selection, a slash-attached rule. The mode is a fact about the turn
       // and is stated once in the system prompt's mode section; it used to be
       // repeated here as a second block, saved into every message's context.
-      let composedIdeContext: string | null =
+      const composedIdeContext: string | null =
         ideContext && ideContext.trim().length > 0 ? ideContext : null;
 
       const availableTools = this.buildAvailableTools(tools, providerConfig);
@@ -333,21 +238,6 @@ export class AgentService {
         this.config.workspacePath !== undefined
           ? this.config.workspacePath
           : useWorkspaceStore.getState().rootPath || null;
-
-      // Team mode: the team runs in its own background engine, so we inject its
-      // live run status on EVERY message (the "pull" re-engage model, §17). A
-      // fresh conversation may also be talking to a team already running for
-      // this workspace (the brain is keyed by workspace, not conversation).
-      // This authoritative block tells the Lead where the team stands and stops
-      // it re-dispatching a still-running effort.
-      if (executionMode === "team") {
-        const activeTeamContext = await buildActiveTeamContext(workspacePath);
-        if (activeTeamContext) {
-          composedIdeContext = composedIdeContext
-            ? `${composedIdeContext}\n\n${activeTeamContext}`
-            : activeTeamContext;
-        }
-      }
 
       // Record the exact non-message overhead sent this turn so the no-usage
       // token estimator can count it (the composed system prompt, the IDE
@@ -565,7 +455,7 @@ export class AgentService {
       // per tool, so any stale/renamed name in TS (e.g. an old
       // `search_replace`) would reappear to the model alongside the real
       // Rust set. We send ONLY the tools the frontend actually executes
-      // (skills, team, question, MCP); everything native comes from Rust.
+      // (skills, question, MCP); everything native comes from Rust.
       .filter((tool) => !tool.nativeRustOwned)
       // Vision-only tools (browser_screenshot returns an image the model
       // must be able to see). Stripping them from the schema entirely

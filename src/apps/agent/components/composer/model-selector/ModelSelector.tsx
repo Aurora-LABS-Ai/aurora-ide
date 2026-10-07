@@ -149,7 +149,6 @@ export const ModelSelector: React.FC<{
   // Agent/Plan execution mode lives inside this picker (no separate chip).
   // Same `agentExecutionMode` the settings page writes, so they never disagree.
   const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   const setExecutionMode = useAgentSettingsStore((s) => s.setAgentExecutionMode);
   /** The seed for the NEXT chat. Only meaningful when none is open. */
   const deepResearchNext = useAgentSettingsStore((s) => s.deepResearchNext);
@@ -678,7 +677,7 @@ export const ModelSelector: React.FC<{
                     onClick={() => setExecutionMode("agent")}
                   >
                     <AgentIcon name="facet" size={12} />
-                    <span>{teamEnabled ? "Team" : "Agent"}</span>
+                    <span>Agent</span>
                   </button>
                   <button
                     type="button"

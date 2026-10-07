@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { tailLines } from "@/apps/agent/components/tool-views/shell-tail";
+import {
+  TAIL_APPEARS_AFTER_MS,
+  tailDueInMs,
+  tailLines,
+} from "@/apps/agent/components/tool-views/shell-tail";
+
+describe("tailDueInMs", () => {
+  it("waits out the delay from the command's own start", () => {
+    expect(tailDueInMs(10_000, 99_999, 10_400)).toBe(TAIL_APPEARS_AFTER_MS - 400);
+  });
+
+  it("is due once the command has run long enough", () => {
+    expect(tailDueInMs(10_000, 99_999, 10_000 + TAIL_APPEARS_AFTER_MS)).toBe(0);
+    expect(tailDueInMs(10_000, 99_999, 60_000)).toBe(0);
+  });
+
+  it("counts from when the card saw it running when there is no start time", () => {
+    expect(tailDueInMs(undefined, 20_000, 20_500)).toBe(TAIL_APPEARS_AFTER_MS - 500);
+  });
+});
 
 describe("tailLines", () => {
   it("keeps the newest lines, oldest first", () => {

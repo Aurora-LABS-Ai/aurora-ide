@@ -85,7 +85,6 @@ export const AgentCommandCenter: React.FC = () => {
   const notifyOnTurnComplete = useAgentSettingsStore((s) => s.notifyOnTurnComplete);
   const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
   const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   /** Aurora Chat: no project, so none of the project-shaped commands. */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
@@ -179,20 +178,6 @@ export const AgentCommandCenter: React.FC = () => {
         icon: destination.icon,
         run: () => openDestination(destination.id),
       })),
-      // Only while Agent Team is on — the palette must not list a way into a
-      // feature that is switched off.
-      ...(teamEnabled && !chatSurface
-        ? [
-            {
-              id: "open-team",
-              title: "Open agent team",
-              keywords: "parallel lead agents",
-              group: "Navigate",
-              icon: "users",
-              run: () => openDockSurface("team"),
-            } satisfies CommandItem,
-          ]
-        : []),
       // The dock holds different surfaces on each side of the app, and the
       // palette is a way IN to them — offering "Open files" in Aurora Chat
       // opens a tree of a folder the chat cannot read.
@@ -301,7 +286,6 @@ export const AgentCommandCenter: React.FC = () => {
     query,
     railOpen,
     showActivityInTitle,
-    teamEnabled,
   ]);
 
   const results = useMemo(() => {

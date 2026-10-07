@@ -32,9 +32,16 @@
 //!   to be unnecessary is a thing the user should still be able to see. Both
 //!   are accepted.
 //! * **No `owner` / `addBlocks` / `addBlockedBy` / `metadata`.** Those belong to
-//!   the reference's multi-agent task queue. Aurora's team runtime has its own
-//!   coordination tools, so those fields would be schema the model reads on
-//!   every request and can never usefully fill.
+//!   the reference's multi-agent task queue, which Aurora does not have, so
+//!   those fields would be schema the model reads on every request and can
+//!   never usefully fill.
+//!
+//! ## A finished list makes way for the next one
+//!
+//! When every task is closed, the next `TaskCreate` starts a new list instead
+//! of appending under it (as the reference does). Ids keep rising across the
+//! reset. Open work is never cleared: a create while anything is pending or in
+//! progress adds to the plan in flight.
 //!
 //! Todos stay independent of plans: a plan carries the coarse phases the user
 //! approved, this list carries the concrete steps of the phase being executed.
@@ -219,8 +226,21 @@ the ONE phase you are executing now."
         let active_form = optional_str(&input, "activeForm").unwrap_or_else(|| subject.clone());
 
         let mut created_id = String::new();
+        let mut started_fresh = false;
         let list = todo_store::update(&ctx.thread_id, |list| {
             let id = list.next_id();
+            // A finished list is history, not the start of this plan. Without
+            // this, every new piece of work was appended under the last one and
+            // the header grew 5/5 → 5/10 → 5/15 for the life of the thread. The
+            // reference clears a fully completed list too (`useTasksV2`,
+            // `TodoWriteTool`). Only the FIRST create of a new plan sees a
+            // closed list; the next one in the same message sees this task
+            // pending and appends. `id` was taken before the clear, so numbers
+            // keep rising and an old `taskId` can never name a new task.
+            if list.cursor().complete {
+                list.items.clear();
+                started_fresh = true;
+            }
             created_id = id.clone();
             list.items.push(TodoItem {
                 id,
@@ -243,7 +263,12 @@ the ONE phase you are executing now."
                     "status": "pending",
                 },
                 "message": format!(
-                    "Created {} as pending. {}",
+                    "{}Created {} as pending. {}",
+                    if started_fresh {
+                        "Every task in the previous list was closed, so this starts a new list. "
+                    } else {
+                        ""
+                    },
                     titled(&list, &created_id),
                     whats_next(&list)
                 ),
@@ -608,6 +633,47 @@ mod tests {
         assert_eq!(subjects, ["One", "Two", "Three", "Four"]);
     }
 
+    /// A new plan after a finished one replaces it. The header used to grow
+    /// 5/5 → 5/10 because the next turn's tasks were appended under it.
+    #[tokio::test]
+    async fn a_new_plan_after_a_finished_one_replaces_it() {
+        let thread = thread();
+        for subject in ["Old one", "Old two"] {
+            create(&thread, subject).await;
+        }
+        update(&thread, json!({"taskId": "1", "status": "completed"})).await.unwrap();
+        update(&thread, json!({"taskId": "2", "status": "cancelled"})).await.unwrap();
+
+        let first = create(&thread, "New one").await;
+        create(&thread, "New two").await;
+
+        assert!(
+            first["message"].as_str().unwrap().contains("starts a new list"),
+            "{first}"
+        );
+        let list = todo_store::read(&thread).unwrap();
+        let subjects: Vec<_> = list.items.iter().map(|i| i.content.as_str()).collect();
+        assert_eq!(subjects, ["New one", "New two"]);
+        // Numbers keep rising, so a stale `taskId: "1"` cannot reach a new task.
+        let ids: Vec<_> = list.items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["3", "4"]);
+    }
+
+    /// Work still open is the plan in progress: a create adds to it.
+    #[tokio::test]
+    async fn a_create_while_work_is_open_appends() {
+        let thread = thread();
+        create(&thread, "Done").await;
+        create(&thread, "Still open").await;
+        update(&thread, json!({"taskId": "1", "status": "completed"})).await.unwrap();
+
+        let out = create(&thread, "Added").await;
+
+        assert!(!out["message"].as_str().unwrap().contains("new list"), "{out}");
+        let list = todo_store::read(&thread).unwrap();
+        assert_eq!(list.items.len(), 3);
+    }
+
     #[tokio::test]
     async fn activeform_falls_back_to_the_subject() {
         let thread = thread();
@@ -844,8 +910,11 @@ mod tests {
             .expect("legacy id resolves");
         assert_eq!(out["status"], "completed");
 
+        // The legacy list is now fully closed, so this starts a new one — and
+        // its first id still continues past `t1`.
         create(&thread, "New task").await;
         let list = todo_store::read(&thread).unwrap();
-        assert_eq!(list.items[1].id, "2");
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].id, "2");
     }
 }

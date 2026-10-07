@@ -42,11 +42,10 @@ const PANEL_ICON: Record<DockSingletonKind, AgentIconName> = {
   files: "files",
   browser: "browser",
   terminal: "terminal",
-  team: "users",
   memory: "database",
 };
 
-/** Build's panels, in the order they are reached for. Team only when it is on. */
+/** Build's panels, in the order they are reached for. */
 const BUILD_PANELS: readonly DockSingletonKind[] = ["files", "terminal", "canvas", "review"];
 
 /** How often "Running" is re-read. A dev server starts in seconds. */
@@ -86,7 +85,6 @@ function useLocalServers(enabled: boolean): { servers: LocalServer[]; readAt: nu
 
 export const NewTabPage: React.FC<{ tabId: string }> = ({ tabId }) => {
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   const resolveNewTab = useAgentWorkspaceStore((s) => s.resolveNewTab);
   const recent = useAgentBrowserHistory((s) => s.recent);
   const { servers, readAt } = useLocalServers(!chatSurface);
@@ -101,10 +99,10 @@ export const NewTabPage: React.FC<{ tabId: string }> = ({ tabId }) => {
     inputRef.current?.focus();
   }, []);
 
-  const panels = useMemo<DockSingletonKind[]>(() => {
-    if (chatSurface) return [...CHAT_DOCK_TABS];
-    return teamEnabled ? [...BUILD_PANELS, "team"] : [...BUILD_PANELS];
-  }, [chatSurface, teamEnabled]);
+  const panels = useMemo<DockSingletonKind[]>(
+    () => (chatSurface ? [...CHAT_DOCK_TABS] : [...BUILD_PANELS]),
+    [chatSurface],
+  );
 
   const q = query.trim().toLowerCase();
   const shownPanels = panels.filter((kind) => !q || DOCK_TAB_LABELS[kind].toLowerCase().includes(q));

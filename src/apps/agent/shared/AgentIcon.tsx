@@ -928,7 +928,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
-  // Users — the agent team (two figures).
+  // Users — two figures.
   users: (
     <>
       <circle cx="9" cy="8" r="3.1" />
@@ -1032,8 +1032,7 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
-  // User — one person: the account cell at the foot of the icon rail. `users`
-  // (two figures) is the agent team and must not be reused for the owner.
+  // User — one person: the account cell at the foot of the icon rail.
   user: (
     <>
       <circle cx="12" cy="8.2" r="3.4" />

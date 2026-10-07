@@ -33,8 +33,6 @@ import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSetti
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore } from "@/apps/agent/store/ui/useAgentTerminalStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import { useTeamHistoryStore } from "@/apps/agent/store/team/useTeamHistoryStore";
-import { useTeamStore } from "@/apps/agent/store/team/useTeamStore";
 import {
   threadService,
   type DbThread,
@@ -205,34 +203,14 @@ export const LeftRail: React.FC = () => {
   const toggleRail = useAgentWorkspaceStore((s) => s.toggleRail);
   const openChatTab = useAgentWorkspaceStore((s) => s.openChatTab);
 
-  // Agent Team is opt-in. Off in Settings means no team surface here at all —
-  // not the rail entry, and not the "has team work" badges, which exist only to
-  // point at a panel that can no longer be opened.
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   /**
    * Aurora Chat has no projects, so the rail loses the Projects section, the
-   * project switcher, the add-project button and the Team entry — Team is a
-   * Build-side feature that acts on a workspace.
+   * project switcher and the add-project button.
    *
    * What stays is the chat list, the search box, Pinned, Recent and Archived.
    * A chat list is still a chat list.
    */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
-
-  // Live team run for the current project (kept warm in AgentWindow); its phase
-  // drives the team badges on the rows below. The Team, Memory and Gallery
-  // entries themselves live on the icon rail now (`IconRail.tsx`).
-  const teamSnapshot = useTeamStore((s) => s.snapshot);
-
-  // Cross-project "has team work" index: which chats (and projects) have ever
-  // dispatched a team run, read from each project's brain. Drives the passive
-  // team badge on rail rows. Rebuilt when the project set or the live team phase
-  // changes (a phase transition means a run just stamped a new origin chat).
-  const teamThreadIds = useTeamHistoryStore((s) => s.threadIds);
-  const teamProjectSet = useTeamHistoryStore((s) => s.projects);
-  const refreshTeamHistory = useTeamHistoryStore((s) => s.refresh);
-  const chatHasTeamWork = (id: string) => teamEnabled && !!teamThreadIds[id];
-  const projectHasTeamWork = (root: string) => teamEnabled && !!teamProjectSet[root];
 
   const projectRoot = useAgentChatStore((s) => s.projectRoot);
   const knownProjects = useAgentChatStore((s) => s.knownProjects);
@@ -459,18 +437,6 @@ export const LeftRail: React.FC = () => {
       }),
     [knownProjects, allWithLive, projectRoot, sortMode, activity, pinnedProjectSet],
   );
-
-  // Rebuild the team-history index off the ROOT SET (not the sorted array), so
-  // re-sorting/pinning projects doesn't refetch. A team phase change means a run
-  // just advanced — refetch so a newly-stamped origin chat lights up promptly.
-  const projectsKey = useMemo(() => [...projects].sort().join("|"), [projects]);
-  const teamPhase = teamSnapshot?.team.phase;
-  useEffect(() => {
-    // Nothing reads the index while the feature is off — don't touch the disk for it.
-    if (!teamEnabled) return;
-    void refreshTeamHistory(projects);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectsKey, teamPhase, teamEnabled, refreshTeamHistory]);
 
   const isOpen = (root: string) => (q ? true : (expanded[root] ?? root === projectRoot));
   const projectsOpen = q ? true : !projectsCollapsed;
@@ -905,19 +871,9 @@ export const LeftRail: React.FC = () => {
           )}
           {!renaming && subtitle && <span className="agw-rail-item-sub">{subtitle}</span>}
         </div>
-        {/* Trailing cluster — the always-on team badge sits alongside the
-            hover-in archive / pin actions in one reserved lane, so they can
-            never overlap or shove the title around. */}
+        {/* Trailing cluster — the hover-in archive / pin actions in one
+            reserved lane, so they never shove the title around. */}
         <div className="agw-rail-item-actions">
-          {chatHasTeamWork(thread.id) && (
-            <span
-              className="agw-rail-team-badge"
-              title="This chat has team work"
-              aria-label="This chat has team work"
-            >
-              <AgentIcon name="users" size={12} />
-            </span>
-          )}
           <button
             type="button"
             className="agw-rail-pin"
@@ -1357,18 +1313,9 @@ export const LeftRail: React.FC = () => {
                       )}
                     </button>
                     {/* Always-on status indicators share one spaced cluster so
-                        the team badge and the running spinner never overlap. */}
-                    {(projectHasTeamWork(root) || projectRunning || projectUnseen) && (
+                        the running spinner and the done dot never overlap. */}
+                    {(projectRunning || projectUnseen) && (
                       <span className="agw-rail-project-status">
-                        {projectHasTeamWork(root) && (
-                          <span
-                            className="agw-rail-team-badge agw-rail-project-team"
-                            title="This project has team work"
-                            aria-label="This project has team work"
-                          >
-                            <AgentIcon name="users" size={12} />
-                          </span>
-                        )}
                         {projectRunning && <span className="agw-rail-spin" aria-hidden />}
                         {projectUnseen && <span className="agw-rail-done-dot" aria-hidden />}
                       </span>

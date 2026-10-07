@@ -238,8 +238,8 @@ export function useAgentAutoScroll(
 
   // Track the user's position; stop chasing the moment they scroll up. Depends
   // on `resetKey` so the listener re-attaches when the scroll container mounts
-  // AFTER the hook (e.g. the team view renders its scroller only once the
-  // snapshot is ready — the listener would otherwise never bind).
+  // AFTER the hook (e.g. a panel that renders its scroller only once its
+  // data is ready — the listener would otherwise never bind).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -289,7 +289,7 @@ export function useAgentAutoScroll(
 
   // The real growth detector: any content height change at the bottom follows
   // the new content. `resetKey` is a dep so the observer re-binds to a scroller
-  // mounted after the hook (conditional team scroller).
+  // mounted after the hook (a conditional scroller).
   useEffect(() => {
     const el = containerRef.current;
     const content = contentRef.current;

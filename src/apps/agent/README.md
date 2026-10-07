@@ -53,14 +53,11 @@ imports the barrel (`index.ts`) — that would create a cycle.
 
 ## Separate window (not embedded)
 
-The agent window is its **own native OS window**, NOT a panel inside the IDE shell.
-Team is embedded inside this window as the center-column Team screen:
+The agent window is its **own native OS window**, NOT a panel inside the IDE shell:
 
 - `adapters/window.ts` → `openAgentWindow()` creates the `agent-window` WebView at
   route `/agent-window` (opened from the title-bar Bot button).
 - `App.tsx` renders `<AgentWindow/>` when `location.pathname === "/agent-window"`.
-- `components/team/TeamPanel.tsx` renders the live Team panel in the right dock of the agent
-  window; there is no separate Team route.
 - `src-tauri/capabilities/default.json` lists `"agent-window"` so Tauri APIs work
   in it (per-window-label permissions — a new window with no capability is inert).
 

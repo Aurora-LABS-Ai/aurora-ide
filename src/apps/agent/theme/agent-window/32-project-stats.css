@@ -216,8 +216,8 @@
   color: var(--agw-text-subtle);
 }
 
-/* Skeleton — the panel's own shape while it resolves, reusing the shimmer the
-   team views already use so loading looks the same everywhere. */
+/* Skeleton — the panel's own shape while it resolves, reusing the shared
+   shimmer so loading looks the same everywhere. */
 .agw-proj-skel-row {
   display: flex;
   flex-direction: column;

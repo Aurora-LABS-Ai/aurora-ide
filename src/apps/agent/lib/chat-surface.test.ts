@@ -21,7 +21,7 @@ describe("Aurora Chat's dock", () => {
   });
 
   it("names nothing that addresses a project", () => {
-    for (const projectSurface of ["files", "browser", "terminal", "review", "team"] as const) {
+    for (const projectSurface of ["files", "browser", "terminal", "review"] as const) {
       expect(CHAT_DOCK_TABS).not.toContain(projectSurface);
     }
   });

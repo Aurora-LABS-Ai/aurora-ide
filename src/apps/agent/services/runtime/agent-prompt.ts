@@ -61,12 +61,6 @@ export interface AgentPromptContext {
    */
   projectRules?: string | null;
   /**
-   * Team mode's worker ceiling, rendered as `<team_policy>`. A fact about the
-   * turn, so it rides in the dynamic half of the system prompt with the mode
-   * section rather than on the message.
-   */
-  teamPolicy?: string | null;
-  /**
    * Browser-inspector element chips the user attached to this turn in the
    * composer. Forwarded to the runtime so they persist into the session
    * JSONL on the user message (re-rendered above the bubble on reopen).
@@ -106,7 +100,7 @@ Your main goal is to follow the USER's instructions at each message.
 - \`<repo_map>\` sits at the head of the first message: a SNAPSHOT of the workspace taken when the conversation started. After you or the user change files it is stale; trust \`workspace_tree\`, \`code\` and \`file_read\` over it whenever they disagree.
 - \`<aurora_context>\` sits at the end of a user message: what the user had open in the right-hand Files panel, any selection or rule they attached, and a \`<checklist>\` with your task list as it stood when they sent that message. The newest one says where the user's attention is; \`TaskCreate\` and \`TaskUpdate\` results say where the checklist stands now.
 - \`<aurora_task_reminder>\` appears inside a tool result, rarely: your checklist has gone untouched for a while. Bring it up to date with \`TaskUpdate\` and carry on.
-- \`<open_files>\` carries filenames only, never content, so read a file if you need what is in it. \`<agent_skills>\`, \`<required_skills>\`, \`<rule …>\` and \`<team_policy>\` describe the user's setup and standing rules.
+- \`<open_files>\` carries filenames only, never content, so read a file if you need what is in it. \`<agent_skills>\`, \`<required_skills>\` and \`<rule …>\` describe the user's setup and standing rules.
 - Long conversations get COMPACTED: older turns are replaced by a summary and only the recent tail survives verbatim. If something you did earlier is missing, it was summarized away rather than never done. Do not silently re-do it — check with a tool, and never re-derive a decision the summary already records.
 
 ## Communication Guidelines
@@ -258,7 +252,7 @@ const BROWSER_INSTRUCTIONS = `## Browser
 
 const DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
 - Call the core tools in your tool list directly. File operations, code search, shell, tasks, and skills do not need discovery.
-- Browser, connected MCP apps, and team tools are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn's mode.
+- Browser and connected MCP apps are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn's mode.
 - Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
 - Search results can be partial. If a needed name is absent, use \`select:exact_name\` before concluding it is unavailable. If a direct call to an optional tool returns "tool not found", recover through exact discovery and \`call_tool\` before reporting a missing capability.
 - Reuse a schema while it remains in context. Search again after compaction removes it, when you need a different capability, or when a tool becomes unavailable. An empty result means no matching optional tool is currently available.`;
@@ -625,7 +619,7 @@ export async function composeAgentSystemPrompt(options: {
 
   // ── Dynamic half ───────────────────────────────────────────────────────
   //
-  // Mode, active skills, and team policy follow the stable prompt. MCP
+  // Mode and active skills follow the stable prompt. MCP
   // connection state is deliberately absent: search results carry it without
   // rewriting the system prefix.
   const dynamicSections = [getAgentModePromptSection(executionMode, { hasActivePlan })];
@@ -641,8 +635,6 @@ export async function composeAgentSystemPrompt(options: {
   if (explicitSkills.length > 0) {
     dynamicSections.push(formatSkillReferences(explicitSkills, "required_skills"));
   }
-  const teamPolicy = promptContext.teamPolicy?.trim();
-  if (teamPolicy) dynamicSections.push(teamPolicy);
   // Connected app metadata belongs in discovery results. Putting a live MCP
   // catalog here would invalidate the system prefix when a server changes.
 

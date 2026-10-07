@@ -173,7 +173,7 @@ phase is what Phase 1 mounts on.
 | File | What changed |
 |---|---|
 | `src/apps/agent/services/runtime/agent-execution-mode.ts` | `"chat"` on the type; `CHAT_MODE_TOOLS` + `isChatModeTool` mirroring Rust; `CHAT_MODE_SYSTEM_PROMPT` (the whole prompt, not a section); chat answered first in both tool filters; `normalizeAgentExecutionMode` handles it; kept **out** of `cycleAgentExecutionMode`; runtime-context block names Chat and points machine work at Build |
-| `src/apps/agent/services/runtime/agent-runtime-client.ts` | Local `"agent" \| "plan" \| "team"` union replaced with the shared type |
+| `src/apps/agent/services/runtime/agent-runtime-client.ts` | Local `"agent" \| "plan"` union replaced with the shared type |
 | `src/apps/agent/store/conversation/useAgentChatStore.ts` | `liveModes` and `beginTurn` widened to the shared type |
 | `src/kernel/types/database.ts` | `agentExecutionMode` accepts `'chat'` |
 
@@ -217,7 +217,7 @@ style, which is new.
 | `src/apps/agent/services/runtime/agent-execution-mode.ts` | `AuroraSurface`, `AURORA_SURFACES`, `normalizeAuroraSurface`, `effectiveExecutionMode` |
 | `src/apps/agent/services/runtime/agent-prompt.ts` | Chat mode swaps the base prompt and drops the design doctrine, the skills roster and the browser pointer. A caller's own custom prompt still wins |
 | `src/apps/agent/hooks/conversation/useAgentWindowSend.ts` | Both mode-resolution sites go through `effectiveExecutionMode` |
-| `src/apps/agent/components/shell/LeftRail.tsx` | Mounts the switcher; hides Projects, the add-project button and the Team entry in chat mode; renders the date-grouped list instead |
+| `src/apps/agent/components/shell/LeftRail.tsx` | Mounts the switcher; hides Projects and the add-project button in chat mode; renders the date-grouped list instead |
 | `src/apps/agent/components/conversation/EmptyState.tsx` | Drops the project row and the workspace starters in chat mode; placeholder becomes "Ask anything" |
 | `src/kernel/types/database.ts` | `auroraSurface` on the settings row |
 | `src/apps/agent/lib/thread/surface-resume.ts` | **Created.** Remembers where each side was left; the two-hour rule |
@@ -229,11 +229,10 @@ style, which is new.
 
 - [x] Product switcher at the top of the left rail
 - [x] Left rail in chat mode: chats only, no Projects, no project switcher, no
-      add-project button, no Team entry
+      add-project button
 - [x] Rail grouped by date (the existing search box already filters it)
 - [x] Chat empty state
 - [x] `CHAT_MODE_SYSTEM_PROMPT` wired in as the base prompt for chat turns
-- [x] Chat mode never inherits Team, whatever the team switch says
 - [x] New chats are created in `Chats/`, with no workspace
 - [x] The rail lists the right store's conversations on each side
 - [x] Switching reloads the rail and resumes where that side was left, subject
@@ -340,7 +339,7 @@ past the page and answers exactly.
 | `src/apps/agent/theme/agent-window/43-memory.css` | **Created.** |
 | `src/apps/agent/types.ts` | `memory` dock tab kind + label |
 | `src/apps/agent/components/shell/RightDock.tsx` | Renders the panel |
-| `src/apps/agent/components/shell/LeftRail.tsx` | Memory entry, in the slot Team occupies on the Build side |
+| `src/apps/agent/components/shell/LeftRail.tsx` | Memory entry |
 
 - [x] Memory entry in the left rail, opening as a dock tab
 - [x] Memory page: pin, edit, delete, add by hand

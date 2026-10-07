@@ -69,7 +69,7 @@ Then open Settings → Providers and let Aurora detect it.
 - Data root (Windows): `%LOCALAPPDATA%\AuroraIDE\` — `sessions\` (JSONL chat history),
   `data\aurora.db` (SQLite settings/providers/themes), `logs\` (`aurora.log`,
   `aurora-crash.log`), `code-index\`, `checkpoints\`.
-- MCP config: `~/.aurora/mcp.json`; team brain: `~/.aurora/projects\<projectId>\`.
+- MCP config: `~/.aurora/mcp.json`.
 - Frontend: `src/apps/{agent,ide}`, `src/kernel`, `src/bridge`. Backend: `src-tauri/src/`
   (`agent_runtime/`, `api/`, `commands/`, `tools/`, `code_index/`, …).
 

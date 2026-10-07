@@ -53,8 +53,7 @@ exactly as they do in Build mode.
 list is browsed by "when was that", and a flat list stops working around forty
 entries.
 
-The rail also carries the **Memory** entry, the same shape as the Team entry
-(`LeftRail.tsx:195` gates on `teamEnabled` and opens a dock tab).
+The rail also carries the **Memory** entry, which opens a dock tab.
 
 ### The right dock
 
@@ -628,7 +627,7 @@ Chat mode registers no file tools so it is not exposed. It is still wrong.
 | Web search + fetch | `websearch/engines.rs`, `tools/file_workspace_search/auroro_websearch.rs` | DuckDuckGo lite with an html fallback; fetch returns Markdown, paged |
 | Versioned artifacts | `tools/definitions/artifact-tools.ts` | `mermaid` rendered and `react` compiled before save; bad output rejected at write time |
 | Canvas SDK | `src/canvas-sdk/index.tsx` | consumed as TEXT by `vite-canvas-plugin.ts`; **do not move** |
-| Rail feature entry | `LeftRail.tsx:195` | the Team entry, the pattern Memory copies |
+| Rail feature entry | `LeftRail.tsx` | the Memory entry |
 | Archive | `useAgentChatStore.toggleArchive`, `session_store.rs:184` | full lifecycle plus a 15-day retention purge |
 | Per-conversation model | `ModelSelector.tsx:809`, `thread-model.ts` | `setThreadModel` writes the pin; mid-conversation switching works |
 | Titles | `agent_runtime/title.rs` | reused as-is |

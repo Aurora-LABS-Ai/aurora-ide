@@ -132,8 +132,8 @@ pub struct QueuedUserMessage {
     pub chips: Option<Vec<AttachedPromptChip>>,
     /// True when a person typed this into a composer mid-turn — the runtime
     /// then prepends [`MID_TURN_PREAMBLE`] so the model knows the timing.
-    /// False for team-mailbox traffic, which carries its own framing
-    /// (`[Message from …]`) and must not claim to be the user.
+    /// False for machine events (a background process ending), which carry
+    /// their own framing and must not claim to be the user.
     pub mid_turn: bool,
     /// Who put this here. `User` is a person's words and renders as their own
     /// row; `Process` is Aurora reporting a background process and renders as a

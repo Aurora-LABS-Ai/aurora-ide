@@ -23,7 +23,7 @@ request.**
 
 | what | where | changes |
 |---|---|---|
-| behaviour, `<env>`, `<machine_tools>`, project rules, skill catalogue, mode, team policy | system prompt | per turn at most |
+| behaviour, `<env>`, `<machine_tools>`, project rules, skill catalogue, mode | system prompt | per turn at most |
 | `<repo_map>` (Build) / `<memory>` (Chat) | head of the first user message | never in a conversation |
 | open files, selection, slash-attached rule, MCP directive, `<checklist>` at send time | `aurora_context` field on the user's own message, folded after the words for the API | never, once written |
 | "your checklist has gone untouched" | inside one tool result, after 10 assistant messages of silence | never, once written |
@@ -42,7 +42,7 @@ Alvan ran `scripts/aurora_dual_api_stream_simulator.py` and read
 `aurora_sim_logs/conversation.md`: request 1 carried **two user messages**,
 the real one and a state-only one. And the state was not "open files plus
 checklist" — the frontend's `ide_context` held the whole `<project_rules>`
-block (up to 10,000 characters), the skill catalogue and the team policy, and
+block (up to 10,000 characters), and the skill catalogue, and
 the whole thing was re-frozen into a tool result every time the checklist
 toggled in or out of it. In a four-request loop the project rules appeared
 three times.
@@ -67,8 +67,8 @@ three times.
   the last result of a batch when it is due, only where `todo` is registered.
 - `agent_runtime/conversation/compaction.rs` — folds the head view the same way
   and uses the same system prompt, so the cache-sharing summary keeps the prefix.
-- `src/apps/agent/services/runtime/agent-prompt.ts` — `projectRules` and
-  `teamPolicy` on `AgentPromptContext`; the skill catalogue and
+- `src/apps/agent/services/runtime/agent-prompt.ts` — `projectRules` on
+  `AgentPromptContext`; the skill catalogue and
   `required_skills` are composed here from the resolved skills; "Context Aurora
   Injects" describes `<aurora_context>` and the rare reminder.
 - `src/apps/agent/hooks/conversation/useAgentWindowSend.ts` — `ideContext` is

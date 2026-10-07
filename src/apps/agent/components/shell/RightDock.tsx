@@ -33,15 +33,12 @@ import { AGENT_BROWSER_LABEL } from "@/apps/agent/services/browser/browser-visib
 import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
-import { TeamPanel } from "@/apps/agent/components/team/TeamPanel";
 import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
-import { MemberPanel } from "@/apps/agent/components/team/MemberPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentBrowserDriving } from "@/apps/agent/store/workspace/useAgentBrowserDriving";
-import { authorColor } from "@/apps/agent/components/team/team-ui";
 import type { DockSingletonKind, DockTabInstance } from "@/apps/agent/types";
 import {
   isTabOnSurface,
@@ -57,7 +54,6 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   files: "files",
   browser: "browser",
   terminal: "terminal",
-  team: "users",
   memory: "database",
 };
 
@@ -179,12 +175,6 @@ const TabGlyph: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
   switch (tab.kind) {
     case "file":
       return <FileIcon name={tab.title} path={tab.path} className="agw-file-ico" />;
-    case "member":
-      // A team member's tab carries their identity color as a small dot —
-      // the same color as their name chip in the group chat.
-      return (
-        <span className="agw-tabpill-dot" style={{ background: authorColor(tab.memberId ?? "") }} />
-      );
     case "project":
       return <AgentIcon name="folder" size={13} />;
     case "session":
@@ -309,12 +299,8 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       // The same panel, pinned to one artifact. Canvas without an id is the
       // index of them all.
       return <CanvasPanel artifactId={tab.artifactId ?? ""} />;
-    case "team":
-      return <TeamPanel />;
     case "memory":
       return <MemoryPanel />;
-    case "member":
-      return <MemberPanel agentId={tab.memberId ?? ""} />;
     case "chat":
       return (
         <ChatPanel

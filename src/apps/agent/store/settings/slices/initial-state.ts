@@ -8,7 +8,6 @@ import {
   DEFAULT_SPEECH_LIVE,
   DEFAULT_TOOL_APPROVAL_SETTINGS,
   LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID,
-  TEAM_SIZE_RECOMMENDED,
   type SpeechMode,
   type TitleMakerMode,
 } from "../values";
@@ -40,13 +39,6 @@ export const initialSettingsState = {
   imageProviders: withBuiltInImageProviders([]),
   seededImageProviderIds: [],
 
-  // Agent Team (disabled by default; user opts in from the Agent Window's Settings → Team)
-  teamEnabled: false,
-  maxTeamSize: TEAM_SIZE_RECOMMENDED,
-  // Empty = ride the active chat model. The user can pin the Lead and the
-  // IC team to specific configured providers from the Agent Window's Settings → Team.
-  teamLeadModel: '',
-  teamMemberModel: '',
   // Global instructions: one empty "Default" set, none active. Replaced by
   // what the DB holds (or the legacy single string) in initialize.
   globalInstructionProfiles: [

@@ -41,10 +41,8 @@ import {
   DEFAULT_COMPACTION_SUMMARY_BUDGET,
   DEFAULT_COMPACTION_THRESHOLD_PCT,
   DEFAULT_TOOL_APPROVAL_SETTINGS,
-  TEAM_SIZE_RECOMMENDED,
   clampCompactionBudget,
   clampCompactionThreshold,
-  clampTeamSize,
   normalizeChatShortlist,
   normalizeSpeechLive,
   normalizeSpeechRuntimePath,
@@ -365,10 +363,6 @@ export const createPersistenceSlice = (set: SettingsSet, get: SettingsGet) =>
               seededImageProviderIds: seeding.seededIds,
             };
           })(),
-          teamEnabled: appSettings.teamEnabled ?? false,
-          maxTeamSize: clampTeamSize(appSettings.maxTeamSize ?? TEAM_SIZE_RECOMMENDED),
-          teamLeadModel: appSettings.teamLeadModel ?? '',
-          teamMemberModel: appSettings.teamMemberModel ?? '',
           globalInstructionProfiles: globalInstructionState.profiles,
           activeGlobalInstructionProfileId: globalInstructionState.activeId,
           compactionThresholdPct: clampCompactionThreshold(
@@ -482,10 +476,6 @@ export const createPersistenceSlice = (set: SettingsSet, get: SettingsGet) =>
         providerCategories: state.providerCategories,
         imageProviders: state.imageProviders,
         seededImageProviderIds: state.seededImageProviderIds,
-        teamEnabled: state.teamEnabled,
-        maxTeamSize: state.maxTeamSize,
-        teamLeadModel: state.teamLeadModel,
-        teamMemberModel: state.teamMemberModel,
         // Legacy mirror: older builds read the single string, so it carries
         // the active set's text (empty when none is active).
         globalInstructions: selectActiveGlobalInstructions(state),

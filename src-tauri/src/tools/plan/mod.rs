@@ -5,7 +5,7 @@
 //! - `plan_write` is the one permitted write in **Plan mode**. The user and the
 //!   agent discuss, the plan gets written, and the user knows exactly what will
 //!   happen before switching to Agent mode.
-//! - `plan_step_update` runs during **execution** (Agent / Team). Authoring a
+//! - `plan_step_update` runs during **execution** (Agent mode). Authoring a
 //!   plan and reporting progress against it are different acts.
 //! - `plan_read` is available everywhere — it is the answer to "where am I".
 //!

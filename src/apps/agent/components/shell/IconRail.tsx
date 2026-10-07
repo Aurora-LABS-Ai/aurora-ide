@@ -3,9 +3,9 @@
  *
  * The 48px strip on the window's left edge, present on every view. It carries
  * the things that are not chats: Home (the chat list and the conversation),
- * Images, Library and Plugins from `DESTINATIONS`; then the one dock surface
- * each product has that the rail used to hold as a row — Memory on Aurora
- * Chat, Team on Aurora Build; then Settings and the account at the foot.
+ * Images, Library and Plugins from `DESTINATIONS`; then, on Aurora Chat, the
+ * Memory dock surface the rail used to hold as a row; then Settings and the
+ * account at the foot.
  *
  * The chat sidebar beside it is unchanged and is what Home shows. A page
  * destination replaces the shell, sidebar included, so pressing Images folds
@@ -25,11 +25,9 @@ import {
   openDockSurface,
   type RailCell as RailCellId,
 } from "@/apps/agent/lib/navigation/destinations";
-import { isActivePhase, PHASE_LABEL, teamProgress } from "@/apps/agent/components/team/team-ui";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import { useTeamStore } from "@/apps/agent/store/team/useTeamStore";
 import type { DockSingletonKind } from "@/apps/agent/types";
 
 const RailCell: React.FC<{
@@ -37,7 +35,7 @@ const RailCell: React.FC<{
   label: string;
   title?: string;
   active?: boolean;
-  /** A toggle (Memory, Team) rather than a place; announced as pressed, not current. */
+  /** A toggle (Memory) rather than a place; announced as pressed, not current. */
   pressed?: boolean;
   /** A dot in the corner: something is happening behind this cell. */
   dot?: string | null;
@@ -64,26 +62,13 @@ export const IconRail: React.FC = () => {
   const openSettings = useAgentUiStore((s) => s.openSettings);
   const openView = useAgentUiStore((s) => s.openView);
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
   const railOpen = useAgentWorkspaceStore((s) => s.railOpen);
   const activeDockKind = useAgentWorkspaceStore(
     (s) => (s.dockOpen ? s.tabs.find((t) => t.id === s.activeTabId)?.kind : undefined) ?? null,
   );
-  const teamSnapshot = useTeamStore((s) => s.snapshot);
 
   const lit: RailCellId = litRailCell(view, section);
   const dockPressed = (kind: DockSingletonKind) => view === "chat" && activeDockKind === kind;
-
-  // A live team run shows as a dot on the Team cell. The rail has no room for
-  // "Working 2/5", so the phase and progress go in the title instead.
-  const teamDot =
-    teamSnapshot?.initialized && isActivePhase(teamSnapshot.team.phase)
-      ? (() => {
-          const { done, total } = teamProgress(teamSnapshot);
-          const label = PHASE_LABEL[teamSnapshot.team.phase] ?? teamSnapshot.team.phase;
-          return total > 0 ? `${label} ${done}/${total}` : label;
-        })()
-      : null;
 
   return (
     <nav className="agw-iconrail" aria-label="Aurora">
@@ -104,29 +89,17 @@ export const IconRail: React.FC = () => {
         />
       ))}
 
-      <span className="agw-iconrail-divider" role="separator" />
-
-      {chatSurface ? (
-        <RailCell
-          icon="database"
-          label="Memory"
-          title="What Aurora remembers about you"
-          pressed={dockPressed("memory")}
-          onClick={() => openDockSurface("memory")}
-        />
-      ) : (
-        // Absent until Agent Team is switched on in Settings, so the rail never
-        // offers a door into a feature the agent is not allowed to use.
-        teamEnabled && (
+      {chatSurface && (
+        <>
+          <span className="agw-iconrail-divider" role="separator" />
           <RailCell
-            icon="users"
-            label="Team"
-            title={teamDot ? `Team · ${teamDot}` : "The agent team for this project"}
-            pressed={dockPressed("team")}
-            dot={teamDot}
-            onClick={() => openDockSurface("team")}
+            icon="database"
+            label="Memory"
+            title="What Aurora remembers about you"
+            pressed={dockPressed("memory")}
+            onClick={() => openDockSurface("memory")}
           />
-        )
+        </>
       )}
 
       <span className="agw-iconrail-grow" />

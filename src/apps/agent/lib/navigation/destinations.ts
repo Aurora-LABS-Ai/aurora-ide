@@ -125,9 +125,9 @@ export function openDestination(id: AgentDestination, options: OpenDestinationOp
 }
 
 /**
- * Open one of the right dock's surfaces (Team, Memory, Files…). The dock only
- * exists on the Home view, so this walks there first: pressing Team from the
- * Images page must show the team, not silently open a tab behind a page that
+ * Open one of the right dock's surfaces (Memory, Files…). The dock only
+ * exists on the Home view, so this walks there first: pressing Memory from the
+ * Images page must show it, not silently open a tab behind a page that
  * cannot display it.
  */
 export function openDockSurface(kind: DockSingletonKind): void {

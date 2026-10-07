@@ -180,9 +180,7 @@ impl BridgeRouter {
 /// any hang this module prevents. Cancel already covers the case where the
 /// user walks away and then presses Stop.
 ///
-/// Nothing else belongs here. `team_dispatch` looks like a candidate and is
-/// not: it starts the workers and returns immediately, by design — see the
-/// Lead's instructions in `agent-execution-mode.ts`.
+/// Nothing else belongs here.
 const UNBOUNDED_BRIDGE_TOOLS: &[&str] = &["ask_question"];
 
 /// How long the agent window gets to answer one tool call.

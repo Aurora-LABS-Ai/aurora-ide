@@ -1,9 +1,8 @@
 /**
  * Agent Window — OS window launcher (adapter / outbound channel).
  *
- * Opens the agent workspace in its OWN native WebView window. Team now lives
- * inside this window as the embedded Team screen; `App.tsx` renders
- * `<AgentWindow/>` for the `/agent-window` route.
+ * Opens the agent workspace in its OWN native WebView window; `App.tsx`
+ * renders `<AgentWindow/>` for the `/agent-window` route.
  * There is exactly one agent window (fixed label); concurrent opens coalesce.
  */
 

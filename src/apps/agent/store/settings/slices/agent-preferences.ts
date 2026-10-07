@@ -7,7 +7,6 @@ import {
   clampCompactionBudget,
   clampCompactionThreshold,
   clampProfileName,
-  clampTeamSize,
   countEnabledSkillToggles,
   normalizeSpeechLive,
   normalizeSpeechRuntimePath,
@@ -17,32 +16,11 @@ import {
 } from "../values";
 
 /**
- * Agent preferences: team, title maker, workspace access, transcript and tool
+ * Agent preferences: title maker, workspace access, transcript and tool
  * toggles, global instructions, compaction, skills and speech.
  */
 export const createAgentPreferencesSlice = (set: SettingsSet, get: SettingsGet) =>
   ({
-  setTeamEnabled: (enabled: boolean) => {
-    // Disabling the feature must not leave the input box stuck in Team mode —
-    // fall back to Agent so the team tools/prompt are no longer in play.
-    const patch: Partial<SettingsState> = { teamEnabled: enabled };
-    if (!enabled && get().agentExecutionMode === "team") {
-      patch.agentExecutionMode = "agent";
-    }
-    set(patch);
-    get().saveToDatabase();
-  },
-
-  setMaxTeamSize: (size: number) => {
-    set({ maxTeamSize: clampTeamSize(size) });
-    get().saveToDatabase();
-  },
-
-  setTeamLeadModel: (selection: string) => {
-    set({ teamLeadModel: selection });
-    get().saveToDatabase();
-  },
-
   setTitleMaker: (value) => {
     const patch: Partial<SettingsState> = {};
     if (value.mode !== undefined) {
@@ -96,11 +74,6 @@ export const createAgentPreferencesSlice = (set: SettingsSet, get: SettingsGet) 
 
   setMcpBridgeEnabled: (value: boolean) => {
     set({ mcpBridgeEnabled: value });
-    get().saveToDatabase();
-  },
-
-  setTeamMemberModel: (selection: string) => {
-    set({ teamMemberModel: selection });
     get().saveToDatabase();
   },
 

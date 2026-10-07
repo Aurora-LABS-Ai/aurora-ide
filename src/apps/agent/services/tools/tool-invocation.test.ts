@@ -27,6 +27,6 @@ describe("optional tool display", () => {
   it("leaves core tools alone and supports empty optional arguments", () => {
     const direct = call('{"path":"a.ts"}', "file_read");
     expect(toolCallForDisplay(direct)).toBe(direct);
-    expect(toolCallForDisplay(call('{"name":"team_status","arguments":{}}'))).toEqual(call("{}", "team_status"));
+    expect(toolCallForDisplay(call('{"name":"mcp_docs_status","arguments":{}}'))).toEqual(call("{}", "mcp_docs_status"));
   });
 });

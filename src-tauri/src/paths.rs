@@ -216,7 +216,7 @@ pub fn auth_dir() -> PathBuf {
 
 /// `~/.aurora/mcp.json` — user-facing, human-editable MCP server config in the
 /// Cursor/Claude format (keyed by server name). Lives in the home `.aurora`
-/// dir (beside the team brain) so it is portable and user-inspectable rather
+/// dir so it is portable and user-inspectable rather
 /// than buried in platform app-data with internal ids.
 pub fn mcp_config_file() -> PathBuf {
     aurora_home_dir().join("mcp.json")
@@ -260,27 +260,18 @@ pub fn agent_images_dir() -> PathBuf {
     dir
 }
 
-/// `~/.aurora/` — the **Agent Team shared brain** root.
+/// `~/.aurora/` — user-facing config that belongs in the home directory.
 ///
 /// Intentionally NOT under the AuroraIDE app-data root resolved by
-/// [`root`]. The team workspace mirrors the `.claude` memory-dir idea
-/// (ground truth §5/§6): it lives in the user's home so it is portable,
-/// user-inspectable, and project-scoped rather than buried in
+/// [`root`]: what lives here (the MCP config) is meant to be found and
+/// edited by hand, so it sits in the user's home rather than buried in
 /// platform-specific app data. Created lazily.
 ///
 /// Falls back to the app-data root when the OS exposes no home dir, so
-/// resolution never panics — the brain just lands beside the rest of
-/// Aurora's state in that degenerate case.
+/// resolution never panics.
 pub fn aurora_home_dir() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(root);
     let dir = base.join(".aurora");
-    ensure(&dir);
-    dir
-}
-
-/// `~/.aurora/projects/` — one subfolder per opened project's team brain.
-pub fn team_projects_dir() -> PathBuf {
-    let dir = aurora_home_dir().join("projects");
     ensure(&dir);
     dir
 }

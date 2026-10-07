@@ -83,18 +83,16 @@ describe("agent execution mode", () => {
       // Agent mode must not be able to rewrite the plan the user approved.
       expect(isToolAllowedForExecutionMode("plan", "plan_write")).toBe(true);
       expect(isToolAllowedForExecutionMode("agent", "plan_write")).toBe(false);
-      expect(isToolAllowedForExecutionMode("team", "plan_write")).toBe(false);
     });
 
     it("exposes plan_step_update during execution only", () => {
       // Marking progress is not authoring; plan mode must not mutate real state.
       expect(isToolAllowedForExecutionMode("agent", "plan_step_update")).toBe(true);
-      expect(isToolAllowedForExecutionMode("team", "plan_step_update")).toBe(true);
       expect(isToolAllowedForExecutionMode("plan", "plan_step_update")).toBe(false);
     });
 
     it("keeps plan_read available everywhere", () => {
-      for (const mode of ["agent", "plan", "team"] as const) {
+      for (const mode of ["agent", "plan"] as const) {
         expect(isToolAllowedForExecutionMode(mode, "plan_read")).toBe(true);
       }
     });
@@ -105,7 +103,6 @@ describe("agent execution mode", () => {
       for (const name of ["TaskCreate", "TaskUpdate", "TaskList"]) {
         expect(isToolAllowedForExecutionMode("plan", name)).toBe(false);
         expect(isToolAllowedForExecutionMode("agent", name)).toBe(true);
-        expect(isToolAllowedForExecutionMode("team", name)).toBe(true);
       }
     });
 
@@ -180,7 +177,7 @@ describe("agent execution mode", () => {
     // The mode used to be repeated per message as an `<execution_mode_context>`
     // block, saved into every message's context. The section is the one home
     // now, so it has to carry the authority claim itself.
-    for (const mode of ["plan", "team", "agent"] as const) {
+    for (const mode of ["plan", "agent"] as const) {
       const section = getAgentModePromptSection(mode);
       expect(section).toMatch(/Aurora sets this mode from the window's actual state/);
       expect(section).not.toMatch(/runtime execution mode context/);
@@ -209,7 +206,6 @@ describe("agent execution mode", () => {
         "code",
         "todo",
         "plan_write",
-        "team_dispatch",
         "browser_navigate",
       ]) {
         expect(isToolAllowedForExecutionMode("chat", name)).toBe(false);
@@ -235,7 +231,7 @@ describe("agent execution mode", () => {
     });
 
     it("keeps Chat image generation out of Build", () => {
-      for (const mode of ["agent", "plan", "team"] as const) {
+      for (const mode of ["agent", "plan"] as const) {
         expect(isToolAllowedForExecutionMode(mode, "generate_image")).toBe(false);
       }
     });
@@ -283,7 +279,7 @@ describe("agent execution mode", () => {
     // nothing. It shipped that way: a Build turn called `recall` beside
     // `shell_execute`.
     it("keeps its memory out of every build mode", () => {
-      for (const mode of ["agent", "plan", "team"] as const) {
+      for (const mode of ["agent", "plan"] as const) {
         for (const name of ["recall", "remember"]) {
           expect(isToolAllowedForExecutionMode(mode, name)).toBe(false);
         }
@@ -308,7 +304,6 @@ describe("agent execution mode", () => {
       // keypress must never move a conversation to another store.
       expect(cycleAgentExecutionMode("agent")).toBe("plan");
       expect(cycleAgentExecutionMode("plan")).toBe("agent");
-      expect(cycleAgentExecutionMode("team", { teamAvailable: true })).toBe("agent");
     });
 
     it("round-trips through normalization", () => {
@@ -316,6 +311,9 @@ describe("agent execution mode", () => {
       expect(normalizeAgentExecutionMode('"chat"')).toBe("chat");
       expect(normalizeAgentExecutionMode("CHAT")).toBe("chat");
       expect(normalizeAgentExecutionMode("nonsense")).toBe("agent");
+      // A "team" mode saved before the agent team was removed opens as Agent.
+      expect(normalizeAgentExecutionMode("team")).toBe("agent");
+      expect(normalizeAgentExecutionMode('"team"')).toBe("agent");
     });
   });
 
@@ -333,16 +331,12 @@ describe("agent execution mode", () => {
     // return you to the Build mode you left, not drop you on Agent.
     it("remembers the build mode while chat is in force", () => {
       expect(effectiveExecutionMode("chat", "plan")).toBe("chat");
-      expect(effectiveExecutionMode("chat", "team")).toBe("chat");
       expect(effectiveExecutionMode("build", "plan")).toBe("plan");
-      expect(effectiveExecutionMode("build", "team")).toBe("team");
       expect(effectiveExecutionMode("build", "agent")).toBe("agent");
     });
 
-    // Team is a Build-side feature. A chat conversation must never be promoted
-    // into one because the team switch happens to be on.
-    it("chat outranks every build mode, including team", () => {
-      for (const mode of ["agent", "plan", "team"] as const) {
+    it("chat outranks every build mode", () => {
+      for (const mode of ["agent", "plan"] as const) {
         expect(effectiveExecutionMode("chat", mode)).toBe("chat");
       }
     });
@@ -381,7 +375,7 @@ describe("agent execution mode", () => {
     });
 
     it("leaves every build mode rooted where it was", () => {
-      for (const mode of ["agent", "plan", "team"] as const) {
+      for (const mode of ["agent", "plan"] as const) {
         expect(effectiveProjectRoot(mode, "E:/work")).toBe("E:/work");
       }
       // No project open is still no project, not `undefined` on the wire.

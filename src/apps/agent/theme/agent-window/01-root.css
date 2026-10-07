@@ -40,7 +40,7 @@
    * be tuned to coincide with a panel colour and make selection invisible.
    * Same 9% text-mix precedent as .agw-model-item.
    * --agw-state-quiet is the resting tier of the same idea: quiet raised
-   * controls (rail search, Team button, inactive tabs) that must stay
+   * controls (rail search, inactive tabs) that must stay
    * distinguishable from whatever panel colour they sit on. */
   --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
   --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);

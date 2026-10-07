@@ -55,7 +55,7 @@ const headerStyle: React.CSSProperties = {
 
 /**
  * The editor's own settings. Everything about the agent — providers, models,
- * tools, approvals, MCP, skills, team, voice — now lives in the agent window's
+ * tools, approvals, MCP, skills, voice — now lives in the agent window's
  * settings page, which owns that configuration end to end. Adding an agent
  * setting here again would give the same value two homes.
  */

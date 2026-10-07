@@ -8,8 +8,8 @@
  * The dock is a browser: open surfaces are tabs (closeable like browser tabs),
  * `+` opens a New tab page that loads an address or turns into one of Aurora's
  * panels, browser tabs each own a native page, files open as their own tabs,
- * and an Expand toggle widens the panel. File and member tabs are
- * session-only; everything else persists.
+ * and an Expand toggle widens the panel. File tabs are session-only;
+ * everything else persists.
  */
 
 import { create } from "zustand";
@@ -21,6 +21,13 @@ import {
   type DockTabInstance,
 } from "@/apps/agent/types";
 import { addressTitle, userBrowserLabel } from "@/apps/agent/lib/browser/browser-tabs";
+
+/**
+ * Tab kinds an older build saved that this one no longer has. Dropped when the
+ * saved layout is read back, so a retired surface never comes back as a tab
+ * with nothing to render.
+ */
+const RETIRED_TAB_KINDS: ReadonlySet<string> = new Set(["gallery", "team", "member"]);
 
 /** Review diff layout — side-by-side (Codex default) vs single-column. */
 export type DiffMode = "split" | "unified";
@@ -86,8 +93,6 @@ interface AgentWorkspaceState {
   openTab: (kind: DockSingletonKind) => void;
   /** Open (or refocus) a file in its own tab. */
   openFileTab: (path: string, title?: string) => void;
-  /** Open (or refocus) a team member's live stream in its own tab. */
-  openMemberTab: (agentId: string, title: string) => void;
   /** Open (or focus) the details tab for a project folder. */
   openProjectTab: (root: string, title: string) => void;
   /** Open the details tab for one conversation (turn timeline, tool outcomes,
@@ -141,14 +146,6 @@ interface AgentWorkspaceState {
   setActiveTab: (id: string) => void;
   /** Close a tab; activates a neighbor, or closes the dock if it was the last. */
   closeTab: (id: string) => void;
-  /**
-   * Close the team screen and every member stream at once.
-   *
-   * Turning Agent Team off in Settings has to take the team OUT of the window,
-   * not just out of the model's tools — and the team tab is persisted, so a
-   * stale one can also come back on a reload after the feature was disabled.
-   */
-  closeTeamTabs: () => void;
 }
 
 export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
@@ -203,16 +200,6 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           const tabs = exists
             ? s.tabs
             : [...s.tabs, { id, kind: "file" as const, title: title ?? basename(path), path }];
-          return { dockOpen: true, activeTabId: id, tabs };
-        }),
-
-      openMemberTab: (agentId, title) =>
-        set((s) => {
-          const id = `member:${agentId}`;
-          const exists = s.tabs.some((t) => t.id === id);
-          const tabs = exists
-            ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
-            : [...s.tabs, { id, kind: "member" as const, title, memberId: agentId }];
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 
@@ -356,17 +343,6 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           const dockOpen = tabs.length > 0 && s.dockOpen;
           return { tabs, activeTabId, dockOpen, expanded: dockOpen ? s.expanded : false };
         }),
-
-      closeTeamTabs: () =>
-        set((s) => {
-          const tabs = s.tabs.filter((t) => t.kind !== "team" && t.kind !== "member");
-          if (tabs.length === s.tabs.length) return s;
-          const activeTabId = tabs.some((t) => t.id === s.activeTabId)
-            ? s.activeTabId
-            : (tabs[0]?.id ?? null);
-          const dockOpen = tabs.length > 0 && s.dockOpen;
-          return { tabs, activeTabId, dockOpen, expanded: dockOpen ? s.expanded : false };
-        }),
     }),
     {
       name: "aurora-agent-window-workspace",
@@ -375,12 +351,11 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         railWidth: s.railWidth,
         dockWidth: s.dockWidth,
         diffMode: s.diffMode,
-        // File tabs are project-specific and member tabs die with their run (a
-        // re-dispatch mints new agent ids), so neither survives a reload. Chat
+        // File tabs are project-specific, so they do not survive a reload. Chat
         // tabs DO: a thread id is durable, and a side-by-side comparison you set
         // up is worth keeping — the panel handles a since-deleted thread as an
         // honest empty state rather than a broken tab.
-        tabs: s.tabs.filter((t) => t.kind !== "file" && t.kind !== "member"),
+        tabs: s.tabs.filter((t) => t.kind !== "file"),
         activeTabId: s.activeTabId,
       }),
       // After rehydrate, make sure activeTabId still points at a surviving tab.
@@ -390,9 +365,10 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
         // safely inferred from a nullable project root, so require a reopen.
         const tabs = (p.tabs ?? []).filter(
           (tab) =>
-            // The gallery was a dock tab until the Library page took it over;
-            // a tab of that kind saved by an older build has nothing to render.
-            (tab.kind as string) !== "gallery" &&
+            // Retired kinds an older build may have saved, with nothing left to
+            // render: the gallery (the Library page took it over) and the
+            // removed Agent Team's tabs.
+            !RETIRED_TAB_KINDS.has(tab.kind as string) &&
             (tab.kind !== "chat" ||
               tab.threadSurface === "chat" ||
               tab.threadSurface === "build"),

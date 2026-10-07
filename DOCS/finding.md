@@ -4,7 +4,7 @@
 **Scope:** prompts, conversation ownership, composer context, tool rosters, and nearby UI.  
 **Status:** Code fixes complete. Automated checks passed; live Tauri/provider switch scenarios remain to be checked.
 
-Aurora Chat is a conversation surface with its own conversation store and no project or native file/shell tools. Aurora Build owns project conversations, project rules, file and browser context, and Agent/Plan/Team modes. A rule or turn that belongs to one surface must not silently run on the other.
+Aurora Chat is a conversation surface with its own conversation store and no project or native file/shell tools. Aurora Build owns project conversations, project rules, file and browser context, and Agent/Plan modes. A rule or turn that belongs to one surface must not silently run on the other.
 
 ## Progress ledger
 
@@ -73,13 +73,13 @@ The [prompt formatter](../src/apps/agent/services/runtime/agent-prompt.ts#L367) 
 
 ### F-08. Chapters prompt/tool mismatch
 
-The [prompt composer](../src/apps/agent/services/runtime/agent-prompt.ts#L599) adds chapter instructions whenever the preference is on. Rust [answers Chat availability before the chapter preference arm](../src-tauri/src/commands/agent_v2/tool_policy.rs#L223), and `chapter` is absent from [Chat's allow-list](../src-tauri/src/commands/agent_v2/tool_policy.rs#L272). The [existing Rust chapter test](../src-tauri/src/commands/agent_v2/tests.rs#L777) covers Agent/Plan/Team, not Chat.
+The [prompt composer](../src/apps/agent/services/runtime/agent-prompt.ts#L599) adds chapter instructions whenever the preference is on. Rust [answers Chat availability before the chapter preference arm](../src-tauri/src/commands/agent_v2/tool_policy.rs#L223), and `chapter` is absent from [Chat's allow-list](../src-tauri/src/commands/agent_v2/tool_policy.rs#L272). The [existing Rust chapter test](../src-tauri/src/commands/agent_v2/tests.rs#L777) covers Agent/Plan, not Chat.
 
 **Impact:** Chat can be asked to call a tool it has not been given. **Target:** one preference controls both the Chat prompt and roster, or the instruction is omitted in Chat.
 
 ### F-09. Optional-tool prose describes Build abilities in Chat
 
-The [Build-oriented optional-tool text](../src/apps/agent/services/runtime/agent-prompt.ts#L257) names files, shell, tasks, skills, browser, and team tools. It is [inserted unconditionally](../src/apps/agent/services/runtime/agent-prompt.ts#L604) after Chat's separate base prompt, despite [Chat's narrow tool roster](../src/apps/agent/services/runtime/agent-execution-mode.ts#L136).
+The [Build-oriented optional-tool text](../src/apps/agent/services/runtime/agent-prompt.ts#L257) names files, shell, tasks, skills and browser tools. It is [inserted unconditionally](../src/apps/agent/services/runtime/agent-prompt.ts#L604) after Chat's separate base prompt, despite [Chat's narrow tool roster](../src/apps/agent/services/runtime/agent-execution-mode.ts#L136).
 
 **Impact:** The full Chat prompt contradicts its own capability boundary. **Target:** surface-specific tool guidance, tested on the composed prompt rather than the base constant alone.
 

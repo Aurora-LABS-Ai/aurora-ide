@@ -25,7 +25,7 @@ export interface SettingsState {
    * Which of Aurora's two products the window is showing.
    *
    * Held SEPARATELY from `agentExecutionMode`, which keeps meaning
-   * agent/plan/team — the mode you were working in on the Build side. Two
+   * agent/plan — the mode you were working in on the Build side. Two
    * reasons, both learned by trying the single-field version first:
    *
    * 1. Switching to Chat and back must return you to the mode you left. One
@@ -111,22 +111,6 @@ export interface SettingsState {
    * behaviour the built-in a6api row wants and these rows do not.
    */
   seededImageProviderIds: string[];
-
-  // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
-  teamEnabled: boolean;
-  maxTeamSize: number;
-  /**
-   * Provider/model the Lead runs on, as a `"providerId:modelKey"` selection
-   * from the user's configured providers. Empty string means "use my active
-   * chat model".
-   */
-  teamLeadModel: string;
-  /**
-   * Provider/model the IC team members run on, same `"providerId:modelKey"`
-   * shape. Empty string falls back to the active chat model. Lets the user
-   * pin the Lead to one provider and the team to another.
-   */
-  teamMemberModel: string;
   /**
    * Named global-instruction sets (Settings → Agent), up to
    * {@link GLOBAL_INSTRUCTION_PROFILE_LIMIT}. At most one is active; only the
@@ -254,14 +238,6 @@ export interface SettingsState {
    */
   mcpBridgeEnabled: boolean;
   setMcpBridgeEnabled: (value: boolean) => void;
-  /**
-   * Resolve the {@link ProviderConfig} the Lead should run on — the
-   * `teamLeadModel` override when set and valid, otherwise the active chat
-   * config (`getLLMConfig`).
-   */
-  getTeamLeadConfig: () => ProviderConfig | null;
-  /** Resolve the {@link ProviderConfig} the IC team members run on. */
-  getTeamMemberConfig: () => ProviderConfig | null;
 
   deleteProvider: (id: string) => void;
   /**
@@ -387,10 +363,6 @@ export interface SettingsState {
   setFireworksTabEnabled: (enabled: boolean) => void;
   setMaxTokens: (tokens: number) => void;
   setMaxToolCallsPerRequest: (max: number) => void;
-  setTeamEnabled: (enabled: boolean) => void;
-  setMaxTeamSize: (size: number) => void;
-  setTeamLeadModel: (selection: string) => void;
-  setTeamMemberModel: (selection: string) => void;
   setProjectLayoutEnabled: (value: boolean) => void;
   setSelectedModel: (model: string) => void;
   /**

@@ -13,14 +13,6 @@ export const countEnabledSkillToggles = (toggles: Record<string, boolean>): numb
   return count;
 };
 
-// Agent Team — the user-configured ceiling on how many agents the Lead may
-// convene per task. Hard ceiling is 16, recommended value is 5 (see
-// DOCS/aurora-agent-team-ground-truth.md §11). The Lead never exceeds this.
-export const TEAM_SIZE_HARD_CEILING = 16;
-export const TEAM_SIZE_RECOMMENDED = 5;
-export const clampTeamSize = (value: number): number =>
-  Math.min(TEAM_SIZE_HARD_CEILING, Math.max(1, Math.round(value) || TEAM_SIZE_RECOMMENDED));
-
 // Context compaction (see DOCS/compaction-design.md). Threshold is a % of the
 // context window; budget is the summary call's max_output_tokens.
 export const DEFAULT_COMPACTION_THRESHOLD_PCT = 80;

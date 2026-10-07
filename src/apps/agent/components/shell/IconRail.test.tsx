@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  settings: { auroraSurface: "build" as "build" | "chat", teamEnabled: true },
+  settings: { auroraSurface: "build" as "build" | "chat" },
   workspace: {
     railOpen: true,
     dockOpen: false,
@@ -12,7 +12,6 @@ const state = vi.hoisted(() => ({
     toggleRail: vi.fn(),
     openTab: vi.fn(),
   },
-  team: { snapshot: null as unknown },
 }));
 vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
   useAgentSettingsStore: (select: (value: unknown) => unknown) => select(state.settings),
@@ -22,9 +21,6 @@ vi.mock("@/apps/agent/store/workspace/useAgentWorkspaceStore", () => {
   useAgentWorkspaceStore.getState = () => state.workspace;
   return { useAgentWorkspaceStore };
 });
-vi.mock("@/apps/agent/store/team/useTeamStore", () => ({
-  useTeamStore: (select: (value: unknown) => unknown) => select(state.team),
-}));
 
 import { IconRail } from "./IconRail";
 import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
@@ -43,7 +39,7 @@ const render = () => act(async () => root.render(<IconRail />));
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
-  state.settings = { auroraSurface: "build", teamEnabled: true };
+  state.settings = { auroraSurface: "build" };
   state.workspace.railOpen = true;
   state.workspace.dockOpen = false;
   state.workspace.tabs = [];
@@ -60,29 +56,26 @@ afterEach(async () => {
 });
 
 describe("IconRail", () => {
-  it("lists the destinations, Team on Build, then Settings and Account", async () => {
+  it("lists the destinations, then Providers, Settings and Account", async () => {
     await render();
     expect(labels()).toEqual([
       "Home",
       "Images",
       "Library",
       "Plugins",
-      "Team",
       "Providers",
       "Settings",
       "Account",
     ]);
   });
 
-  it("shows Memory instead of Team on Aurora Chat, and no Team while the feature is off", async () => {
-    state.settings = { auroraSurface: "chat", teamEnabled: true };
+  it("shows Memory on Aurora Chat only", async () => {
+    state.settings = { auroraSurface: "chat" };
     await render();
     expect(labels()).toContain("Memory");
-    expect(labels()).not.toContain("Team");
 
-    state.settings = { auroraSurface: "build", teamEnabled: false };
+    state.settings = { auroraSurface: "build" };
     await render();
-    expect(labels()).not.toContain("Team");
     expect(labels()).not.toContain("Memory");
   });
 
@@ -107,18 +100,19 @@ describe("IconRail", () => {
     expect(state.workspace.toggleRail).toHaveBeenCalledTimes(1);
   });
 
-  it("Team walks home first from a page, then opens the dock tab, and reads pressed while it shows", async () => {
+  it("Memory walks home first from a page, then opens the dock tab, and reads pressed while it shows", async () => {
+    state.settings = { auroraSurface: "chat" };
     await render();
     await act(async () => cell("Images").click());
-    await act(async () => cell("Team").click());
+    await act(async () => cell("Memory").click());
     expect(useAgentUiStore.getState().view).toBe("chat");
-    expect(state.workspace.openTab).toHaveBeenCalledWith("team");
+    expect(state.workspace.openTab).toHaveBeenCalledWith("memory");
 
     state.workspace.dockOpen = true;
-    state.workspace.tabs = [{ id: "team", kind: "team" }];
-    state.workspace.activeTabId = "team";
+    state.workspace.tabs = [{ id: "memory", kind: "memory" }];
+    state.workspace.activeTabId = "memory";
     await render();
-    expect(cell("Team").getAttribute("aria-pressed")).toBe("true");
+    expect(cell("Memory").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("lights Plugins on its page and Account on the profile page, never both with Settings", async () => {

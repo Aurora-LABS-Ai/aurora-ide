@@ -386,47 +386,6 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
 }
 
 // ---------------------------------------------------------------------------
-// Agent Team — Phase 1 live broadcast sink
-// ---------------------------------------------------------------------------
-//
-// `TauriTeamEventSink` is the production [`TeamEventSink`] for the
-// TeamBus. Every channel event the bus persists to
-// `~/.aurora/projects/<projectId>/channel/events.jsonl` is also emitted
-// on the single `"team_event"` Tauri channel so the frontend team
-// client (`src/services/team-client.ts`) can render the standup live.
-// The payload carries the resolving `project_id` so a client watching
-// one project ignores broadcasts for others.
-struct TauriTeamEventSink {
-    app: tauri::AppHandle,
-}
-
-impl agent_runtime::team::TeamEventSink for TauriTeamEventSink {
-    fn emit_team_event(&self, project_id: &str, event: &agent_runtime::team::ChannelEvent) {
-        #[derive(Clone, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Payload<'a> {
-            project_id: &'a str,
-            event: &'a agent_runtime::team::ChannelEvent,
-        }
-        let _ = self.app.emit("team_event", Payload { project_id, event });
-    }
-
-    // Ephemeral token stream (NOT persisted) — carries an agent's tokens as
-    // they arrive so the Team view streams in real time, on its own
-    // `"team_stream"` channel so the durable `"team_event"` path is untouched.
-    fn emit_team_stream(&self, project_id: &str, delta: &agent_runtime::team::TeamStreamDelta) {
-        #[derive(Clone, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Payload<'a> {
-            project_id: &'a str,
-            #[serde(flatten)]
-            delta: &'a agent_runtime::team::TeamStreamDelta,
-        }
-        let _ = self.app.emit("team_stream", Payload { project_id, delta });
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Phase 2.3 — agent_v2 wiring
 // ---------------------------------------------------------------------------
 //
@@ -1002,28 +961,6 @@ pub fn run_with_args(cli_args: CliArgs) {
             // user's Allow/Deny verdict here. The router lives in
             // managed state (see `setup` below).
             commands::agent_v2_permissions::agent_grant_permission,
-            // Agent Team — Phase 1 foundation (shared brain + TeamBus).
-            // Scaffolds and reads `~/.aurora/projects/<projectId>/` and
-            // posts to the team channel; the `TeamBus` in managed state
-            // persists + broadcasts each post on the `team_event`
-            // channel. See DOCS/aurora-agent-team-ground-truth.md.
-            commands::team::team_resolve_project_id,
-            commands::team::team_init,
-            commands::team::team_get_state,
-            commands::team::team_channel_tail,
-            commands::team::team_origin_threads,
-            commands::team::team_post_channel_event,
-            commands::team::team_remove_agent,
-            commands::team::team_disband,
-            commands::team::team_check_scope,
-            commands::team::team_grant_scope,
-            commands::team::team_lead_message,
-            commands::team::team_lead_inbox,
-            commands::team::team_lead_reply,
-            commands::team::team_dispatch,
-            commands::team::team_run_status,
-            commands::team::team_run_ack,
-            commands::team::team_get_agent_transcript,
             // Composer typing assistance (autocorrect · completion · next-word)
             commands::typing_assist::typing_assist_ensure_ready,
             commands::typing_assist::typing_assist_query,
@@ -1296,27 +1233,6 @@ pub fn run_with_args(cli_args: CliArgs) {
 
             app.manage(agent_registry);
             app.manage(permission_router);
-
-            // Agent Team — Phase 1. The TeamBus owns the single
-            // persist+broadcast path for team-channel events. Its sink
-            // emits the `"team_event"` channel to the frontend; the
-            // brain itself lives in `~/.aurora/projects/<projectId>/`,
-            // resolved per-call by the commands in `commands::team`.
-            let team_sink: std::sync::Arc<dyn agent_runtime::team::TeamEventSink> =
-                std::sync::Arc::new(TauriTeamEventSink {
-                    app: handle.clone(),
-                });
-            app.manage(std::sync::Arc::new(agent_runtime::team::TeamBus::new(
-                Some(team_sink),
-            )));
-
-            // The background dispatch engine: one `team_dispatch` runs the
-            // whole plan→build→integrate lifecycle on a detached task so the
-            // Lead's chat turn never blocks. Holds the live per-project run
-            // status the frontend injects into the Lead every message (§17).
-            app.manage(std::sync::Arc::new(
-                agent_runtime::team::TeamDispatcher::new().with_usage_ledger(usage_ledger),
-            ));
 
             // Native browser-window manager. Owns the lifecycle of
             // every browser-* WebviewWindow used for previews,

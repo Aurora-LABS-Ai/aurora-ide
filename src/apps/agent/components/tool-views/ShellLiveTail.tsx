@@ -9,8 +9,9 @@
  * Documents/aurora-shell-live-output-designs.html).
  *
  * Its height is fixed, so the transcript holds still while output arrives.
- * The card removes it when the command ends or when the card is opened, since
- * the full view then shows the same output.
+ * It opens only once the command has run `TAIL_APPEARS_AFTER_MS` (probe round
+ * 2, `useShellTailDue`), and the card removes it when the command ends or when the card is opened,
+ * since the full view then shows the same output.
  */
 
 import React, { useMemo } from "react";

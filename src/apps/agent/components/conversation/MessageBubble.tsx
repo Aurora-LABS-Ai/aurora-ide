@@ -22,7 +22,6 @@ import { motion } from "framer-motion";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { inertWhen } from "@/kernel/lib/a11y/inert";
-import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
@@ -1209,9 +1208,7 @@ type MessageBubbleProps = {
   showActions?: boolean;
   /** When provided (assistant only), shows a Retry action that resends. */
   onRetry?: () => void;
-  /** Label text over an assistant turn (defaults to "Aurora"). The Team
-   *  screen passes the speaking member's name so a teammate's message renders
-   *  through the exact same chat turn, just labeled. */
+  /** Label text over an assistant turn (defaults to "Aurora"). */
   label?: string;
   /** Idle color for a custom label (streaming keeps the shimmer). */
   labelColor?: string;
@@ -1225,66 +1222,6 @@ type MessageBubbleProps = {
   /** Tokens generated across the turn (`AgwTurn.outputTokens`). */
   outputTokens?: number;
   outputTokensEstimated?: boolean;
-};
-
-/**
- * Team traces in the main chat. The notifier injects team traffic into the
- * Lead's conversation as user-role turns (so the model has the full text),
- * but the WORDS belong to the Team chat — the main chat shows only a compact
- * trace pill. Clicking it opens the Team panel where the content lives.
- * Detection is by the notifier's own stable markers, nothing heuristic.
- */
-const TEAM_QUESTION_RE = /^\[Team question — (.+?) is paused/;
-const TEAM_NOTIFICATION_PREFIX = "[Automatic team notification";
-
-const teamTrace = (content: string): { title: string; tone: "ask" | "done" } | null => {
-  const q = TEAM_QUESTION_RE.exec(content);
-  if (q) return { title: `${q[1]} messaged you`, tone: "ask" };
-  if (content.startsWith(TEAM_NOTIFICATION_PREFIX))
-    return { title: "Team run finished — report requested", tone: "done" };
-  return null;
-};
-
-const TeamTracePill: React.FC<{ title: string; tone: "ask" | "done" }> = ({ title, tone }) => {
-  // An old chat keeps its team traces after Agent Team is switched off, but the
-  // panel they point at is gone. The record stays; it stops being a control,
-  // because a button that opens nothing is worse than a plain marker.
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
-  const body = (
-    <>
-      <span className="agw-team-trace-dot" />
-      <span>{title}</span>
-      <AgentIcon name="users" size={12} />
-    </>
-  );
-  return (
-    <div
-      className="agw-msg"
-      style={{ display: "flex", flexDirection: "column", alignItems: "flex-end" }}
-    >
-      {teamEnabled ? (
-        <button
-          type="button"
-          className="agw-team-trace"
-          data-tone={tone}
-          title="Open the Team panel"
-          onClick={() => {
-            // Lazy import avoids a cycle: the workspace store imports dock types
-            // that components also use.
-            void import("@/apps/agent/store/workspace/useAgentWorkspaceStore").then((m) =>
-              m.useAgentWorkspaceStore.getState().openTab("team"),
-            );
-          }}
-        >
-          {body}
-        </button>
-      ) : (
-        <span className="agw-team-trace" data-tone={tone} data-static="true">
-          {body}
-        </span>
-      )}
-    </div>
-  );
 };
 
 const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
@@ -1302,8 +1239,6 @@ const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   outputTokensEstimated,
 }) => {
   if (message.role === "user") {
-    const trace = teamTrace(message.content);
-    if (trace) return <TeamTracePill title={trace.title} tone={trace.tone} />;
     return (
       <UserBubble
         content={message.content}
@@ -1384,8 +1319,7 @@ function bubblePropsEqual(
   // A tool RESULT can land without changing the event count (the call event
   // already existed; only its `result` filled in). Without this check an idle
   // bubble keeps showing the tool as pending/failed until the NEXT event
-  // arrives — the team transcript's "Didn't complete until the next tool call"
-  // bug. Counting resolved/failed results is cheap and catches the transition.
+  // arrives ("Didn't complete until the next tool call"). Counting resolved/failed results is cheap and catches the transition.
   if (resolvedToolResults(prev.events) !== resolvedToolResults(next.events)) {
     return false;
   }

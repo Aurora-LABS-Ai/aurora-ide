@@ -146,14 +146,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Team-member tab: the member's identity color as a small dot (same color as
- * their name chip in the group chat), sized to sit where a tab icon would. */
-.agw-tabpill-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
 .agw-tabpill-close {
   display: inline-flex;
   align-items: center;

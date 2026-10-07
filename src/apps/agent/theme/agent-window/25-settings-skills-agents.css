@@ -563,7 +563,7 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Agent settings (global instructions + mode + team)
+   Agent settings (global instructions + mode)
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* Global instructions — up to three named sets, tabbed. The tab strip is a
@@ -731,74 +731,4 @@
   color: var(--agw-warning);
 }
 
-/* Team-size stepper. */
-.agw-agent-stepper {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--agw-border);
-  border-radius: var(--agw-radius-pill);
-  background: var(--agw-surface);
-}
-.agw-agent-stepper[data-disabled] {
-  opacity: 0.5;
-}
-.agw-agent-stepper-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: var(--agw-radius-pill);
-  background: transparent;
-  color: var(--agw-text);
-  font-size: var(--agw-fs-title);
-  line-height: 1;
-  cursor: pointer;
-}
-.agw-agent-stepper-btn:hover:not(:disabled) {
-  background: var(--agw-hover-paint);
-}
-.agw-agent-stepper-btn:disabled {
-  color: var(--agw-text-subtle);
-  cursor: not-allowed;
-}
-.agw-agent-stepper-val {
-  min-width: 78px;
-  text-align: center;
-  font-size: var(--agw-fs-ui);
-  color: var(--agw-text);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Team model select (extends .agw-csel). */
-.agw-agent-modelsel {
-  width: 240px;
-  max-width: 100%;
-}
-.agw-agent-modelsel .agw-csel-trigger:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.agw-agent-modelsel-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agw-agent-modelsel-itemlabel {
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.agw-agent-modelsel-meta {
-  flex-shrink: 0;
-  margin-left: 8px;
-  font-size: var(--agw-fs-label);
-  color: var(--agw-text-subtle);
-}
 

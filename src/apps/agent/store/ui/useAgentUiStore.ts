@@ -62,12 +62,10 @@ export type SettingsSection =
   | "tools"
   | "mcp"
   | "execution"
-  | "team"
   | "skills"
   | "appearance"
   | "preferences"
   | "diagnostics";
-// NB: "team" already reserved here; the Team settings tab renders `TeamSettings`.
 
 /** Category tabs on the Appearance page. */
 export type AppearanceTab = "theme" | "layout" | "text" | "colours" | "advanced";

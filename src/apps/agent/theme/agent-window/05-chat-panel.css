@@ -1,0 +1,79 @@
+/* ── Docked chat panel (right-dock tab) ───────────────────────────────────
+ * A conversation docked beside the main one (`ChatPanel`): a header, the
+ * transcript, and a composer at dock width. Themed with --agw-* only. */
+.agw-cp-root {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--agw-conversation);
+}
+.agw-cp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-cp-title {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-cp-body {
+  flex: 1;
+  min-width: 0;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  padding: 14px 14px 16px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+/* The transcript takes the same MEASURE as the main pane. The dock is resizable
+ * and has an Expand toggle, so "it's the narrow surface" is only true until the
+ * user widens it — an uncapped column then runs the same ~110-characters-per-
+ * line document dump the centre pane caps to avoid. Below the cap it costs
+ * nothing (the column is already narrower), so one rule covers both widths.
+ *
+ * 720px, not 768: the centre pane caps its BOX at 768 and pads it by 24 either
+ * side, so 720 is the text width it actually produces. `.agw-cp-body` already
+ * supplies this panel's gutter, so capping at 768 here would have made docked
+ * lines 48px longer than the same prose in the main pane.
+ *
+ * `min-height: 100%` keeps the auto-scroll ResizeObserver measuring a box that
+ * fills the viewport, so a short transcript doesn't sit in a collapsed content
+ * element that never reports growth. */
+.agw-chatpanel-turns {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  min-width: 0;
+  min-height: 100%;
+}
+
+/* The composer at dock width. The main pane can afford 16px of gutter either
+ * side of a 768px column; here that gutter is a visible share of the width. */
+.agw-cp-root > .agw-composer-dock {
+  padding: 10px 10px 8px;
+}
+
+/* An empty or missing conversation: one centred line. */
+.agw-cp-empty {
+  height: 100%;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-md);
+}

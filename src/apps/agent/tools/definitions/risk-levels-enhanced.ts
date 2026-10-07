@@ -139,21 +139,6 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   present_artifact: 'low',
   read_artifact: 'low',
 
-  // ============================================
-  // AGENT TEAM (LEAD CONTROL) TOOLS
-  // Auto-approval is driven by shouldAutoApproveAuroraFrontendTool
-  // (the user opts into the whole flow in settings); these risk
-  // levels are for UI decoration only. Mutations land in guarded
-  // Rust `team_*` commands.
-  // ============================================
-  team_show: 'low',                // Reveals the embedded Team screen
-  team_status: 'low',              // Read-only brain snapshot + run status
-  team_chat: 'low',                // Read-only team group-chat tail
-  team_message: 'low',             // Posts a Lead message to the team channel
-  team_dispatch: 'medium',         // Spins up the team; runs plan→build→integrate in the background
-  team_remove_agent: 'high',       // Dismisses a member, releases its scope
-  team_disband: 'high',            // Stops the whole team run
-
   // Note: MCP tools are handled separately via mcp-tools.ts
   // Their approval is determined by the server's autoApprove setting
 };

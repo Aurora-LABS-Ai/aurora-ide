@@ -59,11 +59,16 @@ import {
   listTerminalSessions,
   readTerminalSession,
 } from "@/apps/agent/services/terminal/terminal-sessions";
-import {
-  executeTeamLeadTool,
-  isTeamLeadTool,
-  type TeamToolContext,
-} from "@/apps/agent/services/team/team-agent-tools";
+
+/**
+ * The calling turn's identity, threaded from the runtime tool seam. Tools MUST
+ * use these over the global stores: the open chat and the window's workspace
+ * drift the moment a turn runs while the user looks at another conversation.
+ */
+export interface FrontendToolContext {
+  workspacePath?: string | null;
+  threadId?: string;
+}
 
 /**
  * Names of Aurora tools that are implemented in TypeScript on the
@@ -97,7 +102,7 @@ const AURORA_FRONTEND_TOOLS = new Set<string>([
  * Aurora executor rather than the Rust runtime or MCP bridge.
  */
 export function isAuroraFrontendTool(toolName: string): boolean {
-  return AURORA_FRONTEND_TOOLS.has(toolName) || isTeamLeadTool(toolName);
+  return AURORA_FRONTEND_TOOLS.has(toolName);
 }
 
 /**
@@ -110,12 +115,7 @@ export function isAuroraFrontendTool(toolName: string): boolean {
  * logic.
  */
 export function shouldAutoApproveAuroraFrontendTool(toolName: string): boolean {
-  // Skill tools are read-only. Team-control tools are auto-approved by
-  // product decision: the user opts into the whole flow by enabling Team in
-  // settings + selecting Team mode, so the Lead drives it without per-call
-  // modals. Each mutation still lands in Rust via the guarded `team_*`
-  // commands, and execution is hard-gated on `teamEnabled`.
-  return AURORA_FRONTEND_TOOLS.has(toolName) || isTeamLeadTool(toolName);
+  return AURORA_FRONTEND_TOOLS.has(toolName);
 }
 
 /**
@@ -357,7 +357,7 @@ function sourceExcerpts(content: string, query: string, contextLines: number) {
 
 async function runReadArtifact(
   rawArgs: Record<string, unknown>,
-  ctx?: TeamToolContext,
+  ctx?: FrontendToolContext,
 ): Promise<string> {
   const threadId = ctx?.threadId?.trim();
   if (!threadId) throw new Error("read_artifact: a saved conversation is required");
@@ -427,7 +427,7 @@ async function runReadArtifact(
 
 async function runPresentArtifact(
   rawArgs: Record<string, unknown>,
-  ctx?: TeamToolContext,
+  ctx?: FrontendToolContext,
 ): Promise<string> {
   const threadId = ctx?.threadId?.trim();
   if (!threadId) {
@@ -575,12 +575,8 @@ async function runPresentArtifact(
 export async function executeAuroraFrontendTool(
   toolName: string,
   args: Record<string, unknown>,
-  ctx?: TeamToolContext,
+  ctx?: FrontendToolContext,
 ): Promise<string> {
-  if (isTeamLeadTool(toolName)) {
-    return executeTeamLeadTool(toolName, args, ctx);
-  }
-
   switch (toolName) {
     case "aurora_skill_search":
       return runSkillSearch(args, ctx?.workspacePath ?? null);

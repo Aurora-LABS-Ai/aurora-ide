@@ -62,7 +62,7 @@
 //!   [`FrontendBridgeExecutor`] per [`AllowedTool`] in
 //!   [`AgentChatRequest::tools`]. The bridge round-trips through the
 //!   `agent_tool_pending` event channel and the `agent_post_tool_result`
-//!   command so the frontend executors (MCP, team, skills, ask_question)
+//!   command so the frontend executors (MCP, skills, ask_question)
 //!   keep working.
 //!
 //! ## Cancellation contract

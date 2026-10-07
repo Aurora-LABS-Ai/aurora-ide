@@ -1,6 +1,6 @@
 //! `plan_step_update` — mark one step's progress during execution.
 //!
-//! Available in Agent and Team mode, not Plan mode: authoring a plan and
+//! Available in Agent mode, not Plan mode: authoring a plan and
 //! reporting progress against it are different acts.
 //!
 //! Marking a step `in_progress` stamps the conversation as its **run claim**.

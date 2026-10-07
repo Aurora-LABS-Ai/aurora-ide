@@ -5,7 +5,7 @@ import {
 } from "../provider-model";
 import type { SettingsGet, SettingsState } from "../state";
 
-/** Resolving the selected, team and compaction models into provider configs. */
+/** Resolving the selected and compaction models into provider configs. */
 export const createLlmConfigSlice = (get: SettingsGet) =>
   ({
   // Get current LLM provider config based on selectedModel.
@@ -102,27 +102,6 @@ export const createLlmConfigSlice = (get: SettingsGet) =>
       buildProviderConfigForSelection(selection, providers, models) ??
       get().getLLMConfig()
     );
-  },
-
-  // Agent Team provider overrides. Each resolves the configured
-  // `"providerId:modelKey"` selection when set & valid, else falls back to
-  // the active chat config — so by default the team rides the chat provider.
-  getTeamLeadConfig: () => {
-    const { teamLeadModel, providers, models } = get();
-    if (teamLeadModel) {
-      const cfg = buildProviderConfigForSelection(teamLeadModel, providers, models);
-      if (cfg) return cfg;
-    }
-    return get().getLLMConfig();
-  },
-
-  getTeamMemberConfig: () => {
-    const { teamMemberModel, providers, models } = get();
-    if (teamMemberModel) {
-      const cfg = buildProviderConfigForSelection(teamMemberModel, providers, models);
-      if (cfg) return cfg;
-    }
-    return get().getLLMConfig();
   },
 
   // Returns `null` rather than falling back to the chat config, because the

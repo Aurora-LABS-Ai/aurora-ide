@@ -161,7 +161,7 @@ declarations were silently dropped. Fixed:
   `--agw-surface-sunken` → `state-quiet`; `--agw-accent-contrast` → `on-accent`.
 - `--agw-focus`: the Kenari link drew an OUTER 2px outline. Now the shared inset
   `--agw-focus-ring`, like `.agw-rv-link`.
-- Status hexes (`#3fb950`, `#e5534b`, `#d9a441`) in Team, Atlas and Cursor → `added` /
+- Status hexes (`#3fb950`, `#e5534b`, `#d9a441`) in Atlas and Cursor → `added` /
   `danger` / `warning`. Gallery font sizes now follow Interface text size.
 
 Expected visible changes, all small: error red follows the theme (dark `#f48771`, light

@@ -162,25 +162,6 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
     inlineResults: true,
   },
   {
-    id: "team",
-    navLabel: "Team",
-    icon: "users",
-    group: "Agent",
-    eyebrow: "Agent",
-    title: "Agent Team",
-    description:
-      "A team of agents that plans, splits your project by scope, and builds in parallel — coordinated by a lead you chat with.",
-    searchTerms: [
-      "enable team",
-      "maximum workers",
-      "team model",
-      "coordinator",
-      "recent runs",
-      "parallel",
-    ],
-    inlineResults: true,
-  },
-  {
     id: "mcp",
     navLabel: "MCP",
     icon: "plug",

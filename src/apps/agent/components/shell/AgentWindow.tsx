@@ -23,7 +23,6 @@ import { SettingsPage } from "@/apps/agent/settings/SettingsPage";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { syncCursorModelsQuietly } from "@/apps/agent/services/providers/cursor-sync";
 import { registerQuestionHandler } from "@/apps/agent/services/tools/question-bridge";
-import { registerTeamViewOpener } from "@/apps/agent/services/team/team-view-bridge";
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useLocalProviderDetection } from "@/apps/agent/hooks/providers/useLocalProviderDetection";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
@@ -31,11 +30,9 @@ import { useBackgroundProcessWatch } from "@/apps/agent/hooks/useBackgroundProce
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
 import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
-import { useTeamStore } from "@/apps/agent/store/team/useTeamStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentQuestionStore } from "@/apps/agent/store/tools/useAgentQuestionStore";
 import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
-import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { AgentCommandCenter } from "@/apps/agent/components/modals/AgentCommandCenter";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 
@@ -48,7 +45,6 @@ function readProjectRootFromUrl(): string | null {
 
 export const AgentWindow: React.FC = () => {
   const init = useAgentChatStore((s) => s.init);
-  const projectRoot = useAgentChatStore((s) => s.projectRoot);
   const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
   const view = useAgentUiStore((s) => s.view);
 
@@ -104,34 +100,6 @@ export const AgentWindow: React.FC = () => {
     if (!settingsReady) return;
     syncCursorModelsQuietly();
   }, [settingsReady]);
-
-  // The team lives in the RIGHT DOCK (a "Team" tab beside Canvas/Files), so
-  // it sits side-by-side with the conversation — the ask-lead loop needs both
-  // visible at once. The Lead's `team_show` / `team_dispatch` tools reveal it
-  // via the bridge.
-  useEffect(
-    () =>
-      registerTeamViewOpener(() =>
-        useAgentWorkspaceStore.getState().openTab("team"),
-      ),
-    [],
-  );
-
-  // Keep the team brain snapshot warm for whatever project this window is scoped
-  // to, so the rail's Team entry and the Team screen are live the moment they're
-  // shown (and re-scope with the project). Off in Settings means off in the
-  // window too: nothing polls, and any team surface still open is taken down —
-  // including a `team` tab restored from a previous session.
-  const teamEnabled = useAgentSettingsStore((s) => s.teamEnabled);
-  useEffect(() => {
-    if (!teamEnabled) {
-      useAgentWorkspaceStore.getState().closeTeamTabs();
-      return;
-    }
-    if (!projectRoot) return;
-    void useTeamStore.getState().start(projectRoot);
-    return () => useTeamStore.getState().stop();
-  }, [projectRoot, teamEnabled]);
 
   // Route the agent's `ask_question` tool to this window's question store, so a
   // tool call rises the inline prompt above the composer and blocks the turn

@@ -12,7 +12,7 @@ import { createProvidersSlice } from "./slices/providers";
 
 /**
  * The Agent Window's settings: providers, models, execution mode and product
- * side, image providers, team, compaction, title maker, workspace access,
+ * side, image providers, compaction, title maker, workspace access,
  * skills, speech, generation defaults and tool approval.
  *
  * The editor carries no agent, so none of this is in `kernel`. The editor's and
@@ -34,8 +34,6 @@ export {
   GLOBAL_INSTRUCTION_PROFILE_LIMIT,
   LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID,
   PROVIDER_DESCRIPTION_MAX,
-  TEAM_SIZE_HARD_CEILING,
-  TEAM_SIZE_RECOMMENDED,
   normalizeProviderDescription,
   normalizeSpeechLive,
   normalizeWorkspaceAccess,

@@ -46,10 +46,7 @@ pub const TRANSCRIPT_SUFFIX: &str = ".jsonl";
 /// What execution mode the dispatched turn should run under.
 ///
 /// Mirrors [`crate::agent_runtime::ipc::AgentExecutionMode`] rather than
-/// re-using it, for the contract reason in the module docs — and because the
-/// CLI deliberately does not expose `team`: a Lead dispatching parallel
-/// workers from a fire-and-forget terminal command is a much bigger promise
-/// than this surface can honestly make yet.
+/// re-using it, for the contract reason in the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskMode {

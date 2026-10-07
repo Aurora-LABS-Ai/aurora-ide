@@ -7,10 +7,6 @@ use rusqlite::{params, Connection};
 pub const APP_SETTING_KEYS: &[&str] = &[
     "selectedModel",
     "agentExecutionMode",
-    "teamEnabled",
-    "maxTeamSize",
-    "teamLeadModel",
-    "teamMemberModel",
     "globalInstructions",
     "globalInstructionProfiles",
     "activeGlobalInstructionProfileId",
@@ -164,22 +160,6 @@ impl<'a> SettingsRepository<'a> {
                 "agentExecutionMode" => {
                     settings.agent_execution_mode = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.agent_execution_mode.clone())
-                }
-                "teamEnabled" => {
-                    settings.team_enabled =
-                        serde_json::from_str(&setting.value).unwrap_or(settings.team_enabled)
-                }
-                "maxTeamSize" => {
-                    settings.max_team_size =
-                        serde_json::from_str(&setting.value).unwrap_or(settings.max_team_size)
-                }
-                "teamLeadModel" => {
-                    settings.team_lead_model = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.team_lead_model.clone())
-                }
-                "teamMemberModel" => {
-                    settings.team_member_model = serde_json::from_str(&setting.value)
-                        .unwrap_or(settings.team_member_model.clone())
                 }
                 "globalInstructions" => {
                     settings.global_instructions = serde_json::from_str(&setting.value)
@@ -444,22 +424,6 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "agentExecutionMode",
             &serde_json::to_string(&settings.agent_execution_mode).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamEnabled",
-            &serde_json::to_string(&settings.team_enabled).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "maxTeamSize",
-            &serde_json::to_string(&settings.max_team_size).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamLeadModel",
-            &serde_json::to_string(&settings.team_lead_model).unwrap_or_default(),
-        )?;
-        self.set_setting(
-            "teamMemberModel",
-            &serde_json::to_string(&settings.team_member_model).unwrap_or_default(),
         )?;
         self.set_setting(
             "globalInstructions",

@@ -434,19 +434,6 @@ pub struct AppSettings {
     // General settings
     pub selected_model: String,
     pub agent_execution_mode: String,
-    // Agent Team (see DOCS/aurora-agent-team-ground-truth.md §11)
-    pub team_enabled: bool,
-    pub max_team_size: i32,
-    /// Provider/model the Lead runs on, as a `"providerId:modelKey"`
-    /// selection drawn from the user's configured providers. Empty string
-    /// means "use my active chat model" (the team rides the chat provider).
-    #[serde(default)]
-    pub team_lead_model: String,
-    /// Provider/model the IC team members run on, same `"providerId:modelKey"`
-    /// shape. Empty string falls back to the active chat model. Lets the user
-    /// pin the Lead to one provider and the team to another.
-    #[serde(default)]
-    pub team_member_model: String,
     /// Legacy single global-instruction text. Kept as a mirror of the ACTIVE
     /// profile in `global_instruction_profiles` so builds that predate the
     /// profile list still read the right rules. Empty string means none.
@@ -662,10 +649,6 @@ impl Default for AppSettings {
         Self {
             selected_model: "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo".to_string(),
             agent_execution_mode: "agent".to_string(),
-            team_enabled: false,
-            max_team_size: 5,
-            team_lead_model: String::new(),
-            team_member_model: String::new(),
             global_instructions: String::new(),
             global_instruction_profiles: Vec::new(),
             active_global_instruction_profile_id: String::new(),

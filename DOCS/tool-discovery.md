@@ -11,7 +11,7 @@ conversation without modifying the tool array or system prompt.
 | Behavior | Previous implementation | Current implementation |
 |---|---|---|
 | Core files, search, shell, tasks, code, skills | Direct tools | Direct tools |
-| Browser, MCP, team | Direct, or deferred behind an opt-in switch | Always discovered through `tool_search` |
+| Browser, MCP | Direct, or deferred behind an opt-in switch | Always discovered through `tool_search` |
 | First successful search | Registered the entire optional catalog into the advertised registry | Returns matching descriptions and argument schemas as a text tool result |
 | Optional invocation | Called the newly advertised tool directly | `call_tool` carries its name and arguments |
 | Later requests | Different tool prefix after discovery | Same direct tools and the same two wrappers |

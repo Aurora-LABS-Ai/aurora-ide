@@ -16,7 +16,7 @@ export interface GlobalInstructionProfile {
 }
 
 export interface AppSettings {
-  agentExecutionMode?: 'agent' | 'plan' | 'team' | 'chat';
+  agentExecutionMode?: 'agent' | 'plan' | 'chat';
   /** Which product the window is showing. `'chat'` is Aurora Chat. */
   auroraSurface?: 'build' | 'chat';
   /** Seed for the next chat, not the state of any conversation. */
@@ -45,25 +45,6 @@ export interface AppSettings {
    */
   providerCategories?: unknown;
   imageProviders?: unknown[];
-  // Agent Team (see DOCS/aurora-agent-team-ground-truth.md)
-  teamEnabled?: boolean;
-  maxTeamSize?: number;
-  /**
-   * Provider/model the Lead runs on, as a `"providerId:modelKey"` selection
-   * from the user's configured providers. Empty/undefined means "use my
-   * active chat model".
-   */
-  teamLeadModel?: string;
-  /**
-   * Provider/model the IC team members run on, same `"providerId:modelKey"`
-   * shape. Empty/undefined falls back to the active chat model.
-   */
-  teamMemberModel?: string;
-  /**
-   * Default integration-gate commands (Settings → Team) the Lead runs after the
-   * build to verify the project. Empty/undefined skips that gate. A
-   * `team_dispatch` call inherits these when the model doesn't pass its own.
-   */
   /**
    * Legacy single global-instruction text. Kept in lockstep with the ACTIVE
    * profile below so older builds sharing this database still read the right
@@ -118,7 +99,7 @@ export interface AppSettings {
   /** Whether the browser toolset is advertised to the model. Defaults on. */
   browserTools?: boolean;
   /**
-   * Hold the optional tool buckets (`mcp_*`, `browser_*`, `team_*`) out of the
+   * Hold the optional tool buckets (`mcp_*`, `browser_*`) out of the
    * advertised roster and let the model load them by name through
    * `tool_search`. Defaults off — it changes how the model reaches a tool.
    */

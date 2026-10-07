@@ -144,12 +144,10 @@ export type DockTabKind =
   | "files"
   | "browser"
   | "terminal"
-  | "team"
   // Aurora Chat's own surface: what Aurora remembers about the user. Opened
-  // from the rail, like Team.
+  // from the rail.
   | "memory"
   | "file"
-  | "member"
   | "project"
   | "chat"
   // One conversation's own numbers — turn timeline, tool outcomes, tokens.
@@ -168,10 +166,10 @@ export type DockTabKind =
   | "newtab";
 
 /** The singleton (one-instance) tab kinds — everything except the per-file,
- *  per-team-member, per-project, per-conversation, per-artifact and New tabs. */
+ *  per-project, per-conversation, per-artifact and New tabs. */
 export type DockSingletonKind = Exclude<
   DockTabKind,
-  "file" | "member" | "project" | "chat" | "artifact" | "session" | "newtab"
+  "file" | "project" | "chat" | "artifact" | "session" | "newtab"
 >;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
@@ -180,7 +178,6 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   files: "Files",
   browser: "Browser",
   terminal: "Terminal",
-  team: "Team",
   memory: "Memory",
 };
 
@@ -189,16 +186,15 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
  * what it keeps.
  *
  * Everything else on this list addresses a project — Files opens a tree, Review
- * shows diffs, Terminal reads the user's shells, Browser and Team drive tools
- * chat mode does not register. There are two doors onto these tabs (the dock's
+ * shows diffs, Terminal reads the user's shells, Browser drives tools chat
+ * mode does not register. There are two doors onto these tabs (the dock's
  * `+` menu and the command palette), which is exactly why the roster is one
  * constant rather than a list written out twice.
  */
 export const CHAT_DOCK_TABS: readonly DockSingletonKind[] = ["canvas", "memory"];
 
 /** A live tab in the dock's strip. Singletons use their kind as the id; file
- *  tabs use `file:<absolutePath>`, team-member tabs `member:<agentId>` and
- *  conversation tabs `chat:<threadId>`, so re-opening the same one refocuses it
+ *  tabs use `file:<absolutePath>` and conversation tabs `chat:<threadId>`, so re-opening the same one refocuses it
  *  instead of stacking duplicates. */
 export interface DockTabInstance {
   id: string;
@@ -206,8 +202,6 @@ export interface DockTabInstance {
   title: string;
   /** Absolute path — only for `kind === "file"`. */
   path?: string;
-  /** Team agent id — only for `kind === "member"`. */
-  memberId?: string;
   /** Workspace folder — only for `kind === "project"`. */
   projectRoot?: string;
   /** Conversation id — for `kind === "chat"` and `kind === "session"`. */

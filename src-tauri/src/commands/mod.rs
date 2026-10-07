@@ -68,7 +68,6 @@ pub mod shell_profiles;
 pub mod speech;
 pub mod speech_stream;
 pub mod state;
-pub mod team;
 pub mod terminal;
 pub mod themes;
 pub mod threads;

@@ -332,7 +332,7 @@ async fn exact_selection_reports_missing_tools_and_limits_without_mutation() {
     install(
         &registry,
         vec![
-            probe("team_status", json!({}), &count),
+            probe("browser_status", json!({}), &count),
             probe("mcp_docs_search", json!({}), &count),
         ],
     );
@@ -340,7 +340,7 @@ async fn exact_selection_reports_missing_tools_and_limits_without_mutation() {
         .get("tool_search")
         .unwrap()
         .execute(
-            json!({"query":"select:team_status,mcp_docs_search,missing", "max_results":1}),
+            json!({"query":"select:browser_status,mcp_docs_search,missing", "max_results":1}),
             &context(),
         )
         .await
@@ -356,7 +356,7 @@ async fn exact_selection_reports_missing_tools_and_limits_without_mutation() {
         .execute(json!({"query":"documents +mcp"}), &context())
         .await
         .unwrap();
-    assert!(!required.contains("team_status"));
+    assert!(!required.contains("browser_status"));
 }
 
 #[tokio::test]
@@ -457,16 +457,16 @@ async fn empty_arguments_work_and_resolved_metadata_comes_from_the_target() {
     install(
         &registry,
         vec![Arc::new(Probe {
-            name: "team_status",
+            name: "mcp_docs_status",
             parameters: json!({"type":"object","additionalProperties":false}),
             calls: count.clone(),
             frontend: true,
         })],
     );
     let call = registry
-        .resolve_call("call_tool", &json!({"name":"team_status","arguments":{}}))
+        .resolve_call("call_tool", &json!({"name":"mcp_docs_status","arguments":{}}))
         .unwrap();
-    assert_eq!(call.executor.name(), "team_status");
+    assert_eq!(call.executor.name(), "mcp_docs_status");
     assert!(call.executor.concurrency_safe());
     assert!(call.executor.uses_frontend_lifecycle());
     assert_eq!(call.input, json!({}));

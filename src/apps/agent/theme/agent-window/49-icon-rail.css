@@ -92,7 +92,7 @@
   flex: 1;
 }
 
-/* Something is happening behind this cell (a team run in progress). Ringed
+/* Something is happening behind this cell. Ringed
    in the rail paint so it reads as sitting on the glyph, not stuck to it. */
 .agw-iconrail-dot {
   position: absolute;

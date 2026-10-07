@@ -40,7 +40,7 @@ use super::types::{AttachedPromptChip, AttachedSelectedElement};
 
 /// Runtime-enforced tool authority for one turn.
 ///
-/// The first three work on a project. [`Chat`](Self::Chat) does not: it is the
+/// The first two work on a project. [`Chat`](Self::Chat) does not: it is the
 /// separate product surface (Aurora Chat), with its own conversation store under
 /// `paths::chats_dir()`, its own system prompt, and a tool roster that is NAMED
 /// rather than subtracted — see `commands::agent_v2::tool_policy`.
@@ -50,7 +50,6 @@ pub enum AgentExecutionMode {
     #[default]
     Agent,
     Plan,
-    Team,
     /// Aurora Chat. No files, no shell, no workspace.
     ///
     /// Deliberately a variant of THIS enum rather than a parallel flag: the
@@ -64,7 +63,7 @@ pub enum AgentExecutionMode {
 }
 
 impl AgentExecutionMode {
-    /// Is this the chat product rather than one of the three project modes?
+    /// Is this the chat product rather than one of the two project modes?
     ///
     /// Named rather than compared inline so a call site reads as what it is
     /// asking. Every `== Chat` in the codebase should be this instead.
@@ -75,7 +74,7 @@ impl AgentExecutionMode {
 
     /// Does this mode operate on a workspace at all?
     ///
-    /// The three project modes do. Chat does not, and a turn that answers
+    /// The two project modes do. Chat does not, and a turn that answers
     /// `false` here must never be handed a `workspace_root`, because the file
     /// tools treat `None` as "no boundary" rather than "no access" — see the
     /// note in `tools::file_workspace_search::resolve_path_with_access`.

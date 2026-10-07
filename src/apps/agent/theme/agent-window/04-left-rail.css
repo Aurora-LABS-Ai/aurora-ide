@@ -205,9 +205,8 @@
 .agw-rail-item[data-active="true"] .agw-rail-item-glyph {
   color: var(--agw-text-muted);
 }
-/* Trailing action lane — the always-on team badge plus the hover-in pin /
- * archive controls share one reserved cluster so they can never overlap each
- * other or reflow the title. The controls already hold their layout space
+/* Trailing action lane — the hover-in pin / archive controls share one
+ * reserved cluster so they can never overlap each other or reflow the title. The controls already hold their layout space
  * (opacity toggles, not display), so hovering reveals them without any shift. */
 .agw-rail-item-actions {
   flex-shrink: 0;
@@ -266,28 +265,9 @@
   opacity: 1;
 }
 
-/* "Has team work" badge — a passive team-icon marker on any chat / project that
- * has ever dispatched a team run. Unlike the hover-only pin, it stays visible so
- * past team activity reads at a glance. Informational (no action of its own; a
- * click just falls through to opening the row). */
-.agw-rail-team-badge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--agw-radius-sm);
-  color: var(--agw-control-accent, var(--agw-accent));
-  background: color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 13%, transparent);
-}
-/* On a project row it trails the flex:1 title button; nudge it off the edge. */
-.agw-rail-project-team {
-  margin-left: 0;
-}
-/* Project-row status cluster — the always-on team badge + the running spinner +
- * the done dot in one spaced lane so they can't clip / overlap each other (they
- * used to sit as flush siblings with no gap). */
+/* Project-row status cluster — the running spinner + the done dot in one spaced
+ * lane so they can't clip / overlap each other (they used to sit as flush
+ * siblings with no gap). */
 .agw-rail-project-status {
   display: inline-flex;
   align-items: center;

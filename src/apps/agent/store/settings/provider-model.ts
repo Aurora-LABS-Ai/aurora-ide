@@ -618,9 +618,8 @@ export function resolveModel(model: LLMModel, provider: LLMProvider): ResolvedLL
  * selection (the same string shape as `selectedModel`). Returns `null` when
  * the provider isn't found, so callers can fall back to the active config.
  *
- * This is the generalized core of `getLLMConfig` — used by the Agent Team
- * model overrides (`getTeamLeadConfig` / `getTeamMemberConfig`) so the Lead
- * and the IC team can each ride a different configured provider.
+ * This is the generalized core of `getLLMConfig` — used wherever a feature
+ * pins its own model (compaction, `getLLMConfigFor`).
  */
 export function buildProviderConfigForSelection(
   selection: string,

@@ -151,11 +151,11 @@ export const ChatPanel: React.FC<{
 
   if (missing) {
     return (
-      <div className="agw-tp-root">
-        <div className="agw-tp-head">
-          <span className="agw-tp-title">{fallbackTitle}</span>
+      <div className="agw-cp-root">
+        <div className="agw-cp-head">
+          <span className="agw-cp-title">{fallbackTitle}</span>
         </div>
-        <div className="agw-team-empty" style={{ flex: 1 }}>
+        <div className="agw-cp-empty" style={{ flex: 1 }}>
           <AgentIcon name="chat" size={22} />
           <span>This chat no longer exists.</span>
           <button
@@ -171,8 +171,8 @@ export const ChatPanel: React.FC<{
   }
 
   return (
-    <div className="agw-tp-root">
-      <div className="agw-tp-head">
+    <div className="agw-cp-root">
+      <div className="agw-cp-head">
         <span
           style={{
             display: "inline-flex",
@@ -189,7 +189,7 @@ export const ChatPanel: React.FC<{
             <AgentIcon name="chat" size={14} style={{ color: "var(--agw-text-muted)" }} />
           )}
         </span>
-        <span className="agw-tp-title" title={title} style={{ flex: 1, minWidth: 0 }}>
+        <span className="agw-cp-title" title={title} style={{ flex: 1, minWidth: 0 }}>
           {isActivity ? activity!.label : title}
         </span>
         {/* Title only, deliberately. There WAS an "open in main view" button
@@ -200,13 +200,13 @@ export const ChatPanel: React.FC<{
       </div>
 
       <div style={{ flex: 1, minHeight: 0, position: "relative", display: "flex", flexDirection: "column" }}>
-        <div ref={containerRef} className="agw-tp-body agw-scroll">
+        <div ref={containerRef} className="agw-cp-body agw-scroll">
           {loading && messages.length === 0 ? (
-            <div className="agw-team-empty">
+            <div className="agw-cp-empty">
               <span>Loading…</span>
             </div>
           ) : messages.length === 0 ? (
-            <div className="agw-team-empty">
+            <div className="agw-cp-empty">
               <AgentIcon name="chat" size={22} />
               <span>No messages yet.</span>
             </div>

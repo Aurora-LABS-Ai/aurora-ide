@@ -77,7 +77,7 @@ describe("stable optional tool discovery instructions", () => {
     expect(result.systemPrompt).toContain("call_tool(");
     expect(result.systemPrompt).toContain("search again after compaction");
     expect(result.systemPrompt).not.toContain("File operations, code search, shell");
-    expect(result.systemPrompt).not.toContain("Browser, connected MCP apps, and team tools");
+    expect(result.systemPrompt).not.toContain("Browser and connected MCP apps");
   });
 });
 
@@ -323,7 +323,6 @@ describe("the chat-mode system prompt", () => {
       "workspace_tree",
       "todo",
       "plan_write",
-      "team_dispatch",
       "browser_navigate",
       "repo_map",
     ]) {

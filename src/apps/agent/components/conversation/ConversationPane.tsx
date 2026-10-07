@@ -40,7 +40,6 @@ import {
   requestReplySuggestions,
   useAgentWindowSend,
 } from "@/apps/agent/hooks/conversation/useAgentWindowSend";
-import { useAgentTeamNotifier } from "@/apps/agent/hooks/conversation/useAgentTeamNotifier";
 import { useCliTask } from "@/apps/agent/hooks/conversation/useCliTask";
 
 /** Stable empty array so the suggestion selector never re-renders on misses. */
@@ -156,9 +155,6 @@ export const ConversationPane: React.FC = () => {
   const newChat = useAgentChatStore((s) => s.newChat);
 
   const send = useAgentWindowSend();
-  // When the background team run finishes/fails, submit a report turn to the
-  // Lead (this chat) so it verifies and reports instead of going silent.
-  useAgentTeamNotifier(send.send);
   // Run tasks dispatched from a terminal (`aurora agent "..."`). Mounted here
   // because this is where the unbound send pipeline lives — a dispatched task
   // becomes an ordinary message in the open chat, which is what makes it

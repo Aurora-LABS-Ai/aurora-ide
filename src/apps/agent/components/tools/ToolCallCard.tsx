@@ -49,6 +49,7 @@ import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ShellLiveTail } from "@/apps/agent/components/tool-views/ShellLiveTail";
+import { TAIL_MOTION_S } from "@/apps/agent/components/tool-views/shell-tail";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { MediaRequest } from "@/apps/agent/components/tool-views/MediaRequest";
 import {
@@ -59,6 +60,7 @@ import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
 import { aspectRatioOfSize } from "@/apps/agent/services/providers/image-providers";
 import { aspectRatioOfVideoRatio } from "@/apps/agent/services/gallery/video-service";
 import { useShellStream } from "@/apps/agent/hooks/useShellStream";
+import { useShellTailDue } from "@/apps/agent/hooks/useShellTailDue";
 import { detachCommandStream } from "@/kernel/lib/ipc/tauri";
 import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
 import {
@@ -1126,6 +1128,7 @@ const StandardToolCallCard: React.FC<{
         ? parsedArgs.timeout_ms
         : DEFAULT_SHELL_TIMEOUT_MS;
   const showLiveShell = isShellTool(call.name) && status === "running";
+  const shellTailDue = useShellTailDue(call.startedAt, showLiveShell);
 
   // Hand this command to the background. The tool call id IS the stream's
   // request id AND the process id it will answer to afterwards
@@ -1593,14 +1596,17 @@ const StandardToolCallCard: React.FC<{
       {/* The newest lines of a running command, without opening the card
           (probe 03, aurora-shell-live-output-designs.html). Fixed height while
           it prints; it folds away when the command ends or the card opens,
-          because the full view then shows the same output. */}
+          because the full view then shows the same output. Only a command
+          past `TAIL_APPEARS_AFTER_MS` gets one (probe round 2): a quick one
+          used to open it and close it again within a tenth of a second. */}
       <AnimatePresence initial={false}>
-        {showLiveShell && !open && liveShellOutput && (
+        {showLiveShell && shellTailDue && !open && liveShellOutput && (
           <motion.div
             key="shell-tail"
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: TAIL_MOTION_S, ease: "easeOut" }}
             style={{ overflow: "hidden" }}
           >
             <ShellLiveTail output={liveShellOutput} />

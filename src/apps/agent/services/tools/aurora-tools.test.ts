@@ -24,10 +24,6 @@ vi.mock("@/apps/agent/services/skills/skills", () => ({
   findSkillById: vi.fn(),
   searchSkillCandidates: vi.fn(),
 }));
-vi.mock("@/apps/agent/services/team/team-agent-tools", () => ({
-  executeTeamLeadTool: vi.fn(),
-  isTeamLeadTool: vi.fn(() => false),
-}));
 vi.mock("@/apps/agent/store/artifacts/useAgentArtifactStore", () => ({
   useAgentArtifactStore: {
     getState: () => ({

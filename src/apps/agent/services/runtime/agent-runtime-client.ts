@@ -1219,10 +1219,10 @@ export class AgentRuntimeClient {
 
       content = isAuroraFrontend
         ? await executeAuroraFrontendTool(toolName, args, {
-            // Pin team/frontend tools to THIS turn's workspace + thread, not
+            // Pin frontend tools to THIS turn's workspace + thread, not
             // whatever project/chat is globally open. A background turn can
-            // drive the team while another chat is on screen; without this the
-            // global stores would point team_dispatch at the wrong project.
+            // run while another chat is on screen; without this the global
+            // stores would point the tool at the wrong project.
             workspacePath: this.options.config.workspacePath ?? null,
             threadId: this.options.threadId,
           })

@@ -35,7 +35,7 @@ checkpoints, MCP, the tree-sitter code index, and browser WebViews. React owns
 the two UIs.
 
 **Modes:** Agent (full tools) · Plan (inspect and write a plan, no workspace
-edits) · Team (a Lead can dispatch parallel workers).
+edits).
 
 **Providers:** Fireworks AI, GLM (Z.AI), Anthropic, Meta Model API, MiniMax,
 DeepSeek, OpenAI, OpenAI (Responses), Kenari, Volcano Ark, Modal, LM Studio and

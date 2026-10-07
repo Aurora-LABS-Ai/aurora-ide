@@ -26,10 +26,6 @@
 //! - [`bridge`] — `FrontendBridgeExecutor` and `BridgeRouter` plumbing
 //!   that lets the runtime delegate any advertised tool back to the
 //!   Tauri frontend via a one-shot request/response channel.
-//! - [`team`] — Agent Team foundation (shared brain + TeamBus). The
-//!   `~/.aurora/projects/<projectId>/` workspace store and the channel
-//!   persist+broadcast pipe. See
-//!   `DOCS/aurora-agent-team-ground-truth.md`.
 
 // `#![allow(dead_code)]` is intentionally kept: the runtime ships a
 // large public-API surface (variants of `MessageRole`, `ContentBlock`,
@@ -54,7 +50,6 @@ pub mod recovery;
 pub mod session;
 pub mod session_index;
 pub mod session_store;
-pub mod team;
 pub mod title;
 pub mod tool_bridge;
 pub mod tool_executor;

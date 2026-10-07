@@ -92,10 +92,6 @@
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--agw-accent);
-  animation: agw-team-pulse 1.4s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .agw-crail-chip-dot { animation: none; }
 }
 
 /* The popover. Right-anchored to its chip and opening upward, because the rail

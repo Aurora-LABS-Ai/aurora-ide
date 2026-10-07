@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn dispatch_rejects_a_mode_it_does_not_have() {
-        let request = call_request(DISPATCH, json!({ "prompt": "x", "mode": "team" }));
+        let request = call_request(DISPATCH, json!({ "prompt": "x", "mode": "build" }));
         let result = dispatch(&request, &state());
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().expect("text");

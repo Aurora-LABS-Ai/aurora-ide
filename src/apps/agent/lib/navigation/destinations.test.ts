@@ -87,9 +87,9 @@ describe("openDestination — the one implementation the rail and the palette sh
 describe("openDockSurface — dock tabs only exist on Home", () => {
   it("walks home first when a page is showing, then opens the tab", () => {
     useAgentUiStore.getState().openView("images");
-    openDockSurface("team");
+    openDockSurface("files");
     expect(useAgentUiStore.getState().view).toBe("chat");
-    expect(workspace.openTab).toHaveBeenCalledWith("team");
+    expect(workspace.openTab).toHaveBeenCalledWith("files");
   });
 
   it("opens the tab directly when already home", () => {

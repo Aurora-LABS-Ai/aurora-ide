@@ -9,7 +9,7 @@ use super::*;
 /// Files, search, shell, tasks, and skills are needed frequently enough that
 /// requiring an extra discovery round trip would slow ordinary coding work.
 pub(super) fn is_deferrable(name: &str) -> bool {
-    name.starts_with("mcp_") || name.starts_with("browser_") || name.starts_with("team_")
+    name.starts_with("mcp_") || name.starts_with("browser_")
 }
 
 /// Add an already-guarded executor with registry-compatible name precedence.
@@ -114,7 +114,7 @@ pub(super) fn build_per_turn_tool_registry(
         }
     }
     // 2. Bridge fallback for every AllowedTool the Rust registry does NOT
-    //    know — primarily `mcp_*`, plus team/skill/question tools.
+    //    know — primarily `mcp_*`, plus skill/question tools.
     //
     //    Sorted by name so the partition is a function of WHICH servers are
     //    connected and never of the order they happened to connect in. Two

@@ -173,11 +173,7 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
 fn build_modes_never_offer_chats_own_tools() {
     use crate::commands::agent_v2::tool_policy::CHAT_ONLY_TOOLS;
 
-    for mode in [
-        AgentExecutionMode::Agent,
-        AgentExecutionMode::Plan,
-        AgentExecutionMode::Team,
-    ] {
+    for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Plan] {
         for name in CHAT_ONLY_TOOLS {
             assert!(
                 !is_tool_available_this_turn(name, mode, true, true, true),
@@ -262,15 +258,11 @@ fn chat_modes_roster_ignores_the_project_mode_switches() {
     }
 }
 
-/// Chat mode must not change what the three project modes offer.
+/// Chat mode must not change what the two project modes offer.
 #[test]
 fn adding_chat_mode_left_the_project_modes_alone() {
     for name in ["file_read", "shell_execute", "code"] {
-        for mode in [
-            AgentExecutionMode::Agent,
-            AgentExecutionMode::Team,
-            AgentExecutionMode::Plan,
-        ] {
+        for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Plan] {
             let expected = mode != AgentExecutionMode::Plan || name != "shell_execute";
             let _ = expected;
             assert!(
@@ -750,12 +742,10 @@ fn only_plan_mode_may_author_a_plan() {
         false,
         true
     ));
-    for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Team] {
-        assert!(
-            !is_tool_available_this_turn("plan_write", mode, true, false, true),
-            "execution mode could rewrite the plan the user approved"
-        );
-    }
+    assert!(
+        !is_tool_available_this_turn("plan_write", AgentExecutionMode::Agent, true, false, true),
+        "execution mode could rewrite the plan the user approved"
+    );
 }
 
 #[test]
@@ -779,7 +769,6 @@ fn chapters_are_withheld_until_the_user_asks_for_them() {
     for mode in [
         AgentExecutionMode::Agent,
         AgentExecutionMode::Plan,
-        AgentExecutionMode::Team,
         AgentExecutionMode::Chat,
     ] {
         assert!(
@@ -2374,7 +2363,7 @@ fn registry_exposes_a_single_shared_bridge_router() {
 
 /// Bridge entries standing in for the buckets that may be deferred.
 fn deferrable_bridge_tools() -> Vec<AllowedTool> {
-    ["mcp_drive_search_files", "team_status"]
+    ["mcp_drive_search_files", "mcp_docs_lookup"]
         .iter()
         .map(|name| AllowedTool {
             name: (*name).into(),
@@ -2425,11 +2414,11 @@ async fn discovered_tools_survive_rebuild_without_changing_the_roster() {
     let result = first
         .get("tool_search")
         .unwrap()
-        .execute(serde_json::json!({"query":"select:team_status"}), &ctx)
+        .execute(serde_json::json!({"query":"select:mcp_docs_lookup"}), &ctx)
         .await
         .unwrap();
-    assert!(result.contains("team_status"));
-    assert!(first.get("team_status").is_none());
+    assert!(result.contains("mcp_docs_lookup"));
+    assert!(first.get("mcp_docs_lookup").is_none());
     assert_eq!(before, serde_json::to_vec(&first.schemas()).unwrap());
     for registry in [
         first,
@@ -2440,10 +2429,10 @@ async fn discovered_tools_survive_rebuild_without_changing_the_roster() {
         let resolved = registry
             .resolve_call(
                 "call_tool",
-                &serde_json::json!({"name":"team_status","arguments":{}}),
+                &serde_json::json!({"name":"mcp_docs_lookup","arguments":{}}),
             )
             .unwrap();
-        assert_eq!(resolved.executor.name(), "team_status");
+        assert_eq!(resolved.executor.name(), "mcp_docs_lookup");
         assert!(resolved.executor.uses_frontend_lifecycle());
     }
 }
@@ -2452,7 +2441,7 @@ async fn discovered_tools_survive_rebuild_without_changing_the_roster() {
 fn optional_tools_always_use_wrappers_and_core_tools_stay_direct() {
     for legacy_flag in [false, true] {
         let registry = registry_with_deferral(legacy_flag);
-        for hidden in ["mcp_drive_search_files", "team_status"] {
+        for hidden in ["mcp_drive_search_files", "mcp_docs_lookup"] {
             assert!(registry.get(hidden).is_none(), "{hidden}");
         }
         for direct in [
@@ -2501,7 +2490,7 @@ fn empty_catalog_still_advertises_the_same_wrappers() {
 
 #[test]
 fn the_deferrable_rule_names_buckets_not_individual_tools() {
-    for optional in ["mcp_x_y", "browser_navigate", "team_status"] {
+    for optional in ["mcp_x_y", "browser_navigate"] {
         assert!(is_deferrable(optional), "{optional}");
     }
     for core in [

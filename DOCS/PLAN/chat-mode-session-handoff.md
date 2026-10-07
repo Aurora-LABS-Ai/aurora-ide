@@ -33,7 +33,6 @@ A first-class block for a picture that IS the assistant's reply.
 
 - `src-tauri/src/agent_runtime/types.rs` — `ContentBlock::Image { asset, path, media_type, width, height, prompt?, model?, artifact? }` + `ContentBlock::image_as_text()` (one-line text a model reads instead of the picture).
 - Every `match` on `ContentBlock` got an `Image` arm. Models always get the **text line**, never an image part in an assistant message (Anthropic rejects those):
-  - `src-tauri/src/commands/team.rs`
   - `src-tauri/src/agent_runtime/conversation/tokens.rs` (token estimate)
   - `src-tauri/src/api/commandcode/adapter.rs`
   - `src-tauri/src/api/provider_kernel_adapter.rs` (`message_blocks_to_anthropic_content`, `collect_text`)

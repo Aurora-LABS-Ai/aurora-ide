@@ -30,22 +30,24 @@ describe("Agent workspace right panel state", () => {
     });
   });
 
-  it("opens a team member as its own tab and refocuses (not duplicates) it", () => {
-    useAgentWorkspaceStore.getState().openTab("team");
-    useAgentWorkspaceStore.getState().openMemberTab("ui-owner-9fba12", "UI");
-    expect(useAgentWorkspaceStore.getState()).toMatchObject({
-      dockOpen: true,
-      activeTabId: "member:ui-owner-9fba12",
-    });
-    expect(useAgentWorkspaceStore.getState().tabs).toHaveLength(2);
-
-    // Re-picking the same member refocuses the existing tab.
-    useAgentWorkspaceStore.getState().setActiveTab("team");
-    useAgentWorkspaceStore.getState().openMemberTab("ui-owner-9fba12", "UI");
-    const state = useAgentWorkspaceStore.getState();
-    expect(state.tabs).toHaveLength(2);
-    expect(state.activeTabId).toBe("member:ui-owner-9fba12");
-    expect(state.tabs[1]).toMatchObject({ kind: "member", memberId: "ui-owner-9fba12" });
+  it("drops tabs of retired kinds when a saved layout is restored", () => {
+    // A window last closed with the removed Team panel open saved these.
+    const merge = useAgentWorkspaceStore.persist.getOptions().merge!;
+    const restored = merge(
+      {
+        tabs: [
+          { id: "team", kind: "team", title: "Team" },
+          { id: "member:ui", kind: "member", title: "UI" },
+          { id: "gallery", kind: "gallery", title: "Gallery" },
+          { id: "files", kind: "files", title: "Files" },
+        ],
+        activeTabId: "team",
+      },
+      useAgentWorkspaceStore.getState(),
+    );
+    expect(restored.tabs.map((t) => t.id)).toEqual(["files"]);
+    // The active tab was one of the dropped ones; a surviving tab takes over.
+    expect(restored.activeTabId).toBe("files");
   });
 
   it("docks a conversation as its own tab, carrying the project it belongs to", () => {

@@ -1179,7 +1179,7 @@ pub(crate) const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "__AURORA_SYSTEM_DYNAMIC
 ///
 /// Returns `(static_half, Some(dynamic_half))` when the marker is present, and
 /// `(whole, None)` when it is not — an older frontend, a caller that built the
-/// prompt by hand, or a team/subagent prompt all land in the second case and
+/// prompt by hand, or a subagent prompt all land in the second case and
 /// keep the previous single-block behaviour.
 ///
 /// Both halves are trimmed: the marker is surrounded by the same `\n\n` the
@@ -5290,7 +5290,7 @@ mod tests {
         );
     }
 
-    /// Team prompts, subagent prompts and any caller that builds a prompt by
+    /// Subagent prompts and any caller that builds a prompt by
     /// hand carry no marker. Those must keep the previous single-block shape
     /// rather than losing their breakpoint.
     #[test]

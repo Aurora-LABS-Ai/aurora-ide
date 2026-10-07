@@ -129,12 +129,11 @@ export const installAgentIdeListeners = async (): Promise<() => void> => {
   const cleanups: Array<() => void> = [];
 
   // `agent_open_in_ide` is a hand-off FROM the agent window (view-only) TO the
-  // IDE editor — only the main window should act on it, never the agent / team
-  // windows (which would open into a non-existent editor and steal focus).
+  // IDE editor — only the main window should act on it, never the agent
+  // window (which would open into a non-existent editor and steal focus).
   // Every other channel is harmless to run in any window.
   const path = typeof window !== "undefined" ? window.location.pathname : "/";
-  const isSecondaryWindow =
-    path === "/agent-window" || path === "/team-view";
+  const isSecondaryWindow = path === "/agent-window";
 
   if (!isSecondaryWindow) {
     cleanups.push(

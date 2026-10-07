@@ -10,8 +10,7 @@
  *   2. Execution mode — Agent (full toolset) vs Plan (read-only).
  *   3. Context compaction — when/how long history is summarized.
  *
- * The Agent Team lives on its own dedicated "Team" settings tab. Chat titling
- * is a window preference, not agent behavior — it lives on the Preferences page
+ * Chat titling is a window preference, not agent behavior — it lives on the Preferences page
  * next to Prompt refine (they can share the same local model).
  */
 
@@ -383,8 +382,8 @@ export const AgentGeneralSettings: React.FC = () => {
           last
           alignTop
           label="Optional tools load on demand"
-          searchTerms="tool loading optional defer deferred tools on demand load lazy mcp browser team tokens cost roster tool_search search"
-          hint="Files, search, shell, tasks, and skills stay directly available. The agent finds tools for connected apps, browser control, and team work as needed. Finding a tool adds one discovery step; the agent can reuse its details while they remain in the conversation."
+          searchTerms="tool loading optional defer deferred tools on demand load lazy mcp browser tokens cost roster tool_search search"
+          hint="Files, search, shell, tasks, and skills stay directly available. The agent finds tools for connected apps and browser control as needed. Finding a tool adds one discovery step; the agent can reuse its details while they remain in the conversation."
         >
           <span>Always on</span>
         </SettingsRow>

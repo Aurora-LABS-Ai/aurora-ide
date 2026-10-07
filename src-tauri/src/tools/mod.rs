@@ -346,11 +346,10 @@ mod tests {
             .unwrap_or(wire.len() / 4);
 
             // Same rule as `tool_policy::is_deferrable`, restated because that
-            // module is private to `agent_v2`. Three prefixes, and a test that
+            // module is private to `agent_v2`. Two prefixes, and a test that
             // drifts from them fails loudly on the count assertion below.
-            let deferrable = schema.name.starts_with("mcp_")
-                || schema.name.starts_with("browser_")
-                || schema.name.starts_with("team_");
+            let deferrable =
+                schema.name.starts_with("mcp_") || schema.name.starts_with("browser_");
             if deferrable {
                 deferred_tokens += tokens;
                 deferred_names.push(schema.name);
@@ -375,7 +374,7 @@ mod tests {
              this far, re-run the deferral trade before assuming it still holds"
         );
         // Nothing deferrable can register without a browser manager, and the
-        // frontend buckets (`mcp_*`, `team_*`) never reach this registry at
+        // frontend bucket (`mcp_*`) never reaches this registry at
         // all. Stated so the zero above reads as the setup, not a finding.
         assert_eq!(deferred_names.len(), 0);
     }

@@ -142,14 +142,6 @@ pub struct SessionMetadata {
     /// reads as a normal chat rather than failing to load.
     #[serde(default)]
     pub deep_research: bool,
-    /// The lead conversation this one is a team member of.
-    ///
-    /// A team member is an ordinary conversation — same engine, same files —
-    /// that the lead conversation created. The mark keeps it out of the chat
-    /// list (its tab lives beside the lead), and deleting the lead deletes it.
-    /// Set once, at creation. `None` for every conversation a person started.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub team_member_of: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -169,7 +161,6 @@ impl SessionMetadata {
             pinned: false,
             archived_at: None,
             deep_research: false,
-            team_member_of: None,
             created_at: now.clone(),
             updated_at: now,
         }

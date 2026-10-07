@@ -24,7 +24,6 @@ import {
 import { ProfileSettings } from "./ProfileSettings";
 import { ToolsSettings } from "./ToolsSettings";
 import { AgentSettings } from "./AgentSettings";
-import { TeamSettings } from "./TeamSettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { PreferencesSettings } from "./PreferencesSettings";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
@@ -43,7 +42,6 @@ const SECTION_VIEWS: Partial<Record<SettingsSection, () => React.ReactNode>> = {
   providers: () => null,
   tools: () => <ToolsSettings />,
   execution: () => <AgentSettings />,
-  team: () => <TeamSettings />,
   // MCP and Skills render on the Plugins page (`components/plugins/`) and
   // Providers on its own page (`components/providers/`). They keep a registry
   // entry so search still finds them and offers them as a destination; the nav

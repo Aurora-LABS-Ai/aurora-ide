@@ -526,7 +526,7 @@ fn commit_prepared_files(mut files: Vec<PreparedEdit>) -> Result<Vec<PreparedEdi
         &files,
         |path| std::fs::read_to_string(path),
         |path, content| {
-            std::fs::write(path, content)?;
+            super::write_retry::write_retrying_lock(path, content)?;
             crate::file_cache::get_file_cache().invalidate(path);
             Ok(())
         },
@@ -580,9 +580,23 @@ where
 
         if let Err(error) = write(path, new_content) {
             let mut attempted = committed.clone();
-            attempted.push(index);
+            // A write can fail partway (truncated, then out of space), so the
+            // failed file is restored too — unless it still reads as it did.
+            // A write refused before it touched the file (another program
+            // holding it) leaves nothing to restore, and "restoring" it hits
+            // the same hold and reports a failed rollback for a file that was
+            // never changed. That false alarm cost a model a call to check.
+            let untouched = read(path).is_ok_and(|now| now == *original_content);
+            if !untouched {
+                attempted.push(index);
+            }
+            let note = if untouched {
+                " (that file was not changed)"
+            } else {
+                ""
+            };
             return Err(rollback_error(
-                format!("failed to write {path}: {error}"),
+                format!("failed to write {path}: {error}{note}"),
                 files,
                 &attempted,
                 &mut write,
@@ -1973,6 +1987,83 @@ mod tests {
         assert!(error.contains("all attempted writes were rolled back"));
         assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
         assert_eq!(disk.borrow().get("b").unwrap(), "old-b");
+    }
+
+    #[test]
+    fn a_file_held_by_another_program_is_not_reported_as_a_failed_rollback() {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+
+        // `b` refuses every write — the edit and any restore alike — the way
+        // a file memory-mapped by a watcher does (os error 1224).
+        let files = vec![
+            prepared("a", "old-a", "new-a"),
+            prepared("b", "old-b", "new-b"),
+        ];
+        let disk = RefCell::new(HashMap::from([
+            ("a".to_string(), "old-a".to_string()),
+            ("b".to_string(), "old-b".to_string()),
+        ]));
+
+        let error = commit_prepared_files_with(
+            &files,
+            |path| {
+                disk.borrow().get(path).cloned().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file")
+                })
+            },
+            |path, content| {
+                if path == "b" {
+                    return Err(std::io::Error::other("held by another program"));
+                }
+                disk.borrow_mut()
+                    .insert(path.to_string(), content.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("the held file must fail the batch");
+
+        assert!(error.contains("that file was not changed"), "{error}");
+        assert!(
+            error.contains("all attempted writes were rolled back"),
+            "{error}"
+        );
+        assert!(!error.contains("rollback also failed"), "{error}");
+        assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
+        assert_eq!(disk.borrow().get("b").unwrap(), "old-b");
+    }
+
+    #[test]
+    fn a_write_that_damaged_the_file_before_failing_is_restored() {
+        use std::cell::{Cell, RefCell};
+        use std::collections::HashMap;
+
+        let files = vec![prepared("a", "old-a", "new-a")];
+        let disk = RefCell::new(HashMap::from([("a".to_string(), "old-a".to_string())]));
+        let failed = Cell::new(false);
+
+        let error = commit_prepared_files_with(
+            &files,
+            |path| {
+                disk.borrow().get(path).cloned().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "missing test file")
+                })
+            },
+            |path, content| {
+                if !failed.replace(true) {
+                    // Truncated, then out of space.
+                    disk.borrow_mut().insert(path.to_string(), "ne".to_string());
+                    return Err(std::io::Error::other("disk full"));
+                }
+                disk.borrow_mut()
+                    .insert(path.to_string(), content.to_string());
+                Ok(())
+            },
+        )
+        .expect_err("the write must fail");
+
+        assert!(!error.contains("that file was not changed"), "{error}");
+        assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
     }
 
     #[test]

@@ -831,6 +831,26 @@ describe("persisted notices reload into the turn they describe", () => {
     ] as never);
     expect(turns).toEqual([]);
   });
+
+  it("explains a question that got no reply with a notice row of its own", () => {
+    // A picture the provider refused: Rust journals the prompt, then a
+    // System/Notice saying why. Reopened, the chat must say so.
+    const turns = buildTurns([
+      { id: "u", role: "user", content: "a red bicycle", timestamp: "2026-10-04T10:30:54.000Z" },
+      {
+        id: "n",
+        role: "notice",
+        content: "Making this picture failed: HTTP 400 content policy.",
+        timestamp: "2026-10-04T10:31:20.000Z",
+      },
+    ] as never);
+
+    expect(turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+    expect(turns[1].content).toBe("");
+    expect(buildRows(turns[1].events)).toEqual([
+      { type: "notice", id: "n", text: "Making this picture failed: HTTP 400 content policy." },
+    ]);
+  });
 });
 
 describe("checklist rows in the transcript", () => {

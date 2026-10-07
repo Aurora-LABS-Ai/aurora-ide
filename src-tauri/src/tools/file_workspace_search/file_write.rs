@@ -162,7 +162,7 @@ impl ToolExecutor for FileWriteTool {
             // file-wide diff in git.
             let (line_ending, bom) = detect_write_conventions(file_path);
             let bytes_to_write = apply_write_conventions(&content, line_ending, bom);
-            std::fs::write(file_path, &bytes_to_write)
+            super::write_retry::write_retrying_lock(file_path, &bytes_to_write)
                 .map_err(|e| format!("Failed to write file: {e}"))?;
             crate::file_cache::get_file_cache().invalidate(&resolved_str);
             Ok(old_content)

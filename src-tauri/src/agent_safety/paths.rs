@@ -164,10 +164,26 @@ fn is_drive_qualifier(component: &str) -> bool {
 /// Only `^/<letter>/` is touched, which no workspace-relative path can be
 /// (a relative path has no leading separator) and no real directory on a
 /// Windows drive root realistically is.
+///
+/// `/tmp` is the one other mount a model reaches for, because it is where a
+/// shell puts scratch output (`grep … > /tmp/hits.txt`, then `file_read` it).
+/// Git for Windows mounts it on the user's temp folder (`/etc/fstab`:
+/// `none /tmp usertemp`, so `cygpath -w /tmp` is `%TEMP%`). Unconverted it
+/// was read as `<workspace drive>:\tmp`, and the file the shell had just
+/// written "did not exist".
 #[must_use]
 pub fn normalize_platform_path(path: &str) -> Cow<'_, str> {
     #[cfg(windows)]
     {
+        if let Some(rest) = path
+            .strip_prefix("/tmp")
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        {
+            let temp = std::env::temp_dir();
+            let temp = temp.to_string_lossy();
+            let temp = temp.trim_end_matches('\\');
+            return Cow::Owned(format!("{temp}{}", rest.replace('/', "\\")));
+        }
         let bytes = path.as_bytes();
         let is_mount_form = bytes.len() >= 3
             && bytes[0] == b'/'
@@ -551,9 +567,37 @@ mod tests {
             // A single leading segment that is not one letter.
             "/home/alvan/x",
             "/",
+            // Starts with the letters, is not the mount.
+            "/tmpfiles/x",
+            "tmp/x",
         ] {
-            assert_eq!(normalize_platform_path(path), path, "{path} must not change");
+            assert_eq!(
+                normalize_platform_path(path),
+                path,
+                "{path} must not change"
+            );
         }
+    }
+
+    /// The shell wrote `/tmp/hits.txt`; `file_read` must open the same file.
+    #[test]
+    fn the_git_bash_tmp_mount_is_the_user_temp_folder() {
+        let converted = normalize_platform_path("/tmp/srv_all.txt");
+        #[cfg(windows)]
+        {
+            let temp = std::env::temp_dir();
+            assert_eq!(
+                std::path::Path::new(converted.as_ref()),
+                temp.join("srv_all.txt"),
+            );
+            // Paths compare by component, so `Temp\` and `Temp` are equal.
+            assert_eq!(
+                std::path::Path::new(normalize_platform_path("/tmp").as_ref()),
+                temp.as_path()
+            );
+        }
+        #[cfg(not(windows))]
+        assert_eq!(converted, "/tmp/srv_all.txt");
     }
 
     #[test]

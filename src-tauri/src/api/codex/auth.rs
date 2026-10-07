@@ -10,7 +10,10 @@
 //! - **Rotation-safe refresh.** OpenAI rotates refresh tokens. Refreshes
 //!   are single-flight behind an async mutex, the file is re-read inside
 //!   the lock (the CLI may have refreshed meanwhile), and the new pair is
-//!   written back immediately so the CLI keeps working.
+//!   written back immediately so the CLI keeps working. With Aurora's own
+//!   account list (`accounts.rs`) the CLI file is no longer the source, but
+//!   an imported account is still one sign-in in two files; "One token
+//!   chain, two holders" below keeps them level.
 //! - **No Tauri types.** The browser open happens in the command layer;
 //!   this module only knows tokens, PKCE, and a loopback listener.
 
@@ -95,6 +98,20 @@ fn read_auth_value() -> Result<Option<Value>, String> {
     read_cli_auth_value()
 }
 
+/// [`read_auth_value`], with a stored account first brought level with Codex
+/// CLI's copy of it. For the refresh path only — see [`reconcile_with_cli`].
+fn read_reconciled_auth_value() -> Result<Option<Value>, String> {
+    let Some(auth) = read_auth_value()? else {
+        return Ok(None);
+    };
+    match identity_of(&auth) {
+        Some(id) if super::accounts::load().get(&id).is_some() => {
+            Ok(Some(reconcile_with_cli(&id, auth)))
+        }
+        _ => Ok(Some(auth)),
+    }
+}
+
 /// Persist a rotated token pair.
 ///
 /// Routed by the account id **inside the value**, not by whichever account is
@@ -104,10 +121,181 @@ fn read_auth_value() -> Result<Option<Value>, String> {
 fn write_auth_value(value: &Value) -> Result<(), String> {
     if let Some(account_id) = identity_of(value) {
         if super::accounts::load().get(&account_id).is_some() {
-            return super::accounts::write_auth_for(&account_id, value.clone());
+            return persist_rotated(&account_id, value);
         }
     }
     write_cli_auth_value(value)
+}
+
+// ---------------------------------------------------------------------------
+// One token chain, two holders
+// ---------------------------------------------------------------------------
+//
+// An account imported from Codex CLI is the SAME sign-in in two files: Aurora's
+// list and `~/.codex/auth.json`. OpenAI refresh tokens are single-use — each
+// refresh returns a new one and retires the old — and presenting a retired one
+// can end the whole session ("refresh_token_invalidated: Your session has
+// ended"). So the two holders must never drift apart. Before the account list
+// existed, every refresh was written back to the CLI file; the list moved the
+// write into Aurora's store only, and the CLI was left holding a token Aurora
+// had already spent. That is how a ChatGPT account got signed out on
+// 2026-10-03: Aurora refreshed on 10-02, the CLI still held the 09-11 token,
+// and its next refresh was refused.
+//
+// The rule now: before refreshing, adopt the CLI's copy when it is the newer
+// one; after refreshing, hand the new pair back to the CLI when its file holds
+// this account.
+
+/// When this access token was issued, from its `iat` claim, falling back to
+/// the file's `last_refresh`. `None` when neither can be read.
+fn issued_at_unix(auth: &Value) -> Option<i64> {
+    let tokens = auth.get("tokens");
+    let from_token = tokens
+        .and_then(|t| t.get("access_token"))
+        .and_then(Value::as_str)
+        .and_then(jwt_claims)
+        .and_then(|claims| claims.get("iat")?.as_i64());
+    from_token.or_else(|| {
+        let raw = auth.get("last_refresh")?.as_str()?;
+        chrono::DateTime::parse_from_rfc3339(raw)
+            .ok()
+            .map(|t| t.timestamp())
+    })
+}
+
+fn refresh_token_of(auth: &Value) -> Option<&str> {
+    auth.get("tokens")?.get("refresh_token")?.as_str()
+}
+
+/// The person signed in: the id token's `sub`, else its email.
+fn user_of(auth: &Value) -> Option<String> {
+    let claims = auth
+        .get("tokens")?
+        .get("id_token")?
+        .as_str()
+        .and_then(jwt_claims)?;
+    claim_str(&claims, "sub").or_else(|| claim_str(&claims, "email"))
+}
+
+/// Are these two files the same sign-in — one person on one ChatGPT account?
+///
+/// The account id alone is not enough: on a Team or Enterprise plan everyone
+/// in the workspace shares it, and handing one member's tokens to another
+/// member's CLI would sign the CLI in as the wrong person. Anything unreadable
+/// on either side answers no, so a doubtful match is never written.
+fn is_same_sign_in(a: &Value, b: &Value) -> bool {
+    let (Some(account_a), Some(account_b)) = (identity_of(a), identity_of(b)) else {
+        return false;
+    };
+    let (Some(user_a), Some(user_b)) = (user_of(a), user_of(b)) else {
+        return false;
+    };
+    account_a == account_b && user_a == user_b
+}
+
+/// Does `theirs` hold a later point of the same chain than `ours`?
+///
+/// Same sign-in, a different refresh token, and issued strictly later. An
+/// unreadable issue time on either side is not evidence of anything, so it
+/// keeps ours.
+fn is_newer_copy(ours: &Value, theirs: &Value) -> bool {
+    if !is_same_sign_in(ours, theirs) {
+        return false;
+    }
+    if refresh_token_of(theirs).is_none() || refresh_token_of(ours) == refresh_token_of(theirs) {
+        return false;
+    }
+    matches!(
+        (issued_at_unix(ours), issued_at_unix(theirs)),
+        (Some(a), Some(b)) if b > a
+    )
+}
+
+/// The CLI file with a rotated pair written into it. Only the keys a refresh
+/// changes are replaced; everything else in the CLI's file is the CLI's.
+fn with_rotated_tokens(mut cli: Value, rotated: &Value) -> Value {
+    let Some(rotated_tokens) = rotated.get("tokens").and_then(Value::as_object) else {
+        return cli;
+    };
+    if !cli.is_object() {
+        cli = json!({});
+    }
+    let obj = cli.as_object_mut().expect("ensured object above");
+    if let Some(last) = rotated.get("last_refresh") {
+        obj.insert("last_refresh".into(), last.clone());
+    }
+    let slot = obj.entry("tokens").or_insert_with(|| json!({}));
+    if !slot.is_object() {
+        *slot = json!({});
+    }
+    let t = slot.as_object_mut().expect("ensured object above");
+    for key in ["access_token", "refresh_token", "id_token", "account_id"] {
+        if let Some(value) = rotated_tokens.get(key) {
+            t.insert(key.into(), value.clone());
+        }
+    }
+    cli
+}
+
+/// The CLI's file, when it holds the same sign-in as `ours`. A CLI signed in
+/// to any other account or person is never read from or written to.
+fn cli_copy_of(ours: &Value) -> Option<Value> {
+    let cli = match read_cli_auth_value() {
+        Ok(Some(cli)) => cli,
+        Ok(None) => return None,
+        Err(err) => {
+            crate::logging::log_warn(
+                "codex.auth",
+                &format!("could not read Codex CLI's auth.json: {err}"),
+            );
+            return None;
+        }
+    };
+    is_same_sign_in(ours, &cli).then_some(cli)
+}
+
+/// Aurora's copy of a stored account, replaced by the CLI's when the CLI has
+/// refreshed it since. Called inside the refresh lock, before deciding to
+/// refresh, so Aurora never presents a refresh token the CLI already spent.
+fn reconcile_with_cli(account_id: &str, ours: Value) -> Value {
+    let Some(theirs) = cli_copy_of(&ours) else {
+        return ours;
+    };
+    if !is_newer_copy(&ours, &theirs) {
+        return ours;
+    }
+    let adopted = with_rotated_tokens(ours, &theirs);
+    if let Err(err) = super::accounts::write_auth_for(account_id, adopted.clone()) {
+        crate::logging::log_warn(
+            "codex.auth",
+            &format!(
+                "adopted Codex CLI's newer tokens for {account_id} but could not save them: {err}"
+            ),
+        );
+    }
+    adopted
+}
+
+/// Save a rotated pair for a stored account, and give it to the CLI too when
+/// the CLI's file is the same sign-in. The refresh already happened, so a
+/// failed CLI write does not fail the request; it is logged, because it means
+/// the CLI will be refused on its next refresh.
+fn persist_rotated(account_id: &str, rotated: &Value) -> Result<(), String> {
+    super::accounts::write_auth_for(account_id, rotated.clone())?;
+    if let Some(cli) = cli_copy_of(rotated) {
+        if refresh_token_of(&cli) != refresh_token_of(rotated) {
+            if let Err(err) = write_cli_auth_value(&with_rotated_tokens(cli, rotated)) {
+                crate::logging::log_warn(
+                    "codex.auth",
+                    &format!(
+                        "refreshed {account_id} but could not update Codex CLI's auth.json, \
+                         so the CLI holds a spent refresh token: {err}"
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Stable identity for one set of credentials.
@@ -365,7 +553,7 @@ pub async fn fresh_access(force: bool) -> Result<CodexAccess, String> {
 
     // Re-read inside the lock: a parallel Aurora turn — or Codex CLI
     // itself — may have already rotated the pair.
-    let auth = read_auth_value()?.ok_or(SIGNED_OUT_MSG)?;
+    let auth = read_reconciled_auth_value()?.ok_or(SIGNED_OUT_MSG)?;
     let access = access_from_value(&auth).ok_or(SIGNED_OUT_MSG)?;
     if !force && access_is_fresh(&access) {
         return Ok(access);
@@ -388,7 +576,10 @@ pub async fn fresh_access(force: bool) -> Result<CodexAccess, String> {
             // Rotation race: if the CLI refreshed between our read and the
             // request, our refresh token is stale but the file now holds a
             // fresh pair. Use it instead of failing the turn.
-            if let Some(current) = read_auth_value()?.as_ref().and_then(access_from_value) {
+            if let Some(current) = read_reconciled_auth_value()?
+                .as_ref()
+                .and_then(access_from_value)
+            {
                 if current.access_token != access.access_token && access_is_fresh(&current) {
                     return Ok(current);
                 }
@@ -423,8 +614,8 @@ pub async fn fresh_access_for(account_id: &str, force: bool) -> Result<CodexAcce
 
     let _guard = refresh_lock().lock().await;
     // Re-read inside the lock — a turn running on this account may have
-    // rotated the pair while we waited.
-    let auth = read(account_id)?;
+    // rotated the pair while we waited, and so may Codex CLI.
+    let auth = reconcile_with_cli(account_id, read(account_id)?);
     let access = access_from_value(&auth).ok_or("Those stored credentials have no access token.")?;
     if !force && access_is_fresh(&access) {
         return Ok(access);
@@ -441,7 +632,7 @@ pub async fn fresh_access_for(account_id: &str, force: bool) -> Result<CodexAcce
         .await
         .map_err(|err| format!("Token refresh failed for that account: {err}"))?;
     let updated = apply_token_response(auth, &tokens)?;
-    super::accounts::write_auth_for(account_id, updated.clone())?;
+    persist_rotated(account_id, &updated)?;
     access_from_value(&updated).ok_or_else(|| "Refresh produced no tokens.".to_string())
 }
 
@@ -930,5 +1121,87 @@ mod tests {
         let parsed = parse_query("code=abc%2F1&state=x+y");
         assert_eq!(parsed.get("code").map(String::as_str), Some("abc/1"));
         assert_eq!(parsed.get("state").map(String::as_str), Some("x y"));
+    }
+
+    /// One sign-in as a file holds it: account, refresh token, issue time.
+    fn sign_in(account: &str, refresh: &str, iat: i64) -> Value {
+        sign_in_as("user-1", account, refresh, iat)
+    }
+
+    fn sign_in_as(person: &str, account: &str, refresh: &str, iat: i64) -> Value {
+        json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": "2026-10-02T03:07:17Z",
+            "tokens": {
+                "account_id": account,
+                "access_token": fake_jwt(json!({ "iat": iat, "exp": iat + 864_000 })),
+                "refresh_token": refresh,
+                "id_token": fake_jwt(json!({ "sub": person, "email": format!("{person}@example.com") })),
+            }
+        })
+    }
+
+    #[test]
+    fn a_teammate_on_the_same_workspace_is_a_different_sign_in() {
+        // Team plans share one account id across members.
+        let ours = sign_in_as("alvan", "team-acct", "rt-1", 1_000);
+        let teammate = sign_in_as("austin", "team-acct", "rt-2", 2_000);
+        assert!(!is_same_sign_in(&ours, &teammate));
+        assert!(!is_newer_copy(&ours, &teammate));
+        let later = sign_in_as("alvan", "team-acct", "rt-3", 3_000);
+        assert!(is_same_sign_in(&ours, &later));
+    }
+
+    #[test]
+    fn a_sign_in_with_no_readable_person_matches_nothing() {
+        let ours = sign_in("acct", "rt-1", 1_000);
+        let mut theirs = sign_in("acct", "rt-2", 2_000);
+        theirs["tokens"]["id_token"] = json!("opaque");
+        assert!(!is_same_sign_in(&ours, &theirs));
+    }
+
+    #[test]
+    fn a_copy_the_cli_refreshed_later_is_adopted() {
+        let ours = sign_in("acct", "rt-sep11", 1_000);
+        let theirs = sign_in("acct", "rt-oct02", 2_000);
+        assert!(is_newer_copy(&ours, &theirs));
+        assert!(
+            !is_newer_copy(&theirs, &ours),
+            "an older copy is never adopted"
+        );
+    }
+
+    #[test]
+    fn another_account_or_the_same_token_is_not_a_newer_copy() {
+        let ours = sign_in("acct", "rt-1", 1_000);
+        assert!(!is_newer_copy(&ours, &sign_in("other", "rt-2", 2_000)));
+        assert!(!is_newer_copy(&ours, &sign_in("acct", "rt-1", 2_000)));
+    }
+
+    #[test]
+    fn an_unreadable_issue_time_keeps_ours() {
+        let ours = sign_in("acct", "rt-1", 1_000);
+        let mut theirs = sign_in("acct", "rt-2", 2_000);
+        theirs["tokens"]["access_token"] = json!("opaque");
+        theirs.as_object_mut().unwrap().remove("last_refresh");
+        assert!(!is_newer_copy(&ours, &theirs));
+    }
+
+    #[test]
+    fn rotated_tokens_reach_the_cli_file_without_touching_its_own_keys() {
+        let mut cli = sign_in("acct", "rt-old", 1_000);
+        cli["OPENAI_API_KEY"] = json!(null);
+        cli["tokens"]["cli_only"] = json!("keep-me");
+        let rotated = sign_in("acct", "rt-new", 2_000);
+
+        let merged = with_rotated_tokens(cli, &rotated);
+
+        assert_eq!(merged["tokens"]["refresh_token"], "rt-new");
+        assert_eq!(
+            merged["tokens"]["access_token"],
+            rotated["tokens"]["access_token"]
+        );
+        assert_eq!(merged["tokens"]["cli_only"], "keep-me");
+        assert!(merged.get("OPENAI_API_KEY").is_some());
     }
 }

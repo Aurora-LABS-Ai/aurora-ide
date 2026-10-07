@@ -3760,6 +3760,40 @@ fn an_unclosed_analysis_block_does_not_swallow_the_note() {
 }
 
 #[test]
+fn an_instruction_quoted_while_drafting_is_not_the_note() {
+    // A local model repeated the instruction inside its scratchpad. The
+    // first `<summary>` in the response was that quote, and the stored note
+    // began "` block. Nothing else." followed by the whole draft.
+    let raw = "<analysis>\nI must write an `<analysis>` block, then a `<summary>` block. \
+               Nothing else.\n\nKey details: the dispute is $600.\n</analysis>\n\n\
+               <summary>\n1. Primary request: find the payments.\n</summary>";
+    let out = format_compact_summary(raw);
+    assert_eq!(out, "1. Primary request: find the payments.");
+}
+
+#[test]
+fn a_quoted_tag_in_an_unclosed_draft_is_not_the_note() {
+    let raw = "<analysis>\nthen a `<summary>` block, it said.\n\
+               <summary>\n1. Ship the parser.\n</summary>";
+    assert_eq!(format_compact_summary(raw), "1. Ship the parser.");
+}
+
+#[test]
+fn a_note_that_quotes_the_tags_is_kept_whole() {
+    let raw = "<analysis>draft</analysis>\n<summary>\n1. We changed how `<summary>` \
+               and `</summary>` are parsed.\n2. Next: tests.\n</summary>";
+    let out = format_compact_summary(raw);
+    assert!(out.starts_with("1. We changed how"), "{out}");
+    assert!(out.ends_with("2. Next: tests."), "{out}");
+}
+
+#[test]
+fn a_closed_draft_with_an_untagged_note_keeps_the_note() {
+    let raw = "<analysis>draft, mentions a <summary> block</analysis>\n1. Ship it.";
+    assert_eq!(format_compact_summary(raw), "1. Ship it.");
+}
+
+#[test]
 fn a_summary_that_ignored_the_tags_is_still_used() {
     // Tags are a request, not a guarantee. A plain-prose summary is worth
     // far more than treating the compaction as failed.

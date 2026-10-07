@@ -79,6 +79,7 @@ describe("useAgentImagesStore.generate", () => {
       model: "banana",
       size: "1536x1024",
       modelSelection: "img-a:banana",
+      retry: false,
     });
     expect(useAgentImagesStore.getState().jobs.map((job) => job.status)).toEqual(["done"]);
     expect(useAgentImagesStore.getState().revision).toBe(1);
@@ -147,11 +148,25 @@ describe("useAgentImagesStore.retry / dismiss", () => {
     await useAgentImagesStore.getState().retry(failed.id);
 
     expect(mocks.createThread).toHaveBeenCalledTimes(1);
+    // Marked as a retry, so Rust re-asks the question already in the chat
+    // instead of appending the same prompt a second time.
     expect(mocks.generateImageDirect).toHaveBeenLastCalledWith(
-      expect.objectContaining({ threadId: "chat-9" }),
+      expect.objectContaining({ threadId: "chat-9", retry: true }),
     );
     expect(useAgentImagesStore.getState().jobs.map((job) => job.status)).toEqual(["done"]);
     expect(useAgentImagesStore.getState().revision).toBe(1);
+  });
+
+  it("is a first attempt when the failed try never made its conversation", async () => {
+    mocks.createThread.mockRejectedValueOnce(new Error("disk full"));
+    await useAgentImagesStore.getState().generate(input);
+    const [failed] = useAgentImagesStore.getState().jobs;
+
+    await useAgentImagesStore.getState().retry(failed.id);
+
+    expect(mocks.generateImageDirect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ retry: false }),
+    );
   });
 
   it("only retries jobs that failed", async () => {

@@ -33,12 +33,19 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::agent_runtime::ipc::AgentExecutionMode;
-use crate::agent_runtime::types::{ContentBlock, ConversationMessage};
+use crate::agent_runtime::session::Session;
+use crate::agent_runtime::session_store::SessionStore;
+use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
 use crate::api::aurora_image;
 use crate::commands::agent_v2::AgentRegistry;
 use crate::tools::image::assets::{self, AssetRecord, AssetSource, NewAsset};
 use crate::tools::image::client::ImageClient;
-use crate::tools::image::config::{resolve_model, ImageModelConfig, ImageProviderConfig};
+use crate::tools::image::config::{
+    resolve_model, ImageModelConfig, ImageProviderConfig, ResolvedImageModel,
+};
+
+/// One conversation's session, as the registry hands it out.
+type SessionHandle = Arc<tokio::sync::Mutex<Session>>;
 use crate::tools::image::ingest;
 use crate::tools::image::wire::{EditSource, GenerationCall, WireError};
 
@@ -65,6 +72,10 @@ pub struct ImageDirectRequest {
     /// The conversation's pin, `"<providerId>:<modelKey>"`, written to the
     /// sidecar so the composer shows this model when the chat is reopened.
     pub model_selection: String,
+    /// The Images page's Retry: the conversation already holds this question,
+    /// unanswered, so it is asked again rather than appended again.
+    #[serde(default)]
+    pub retry: bool,
 }
 
 /// What came back: the picture as the transcript renders it. The same fields
@@ -160,35 +171,154 @@ async fn generate(
     let session_arc = registry
         .load_or_create_session_in(AgentExecutionMode::Chat, thread_id)
         .map_err(|e| e.to_string())?;
-    let session_path = store.session_path(thread_id);
+
+    // A retry asks the question that is already on the page. Appending it
+    // again stacked identical prompts (three of one in a chat on 2026-10-04)
+    // and stored the attached picture once per attempt.
+    let pending = if request.retry {
+        unanswered_question(session_arc.lock().await.messages(), prompt)
+    } else {
+        None
+    };
 
     // The attached picture, stored as this conversation's asset — the same
     // `ingest` a chat turn runs, so it is listed, placed in the Canvas and
     // usable as a later edit's source like any pasted picture. The message
     // keeps the marker (now naming the file) so the bubble shows the picture.
-    let (user_text, source) = if attached == 1 {
-        let ingested = ingest::ingest_user_images_into(&assets_dir, &request.prompt, Some((&store, thread_id)));
-        let source = match ingested.stored.into_iter().next() {
-            Some(record) => record,
-            // A marker that names an existing asset carries no bytes to store.
-            None => existing_source(&assets_dir, &request.prompt)?,
-        };
-        (ingested.text, Some(source))
-    } else {
-        (prompt.to_string(), None)
+    let source = match (&pending, attached) {
+        (_, 0) => None,
+        // The retried question's marker names the picture stored the first time.
+        (Some(question), _) => Some(existing_source(&assets_dir, question)?),
+        (None, _) => {
+            let ingested = ingest::ingest_user_images_into(
+                &assets_dir,
+                &request.prompt,
+                Some((&store, thread_id)),
+            );
+            let source = match ingested.stored.into_iter().next() {
+                Some(record) => record,
+                // A marker that names an existing asset carries no bytes to store.
+                None => existing_source(&assets_dir, &request.prompt)?,
+            };
+            journal_question(&session_arc, &request.model_selection, ingested.text).await;
+            Some(source)
+        }
     };
-
-    // The user's message lands first and is journaled at once, so a provider
-    // that takes forty seconds and then fails still leaves the question asked.
-    {
-        let mut session = session_arc.lock().await;
-        session.model = Some(request.model_selection.clone());
-        session.append_message(ConversationMessage::user_text(
-            user_text,
-            Utc::now().timestamp_millis(),
-        ));
+    if pending.is_none() && attached == 0 {
+        journal_question(&session_arc, &request.model_selection, prompt.to_string()).await;
     }
+    // The pin goes on before the provider is asked, so a chat whose picture
+    // failed still reopens on the image model it was made for.
+    let _ = store.set_workspace_and_model(thread_id, None, Some(request.model_selection.clone()));
 
+    let made = make_picture(
+        &store,
+        thread_id,
+        &assets_dir,
+        &session_arc,
+        &resolved,
+        prompt,
+        size,
+        source,
+    )
+    .await;
+    if let Err(reason) = &made {
+        record_failure(
+            &store,
+            thread_id,
+            &session_arc,
+            &resolved.model.model_key,
+            reason,
+        )
+        .await;
+    }
+    made
+}
+
+/// The question a retry is re-asking: the last message, when it is the user's
+/// and nothing answered it, and its text is this prompt. Only notices may sit
+/// after it — the failure notice of the attempt being retried.
+fn unanswered_question(messages: &[ConversationMessage], prompt: &str) -> Option<String> {
+    let last = messages
+        .iter()
+        .rev()
+        .find(|m| m.role != MessageRole::System)?;
+    if last.role != MessageRole::User {
+        return None;
+    }
+    let text = last.blocks.iter().find_map(|block| match block {
+        ContentBlock::Text { text } => Some(text.clone()),
+        _ => None,
+    })?;
+    (prompt_text(&text).0 == prompt).then_some(text)
+}
+
+/// The user's message lands first and is journaled at once, so a provider
+/// that takes forty seconds and then fails still leaves the question asked.
+async fn journal_question(session_arc: &SessionHandle, model_selection: &str, text: String) {
+    let mut session = session_arc.lock().await;
+    session.model = Some(model_selection.to_string());
+    session.append_message(ConversationMessage::user_text(
+        text,
+        Utc::now().timestamp_millis(),
+    ));
+}
+
+/// Why a picture was not made, kept where the chat and the log can show it.
+///
+/// Before, the reason lived only in the Images page's memory: the chat on disk
+/// held the prompt and nothing after it, `aurora.log` had no line, and a
+/// restart lost the only copy. Two such chats on 2026-10-04 could not be
+/// diagnosed at all. The notice is never sent to a model.
+async fn record_failure(
+    store: &SessionStore,
+    thread_id: &str,
+    session_arc: &SessionHandle,
+    model: &str,
+    reason: &str,
+) {
+    crate::logging::log_error(
+        "image_direct",
+        &format!("thread {thread_id}: {model} did not make the picture: {reason}"),
+    );
+    let now = Utc::now().timestamp_millis();
+    let mut session = session_arc.lock().await;
+    session.append_message(ConversationMessage {
+        event_id: None,
+        role: MessageRole::System,
+        blocks: vec![ContentBlock::Notice {
+            message: format!("Making this picture failed: {reason}"),
+            created_at: now,
+        }],
+        usage: None,
+        timestamp: now,
+        attached_selected_elements: None,
+        attached_prompt_chips: None,
+        aurora_context: None,
+        model: None,
+    });
+    if let Err(err) = session.save_to_path(&store.session_path(thread_id)) {
+        crate::logging::log_error(
+            "image_direct",
+            &format!("thread {thread_id}: could not save the failure notice: {err}"),
+        );
+    }
+}
+
+/// Ask the provider, store the picture, and answer the question with it.
+#[allow(clippy::too_many_arguments)]
+async fn make_picture(
+    store: &SessionStore,
+    thread_id: &str,
+    assets_dir: &std::path::Path,
+    session_arc: &SessionHandle,
+    resolved: &ResolvedImageModel,
+    prompt: &str,
+    size: Option<String>,
+    source: Option<AssetRecord>,
+) -> Result<ImageDirectResult, String> {
+    let assets_dir = assets_dir.to_path_buf();
+    let session_path = store.session_path(thread_id);
     let started = std::time::Instant::now();
     let client = ImageClient::new();
     let call = GenerationCall {
@@ -272,9 +402,9 @@ async fn generate(
             .map_err(|e| format!("the picture was made but the conversation was not saved: {e}"))?;
     }
 
-    // Sidecar: model pin, a title from the prompt while the chat is still
-    // "New Chat", and the timestamp bump that floats it to the top of the rail.
-    let _ = store.set_workspace_and_model(thread_id, None, Some(request.model_selection.clone()));
+    // Sidecar (the model pin went on before the call): a title from the
+    // prompt while the chat is still "New Chat", and the timestamp bump that
+    // floats it to the top of the rail.
     let needs_title = store
         .load_metadata(thread_id)
         .map(|m| m.title == "New Chat")
@@ -302,7 +432,7 @@ async fn generate(
         width: record.width,
         height: record.height,
         prompt: prompt.to_string(),
-        model: resolved.model.model_key,
+        model: resolved.model.model_key.clone(),
         artifact_id,
         revised_prompt: output.revised_prompt,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -395,6 +525,54 @@ mod tests {
     use super::*;
 
     const DOT: &str = "<aurora_image media_type=\"image/png\">iVBORw0KGgo=</aurora_image>";
+
+    fn failure_notice() -> ConversationMessage {
+        ConversationMessage {
+            event_id: None,
+            role: MessageRole::System,
+            blocks: vec![ContentBlock::Notice {
+                message: "Making this picture failed: 400".into(),
+                created_at: 2,
+            }],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn a_retry_reasks_the_unanswered_question_past_its_failure_notice() {
+        let asked = "a red bicycle\n\n<aurora_image media_type=\"image/png\" src=\"001-a.png\"></aurora_image>";
+        let messages = vec![ConversationMessage::user_text(asked, 1), failure_notice()];
+        assert_eq!(
+            unanswered_question(&messages, "a red bicycle").as_deref(),
+            Some(asked)
+        );
+    }
+
+    #[test]
+    fn an_answered_or_different_question_is_asked_anew() {
+        let answered = vec![
+            ConversationMessage::user_text("a red bicycle", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::Text {
+                    text: "done".into(),
+                }],
+                2,
+            ),
+        ];
+        assert_eq!(unanswered_question(&answered, "a red bicycle"), None);
+
+        let other = vec![
+            ConversationMessage::user_text("a blue bicycle", 1),
+            failure_notice(),
+        ];
+        assert_eq!(unanswered_question(&other, "a red bicycle"), None);
+        assert_eq!(unanswered_question(&[], "a red bicycle"), None);
+    }
 
     #[test]
     fn a_plain_prompt_has_no_picture() {

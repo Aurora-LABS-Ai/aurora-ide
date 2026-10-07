@@ -100,6 +100,7 @@ pub mod search_replace;
 /// arguments are still streaming. Shared by `file_edit` and `file_write`.
 pub mod streaming_targets;
 pub mod workspace_tree;
+pub(crate) mod write_retry;
 
 /// Register every tool in this bucket against `reg`. Idempotent: a
 /// re-registration overwrites the existing entry (this is what the
@@ -804,7 +805,7 @@ mod tests {
     /// default access now refuses, and the refusal says what to do about it.
     #[test]
     fn the_write_resolver_refuses_with_no_workspace_and_default_access() {
-        let err = resolve_path_with_access("/tmp/whatever", None, WorkspaceAccess::Workspace)
+        let err = resolve_path_with_access("/outside/whatever", None, WorkspaceAccess::Workspace)
             .expect_err("must not resolve a path unchecked");
         assert_no_workspace_refusal(&err);
         assert!(
@@ -814,13 +815,13 @@ mod tests {
 
         // The convenience wrapper hardcodes the default mode — it must not
         // become a bypass around the guard its callee just grew.
-        let err = resolve_path("/tmp/whatever", None).expect_err("wrapper refuses too");
+        let err = resolve_path("/outside/whatever", None).expect_err("wrapper refuses too");
         assert_no_workspace_refusal(&err);
     }
 
     #[test]
     fn the_read_resolver_refuses_with_no_workspace_and_default_access() {
-        let err = resolve_path_for_read("/tmp/whatever", None, WorkspaceAccess::Workspace)
+        let err = resolve_path_for_read("/outside/whatever", None, WorkspaceAccess::Workspace)
             .expect_err("must not read a path unchecked");
         assert_no_workspace_refusal(&err);
     }
@@ -829,7 +830,7 @@ mod tests {
     /// through the create variant — the same hole, closed on the same terms.
     #[test]
     fn the_create_resolver_refuses_with_no_workspace_and_default_access() {
-        let err = resolve_path_for_create("/tmp/whatever", None, WorkspaceAccess::Workspace)
+        let err = resolve_path_for_create("/outside/whatever", None, WorkspaceAccess::Workspace)
             .expect_err("must not create a path unchecked");
         assert_no_workspace_refusal(&err);
     }
@@ -840,32 +841,32 @@ mod tests {
     #[test]
     fn the_access_setting_decides_when_there_is_no_workspace() {
         // Writes and searches: only Full lifts the boundary.
-        let err = resolve_path_with_access("/tmp/anywhere.md", None, WorkspaceAccess::Read)
+        let err = resolve_path_with_access("/outside/anywhere.md", None, WorkspaceAccess::Read)
             .expect_err("Read opens one named file, not writes or searches");
         assert_no_workspace_refusal(&err);
         assert_eq!(
-            resolve_path_with_access("/tmp/anywhere.md", None, WorkspaceAccess::Full)
+            resolve_path_with_access("/outside/anywhere.md", None, WorkspaceAccess::Full)
                 .expect("Full takes the path as written"),
-            std::path::PathBuf::from("/tmp/anywhere.md")
+            std::path::PathBuf::from("/outside/anywhere.md")
         );
 
         // Reads: Read and Full both reach outside.
         for access in [WorkspaceAccess::Read, WorkspaceAccess::Full] {
             assert_eq!(
-                resolve_path_for_read("/tmp/anywhere.md", None, access)
+                resolve_path_for_read("/outside/anywhere.md", None, access)
                     .unwrap_or_else(|err| panic!("{access:?} must allow it: {err}")),
-                std::path::PathBuf::from("/tmp/anywhere.md")
+                std::path::PathBuf::from("/outside/anywhere.md")
             );
         }
 
         // Creates: Full only.
-        let err = resolve_path_for_create("/tmp/anywhere.md", None, WorkspaceAccess::Read)
+        let err = resolve_path_for_create("/outside/anywhere.md", None, WorkspaceAccess::Read)
             .expect_err("Read must not create outside");
         assert_no_workspace_refusal(&err);
         assert_eq!(
-            resolve_path_for_create("/tmp/anywhere.md", None, WorkspaceAccess::Full)
+            resolve_path_for_create("/outside/anywhere.md", None, WorkspaceAccess::Full)
                 .expect("Full takes the destination as written"),
-            std::path::PathBuf::from("/tmp/anywhere.md")
+            std::path::PathBuf::from("/outside/anywhere.md")
         );
     }
 

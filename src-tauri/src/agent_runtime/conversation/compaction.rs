@@ -933,48 +933,41 @@ pub(super) fn strip_reasoning(messages: Vec<ConversationMessage>) -> Vec<Convers
 /// that arrived in the wrong shape is still worth infinitely more than
 /// discarding it and failing the compaction.
 pub(super) fn format_compact_summary(raw: &str) -> String {
-    let without_analysis = match raw.find("<analysis>") {
-        Some(start) => {
-            // Where the scratchpad ends: its closing tag, or — when the model
-            // forgot to close it — the start of the summary, which is the
-            // other unambiguous boundary. Taking only the closing tag would
-            // throw away a summary that WAS written, turning a formatting slip
-            // into a failed compaction.
-            let close = raw[start..]
-                .find("</analysis>")
-                .map(|i| start + i + "</analysis>".len());
-            let summary_start = raw[start..].find("<summary>").map(|i| start + i);
-            let resume = match (close, summary_start) {
-                (Some(c), Some(s)) => Some(c.min(s)),
-                (Some(c), None) => Some(c),
-                (None, Some(s)) => Some(s),
-                // Neither: the response was cut off mid-draft and there is
-                // nothing after the scratchpad to keep.
-                (None, None) => None,
-            };
-            let mut out = String::with_capacity(raw.len());
-            out.push_str(&raw[..start]);
-            if let Some(resume) = resume {
-                out.push_str(&raw[resume..]);
-            }
-            out
-        }
-        None => raw.to_string(),
+    // Where the note opens. Not simply the first `<summary>`: a model drafting
+    // its analysis can repeat the instruction ("an <analysis> block, then a
+    // <summary> block"), and that quoted tag sits inside the scratchpad. On
+    // 2026-10-05 a local model did exactly that, and the stored summary began
+    // "` block. Nothing else." followed by the whole draft. So when the
+    // scratchpad is closed, the note is the first `<summary>` AFTER it; when
+    // it never closed, the last `<summary>` is the one the model wrote as
+    // the note rather than mentioned while drafting.
+    let note_start = match raw.find("</analysis>") {
+        Some(close) => raw[close..].find("<summary>").map(|i| close + i),
+        None => raw.rfind("<summary>"),
     };
+    if let Some(start) = note_start {
+        let body = &raw[start + "<summary>".len()..];
+        // The last close, so a note that itself quotes `</summary>` is kept
+        // whole. No close at all: the budget ran out mid-note; keep it.
+        let body = match body.rfind("</summary>") {
+            Some(end) => &body[..end],
+            None => body,
+        };
+        return body.trim().to_string();
+    }
 
-    match (
-        without_analysis.find("<summary>"),
-        without_analysis.find("</summary>"),
-    ) {
-        (Some(start), Some(end)) if end > start => without_analysis[start + "<summary>".len()..end]
-            .trim()
-            .to_string(),
-        // Opened but never closed — the budget ran out mid-note. Keep what
-        // was written; a truncated note still carries the early sections.
-        (Some(start), None) => without_analysis[start + "<summary>".len()..]
-            .trim()
-            .to_string(),
-        _ => without_analysis.trim().to_string(),
+    // No `<summary>` tag to open the note: drop the scratchpad and keep the
+    // rest as the note. A scratchpad that never closed was cut off mid-draft,
+    // and there is nothing after it to keep.
+    match raw.find("<analysis>") {
+        Some(start) => {
+            let mut out = raw[..start].to_string();
+            if let Some(close) = raw[start..].find("</analysis>") {
+                out.push_str(&raw[start + close + "</analysis>".len()..]);
+            }
+            out.trim().to_string()
+        }
+        None => raw.trim().to_string(),
     }
 }
 

@@ -103,7 +103,7 @@ export const useAgentImagesStore = create<AgentImagesState>()((set, get) => {
       jobs: state.jobs.map((job) => (job.id === id ? { ...job, ...changes } : job)),
     }));
 
-  const run = async (id: string): Promise<void> => {
+  const run = async (id: string, retry = false): Promise<void> => {
     const job = get().jobs.find((entry) => entry.id === id);
     if (!job) return;
     const { request } = job;
@@ -126,6 +126,9 @@ export const useAgentImagesStore = create<AgentImagesState>()((set, get) => {
         model: request.model.modelKey,
         size: request.size ?? request.model.defaultSize ?? null,
         modelSelection: request.modelSelection,
+        // Only a retry into the conversation the failed attempt made; a
+        // first attempt has no question on the page yet.
+        retry: retry && job.threadId !== undefined,
       });
       // Keep the slot, now showing the picture itself; `settle` drops the job
       // once the refreshed gallery carries the same picture under the same key.
@@ -190,7 +193,7 @@ export const useAgentImagesStore = create<AgentImagesState>()((set, get) => {
       const job = get().jobs.find((entry) => entry.id === id);
       if (!job || job.status !== "failed") return;
       patch(id, { status: "pending", error: undefined, startedAt: Date.now() });
-      await run(id);
+      await run(id, true);
     },
 
     dismiss: (id) =>

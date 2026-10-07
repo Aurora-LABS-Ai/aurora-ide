@@ -21,6 +21,11 @@ export interface ImageDirectRequest {
   size?: string | null;
   /** The conversation's pin, `"<providerId>:<modelKey>"`. */
   modelSelection: string;
+  /**
+   * A Retry of a failed attempt: the conversation already holds this
+   * question, so Rust asks it again instead of appending it again.
+   */
+  retry?: boolean;
 }
 
 /** The stored picture, in the shape the transcript renders. */

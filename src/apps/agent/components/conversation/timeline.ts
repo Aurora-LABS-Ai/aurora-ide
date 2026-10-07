@@ -702,10 +702,25 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       const host = turns[turns.length - 1];
       if (host && host.role === "assistant") {
         host.events.push({ kind: "notice", id: m.id, text: m.content || "" });
+      } else if (host && host.role === "user") {
+        // A question that got no reply at all, and the notice says why — a
+        // picture the image provider refused to make. It opens Aurora's turn
+        // as a notice row, the way a process beat does, never as text in a
+        // bubble; dropping it left the question hanging with no explanation.
+        turns.push({
+          id: m.id,
+          role: "assistant",
+          content: "",
+          events: [{ kind: "notice", id: m.id, text: m.content || "" }],
+          isThinking: false,
+          startedAt: lastUserTs,
+          endedAt: m.timestamp,
+          startedBy: "user",
+        });
       }
-      // No assistant turn to describe (a truncated first turn that never
-      // persisted): drop it rather than let it fall through and render as an
-      // assistant bubble containing product copy.
+      // Nothing before it at all (a truncated first turn that never
+      // persisted): drop it rather than let it render as an assistant bubble
+      // containing product copy.
       continue;
     }
     if (m.role === "user") {

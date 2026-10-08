@@ -49,6 +49,51 @@ impl Survivor {
     pub fn describe(&self) -> String {
         format!("{} (pid {})", self.name, self.pid)
     }
+
+    /// Is this a POSIX shell process rather than the program it was running?
+    fn is_shell(&self) -> bool {
+        let name = self.name.to_ascii_lowercase();
+        let stem = name.strip_suffix(".exe").unwrap_or(&name);
+        matches!(stem, "bash" | "sh" | "dash" | "zsh" | "fish")
+    }
+}
+
+/// How long to wait before reading the survivors again when the first read
+/// caught only shells. See [`caught_mid_fork`].
+pub const SURVIVOR_SETTLE_MS: u64 = 250;
+
+/// Did a survivor read land in the gap between a shell forking a background
+/// job and that job starting its program?
+///
+/// Git Bash runs `cmd &` as a fork (a second `bash.exe`) that then starts the
+/// program. Read the job in that gap, which a loaded machine widens, and the
+/// only survivor is `bash.exe`: real, but not what the command left running.
+/// `a_survivor_holding_no_pipe_is_still_found_and_named` failed exactly once
+/// in a full test run that way. When every survivor is a shell, the caller
+/// reads once more after [`SURVIVOR_SETTLE_MS`]. A shell that really is the
+/// survivor (`bash -c 'sleep 99' &`) is still reported, a moment later.
+#[must_use]
+pub fn caught_mid_fork(survivors: &[Survivor]) -> bool {
+    !survivors.is_empty() && survivors.iter().all(Survivor::is_shell)
+}
+
+#[cfg(test)]
+mod fork_window_tests {
+    use super::{caught_mid_fork, Survivor};
+
+    fn s(name: &str) -> Survivor {
+        Survivor { pid: 1, name: name.into() }
+    }
+
+    #[test]
+    fn only_shells_means_the_read_may_have_landed_mid_fork() {
+        assert!(caught_mid_fork(&[s("bash.exe")]));
+        assert!(caught_mid_fork(&[s("BASH.EXE"), s("sh")]));
+        assert!(!caught_mid_fork(&[s("bash.exe"), s("sleep.exe")]), "the program is named");
+        assert!(!caught_mid_fork(&[s("node.exe")]));
+        assert!(!caught_mid_fork(&[]), "nothing left running is an answer");
+        assert!(!caught_mid_fork(&[s("bashful.exe")]), "whole names only");
+    }
 }
 
 #[cfg(target_os = "windows")]

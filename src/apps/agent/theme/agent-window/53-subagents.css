@@ -1,0 +1,722 @@
+/* ── Sub-agents ──────────────────────────────────────────────────────────
+ * Probe: Documents/aurora-agents-panel-designs.html (02 picked, 2026-10-08).
+ *
+ * Two surfaces share this partial:
+ *  - the AGENT REPORT CARD in a parent transcript: a sub-agent reporting back.
+ *    It arrives from the agent's side, so it sits on the right like a user
+ *    message and borrows the user bubble's fill, measure and radius — but it
+ *    is not the user's words, so its first line says who: a static status
+ *    dot, the agent's name, its type, how it ended.
+ *  - the AGENTS dock tab and an AGENT tab (the child's conversation, no
+ *    composer). Those rules follow the card's.
+ *
+ * Nothing here pulses. Running is the dot matrix the chat tab already uses.
+ */
+
+.agw-agent-card {
+  align-self: flex-end;
+  max-width: 82%;
+  min-width: min(280px, 100%);
+  background: var(--agw-bubble-user);
+  border-radius: var(--agw-radius-lg);
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+/* Row-level, not column-level: the assistant turn's column is left-aligned,
+ * so a card that wants the right edge has to be wrapped. */
+.agw-agent-card-row {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+/* A report that arrived while the window watched rises in from just below,
+ * out of a soft blur — the same arrival the Agents-tab tail uses. Reloaded
+ * cards never animate. */
+.agw-agent-card-row[data-arrive] {
+  animation: agw-agent-arrive var(--agw-dur-slow) var(--agw-ease-enter) both;
+}
+@keyframes agw-agent-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-agent-card-row[data-arrive] {
+    animation: none;
+  }
+}
+.agw-agent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  line-height: 1.4;
+}
+.agw-agent-card-head > span {
+  white-space: nowrap;
+}
+.agw-agent-name {
+  color: var(--agw-text);
+  font-weight: var(--agw-fw-medium);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-agent-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.agw-agent-name:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.agw-agent-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-text-subtle);
+}
+.agw-agent-dot[data-status="completed"] {
+  background: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+}
+.agw-agent-dot[data-status="failed"] {
+  background: var(--agw-removed);
+}
+.agw-agent-dot[data-status="running"] {
+  background: var(--agw-accent);
+}
+.agw-agent-card-summary {
+  color: var(--agw-text);
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.agw-agent-card-summary[data-status="failed"] {
+  color: var(--agw-removed);
+}
+.agw-agent-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+.agw-agent-card-open {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.agw-agent-card-open:hover,
+.agw-agent-card-open:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+}
+.agw-agent-card-open svg {
+  transition: transform var(--agw-dur-fast) ease;
+}
+.agw-agent-card-open[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.agw-agent-card-body {
+  border-top: 1px solid var(--agw-border);
+  padding-top: 8px;
+  margin-top: 2px;
+  min-width: 0;
+}
+/* The report body is prose from the child; it uses the transcript's markdown
+ * styles. Only the measure is ours. */
+.agw-agent-card-body .agw-markdown {
+  font-size: var(--agw-fs-label);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-agent-card-open svg {
+    transition: none;
+  }
+}
+
+/* A message FROM THE PARENT inside a child's transcript. Same card, flipped
+ * reading: it says who sent it, and that it is not a person. The agent tab
+ * uses it for every user-role message in the child's conversation. */
+.agw-agent-card[data-from="parent"] .agw-agent-card-summary {
+  white-space: pre-wrap;
+}
+/* Sent, not yet taken in: the agent reads it at its next step. Shown at once
+ * so the message never seems to vanish; the open fill says it has not landed. */
+.agw-agent-card[data-waiting] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--agw-border-strong);
+}
+.agw-agent-card[data-waiting] .agw-agent-card-summary {
+  color: var(--agw-text-muted);
+}
+
+/* ── Header indicator and its card ───────────────────────────────────────
+ * The trigger IS `.agw-taskind` (06-activity-tasks.css) so the two header
+ * readouts are one control twice; `.agw-agentind` only colours the working
+ * state. The card is `.agw-taskpop`'s measure with its own rows. */
+.agw-agentind[data-state="running"] {
+  color: var(--agw-text);
+}
+.agw-agentpop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 6px;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-agentpop-head > span + span {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-body);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.agw-agentpop-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--agw-dur-fast) var(--agw-ease-standard);
+}
+.agw-agentpop-row:hover,
+.agw-agentpop-row:focus-visible {
+  outline: none;
+  background: var(--agw-hover-paint);
+}
+.agw-agentpop-row:active {
+  background: var(--agw-press-paint);
+}
+.agw-agentpop-row:last-child {
+  margin-bottom: 4px;
+}
+.agw-agentpop-lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.agw-agentpop-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agw-agentpop-name {
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-agentpop-sub {
+  margin-top: 1px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-agentpop-row[data-status="failed"] .agw-agentpop-sub {
+  color: var(--agw-removed);
+}
+.agw-agentpop-time {
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── The Agents tab ──────────────────────────────────────────────────────
+ * Header, then RUNNING and FINISHED groups of 44px rows. A row is a wrapper
+ * (not a button) because it holds two controls: the agent's name opens its
+ * tab, and Stop stops it. Buttons cannot nest, so the name button stretches
+ * over the whole row with ::after and Stop sits above it. */
+.agw-agents {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--agw-dock-paint, var(--agw-dock));
+  padding-bottom: 12px;
+}
+.agw-agents-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 6px;
+}
+.agw-agents-head h2 {
+  margin: 0;
+  color: var(--agw-text);
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-strong);
+}
+.agw-agents-head > span {
+  align-self: center;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+/* The dock can be as wide as half the window. A list row stretched end to
+   end over 900px reads as a spreadsheet; hold the list to the transcript's
+   measure and centre it, as the docked chat does. */
+.agw-agents-head,
+.agw-agents-group,
+.agw-agents-empty {
+  width: 100%;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.agw-agents-group-label {
+  padding: 10px 16px 4px;
+  color: var(--agw-text-subtle);
+  font-size: 11px;
+  font-weight: var(--agw-fw-strong);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.agw-agents-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 9px 16px;
+  transition: background var(--agw-dur-fast) var(--agw-ease-standard);
+}
+/* The agent's tile: its initial, built like `.agw-prov-avatar` — Aurora's
+   existing way of giving a party an identity. */
+.agw-agents-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--agw-radius-md);
+  border: 1px solid var(--agw-border);
+  background: var(--agw-surface-elevated);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1;
+}
+.agw-agents-row[data-status="running"] .agw-agents-avatar {
+  border-color: var(--agw-border-strong);
+}
+/* The name toggles the live preview. Its chevron turns when open. */
+.agw-agents-row-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.agw-agents-row-open > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-agents-row-open svg {
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition: transform var(--agw-dur-fast) var(--agw-ease-standard);
+}
+.agw-agents-row-open[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-agents-row-open svg {
+    transition: none;
+  }
+}
+/* "Open in its own tab": above the stretched name button, like Stop. */
+.agw-agents-tab {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition:
+    color var(--agw-dur-fast) var(--agw-ease-standard),
+    background var(--agw-dur-fast) var(--agw-ease-standard);
+}
+.agw-agents-tab:hover,
+.agw-agents-tab:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+}
+.agw-agents-tab:focus-visible {
+  border-color: var(--agw-border-strong);
+}
+.agw-agents-tab:active {
+  background: var(--agw-press-paint);
+}
+/* ── An agent's live tail (`SubagentTail`) ───────────────────────────────
+ * Probe: Documents/aurora-agent-preview-designs.html, 06 (picked 2026-10-08).
+ * The running command's tail (`.agw-shell-tail`), for an agent: no box, a rule
+ * at the tool body's indent, accent while the agent works; a fixed window with
+ * the newest line at the bottom and older lines dissolving into the top fade.
+ * The wrapper animates open (height + rise out of a blur) in `AgentsPanel`. */
+.agw-agents-preview {
+  margin: 0 16px 0 50px;
+}
+.agw-tail-wrap {
+  padding-bottom: 8px;
+}
+/* Finished: as tall as what it holds, up to the window. A fixed window here
+   left an agent stopped before it did anything (one "From parent" line) with
+   that line pinned under ~170px of nothing. */
+.agw-tail {
+  position: relative; /* rows' offsetTop is measured against this box */
+  max-height: 212px;
+  padding: 6px 0 6px 13px;
+  border-left: 1px solid var(--agw-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  transition:
+    height var(--agw-dur-slow) var(--agw-ease-enter),
+    border-color var(--agw-dur-fast) var(--agw-ease-standard);
+}
+/* Running: the fixed window from the probe, so arriving lines never resize it. */
+.agw-tail-wrap[data-running] .agw-tail {
+  height: 212px;
+  border-left-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+}
+/* The fade says "there is more above". Only when there is: on a tail that
+   fits, it dimmed the first line for no reason. `data-clipped` is measured
+   in `SubagentTail`. */
+.agw-tail[data-clipped] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 34%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 34%);
+}
+/* "Show more": taller, and it scrolls back through the whole run. The fade
+   shrinks to a lip so a line scrolled to the top stays readable. */
+.agw-tail[data-more] {
+  max-height: 420px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
+}
+.agw-tail-wrap[data-running] .agw-tail[data-more] {
+  height: 420px;
+}
+.agw-tail[data-more][data-clipped] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 22px);
+}
+/* At the bottom whatever its length: margin-top:auto, not flex-end, because
+   a flex-end column cannot be scrolled back up. */
+.agw-tail-in {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+.agw-tail-step {
+  min-width: 0;
+}
+/* A line that streams in while the window watches rises in from just below,
+   out of a soft blur. History read from the file never animates: opening an
+   old agent used to start this on every line at once. */
+.agw-tail-step[data-arrive] {
+  animation: agw-agent-arrive var(--agw-dur-slow) var(--agw-ease-enter) both;
+}
+.agw-tail-text {
+  padding: 2px 0 4px 24px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.5;
+  color: var(--agw-text-subtle);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.agw-tail-text[data-kind="said"] {
+  color: var(--agw-text);
+  -webkit-line-clamp: 3;
+}
+.agw-tail-text[data-kind="parent"] {
+  color: var(--agw-text-muted);
+}
+.agw-tail-text[data-waiting] {
+  font-style: italic;
+}
+.agw-tail-tag {
+  margin-right: 6px;
+  color: var(--agw-text-muted);
+  font-weight: var(--agw-fw-medium);
+  font-style: normal;
+}
+.agw-tail-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0 13px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  color: var(--agw-text-subtle);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color var(--agw-dur-fast) var(--agw-ease-standard);
+}
+.agw-tail-more[data-hidden] {
+  visibility: hidden;
+}
+.agw-tail-more:hover,
+.agw-tail-more:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+}
+.agw-tail-more svg {
+  transition: transform var(--agw-dur-slow) var(--agw-ease-enter);
+}
+.agw-tail-more[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-tail,
+  .agw-tail-more svg {
+    transition: none;
+  }
+  .agw-tail-step {
+    animation: none;
+  }
+}
+@media (max-width: 520px) {
+  .agw-agents-preview {
+    margin-left: 16px;
+  }
+}
+.agw-agents-row:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-agents-row:has(.agw-agents-row-open:active) {
+  background: var(--agw-press-paint);
+}
+.agw-agents-row:has(.agw-agents-row-open:focus-visible) {
+  background: var(--agw-state-selected);
+}
+.agw-agents-row-lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.agw-agents-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agw-agents-row-open {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.agw-agents-row-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.agw-agents-row-open:focus-visible {
+  outline: none;
+}
+.agw-agents-row-sub {
+  margin-top: 1px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-agents-row[data-status="failed"] .agw-agents-row-sub {
+  color: var(--agw-removed);
+}
+.agw-agents-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Stop, in a row and in an agent's footer. Above the stretched name button. */
+.agw-agents-stop {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  transition:
+    color var(--agw-dur-fast) var(--agw-ease-standard),
+    background var(--agw-dur-fast) var(--agw-ease-standard),
+    border-color var(--agw-dur-fast) var(--agw-ease-standard);
+}
+.agw-agents-stop:hover,
+.agw-agents-stop:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  background: var(--agw-hover-paint);
+}
+.agw-agents-stop:focus-visible {
+  border-color: var(--agw-text-muted);
+}
+.agw-agents-stop:active {
+  background: var(--agw-press-paint);
+}
+.agw-agents-stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+  background: transparent;
+}
+.agw-agents-empty {
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  line-height: 1.55;
+}
+
+/* ── An agent's own tab ──────────────────────────────────────────────────
+ * The docked-chat view (`.agw-cp-root`, `.agw-cp-body`) with a status bar in
+ * the composer's place. */
+.agw-subagent-main {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.agw-subagent-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--agw-border);
+  color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+}
+.agw-subagent-foot-lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.agw-subagent-foot-line {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-subagent-foot-note {
+  flex: none;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+
+/* ── Delegation lifecycle marks ──────────────────────────────────────────
+ * Probe: Documents/aurora-subagent-tool-icon-designs.html (card 5 picked,
+ * 2026-10-08).
+ *
+ * The one written exception to "a tool mark never takes a colour"
+ * (33-tool-glyph-motion.css): Start agent and Submit report — the rows that
+ * open and close a delegation — rest in the accent. In a long parent turn
+ * they are what you scroll for. Every other mark, the other five sub-agent
+ * tools included, stays muted.
+ *
+ * Here and not in 33: that partial owns MOTION and is kept colourless by a
+ * test. This is a resting colour for two rows, owned by the sub-agent
+ * surface. It loads after 33 at equal specificity, so it outranks 33's
+ * running-state pin to --agw-text-muted; the running scan still passes over
+ * the mark in --agw-text, adding light to the accent rather than replacing it.
+ *
+ * Known cost, accepted: the accent is the user's, so a red or green accent
+ * paints these two marks in a colour that elsewhere means error or success.
+ */
+.agw-tool-glyph[data-lifecycle] {
+  color: var(--agw-accent);
+}

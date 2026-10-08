@@ -203,6 +203,12 @@ pub struct BuildStats {
     pub files_failed: usize,
     #[serde(default)]
     pub failed_files: Vec<String>,
+    /// A bounded sample of the files counted in `files_with_parse_errors`, so
+    /// the gap names a file to open instead of only a number. Since source is
+    /// read lossily (`incremental::read_source`), a file of bytes that are not
+    /// text lands here rather than in `failed_files`.
+    #[serde(default)]
+    pub parse_error_files: Vec<String>,
     pub skipped_too_large: usize,
     /// Minified / bundled output, detected by line shape. Reported rather than
     /// silently dropped: a truncation that does not name itself reads as
@@ -448,6 +454,9 @@ impl CodeIndex {
             let file_id = idx.files.len() as u32;
             if facts.had_parse_error {
                 idx.stats.files_with_parse_errors += 1;
+                if idx.stats.parse_error_files.len() < 20 {
+                    idx.stats.parse_error_files.push(rel.clone());
+                }
             }
             idx.stats.bytes += bytes;
             idx.stats.reused_files += usize::from(reused);
@@ -1452,8 +1461,14 @@ impl CodeIndex {
             ));
         }
         if self.stats.files_with_parse_errors > 0 {
+            let example = self
+                .stats
+                .parse_error_files
+                .first()
+                .map(|path| format!("; first: `{path}`"))
+                .unwrap_or_default();
             reasons.push(format!(
-                "{} file(s) contain syntax errors and were indexed through parser recovery",
+                "{} file(s) contain syntax errors and were indexed through parser recovery{example}",
                 self.stats.files_with_parse_errors
             ));
         }

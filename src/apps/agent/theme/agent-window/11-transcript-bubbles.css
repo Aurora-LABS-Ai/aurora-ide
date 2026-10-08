@@ -339,8 +339,13 @@
  * growing into empty room below it.
  *
  * `min-height` only, so a long exchange is unaffected — it applies to the short
- * ones, which are the only ones that need it. */
-.agw-root[data-transcript-sticky-user] .agw-section:last-child {
+ * ones, which are the only ones that need it.
+ *
+ * Only a section that OPENS WITH A QUESTION reserves the room. A section a
+ * sub-agent's report or a process ending opened is not pinned (nothing asks
+ * for it to sit at the top), and padding it put the report alone at the top
+ * of an empty screen the moment the bottom-follow reached it. */
+.agw-root[data-transcript-sticky-user] .agw-section:last-child:has([data-uturn]) {
   min-height: calc(100vh - 300px);
 }
 

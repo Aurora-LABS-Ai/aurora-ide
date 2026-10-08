@@ -92,11 +92,24 @@ impl ConversationRuntime {
         if self.config.execution_mode_is_chat {
             return base.map(str::to_string);
         }
-        match (base, machine_tools_block(thread_id)) {
-            (Some(prompt), Some(tools)) => Some(format!("{prompt}\n\n{tools}")),
-            (Some(prompt), None) => Some(prompt.to_string()),
-            (None, Some(tools)) => Some(tools),
-            (None, None) => None,
+        // The sub-agent section rides here too: it describes tools this turn
+        // has, so it belongs with the prompt, and it is fixed for the turn.
+        let sections: Vec<String> = [
+            base.map(str::to_string),
+            machine_tools_block(thread_id),
+            self.config
+                .subagent_instructions
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if sections.is_empty() {
+            None
+        } else {
+            Some(sections.join("\n\n"))
         }
     }
 

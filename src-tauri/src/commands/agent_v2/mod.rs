@@ -178,6 +178,14 @@ pub trait EventEmitter: Send + Sync + 'static {
     /// pipeline, and posts the result back via
     /// `agent_post_tool_result`.
     fn emit_tool_pending(&self, request: &ToolBridgeRequest);
+
+    /// Emit a sub-agent lifecycle event (started, finished, message).
+    /// Wire-channel: `"agent_subagent"`. A child's own stream rides
+    /// `agent_event` under the child's turn id like any other turn; this is
+    /// the part that stream cannot say — that the child exists, who started
+    /// it, and how it ended. Defaulted to a no-op so emitters that do not
+    /// care (tests, the verify crate) need not mention it.
+    fn emit_subagent(&self, _event: &crate::agent_runtime::subagents::SubagentEvent) {}
 }
 
 /// `BridgeEmitter` is the narrower surface the bridge module needs.
@@ -198,14 +206,23 @@ impl<E: EventEmitter + ?Sized> BridgeEmitter for E {
 // `commands::agent_v2::{AgentRegistry, ApiFactory, EventEmitter, TurnDriver}`.
 
 mod registry;
+mod subagent_host;
 #[cfg(test)]
 mod tests;
 mod tool_policy;
 mod turn_driver;
 
 pub use registry::*;
+pub use subagent_host::*;
 use tool_policy::*;
 pub use turn_driver::*;
+
+/// The database-backed model lookup sub-agents resolve a `model` pin with.
+/// Tauri-only: it reads the managed `Mutex<Database>`.
+#[cfg(not(feature = "verify_only"))]
+mod subagent_lookup;
+#[cfg(not(feature = "verify_only"))]
+pub use subagent_lookup::DatabaseProviderLookup;
 
 // ============================================================================
 // Tauri layer — production glue. Excluded from the verify crate via the

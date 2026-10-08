@@ -19,11 +19,45 @@ import {
   formatReplyTime,
   formatWorkedDuration,
   finishCompaction,
+  newestQuestion,
   settleImageEvent,
   type DirectImageEvent,
   type TimelineEvent,
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
+
+describe("the pinned question", () => {
+  const ask: DbMessage = { id: "q1", role: "user", content: "Build it", timestamp: "2026-10-08T10:00:00Z" };
+  const reply: DbMessage = { id: "a1", role: "assistant", content: "Started two agents.", timestamp: "2026-10-08T10:00:05Z" };
+
+  it("does not move when a sub-agent's report opens a turn", () => {
+    const before = newestQuestion(buildTurns([ask, reply]));
+    const report: DbMessage = {
+      id: "r1",
+      role: "agent_report",
+      content: 'Finished "Shell" · completed',
+      timestamp: "2026-10-08T10:03:00Z",
+      timeline: [
+        {
+          kind: "agent_report",
+          id: "r1-0",
+          agentId: "agent_1",
+          name: "shell",
+          status: "completed",
+          summary: 'Finished "Shell" · completed',
+          detail: "done",
+        },
+      ],
+    };
+    const after = newestQuestion(buildTurns([ask, reply, report, { ...reply, id: "a2" }]));
+    expect(after).toBe(before);
+  });
+
+  it("moves to a new question", () => {
+    const next: DbMessage = { ...ask, id: "q2", content: "Now the docs" };
+    expect(newestQuestion(buildTurns([ask, reply, next]))).not.toBe(newestQuestion(buildTurns([ask, reply])));
+  });
+});
 
 describe("compaction terminal states", () => {
   it("settles failure without inventing an after-token count", () => {

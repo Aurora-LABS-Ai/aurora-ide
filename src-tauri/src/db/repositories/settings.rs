@@ -26,6 +26,8 @@ pub const APP_SETTING_KEYS: &[&str] = &[
     "notifyOnTurnComplete",
     "showActivityInTitle",
     "browserTools",
+    "subagentsEnabled",
+    "subagentModel",
     "deferTools",
     "mcpBridgeEnabled",
     "autoApproveTools",
@@ -237,6 +239,14 @@ impl<'a> SettingsRepository<'a> {
                 "browserTools" => {
                     settings.browser_tools =
                         serde_json::from_str(&setting.value).unwrap_or(settings.browser_tools)
+                }
+                "subagentsEnabled" => {
+                    settings.subagents_enabled =
+                        serde_json::from_str(&setting.value).unwrap_or(settings.subagents_enabled)
+                }
+                "subagentModel" => {
+                    settings.subagent_model = serde_json::from_str(&setting.value)
+                        .unwrap_or_else(|_| settings.subagent_model.clone())
                 }
                 "deferTools" => {
                     settings.defer_tools =
@@ -503,6 +513,14 @@ impl<'a> SettingsRepository<'a> {
         self.set_setting(
             "browserTools",
             &serde_json::to_string(&settings.browser_tools).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "subagentsEnabled",
+            &serde_json::to_string(&settings.subagents_enabled).unwrap_or_default(),
+        )?;
+        self.set_setting(
+            "subagentModel",
+            &serde_json::to_string(&settings.subagent_model).unwrap_or_default(),
         )?;
         self.set_setting(
             "deferTools",
@@ -1059,6 +1077,8 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.defer_tools = true;
         settings.browser_tools = false;
+        settings.subagents_enabled = true;
+        settings.subagent_model = Some("openai:gpt-5.2".into());
         settings.notify_on_turn_complete = false;
         settings.show_activity_in_title = false;
         settings.compaction_model = "openai:gpt-5.2".into();
@@ -1219,6 +1239,8 @@ mod tests {
         assert!(loaded.notify_on_turn_complete);
         assert!(loaded.show_activity_in_title);
         assert!(!loaded.defer_tools);
+        assert!(!loaded.subagents_enabled);
+        assert!(loaded.subagent_model.is_none());
         assert!(loaded.compaction_model.is_empty());
         assert!(loaded.global_instruction_profiles.is_empty());
         assert!(loaded.active_global_instruction_profile_id.is_empty());

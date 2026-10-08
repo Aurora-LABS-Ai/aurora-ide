@@ -30,7 +30,11 @@ export interface AgentCallbacks extends ProviderStreamCallbacks {
      * renders as a one-line beat — never as the user's own words, which is
      * what it used to do.
      */
-    origin?: "user" | "process",
+    origin?: "user" | "process" | "subagent",
+    /** The agent a `"subagent"` report is about. */
+    agent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null,
+    /** A `"subagent"` report's full text. */
+    detail?: string | null,
   ) => void;
   /**
    * Context compaction has begun (auto at threshold, or manual). UI: turn the
@@ -145,6 +149,13 @@ export interface AgentConfig {
    * every request, so it is switchable — Settings → Agent → Browser control.
    */
   browserTools?: boolean;
+  /** Let the agent delegate work to subagents this turn. Off when unset. */
+  subagentsEnabled?: boolean;
+  /**
+   * `providerId:modelKey` pin for subagents. `null`/unset means "same as the
+   * conversation's model".
+   */
+  subagentModel?: string | null;
   /** Legacy preference; optional tools always use tool_search and call_tool. */
   deferTools?: boolean;
   /**

@@ -9,6 +9,7 @@ import {
   selectActiveAgentTheme,
   useAgentThemeStore,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
+import { useProgressiveCount } from "@/apps/agent/components/tool-views/useProgressiveCount";
 
 function extensionOf(path: string): string {
   const base = path.split(/[/\\]/).pop() ?? path;
@@ -40,6 +41,14 @@ export const ToolCode: React.FC<{ code: string; path: string | null }> = ({
     [syntaxOn, path, code],
   );
   const tokens = useShikiTokens(code, language, variant);
+  // Coloured lines are a span per token; build the first screenful at once and
+  // the rest after the card's opening motion. Until then the rest is one plain
+  // text run, so the box's content — and its height — is complete throughout.
+  const shown = useProgressiveCount(tokens?.length ?? 0);
+  const rest = useMemo(
+    () => (tokens && shown < tokens.length ? code.split("\n").slice(shown).join("\n") : ""),
+    [tokens, shown, code],
+  );
 
   if (!tokens) {
     return <pre className="agw-code agw-scroll agw-tool-result">{code}</pre>;
@@ -48,7 +57,7 @@ export const ToolCode: React.FC<{ code: string; path: string | null }> = ({
   return (
     <pre className="agw-code agw-scroll agw-tool-result">
       <code>
-        {tokens.map((line, lineIndex) => (
+        {tokens.slice(0, shown).map((line, lineIndex) => (
           <span key={lineIndex} className="agw-code-line">
             {line.length === 0 ? (
               "\n"
@@ -64,6 +73,7 @@ export const ToolCode: React.FC<{ code: string; path: string | null }> = ({
             )}
           </span>
         ))}
+        {rest && <span className="agw-code-line">{rest}</span>}
       </code>
     </pre>
   );

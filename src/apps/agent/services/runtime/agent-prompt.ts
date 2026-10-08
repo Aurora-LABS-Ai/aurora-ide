@@ -49,9 +49,11 @@ export interface AgentPromptContext {
    * system prompt. It is forwarded to the runtime, where it decides which
    * content block the message is persisted as.
    */
-  userMessageOrigin?: "user" | "process";
-  /** The transcript's one line when the origin is `"process"`. */
+  userMessageOrigin?: "user" | "process" | "subagent";
+  /** The transcript's one line when the origin is `"process"` or `"subagent"`. */
   userMessageSummary?: string | null;
+  /** The agent a `"subagent"` report is about. Persisted on the block. */
+  userMessageAgent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null;
   workspacePath?: string | null;
   /**
    * The project's standing `.aurora/*.md` rules, already rendered as a
@@ -121,13 +123,14 @@ Your main goal is to follow the USER's instructions at each message.
 - Before you call the work done, run the project's own checks with \`shell_execute\`: the type check, lint, or test command the project defines (its \`package.json\` scripts, \`cargo check\`, \`ruff\`, \`pytest\`). Run once after a related group of edits, not after every single one. Read the raw output yourself: a runner that prints a banner or an install hint instead of diagnostics has checked nothing, so say that rather than reporting clean. Fix the issues you introduced; ignore pre-existing findings in files you did not touch. Report what the checks printed, not what you expected
 - Preserve existing project patterns, structure, and theming conventions
 - Do NOT add comments that merely narrate the code (\`// import the module\`, \`// loop over items\`, \`// handle the error\`). Comments explain non-obvious intent, trade-offs, or constraints — never the mechanics, and NEVER the edit you just made
-- \`old_string\` and \`new_string\` carry the file's literal text, exactly as \`file_read\` printed it. Do not escape it for transport: send the quote the file has, not \`\\"\`, and a real line break, not the two characters \`\\\` \`n\`. The only backslashes that belong in them are the ones the file itself contains. Same rule as shell commands below — the argument reaches the file untouched
+- \`old_string\` and \`new_string\` carry the file's literal text, exactly as \`file_read\` printed it after each line's number and tab — never the number or the tab themselves. Do not escape it for transport: send the quote the file has, not \`\\"\`, and a real line break, not the two characters \`\\\` \`n\`. The only backslashes that belong in them are the ones the file itself contains. Same rule as shell commands below — the argument reaches the file untouched
 - Do not create a new file with \`file_write\` when editing an existing one achieves the goal. Only add files that are genuinely necessary; prefer extending what is already there
 - Never emit long hashes, base64, or other non-textual blobs into your reply or a file — they are expensive and unhelpful
 
 ## Tool Usage Guidelines
 - When constructing a tool call, emit its identifying arguments first so Aurora can show the action target while the remaining payload streams. Emit \`affected_paths\` and \`path\` before large fields such as \`content\`, \`old_string\`, \`new_string\`, or \`value\`, and \`command\`, \`query\`, \`url\`, or \`selector\` before any long supporting text. Order the keys the way each tool's own schema declares them, never alphabetically — sorting is what pushes the identifying argument behind the payload
 - \`affected_paths\` labels the row in the interface; it does not choose the file. In a multi-file \`file_edit\` batch, give every item in \`edits\` its own \`path\` as well — listing the files once at the top does not say which edit belongs to which
+- \`file_read\` numbers every line it returns: \`  12\\tconst x = 1;\` is line 12. Use those numbers when you name a line (\`path:12\`) instead of counting lines yourself. The number and the tab are not part of the file
 - \`file_read\` names what to read through ONE argument: \`path\` is always an ARRAY of paths — one entry for a single file, more to read them in parallel. Start with no line range — files small enough come back whole, and larger ones report their true length and where to continue, so you never have to guess. A range applies to EVERY path in the call; to take different ranges from different files, issue one call per file in the same message
 - Images are files you can read. Name a PNG, JPEG, GIF or WebP in \`file_read\` and you SEE it — so look at the mockup, the screenshot, the exported design, rather than asking the user to describe it or reasoning about a picture you never opened. An image can share a call with source files
 - A file_read returns exactly the range you asked for. If the result says it was capped, continue from the \`start_line\` it names rather than re-reading from the top — or pass \`force_full_content: true\` to take the whole file in one call when you genuinely need all of it
@@ -606,7 +609,7 @@ export async function composeAgentSystemPrompt(options: {
   sections.push(chatMode ? CHAT_DEFERRED_TOOL_INSTRUCTIONS : DEFERRED_TOOL_INSTRUCTIONS);
 
   // Global user instructions: the ACTIVE one of the user's named instruction
-  // sets (Settings → Agent — up to three, at most one active). Applies to
+  // sets (Settings → Agent — up to eight, at most one active). Applies to
   // every workspace and turn, so it rides high in the prompt (right after the
   // base identity), framed as standing rules that yield only to the user's
   // explicit message this turn. Stable for the session, so it stays static.

@@ -153,6 +153,13 @@ pub struct AgentChatRequest {
     /// whose bubble shows the words that were typed.
     #[serde(default)]
     pub user_message_summary: Option<String>,
+    /// Which sub-agent a turn started by [`Self::user_message_origin`] ==
+    /// `Subagent` is reporting for. The window copies it from the `Report`
+    /// event that asked it to start the turn; the runtime persists the
+    /// message as an `AgentReport` block carrying it. Ignored for every
+    /// other origin.
+    #[serde(default)]
+    pub user_message_agent: Option<crate::agent_runtime::types::AgentReportMeta>,
     /// LLM provider identifier. Used by the
     /// [`crate::commands::agent_v2::AgentRegistry`] for telemetry; the
     /// real provider routing is done by the [`provider_config`] field
@@ -363,6 +370,25 @@ pub struct AgentChatRequest {
     /// `tools::image::config` keyed by conversation before the turn runs.
     #[serde(default)]
     pub image_providers: Vec<crate::tools::image::config::ImageProviderConfig>,
+
+    /// The user's master switch for sub-agents (Settings → Agent → Sub-agents).
+    ///
+    /// When true, a project Agent turn is handed the sub-agent tools
+    /// (`spawn_agent`, `list_models`, …) and the frontend puts the matching
+    /// section in the system prompt. `None`/`false` withholds the tools
+    /// entirely — the model is never told sub-agents exist. Enforced here, in
+    /// the roster the model actually sees, not by the prompt alone.
+    ///
+    /// Ignored in Plan and Chat modes, and always off for a sub-agent's own
+    /// turn: one level of delegation is the supported shape.
+    #[serde(default)]
+    pub subagents_enabled: Option<bool>,
+
+    /// `providerId:modelKey` sub-agents run on by default (Settings → Agent →
+    /// Sub-agent model). `None` means the parent's own model. A definition's
+    /// `model:` and an explicit `model` on `spawn_agent` both outrank it.
+    #[serde(default)]
+    pub subagent_model: Option<String>,
 }
 
 /// One tool entry in [`AgentChatRequest::tools`].
@@ -427,6 +453,7 @@ mod tests {
             user_message: "hello".into(),
             user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
             user_message_summary: None,
+            user_message_agent: None,
             provider_id: "anthropic".into(),
             model: "claude-3-7-sonnet".into(),
             model_selection: None,
@@ -460,6 +487,8 @@ mod tests {
             transcript_chapters: None,
             browser_tools: None,
             defer_tools: None,
+            subagents_enabled: None,
+            subagent_model: None,
         }
     }
 
@@ -603,6 +632,7 @@ mod tests {
             user_message: "u".into(),
             user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
             user_message_summary: None,
+            user_message_agent: None,
             provider_id: "p".into(),
             model: "m".into(),
             model_selection: None,
@@ -628,6 +658,8 @@ mod tests {
             transcript_chapters: None,
             browser_tools: None,
             defer_tools: None,
+            subagents_enabled: None,
+            subagent_model: None,
         };
         let s = serde_json::to_string(&req).expect("serialize");
         // Phase 2.3 contract: camelCase, no skip_serializing_if on

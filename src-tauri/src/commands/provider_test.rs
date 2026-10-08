@@ -255,6 +255,7 @@ pub async fn provider_test_model(
 fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'static str, String) {
     match kind {
         ProviderKind::Anthropic => ("Anthropic Messages", build_anthropic_url(&config.base_url)),
+        ProviderKind::AnthropicApi => ("Anthropic API", build_anthropic_url(&config.base_url)),
         ProviderKind::OpenAIResponses => ("Responses", build_responses_url(&config.base_url)),
         ProviderKind::Codex => ("Codex", CODEX_RESPONSES_URL.to_string()),
         // Pinned to api.anthropic.com; the row's base URL is not what a

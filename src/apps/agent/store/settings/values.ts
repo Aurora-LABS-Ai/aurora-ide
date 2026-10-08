@@ -32,10 +32,11 @@ export const DEFAULT_COMPACTION_SUMMARY_BUDGET = 16000;
 export const COMPACTION_SUMMARY_BUDGET_MIN = 4000;
 export const COMPACTION_SUMMARY_BUDGET_MAX = 24000;
 
-// Global instructions (Settings → Agent). The user keeps up to three named
+// Global instructions (Settings → Agent). The user keeps up to eight named
 // sets ("personas") and activates at most one; only the active set's text is
-// injected into the agent's system prompt.
-export const GLOBAL_INSTRUCTION_PROFILE_LIMIT = 3;
+// injected into the agent's system prompt. Was three; Alvan keeps one set per
+// kind of session and ran out (2026-10-08).
+export const GLOBAL_INSTRUCTION_PROFILE_LIMIT = 8;
 export const GLOBAL_INSTRUCTION_NAME_MAX = 30;
 /** Id the pre-profile single string migrates onto, kept stable for tests. */
 export const LEGACY_GLOBAL_INSTRUCTION_PROFILE_ID = "default";

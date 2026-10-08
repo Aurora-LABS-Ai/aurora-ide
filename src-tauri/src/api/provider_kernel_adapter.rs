@@ -396,6 +396,18 @@ pub struct AnthropicStreamEvent {
 #[derive(Debug, Deserialize)]
 pub struct AnthropicMessageEnvelope {
     pub usage: Option<AnthropicUsageWire>,
+    /// The model that is producing this message. Normally the one requested;
+    /// after a refusal fallback it names the model that took over, including
+    /// on later "sticky" requests that carry no `fallback` block at all.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Thinking blocks the API dropped from the history before the model saw
+    /// them (`thinking_dropped`), or let through despite a mismatch
+    /// (`thinking_mismatch_allowed`). Present only when the request sent the
+    /// thinking-binding beta. Diagnostic: each entry names the block's path
+    /// and why — an edited history, or a switch to another model.
+    #[serde(default)]
+    pub input_transformations: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +420,12 @@ pub struct AnthropicContentBlockMeta {
     /// by Anthropic's safety systems instead of returned as readable text.
     /// Opaque, and must be replayed verbatim or the history is rejected.
     pub data: Option<String>,
+    /// A `fallback` block's switch point: `{"model": ...}` for the model that
+    /// declined and for the one that continued.
+    #[serde(default)]
+    pub from: Option<Value>,
+    #[serde(default)]
+    pub to: Option<Value>,
 }
 
 /// The five effort tiers Anthropic accepts under `output_config.effort`.
@@ -462,10 +480,17 @@ pub struct AnthropicSurface {
     /// `true` → `{"type":"adaptive"}` and `output_config.effort`.
     /// `false` → the legacy `{"type":"enabled","budget_tokens":N}`.
     pub adaptive: bool,
-    /// Omitting `thinking` entirely still reasons (Opus 5, Sonnet 5, Fable 5).
+    /// Omitting `thinking` entirely still reasons (the Claude 5 family).
+    ///
+    /// These models are always sent adaptive thinking, and "reasoning off" is
+    /// honoured as the lowest effort instead of `{"type":"disabled"}`. Two
+    /// reasons: Opus 5.5 and Sonnet 5.5 reject `disabled` outright, and where
+    /// it is accepted (Opus 5, Haiku 5.5) Anthropic documents two failure
+    /// modes an agent cannot afford — the model writes a tool call into its
+    /// visible text, where it never runs, and leaks `<thinking>` tags.
     pub thinks_by_default: bool,
-    /// `{"type":"disabled"}` is accepted at all — Fable 5 rejects it outright
-    /// and wants the parameter omitted instead.
+    /// `{"type":"disabled"}` is accepted at all. Only consulted for models
+    /// that do not think by default; see [`Self::thinks_by_default`].
     pub allows_disabled: bool,
     /// Highest tier this model accepts; `None` means it has no effort control.
     pub max_effort: Option<AnthropicEffort>,
@@ -502,8 +527,8 @@ pub fn anthropic_surface_for(model: &str) -> AnthropicSurface {
 
     let has = |needle: &str| id.contains(needle);
 
-    // Claude Fable 5 / Mythos 5 — thinking is always on and cannot be turned
-    // off; an explicit `disabled` is a 400 at any effort.
+    // Claude Fable 5 / 5.1 and Mythos 5 / 5.1 — thinking is always on and
+    // cannot be turned off; an explicit `disabled` is a 400 at any effort.
     if has("fable-5") || has("mythos-5") {
         return AnthropicSurface {
             adaptive: true,
@@ -515,9 +540,26 @@ pub fn anthropic_surface_for(model: &str) -> AnthropicSurface {
         };
     }
 
-    // Claude Opus 5 / Sonnet 5 — adaptive by default when `thinking` is
-    // omitted, which is the opposite of 4.8/4.7.
-    if has("opus-5") || has("sonnet-5") {
+    // Claude Opus 5.5 and Sonnet 5.5 — `disabled` is a 400 on both (Sonnet
+    // 5.5's own off switch, `between_tools`, is not used: see
+    // `thinks_by_default`). Checked before the row below, which `opus-5-5`
+    // and `sonnet-5-5` would otherwise also match.
+    if has("opus-5-5") || has("opus-5.5") || has("sonnet-5-5") || has("sonnet-5.5") {
+        return AnthropicSurface {
+            adaptive: true,
+            thinks_by_default: true,
+            allows_disabled: false,
+            max_effort: Some(AnthropicEffort::Max),
+            allows_sampling: false,
+            summaries_need_opt_in: true,
+        };
+    }
+
+    // Claude Opus 5 / Sonnet 5 / Haiku 5.5 — adaptive by default when
+    // `thinking` is omitted, which is the opposite of 4.8/4.7, and `disabled`
+    // is accepted at effort `high` or below. Haiku 5.5 rejects
+    // `budget_tokens`, so it must never fall through to the legacy row.
+    if has("opus-5") || has("sonnet-5") || has("haiku-5-5") || has("haiku-5.5") {
         return AnthropicSurface {
             adaptive: true,
             thinks_by_default: true,
@@ -606,6 +648,12 @@ pub struct AnthropicDelta {
     pub signature: Option<String>,
     pub partial_json: Option<String>,
     pub stop_reason: Option<String>,
+    /// Set only beside `stop_reason: "refusal"`: `category` (an open set —
+    /// `cyber`, `bio`, … or `null`), an optional `explanation`, and
+    /// `recommended_model` when a fallback could not run. Informational: the
+    /// stop reason decides what happened, never this.
+    #[serde(default)]
+    pub stop_details: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -960,8 +1008,6 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
         } else if surface.allows_disabled {
             body.insert("thinking".to_string(), json!({ "type": "disabled" }));
         }
-        // Fable 5 with reasoning off: omit the field entirely — an explicit
-        // `disabled` is a 400 there, and omitting it runs adaptive anyway.
 
         if let Some(ceiling) = surface.max_effort {
             // Clamp rather than reject: a tier the model doesn't know is a 400,
@@ -975,6 +1021,17 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
             // it with `xhigh`/`max` is a 400 on Opus 5.
             if !on {
                 level = level.min(AnthropicEffort::High);
+            }
+            // Reasoning switched off on a model that always reasons. Effort is
+            // the only control left, and `low` is Anthropic's documented
+            // replacement for `disabled` on these models. Without this the
+            // switch did nothing at all: the turn ran at the picked tier.
+            // Only when the row offers reasoning, so a row that never declared
+            // it keeps the model's normal depth rather than being silently cut
+            // to the floor.
+            if config.supports_thinking && !request.reasoning.enabled && surface.thinks_by_default
+            {
+                level = AnthropicEffort::Low;
             }
             body.insert(
                 "output_config".to_string(),
@@ -1037,8 +1094,11 @@ pub fn build_anthropic_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
             // was already translated into `thinking` above. `reasoning_replay`
             // is an Aurora directive for the OpenAI-compat path; Anthropic
             // replays thinking natively, so here it is only noise to strip.
+            // `prompt_cache_ttl` is the Anthropic row's cache-length setting,
+            // applied by its adapter; Anthropic has no such body field.
             if key.eq_ignore_ascii_case("reasoning_effort")
                 || key.eq_ignore_ascii_case("reasoning_replay")
+                || key.eq_ignore_ascii_case(super::anthropic_api::PROMPT_CACHE_TTL_PARAM)
             {
                 continue;
             }
@@ -1243,6 +1303,7 @@ pub(crate) fn strip_system_boundary(prompt: &str) -> std::borrow::Cow<'_, str> {
 fn supports_prompt_caching(config: &ProviderConfigSnapshot) -> bool {
     let provider_type = config.effective_provider_type();
     provider_type.eq_ignore_ascii_case("anthropic")
+        || provider_type.eq_ignore_ascii_case(super::anthropic_api::ANTHROPIC_API_PROVIDER_TYPE)
         // The subscription route is Anthropic's own endpoint; the plan bills
         // cached reads at the same discount as the API does.
         || provider_type.eq_ignore_ascii_case(super::claude_code::CLAUDE_CODE_PROVIDER_TYPE)
@@ -1455,7 +1516,9 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             // notice, this IS the model's business — it is a fact about the
             // work, and the next move is usually to read the process's log —
             // so the detail copy goes on the wire as ordinary text.
-            ContentBlock::ProcessEvent { detail, .. } => {
+            // A finished sub-agent's report is the same kind of fact.
+            ContentBlock::ProcessEvent { detail, .. }
+            | ContentBlock::AgentReport { detail, .. } => {
                 arr.push(json!({ "type": "text", "text": detail }));
             }
             // A directly made picture: one line of text. Anthropic rejects
@@ -2351,7 +2414,8 @@ pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&
         // (`build_anthropic_body`), Responses and Codex replay an encrypted
         // reasoning item, and Cursor speaks its own. Putting an OpenAI chat
         // field in any of those bodies would be malformed, not merely unwanted.
-        "minimax" | "anthropic" | "claude-code" | "openai-responses" | "codex" | "cursor"
+        "minimax" | "anthropic" | "anthropic-api" | "claude-code" | "openai-responses" | "codex"
+        | "cursor"
         | "kenari-messages" | "kenari-responses" | "modal-messages" | "modal-responses" => None,
         // Every other OpenAI-compatible provider — `"openai"`, `"custom"`,
         // Fireworks, Ollama, kenari, and anything Aurora has never heard of:
@@ -2597,7 +2661,10 @@ pub(crate) fn collect_text(blocks: &[ContentBlock]) -> String {
             // thinking on a live run: "No user content — just an empty message.
             // The background process likely finished by now." It was never
             // told; it guessed, and it happened to guess right.
-            ContentBlock::ProcessEvent { detail, .. } => Some(detail.clone()),
+            //
+            // A sub-agent's report goes the same way for the same reason.
+            ContentBlock::ProcessEvent { detail, .. }
+            | ContentBlock::AgentReport { detail, .. } => Some(detail.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -4164,6 +4231,61 @@ mod tests {
         assert!(anthropic_surface_for("claude-opus-5").allows_disabled);
     }
 
+    /// Live 2026-10-08: `{"type":"enabled","budget_tokens":1024}` on
+    /// `claude-haiku-5-5` is a 400. Haiku 5.5 used to fall through to the
+    /// legacy row, so every Haiku 5.5 turn with reasoning on failed.
+    #[test]
+    fn haiku_5_5_gets_adaptive_thinking_never_a_budget() {
+        let s = anthropic_surface_for("claude-haiku-5-5");
+        assert!(s.adaptive && s.thinks_by_default && !s.allows_sampling);
+
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        let mut request = caching_request(&messages, &[]);
+        request.model = "claude-haiku-5-5";
+        request.reasoning.enabled = true;
+        let body = build_anthropic_body(&request, &thinking_config());
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body["thinking"].get("budget_tokens").is_none());
+    }
+
+    /// Live 2026-10-08: `{"type":"disabled"}` on `claude-opus-5-5` is a 400,
+    /// and the 5.5 rows must not be caught by the Opus 5 / Sonnet 5 row that
+    /// their ids also contain.
+    #[test]
+    fn the_5_5_models_refuse_disabled_and_are_not_mistaken_for_5() {
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5"] {
+            let s = anthropic_surface_for(model);
+            assert!(!s.allows_disabled, "{model} rejects disabled thinking");
+            assert!(s.thinks_by_default, "{model} reasons when thinking is omitted");
+        }
+        assert!(anthropic_surface_for("claude-opus-5").allows_disabled);
+    }
+
+    /// Reasoning switched off used to do nothing on the Claude 5 family: the
+    /// turn ran adaptive at the picked effort. Off is now the lowest effort,
+    /// and never `disabled`, which Opus 5.5 answers with a 400.
+    #[test]
+    fn reasoning_off_on_a_model_that_always_reasons_is_low_effort() {
+        let messages = [ConversationMessage::user_text("hi", 0)];
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-5"] {
+            let mut request = caching_request(&messages, &[]);
+            request.model = model;
+            request.reasoning.enabled = false;
+            request.reasoning.effort = Some("xhigh");
+            let body = build_anthropic_body(&request, &thinking_config());
+            assert_eq!(body["thinking"]["type"], "adaptive", "{model}");
+            assert_eq!(body["output_config"]["effort"], "low", "{model}");
+        }
+
+        // On, the picked tier is sent as picked.
+        let mut request = caching_request(&messages, &[]);
+        request.model = "claude-opus-5-5";
+        request.reasoning.enabled = true;
+        request.reasoning.effort = Some("xhigh");
+        let body = build_anthropic_body(&request, &thinking_config());
+        assert_eq!(body["output_config"]["effort"], "xhigh");
+    }
+
     #[test]
     fn thinking_defaults_differ_between_opus_5_and_opus_4_8() {
         // Omitting `thinking` reasons on Opus 5 and does not on Opus 4.8 —
@@ -4241,6 +4363,33 @@ mod tests {
         assert_eq!(
             arr[0]["text"],
             "The background process \"pnpm test\" (id bg-1) has ended with exit code 0."
+        );
+    }
+
+    /// A sub-agent's report is the same kind of fact as a process ending and
+    /// must reach every wire the same way.
+    #[test]
+    fn an_agent_report_reaches_the_openai_wire_too() {
+        let blocks = vec![ContentBlock::AgentReport {
+            agent_id: "agent-7".into(),
+            name: Some("Login finder".into()),
+            status: "completed".into(),
+            summary: "Finished \"Find the login flow\" · completed".into(),
+            detail: "Sub-agent agent-7 completed. The login flow is in auth.rs.".into(),
+            created_at: 7,
+        }];
+
+        assert_eq!(
+            collect_text(&blocks),
+            "Sub-agent agent-7 completed. The login flow is in auth.rs."
+        );
+
+        let content = message_blocks_to_anthropic_content(&blocks, false);
+        let arr = content.as_array().expect("array");
+        assert_eq!(arr[0]["type"], "text");
+        assert_eq!(
+            arr[0]["text"],
+            "Sub-agent agent-7 completed. The login flow is in auth.rs."
         );
     }
 

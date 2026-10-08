@@ -260,6 +260,12 @@ pub struct TurnUsage {
     /// blocks, thinking blocks (with their signatures), and tool-use
     /// blocks aggregated in emit order.
     pub assistant_message: ConversationMessage,
+    /// Facts the provider reported about this call that the person must
+    /// see, already worded for them: a refusal and its stated reason, or a
+    /// refusal fallback that handed the reply to another model. The runtime
+    /// shows each one and saves it beneath the reply, so it survives a
+    /// reload. Empty for almost every call.
+    pub notices: Vec<String>,
 }
 
 /// Errors raised by [`StreamingApiClient::stream`].
@@ -515,6 +521,7 @@ mod tests {
                     aurora_context: None,
                     model: None,
                 },
+                notices: Vec::new(),
             })
         }
     }

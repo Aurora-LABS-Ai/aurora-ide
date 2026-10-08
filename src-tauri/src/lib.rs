@@ -223,6 +223,7 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
             req.cwd.clone(),
             log_path.clone(),
         );
+        commands::tag_command_stream_thread(&req.request_id, &req.thread_id);
         let app = self.app.clone();
         let process_id = req.process_id.clone();
         let log_for_task = log_path.clone();
@@ -534,6 +535,21 @@ pub fn run_with_args(cli_args: CliArgs) {
             // headless process alive on the strength of an error.
             if remaining.iter().any(|w| w.is_visible().unwrap_or(false)) {
                 return;
+            }
+            // The app is going away: stop every background sub-agent so its
+            // run ends through the normal path — its transcript is already
+            // journaled, and `agent.json` records `killed` rather than a
+            // `running` nobody is running.
+            if let Some(registry) =
+                app.try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()
+            {
+                let stopped = registry.subagent_tasks().kill_all();
+                if stopped > 0 {
+                    logging::log_info(
+                        "subagents",
+                        &format!("stopped {stopped} background sub-agent(s) on exit"),
+                    );
+                }
             }
             // CLOSE the leftovers rather than calling `app.exit`. Two reasons,
             // both learned the hard way:
@@ -957,6 +973,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::agent_v2::agent_post_tool_result,
             commands::agent_v2::agent_enqueue_message,
             commands::agent_v2::agent_cancel_queued_message,
+            // Sub-agents: the Agents panel's list, a child's transcript, and
+            // its stop button. Spawning is a tool call, not a command.
+            commands::agent_v2::agent_subagent_list,
+            commands::agent_v2::agent_subagent_load,
+            commands::agent_v2::agent_subagent_kill,
+            commands::threads::subagent_thread_load,
             // Phase 4 permission gate — frontend modal posts the
             // user's Allow/Deny verdict here. The router lives in
             // managed state (see `setup` below).
@@ -1142,7 +1164,13 @@ pub fn run_with_args(cli_args: CliArgs) {
                 // `projects/`, never inside it — the two products' histories
                 // are separate stores and deleting one must not reach the other.
                 .with_chat_dir(paths::chats_dir())
-                .with_usage_ledger(usage_ledger.clone()),
+                .with_usage_ledger(usage_ledger.clone())
+                // Sub-agents may run on any configured model; the pin is
+                // resolved against the same provider rows the Providers page
+                // edits.
+                .with_provider_lookup(std::sync::Arc::new(
+                    commands::agent_v2::DatabaseProviderLookup::new(handle.clone()),
+                )),
             );
 
             // Phase 3 — pre-populate the AgentRegistry's ToolRegistry

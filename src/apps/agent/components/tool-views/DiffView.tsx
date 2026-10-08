@@ -27,7 +27,8 @@
 import React, { useMemo } from "react";
 import type { ThemedToken } from "shiki";
 
-import { computeDiff, toSplitRows, type DiffRow, type SplitCell } from "@/apps/agent/components/tool-views/diff";
+import { computeDiffCached, toSplitRows, type DiffRow, type SplitCell } from "@/apps/agent/components/tool-views/diff";
+import { useProgressiveCount } from "@/apps/agent/components/tool-views/useProgressiveCount";
 import {
   selectActiveAgentTheme,
   useAgentThemeStore,
@@ -182,11 +183,14 @@ export const DiffView: React.FC<{
     [newTokens, newText],
   );
 
-  const { rows } = useMemo(() => computeDiff(oldText, newText), [oldText, newText]);
+  const { rows } = useMemo(() => computeDiffCached(oldText, newText), [oldText, newText]);
   const splitRows = useMemo(
     () => (mode === "split" ? toSplitRows(rows) : null),
     [mode, rows],
   );
+  // The box shows about fifteen lines; build the rest once the card's opening
+  // motion has run, so a whole-file diff does not drop its frames.
+  const shown = useProgressiveCount(splitRows ? splitRows.length : rows.length);
 
   if (rows.length === 0) {
     return <div className="agw-diff-empty">No content changes</div>;
@@ -195,7 +199,7 @@ export const DiffView: React.FC<{
   if (splitRows) {
     return (
       <div className="agw-diffview agw-diffview-split agw-scroll" style={{ maxHeight }}>
-        {splitRows.map((row, i) =>
+        {splitRows.slice(0, shown).map((row, i) =>
           row.kind === "gap" ? (
             <div key={i} className="agw-dl-gap agw-dl-gap-split">
               <span>⋯</span>
@@ -222,7 +226,7 @@ export const DiffView: React.FC<{
 
   return (
     <div className="agw-diffview agw-scroll" style={{ maxHeight }}>
-      {rows.map((row, i) => (
+      {rows.slice(0, shown).map((row, i) => (
         <UnifiedLine key={i} row={row} old={old} next={next} />
       ))}
     </div>

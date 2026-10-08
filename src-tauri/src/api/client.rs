@@ -31,6 +31,8 @@ use serde_json::Value;
 use crate::agent_runtime::api_client::{ReasoningConfig, StreamingApiClient};
 
 use super::anthropic::AnthropicAdapter;
+use super::anthropic_api::adapter::AnthropicApiAdapter;
+use super::anthropic_api::ANTHROPIC_API_PROVIDER_TYPE;
 use super::claude_code::adapter::ClaudeCodeAdapter;
 use super::claude_code::CLAUDE_CODE_PROVIDER_TYPE;
 use super::codex::adapter::CodexAdapter;
@@ -161,6 +163,12 @@ impl ProviderConfigSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     Anthropic,
+    /// Anthropic's own API on a console key — the built-in Anthropic row.
+    /// Same Messages wire as [`Self::Anthropic`], plus the request fields
+    /// only Anthropic accepts (refusal fallbacks, thinking-binding control),
+    /// which a gateway typed `anthropic` would answer with a 400. See
+    /// [`super::anthropic_api`].
+    AnthropicApi,
     DeepSeek,
     /// OpenAI's typed-event `/responses` endpoint. An *additional*
     /// wire shape users opt into per provider — Chat Completions
@@ -223,6 +231,7 @@ impl ProviderKind {
             "anthropic" | "minimax" | "kenari-messages" | "opencode-go-messages"
             | "modal-messages" | "ark-messages" | super::meta::META_MESSAGES_TYPE
             | super::deepseek::DEEPSEEK_MESSAGES_TYPE => ProviderKind::Anthropic,
+            ANTHROPIC_API_PROVIDER_TYPE => ProviderKind::AnthropicApi,
             "deepseek" => ProviderKind::DeepSeek,
             // On OpenCode Go the wire belongs to the MODEL, not the row: the
             // same key and base URL answer all three formats and each model
@@ -323,7 +332,9 @@ pub fn reasoning_replay_for(
     match ProviderKind::detect(provider_type) {
         // Anthropic replays `thinking` blocks verbatim and requires it once
         // extended thinking is on.
-        ProviderKind::Anthropic | ProviderKind::ClaudeCode => ReasoningReplay::Text,
+        ProviderKind::Anthropic | ProviderKind::AnthropicApi | ProviderKind::ClaudeCode => {
+            ReasoningReplay::Text
+        }
         ProviderKind::OpenAIResponses | ProviderKind::Codex => ReasoningReplay::Opaque,
         // Command Code replays reasoning as a plain `{type:"reasoning",
         // text}` part: no signature to echo, nothing encrypted. It costs
@@ -381,6 +392,7 @@ pub fn build_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApi
 pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn StreamingApiClient> {
     match ProviderKind::detect(config.effective_provider_type()) {
         ProviderKind::Anthropic => Arc::new(AnthropicAdapter::new(config.clone())),
+        ProviderKind::AnthropicApi => Arc::new(AnthropicApiAdapter::new(config.clone())),
         ProviderKind::DeepSeek => Arc::new(DeepSeekAdapter::new(config.clone())),
         ProviderKind::OpenAIResponses => Arc::new(OpenAIResponsesAdapter::new(config.clone())),
         ProviderKind::Codex => Arc::new(CodexAdapter::new(config.clone())),
@@ -705,6 +717,7 @@ mod tests {
         // Every other family must survive a UUID row id too.
         for (api_type, expected) in [
             ("anthropic", ProviderKind::Anthropic),
+            ("anthropic-api", ProviderKind::AnthropicApi),
             ("minimax", ProviderKind::Anthropic),
             ("deepseek", ProviderKind::DeepSeek),
             ("codex", ProviderKind::Codex),

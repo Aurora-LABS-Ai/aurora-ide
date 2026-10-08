@@ -76,6 +76,31 @@ impl EventEmitter for TauriEmitter {
         // (turnId, toolUseId, name, input).
         let _ = self.app.emit("agent_tool_pending", request);
     }
+
+    fn emit_subagent(&self, event: &crate::agent_runtime::subagents::SubagentEvent) {
+        use crate::agent_runtime::subagents::SubagentEvent;
+        // A handful per task, so each one is worth a log line: when the window
+        // shows a stale agent list this is the half of the story Rust can tell.
+        let (kind, agent_id) = match event {
+            SubagentEvent::Started { agent_id, .. } => ("started", agent_id.as_str()),
+            SubagentEvent::Finished { agent_id, .. } => ("finished", agent_id.as_str()),
+            SubagentEvent::Message { agent_id, .. } => ("message", agent_id.as_str()),
+            SubagentEvent::Report { agent_id, .. } => ("report", agent_id.as_str()),
+        };
+        match self.app.emit(
+            crate::agent_runtime::subagents::events::SUBAGENT_EVENT_CHANNEL,
+            event,
+        ) {
+            Ok(()) => crate::logging::log_info(
+                "subagents.events",
+                &format!("emitted {kind} for {agent_id}"),
+            ),
+            Err(err) => crate::logging::log_warn(
+                "subagents.events",
+                &format!("failed to emit {kind} for {agent_id}: {err}"),
+            ),
+        }
+    }
 }
 
 /// Drive one agent turn end-to-end. Streams events on the
@@ -228,10 +253,13 @@ pub async fn agent_enqueue_message(
     text: String,
     display_text: Option<String>,
     chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
-    // `origin`: "user" (the default) or "process". Decides the model-facing
-    // framing and which row the transcript draws — a background process ending
-    // must not arrive wearing the user's voice.
+    // `origin`: "user" (the default), "process", or "subagent". Decides the
+    // model-facing framing and which row the transcript draws — a background
+    // process ending or an agent's report must not arrive wearing the user's
+    // voice.
     origin: Option<String>,
+    // The agent a "subagent" report is about. Ignored for other origins.
+    agent: Option<crate::agent_runtime::types::AgentReportMeta>,
 ) -> Result<(), String> {
     use crate::agent_runtime::types::InjectedOrigin;
     // An unrecognised value falls back to `User`, which is the conservative
@@ -240,11 +268,11 @@ pub async fn agent_enqueue_message(
     // of their attribution.
     let origin = match origin.as_deref() {
         Some("process") => InjectedOrigin::Process,
+        Some("subagent") => InjectedOrigin::Subagent,
         _ => InjectedOrigin::User,
     };
-    state
-        .enqueue_message(&thread_id, text, display_text, chips, origin)
-        .await
+    let agent = agent.filter(|_| origin == InjectedOrigin::Subagent);
+    state.enqueue_with_agent(&thread_id, text, display_text, chips, origin, agent)
 }
 
 /// Cancel the queued message for `thread_id` (if any). Never fails:
@@ -256,4 +284,82 @@ pub async fn agent_cancel_queued_message(
     thread_id: String,
 ) -> Result<(), String> {
     state.cancel_queued_message(&thread_id).await
+}
+
+// ── Sub-agents ──────────────────────────────────────────────────────────
+
+/// Every sub-agent a conversation has started, oldest first: the files are
+/// the list, the live records are the state of whichever are running now.
+/// Empty for a conversation that never delegated.
+#[tauri::command]
+pub async fn agent_subagent_list(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+) -> Result<Vec<crate::agent_runtime::subagents::record::TaskSnapshot>, String> {
+    let registry = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(list_agents_for(&registry, &store, &parent_thread_id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A sub-agent's transcript, for the read-only view in the Agents panel.
+/// The same shape `agent_load_thread` returns for a conversation.
+#[tauri::command]
+pub async fn agent_subagent_load(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+    agent_id: String,
+) -> Result<Vec<ConversationMessage>, String> {
+    let registry = state.inner().clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        let Some(parent_store) = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok::<_, String>(None);
+        };
+        let store = crate::agent_runtime::subagents::store::child_store_for(
+            &parent_store,
+            &parent_thread_id,
+        );
+        if !store.exists(&agent_id) {
+            return Ok(None);
+        }
+        registry
+            .load_session_from_store(&agent_id, &store)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let Some(session) = loaded else {
+        return Ok(Vec::new());
+    };
+    let guard = session.lock().await;
+    Ok(guard.messages().to_vec())
+}
+
+/// Stop a running sub-agent. Returns whether it was running. Its transcript
+/// and record stay; it can be resumed later with `send_message`.
+#[tauri::command]
+pub async fn agent_subagent_kill(
+    state: State<'_, Arc<AgentRegistry>>,
+    agent_id: String,
+) -> Result<bool, String> {
+    Ok(state
+        .subagent_tasks()
+        .get(&agent_id)
+        // Only the window calls this, and only for a person's Stop: the
+        // parent's own stops go through `stop_agent`.
+        .is_some_and(|record| {
+            record.kill(crate::agent_runtime::subagents::record::StopBy::User)
+        }))
 }

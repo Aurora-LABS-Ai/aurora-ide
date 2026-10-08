@@ -100,6 +100,14 @@ export type TimelineEvent =
    */
   | { kind: "reconnect"; id: string; attempt: number; maxAttempts: number }
   /**
+   * A sub-agent this conversation started has reported back. Arrives from the
+   * agent's side — so it draws on the right, like a message — but it is not
+   * the user's words, so it wears the agent's name and state, never the user
+   * bubble. `summary` is the transcript's one line, `detail` the full report.
+   * Probe: Documents/aurora-agents-panel-designs.html, 02.
+   */
+  | AgentReportEvent
+  /**
    * A picture made DIRECTLY — the conversation's model is an image model, so
    * the reply is the picture and nothing else. `pending` is the live hole the
    * silk placeholder fills at the requested aspect; `ready` carries the stored
@@ -108,6 +116,23 @@ export type TimelineEvent =
    * not this — they are tool calls, and render as tool cards.
    */
   | DirectImageEvent;
+
+export interface AgentReportEvent {
+  kind: "agent_report";
+  id: string;
+  agentId: string;
+  /** The name the parent gave the agent, when it gave one. */
+  name?: string | null;
+  /** `completed`, `failed`, or `killed`. */
+  status: string;
+  /** One line: `Finished "Find the login flow" · completed`. */
+  summary: string;
+  /** The report the model read, `<subagent_report>` envelope included. */
+  detail: string;
+  /** Arrived while the window watched (never set on reload): the card rises
+   *  in instead of appearing. */
+  arrivedLive?: boolean;
+}
 
 export interface DirectImageEvent {
   kind: "image";
@@ -133,6 +158,7 @@ export type TimelineRow =
   | { type: "tools"; id: string; tools: ToolCall[] }
   | { type: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
   | { type: "process_beat"; id: string; text: string }
+  | { type: "agent_report"; id: string; report: AgentReportEvent }
   | {
       type: "compaction";
       id: string;
@@ -193,7 +219,7 @@ export interface AgwTurn {
    * to know: there are no typed words to send again for a process-started
    * turn.
    */
-  startedBy?: "user" | "process";
+  startedBy?: "user" | "process" | "subagent";
   /**
    * Assistant only — tokens the model GENERATED across every request of this
    * turn, from the usage each message carries. Input tokens are deliberately
@@ -230,6 +256,19 @@ const parseTs = (value: string | undefined): number | null => {
  * `null` when the turn has no usable span (a turn with no preceding user
  * message, or clock values that would produce a negative duration).
  */
+/**
+ * The id of the newest turn a PERSON opened, or `null`. The "pin each question"
+ * preference pins when this changes and only then: a sub-agent's report or a
+ * process ending opens a turn too, and re-pinning on those yanked the view up
+ * to the last question in one instant jump.
+ */
+export function newestQuestion(turns: AgwTurn[]): string | null {
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    if (turns[i].role === "user") return turns[i].id;
+  }
+  return null;
+}
+
 export function turnWorkedMs(turn: AgwTurn): number | null {
   if (turn.role !== "assistant") return null;
   const start = parseTs(turn.startedAt);
@@ -381,6 +420,40 @@ export function appendUserInjection(
  */
 export function appendProcessBeat(tl: TimelineEvent[], text: string): TimelineEvent[] {
   return [...tl, { kind: "process_beat", id: nextEventId(), text }];
+}
+
+/**
+ * Append a sub-agent's report where it arrived in the turn — after the tool
+ * result it rode in with, before the agent continues — the same placement a
+ * mid-turn user message gets, because the model read it in that order.
+ */
+export function appendAgentReport(
+  tl: TimelineEvent[],
+  report: Omit<AgentReportEvent, "kind" | "id"> & { id?: string },
+): TimelineEvent[] {
+  return [...tl, { kind: "agent_report", id: report.id ?? nextEventId(), ...report }];
+}
+
+/**
+ * The reload path's `agent_report` timeline entry (`commands/threads.rs`),
+ * as the live event. `null` for anything that is not one.
+ */
+export function agentReportFromRow(raw: unknown): AgentReportEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== "agent_report") return null;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return {
+    kind: "agent_report",
+    id: str(r.id) || nextEventId(),
+    agentId: str(r.agentId),
+    name: typeof r.name === "string" && r.name ? r.name : null,
+    status: str(r.status) || "completed",
+    summary: str(r.summary),
+    detail: str(r.detail),
+    // Only the window's own live row carries it; Rust's reload rows never do.
+    arrivedLive: r.arrivedLive === true || undefined,
+  };
 }
 
 /** Append a runtime notice (e.g. "the reply was cut off at the output limit")
@@ -762,6 +835,35 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
       });
       continue;
     }
+    if (m.role === "agent_report") {
+      // A sub-agent's report arrived while the conversation was idle and the
+      // window started this turn to deliver it. Same boundary rule as a
+      // process row: a fresh Aurora turn whose first row is the agent's card,
+      // never a user bubble. The row carries the card's data in its timeline.
+      lastUserTs = m.timestamp;
+      const raw = (m as { timeline?: unknown }).timeline;
+      const entry = Array.isArray(raw) ? agentReportFromRow(raw[0]) : null;
+      const report: AgentReportEvent = entry ?? {
+        kind: "agent_report",
+        id: m.id,
+        agentId: "",
+        name: null,
+        status: "completed",
+        summary: m.content || "",
+        detail: "",
+      };
+      turns.push({
+        id: m.id,
+        role: "assistant",
+        content: "",
+        events: [{ ...report, id: m.id }],
+        isThinking: false,
+        startedAt: m.timestamp,
+        endedAt: m.timestamp,
+        startedBy: "subagent",
+      });
+      continue;
+    }
     const prev = turns[turns.length - 1];
     if (prev && prev.role === "assistant") {
       if (m.content) {
@@ -1092,6 +1194,8 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
         rows.push({ type: "user_injection", id: e.id, text: e.text, chips: e.chips });
       } else if (e.kind === "process_beat") {
         rows.push({ type: "process_beat", id: e.id, text: e.text });
+      } else if (e.kind === "agent_report") {
+        rows.push({ type: "agent_report", id: e.id, report: e });
       } else if (e.kind === "notice") {
         rows.push({ type: "notice", id: e.id, text: e.text });
       } else if (e.kind === "reconnect") {

@@ -141,9 +141,18 @@ pub enum AssistantEvent {
         chips: Option<Vec<super::types::AttachedPromptChip>>,
         /// Who queued it, so the frontend knows which row to draw. A person's
         /// message keeps the injected-user row; a background-process report is
-        /// a beat, because it is nobody's words.
+        /// a beat, because it is nobody's words; a sub-agent's report is the
+        /// agent's row.
         #[serde(default)]
         origin: super::types::InjectedOrigin,
+        /// The agent a sub-agent report is about. `None` for other origins.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent: Option<super::types::AgentReportMeta>,
+        /// A sub-agent report's full text — what the model read — so the
+        /// live card can open it without waiting for a reload. `None` for
+        /// other origins; their `text` IS the whole message.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 
     /// Stream-level error. `recoverable` tells the frontend whether a

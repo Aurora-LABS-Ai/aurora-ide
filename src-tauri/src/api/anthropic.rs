@@ -145,6 +145,7 @@ impl StreamingApiClient for AnthropicAdapter {
             ),
         )
         .await
+        .map(|outcome| outcome.turn)
     }
 }
 
@@ -169,6 +170,34 @@ where
     B: AsRef<[u8]>,
     E: std::fmt::Display,
 {
+    drive_anthropic_stream_detailed(bytes_stream, event_sink, cancel_token)
+        .await
+        .map(|outcome| outcome.turn)
+}
+
+/// The turn, plus what the stream said about who produced it.
+pub struct AnthropicStreamOutcome {
+    pub turn: TurnUsage,
+    /// The model `message_start` named. After a refusal fallback this is the
+    /// model that took over, which is the only way to notice a "sticky"
+    /// request — Anthropic keeps routing a conversation to the fallback model
+    /// for a while, and those replies carry no `fallback` block.
+    pub served_model: Option<String>,
+}
+
+/// [`drive_anthropic_stream`] for callers that need to know which model
+/// actually answered — the first-party adapter, which requests refusal
+/// fallbacks and must say so when one served the reply.
+pub async fn drive_anthropic_stream_detailed<S, B, E>(
+    bytes_stream: S,
+    event_sink: mpsc::Sender<AssistantEvent>,
+    cancel_token: CancellationToken,
+) -> Result<AnthropicStreamOutcome, ApiError>
+where
+    S: Stream<Item = Result<B, E>> + Send,
+    B: AsRef<[u8]>,
+    E: std::fmt::Display,
+{
     drive_anthropic_stream_with_legacy_eof(bytes_stream, event_sink, cancel_token, false).await
 }
 
@@ -187,7 +216,7 @@ async fn drive_anthropic_stream_with_legacy_eof<S, B, E>(
     event_sink: mpsc::Sender<AssistantEvent>,
     cancel_token: CancellationToken,
     allow_legacy_eof: bool,
-) -> Result<TurnUsage, ApiError>
+) -> Result<AnthropicStreamOutcome, ApiError>
 where
     S: Stream<Item = Result<B, E>> + Send,
     B: AsRef<[u8]>,
@@ -205,6 +234,7 @@ where
 
     let mut usage = TokenUsage::default();
     let mut stop_reason: Option<String> = None;
+    let mut facts = StreamFacts::default();
     // Anthropic closes a healthy stream with `message_stop` (and carries the
     // real stop reason on the preceding `message_delta`). Reaching EOF without
     // either means the connection dropped mid-reply — see the check below.
@@ -269,6 +299,7 @@ where
                     &mut block_order,
                     &mut usage,
                     &mut stop_reason,
+                    &mut facts,
                     &event_sink,
                 )
                 .await;
@@ -324,18 +355,120 @@ where
         .await;
 
     // Build the aggregated assistant message in upstream block order.
-    let ordered: Vec<BlockState> = block_order
+    let mut ordered: Vec<BlockState> = block_order
         .into_iter()
         .filter_map(|idx| blocks.remove(&idx))
         .collect();
 
+    if final_stop == "refusal" {
+        // A declined reply is not one to act on. Any tool call it had already
+        // streamed was part of the work that got declined, and the runtime
+        // runs whatever tool calls the final message holds — so they go.
+        // The text stays: it is what the person watched arrive, and the
+        // notice below says where it was cut.
+        let had_text = ordered
+            .iter()
+            .any(|b| matches!(b, BlockState::Text { text } if !text.trim().is_empty()));
+        let dropped_calls = ordered
+            .iter()
+            .filter(|b| matches!(b, BlockState::ToolUse { .. }))
+            .count();
+        ordered.retain(|b| !matches!(b, BlockState::ToolUse { .. }));
+        if dropped_calls > 0 {
+            crate::logging::log_warn(
+                "api.anthropic",
+                &format!("refusal: discarded {dropped_calls} tool call(s) from the declined reply"),
+            );
+        }
+        facts
+            .notices
+            .push(refusal_notice(facts.stop_details.as_ref(), had_text));
+    }
+
     let assistant_message = finalize_assistant_message(coalesce_text(ordered), usage.clone());
 
-    Ok(TurnUsage {
-        usage,
-        stop_reason: final_stop,
-        assistant_message,
+    Ok(AnthropicStreamOutcome {
+        turn: TurnUsage {
+            usage,
+            stop_reason: final_stop,
+            assistant_message,
+            notices: facts.notices,
+        },
+        served_model: facts.served_model,
     })
+}
+
+/// What the stream reported about the reply beyond its content.
+#[derive(Default)]
+struct StreamFacts {
+    /// `message_start`'s model. See [`AnthropicStreamOutcome::served_model`].
+    served_model: Option<String>,
+    /// The `stop_details` that accompany a refusal.
+    stop_details: Option<Value>,
+    notices: Vec<String>,
+}
+
+/// The `model` out of a `fallback` block's `from` / `to` object.
+fn fallback_model(side: Option<&Value>) -> String {
+    side.and_then(|v| v.get("model"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "another model".to_string())
+}
+
+/// A refusal, said in words a person can act on.
+///
+/// Branches on nothing but the stop reason having been `refusal` — the
+/// details are informational and may be `null`, and an unknown category is
+/// shown as Anthropic named it rather than guessed at.
+pub(crate) fn refusal_notice(details: Option<&Value>, had_text: bool) -> String {
+    let category = details
+        .and_then(|d| d.get("category"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let topic = category.map(|c| match c {
+        "cyber" => "cybersecurity".to_string(),
+        "bio" => "biology".to_string(),
+        "reasoning_extraction" => "a request for the model's hidden reasoning".to_string(),
+        "frontier_llm" => "building frontier AI models".to_string(),
+        "general_harms" => "potential harm".to_string(),
+        other => other.replace('_', " "),
+    });
+
+    let mut notice = match topic {
+        Some(topic) => format!("Claude declined this request. Anthropic's safety check flagged it as {topic}."),
+        None => "Claude declined this request.".to_string(),
+    };
+    if had_text {
+        notice.push_str(" The reply above stops where it was declined.");
+    }
+    // Anthropic's explanation ends with advice for the developer ("API
+    // integrators: … configure a fallback model"), measured live 2026-10-08.
+    // Aurora already does that, and the person reading the notice can do
+    // nothing with it, so only the part addressed to them is kept.
+    if let Some(explanation) = details
+        .and_then(|d| d.get("explanation"))
+        .and_then(Value::as_str)
+        .map(|e| e.split("API integrators:").next().unwrap_or(e).trim())
+        .filter(|e| !e.is_empty())
+    {
+        notice.push(' ');
+        notice.push_str(explanation);
+        if !explanation.ends_with('.') {
+            notice.push('.');
+        }
+    }
+    if let Some(model) = details
+        .and_then(|d| d.get("recommended_model"))
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty())
+    {
+        notice.push_str(&format!(" Anthropic suggests retrying with {model}."));
+    } else {
+        notice.push_str(" Nothing it started was run. Rephrase the request, or switch model and retry.");
+    }
+    notice
 }
 
 /// Join runs of consecutive text blocks into one.
@@ -383,11 +516,27 @@ async fn handle_anthropic_event(
     block_order: &mut Vec<i32>,
     usage: &mut TokenUsage,
     stop_reason: &mut Option<String>,
+    facts: &mut StreamFacts,
     event_sink: &mpsc::Sender<AssistantEvent>,
 ) {
     match event.event_type.as_str() {
         "message_start" => {
             if let Some(envelope) = event.message {
+                if let Some(model) = envelope.model.filter(|m| !m.is_empty()) {
+                    facts.served_model = Some(model);
+                }
+                // Logged, not shown. A dropped thinking block costs the model
+                // that turn's earlier reasoning, which is invisible from the
+                // reply alone; the log is the only place the cause survives.
+                if let Some(changes) = envelope.input_transformations.filter(|t| !t.is_empty()) {
+                    crate::logging::log_warn(
+                        "api.anthropic",
+                        &format!(
+                            "the API altered this request's history before the model saw it: {}",
+                            Value::Array(changes)
+                        ),
+                    );
+                }
                 if let Some(wire) = envelope.usage {
                     // Merged, NOT emitted. Anthropic reports the input and
                     // cache counts here and the final output count again on
@@ -443,6 +592,35 @@ async fn handle_anthropic_event(
                     name: meta.name.unwrap_or_default(),
                     raw_input: String::new(),
                 }),
+                // A refusal fallback's switch point: the model before it
+                // declined and the one after it carries on, on the same
+                // stream. Anthropic's rule for what came before it: the text
+                // stays (the new model was given it as context), but thinking
+                // and tool calls must not be sent back — and a tool call the
+                // declining model started must not run, since the runtime runs
+                // every call the final message holds. The block itself is only
+                // an audit marker, so it is not kept either.
+                "fallback" => {
+                    let from = fallback_model(meta.from.as_ref());
+                    let to = fallback_model(meta.to.as_ref());
+                    block_order.retain(|i| {
+                        matches!(blocks.get(i), Some(BlockState::Text { .. }))
+                    });
+                    blocks.retain(|_, b| matches!(b, BlockState::Text { .. }));
+                    crate::logging::log_warn(
+                        "api.anthropic",
+                        &format!("refusal fallback: {from} declined, {to} continued"),
+                    );
+                    // After a MID-reply decline `message_start` still named the
+                    // requested model; only this block says who took over.
+                    facts.served_model = Some(to.clone());
+                    facts.notices.push(format!(
+                        "{from} declined this request, so Anthropic handed it to {to}, which \
+                         wrote the reply. Anthropic may keep using {to} for this conversation \
+                         for about an hour."
+                    ));
+                    None
+                }
                 // Never silently again. An unrecognized block is a response we
                 // are throwing away, and the only thing worse than not
                 // supporting it is not knowing that we don't: this failure was
@@ -622,6 +800,9 @@ async fn handle_anthropic_event(
                 if let Some(reason) = d.stop_reason {
                     *stop_reason = Some(reason);
                 }
+                if let Some(details) = d.stop_details.filter(|v| !v.is_null()) {
+                    facts.stop_details = Some(details);
+                }
             }
             if let Some(wire) = event.usage {
                 merge_usage(usage, &wire);
@@ -731,6 +912,7 @@ mod tests {
             true,
         )
         .await
+        .map(|outcome| outcome.turn)
         .expect("the measured legacy route must remain usable");
         assert_eq!(turn.stop_reason, "end_turn");
         match turn.assistant_message.blocks.as_slice() {
@@ -776,6 +958,134 @@ mod tests {
                     data: {\"type\":\"message_stop\"}\n\n";
         let turn = drive(body).await.expect("a capped turn still completes");
         assert_eq!(turn.stop_reason, "max_tokens");
+    }
+
+    /// A refused reply must not run anything it started. The runtime runs every
+    /// tool call the final message holds, so a call streamed before the
+    /// classifier declined would otherwise execute.
+    #[tokio::test]
+    async fn a_refusal_keeps_the_text_drops_tool_calls_and_says_why() {
+        let mut body = text_block(0, "Here is the scan");
+        body.push_str(
+            "data: {\"type\":\"content_block_start\",\"index\":1,\
+             \"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"shell_execute\"}}\n\n\
+             data: {\"type\":\"content_block_stop\",\"index\":1}\n\n\
+             data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\
+             \"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\",\"explanation\":null}}}\n\n\
+             data: {\"type\":\"message_stop\"}\n\n",
+        );
+
+        let turn = drive(&body).await.expect("a refusal is a finished response");
+        assert_eq!(turn.stop_reason, "refusal");
+        assert!(
+            !turn
+                .assistant_message
+                .blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. })),
+            "a declined reply's tool call must not reach the runtime"
+        );
+        assert!(turn
+            .assistant_message
+            .blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "Here is the scan")));
+        assert_eq!(turn.notices.len(), 1);
+        assert!(turn.notices[0].contains("cybersecurity"), "{}", turn.notices[0]);
+        assert!(turn.notices[0].contains("stops where it was declined"), "{}", turn.notices[0]);
+    }
+
+    /// Anthropic's rule for a mid-stream fallback: thinking and tool calls
+    /// before the switch are not sent back (and a call there must not run);
+    /// text before it stays, and everything after it is the new model's reply.
+    #[tokio::test]
+    async fn a_fallback_switch_drops_the_declined_models_thinking_and_calls() {
+        let body = "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-5-5\",\
+                    \"input_transformations\":[]}}\n\n\
+                    data: {\"type\":\"content_block_start\",\"index\":0,\
+                    \"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":0,\
+                    \"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\n\
+                    data: {\"type\":\"content_block_stop\",\"index\":0}\n\n\
+                    data: {\"type\":\"content_block_start\",\"index\":1,\
+                    \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":1,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"Start. \"}}\n\n\
+                    data: {\"type\":\"content_block_stop\",\"index\":1}\n\n\
+                    data: {\"type\":\"content_block_start\",\"index\":2,\
+                    \"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"grep\"}}\n\n\
+                    data: {\"type\":\"content_block_stop\",\"index\":2}\n\n\
+                    data: {\"type\":\"content_block_start\",\"index\":3,\
+                    \"content_block\":{\"type\":\"fallback\",\"from\":{\"model\":\"claude-opus-5-5\"},\
+                    \"to\":{\"model\":\"claude-opus-4-8\"}}}\n\n\
+                    data: {\"type\":\"content_block_stop\",\"index\":3}\n\n\
+                    data: {\"type\":\"content_block_start\",\"index\":4,\
+                    \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+                    data: {\"type\":\"content_block_delta\",\"index\":4,\
+                    \"delta\":{\"type\":\"text_delta\",\"text\":\"Finished.\"}}\n\n\
+                    data: {\"type\":\"content_block_stop\",\"index\":4}\n\n\
+                    data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n\
+                    data: {\"type\":\"message_stop\"}\n\n";
+
+        let (tx, _rx) = mpsc::channel(256);
+        let outcome = drive_anthropic_stream_detailed(
+            futures_util::stream::iter([Ok::<_, std::io::Error>(body.as_bytes().to_vec())]),
+            tx,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("turn completes");
+        let blocks = &outcome.turn.assistant_message.blocks;
+
+        assert!(!blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. })));
+        assert!(!blocks.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })));
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "Start. Finished.");
+        // `message_start` named the requested model; the switch is what counts.
+        assert_eq!(outcome.served_model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(outcome.turn.notices.len(), 1);
+        assert!(outcome.turn.notices[0].contains("claude-opus-4-8"));
+    }
+
+    /// The `stop_details` Opus 5.5 actually returned on 2026-10-08 for a
+    /// request to reproduce its hidden reasoning (pre-output refusal, with
+    /// `fallbacks: "default"` sent — this category was not routed to one).
+    #[test]
+    fn a_live_refusal_reads_without_the_developer_advice() {
+        let details = serde_json::json!({
+            "type": "refusal",
+            "category": "reasoning_extraction",
+            "explanation": "This request was blocked as it seems to violate Anthropic's Terms of \
+                Service restrictions on reverse engineering or duplicating model outputs. To learn \
+                more, visit https://www.anthropic.com/legal/commercial-terms. API integrators: you \
+                can reduce refusals for your users by configuring a fallback model — see \
+                https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback",
+            "recommended_model": null,
+        });
+        let notice = refusal_notice(Some(&details), false);
+        assert!(notice.contains("hidden reasoning"), "{notice}");
+        assert!(notice.contains("Terms of Service"), "{notice}");
+        assert!(!notice.contains("API integrators"), "{notice}");
+        assert!(notice.ends_with("switch model and retry."), "{notice}");
+    }
+
+    #[test]
+    fn a_refusal_with_no_details_still_reads_as_a_sentence() {
+        let notice = refusal_notice(None, false);
+        assert!(notice.starts_with("Claude declined this request."), "{notice}");
+        assert!(!notice.contains("flagged"), "no category was given: {notice}");
+
+        let suggested = refusal_notice(
+            Some(&serde_json::json!({"category": null, "recommended_model": "claude-opus-4-8"})),
+            false,
+        );
+        assert!(suggested.contains("retrying with claude-opus-4-8"), "{suggested}");
     }
 
     /// Build the SSE for one text block: start, one delta, stop.

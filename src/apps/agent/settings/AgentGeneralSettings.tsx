@@ -134,6 +134,11 @@ export const AgentGeneralSettings: React.FC = () => {
 
   const modelOptions = useModelOptions(SAME_AS_CHAT);
 
+  const subagentsEnabled = useAgentSettingsStore((s) => s.subagentsEnabled);
+  const setSubagentsEnabled = useAgentSettingsStore((s) => s.setSubagentsEnabled);
+  const subagentModel = useAgentSettingsStore((s) => s.subagentModel);
+  const setSubagentModel = useAgentSettingsStore((s) => s.setSubagentModel);
+
   const mode: Mode = executionMode === "plan" ? "plan" : "agent";
   const giText = giSelected?.text ?? "";
   const giRemaining = GLOBAL_INSTRUCTIONS_MAX - giText.length;
@@ -145,7 +150,7 @@ export const AgentGeneralSettings: React.FC = () => {
       <SettingsSection
         icon="message"
         title="Global instructions"
-        description="Standing rules for Aurora Build and the IDE agent, applied across Build workspaces. Keep up to three named sets and activate one at a time. Aurora Chat does not receive these instructions."
+        description="Standing rules for Aurora Build and the IDE agent, applied across Build workspaces. Keep up to eight named sets and activate one at a time. Aurora Chat does not receive these instructions."
       >
         <SettingsBlock last searchTerms="global instructions persona instruction set active rules">
           <div className="agw-gi-head">
@@ -369,6 +374,40 @@ export const AgentGeneralSettings: React.FC = () => {
             checked={browserTools}
             onChange={setBrowserTools}
             ariaLabel="Give the agent the browser toolset"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Sub-agents"
+        icon="users"
+        description="Separate agents the main agent can start for a task, each with its own conversation and tools."
+      >
+        <SettingsRow
+          alignTop
+          label="Let the agent start sub-agents"
+          searchTerms="sub-agents subagents sub agent agents delegate hand off background parallel spawn worker child task agents panel"
+          hint="The agent can hand a task to a separate agent with its own conversation and tools, wait for its report or let it run in the background, and continue it later. Each one appears in the Agents panel under the name the agent gives it. Off, the agent is never told sub-agents exist."
+        >
+          <AgwSwitch
+            checked={subagentsEnabled}
+            onChange={setSubagentsEnabled}
+            ariaLabel="Let the agent start sub-agents"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          last
+          label="Sub-agent model"
+          searchTerms="sub-agent subagent model cheaper cheap explore exploration checks default pin"
+          hint="The model sub-agents run on unless the agent picks one for a task. Same as the conversation is the simplest choice; a cheaper model suits exploration and checks."
+        >
+          <AgwSelect
+            value={subagentModel ?? SAME_AS_CHAT.value}
+            options={modelOptions}
+            // The sentinel is the empty string; the store keeps "no pin" as null.
+            onChange={(selection) => setSubagentModel(selection || null)}
+            ariaLabel="Sub-agent model"
           />
         </SettingsRow>
       </SettingsSection>

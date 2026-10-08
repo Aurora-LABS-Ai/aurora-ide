@@ -10,7 +10,7 @@
  * See: DOCS/theme-dev.md for full token reference
  */
 
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
 export interface MenuItem {
@@ -56,14 +56,11 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   minWidth = 220,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
-  // The menu starts invisible until it is measured + clamped to the
-  // viewport. This avoids a single-frame flash at (x, y) before the
-  // edge-clamp moves the menu inward.
-  const [position, setPosition] = useState<{
-    left: number;
-    top: number;
-    placed: boolean;
-  }>({ left: x, top: y, placed: false });
+  // The menu renders invisible at (x, y) and the layout effect below
+  // measures it, clamps it into the viewport and shows it, all before the
+  // first paint, so it never flashes at an unclamped spot. That writes the
+  // element's style directly: the measured position is only ever a style,
+  // and holding it in state cost a second render for nothing.
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -111,8 +108,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   // "fading up from below" effect that occurred when the menu had its
   // bottom edge anchored to a near-bottom click.
   useLayoutEffect(() => {
-    if (!menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
+    const menu = menuRef.current;
+    if (!menu) return;
+    const rect = menu.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const margin = 8;
@@ -135,7 +133,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     }
     if (top < margin) top = margin;
 
-    setPosition({ left, top, placed: true });
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.visibility = "visible";
+    menu.style.opacity = "";
   }, [x, y, items]);
 
   return createPortal(
@@ -144,8 +145,8 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
       role="menu"
       className="fixed z-[9999] py-1 animate-in fade-in zoom-in-95 duration-100"
       style={{
-        left: position.left,
-        top: position.top,
+        left: x,
+        top: y,
         minWidth,
         backgroundColor: "var(--aurora-sidebar-background)",
         border:
@@ -157,10 +158,10 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
         // regardless of whether the click was in the middle or near a
         // viewport edge.
         transformOrigin: "top left",
-        // Hide for the very first frame so the placement effect can clamp
-        // the menu before the user sees it. Once placed, fade/zoom in.
-        visibility: position.placed ? "visible" : "hidden",
-        opacity: position.placed ? undefined : 0,
+        // Hidden until the placement effect has clamped it (it shows the
+        // menu before paint). Once placed, fade/zoom in.
+        visibility: "hidden",
+        opacity: 0,
       }}
     >
       {items.map((item, index) => {

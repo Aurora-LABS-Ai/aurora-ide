@@ -149,9 +149,11 @@ export interface AgentChatRequest {
    * answers it, but nobody typed it — Rust persists it as a process event, so
    * the transcript draws a beat instead of a bubble in the user's voice.
    */
-  userMessageOrigin?: "user" | "process";
-  /** The transcript's one line when `userMessageOrigin` is `"process"`. */
+  userMessageOrigin?: "user" | "process" | "subagent";
+  /** The transcript's one line when `userMessageOrigin` is `"process"` or `"subagent"`. */
   userMessageSummary?: string | null;
+  /** The agent a `"subagent"` turn reports for (Rust `user_message_agent`). */
+  userMessageAgent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null;
   providerId: string;
   model: string;
   /** See {@link AgentRuntimeChatInput.modelSelection}. */
@@ -232,6 +234,16 @@ export interface AgentChatRequest {
    * older caller and resolves to ON in Rust — see `browser_tools` in `ipc.rs`.
    */
   browserTools: boolean | null;
+  /**
+   * Whether the agent may delegate work to subagents this turn. `null` means an
+   * older caller and resolves to OFF in Rust (`subagents_enabled` in `ipc.rs`).
+   */
+  subagentsEnabled: boolean | null;
+  /**
+   * `providerId:modelKey` pin for subagents. `null` means "same as the
+   * conversation's model" (`subagent_model` in `ipc.rs`).
+   */
+  subagentModel: string | null;
   /** Legacy wire field; Rust always uses the static discovery wrappers. */
   deferTools: boolean | null;
   /**
@@ -296,7 +308,11 @@ export type AssistantEvent =
        * Who queued it. Absent on events from an older runtime, which only ever
        * carried the user's own messages — so the default is `"user"`.
        */
-      origin?: "user" | "process" | null;
+      origin?: "user" | "process" | "subagent" | null;
+      /** The agent a `"subagent"` report is about. */
+      agent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null;
+      /** A `"subagent"` report's full text, for the card to open. */
+      detail?: string | null;
     }
   | { type: "compaction_started" }
   | { type: "compaction_completed"; before_tokens: number; after_tokens: number }
@@ -415,7 +431,10 @@ export interface AgentRuntimeCallbacks extends AgentCallbacks {
   onQueuedMessageInjected?: (
     text: string,
     chips?: AttachedPromptChip[] | null,
-    origin?: "user" | "process",
+    origin?: "user" | "process" | "subagent",
+    agent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null,
+    /** A `"subagent"` report's full text. */
+    detail?: string | null,
   ) => void;
   /** Fires once on success — typically right before the chat() promise resolves. */
   onTurnComplete?: (summary: TurnCompletionPayload) => void;
@@ -433,9 +452,11 @@ export interface AgentRuntimeChatInput {
    * cached prefix exactly as a person's turn does. Anything that varied here
    * would re-bill the whole conversation as a cache write.
    */
-  userMessageOrigin?: "user" | "process";
-  /** The transcript's one line when the origin is `"process"`. */
+  userMessageOrigin?: "user" | "process" | "subagent";
+  /** The transcript's one line when the origin is `"process"` or `"subagent"`. */
   userMessageSummary?: string | null;
+  /** The agent a `"subagent"` report is about. */
+  userMessageAgent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null;
   systemPrompt: string;
   ideContext: string | null;
   tools: RuntimeToolDefinitionLike[];
@@ -643,6 +664,7 @@ export class AgentRuntimeClient {
       userMessage: input.userMessage,
       userMessageOrigin: input.userMessageOrigin ?? "user",
       userMessageSummary: input.userMessageSummary ?? null,
+      userMessageAgent: input.userMessageAgent ?? null,
       providerId: providerConfig.id,
       model: providerConfig.model,
       modelSelection: input.modelSelection ?? null,
@@ -710,6 +732,11 @@ export class AgentRuntimeClient {
           : null,
       browserTools:
         typeof config.browserTools === "boolean" ? config.browserTools : null,
+      subagentsEnabled:
+        typeof config.subagentsEnabled === "boolean"
+          ? config.subagentsEnabled
+          : null,
+      subagentModel: config.subagentModel?.trim() || null,
       deferTools:
         typeof config.deferTools === "boolean" ? config.deferTools : null,
       attachedSelectedElements:
@@ -1040,6 +1067,8 @@ export class AgentRuntimeClient {
           event.text,
           event.chips ?? null,
           event.origin ?? "user",
+          event.agent ?? null,
+          event.detail ?? null,
         );
         break;
       case "compaction_started":

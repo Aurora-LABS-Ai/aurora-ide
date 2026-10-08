@@ -108,6 +108,12 @@ interface AgentWorkspaceState {
    */
   openArtifactTab: (artifactId: string, title: string) => void;
   /**
+   * Open (or refocus) one sub-agent's conversation in its own tab. Keyed by
+   * agent id: an agent id is unique across every conversation, and the tab
+   * carries its parent so the transcript can be found under it.
+   */
+  openAgentTab: (parentThreadId: string, agentId: string, title: string) => void;
+  /**
    * Open (or refocus) a CONVERSATION in its own dock tab — a second, fully live
    * chat beside the main one, so two models can be watched answering at once
    * instead of switching back and forth between them.
@@ -223,6 +229,19 @@ export const useAgentWorkspaceStore = create<AgentWorkspaceState>()(
           const tabs = exists
             ? s.tabs.map((t) => (t.id === id ? { ...t, title } : t))
             : [...s.tabs, { id, kind: "session" as const, title, threadId }];
+          return { dockOpen: true, activeTabId: id, tabs };
+        }),
+
+      openAgentTab: (parentThreadId, agentId, title) =>
+        set((s) => {
+          const id = `agent:${agentId}`;
+          const exists = s.tabs.some((t) => t.id === id);
+          const tabs = exists
+            ? s.tabs.map((t) => (t.id === id ? { ...t, title, parentThreadId } : t))
+            : [
+                ...s.tabs,
+                { id, kind: "agent" as const, title, agentId, parentThreadId },
+              ];
           return { dockOpen: true, activeTabId: id, tabs };
         }),
 

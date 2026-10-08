@@ -67,6 +67,16 @@ export const createAgentPreferencesSlice = (set: SettingsSet, get: SettingsGet) 
     get().saveToDatabase();
   },
 
+  setSubagentsEnabled: (value: boolean) => {
+    set({ subagentsEnabled: value });
+    get().saveToDatabase();
+  },
+
+  setSubagentModel: (value: string | null) => {
+    set({ subagentModel: value && value.trim() ? value : null });
+    get().saveToDatabase();
+  },
+
   setDeferTools: (value: boolean) => {
     set({ deferTools: value });
     get().saveToDatabase();

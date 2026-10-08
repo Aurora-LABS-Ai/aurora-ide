@@ -564,6 +564,13 @@ pub struct AppSettings {
     /// Whether the browser toolset is advertised to the model. Default on.
     #[serde(default = "default_true")]
     pub browser_tools: bool,
+    /// Whether the agent may delegate work to subagents. Default off.
+    #[serde(default)]
+    pub subagents_enabled: bool,
+    /// `providerId:modelKey` pin for subagents; `None` means "same as the
+    /// conversation's model".
+    #[serde(default)]
+    pub subagent_model: Option<String>,
     /// Hold optional tool buckets out of the roster behind `tool_search`.
     /// Default off — it changes how the model reaches a tool.
     #[serde(default)]
@@ -682,6 +689,8 @@ impl Default for AppSettings {
             notify_on_turn_complete: true,
             show_activity_in_title: true,
             browser_tools: true,
+            subagents_enabled: false,
+            subagent_model: None,
             defer_tools: false,
             mcp_bridge_enabled: false,
             auto_approve_tools: false,

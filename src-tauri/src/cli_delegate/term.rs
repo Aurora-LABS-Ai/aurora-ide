@@ -152,10 +152,20 @@ pub struct Term {
 impl Term {
     /// Resolve styling for this process.
     pub fn new(choice: ColorChoice) -> Self {
-        Self {
-            color: choice.enabled(),
-            unicode: unicode_ok(),
-        }
+        Self::decided(choice.enabled(), unicode_ok())
+    }
+
+    /// The terminal's styling, decided here, and crossterm told so.
+    ///
+    /// crossterm makes its own `NO_COLOR` decision when it paints, read once
+    /// and memoized for the process. Left alone, it stripped every escape
+    /// from `--color always` whenever the shell had `NO_COLOR` set, although
+    /// this module documents that the flag outranks the variable. The answer
+    /// [`ColorChoice::enabled`] gives is the final one, so crossterm is set to
+    /// match it.
+    fn decided(color: bool, unicode: bool) -> Self {
+        crossterm::style::Colored::set_ansi_color_disabled(!color);
+        Self { color, unicode }
     }
 
     /// A plain-text terminal: no colour, no unicode. What a redirected stream
@@ -294,12 +304,11 @@ mod tests {
     }
 
     /// Styling forced on, so the assertions describe the renderer rather than
-    /// the machine the suite happens to run on.
+    /// the machine the suite happens to run on. Built through the same path
+    /// as a real `--color always`, so a shell with `NO_COLOR` set (one did,
+    /// after a reboot) cannot strip the escapes these tests look for.
     fn styled() -> Term {
-        Term {
-            color: true,
-            unicode: true,
-        }
+        Term::decided(true, true)
     }
 
     fn unstyled() -> Term {
@@ -369,6 +378,27 @@ mod tests {
     fn never_and_always_ignore_the_environment() {
         assert!(!ColorChoice::Never.enabled());
         assert!(ColorChoice::Always.enabled());
+    }
+
+    #[test]
+    fn color_always_paints_even_with_no_color_set() {
+        // The documented order: `--color always` outranks `NO_COLOR`. crossterm
+        // read the variable on its own and stripped the escapes anyway.
+        let _guard = env_lock();
+        let restore = std::env::var_os("NO_COLOR");
+        std::env::set_var("NO_COLOR", "1");
+        let painted = Term::new(ColorChoice::Always).paint(Style::Error, "boom");
+        match restore {
+            Some(value) => std::env::set_var("NO_COLOR", value),
+            None => std::env::remove_var("NO_COLOR"),
+        }
+        // Stripped, crossterm still writes empty sequences ("\x1b[mboom\x1b[m"),
+        // so "starts with an escape" proves nothing. A colour that was really
+        // applied closes with SGR 39.
+        assert!(
+            painted.ends_with("\x1b[39m") && !painted.contains("\x1b[m"),
+            "--color always lost its colour: {painted:?}"
+        );
     }
 
     #[test]

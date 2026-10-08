@@ -204,6 +204,36 @@ fn session_to_db_messages_rich(
                     });
                     continue;
                 }
+                // A turn STARTED by a sub-agent finishing: the same boundary
+                // reasoning as the process row, drawn as an `agent_report`
+                // row whose timeline carries the one agent entry.
+                if let Some(block) = agent_report_started_turn(&msg.blocks) {
+                    if let Some(entry) = agent_report_timeline_entry(
+                        block,
+                        format!("agent-report-{}-0", msg.timestamp),
+                    ) {
+                        let summary = match block {
+                            ContentBlock::AgentReport { summary, .. } => summary.clone(),
+                            _ => String::new(),
+                        };
+                        out.push(Message {
+                            id: synthetic_message_id("agent-report", msg.timestamp, out.len()),
+                            role: "agent_report".to_string(),
+                            content: summary,
+                            timestamp,
+                            tool_calls: None,
+                            thinking: None,
+                            is_thinking: None,
+                            tools: None,
+                            timeline: Some(serde_json::Value::Array(vec![entry])),
+                            tool_proposal: None,
+                            attached_selected_elements: None,
+                            attached_prompt_chips: None,
+                            usage: None,
+                        });
+                        continue;
+                    }
+                }
                 let content = collect_text_blocks(&msg.blocks);
                 out.push(Message {
                     id: synthetic_message_id("user", msg.timestamp, out.len()),
@@ -315,9 +345,10 @@ fn session_to_db_messages_rich(
                             // System messages and are surfaced as their own
                             // rows; never on Assistant.
                         }
-                        ContentBlock::ProcessEvent { .. } => {
+                        ContentBlock::ProcessEvent { .. } | ContentBlock::AgentReport { .. } => {
                             // Rides the Tool message the runtime was assembling
-                            // when the process ended, and is surfaced there.
+                            // when the process ended (or the sub-agent
+                            // finished), and is surfaced there.
                         }
                     }
                 }
@@ -470,6 +501,40 @@ fn session_to_db_messages_rich(
                         usage: None,
                     });
                 }
+
+                // A sub-agent that finished while these tools ran. Same
+                // treatment as the process beat above: the transcript gets the
+                // agent row, the model-facing detail stays in the block.
+                for entry in msg
+                    .blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(block, ContentBlock::AgentReport { summary, .. } if !summary.is_empty())
+                    })
+                    .enumerate()
+                    .filter_map(|(index, block)| {
+                        agent_report_timeline_entry(
+                            block,
+                            format!("agent-report-{}-{index}", msg.timestamp),
+                        )
+                    })
+                {
+                    out.push(Message {
+                        id: synthetic_message_id("agent-report", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::Value::Array(vec![entry])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
             }
         }
     }
@@ -590,8 +655,9 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                         ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
                         // A process event never sits on an assistant message —
                         // it rides the tool message the runtime was building
-                        // when the process ended. Handled in that branch.
-                        ContentBlock::ProcessEvent { .. } => {}
+                        // when the process ended. Handled in that branch. An
+                        // agent report is the same.
+                        ContentBlock::ProcessEvent { .. } | ContentBlock::AgentReport { .. } => {}
                     }
                 }
                 let content_opt = if content.is_empty() {
@@ -636,7 +702,9 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                         // it needs to act — carried in the same trailing user
                         // message the injected text uses, which is the shape
                         // every provider already accepts here.
-                        ContentBlock::ProcessEvent { detail, .. } => {
+                        // A finished sub-agent's report goes the same way.
+                        ContentBlock::ProcessEvent { detail, .. }
+                        | ContentBlock::AgentReport { detail, .. } => {
                             push_with_newline(&mut injected_text, detail);
                         }
                         _ => {}
@@ -678,11 +746,53 @@ fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
 fn collect_model_text_blocks(blocks: &[ContentBlock]) -> String {
     let mut out = collect_text_blocks(blocks);
     for block in blocks {
-        if let ContentBlock::ProcessEvent { detail, .. } = block {
+        if let ContentBlock::ProcessEvent { detail, .. } | ContentBlock::AgentReport { detail, .. } =
+            block
+        {
             push_with_newline(&mut out, detail);
         }
     }
     out
+}
+
+/// The `AgentReport` block that started a user-role turn, or `None` when a
+/// person wrote it. The sibling of [`process_started_turn_summary`] and the
+/// same rule: ANY typed text means the message is the user's.
+fn agent_report_started_turn(blocks: &[ContentBlock]) -> Option<&ContentBlock> {
+    let typed = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()));
+    if typed {
+        return None;
+    }
+    blocks
+        .iter()
+        .find(|b| matches!(b, ContentBlock::AgentReport { summary, .. } if !summary.trim().is_empty()))
+}
+
+/// The transcript's timeline entry for a finished sub-agent. `None` for any
+/// other block. `id` is supplied by the caller so both homes (mid-turn and
+/// turn-starting) share the shape and differ only in their id.
+fn agent_report_timeline_entry(block: &ContentBlock, id: String) -> Option<serde_json::Value> {
+    match block {
+        ContentBlock::AgentReport {
+            agent_id,
+            name,
+            status,
+            summary,
+            detail,
+            ..
+        } => Some(serde_json::json!({
+            "kind": "agent_report",
+            "id": id,
+            "agentId": agent_id,
+            "name": name,
+            "status": status,
+            "summary": summary,
+            "detail": detail,
+        })),
+        _ => None,
+    }
 }
 
 /// The one-line summary of a user-role message that a background process
@@ -1368,6 +1478,33 @@ pub async fn thread_usage_breakdown(
     .map_err(|e| format!("Thread operation failed: {e}"))?
 }
 
+/// Read a sub-agent's transcript in the chat panel's shape, for the Agents
+/// panel's read-only view. The child lives in `agents/` under its parent's
+/// thread folder, where `thread_load` cannot see it.
+#[tauri::command]
+pub async fn subagent_thread_load(
+    parent_thread_id: String,
+    agent_id: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<Option<ThreadState>, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(parent_store) = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let store = crate::agent_runtime::subagents::store::child_store_for(
+            &parent_store,
+            &parent_thread_id,
+        );
+        build_thread_state(&store, &agent_id)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
 /// Read a full thread (metadata + transcript) for the chat panel.
 #[tauri::command]
 pub async fn thread_load(
@@ -1853,6 +1990,116 @@ mod tests {
             sent.contains("toolu_1"),
             "with the id, because the next move is shell_read_output: {sent}"
         );
+    }
+
+    fn agent_report_block(created_at: i64) -> ContentBlock {
+        ContentBlock::AgentReport {
+            agent_id: "agent-7".into(),
+            name: Some("Login finder".into()),
+            status: "completed".into(),
+            summary: "Finished \"Find the login flow\" · completed".into(),
+            detail: "Sub-agent agent-7 completed. Report: the login flow is in auth.rs.".into(),
+            created_at,
+        }
+    }
+
+    fn message_with(role: MessageRole, blocks: Vec<ContentBlock>, ts: i64) -> ConversationMessage {
+        ConversationMessage {
+            event_id: None,
+            role,
+            blocks,
+            usage: None,
+            timestamp: ts,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    /// A sub-agent finishing mid-turn reloads as an `agent_report` timeline
+    /// entry on an assistant row, never as the user's words, and the model is
+    /// still told through the API view.
+    #[test]
+    fn a_mid_turn_agent_report_reloads_as_an_agent_entry_and_reaches_the_model() {
+        let messages = vec![
+            user_msg("find the login flow", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "TaskList".into(),
+                    input: serde_json::json!({}),
+                }],
+                2,
+            ),
+            message_with(
+                MessageRole::Tool,
+                vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "[]".into(),
+                        is_error: None,
+                    },
+                    agent_report_block(3),
+                ],
+                3,
+            ),
+        ];
+
+        let out = session_to_db_messages(&messages);
+        assert_eq!(out.iter().filter(|m| m.role == "user").count(), 1);
+        let row = out
+            .iter()
+            .find(|m| {
+                m.timeline
+                    .as_ref()
+                    .is_some_and(|t| t.to_string().contains("agent_report"))
+            })
+            .expect("an agent report row");
+        assert_eq!(row.role, "assistant");
+        let entry = &row.timeline.as_ref().expect("timeline")[0];
+        assert_eq!(entry["kind"], "agent_report");
+        assert_eq!(entry["id"], "agent-report-3-0");
+        assert_eq!(entry["agentId"], "agent-7");
+        assert_eq!(entry["name"], "Login finder");
+        assert_eq!(entry["status"], "completed");
+        assert_eq!(entry["summary"], "Finished \"Find the login flow\" · completed");
+        assert_eq!(
+            entry["detail"],
+            "Sub-agent agent-7 completed. Report: the login flow is in auth.rs."
+        );
+
+        let sent = serde_json::to_string(&session_to_api_messages(&messages)).expect("serialises");
+        assert!(sent.contains("the login flow is in auth.rs"), "{sent}");
+    }
+
+    /// A sub-agent finishing while the conversation was idle starts a turn: a
+    /// user-role message with only the report. It reloads as an `agent_report`
+    /// row, and a person's typed text beside it keeps the message theirs.
+    #[test]
+    fn an_agent_started_turn_reloads_as_an_agent_report_row() {
+        let messages = vec![
+            user_msg("find the login flow", 1),
+            assistant_text("Started an agent.", 2),
+            message_with(MessageRole::User, vec![agent_report_block(3)], 3),
+            assistant_text("It found it.", 4),
+        ];
+
+        let out = session_to_db_messages(&messages);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "agent_report", "assistant"]);
+        let row = &out[2];
+        assert_eq!(row.content, "Finished \"Find the login flow\" · completed");
+        let entry = &row.timeline.as_ref().expect("timeline")[0];
+        assert_eq!(entry["kind"], "agent_report");
+        assert_eq!(entry["agentId"], "agent-7");
+
+        let sent = serde_json::to_string(&session_to_api_messages(&messages)).expect("serialises");
+        assert!(sent.contains("the login flow is in auth.rs"), "{sent}");
+
+        // Typed text means a person wrote it.
+        let typed = vec![ContentBlock::Text { text: "hi".into() }, agent_report_block(5)];
+        assert!(agent_report_started_turn(&typed).is_none());
     }
 
     /// A process ending that STARTED a turn (the conversation was idle) is a

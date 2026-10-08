@@ -230,6 +230,13 @@ pub struct RuntimeConfig {
     /// the safe default for a config built without provider knowledge (it
     /// counts nothing that might not be sent).
     pub reasoning_replay: ReasoningReplay,
+
+    /// The sub-agent section of the system prompt, when this turn has the
+    /// sub-agent tools. Appended after the composed prompt and
+    /// `<machine_tools>`, in the same place for every request of the turn.
+    /// `None` when the switch is off: the model is never told sub-agents
+    /// exist.
+    pub subagent_instructions: Option<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -256,6 +263,7 @@ impl Default for RuntimeConfig {
             workspace_access: crate::agent_runtime::tool_executor::WorkspaceAccess::Workspace,
             execution_mode_is_chat: false,
             reasoning_replay: ReasoningReplay::Dropped,
+            subagent_instructions: None,
         }
     }
 }
@@ -401,6 +409,22 @@ impl ConversationRuntime {
         super::tool_spill::spill_under_clamp(&dir, tool_call_id, raw, clamp_keeps)
     }
 
+    /// The model-history copy of one tool result: spilled, clamped, and
+    /// moved whole to disk when the clamp could only fit it by deleting
+    /// fields. See [`tool_results::clamp_or_move`].
+    fn history_copy(&self, session: &Session, tool: &str, tool_call_id: &str, raw: &str) -> String {
+        // Reads are numbered first, so anything moved to a file or clamped
+        // below keeps the file's real line numbers.
+        let numbered = tool_results::number_read_content(tool, raw);
+        let raw = numbered.as_deref().unwrap_or(raw);
+        let spilled = self.spill_tool_output(session, tool, tool_call_id, raw.to_string());
+        let dir = self
+            .store_dir
+            .as_deref()
+            .map(|root| super::session_store::tool_results_dir_in(root, &session.thread_id, self.store_layout));
+        tool_results::clamp_or_move(tool, tool_call_id, spilled, raw, dir.as_deref())
+    }
+
     /// [`Self::spill_tool_output`] at the budget's lower floor.
     ///
     /// Called only when one tool message's results together exceed
@@ -483,6 +507,10 @@ impl ConversationRuntime {
         // One free re-issue when the provider hands back a response with no
         // content blocks at all. See the empty-reply branch below.
         let mut retried_empty_reply = false;
+        // Provider notices already shown in this turn. A conversation Anthropic
+        // keeps on its fallback model reports that on EVERY request, and a
+        // tool loop is dozens of requests; once per turn says it.
+        let mut shown_notices: std::collections::HashSet<String> = std::collections::HashSet::new();
         // A provider overflow may teach us a smaller endpoint limit once. The
         // next iteration rebuilds through deterministic trim; no paid summary
         // is launched from the error path.
@@ -1036,12 +1064,25 @@ impl ConversationRuntime {
                 assistant_messages.push(assistant_message);
             }
 
+            // What the provider said about this reply — a refusal and its
+            // reason, a fallback to another model. Beneath the reply, so a
+            // reload shows them in the same place.
+            for notice in &turn.notices {
+                if shown_notices.insert(notice.clone()) {
+                    emit_notice(session, turn_id.as_str(), &mut seq, &event_sink, notice).await;
+                }
+            }
+            let refused = is_refusal_stop(&turn.stop_reason);
+
             // Nothing ran and nothing was written, so re-issuing the identical
             // request is safe — and it is exactly what the user was doing by
             // hand, several times a day, because a dropped response is
             // transient. Once only: a second empty reply is a real condition
             // to report, not a loop to spin in.
-            if produced_nothing && !retried_empty_reply {
+            //
+            // Never for a refusal: the same request is declined the same way,
+            // and the provider has already said why.
+            if produced_nothing && !retried_empty_reply && !refused {
                 retried_empty_reply = true;
                 eprintln!(
                     "agent_runtime: reply cannot advance the turn — no text, no tool call \
@@ -1087,7 +1128,8 @@ impl ConversationRuntime {
                 // backstop for a provider that closes cleanly having emitted
                 // nothing at all. Say so; ending silently is what made this
                 // class of failure impossible to diagnose.
-                if !has_visible_answer(&turn.assistant_message) {
+                // A refusal is already explained by its own notice above.
+                if !refused && !has_visible_answer(&turn.assistant_message) {
                     let notice = if has_thinking(&turn.assistant_message) {
                         "The model reasoned but never produced an answer, so this turn stopped \
                          early. Retry, or lower the reasoning effort for this model."
@@ -1258,22 +1300,48 @@ impl ConversationRuntime {
             // chat list — the model sees the merged user-role message
             // on the next API call, the human sees it as a normal
             // message in the timeline.
-            if let Some(queued) = session.take_queued_message().filter(|queued| {
-                !process_ending_already_read(queued, &tool_msg.blocks, &read_output_calls)
-            }) {
-                // Two things ride this slot, and they are not the same kind of
-                // thing. A person's message goes in as text on the tool message
-                // — that is a message, and it belongs in the conversation as
-                // one. A background process ending is not anybody's words, so
-                // it goes in as its own block; that is what lets a RELOADED
-                // thread still tell the two apart, which a display-only flag
-                // could not (the flag lives in the event, the transcript is
-                // rebuilt from the blocks).
+            // Every message queued since the last boundary, oldest first. A
+            // person's note and two agents' reports can all be waiting; each
+            // gets its own block on this one tool message, in the order they
+            // arrived, so the model reads them in the order they happened.
+            for queued in session.take_queued_messages() {
+                if process_ending_already_read(&queued, &tool_msg.blocks, &read_output_calls) {
+                    continue;
+                }
+                // Three things ride this queue, and they are not the same kind
+                // of thing. A person's message goes in as text on the tool
+                // message — that is a message, and it belongs in the
+                // conversation as one. A background process ending or a
+                // sub-agent finishing is not anybody's words, so each goes in
+                // as its own block; that is what lets a RELOADED thread still
+                // tell them apart, which a display-only flag could not (the
+                // flag lives in the event, the transcript is rebuilt from the
+                // blocks).
                 match queued.origin {
                     crate::agent_runtime::types::InjectedOrigin::Process => {
                         tool_msg.blocks.push(ContentBlock::ProcessEvent {
                             // The transcript's one line, in the checklist
                             // beat's shape; the model's copy keeps the ids.
+                            summary: queued
+                                .display_text
+                                .clone()
+                                .unwrap_or_else(|| queued.text.clone()),
+                            detail: queued.text.clone(),
+                            created_at: queued.queued_at_ms,
+                        });
+                    }
+                    crate::agent_runtime::types::InjectedOrigin::Subagent => {
+                        let meta = queued.agent.clone().unwrap_or_else(|| {
+                            crate::agent_runtime::types::AgentReportMeta {
+                                agent_id: String::new(),
+                                name: None,
+                                status: "completed".to_string(),
+                            }
+                        });
+                        tool_msg.blocks.push(ContentBlock::AgentReport {
+                            agent_id: meta.agent_id,
+                            name: meta.name,
+                            status: meta.status,
                             summary: queued
                                 .display_text
                                 .clone()
@@ -1308,7 +1376,12 @@ impl ConversationRuntime {
                     }
                 }
                 // The event carries the DISPLAY text: what the user typed,
-                // not the model copy with the resolved directive block.
+                // not the model copy with the resolved directive block. A
+                // sub-agent's report also sends the model's copy, which is the
+                // report itself and what the card opens.
+                let detail = (queued.origin
+                    == crate::agent_runtime::types::InjectedOrigin::Subagent)
+                    .then(|| queued.text.clone());
                 let display = queued.display_text.unwrap_or(queued.text);
                 let envelope = AgentEventEnvelope {
                     turn_id: turn_id.clone(),
@@ -1317,6 +1390,8 @@ impl ConversationRuntime {
                         text: display,
                         chips: queued.chips,
                         origin: queued.origin,
+                        agent: queued.agent,
+                        detail,
                     },
                 };
                 seq = seq.saturating_add(1);

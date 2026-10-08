@@ -43,10 +43,12 @@ const PANEL_ICON: Record<DockSingletonKind, AgentIconName> = {
   browser: "browser",
   terminal: "terminal",
   memory: "database",
+  agents: "users",
 };
 
-/** Build's panels, in the order they are reached for. */
-const BUILD_PANELS: readonly DockSingletonKind[] = ["files", "terminal", "canvas", "review"];
+/** Build's panels, in the order they are reached for. Agents is listed only
+ *  while the user's sub-agent switch is on; see `shownPanels`. */
+const BUILD_PANELS: readonly DockSingletonKind[] = ["files", "terminal", "canvas", "review", "agents"];
 
 /** How often "Running" is re-read. A dev server starts in seconds. */
 const SERVERS_POLL_MS = 5_000;
@@ -85,6 +87,7 @@ function useLocalServers(enabled: boolean): { servers: LocalServer[]; readAt: nu
 
 export const NewTabPage: React.FC<{ tabId: string }> = ({ tabId }) => {
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
+  const subagentsEnabled = useAgentSettingsStore((s) => s.subagentsEnabled);
   const resolveNewTab = useAgentWorkspaceStore((s) => s.resolveNewTab);
   const recent = useAgentBrowserHistory((s) => s.recent);
   const { servers, readAt } = useLocalServers(!chatSurface);
@@ -105,7 +108,13 @@ export const NewTabPage: React.FC<{ tabId: string }> = ({ tabId }) => {
   );
 
   const q = query.trim().toLowerCase();
-  const shownPanels = panels.filter((kind) => !q || DOCK_TAB_LABELS[kind].toLowerCase().includes(q));
+  // Agents exists only while the user's sub-agent switch is on: a tile for a
+  // panel that can never fill is a dead control.
+  const shownPanels = panels.filter(
+    (kind) =>
+      (kind !== "agents" || subagentsEnabled) &&
+      (!q || DOCK_TAB_LABELS[kind].toLowerCase().includes(q)),
+  );
   const shownServers = servers.filter(
     (s) => !q || s.url.toLowerCase().includes(q) || s.command.toLowerCase().includes(q),
   );

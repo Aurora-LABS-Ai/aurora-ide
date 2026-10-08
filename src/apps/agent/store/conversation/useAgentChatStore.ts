@@ -208,7 +208,9 @@ interface AgentChatState {
        * message, and it never lights the composer's "queued" pill (nobody
        * queued anything to cancel).
        */
-      origin?: "user" | "process";
+      origin?: "user" | "process" | "subagent";
+      /** The agent a `"subagent"` report is about. */
+      agent?: import("@/apps/agent/services/subagents/events").AgentReportMeta | null;
     },
   ) => Promise<void>;
   /** Cancel the pending injection for `threadId` (clears the UI + the Rust slot). */
@@ -392,6 +394,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
         displayText: display !== model ? display : null,
         chips: chips ?? null,
         origin,
+        agent: opts?.agent ?? null,
       });
     } catch (err) {
       console.error("[agent-chat] agent_enqueue_message failed:", err);
@@ -938,13 +941,16 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     let openerIndex = -1;
     for (let i = cut; i >= 0; i--) {
       const role = thread.messages[i].role;
-      if (role === "user" || role === "process") {
+      if (role === "user" || role === "process" || role === "agent_report") {
         openerIndex = i;
         break;
       }
     }
     if (openerIndex < 0) return null;
-    if (thread.messages[openerIndex].role === "process") return null;
+    // A sub-agent's report opens a turn the same way a process row does, and
+    // there is nothing to type again for it either.
+    const openerRole = thread.messages[openerIndex].role;
+    if (openerRole === "process" || openerRole === "agent_report") return null;
 
     // Its ordinal among the runtime's user-role messages — the one ordering
     // the frontend transcript and the Rust session agree on, since the
@@ -953,7 +959,8 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // it counts here or every retry after one lands a turn early.
     const ordinal = thread.messages
       .slice(0, openerIndex)
-      .filter((m) => m.role === "user" || m.role === "process").length;
+      .filter((m) => m.role === "user" || m.role === "process" || m.role === "agent_report")
+      .length;
     const userIndex = openerIndex;
     const content = thread.messages[userIndex].content;
 

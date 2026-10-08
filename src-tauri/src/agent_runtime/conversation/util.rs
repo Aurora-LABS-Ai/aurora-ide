@@ -200,6 +200,7 @@ mod process_ending_tests {
             mid_turn: true,
             origin,
             queued_at_ms: 0,
+            agent: None,
         }
     }
 

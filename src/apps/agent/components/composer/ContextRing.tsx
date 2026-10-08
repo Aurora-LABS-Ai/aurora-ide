@@ -45,6 +45,7 @@ import {
   type ModelUsageGroup,
 } from "@/apps/agent/lib/cost/cost";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import { cacheWritePerMtok } from "@/apps/agent/services/providers/anthropic";
 import {
   claudeCodeUsageGet,
   CLAUDE_CODE_PROVIDER_ID,
@@ -806,6 +807,7 @@ export const ContextRing: React.FC = () => {
    * result as measured. A miss must stay a miss so the card can disclose it.
    */
   const models = useAgentSettingsStore((s) => s.models);
+  const providers = useAgentSettingsStore((s) => s.providers);
   const priceLookup = useCallback(
     (selection: string | undefined): ModelPrices | null => {
       if (!selection) return null;
@@ -822,10 +824,15 @@ export const ContextRing: React.FC = () => {
         cacheMissPerMtok: model.priceCacheMissPerMtok,
         outputPerMtok: model.priceOutputPerMtok,
         cacheHitPerMtok: model.priceCacheHitPerMtok,
-        cacheWritePerMtok: model.priceCacheWritePerMtok,
+        // The provider's cache length changes the write rate (Anthropic:
+        // 1.25× input for five minutes, 2× for an hour).
+        cacheWritePerMtok: cacheWritePerMtok(
+          providers.find((p) => p.id === providerId),
+          model,
+        ),
       };
     },
-    [models],
+    [models, providers],
   );
 
   /**

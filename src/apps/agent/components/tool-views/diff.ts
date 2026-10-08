@@ -188,6 +188,33 @@ export function toSplitRows(rows: DiffRow[]): SplitRow[] {
   return out;
 }
 
+/**
+ * `computeDiff`, remembered. A diff is worked out when its card opens, and on
+ * a whole file that is long enough to drop frames from the opening motion; it
+ * was also redone on every reopen. Cached here (and warmed on hover by
+ * `warm.ts`) it is ready before the card opens.
+ */
+const DIFF_CACHE_MAX = 16;
+const diffCache = new Map<string, DiffResult>();
+
+export function computeDiffCached(oldText: string, newText: string): DiffResult {
+  const key = `${oldText.length}:${oldText}\u0000${newText}`;
+  const hit = diffCache.get(key);
+  if (hit) {
+    diffCache.delete(key);
+    diffCache.set(key, hit);
+    return hit;
+  }
+  const result = computeDiff(oldText, newText);
+  diffCache.set(key, result);
+  while (diffCache.size > DIFF_CACHE_MAX) {
+    const oldest = diffCache.keys().next().value;
+    if (oldest === undefined) break;
+    diffCache.delete(oldest);
+  }
+  return result;
+}
+
 export function computeDiff(oldText: string, newText: string): DiffResult {
   const a = toLines(oldText);
   const b = toLines(newText);

@@ -271,7 +271,7 @@ export class AgentService {
           latestUsage = usage;
           callbacks.onUsage?.(usage);
         },
-        onQueuedMessageInjected: (text, chips, origin) => {
+        onQueuedMessageInjected: (text, chips, origin, agent, detail) => {
           // The Rust runtime just drained the queue slot and stapled
           // this text to the tool message about to be sent to the
           // model. UI: clear the pill, then let the panel-level
@@ -284,7 +284,7 @@ export class AgentService {
           // after the still-streaming assistant message and read as
           // if the agent replied before the user spoke. The panel's
           // callback also clears the queued pill (`useAgentChatStore`).
-          callbacks.onQueuedMessageInjected?.(text, chips, origin);
+          callbacks.onQueuedMessageInjected?.(text, chips, origin, agent, detail);
         },
       };
 
@@ -315,6 +315,7 @@ export class AgentService {
         // which is what makes that true rather than merely intended.
         userMessageOrigin: promptContext?.userMessageOrigin ?? "user",
         userMessageSummary: promptContext?.userMessageSummary ?? null,
+        userMessageAgent: promptContext?.userMessageAgent ?? null,
         systemPrompt: composedPrompt.systemPrompt,
         ideContext: composedIdeContext,
         tools: availableTools as RuntimeToolDefinitionLike[],

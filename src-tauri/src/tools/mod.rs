@@ -81,6 +81,11 @@ pub mod shell_editor_todo;
 /// constructed per turn against that turn's deferred catalogue and its live
 /// registry, so it has no fixed executor to pre-register and does not count
 /// toward [`BUILTIN_TOOL_COUNT`]. See `commands::agent_v2::tool_policy`.
+/// The parent-side sub-agent tools (`spawn_agent`, `list_models`, …). Like
+/// `tool_search`, built per turn — each holds the parent turn it serves — so
+/// not registered here and not counted in [`BUILTIN_TOOL_COUNT`]. Installed
+/// by `commands::agent_v2::tool_policy` when the user's switch is on.
+pub mod subagents;
 pub mod timeout;
 pub mod tool_search;
 pub mod transcript;

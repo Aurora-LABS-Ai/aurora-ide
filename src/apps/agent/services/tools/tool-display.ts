@@ -28,6 +28,15 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   shell_kill: "Stop Background Process",
   shell_list_processes: "List Running Processes",
   shell_spawn: "Start Background Process",
+  // Sub-agents. "Start agent" rather than "Spawn": the card's chip carries the
+  // agent's name, so the title is the act.
+  spawn_agent: "Start agent",
+  send_message: "Message agent",
+  get_task_output: "Check agent",
+  stop_agent: "Stop agent",
+  list_models: "List models",
+  message_parent: "Message parent",
+  submit_report: "Submit report",
   // Two separate systems, and the labels must not blur them: "Task List" is the
   // agent's working checklist, "Plan" is the Plan-mode document in the Canvas.
   // Without these entries the fallback title-cased them into "Todo" and

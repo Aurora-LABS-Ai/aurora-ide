@@ -278,12 +278,20 @@ const TerminalView: React.FC<{ session: TermSession }> = ({ session }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const appearance = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance);
   const setRunning = useAgentTerminalStore((s) => s.setRunning);
+  // The session as it stands, for the attach below. The attach runs once per
+  // session id: a rename hands this view a new session object, and attaching
+  // again for it would rebuild a live terminal. Declared first, so it is
+  // current when the attach effect runs in the same commit.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !isAuroraRuntimeAvailable()) return;
     let cancelled = false;
-    attachSession(session, container, () => {
+    attachSession(sessionRef.current, container, () => {
       if (!cancelled) setRunning(session.id, false);
     }).catch((error: unknown) => {
       // Never let this fail silently. `attachSession` builds the xterm, asks

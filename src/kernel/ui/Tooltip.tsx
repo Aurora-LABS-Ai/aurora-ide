@@ -48,11 +48,10 @@ interface TooltipProps {
   panelClassName?: string;
 }
 
-interface TooltipPosition {
-  left: number;
-  top: number;
-  placed: boolean;
-  placement: TooltipPlacement;
+/** Hand `node` to a ref of either kind, as React itself would. */
+function assignRef<T>(ref: React.Ref<T> | undefined, node: T | null): void {
+  if (typeof ref === "function") ref(node);
+  else if (ref && typeof ref === "object") (ref as React.MutableRefObject<T | null>).current = node;
 }
 
 export const Tooltip: React.FC<TooltipProps> = ({
@@ -64,44 +63,48 @@ export const Tooltip: React.FC<TooltipProps> = ({
   panelClassName,
 }) => {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<TooltipPosition>({
-    left: 0,
-    top: 0,
-    placed: false,
-    placement,
-  });
 
-  const triggerRef = useRef<HTMLElement | null>(null);
+  // The element the tooltip is anchored to. State, not a ref: it is set by
+  // the ref callback built during render below, and a callback that wrote a
+  // `useRef` there is a ref touched from render as far as React can tell.
+  const [trigger, setTrigger] = useState<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const timerRef = useRef<number | null>(null);
+  // Pointer or focus is on the trigger. The open delay is an effect on this
+  // rather than a timer kept in a ref: the handlers below are handed to
+  // `cloneElement` while rendering, and a handler that touched a ref there is
+  // one React cannot prove safe.
+  const [wanted, setWanted] = useState(false);
 
   const isDisabled =
     label === null || label === undefined || label === false || label === "";
 
+  useEffect(() => {
+    if (!wanted || isDisabled) return;
+    const timer = window.setTimeout(() => setOpen(true), delay);
+    // Leaving before the delay, or unmounting, cancels it.
+    return () => window.clearTimeout(timer);
+  }, [wanted, delay, isDisabled]);
+
   const show = useCallback(() => {
-    if (isDisabled) return;
-    if (timerRef.current) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      setOpen(true);
-    }, delay);
-  }, [delay, isDisabled]);
+    if (!isDisabled) setWanted(true);
+  }, [isDisabled]);
 
   const hide = useCallback(() => {
-    if (timerRef.current) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+    setWanted(false);
     setOpen(false);
-    setPosition((prev) => ({ ...prev, placed: false }));
   }, []);
 
   // Measure + clamp + auto-flip BEFORE the browser paints the tooltip,
-  // otherwise the user sees one frame at (0, 0) before it lands.
+  // otherwise the user sees one frame at (0, 0) before it lands. The result
+  // is written onto the panel directly: it is only ever its style, and state
+  // for it cost a second render. Measuring has already computed the hidden
+  // starting style, so the change below still runs the fade-in transition.
   useLayoutEffect(() => {
-    if (!open || !panelRef.current || !triggerRef.current) return;
+    const panelEl = panelRef.current;
+    if (!open || !panelEl || !trigger) return;
 
-    const trigger = triggerRef.current.getBoundingClientRect();
-    const panel = panelRef.current.getBoundingClientRect();
+    const anchor = trigger.getBoundingClientRect();
+    const panel = panelEl.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const margin = 6;
@@ -109,11 +112,11 @@ export const Tooltip: React.FC<TooltipProps> = ({
     let resolved: TooltipPlacement = placement;
 
     // Auto-flip top↔bottom if the preferred side would clip.
-    if (placement === "top" && trigger.top - panel.height - offset < margin) {
+    if (placement === "top" && anchor.top - panel.height - offset < margin) {
       resolved = "bottom";
     } else if (
       placement === "bottom" &&
-      trigger.bottom + panel.height + offset > vh - margin
+      anchor.bottom + panel.height + offset > vh - margin
     ) {
       resolved = "top";
     }
@@ -122,17 +125,17 @@ export const Tooltip: React.FC<TooltipProps> = ({
     let top = 0;
 
     if (resolved === "top" || resolved === "bottom") {
-      left = trigger.left + trigger.width / 2 - panel.width / 2;
+      left = anchor.left + anchor.width / 2 - panel.width / 2;
       top =
         resolved === "top"
-          ? trigger.top - panel.height - offset
-          : trigger.bottom + offset;
+          ? anchor.top - panel.height - offset
+          : anchor.bottom + offset;
     } else {
-      top = trigger.top + trigger.height / 2 - panel.height / 2;
+      top = anchor.top + anchor.height / 2 - panel.height / 2;
       left =
         resolved === "left"
-          ? trigger.left - panel.width - offset
-          : trigger.right + offset;
+          ? anchor.left - panel.width - offset
+          : anchor.right + offset;
     }
 
     // Clamp horizontally / vertically so the tooltip stays in the viewport.
@@ -141,8 +144,11 @@ export const Tooltip: React.FC<TooltipProps> = ({
     if (top + panel.height > vh - margin) top = vh - panel.height - margin;
     if (top < margin) top = margin;
 
-    setPosition({ left, top, placed: true, placement: resolved });
-  }, [open, label, placement, offset]);
+    panelEl.style.left = `${left}px`;
+    panelEl.style.top = `${top}px`;
+    panelEl.style.opacity = "1";
+    panelEl.style.transform = "translateY(0) scale(1)";
+  }, [open, label, placement, offset, trigger]);
 
   // Hide on resize / Escape. Previously we also hid on any capture-
   // phase scroll, but in an IDE shell that fires constantly during
@@ -164,29 +170,24 @@ export const Tooltip: React.FC<TooltipProps> = ({
     };
   }, [open, hide]);
 
-  // Cleanup timer on unmount.
-  useEffect(
-    () => () => {
-      if (timerRef.current) window.clearTimeout(timerRef.current);
-    },
-    [],
-  );
-
   // Compose handlers with anything the child already had.
   const child = React.Children.only(children);
   const childProps = child.props as Record<string, unknown>;
+  // The child's own ref (React 18 keeps it on the element), forwarded to.
+  const childRef = (child as unknown as { ref?: React.Ref<HTMLElement> }).ref;
+
+  // Stable per child ref, so React does not detach and re-attach the trigger
+  // (and set its state twice) on every render.
+  const attachTrigger = useCallback(
+    (node: HTMLElement | null) => {
+      setTrigger(node);
+      assignRef(childRef, node);
+    },
+    [childRef],
+  );
 
   const composedChild = React.cloneElement(child, {
-    ref: (node: HTMLElement | null) => {
-      triggerRef.current = node;
-      // Forward ref if the child had one.
-      const childRef = (
-        child as unknown as { ref?: React.Ref<HTMLElement> }
-      ).ref;
-      if (typeof childRef === "function") childRef(node);
-      else if (childRef && typeof childRef === "object")
-        (childRef as React.MutableRefObject<HTMLElement | null>).current = node;
-    },
+    ref: attachTrigger,
     onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
       (childProps.onMouseEnter as ((e: React.MouseEvent) => void) | undefined)?.(
         e,
@@ -229,8 +230,9 @@ export const Tooltip: React.FC<TooltipProps> = ({
               panelClassName ?? ""
             }`}
             style={{
-              left: position.left,
-              top: position.top,
+              // Placed and revealed by the layout effect before paint.
+              left: 0,
+              top: 0,
               backgroundColor: "var(--aurora-sidebar-background)",
               color: "var(--aurora-common-text-primary)",
               border:
@@ -238,10 +240,8 @@ export const Tooltip: React.FC<TooltipProps> = ({
               borderRadius: 6,
               boxShadow:
                 "0 6px 18px color-mix(in srgb, var(--aurora-common-shadow) 45%, transparent), 0 2px 5px color-mix(in srgb, var(--aurora-common-shadow) 30%, transparent)",
-              opacity: position.placed ? 1 : 0,
-              transform: position.placed
-                ? "translateY(0) scale(1)"
-                : "translateY(2px) scale(0.97)",
+              opacity: 0,
+              transform: "translateY(2px) scale(0.97)",
               transition:
                 "opacity 110ms ease-out, transform 110ms ease-out",
               letterSpacing: "0.01em",

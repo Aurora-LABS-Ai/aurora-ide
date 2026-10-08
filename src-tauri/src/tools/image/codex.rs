@@ -699,8 +699,12 @@ mod tests {
         let error = StreamState::default().finish().unwrap_err().to_string();
         assert!(error.contains("gave no reason"));
         // Nothing measured says which plans serve this, so nothing here may
-        // tell the user their plan is the problem.
-        assert!(!error.contains("Plus") && !error.contains("Pro"), "{error}");
+        // tell the user their plan is the problem. Whole words: the message
+        // points at "Settings → Providers", and "Providers" is not the Pro plan.
+        let words: Vec<&str> = error.split(|c: char| !c.is_alphanumeric()).collect();
+        for plan_word in ["Plus", "Pro", "Team", "Enterprise", "plan"] {
+            assert!(!words.contains(&plan_word), "names a plan ({plan_word}): {error}");
+        }
     }
 
     #[test]

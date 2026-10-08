@@ -54,8 +54,88 @@ pub(super) fn build_per_turn_tool_registry(
     chapters_enabled: bool,
     browser_enabled: bool,
     // Accepted for older clients; optional tools now always use static wrappers.
+    defer_tools: bool,
+    thread_id: &str,
+) -> ToolRegistry {
+    build_per_turn_tool_registry_scoped(
+        base,
+        tools,
+        turn_id,
+        router,
+        emitter,
+        cancel_token,
+        supports_vision,
+        execution_mode,
+        workspace_path,
+        chapters_enabled,
+        browser_enabled,
+        defer_tools,
+        thread_id,
+        &ToolScope::Plain,
+    )
+}
+
+/// Whose turn the roster is for.
+///
+/// The per-turn registry used to answer one question — what may THIS mode
+/// call — and sub-agents add a second: is this the parent, who may start
+/// agents, or a child, who may call only what its definition names and
+/// nothing routed through the window?
+pub(crate) enum ToolScope {
+    /// An ordinary turn with no sub-agent tools. Compaction, Plan, Chat, and
+    /// an Agent turn with the switch off.
+    Plain,
+    /// A project Agent turn with the switch on: the ordinary roster plus the
+    /// parent-side sub-agent tools.
+    Parent {
+        host: Arc<dyn crate::agent_runtime::subagents::SubagentHost>,
+        parent: Arc<crate::agent_runtime::subagents::host::ParentTurn>,
+    },
+    /// A sub-agent's turn. Only the natives on `allow`, minus the ones no
+    /// child may have; no frontend-bridged tools (their replies route by the
+    /// parent's turn id and would never arrive); no discovery wrappers.
+    /// Plus `message_parent`, when the run has a way back to its parent.
+    Child {
+        allow: Vec<String>,
+        messenger: Option<Arc<dyn crate::agent_runtime::subagents::host::ParentMessenger>>,
+    },
+}
+
+impl ToolScope {
+    fn is_child(&self) -> bool {
+        matches!(self, Self::Child { .. })
+    }
+
+    /// Child scope: may the child call `name`?
+    fn child_allows(&self, name: &str) -> bool {
+        match self {
+            Self::Child { allow, .. } => {
+                !crate::agent_runtime::subagents::catalog::NEVER_FOR_CHILDREN.contains(&name)
+                    && allow.iter().any(|t| t == name)
+            }
+            _ => true,
+        }
+    }
+}
+
+/// [`build_per_turn_tool_registry`] with a [`ToolScope`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_per_turn_tool_registry_scoped(
+    base: Arc<ToolRegistry>,
+    tools: &[AllowedTool],
+    turn_id: String,
+    router: Arc<BridgeRouter>,
+    emitter: Arc<dyn BridgeEmitter>,
+    cancel_token: CancellationToken,
+    supports_vision: bool,
+    execution_mode: AgentExecutionMode,
+    workspace_path: Option<&str>,
+    chapters_enabled: bool,
+    browser_enabled: bool,
+    // Accepted for older clients; optional tools now always use static wrappers.
     _defer_tools: bool,
     _thread_id: &str,
+    scope: &ToolScope,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     // Chat mode has no workspace, and the plan lookup below walks one.
@@ -99,6 +179,9 @@ pub(super) fn build_per_turn_tool_registry(
         if vision_blocked(&name) || is_withdrawn_tool(&name) || mode_blocked(&name) {
             continue;
         }
+        if !scope.child_allows(&name) {
+            continue;
+        }
         if let Some(existing) = base.get(&name) {
             let executor: Arc<dyn ToolExecutor> =
                 if execution_mode == AgentExecutionMode::Plan && name == "shell_execute" {
@@ -106,12 +189,27 @@ pub(super) fn build_per_turn_tool_registry(
                 } else {
                     existing
                 };
-            if is_deferrable(&name) {
+            // A child's roster is its whole world: what its definition named
+            // is registered directly, discoverable or not, because the child
+            // has no `tool_search` to find anything behind.
+            if is_deferrable(&name) && !scope.is_child() {
                 defer(&mut deferred, executor);
             } else {
                 registry.register(executor);
             }
         }
+    }
+    // A sub-agent gets natives only. Frontend-bridged tools answer through
+    // `agent_post_tool_result` keyed by the PARENT's turn id; a child's call
+    // would park on a reply the window never sends. And no discovery pair:
+    // there is nothing deferred for it to find.
+    if let ToolScope::Child { messenger, .. } = scope {
+        // The one tool every child has whatever its definition says: the way
+        // to tell the parent it cannot do the task as asked.
+        if let Some(messenger) = messenger {
+            crate::tools::subagents::install_child(&registry, messenger.clone());
+        }
+        return registry;
     }
     // 2. Bridge fallback for every AllowedTool the Rust registry does NOT
     //    know — primarily `mcp_*`, plus skill/question tools.
@@ -151,6 +249,12 @@ pub(super) fn build_per_turn_tool_registry(
     // These definitions stay present even when no optional tools are connected.
     // Catalog changes on later turns affect search results, never this prefix.
     crate::tools::tool_search::install(&registry, deferred);
+    // 3. The parent-side sub-agent tools, last. After the discovery pair so
+    //    the roster's head — every native, in registration order — is the
+    //    same bytes whether or not the user's switch is on.
+    if let ToolScope::Parent { host, parent } = scope {
+        crate::tools::subagents::install(&registry, host.clone(), parent.clone());
+    }
     registry
 }
 

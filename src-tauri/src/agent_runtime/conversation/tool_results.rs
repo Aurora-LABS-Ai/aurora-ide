@@ -234,6 +234,124 @@ pub(super) fn truncate_tool_content(tool: &str, s: String) -> String {
     out
 }
 
+/// `text` with every line prefixed by its number in the file, right-aligned,
+/// then a tab: `  12\tlet x = 1;`. `first` is the number of the first line.
+/// Line breaks are kept as they are (`\r\n` included), so the text after each
+/// tab is exactly the file's.
+pub(super) fn number_lines(text: &str, first: usize) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let last = first + lines.len().saturating_sub(1);
+    let width = last.to_string().len();
+    let mut out = String::with_capacity(text.len() + lines.len() * (width + 1));
+    for (offset, line) in lines.iter().enumerate() {
+        out.push_str(&format!("{:>width$}\t", first + offset));
+        out.push_str(line);
+    }
+    out
+}
+
+/// The model's copy of a `file_read` result, with every line of every file
+/// numbered (`number_lines`). `None` when nothing changes: another tool, a
+/// failed read, an image.
+///
+/// Without numbers the model counted newlines to name a line, and miscounted
+/// around blank ones: on the 2026-10-08 harness run two agents reported
+/// `slugify:5` and `truncate:13` for lines 6 and 14. Claude Code's Read numbers
+/// its lines for the same reason. Only the MODEL's copy is numbered: the
+/// window's file views read the raw result, which stays the file's text.
+pub(super) fn number_read_content(tool: &str, raw: &str) -> Option<String> {
+    if !matches!(tool, "file_read" | "multi_file_read") {
+        return None;
+    }
+    let mut value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    fn number_entry(entry: &mut serde_json::Value) -> bool {
+        let Some(map) = entry.as_object_mut() else {
+            return false;
+        };
+        let Some(text) = map.get("content").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        // A picture's marker is not lines of text.
+        if text.is_empty() || crate::api::aurora_image::has_marker(text) {
+            return false;
+        }
+        let first = map
+            .get("range")
+            .and_then(|r| r.get("startLine"))
+            .and_then(serde_json::Value::as_u64)
+            .map_or(1, |n| n.max(1) as usize);
+        let numbered = number_lines(text, first);
+        map.insert("content".into(), serde_json::Value::String(numbered));
+        true
+    }
+    let mut changed = number_entry(&mut value);
+    if let Some(files) = value.get_mut("files").and_then(serde_json::Value::as_array_mut) {
+        for file in files {
+            changed |= number_entry(file);
+        }
+    }
+    if !changed {
+        return None;
+    }
+    // Say once what the prefix is, in the result the model is reading.
+    if let Some(map) = value.as_object_mut() {
+        map.insert(
+            "lineNumbers".into(),
+            serde_json::Value::String(
+                "Each line starts with its line number and a tab. They are not part of the \
+                 file: never copy them into old_string, new_string or written content."
+                    .into(),
+            ),
+        );
+    }
+    serde_json::to_string(&value).ok()
+}
+
+/// The key the clamp's last resort writes when it had to DROP fields rather
+/// than shorten them. [`clamp_or_move`] reads it as "this is about to lose
+/// data" and moves the whole result to disk instead.
+pub(super) const DROPPED_FIELDS_NOTE: &str = "truncationNote";
+
+/// Did the clamp drop whole fields from this result?
+pub(super) fn dropped_fields(clamped: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(clamped)
+        .ok()
+        .is_some_and(|v| v.get(DROPPED_FIELDS_NOTE).is_some())
+}
+
+/// The model-history copy of one tool result: clamped to its cap, or, when
+/// clamping could only fit it by deleting fields, MOVED whole to a file in
+/// `spill_dir` with a small envelope pointing at it.
+///
+/// `spilled` is the result after the ordinary payload-field spill; `raw` is
+/// the untouched original, which is what gets written when the whole result
+/// moves. Without a `spill_dir`, or when the move fails, the clamp's output
+/// stands: a note that fields were dropped beats a result that never arrives.
+pub(super) fn clamp_or_move(
+    tool: &str,
+    tool_call_id: &str,
+    spilled: String,
+    raw: &str,
+    spill_dir: Option<&std::path::Path>,
+) -> String {
+    let clamped = truncate_tool_content(tool, spilled);
+    if !dropped_fields(&clamped) {
+        return clamped;
+    }
+    let Some(dir) = spill_dir else {
+        return clamped;
+    };
+    match crate::agent_runtime::tool_spill::spill_whole_json(dir, tool_call_id, raw) {
+        // Through the clamp once more so the per-tool cap still holds; the
+        // envelope is built to sit well under it.
+        Some(moved) => truncate_tool_content(tool, moved),
+        None => clamped,
+    }
+}
+
 pub(super) fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String> {
     let original = serde_json::from_str::<serde_json::Value>(raw).ok()?;
     let mut low = 0usize;
@@ -315,7 +433,7 @@ pub(super) fn compact_json_tool_content(raw: &str, cap: usize) -> Option<String>
     );
     if !dropped.is_empty() {
         fallback.insert(
-            "truncationNote".into(),
+            DROPPED_FIELDS_NOTE.into(),
             serde_json::Value::from(format!(
                 "This result was too large to keep ({} bytes, limit {cap}). \
                  These fields were dropped entirely and hold no data here: {}. \

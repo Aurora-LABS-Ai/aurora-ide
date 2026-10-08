@@ -16,6 +16,8 @@
 //!   `provider_id` (no `base_url` introspection).
 //! - [`anthropic`] — [`AnthropicAdapter`] for `provider_id` ∈
 //!   `{"anthropic", "minimax"}`.
+//! - [`anthropic_api`] — the built-in Anthropic row (`"anthropic-api"`):
+//!   the same Messages wire plus what only Anthropic itself accepts.
 //! - [`responses`] — [`OpenAIResponsesAdapter`] for `provider_id`
 //!   `"openai-responses"` (OpenAI's typed-event `/responses` wire
 //!   shape — an additional provider type, not a replacement for
@@ -50,6 +52,7 @@
 //! retire `commands::provider_kernel` and merge these modules.
 
 pub mod anthropic;
+pub mod anthropic_api;
 pub mod aurora_image;
 pub mod claude_code;
 pub mod client;

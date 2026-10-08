@@ -173,7 +173,7 @@ interface PillTokens {
   border: string;
 }
 
-export const PILL_TOKENS: Record<PillVariant, PillTokens> = {
+const PILL_TOKENS: Record<PillVariant, PillTokens> = {
   success: {
     fg: 'var(--aurora-common-success)',
     bg: 'color-mix(in srgb, var(--aurora-common-success) 14%, transparent)',
@@ -405,12 +405,10 @@ export const FieldLabel: React.FC<FieldLabelProps> = ({ children, className }) =
 // IdeTextInput / IdeTextArea — tight 28px text inputs that match IdeSelect.
 // ---------------------------------------------------------------------------
 
-interface IdeTextInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
-  containerClassName?: string;
-}
+type IdeTextInputProps = React.InputHTMLAttributes<HTMLInputElement>;
 
 export const IdeTextInput = React.forwardRef<HTMLInputElement, IdeTextInputProps>(
-  ({ className, containerClassName: _containerClassName, ...rest }, ref) => (
+  ({ className, ...rest }, ref) => (
     <input
       ref={ref}
       {...rest}

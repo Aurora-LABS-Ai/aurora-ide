@@ -34,7 +34,10 @@ import { CanvasPanel } from "@/apps/agent/components/canvas/CanvasPanel";
 import { ProjectPanel } from "@/apps/agent/components/panels/ProjectPanel";
 import { SessionPanel } from "@/apps/agent/components/panels/SessionPanel";
 import { MemoryPanel } from "@/apps/agent/components/panels/MemoryPanel";
+import { AgentsPanel } from "@/apps/agent/components/panels/AgentsPanel";
+import { SubagentPanel } from "@/apps/agent/components/panels/SubagentPanel";
 import { ChatPanel } from "@/apps/agent/components/shell/ChatPanel";
+import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
@@ -55,6 +58,7 @@ const SINGLETON_ICON: Record<DockSingletonKind, AgentIconName> = {
   browser: "browser",
   terminal: "terminal",
   memory: "database",
+  agents: "users",
 };
 
 /**
@@ -190,9 +194,36 @@ const TabGlyph: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <AgentIcon name="browser" size={13} />;
     case "artifact":
       return <AgentIcon name="panel-right" size={13} />;
+    case "agent":
+      return <AgentTabGlyph agentId={tab.agentId ?? ""} />;
     default:
       return <AgentIcon name={SINGLETON_ICON[tab.kind]} size={13} />;
   }
+};
+
+/**
+ * An agent tab's glyph — the dot matrix while THAT agent is running, its
+ * settled status dot otherwise. Same reasoning as `ChatTabGlyph`: the tab you
+ * are not reading still has to say whether the agent is busy.
+ */
+const AgentTabGlyph: React.FC<{ agentId: string }> = ({ agentId }) => {
+  const status = useAgentSubagentStore((s) => {
+    for (const list of Object.values(s.byParent)) {
+      const row = list.find((r) => r.agentId === agentId);
+      if (row) return row.status;
+    }
+    return "completed";
+  });
+  // The list Rust returns is the truth about running; the live turn id only
+  // arrives sooner.
+  const running = useAgentSubagentStore(
+    (s) => status === "running" || !!s.liveTurnByAgent[agentId],
+  );
+  return running ? (
+    <StreamingDotMatrix size={18} />
+  ) : (
+    <span className="agw-agent-dot" data-status={status} aria-hidden />
+  );
 };
 
 /** Which edges of the tab strip have tabs hidden past them. */
@@ -334,6 +365,16 @@ const TabBody: React.FC<{ tab: DockTabInstance }> = ({ tab }) => {
       return <ProjectPanel root={tab.projectRoot ?? ""} />;
     case "session":
       return <SessionPanel threadId={tab.threadId ?? ""} />;
+    case "agents":
+      return <AgentsPanel />;
+    case "agent":
+      return (
+        <SubagentPanel
+          parentThreadId={tab.parentThreadId ?? ""}
+          agentId={tab.agentId ?? ""}
+          title={tab.title}
+        />
+      );
     default: {
       const _exhaustive: never = tab.kind;
       return _exhaustive;

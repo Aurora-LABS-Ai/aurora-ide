@@ -31,6 +31,31 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_runtime::tool_executor::{Permitter, ToolError};
 
+/// Turns that may NOT prompt the user: a sub-agent's runs. The only thing a
+/// prompt could do in one of these is hang it, so the Tauri permitter answers
+/// "denied, and here is why" at once instead of emitting an event nobody will
+/// answer. Set by the sub-agent runner around each child turn.
+static NO_PROMPT_TURNS: std::sync::OnceLock<dashmap::DashSet<String>> = std::sync::OnceLock::new();
+
+fn no_prompt_turns() -> &'static dashmap::DashSet<String> {
+    NO_PROMPT_TURNS.get_or_init(dashmap::DashSet::new)
+}
+
+/// Mark `turn_id` as one whose tools must not prompt. Pair with
+/// [`clear_no_prompt_turn`] when the turn ends.
+pub fn mark_no_prompt_turn(turn_id: &str) {
+    no_prompt_turns().insert(turn_id.to_string());
+}
+
+pub fn clear_no_prompt_turn(turn_id: &str) {
+    no_prompt_turns().remove(turn_id);
+}
+
+#[must_use]
+pub fn is_no_prompt_turn(turn_id: &str) -> bool {
+    no_prompt_turns().contains(turn_id)
+}
+
 /// The Tauri event channel name the frontend listens on for
 /// permission prompts. Hard-coded so the contract is explicit at
 /// both ends — if you change this here, change it in the frontend
@@ -387,6 +412,18 @@ impl Permitter for TauriPermitter {
             return Err(ToolError::Cancelled);
         }
 
+        // A sub-agent's turn: nobody is watching it to click Allow, and parking
+        // on a prompt would hang it until the parent gave up. Refuse with the
+        // reason, so the child can report it and the parent — which does have
+        // a person on the other end — can do that step itself.
+        if is_no_prompt_turn(turn_id) {
+            return Err(ToolError::PermissionDenied(format!(
+                "{tool_name} needs the user's approval and a sub-agent cannot ask for it. \
+                 Report this step back to the parent agent instead of working around it; the \
+                 user can set {tool_name} to auto-approve in Settings → Tools."
+            )));
+        }
+
         let key = (turn_id.to_string(), tool_name.to_string());
         let receiver = self.router.register(key.0.clone(), key.1.clone());
 
@@ -544,6 +581,37 @@ mod tests {
         assert_eq!(router.pending_count(), 3);
         router.drop_turn("turn-a");
         assert_eq!(router.pending_count(), 1);
+    }
+
+    /// A sub-agent's turn never reaches the window: the permitter answers
+    /// "denied, and why" itself and emits nothing to park on.
+    #[tokio::test]
+    async fn a_no_prompt_turn_is_refused_without_an_event() {
+        let router = Arc::new(PermissionRouter::new());
+        let emitter = Arc::new(RecordingEmitter::default());
+        let permitter = TauriPermitter::new(
+            router.clone(),
+            emitter.clone() as Arc<dyn PermissionEmitter>,
+        );
+        mark_no_prompt_turn("sub_abc");
+        let err = permitter
+            .request(
+                "sub_abc",
+                "toolu_1",
+                "shell_execute",
+                &serde_json::json!({"command": "pnpm test"}),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("a child turn must not prompt");
+        assert!(
+            matches!(err, ToolError::PermissionDenied(ref m) if m.contains("sub-agent cannot ask")),
+            "{err}"
+        );
+        assert!(emitter.seen.lock().unwrap().is_empty(), "nothing was emitted");
+        assert_eq!(router.pending_count(), 0, "nothing was parked");
+        clear_no_prompt_turn("sub_abc");
+        assert!(!is_no_prompt_turn("sub_abc"));
     }
 
     #[tokio::test]

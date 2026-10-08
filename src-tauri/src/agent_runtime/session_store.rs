@@ -311,6 +311,13 @@ impl SessionStore {
         self
     }
 
+    /// The ledger this store reports usage to, so a store derived from this
+    /// one (a parent's sub-agent store) can report to the same place.
+    #[must_use]
+    pub fn usage_ledger(&self) -> Option<std::sync::Arc<crate::usage_ledger::UsageLedger>> {
+        self.usage_ledger.clone()
+    }
+
     pub fn preserve_usage(&self, thread_id: &str) -> Result<(), RuntimeError> {
         if let Some(ledger) = &self.usage_ledger {
             ledger

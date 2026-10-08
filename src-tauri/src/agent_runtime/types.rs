@@ -156,6 +156,34 @@ pub enum ContentBlock {
         created_at: i64,
     },
 
+    /// A sub-agent this conversation started has finished, and this is its
+    /// report arriving in the parent.
+    ///
+    /// The same shape as [`ProcessEvent`](Self::ProcessEvent) and for the same
+    /// reasons: it is nobody's words, so it is not a `Text` block; it IS sent
+    /// to the model, because the parent asked for the work and has to be told
+    /// the result; and it is its own block so a reload can draw the agent row
+    /// instead of a user bubble. `summary` is the transcript's one line
+    /// (`Finished "Find the login flow" · completed`); `detail` is the model's
+    /// copy — the report itself, the agent id to continue it with, the
+    /// transcript path.
+    ///
+    /// Two homes, like a process event: on the Tool message the runtime was
+    /// building when the report arrived mid-turn, or alone on a User message
+    /// when the report woke an idle conversation.
+    AgentReport {
+        agent_id: String,
+        /// The parent's name for the agent, when it gave one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// `completed`, `failed`, or `killed`.
+        status: String,
+        summary: String,
+        detail: String,
+        /// Unix epoch milliseconds when the agent finished.
+        created_at: i64,
+    },
+
     /// A picture Aurora Chat made DIRECTLY — the conversation's model is an
     /// image model, so the user's message went to it as the prompt and this is
     /// the reply. Carried on an [`MessageRole::Assistant`] message.
@@ -328,6 +356,22 @@ pub enum InjectedOrigin {
     /// Aurora reporting what happened to a background process. Renders as a
     /// one-line beat, never as anybody's words.
     Process,
+    /// A sub-agent's report arriving in its parent. Renders as the agent's
+    /// row — name, state, result — never as anybody's words.
+    Subagent,
+}
+
+/// Who a queued or starting sub-agent report is about. Rides beside the
+/// text on the queue and on the wake request so the persisted block can be
+/// built with the agent's identity, not just its words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentReportMeta {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `completed`, `failed`, or `killed`.
+    pub status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,6 +468,37 @@ impl ConversationMessage {
             event_id: None,
             role: MessageRole::User,
             blocks: vec![ContentBlock::ProcessEvent {
+                summary: summary.into(),
+                detail: detail.into(),
+                created_at: timestamp,
+            }],
+            usage: None,
+            timestamp,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    /// A turn STARTED by a sub-agent's report arriving while the conversation
+    /// was idle. User role, for the reason [`Self::user_process_event`] is;
+    /// an [`ContentBlock::AgentReport`] block, so a reload draws the agent's
+    /// row and the model reads the report.
+    #[must_use]
+    pub fn user_agent_report(
+        agent: AgentReportMeta,
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+        timestamp: i64,
+    ) -> Self {
+        Self {
+            event_id: None,
+            role: MessageRole::User,
+            blocks: vec![ContentBlock::AgentReport {
+                agent_id: agent.agent_id,
+                name: agent.name,
+                status: agent.status,
                 summary: summary.into(),
                 detail: detail.into(),
                 created_at: timestamp,

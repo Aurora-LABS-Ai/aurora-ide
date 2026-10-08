@@ -220,59 +220,137 @@ export function useShikiTokens(
   lang: string | null,
   theme: ShikiThemeVariant,
 ): ThemedToken[][] | null {
-  const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
+  const key = code && lang && highlightable(code) ? cacheKey(code, lang, theme) : null;
+  // Stamped with the input it answers, so a changed input never shows the
+  // previous one's colours. A cached answer is read during render: a card
+  // reopened, or warmed on hover, is coloured on its first frame.
+  const [result, setResult] = useState<{ key: string | null; tokens: ThemedToken[][] | null }>(
+    () => ({ key, tokens: key ? cacheGet(key) : null }),
+  );
 
   useEffect(() => {
-    if (!code || !lang) {
-      setTokens(null);
-      return;
-    }
-    if (code.length > MAX_HIGHLIGHT_BYTES) {
-      setTokens(null);
-      return;
-    }
-    // Quick line-count check before paying for tokenization.
-    let approxLines = 0;
-    for (let i = 0; i < code.length; i += 1) {
-      if (code.charCodeAt(i) === 10 /* \n */) approxLines += 1;
-      if (approxLines > MAX_HIGHLIGHT_LINES) break;
-    }
-    if (approxLines > MAX_HIGHLIGHT_LINES) {
-      setTokens(null);
-      return;
-    }
-
+    if (!key || !code || !lang) return;
+    if (cacheGet(key)) return;
     let cancelled = false;
-    getHighlighter()
-      .then((h) => {
-        if (cancelled) return;
-        try {
-          // `lang` is constrained at the call site to values from our
-          // `extToShikiLang` allow-list, which all map to bundled
-          // languages we eagerly loaded above — but Shiki's signature
-          // is keyed on the `BundledLanguage` literal union, so cast
-          // here rather than widening the public API.
-          const result = h.codeToTokens(code, {
-            lang: lang as BundledLanguage,
-            theme: (theme === "light"
-              ? "github-light"
-              : "github-dark") as BundledTheme,
-          });
-          if (!cancelled) setTokens(result.tokens);
-        } catch {
-          // Unknown language at runtime (shouldn't happen with our
-          // allow-list, but be defensive): fall back to plain.
-          if (!cancelled) setTokens(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setTokens(null);
-      });
-
+    void tokenize(code, lang, theme).then((tokens) => {
+      if (!cancelled) setResult({ key, tokens });
+    });
     return () => {
       cancelled = true;
     };
-  }, [code, lang, theme]);
+  }, [key, code, lang, theme]);
 
-  return tokens;
+  if (!key) return null;
+  return result.key === key ? result.tokens : cacheGet(key);
+}
+
+// ── Tokenizing off the critical frames ─────────────────────────────────
+//
+// `codeToTokens` is synchronous and, for a few thousand lines, long enough to
+// drop frames. It used to run in the microtask right after a card mounted —
+// which is exactly when the card's opening animation runs — and again on every
+// reopen. Now: answers are cached, work is scheduled for idle time, and a
+// caller that knows a card is about to open (the pointer is on it) can start
+// the work early with `warmShikiTokens`.
+
+const TOKEN_CACHE_MAX = 24;
+const tokenCache = new Map<string, ThemedToken[][]>();
+const inflight = new Map<string, Promise<ThemedToken[][] | null>>();
+
+function cacheKey(code: string, lang: string, theme: ShikiThemeVariant): string {
+  return `${theme}\u0000${lang}\u0000${code}`;
+}
+
+function cacheGet(key: string): ThemedToken[][] | null {
+  const hit = tokenCache.get(key);
+  if (!hit) return null;
+  // Most recently used last, so eviction takes the oldest.
+  tokenCache.delete(key);
+  tokenCache.set(key, hit);
+  return hit;
+}
+
+function cachePut(key: string, tokens: ThemedToken[][]): void {
+  tokenCache.set(key, tokens);
+  while (tokenCache.size > TOKEN_CACHE_MAX) {
+    const oldest = tokenCache.keys().next().value;
+    if (oldest === undefined) break;
+    tokenCache.delete(oldest);
+  }
+}
+
+/** Inside the size caps a highlight is allowed to cost. */
+function highlightable(code: string): boolean {
+  if (code.length > MAX_HIGHLIGHT_BYTES) return false;
+  let lines = 0;
+  for (let i = 0; i < code.length; i += 1) {
+    if (code.charCodeAt(i) === 10 /* \n */) lines += 1;
+    if (lines > MAX_HIGHLIGHT_LINES) return false;
+  }
+  return true;
+}
+
+/** Run `work` when the renderer is idle (bounded, so it always runs). */
+function whenIdle<T>(work: () => T): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      try {
+        resolve(work());
+      } catch (err) {
+        reject(err);
+      }
+    };
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+      .requestIdleCallback;
+    if (ric) ric(run, { timeout: 400 });
+    else setTimeout(run, 30);
+  });
+}
+
+function tokenize(
+  code: string,
+  lang: string,
+  theme: ShikiThemeVariant,
+): Promise<ThemedToken[][] | null> {
+  const key = cacheKey(code, lang, theme);
+  const cached = cacheGet(key);
+  if (cached) return Promise.resolve(cached);
+  const running = inflight.get(key);
+  if (running) return running;
+  const job = getHighlighter()
+    .then((h) =>
+      whenIdle(() => {
+        // `lang` is constrained at the call site to values from our
+        // `extToShikiLang` allow-list, which all map to bundled languages we
+        // eagerly loaded above — but Shiki's signature is keyed on the
+        // `BundledLanguage` literal union, so cast here rather than widening
+        // the public API.
+        const result = h.codeToTokens(code, {
+          lang: lang as BundledLanguage,
+          theme: (theme === "light" ? "github-light" : "github-dark") as BundledTheme,
+        });
+        cachePut(key, result.tokens);
+        return result.tokens;
+      }),
+    )
+    // Unknown language at runtime (shouldn't happen with our allow-list) or a
+    // highlighter that failed to boot: the caller renders plain text.
+    .catch(() => null)
+    .finally(() => inflight.delete(key));
+  inflight.set(key, job);
+  return job;
+}
+
+/**
+ * Start colouring `code` before it is shown, so the view that shows it has its
+ * colours on the first frame. For a card the pointer has just reached. Free
+ * when the answer is already cached or the input is past the caps.
+ */
+export function warmShikiTokens(
+  code: string | null | undefined,
+  lang: string | null,
+  theme: ShikiThemeVariant,
+): void {
+  if (!code || !lang || !highlightable(code)) return;
+  void tokenize(code, lang, theme);
 }

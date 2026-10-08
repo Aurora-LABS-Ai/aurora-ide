@@ -25,6 +25,7 @@ import { inertWhen } from "@/kernel/lib/a11y/inert";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
+import { AgentReportCard } from "@/apps/agent/components/conversation/AgentReportCard";
 import { AgentThinkingBlock } from "@/apps/agent/components/conversation/AgentThinkingBlock";
 import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
 import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
@@ -984,6 +985,11 @@ const AssistantTurn: React.FC<{
       // user's own row, tooltipped "You added this mid-turn". Nobody said it,
       // so it wears the checklist beat instead: one line, naming what happened.
       return <ProcessBeat text={row.text} />;
+    }
+    if (row.type === "agent_report") {
+      // A sub-agent reporting back. From the agent's side, so on the right
+      // like a message — labelled with the agent's name, never the user's.
+      return <AgentReportCard report={row.report} />;
     }
     if (row.type === "chapter") {
       // Unreachable: `buildSections` lifts every chapter row out into a section

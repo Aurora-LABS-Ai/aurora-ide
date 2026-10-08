@@ -33,9 +33,21 @@ interface SearchMatch {
   matchEnd: number;
 }
 
+/** Every file in a tree, depth first. Pure, so it lives outside the component. */
+function flattenFiles(nodes: FileNode[], result: FileNode[] = []): FileNode[] {
+  for (const node of nodes) {
+    if (node.type === 'file') {
+      result.push(node);
+    } else if (node.children) {
+      flattenFiles(node.children, result);
+    }
+  }
+  return result;
+}
+
 export const SearchPanel: React.FC = () => {
   const { rootPath, files } = useWorkspaceStore();
-  const { openFile } = useEditorStore();
+  const { openFile, requestEditorReveal } = useEditorStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'files' | 'content'>('files');
@@ -52,18 +64,6 @@ export const SearchPanel: React.FC = () => {
   // Focus search input on mount
   useEffect(() => {
     searchInputRef.current?.focus();
-  }, []);
-
-  // Flatten file tree for searching
-  const flattenFiles = useCallback((nodes: FileNode[], result: FileNode[] = []): FileNode[] => {
-    for (const node of nodes) {
-      if (node.type === 'file') {
-        result.push(node);
-      } else if (node.children) {
-        flattenFiles(node.children, result);
-      }
-    }
-    return result;
   }, []);
 
   // Search file names
@@ -110,7 +110,7 @@ export const SearchPanel: React.FC = () => {
     });
 
     setFileResults(matches.slice(0, 100)); // Limit results
-  }, [files, flattenFiles, caseSensitive, useRegex]);
+  }, [files, caseSensitive, useRegex]);
 
   // Search file contents
   const searchFileContents = useCallback(async (query: string) => {
@@ -204,7 +204,7 @@ export const SearchPanel: React.FC = () => {
     // Auto-expand all results
     setExpandedFiles(new Set(results.map(r => r.filePath)));
     setIsSearching(false);
-  }, [files, flattenFiles, rootPath, caseSensitive, useRegex]);
+  }, [files, rootPath, caseSensitive, useRegex]);
 
   // Handle search input change with debounce
   const handleSearchChange = useCallback((value: string) => {
@@ -223,8 +223,8 @@ export const SearchPanel: React.FC = () => {
     }, searchMode === 'files' ? 100 : 300);
   }, [searchMode, searchFileNames, searchFileContents]);
 
-  // Handle file click - open in editor
-  const handleFileClick = useCallback(async (filePath: string, fileName: string, _line?: number) => {
+  // Handle file click - open in editor, at the matched line for a content hit
+  const handleFileClick = useCallback(async (filePath: string, fileName: string, line?: number) => {
     const { selectFile } = useWorkspaceStore.getState();
     selectFile(filePath);
 
@@ -232,12 +232,16 @@ export const SearchPanel: React.FC = () => {
       // Load content first, then open file - prevents "// Loading..." flash
       const content = await loadFileContent(filePath);
       openFile(filePath, fileName, content, undefined);
-      // TODO: If line is provided, scroll to that line in the editor
+      // A content match carries its line: put the cursor there. The tab id
+      // is the file path (`openFile`).
+      if (line !== undefined) {
+        requestEditorReveal(filePath, { mode: 'line', lineNumber: line, focus: true });
+      }
     } catch (err) {
       console.error('Failed to load file:', err);
       openFile(filePath, fileName, `// Failed to load file: ${err}`, undefined);
     }
-  }, [openFile]);
+  }, [openFile, requestEditorReveal]);
 
   // Toggle file expansion in content results
   const toggleFileExpansion = useCallback((filePath: string) => {

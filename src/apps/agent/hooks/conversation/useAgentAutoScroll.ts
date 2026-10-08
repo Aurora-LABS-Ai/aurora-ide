@@ -53,6 +53,13 @@ interface AgentAutoScrollOptions {
   bottomThreshold?: number;
   /** Per-frame approach fraction (0–1). Higher = snappier, lower = floatier. */
   followLerp?: number;
+  /**
+   * Where to land on a reset INSTEAD of the bottom: a `scrollTop` the reader
+   * had scrolled to before this view was unmounted (a dock tab they switched
+   * away from). `null`/undefined keeps the bottom anchor. Read once per
+   * `resetKey`.
+   */
+  restoreScrollTop?: number | null;
 }
 
 interface AgentAutoScrollResult {
@@ -120,7 +127,15 @@ export function useAgentAutoScroll(
     growthKey = 0,
     bottomThreshold = DEFAULT_BOTTOM_THRESHOLD,
     followLerp = DEFAULT_FOLLOW_LERP,
+    restoreScrollTop = null,
   } = options;
+  // Read by the reset effect only; a ref so a changing value does not re-run
+  // it (the reset is keyed on `resetKey` alone). Written in a layout effect
+  // declared BEFORE the reset effect, so the same commit's reset sees it.
+  const restoreRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    restoreRef.current = restoreScrollTop;
+  });
 
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -344,9 +359,23 @@ export function useAgentAutoScroll(
   // `useEffect` produced. The `initialAnchor` window then keeps re-pinning
   // through async content growth (markdown/highlight) for a short settle time.
   useLayoutEffect(() => {
+    const el = containerRef.current;
+    const restore = restoreRef.current;
+    if (el && typeof restore === "number") {
+      // Back to where the reader was. No bottom anchor: it would re-pin over
+      // the restored position the moment anything laid itself out.
+      el.scrollTop = restore;
+      nearBottomRef.current =
+        el.scrollHeight - (el.scrollTop + el.clientHeight) <= bottomThreshold;
+      initialAnchorRef.current = false;
+      const raf = requestAnimationFrame(() => setShowJump(!nearBottomRef.current));
+      return () => {
+        cancelAnimationFrame(raf);
+        releaseAnchor();
+      };
+    }
     nearBottomRef.current = true;
     initialAnchorRef.current = true;
-    const el = containerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
     // Hide the "jump to latest" pill on the next frame (we just anchored to the
     // bottom) — deferred so it isn't a synchronous setState inside the effect.
@@ -368,12 +397,15 @@ export function useAgentAutoScroll(
       cancelAnimationFrame(raf);
       releaseAnchor();
     };
-  }, [armAnchorQuiet, releaseAnchor, resetKey]);
+  }, [armAnchorQuiet, bottomThreshold, releaseAnchor, resetKey]);
 
   // New message boundary → glide down, but only if the reader was at the bottom
   // (respects a scrolled-up reader; the pill stays available for them).
+  // Glided, not snapped: a message arriving (a sub-agent's report, a reply
+  // starting) should slide into view. `jumpToBottom` still snaps when the
+  // distance is too far to glide sensibly (`shouldSnapToBottom`).
   useEffect(() => {
-    if (nearBottomRef.current) jumpToBottom("auto");
+    if (nearBottomRef.current) jumpToBottom("smooth");
   }, [growthKey, jumpToBottom]);
 
   useEffect(

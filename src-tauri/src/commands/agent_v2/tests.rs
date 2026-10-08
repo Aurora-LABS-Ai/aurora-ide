@@ -294,6 +294,11 @@ struct MockApi {
     /// doing anything else and returns `ApiError::Cancelled`. Used
     /// by the cancel-path tests to make timing deterministic.
     wait_for_cancel: bool,
+    /// If set, every `stream` call takes one permit before replying, so a
+    /// test can step the model one call at a time and act between calls.
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// How many times `stream` has been called.
+    calls: std::sync::atomic::AtomicUsize,
 }
 
 enum TurnScript {
@@ -309,6 +314,8 @@ impl MockApi {
             script: StdMutex::new(turns),
             last_model: StdMutex::new(None),
             wait_for_cancel: false,
+            gate: None,
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -317,7 +324,38 @@ impl MockApi {
             script: StdMutex::new(Vec::new()),
             last_model: StdMutex::new(None),
             wait_for_cancel: true,
+            gate: None,
+            calls: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// A scripted API that replies only when the test hands it a permit.
+    fn gated(turns: Vec<TurnScript>) -> (Self, Arc<tokio::sync::Semaphore>) {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let api = Self {
+            script: StdMutex::new(turns),
+            last_model: StdMutex::new(None),
+            wait_for_cancel: false,
+            gate: Some(gate.clone()),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        (api, gate)
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Wait until `stream` has been called `n` times (and is therefore
+    /// parked on the gate for the n-th).
+    async fn wait_for_calls(&self, n: usize) {
+        for _ in 0..500 {
+            if self.call_count() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the model was not called {n} times (saw {})", self.call_count());
     }
 }
 
@@ -330,10 +368,18 @@ impl StreamingApiClient for MockApi {
         cancel_token: CancellationToken,
     ) -> Result<TurnUsage, ApiError> {
         *self.last_model.lock().expect("last_model mutex") = Some(request.model.to_string());
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         if self.wait_for_cancel {
             cancel_token.cancelled().await;
             return Err(ApiError::Cancelled);
+        }
+        if let Some(gate) = &self.gate {
+            tokio::select! {
+                permit = gate.acquire() => permit.expect("gate open").forget(),
+                () = cancel_token.cancelled() => return Err(ApiError::Cancelled),
+            }
         }
 
         let turn = {
@@ -454,9 +500,16 @@ struct MockEmitter {
     completes: StdMutex<Vec<(String, TurnCompletion)>>,
     errors: StdMutex<Vec<(String, String, Option<RecoveryHint>)>>,
     tool_pendings: StdMutex<Vec<ToolBridgeRequest>>,
+    subagent_events: StdMutex<Vec<crate::agent_runtime::subagents::SubagentEvent>>,
 }
 
 impl MockEmitter {
+    fn snapshot_subagent_events(&self) -> Vec<crate::agent_runtime::subagents::SubagentEvent> {
+        self.subagent_events
+            .lock()
+            .expect("subagent_events mutex")
+            .clone()
+    }
     fn snapshot_events(&self) -> Vec<AgentEventEnvelope> {
         self.events.lock().expect("events mutex").clone()
     }
@@ -500,6 +553,12 @@ impl EventEmitter for MockEmitter {
             .expect("tool_pendings mutex")
             .push(request.clone());
     }
+    fn emit_subagent(&self, event: &crate::agent_runtime::subagents::SubagentEvent) {
+        self.subagent_events
+            .lock()
+            .expect("subagent_events mutex")
+            .push(event.clone());
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -534,6 +593,7 @@ fn turn_usage(message: ConversationMessage, stop_reason: &str) -> TurnUsage {
         },
         stop_reason: stop_reason.into(),
         assistant_message: message,
+        notices: Vec::new(),
     }
 }
 
@@ -568,6 +628,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         user_message: msg.into(),
         user_message_origin: crate::agent_runtime::types::InjectedOrigin::User,
         user_message_summary: None,
+        user_message_agent: None,
         provider_id: "mock-provider".into(),
         model: "mock-model".into(),
         model_selection: None,
@@ -593,6 +654,8 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         transcript_chapters: None,
         browser_tools: None,
         defer_tools: None,
+        subagents_enabled: None,
+        subagent_model: None,
     }
 }
 
@@ -2880,4 +2943,1629 @@ async fn a_process_report_is_not_framed_as_anybody_speaking() {
     // `[The user sent this…]` over a process that ended on its own is a lie
     // about who is talking, which is the whole defect this field exists for.
     assert!(!queued.mid_turn);
+}
+
+// ---------------------------------------------------------------------------
+// Sub-agents
+//
+// The promises: the switch decides whether the parent is handed the tools; a
+// child's roster is its definition and never the spawn tools; a synchronous
+// spawn runs a real child turn whose transcript lands inside the parent's
+// folder; Stop on the parent stops the child.
+// ---------------------------------------------------------------------------
+
+mod subagents {
+    use super::*;
+    use crate::agent_runtime::subagents::catalog::{GENERAL_PURPOSE_TOOLS, READ_ONLY_TOOLS};
+    use crate::agent_runtime::subagents::host::{
+        ParentTurn, SendOutcome, SpawnOutcome, SpawnRequest, SubagentError, SubagentHost,
+    };
+    use crate::agent_runtime::subagents::record::{TaskRecord, TaskStatus};
+    use crate::agent_runtime::subagents::store::{child_store_for, AgentSidecar};
+    use crate::agent_runtime::subagents::SubagentEvent;
+
+    fn scripted_host(
+        emitter: Arc<MockEmitter>,
+        registry: Arc<AgentRegistry>,
+    ) -> (AgentV2SubagentHost<MockEmitter>, tempfile::TempDir) {
+        let catalog_dir = tempfile::tempdir().expect("catalog dir");
+        let host = AgentV2SubagentHost::new(registry, emitter)
+            .with_catalog_dir(catalog_dir.path().to_path_buf());
+        (host, catalog_dir)
+    }
+
+    fn parent_turn(registry: &AgentRegistry, request: AgentChatRequest) -> ParentTurn {
+        let store = registry
+            .store_for_conversation(
+                request.execution_mode,
+                &request.thread_id,
+                request.workspace_path.as_deref(),
+            )
+            .expect("parent store");
+        store
+            .ensure_thread(&request.thread_id, None, None)
+            .expect("parent thread");
+        ParentTurn {
+            thread_id: request.thread_id.clone(),
+            turn_id: request.turn_id.clone(),
+            request: Arc::new(request),
+            store,
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    fn spawn(description: &str, prompt: &str, agent_type: Option<&str>) -> SpawnRequest {
+        SpawnRequest {
+            description: description.into(),
+            prompt: prompt.into(),
+            agent_type: agent_type.map(str::to_string),
+            model: None,
+            background: false,
+            name: None,
+        }
+    }
+
+    fn roster(request: &AgentChatRequest, kind: TurnKind, registry: &Arc<AgentRegistry>) -> Vec<String> {
+        let emitter: Arc<MockEmitter> = Arc::new(MockEmitter::default());
+        let scope = match kind {
+            TurnKind::Child {
+                allow, messenger, ..
+            } => ToolScope::Child { allow, messenger },
+            TurnKind::Conversation
+                if request.subagents_enabled.unwrap_or(false)
+                    && request.execution_mode == AgentExecutionMode::Agent =>
+            {
+                ToolScope::Parent {
+                    host: Arc::new(AgentV2SubagentHost::new(registry.clone(), emitter.clone())),
+                    parent: Arc::new(parent_turn(registry, request.clone())),
+                }
+            }
+            TurnKind::Conversation => ToolScope::Plain,
+        };
+        build_per_turn_tool_registry_scoped(
+            native_test_registry(),
+            &[AllowedTool {
+                name: "ask_question".into(),
+                description: "bridged".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }],
+            request.turn_id.clone(),
+            Arc::new(BridgeRouter::new()),
+            emitter,
+            CancellationToken::new(),
+            true,
+            request.execution_mode,
+            request.workspace_path.as_deref(),
+            false,
+            true,
+            false,
+            &request.thread_id,
+            &scope,
+        )
+        .names()
+    }
+
+    #[test]
+    fn the_switch_decides_whether_the_parent_gets_the_tools() {
+        let (registry, _dir) = temp_registry();
+        let mut on = make_request("t-sw", "thread-sw", "hi");
+        on.subagents_enabled = Some(true);
+        let names = roster(&on, TurnKind::Conversation, &registry);
+        assert!(names.contains(&"spawn_agent".to_string()), "{names:?}");
+        assert!(names.contains(&"list_models".to_string()), "{names:?}");
+        // After the discovery pair, so the natives prefix is unchanged.
+        let spawn_at = names.iter().position(|n| n == "spawn_agent").unwrap();
+        let search_at = names.iter().position(|n| n == "tool_search").unwrap();
+        assert!(spawn_at > search_at);
+
+        let mut off = on.clone();
+        off.subagents_enabled = Some(false);
+        let names_off = roster(&off, TurnKind::Conversation, &registry);
+        assert!(!names_off.iter().any(|n| n == "spawn_agent" || n == "list_models"));
+        let mut absent = on.clone();
+        absent.subagents_enabled = None;
+        assert!(!roster(&absent, TurnKind::Conversation, &registry)
+            .iter()
+            .any(|n| n == "spawn_agent"));
+        // Everything before the switch is the same with it on or off.
+        let head_on: Vec<_> = names.iter().take(names_off.len()).cloned().collect();
+        assert_eq!(head_on, names_off, "the switch only appends");
+    }
+
+    #[test]
+    fn plan_and_chat_never_get_the_tools_whatever_the_switch_says() {
+        let (registry, _dir) = temp_registry();
+        for mode in [AgentExecutionMode::Plan, AgentExecutionMode::Chat] {
+            let mut request = make_request("t-m", "thread-m", "hi");
+            request.subagents_enabled = Some(true);
+            request.execution_mode = mode;
+            let names = roster(&request, TurnKind::Conversation, &registry);
+            assert!(
+                !names.iter().any(|n| n == "spawn_agent" || n == "list_models"),
+                "{mode:?} must not delegate: {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_child_roster_is_its_definition_and_nothing_routed_through_the_window() {
+        let (registry, _dir) = temp_registry();
+        let request = make_request("sub_1", "agent_x", "task");
+        let names = roster(
+            &request,
+            TurnKind::Child {
+                allow: READ_ONLY_TOOLS.iter().map(|t| (*t).to_string()).collect(),
+                cancel: CancellationToken::new(),
+                messenger: None,
+            },
+            &registry,
+        );
+        for name in READ_ONLY_TOOLS {
+            if *name == "code" {
+                // Not in the test registry (code_intel is not registered there).
+                continue;
+            }
+            assert!(names.contains(&(*name).to_string()), "{name} missing: {names:?}");
+        }
+        for forbidden in [
+            "spawn_agent",
+            "list_models",
+            "ask_question",
+            "tool_search",
+            "call_tool",
+            "file_write",
+            "shell_execute",
+            "TaskCreate",
+        ] {
+            assert!(!names.contains(&forbidden.to_string()), "{forbidden} leaked: {names:?}");
+        }
+        // Even a definition that NAMES the spawn tool does not get it.
+        let names = roster(
+            &request,
+            TurnKind::Child {
+                allow: vec!["file_read".into(), "spawn_agent".into(), "ask_question".into()],
+                cancel: CancellationToken::new(),
+                messenger: None,
+            },
+            &registry,
+        );
+        assert_eq!(names, vec!["file_read"]);
+        // The general-purpose roster keeps shell and writes.
+        let names = roster(
+            &request,
+            TurnKind::Child {
+                allow: GENERAL_PURPOSE_TOOLS.iter().map(|t| (*t).to_string()).collect(),
+                cancel: CancellationToken::new(),
+                messenger: None,
+            },
+            &registry,
+        );
+        assert!(names.contains(&"shell_execute".to_string()));
+        assert!(names.contains(&"file_write".to_string()));
+        assert!(!names.contains(&"TaskCreate".to_string()));
+    }
+
+    /// The load-bearing one: a synchronous spawn drives a real child turn
+    /// through the mock API and the parent gets the child's report.
+    #[tokio::test]
+    async fn a_sync_spawn_runs_a_child_turn_inside_the_parents_folder() {
+        let api = Arc::new(MockApi::new(vec![
+            submit_reply(
+                "submit-1",
+                "Login is handled in src/auth/login.ts:42.",
+                "## Found\n- src/auth/login.ts:42 calls `signIn`.",
+            ),
+            TurnScript::Reply {
+                events: vec![AssistantEvent::TextDelta {
+                    delta: "Report submitted.".into(),
+                }],
+                result: Ok(turn_usage(assistant_text_msg("Report submitted."), "end_turn")),
+            },
+        ]));
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory.clone(), dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+
+        let mut request = make_request("t-parent", "thread-parent", "find login");
+        request.subagents_enabled = Some(true);
+        request.workspace_path = Some(dir.path().to_string_lossy().into_owned());
+        let parent = parent_turn(&registry, request);
+
+        let outcome = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    name: Some("scout".into()),
+                    ..spawn("Find the login flow", "Where is login handled?", Some("explore"))
+                },
+            )
+            .await
+            .expect("spawn ok");
+
+        let SpawnOutcome::Finished {
+            agent_id,
+            state,
+            result,
+            error,
+            usage,
+            output_file,
+        } = outcome
+        else {
+            panic!("a sync spawn finishes");
+        };
+        let expected = "Login is handled in src/auth/login.ts:42.\n\n\
+                        ## Found\n- src/auth/login.ts:42 calls `signIn`.";
+        assert_eq!(state, "completed");
+        assert_eq!(result, expected, "the submitted report, not the closing line");
+        assert!(error.is_none());
+        assert_eq!(api.call_count(), 2, "submitted on its own: no reminder");
+        assert_eq!(usage.iterations, 2);
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 14);
+        assert_eq!(usage.tool_calls, 1);
+
+        // The child lives inside the parent's thread folder.
+        let child_store = child_store_for(&parent.store, "thread-parent");
+        let expected_dir = parent.store.thread_dir("thread-parent").join("agents").join(&agent_id);
+        assert_eq!(child_store.thread_dir(&agent_id), expected_dir);
+        assert_eq!(
+            std::path::Path::new(&output_file),
+            expected_dir.join("conversation.jsonl").as_path()
+        );
+        let on_disk = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .expect("child transcript");
+        assert_eq!(on_disk.len(), 4, "prompt, submit_report call, its result, closing line");
+        assert_eq!(on_disk.messages()[0].role, MessageRole::User);
+
+        // The sidecar says who it was and how it ended.
+        let sidecar = AgentSidecar::load(&child_store, &agent_id).expect("agent.json");
+        assert_eq!(sidecar.agent_type, "explore");
+        assert_eq!(sidecar.name.as_deref(), Some("scout"));
+        assert_eq!(sidecar.status, TaskStatus::Completed);
+        assert_eq!(sidecar.result.as_deref(), Some(expected));
+        assert_eq!(sidecar.model.as_deref(), Some("mock-provider:mock-model"));
+        assert_eq!(sidecar.runs, 1);
+
+        // The parent's own listing does not show the child.
+        let parent_threads = parent.store.list_summaries().expect("list");
+        assert_eq!(parent_threads.len(), 1);
+        assert_eq!(parent_threads[0].id, "thread-parent");
+
+        // The live record and the registry's name map.
+        let record = registry
+            .subagent_tasks()
+            .resolve("thread-parent", "scout")
+            .expect("named record");
+        assert_eq!(record.agent_id, agent_id);
+        assert_eq!(record.status(), TaskStatus::Completed);
+        assert_eq!(host.list("thread-parent").len(), 1);
+
+        // The child ran on the parent's provider snapshot, as a copy.
+        let built = factory.built_with_snapshot();
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].provider_id, "mock-provider");
+        assert_eq!(built[0].model, "mock-model");
+
+        // The child's stream used the CHILD's turn id, never the parent's.
+        let events = emitter.snapshot_events();
+        assert!(!events.is_empty());
+        assert!(events.iter().all(|e| e.turn_id.starts_with("sub_")), "{events:?}");
+        let completes = emitter.snapshot_completes();
+        assert_eq!(completes.len(), 1);
+        assert!(completes[0].0.starts_with("sub_"));
+
+        // Lifecycle: started, then finished, with matching ids.
+        let lifecycle = emitter.snapshot_subagent_events();
+        assert_eq!(lifecycle.len(), 2, "{lifecycle:?}");
+        match &lifecycle[0] {
+            SubagentEvent::Started {
+                agent_id: started_id,
+                parent_thread_id,
+                parent_turn_id,
+                turn_id,
+                agent_type,
+                name,
+                background,
+                resumed,
+                ..
+            } => {
+                assert_eq!(started_id, &agent_id);
+                assert_eq!(parent_thread_id, "thread-parent");
+                assert_eq!(parent_turn_id.as_deref(), Some("t-parent"));
+                assert_eq!(turn_id, &completes[0].0);
+                assert_eq!(agent_type, "explore");
+                assert_eq!(name.as_deref(), Some("scout"));
+                assert!(!background && !resumed);
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
+        match &lifecycle[1] {
+            SubagentEvent::Finished {
+                agent_id: finished_id,
+                status,
+                result,
+                reported_to_parent,
+                ..
+            } => {
+                assert_eq!(finished_id, &agent_id);
+                assert_eq!(*status, TaskStatus::Completed);
+                assert_eq!(result, expected);
+                assert!(!reported_to_parent, "a waiting parent has the answer in hand");
+            }
+            other => panic!("expected Finished, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_type_is_refused_before_anything_is_written() {
+        let (registry, dir) = temp_registry();
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-u", "hi"));
+        let err = host
+            .spawn(&parent, spawn("x", "y", Some("janitor")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubagentError::Invalid(ref m) if m.contains("Available")), "{err}");
+        assert!(!parent.store.thread_dir("thread-u").join("agents").exists());
+        assert!(emitter.snapshot_subagent_events().is_empty());
+        assert!(registry.subagent_tasks().is_empty());
+        drop(dir);
+    }
+
+    /// Stop on the parent stops a waiting child: its token is a child of the
+    /// parent turn's, so the cancel reaches the mock stream, the child ends
+    /// `killed`, and the parent is told so instead of being left waiting.
+    #[tokio::test]
+    async fn stopping_the_parent_kills_a_sync_child() {
+        let api = Arc::new(MockApi::cancel_blocker());
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t-p", "thread-k", "go"));
+        let parent_cancel = parent.cancel.clone();
+
+        let spawned = tokio::spawn({
+            let registry = registry.clone();
+            let emitter = emitter.clone();
+            async move {
+                let (host, _catalog) = scripted_host(emitter, registry);
+                host.spawn(&parent, spawn("Long task", "work", None)).await
+            }
+        });
+        drop(host);
+        // Let the child reach its (blocked) model call, then stop the parent.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        parent_cancel.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), spawned)
+            .await
+            .expect("the child must end when the parent is stopped")
+            .expect("task join")
+            .expect("spawn returns an outcome, not an error");
+        let SpawnOutcome::Finished { state, error, .. } = outcome else {
+            panic!("sync spawn finishes");
+        };
+        assert_eq!(state, "killed");
+        assert!(error.is_none(), "a kill is not a failure: {error:?}");
+        let lifecycle = emitter.snapshot_subagent_events();
+        assert!(matches!(
+            lifecycle.last(),
+            Some(SubagentEvent::Finished { status: TaskStatus::Killed, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_model_pin_on_the_parents_provider_swaps_the_model_and_a_foreign_one_is_refused() {
+        let api = Arc::new(MockApi::new(submits("submit-1", "done")));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory.clone(), dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter, registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-model", "hi"));
+
+        let err = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    model: Some("elsewhere:other-model".into()),
+                    ..spawn("x", "y", None)
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SubagentError::UnknownModel(_)), "{err}");
+
+        let outcome = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    model: Some("mock-provider:cheaper-model".into()),
+                    ..spawn("x", "y", None)
+                },
+            )
+            .await
+            .expect("same provider, other model");
+        let SpawnOutcome::Finished { agent_id, .. } = outcome else {
+            panic!("finishes");
+        };
+        let built = factory.built_with_snapshot();
+        assert_eq!(built.last().unwrap().model, "cheaper-model");
+        let child_store = child_store_for(&parent.store, "thread-model");
+        let sidecar = AgentSidecar::load(&child_store, &agent_id).unwrap();
+        assert_eq!(sidecar.model.as_deref(), Some("mock-provider:cheaper-model"));
+        // Without a database the only listable model is the parent's.
+        let models = host.models(&parent).unwrap();
+        assert_eq!(models.len(), 1);
+        assert!(models[0].current);
+        assert_eq!(models[0].pin, "mock-provider:mock-model");
+    }
+
+    #[tokio::test]
+    async fn a_background_spawn_returns_launched_and_finishes_on_its_own() {
+        let api = Arc::new(MockApi::new(submits("submit-1", "bg done")));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-bg", "hi"));
+
+        let outcome = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    ..spawn("Background job", "do it", None)
+                },
+            )
+            .await
+            .expect("launched");
+        let SpawnOutcome::Launched { agent_id, .. } = outcome else {
+            panic!("background spawns launch");
+        };
+        // The parent's turn ending does not stop it.
+        parent.cancel.cancel();
+        let record = registry.subagent_tasks().get(&agent_id).expect("record");
+        for _ in 0..100 {
+            if !record.is_running() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(record.status(), TaskStatus::Completed);
+        assert_eq!(record.snapshot().result, Some(submitted_text("bg done")));
+        let lifecycle = emitter.snapshot_subagent_events();
+        assert!(matches!(
+            lifecycle.last(),
+            Some(SubagentEvent::Finished { status: TaskStatus::Completed, .. })
+        ));
+    }
+
+    // ── Reporting back ──────────────────────────────────────────────
+
+    fn tool_use_reply(id: &str) -> TurnScript {
+        TurnScript::Reply {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_use_msg(id, "ghost", serde_json::json!({})),
+                "tool_use",
+            )),
+        }
+    }
+
+    fn text_reply(text: &str) -> TurnScript {
+        TurnScript::Reply {
+            events: vec![],
+            result: Ok(turn_usage(assistant_text_msg(text), "end_turn")),
+        }
+    }
+
+    /// A child's model call that hands in its report with `submit_report`.
+    fn submit_reply(call_id: &str, summary: &str, report: &str) -> TurnScript {
+        TurnScript::Reply {
+            events: vec![],
+            result: Ok(turn_usage(
+                assistant_tool_use_msg(
+                    call_id,
+                    "submit_report",
+                    serde_json::json!({
+                        "outcome": "done",
+                        "summary": summary,
+                        "report": report,
+                    }),
+                ),
+                "tool_use",
+            )),
+        }
+    }
+
+    /// A child finishing the way it is told to: submit the report (here the
+    /// answer is both summary and report), then close with the answer as its
+    /// one line. Two model calls.
+    fn submits(call_id: &str, answer: &str) -> Vec<TurnScript> {
+        vec![submit_reply(call_id, answer, answer), text_reply(answer)]
+    }
+
+    /// What a run that submitted `answer` via [`submits`] records as its
+    /// result: summary and report, one after the other.
+    fn submitted_text(answer: &str) -> String {
+        format!("{answer}\n\n{answer}")
+    }
+
+    async fn wait_until_done(record: &TaskRecord) {
+        assert!(
+            record.wait_finished(std::time::Duration::from_secs(5)).await,
+            "the agent must finish"
+        );
+    }
+
+    fn report_events(emitter: &MockEmitter) -> Vec<SubagentEvent> {
+        emitter
+            .snapshot_subagent_events()
+            .into_iter()
+            .filter(|e| matches!(e, SubagentEvent::Report { .. }))
+            .collect()
+    }
+
+    /// Acceptance 3: an idle parent is woken with exactly one report.
+    #[tokio::test]
+    async fn a_background_child_finishing_while_the_parent_is_idle_sends_one_report() {
+        let api = Arc::new(MockApi::new(submits("submit-1", "bg report")));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-idle", "hi"));
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("worker".into()),
+                    ..spawn("Background job", "do it", None)
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        // The report path runs right after the finish; give it a tick.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let reports = report_events(&emitter);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        let SubagentEvent::Report {
+            agent_id: reported,
+            parent_thread_id,
+            agent,
+            summary,
+            detail,
+        } = &reports[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!(reported, &agent_id);
+        assert_eq!(parent_thread_id, "thread-idle");
+        assert_eq!(agent.name.as_deref(), Some("worker"));
+        assert_eq!(agent.status, "completed");
+        assert_eq!(summary, "Finished \"Background job\" · completed");
+        assert!(detail.contains("outcome=\"done\""), "{detail}");
+        assert!(detail.contains("Summary: bg report"), "{detail}");
+        assert!(detail.contains("to=\"worker\""));
+        assert!(record.was_notified());
+        assert!(matches!(
+            emitter.snapshot_subagent_events().iter().find(|e| matches!(e, SubagentEvent::Finished { .. })),
+            Some(SubagentEvent::Finished { reported_to_parent: true, .. })
+        ));
+        // Nothing was queued into the parent: it was idle.
+        assert!(registry.drain_queued("thread-idle").is_empty());
+    }
+
+    /// When the parent is mid-turn the report is queued into that turn,
+    /// as an agent report, and no wake is sent.
+    #[tokio::test]
+    async fn a_background_child_finishing_during_the_parents_turn_queues_its_report() {
+        let api = Arc::new(MockApi::new(submits("submit-1", "bg report")));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t-busy", "thread-busy", "hi"));
+        registry.mark_turn_active("thread-busy", "t-busy");
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(&parent, SpawnRequest { background: true, ..spawn("Job", "do it", None) })
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert!(report_events(&emitter).is_empty(), "no wake while the parent runs");
+        let queued = registry.drain_queued("thread-busy");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].origin, crate::agent_runtime::types::InjectedOrigin::Subagent);
+        assert!(!queued[0].mid_turn, "a report is not framed as the user's words");
+        assert_eq!(queued[0].agent.as_ref().unwrap().agent_id, agent_id);
+        assert_eq!(queued[0].display_text.as_deref(), Some("Finished \"Job\" · completed"));
+        assert!(queued[0].text.contains("bg report"));
+        registry.clear_turn_active("thread-busy", "t-busy");
+    }
+
+    /// A parent checking on a RUNNING child gets its timeline at once. The
+    /// child's turn holds its session locked for the whole run; a check that
+    /// read the session waited for the run to end (the 1m 54s card).
+    #[tokio::test]
+    async fn a_check_on_a_running_child_answers_without_waiting_for_its_turn() {
+        let (api, gate) = MockApi::gated(vec![
+            TurnScript::Reply {
+                events: vec![
+                    AssistantEvent::StreamAttemptStarted,
+                    AssistantEvent::Thinking {
+                        text: "Start with the stylesheet.".into(),
+                        signature: None,
+                    },
+                    AssistantEvent::ToolUse {
+                        id: "c1".into(),
+                        name: "file_read".into(),
+                        input: serde_json::json!({ "path": "src/index.css" }),
+                    },
+                ],
+                result: Ok(turn_usage(
+                    assistant_tool_use_msg(
+                        "c1",
+                        "file_read",
+                        serde_json::json!({ "path": "src/index.css" }),
+                    ),
+                    "tool_use",
+                )),
+            },
+            submit_reply("submit-1", "done", "done"),
+            text_reply("done"),
+        ]);
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-check", "hi"));
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("styler".into()),
+                    ..spawn("Job", "do it", None)
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        // Call 1 runs; call 2 parks on the gate with the child's turn — and
+        // its session lock — still held.
+        api.wait_for_calls(1).await;
+        gate.add_permits(1);
+        api.wait_for_calls(2).await;
+
+        let activity = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            host.activity(&parent, "styler"),
+        )
+        .await
+        .expect("a check must not wait for the child's turn")
+        .expect("a live record");
+        assert_eq!(
+            activity.timeline,
+            vec!["thought: Start with the stylesheet.", "ran file_read src/index.css"]
+        );
+        // Seen once: the next check starts after it.
+        let again = host.activity(&parent, &agent_id).await.expect("record");
+        assert!(again.timeline.is_empty(), "{again:?}");
+
+        gate.add_permits(2);
+        wait_until_done(&registry.subagent_tasks().get(&agent_id).unwrap()).await;
+    }
+
+    /// A message sent while the child writes its FINAL reply has no tool
+    /// boundary left to ride. The parent was told "queued", so the child
+    /// carries on with it rather than finishing without it.
+    #[tokio::test]
+    async fn a_message_sent_during_the_final_reply_is_still_answered() {
+        // The first turn ends without a report, but a message is waiting, so
+        // the child takes the message, not a reminder.
+        let (api, gate) = MockApi::gated(vec![
+            text_reply("first answer"),
+            submit_reply("submit-1", "read it", "read it"),
+            text_reply("read it"),
+        ]);
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-late", "hi"));
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("worker".into()),
+                    ..spawn("Job", "do it", None)
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        api.wait_for_calls(1).await;
+        let outcome = host
+            .send_message(&parent, "worker", "one more thing")
+            .await
+            .unwrap();
+        assert!(matches!(outcome, SendOutcome::Queued { .. }));
+        gate.add_permits(3);
+
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(api.call_count(), 3, "the child answered the late message, then submitted");
+        assert_eq!(record.snapshot().result, Some(submitted_text("read it")));
+        let child_store = child_store_for(&parent.store, "thread-late");
+        let session = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .expect("child transcript");
+        assert!(
+            session.messages().iter().any(|m| m.role == MessageRole::User
+                && m.blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.contains("one more thing")))),
+            "{:?}",
+            session.messages()
+        );
+        assert_eq!(report_events(&emitter).len(), 1, "one report, after the follow-up");
+    }
+
+    /// A child that cannot do the task as asked raises its hand with
+    /// `message_parent`. The message takes the parent's mid-turn queue — the
+    /// same path a person's message takes — tagged with the agent and a
+    /// `running` status, ahead of the finish report that follows.
+    #[tokio::test]
+    async fn a_child_messaging_its_busy_parent_lands_in_the_turn_queue_before_its_report() {
+        let api = Arc::new(MockApi::new(vec![
+            TurnScript::Reply {
+                events: vec![],
+                result: Ok(turn_usage(
+                    assistant_tool_use_msg(
+                        "m1",
+                        "message_parent",
+                        serde_json::json!({ "message": "I was asked to run pytest but have no shell tool." }),
+                    ),
+                    "tool_use",
+                )),
+            },
+            submit_reply(
+                "submit-1",
+                "Reviewed what I could without running the suite.",
+                "No shell, so pytest was not run.",
+            ),
+            text_reply("Submitted."),
+        ]));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t-hand", "thread-hand", "hi"));
+        registry.mark_turn_active("thread-hand", "t-hand");
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("checker".into()),
+                    ..spawn("Review the suite", "run pytest and review", Some("explore"))
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert!(report_events(&emitter).is_empty(), "no wake while the parent runs");
+        let queued = registry.drain_queued("thread-hand");
+        assert_eq!(queued.len(), 2, "the message, then the report: {queued:?}");
+        let message = &queued[0];
+        assert_eq!(message.origin, crate::agent_runtime::types::InjectedOrigin::Subagent);
+        let agent = message.agent.as_ref().expect("tagged with the agent");
+        assert_eq!(agent.agent_id, agent_id);
+        assert_eq!(agent.name.as_deref(), Some("checker"));
+        assert_eq!(agent.status, "running", "a mid-run message, not an ending");
+        assert_eq!(message.display_text.as_deref(), Some("Message from \"checker\""));
+        assert!(message.text.contains("have no shell tool"), "{}", message.text);
+        assert!(message.text.contains("send_message to=\"checker\""), "{}", message.text);
+        let report = &queued[1];
+        assert_eq!(report.agent.as_ref().unwrap().status, "completed");
+        assert!(report.text.contains("Reviewed what I could"));
+        registry.clear_turn_active("thread-hand", "t-hand");
+    }
+
+    /// Live run, 2026-10-08: the parent sat in `get_task_output` while two
+    /// children finished. The check claimed their reports and carried them
+    /// as its result (13 and 15 KB), the 8 KiB tool-result cap dropped them
+    /// whole, and no report ever came. A check now only looks: the report
+    /// goes into the busy parent's queue, whole, before the check wakes.
+    #[tokio::test]
+    async fn a_check_waiting_when_a_child_finishes_leaves_the_report_to_the_conversation() {
+        // 12 KB: over the 8 KiB tool-result cap that dropped the live reports,
+        // under the size at which a report moves to a file.
+        let long_report = format!("findings: {}", "x".repeat(12_000));
+        let (api, gate) = MockApi::gated(vec![
+            submit_reply("submit-1", "Findings below.", &long_report),
+            text_reply("Submitted."),
+        ]);
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-poll", "hi"));
+        registry.mark_turn_active("thread-poll", "t");
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(&parent, SpawnRequest { background: true, ..spawn("Job", "do it", None) })
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        // Still running: a check says so and claims nothing.
+        let now = host.output(&parent, &agent_id, None).await.unwrap();
+        assert_eq!(now.status, TaskStatus::Running);
+        assert!(!now.notified);
+
+        // Wait in a check, then let the model answer.
+        let waiter = {
+            let registry = registry.clone();
+            let emitter = emitter.clone();
+            let parent_request = parent.request.clone();
+            let parent_store = parent.store.clone();
+            let agent_id = agent_id.clone();
+            tokio::spawn(async move {
+                let (host, _catalog) = scripted_host(emitter, registry);
+                let parent = ParentTurn {
+                    thread_id: "thread-poll".into(),
+                    turn_id: "t".into(),
+                    request: parent_request,
+                    store: parent_store,
+                    cancel: CancellationToken::new(),
+                };
+                host.output(&parent, &agent_id, Some(std::time::Duration::from_secs(5)))
+                    .await
+            })
+        };
+        api.wait_for_calls(1).await;
+        gate.add_permits(2);
+        let checked = waiter.await.unwrap().unwrap();
+        assert_eq!(checked.status, TaskStatus::Completed);
+
+        // No sleep: the report is queued before the check wakes, so it lands
+        // on the same tool boundary as the check's result.
+        let queued = registry.drain_queued("thread-poll");
+        assert_eq!(queued.len(), 1, "the report, once: {queued:?}");
+        assert_eq!(queued[0].agent.as_ref().unwrap().status, "completed");
+        assert!(
+            queued[0].text.contains(&long_report),
+            "the whole report, not a capped copy"
+        );
+        assert!(report_events(&emitter).is_empty(), "the parent is busy: no wake");
+
+        // Another look at the finished agent sends nothing more.
+        host.output(&parent, &agent_id, Some(std::time::Duration::from_secs(1)))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(registry.drain_queued("thread-poll").is_empty());
+        assert!(report_events(&emitter).is_empty());
+        registry.clear_turn_active("thread-poll", "t");
+    }
+
+    /// The rule under the test above, without its timing: a check that sees
+    /// a finished agent before the finisher has reported must not take the
+    /// report. Old code claimed it there, and the finisher then sent nothing.
+    #[tokio::test]
+    async fn a_check_never_takes_the_report_from_the_finisher() {
+        let (api, gate) = MockApi::gated(submits("submit-1", "the real report"));
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-take", "hi"));
+        registry.mark_turn_active("thread-take", "t");
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(&parent, SpawnRequest { background: true, ..spawn("Job", "do it", None) })
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        api.wait_for_calls(1).await;
+        // The record says finished while the run has not reported yet: the
+        // window a check fell into on the live run.
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        record.finish(
+            TaskStatus::Completed,
+            Some("early".into()),
+            None,
+            crate::agent_runtime::subagents::host::SubagentUsage::default(),
+        );
+        let seen = host.output(&parent, &agent_id, None).await.unwrap();
+        assert_eq!(seen.status, TaskStatus::Completed);
+        assert!(!record.was_notified(), "the check claimed the report");
+
+        gate.add_permits(2);
+        let mut queued = Vec::new();
+        for _ in 0..100 {
+            queued = registry.drain_queued("thread-take");
+            if !queued.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(queued.len(), 1, "the finisher still reports: {queued:?}");
+        assert!(queued[0].text.contains("the real report"));
+        registry.clear_turn_active("thread-take", "t");
+    }
+
+    /// Start a background child under a busy parent and wait for its report
+    /// to reach the parent's queue. Returns the queued items and the id.
+    async fn run_child_to_its_report(
+        api: Arc<MockApi>,
+        thread: &str,
+    ) -> (
+        Vec<crate::agent_runtime::session::QueuedUserMessage>,
+        String,
+        Arc<AgentRegistry>,
+        ParentTurn,
+        tempfile::TempDir,
+    ) {
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter, registry.clone());
+        let parent = parent_turn(&registry, make_request("t", thread, "hi"));
+        registry.mark_turn_active(thread, "t");
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("scout".into()),
+                    ..spawn("Job", "do it", Some("explore"))
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let queued = registry.drain_queued(thread);
+        registry.clear_turn_active(thread, "t");
+        (queued, agent_id, registry, parent, dir)
+    }
+
+    /// A child that ends without `submit_report` is asked once, in Aurora's
+    /// words, and the report it then submits is the one the parent gets.
+    #[tokio::test]
+    async fn a_child_that_ends_without_a_report_is_asked_once_and_its_submission_is_used() {
+        let api = Arc::new(MockApi::new(vec![
+            text_reply("I looked around."),
+            submit_reply("submit-1", "Login is in src/auth.ts:42.", "## Found\n- src/auth.ts:42"),
+            text_reply("Submitted."),
+        ]));
+        let (queued, agent_id, registry, parent, _dir) =
+            run_child_to_its_report(api.clone(), "thread-remind").await;
+        assert_eq!(api.call_count(), 3, "one reminder, then the submission");
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        let text = &queued[0].text;
+        assert!(text.contains("outcome=\"done\""), "{text}");
+        assert!(text.contains("Summary: Login is in src/auth.ts:42."), "{text}");
+        assert!(!text.contains("I looked around."), "the submission, not the chatter: {text}");
+
+        // The reminder is Aurora's note in the child's transcript, never a
+        // message drawn as coming from the parent.
+        let child_store = child_store_for(&parent.store, "thread-remind");
+        let session = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .expect("child transcript");
+        let reminders: Vec<_> = session
+            .messages()
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ProcessEvent { summary, detail, .. } => Some((summary, detail)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reminders.len(), 1, "{:?}", session.messages());
+        assert_eq!(reminders[0].0, "Asked for its report");
+        assert!(reminders[0].1.contains("submit_report"));
+        drop(registry);
+    }
+
+    /// Asked and still silent: the parent gets the last message, plainly
+    /// marked as never submitted. Exactly one reminder, never a loop.
+    #[tokio::test]
+    async fn a_child_that_never_submits_is_reported_from_its_last_message_and_says_so() {
+        let api = Arc::new(MockApi::new(vec![
+            text_reply("Working on it."),
+            text_reply("Login is in src/auth.ts:42."),
+        ]));
+        let (queued, agent_id, registry, _parent, _dir) =
+            run_child_to_its_report(api.clone(), "thread-silent").await;
+        assert_eq!(api.call_count(), 2, "one reminder and no more");
+        assert_eq!(queued.len(), 1);
+        let text = &queued[0].text;
+        assert!(text.contains("outcome=\"not_submitted\""), "{text}");
+        assert!(text.contains("did not submit a report"), "{text}");
+        assert!(text.contains("Login is in src/auth.ts:42."), "{text}");
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        assert_eq!(record.status(), TaskStatus::Completed);
+        assert_eq!(record.snapshot().result.as_deref(), Some("Login is in src/auth.ts:42."));
+    }
+
+    /// A report too long to deliver whole reaches the parent as its head and
+    /// tail plus a file in the PARENT's tool-results folder, which the
+    /// parent's `file_read` opens without any outside-workspace permission.
+    #[tokio::test]
+    async fn a_long_report_reaches_the_parent_as_a_file_it_can_read() {
+        let long = format!("HEAD-MARK\n{}\nTAIL-MARK", "a finding per line\n".repeat(2_000));
+        let api = Arc::new(MockApi::new(vec![
+            submit_reply("submit-1", "Many findings.", &long),
+            text_reply("Submitted."),
+        ]));
+        let (queued, agent_id, _registry, parent, _dir) =
+            run_child_to_its_report(api, "thread-long").await;
+        let text = &queued[0].text;
+        assert!(text.len() < long.len(), "the middle moved out of the message");
+        assert!(text.contains("Summary: Many findings."));
+        assert!(text.contains("HEAD-MARK") && text.contains("TAIL-MARK"));
+        let file = parent
+            .store
+            .tool_results_dir("thread-long")
+            .join(format!("agent-report-{agent_id}-run1.md"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), long.trim(), "all of it is on disk");
+        let shown = dunce::canonicalize(&file).unwrap();
+        assert!(text.contains(&shown.display().to_string()), "the path is given: {text}");
+    }
+
+    /// Live run 5: the user pressed Stop on an agent four minutes in. The
+    /// parent read "0 tool calls · 0 tokens · stopped before it reported
+    /// anything" and could not tell the user had stopped it. Now the report
+    /// says who stopped it, counts the stopped turn's work from its stream,
+    /// and lists what it was doing.
+    #[tokio::test]
+    async fn a_user_stop_reaches_the_parent_as_the_users_decision_with_the_work_done() {
+        let (api, _gate) = MockApi::gated(vec![
+            TurnScript::Reply {
+                events: vec![
+                    AssistantEvent::StreamAttemptStarted,
+                    AssistantEvent::ToolUse {
+                        id: "c1".into(),
+                        name: "file_read".into(),
+                        input: serde_json::json!({ "path": ["data/catalog.txt"] }),
+                    },
+                ],
+                result: Ok(turn_usage(
+                    assistant_tool_use_msg(
+                        "c1",
+                        "file_read",
+                        serde_json::json!({ "path": ["data/catalog.txt"] }),
+                    ),
+                    "tool_use",
+                )),
+            },
+            TurnScript::Reply {
+                events: vec![
+                    AssistantEvent::StreamAttemptStarted,
+                    AssistantEvent::Thinking {
+                        text: "Summing the garden prices".into(),
+                        signature: None,
+                    },
+                ],
+                result: Ok(turn_usage(assistant_text_msg("never reached"), "end_turn")),
+            },
+        ]);
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter, registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-user-stop", "hi"));
+        registry.mark_turn_active("thread-user-stop", "t");
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("inventory".into()),
+                    ..spawn("Report every catalog item", "do it", Some("explore"))
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        // Call 1 runs its tool; call 2 parks on the gate mid-turn.
+        api.wait_for_calls(1).await;
+        _gate.add_permits(1);
+        api.wait_for_calls(2).await;
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        // The window's Stop button.
+        assert!(record.kill(crate::agent_runtime::subagents::record::StopBy::User));
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let queued = registry.drain_queued("thread-user-stop");
+        registry.clear_turn_active("thread-user-stop", "t");
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        let text = &queued[0].text;
+        assert_eq!(queued[0].agent.as_ref().unwrap().status, "killed");
+        assert!(text.contains("outcome=\"stopped\""), "{text}");
+        assert!(text.contains("The user stopped it. Do not restart it"), "{text}");
+        assert!(text.contains("1 tool call"), "the stopped run's work is counted: {text}");
+        assert!(text.contains("- ran file_read"), "{text}");
+        assert_eq!(api.call_count(), 2, "no reminder after a stop");
+    }
+
+    /// Live runs 4 and 5: prober asked about its missing shell, could only
+    /// carry on, finished first, and the parent's answer started a SECOND run
+    /// with a second report. With `waitForReply` the question holds, the
+    /// answer comes back as the tool's result inside the same run, it is not
+    /// delivered a second time, and there is one report.
+    #[tokio::test]
+    async fn a_question_that_waits_is_answered_inside_the_same_run() {
+        let api = Arc::new(MockApi::new(vec![
+            TurnScript::Reply {
+                events: vec![],
+                result: Ok(turn_usage(
+                    assistant_tool_use_msg(
+                        "ask-1",
+                        "message_parent",
+                        serde_json::json!({
+                            "message": "No shell here. Skip the version commands?",
+                            "waitForReply": true,
+                        }),
+                    ),
+                    "tool_use",
+                )),
+            },
+            submit_reply("submit-1", "Skipped the versions as told.", "Exports listed."),
+            text_reply("Submitted."),
+        ]));
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-ask", "hi"));
+        registry.mark_turn_active("thread-ask", "t");
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("prober".into()),
+                    ..spawn("Probe", "run node --version", Some("explore"))
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        for _ in 0..200 {
+            if record.is_waiting_for_reply() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(record.is_waiting_for_reply(), "the question holds for its answer");
+
+        // The parent sees a QUESTION, telling it to answer now.
+        let asked = registry.drain_queued("thread-ask");
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0].display_text.as_deref(), Some("Question from \"prober\""));
+        assert!(asked[0].text.contains("waiting for your answer"));
+
+        let outcome = host
+            .send_message(&parent, "prober", "Yes, skip them and submit partial.")
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, SendOutcome::Queued { taken_now: true, .. }),
+            "{outcome:?}"
+        );
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // One run, one report.
+        assert_eq!(record.snapshot().runs, 1, "no second run");
+        let reports = registry.drain_queued("thread-ask");
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports[0].agent.as_ref().unwrap().status, "completed");
+
+        // The answer is the tool's result, and never arrives again as a message.
+        let child_store = child_store_for(&parent.store, "thread-ask");
+        let session = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .expect("child transcript");
+        let tool_result = session
+            .messages()
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == "ask-1" => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("the question's result");
+        assert!(tool_result.contains("Yes, skip them and submit partial."), "{tool_result}");
+        let user_copies = session
+            .messages()
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .flat_map(|m| m.blocks.iter())
+            .filter(|b| matches!(b, ContentBlock::Text { text } if text.contains("Yes, skip them")))
+            .count();
+        assert_eq!(user_copies, 0, "taken once, as the result");
+        assert_eq!(api.call_count(), 3);
+        registry.clear_turn_active("thread-ask", "t");
+    }
+
+    /// A waiting question takes only the parent's words. A background
+    /// process's ending queued beside them stays for normal delivery.
+    #[test]
+    fn taking_the_parents_answer_leaves_a_process_ending_queued() {
+        let (registry, _dir) = temp_registry();
+        use crate::agent_runtime::types::InjectedOrigin;
+        registry
+            .enqueue_in_order("agent_x", "process bg-1 ended".into(), InjectedOrigin::Process)
+            .unwrap();
+        registry
+            .enqueue_in_order("agent_x", "the answer".into(), InjectedOrigin::User)
+            .unwrap();
+        let taken = registry.take_queued_from("agent_x", InjectedOrigin::User);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].text, "the answer");
+        let left = registry.take_queued_messages("agent_x");
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].text, "process bg-1 ended");
+    }
+
+    /// A report queued after the parent's last tool boundary never reached
+    /// the model; the end-of-turn sweep turns it into a wake.
+    #[tokio::test]
+    async fn a_report_left_in_the_queue_after_the_turn_becomes_a_wake() {
+        let api = Arc::new(MockApi::new(vec![text_reply("parent reply")]));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        // Pre-queue a report AND a person's message: only the report sweeps.
+        registry
+            .enqueue_with_agent(
+                "thread-sweep",
+                "<subagent_report>late</subagent_report>".into(),
+                Some("Finished \"Late\" · completed".into()),
+                None,
+                crate::agent_runtime::types::InjectedOrigin::Subagent,
+                Some(crate::agent_runtime::types::AgentReportMeta {
+                    agent_id: "agent_late".into(),
+                    name: None,
+                    status: "completed".into(),
+                }),
+            )
+            .unwrap();
+        registry
+            .enqueue_message(
+                "thread-sweep",
+                "and also this".into(),
+                None,
+                None,
+                crate::agent_runtime::types::InjectedOrigin::User,
+            )
+            .await
+            .unwrap();
+
+        let driver = TurnDriver::new(registry.clone(), emitter.clone());
+        driver
+            .run_turn(make_request("t-sweep", "thread-sweep", "hi"))
+            .await
+            .expect("turn");
+        // A text-only turn has no tool boundary, so neither was injected.
+        let reports = report_events(&emitter);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(matches!(&reports[0], SubagentEvent::Report { agent_id, .. } if agent_id == "agent_late"));
+        let left = registry.drain_queued("thread-sweep");
+        assert_eq!(left.len(), 1, "the person's message is still waiting");
+        assert_eq!(left[0].text, "and also this");
+    }
+
+    // ── Messaging and resume ────────────────────────────────────────
+
+    /// Acceptance 5: a message to a running child lands in its transcript
+    /// as a user message after the tool call it interrupted, in order.
+    #[tokio::test]
+    async fn a_message_to_a_running_child_is_delivered_at_its_next_boundary() {
+        let (api, gate) = MockApi::gated(vec![
+            tool_use_reply("c1"),
+            tool_use_reply("c2"),
+            submit_reply("submit-1", "child done", "child done"),
+            text_reply("child done"),
+        ]);
+        let api = Arc::new(api);
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-msg", "hi"));
+
+        let SpawnOutcome::Launched { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    background: true,
+                    name: Some("worker".into()),
+                    ..spawn("Job", "do it", None)
+                },
+            )
+            .await
+            .expect("launched")
+        else {
+            panic!("launches");
+        };
+        // Call 1 → tool c1 → boundary 1 (queue empty) → call 2 waits on the gate.
+        api.wait_for_calls(1).await;
+        gate.add_permits(1);
+        api.wait_for_calls(2).await;
+        // Now the message. It must ride boundary 2, after tool c2.
+        let outcome = host
+            .send_message(&parent, "worker", "also check the tests")
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            SendOutcome::Queued {
+                agent_id: agent_id.clone(),
+                taken_now: false
+            }
+        );
+        let one_more = host.send_message(&parent, &agent_id, "and the docs").await.unwrap();
+        assert!(matches!(one_more, SendOutcome::Queued { .. }));
+        gate.add_permits(3);
+
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+
+        let child_store = child_store_for(&parent.store, "thread-msg");
+        let session = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .expect("child transcript");
+        // user, assistant(c1), tool(c1), assistant(c2), tool(c2 + message),
+        // assistant(submit_report), tool(submitted), assistant(done)
+        assert_eq!(session.len(), 8, "{:?}", session.messages());
+        let second_tool_msg = &session.messages()[4];
+        assert_eq!(second_tool_msg.role, MessageRole::Tool);
+        let texts: Vec<&str> = second_tool_msg
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // The parent's messages all arrive, in order. A person's composer has
+        // one pending slot; the parent's queue to its child does not.
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert!(texts[0].contains("also check the tests"));
+        assert!(texts[1].contains("and the docs"));
+        for text in &texts {
+            assert!(
+                text.starts_with(crate::agent_runtime::session::MID_TURN_PREAMBLE),
+                "framed as arriving mid-turn: {text}"
+            );
+        }
+        let first_tool_msg = &session.messages()[2];
+        assert!(
+            !first_tool_msg.blocks.iter().any(|b| matches!(b, ContentBlock::Text { .. })),
+            "nothing rode the first boundary"
+        );
+        assert!(emitter
+            .snapshot_subagent_events()
+            .iter()
+            .any(|e| matches!(e, SubagentEvent::Message { delivered: false, .. })));
+    }
+
+    /// Acceptance 6 and 7: a message to a finished agent resumes it under the
+    /// same id with its history; evicting the record first changes nothing.
+    #[tokio::test]
+    async fn a_message_to_a_finished_or_forgotten_child_resumes_it_with_its_history() {
+        let api = Arc::new(MockApi::new(
+            [
+                submits("submit-1", "first answer"),
+                submits("submit-2", "second answer"),
+                submits("submit-3", "third answer"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        ));
+        let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-resume", "hi"));
+
+        let SpawnOutcome::Finished { agent_id, .. } = host
+            .spawn(
+                &parent,
+                SpawnRequest {
+                    name: Some("scout".into()),
+                    ..spawn("Scout", "first task", Some("explore"))
+                },
+            )
+            .await
+            .expect("sync")
+        else {
+            panic!("finishes");
+        };
+
+        // 1. Finished, still in memory → resumed by name.
+        let outcome = host.send_message(&parent, "scout", "second task").await.unwrap();
+        let SendOutcome::Resumed { agent_id: resumed, note, .. } = outcome else {
+            panic!("a finished agent is resumed, got {outcome:?}");
+        };
+        assert_eq!(resumed, agent_id, "the id never changes");
+        assert!(note.is_none());
+        let record = registry.subagent_tasks().get(&agent_id).unwrap();
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(
+            record.snapshot().result,
+            Some(submitted_text("second answer")),
+            "the second run's own report, not the first's"
+        );
+        assert_eq!(record.snapshot().runs, 2);
+
+        // 2. Evicted → resumed from disk by id.
+        assert!(registry.subagent_tasks().evict(&agent_id));
+        let outcome = host.send_message(&parent, &agent_id, "third task").await.unwrap();
+        assert!(matches!(outcome, SendOutcome::Resumed { agent_id: ref id, .. } if id == &agent_id));
+        let record = registry.subagent_tasks().get(&agent_id).expect("rebuilt from disk");
+        wait_until_done(&record).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // One transcript, all three exchanges, in order.
+        let child_store = child_store_for(&parent.store, "thread-resume");
+        let session = Session::load_from_path(&agent_id, &child_store.session_path(&agent_id))
+            .unwrap();
+        let texts: Vec<String> = session
+            .messages()
+            .iter()
+            .map(|m| {
+                m.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "first task",
+                "first answer",
+                "second task",
+                "second answer",
+                "third task",
+                "third answer"
+            ]
+        );
+        // Two calls per run (submit, close), and no reminder: every run
+        // submitted. The model saw the whole history on the resumed calls.
+        assert_eq!(api.call_count(), 6);
+
+        let sidecar = AgentSidecar::load(&child_store, &agent_id).unwrap();
+        assert_eq!(sidecar.runs, 3);
+        assert_eq!(sidecar.status, TaskStatus::Completed);
+        assert_eq!(sidecar.result, Some(submitted_text("third answer")));
+        assert_eq!(sidecar.agent_type, "explore", "the definition is kept for routing");
+
+        // Each resumed run reported once; the first (sync) run did not.
+        let reports = report_events(&emitter);
+        assert_eq!(reports.len(), 2, "{reports:?}");
+        let started_resumed = emitter
+            .snapshot_subagent_events()
+            .iter()
+            .filter(|e| matches!(e, SubagentEvent::Started { resumed: true, .. }))
+            .count();
+        assert_eq!(started_resumed, 2);
+
+        // Nothing is known about a stranger.
+        let err = host.send_message(&parent, "nobody", "x").await.unwrap_err();
+        assert!(matches!(err, SubagentError::NotFound(_)));
+    }
+
+    /// The window's view: files first, live state overlaid.
+    #[tokio::test]
+    async fn the_agents_list_merges_disk_and_live_state() {
+        let api = Arc::new(MockApi::new(
+            [submits("s-a", "a"), submits("s-b", "b")].into_iter().flatten().collect(),
+        ));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        let (host, _catalog) = scripted_host(emitter.clone(), registry.clone());
+        let parent = parent_turn(&registry, make_request("t", "thread-list", "hi"));
+        let SpawnOutcome::Finished { agent_id: first, .. } =
+            host.spawn(&parent, spawn("First", "a", None)).await.unwrap()
+        else {
+            panic!()
+        };
+        let SpawnOutcome::Finished { agent_id: second, .. } =
+            host.spawn(&parent, spawn("Second", "b", None)).await.unwrap()
+        else {
+            panic!()
+        };
+        registry.subagent_tasks().evict(&first);
+        let listed = list_agents_for(&registry, &parent.store, "thread-list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].agent_id, first, "oldest first");
+        assert_eq!(listed[0].status, TaskStatus::Completed, "from disk");
+        assert_eq!(listed[0].result, Some(submitted_text("a")));
+        assert_eq!(listed[1].agent_id, second);
+        assert_eq!(listed[1].result, Some(submitted_text("b")));
+        assert!(list_agents_for(&registry, &parent.store, "thread-none").is_empty());
+    }
 }

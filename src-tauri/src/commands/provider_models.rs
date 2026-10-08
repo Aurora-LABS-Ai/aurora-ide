@@ -112,7 +112,7 @@ fn row_to_model(row: &Value) -> Option<DiscoveredModel> {
 fn uses_anthropic_auth(provider_type: &str) -> bool {
     matches!(
         provider_type.trim(),
-        "anthropic" | "minimax" | "modal-messages"
+        "anthropic" | "anthropic-api" | "minimax" | "modal-messages"
     )
 }
 
@@ -176,12 +176,18 @@ pub async fn provider_list_models(
 ) -> Result<Vec<DiscoveredModel>, String> {
     // Subscription rows sign in instead of holding a key, so the key-based
     // request below can only be refused ("x-api-key header is required").
-    // Each asks its own backend with the stored sign-in instead.
+    // Each asks its own backend with the stored sign-in instead. Anthropic's
+    // own row holds a key but needs its own lister too (see its arm).
     let signed_in_list = match provider_type.as_deref().map(str::trim) {
         Some("codex") => Some(crate::api::codex::models::list_models().await),
         Some(crate::api::claude_code::CLAUDE_CODE_PROVIDER_TYPE) => {
             Some(crate::api::claude_code::models::list_models().await)
         }
+        // A real key, but Anthropic pages the list at 20 unless asked for
+        // more — the generic request below would quietly miss models.
+        Some(crate::api::anthropic_api::ANTHROPIC_API_PROVIDER_TYPE) => Some(
+            crate::api::anthropic_api::models::list_models(&base_url, &api_key).await,
+        ),
         _ => None,
     };
     if let Some(listed) = signed_in_list {

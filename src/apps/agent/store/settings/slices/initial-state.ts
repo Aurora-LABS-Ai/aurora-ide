@@ -75,6 +75,8 @@ export const initialSettingsState = {
   // Chapters change what the agent is told to do, so they stay off until asked for.
   transcriptChapters: false,
   browserTools: true,
+  subagentsEnabled: false,
+  subagentModel: null,
   deferTools: false,
   mcpBridgeEnabled: false,
 

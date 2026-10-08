@@ -198,7 +198,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           //     remaining in the tree is inline (e.g. `code` spans
           //     inside paragraphs and list items). Render as a small
           //     pill so we never put a <div> inside a <p>.
-          pre({ children }: any) {
+          pre({ children }) {
             if (
               React.isValidElement(children) &&
               (children as React.ReactElement<{
@@ -224,7 +224,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
             return <pre>{children}</pre>;
           },
 
-          code({ className, children }: any) {
+          code({ className, children }) {
             return (
               <code
                 className={`px-1.5 py-0.5 rounded bg-input text-[13px] ${className || ''}`.trim()}
@@ -239,7 +239,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           },
           
           // Headings
-          h1: ({ children }: any) => (
+          h1: ({ children }) => (
             <h1
               className="text-2xl font-bold mt-6 mb-3 pb-2 border-b"
               style={{ color: 'var(--aurora-common-text-primary)', borderColor: 'var(--aurora-common-border)' }}
@@ -247,7 +247,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </h1>
           ),
-          h2: ({ children }: any) => (
+          h2: ({ children }) => (
             <h2
               className="text-xl font-bold mt-5 mb-3 pb-1 border-b"
               style={{ color: 'var(--aurora-common-text-primary)', borderColor: 'var(--aurora-common-border)' }}
@@ -255,7 +255,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </h2>
           ),
-          h3: ({ children }: any) => (
+          h3: ({ children }) => (
             <h3
               className="text-lg font-semibold mt-4 mb-2"
               style={{ color: 'var(--aurora-common-text-primary)' }}
@@ -263,7 +263,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </h3>
           ),
-          h4: ({ children }: any) => (
+          h4: ({ children }) => (
             <h4
               className="text-base font-semibold mt-3 mb-2"
               style={{ color: 'var(--aurora-common-text-primary)' }}
@@ -271,7 +271,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </h4>
           ),
-          h5: ({ children }: any) => (
+          h5: ({ children }) => (
             <h5
               className="text-sm font-semibold mt-2 mb-1"
               style={{ color: 'var(--aurora-common-text-primary)' }}
@@ -279,7 +279,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </h5>
           ),
-          h6: ({ children }: any) => (
+          h6: ({ children }) => (
             <h6
               className="text-xs font-medium mt-2 mb-1"
               style={{ color: 'var(--aurora-common-muted-foreground)' }}
@@ -289,12 +289,12 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           ),
           
           // Paragraphs
-          p: ({ children }: any) => (
+          p: ({ children }) => (
             <p className="mb-4 leading-7">{children}</p>
           ),
           
           // Links
-          a: ({ href, children }: any) => (
+          a: ({ href, children }) => (
             <a
               href={href}
               className="underline hover:text-primary transition-colors"
@@ -305,18 +305,18 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           ),
           
           // Lists
-          ul: ({ children }: any) => (
+          ul: ({ children }) => (
             <ul className="list-disc pl-6 mb-4 space-y-1">{children}</ul>
           ),
-          ol: ({ children }: any) => (
+          ol: ({ children }) => (
             <ol className="list-decimal pl-6 mb-4 space-y-1">{children}</ol>
           ),
-          li: ({ children }: any) => (
+          li: ({ children }) => (
             <li className="leading-7">{children}</li>
           ),
           
           // Blockquotes
-          blockquote: ({ children }: any) => (
+          blockquote: ({ children }) => (
             <blockquote
               className="border-l-4 pl-4 py-1 mb-4 text-sm"
               style={{ borderColor: 'var(--aurora-common-border)', color: 'var(--aurora-common-muted-foreground)' }}
@@ -326,14 +326,14 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
           ),
           
           // Tables
-          table: ({ children }: any) => (
+          table: ({ children }) => (
             <div className="overflow-x-auto mb-4">
               <table className="min-w-full border-collapse text-sm">
                 {children}
               </table>
             </div>
           ),
-          thead: ({ children }: any) => (
+          thead: ({ children }) => (
             <thead
               className="border-b-2 font-medium"
               style={{ borderColor: 'var(--aurora-common-border)', color: 'var(--aurora-common-text-primary)' }}
@@ -341,16 +341,16 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
               {children}
             </thead>
           ),
-          tbody: ({ children }: any) => <tbody>{children}</tbody>,
-          tr: ({ children }: any) => (
+          tbody: ({ children }) => <tbody>{children}</tbody>,
+          tr: ({ children }) => (
             <tr className="border-b" style={{ borderColor: 'var(--aurora-common-border)' }}>
               {children}
             </tr>
           ),
-          th: ({ children }: any) => (
+          th: ({ children }) => (
             <th className="px-3 py-2 text-left">{children}</th>
           ),
-          td: ({ children }: any) => (
+          td: ({ children }) => (
             <td className="px-3 py-2">{children}</td>
           ),
           
@@ -362,20 +362,20 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
             />
           ),
           
-          // Italic
-          em: ({ children, ...props }: any) => (
-            <em className="italic" {...props}>{children}</em>
-          ),
-          
+          // Italic. Only what is rendered is passed on: react-markdown's
+          // props include its own `node` (the syntax tree), which a blanket
+          // spread put onto the DOM element.
+          em: ({ children }) => <em className="italic">{children}</em>,
+
           // Strong/Bold
-          strong: ({ children, ...props }: any) => (
-            <strong className="font-semibold" style={{ color: 'var(--aurora-common-text-primary)' }} {...props}>
+          strong: ({ children }) => (
+            <strong className="font-semibold" style={{ color: 'var(--aurora-common-text-primary)' }}>
               {children}
             </strong>
           ),
-          
+
           // Mermaid diagram blocks
-          div: ({ className, children, ...props }: any) => {
+          div: ({ className, children }) => {
             if (className === 'mermaid') {
               return (
                 <div className="mermaid my-4 p-4 bg-input/30 rounded-lg overflow-auto">
@@ -383,7 +383,7 @@ export const MarkdownPreview: React.FC<MarkdownPreviewProps> = ({ content, class
                 </div>
               );
             }
-            return <div className={className} {...props}>{children}</div>;
+            return <div className={className}>{children}</div>;
           },
         }}
       >

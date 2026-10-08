@@ -58,6 +58,24 @@ pub struct TurnDriver<E: EventEmitter> {
     registry: Arc<AgentRegistry>,
     emitter: Arc<E>,
 }
+
+/// Whose turn [`TurnDriver::run_turn_in_store`] is driving.
+pub(crate) enum TurnKind {
+    /// A conversation the user can see. Sub-agent tools follow the request's
+    /// switch and mode.
+    Conversation,
+    /// A sub-agent's run: this allow-list and nothing else, stopped by this
+    /// token — a child of the parent turn's for a waiting parent, the
+    /// record's own for a background agent. The driver must not mint its
+    /// own, or Stop on the parent would never reach the child.
+    Child {
+        allow: Vec<String>,
+        cancel: CancellationToken,
+        /// The run's way back to its parent, for `message_parent`. `None`
+        /// only in tests that drive a child turn without a host.
+        messenger: Option<Arc<dyn crate::agent_runtime::subagents::host::ParentMessenger>>,
+    },
+}
 /// What to persist as the thread's model.
 ///
 /// The pin answers "what is this conversation on", and every later capability
@@ -126,7 +144,7 @@ fn bind_cli_task(task_id: &str, turn_id: &str, thread_id: &str, request: &AgentC
 
 /// [`pinned_model`] over plain strings, so the rule can be tested without
 /// standing up a whole request.
-fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &str) -> String {
+pub(super) fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &str) -> String {
     let model = selection
         .map(str::trim)
         .filter(|selection| !selection.is_empty())
@@ -142,10 +160,56 @@ fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &str) -> Stri
     }
 }
 
+/// Sub-agent reports still in a thread's queue when no turn is running on it
+/// were queued too late to be injected. Each becomes a `Report` event so the
+/// window starts a turn for it; everything else stays queued, in order.
+///
+/// Called when a turn ends, and by a reporter that queued into a turn which
+/// ended between its "is a turn running" check and its enqueue. Draining is
+/// atomic under the queue's lock, so the two can race without a report going
+/// out twice.
+pub(super) fn sweep_leftover_reports<E: EventEmitter + ?Sized>(
+    registry: &AgentRegistry,
+    emitter: &E,
+    thread_id: &str,
+) {
+    use crate::agent_runtime::subagents::SubagentEvent;
+    use crate::agent_runtime::types::InjectedOrigin;
+    let leftover = registry.drain_queued(thread_id);
+    if leftover.is_empty() {
+        return;
+    }
+    for queued in leftover {
+        if queued.origin != InjectedOrigin::Subagent {
+            registry.requeue(thread_id, queued);
+            continue;
+        }
+        let agent = queued
+            .agent
+            .unwrap_or_else(|| crate::agent_runtime::types::AgentReportMeta {
+                agent_id: String::new(),
+                name: None,
+                status: "completed".to_string(),
+            });
+        emitter.emit_subagent(&SubagentEvent::Report {
+            agent_id: agent.agent_id.clone(),
+            parent_thread_id: thread_id.to_string(),
+            agent,
+            summary: queued.display_text.unwrap_or_else(|| queued.text.clone()),
+            detail: queued.text,
+        });
+    }
+}
+
 impl<E: EventEmitter> TurnDriver<E> {
     #[must_use]
     pub fn new(registry: Arc<AgentRegistry>, emitter: Arc<E>) -> Self {
         Self { registry, emitter }
+    }
+
+    /// After a turn ends: see [`sweep_leftover_reports`].
+    fn sweep_leftover_reports(&self, thread_id: &str) {
+        sweep_leftover_reports(&self.registry, self.emitter.as_ref(), thread_id);
     }
 
     pub async fn compact_thread(
@@ -266,6 +330,32 @@ impl<E: EventEmitter> TurnDriver<E> {
         &self,
         request: AgentChatRequest,
     ) -> Result<TurnCompletion, RuntimeError> {
+        let request = request.scoped_to_mode();
+        // Resolve the store that owns this conversation (or will). Children
+        // never come through here: a sub-agent's store is the folder inside
+        // its parent's thread directory, and `run_turn_in_store` is handed it.
+        let store = self.registry.store_for_conversation(
+            request.execution_mode,
+            &request.thread_id,
+            request.workspace_path.as_deref(),
+        )?;
+        self.run_turn_in_store(request, store, TurnKind::Conversation)
+            .await
+    }
+
+    /// [`Self::run_turn`] against a store the caller already resolved.
+    ///
+    /// The one extra door into the driver, for sub-agents: a child is a
+    /// conversation in a store the project listing cannot see, and its tool
+    /// roster is its definition's allow-list rather than the mode's roster.
+    /// Everything else — the journal, the mutex, the save, the closing event
+    /// — is exactly the parent's path, which is the point.
+    pub(crate) async fn run_turn_in_store(
+        &self,
+        request: AgentChatRequest,
+        store: Arc<SessionStore>,
+        kind: TurnKind,
+    ) -> Result<TurnCompletion, RuntimeError> {
         let mut request = request.scoped_to_mode();
         let mut trace = crate::agent_runtime::diagnostics::TurnTrace::new(
             &request.thread_id,
@@ -288,11 +378,6 @@ impl<E: EventEmitter> TurnDriver<E> {
         }
 
         // 1. Resolve the session (cache → disk → fresh).
-        let store = self.registry.store_for_conversation(
-            request.execution_mode,
-            &thread_id,
-            request.workspace_path.as_deref(),
-        )?;
         let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
         {
             let mut session = session_arc.lock().await;
@@ -321,17 +406,53 @@ impl<E: EventEmitter> TurnDriver<E> {
 
         // 6. (out of order — token built first so the bridge executor
         //    can hold it). Per-turn cancellation token, registered for
-        //    agent_cancel.
-        let cancel_token = CancellationToken::new();
+        //    agent_cancel. A sub-agent's turn arrives with its token already
+        //    made, tied to whoever may stop it.
+        let cancel_token = match &kind {
+            TurnKind::Child { cancel, .. } => cancel.clone(),
+            TurnKind::Conversation => CancellationToken::new(),
+        };
         self.registry
             .register_in_flight(turn_id.clone(), cancel_token.clone());
+        // From here until step 10 a sub-agent finishing can queue its report
+        // into this turn instead of waking the conversation.
+        self.registry.mark_turn_active(&thread_id, &turn_id);
 
         // 3. Build the per-turn ToolRegistry. Start with the
         //    registry-level base (empty in Phase 2.3) and overlay one
         //    FrontendBridgeExecutor per AllowedTool. Re-registering an
         //    existing name overwrites — Phase 3 will use this to let
         //    native Rust tools shadow specific bridge entries.
-        let per_turn_tools = build_per_turn_tool_registry(
+        //
+        //    Whose roster: a sub-agent's is its definition's allow-list; a
+        //    conversation's is the mode's roster, plus the sub-agent tools when
+        //    the user's switch is on and this is a project Agent turn. Plan
+        //    mode plans, Chat has no workspace to delegate in.
+        let scope = match kind {
+            TurnKind::Child {
+                allow, messenger, ..
+            } => ToolScope::Child { allow, messenger },
+            TurnKind::Conversation
+                if request.subagents_enabled.unwrap_or(false)
+                    && request.execution_mode == AgentExecutionMode::Agent =>
+            {
+                ToolScope::Parent {
+                    host: Arc::new(AgentV2SubagentHost::new(
+                        self.registry.clone(),
+                        self.emitter.clone(),
+                    )),
+                    parent: Arc::new(crate::agent_runtime::subagents::ParentTurn {
+                        thread_id: thread_id.clone(),
+                        turn_id: turn_id.clone(),
+                        request: Arc::new(request.clone()),
+                        store: store.clone(),
+                        cancel: cancel_token.clone(),
+                    }),
+                }
+            }
+            TurnKind::Conversation => ToolScope::Plain,
+        };
+        let per_turn_tools = build_per_turn_tool_registry_scoped(
             self.registry.tools(),
             &request.tools,
             turn_id.clone(),
@@ -345,6 +466,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             request.browser_tools.unwrap_or(true),
             request.defer_tools.unwrap_or(false),
             &request.thread_id,
+            &scope,
         );
 
         // 3b. Hand `generate_image` this conversation's image providers and
@@ -393,8 +515,11 @@ impl<E: EventEmitter> TurnDriver<E> {
         // A machine-started turn has no pasted pictures to land and no words to
         // attribute — scanning its text for image markers would only be a way
         // to misread a log line as one.
-        let started_by_process =
-            request.user_message_origin == crate::agent_runtime::types::InjectedOrigin::Process;
+        // A machine-started turn: a process ending or a sub-agent reporting.
+        // Neither has pasted pictures to land, words to attribute, or a title
+        // to derive.
+        let started_by_process = request.user_message_origin
+            != crate::agent_runtime::types::InjectedOrigin::User;
         let landed = match store
             .assets_dir(&request.thread_id)
             .filter(|_| !started_by_process)
@@ -409,24 +534,53 @@ impl<E: EventEmitter> TurnDriver<E> {
                 stored: Vec::new(),
             },
         };
-        let mut user_message = if started_by_process {
-            // The transcript's one line is the display text; the model's copy
-            // keeps the process id and the log path, because the useful next
-            // move is `shell_read_output` and it cannot make that call out of
-            // prose. Same split the mid-turn injection uses.
-            let summary = request
-                .user_message_summary
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(landed.text.as_str());
-            ConversationMessage::user_process_event(
-                summary,
-                landed.text.clone(),
-                Utc::now().timestamp_millis(),
-            )
-        } else {
-            ConversationMessage::user_text(landed.text, Utc::now().timestamp_millis())
+        let mut user_message = match request.user_message_origin {
+            crate::agent_runtime::types::InjectedOrigin::Process => {
+                // The transcript's one line is the display text; the model's
+                // copy keeps the process id and the log path, because the
+                // useful next move is `shell_read_output` and it cannot make
+                // that call out of prose. Same split the mid-turn injection
+                // uses.
+                let summary = request
+                    .user_message_summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(landed.text.as_str());
+                ConversationMessage::user_process_event(
+                    summary,
+                    landed.text.clone(),
+                    Utc::now().timestamp_millis(),
+                )
+            }
+            crate::agent_runtime::types::InjectedOrigin::Subagent => {
+                // A background sub-agent finished while this conversation was
+                // idle and the window started this turn to deliver its
+                // report. Same split: one line for the transcript, the
+                // report with its ids for the model.
+                let summary = request
+                    .user_message_summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(landed.text.as_str());
+                let agent = request.user_message_agent.clone().unwrap_or_else(|| {
+                    crate::agent_runtime::types::AgentReportMeta {
+                        agent_id: String::new(),
+                        name: None,
+                        status: "completed".to_string(),
+                    }
+                });
+                ConversationMessage::user_agent_report(
+                    agent,
+                    summary,
+                    landed.text.clone(),
+                    Utc::now().timestamp_millis(),
+                )
+            }
+            crate::agent_runtime::types::InjectedOrigin::User => {
+                ConversationMessage::user_text(landed.text, Utc::now().timestamp_millis())
+            }
         };
         // The names the pasted pictures were stored under, in the order they
         // appear in the message.
@@ -700,6 +854,13 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     guard didn't catch (e.g. an abnormal panic).
         self.registry.unregister_in_flight(&turn_id);
         self.registry.bridge_router().drop_turn(&turn_id);
+        // 10b. The turn is over for the sub-agent reporter too. A report that
+        //      was queued into this turn after its last tool boundary never
+        //      reached the model; hand each one to the window as a wake
+        //      instead, and leave anything else (a person's message) where
+        //      the composer expects it.
+        self.registry.clear_turn_active(&thread_id, &turn_id);
+        self.sweep_leftover_reports(&thread_id);
 
         // 11. Closing event. Cancellations get an error event with the
         //     literal "cancelled" so the frontend has ONE observable
@@ -780,7 +941,20 @@ pub(super) fn with_compaction_model(
 
 pub(super) fn build_runtime_config(request: &AgentChatRequest) -> RuntimeConfig {
     let defaults = RuntimeConfig::default();
+    // The prompt section exists exactly when the tools do — see the scope
+    // decision in `run_turn_in_store` — so the model is never told about a
+    // tool it has not got, or handed one it was never told about.
+    let subagent_instructions = (request.subagents_enabled.unwrap_or(false)
+        && request.execution_mode == AgentExecutionMode::Agent)
+        .then(|| {
+            crate::agent_runtime::subagents::prompt::parent_instructions(
+                &crate::agent_runtime::subagents::catalog::Catalog::load(
+                    &crate::agent_runtime::subagents::catalog::Catalog::user_dir(),
+                ),
+            )
+        });
     RuntimeConfig {
+        subagent_instructions,
         // What to SEND, as the frontend composed it. Distinct from the pin the
         // session records — see `RuntimeConfig::wire_model`.
         wire_model: request.model.clone(),

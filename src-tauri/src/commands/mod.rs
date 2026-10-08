@@ -320,6 +320,18 @@ pub struct CommandStreamInfo {
     /// command also loses its timeout, because the deadline existed to protect
     /// a caller that is no longer there.
     pub detached: bool,
+    /// The conversation whose `shell_spawn` started it, when one did. A
+    /// sub-agent's process belongs to the sub-agent: filing it under the
+    /// conversation on screen told the parent about a process it never
+    /// started and left the child that did unaware it had ended.
+    pub thread_id: Option<String>,
+}
+
+/// Record which conversation a just-registered process belongs to.
+pub fn tag_command_stream_thread(request_id: &str, thread_id: &str) {
+    if let Some(stream) = ACTIVE_COMMAND_STREAMS.write().get_mut(request_id) {
+        stream.thread_id = Some(thread_id.to_string());
+    }
 }
 
 lazy_static::lazy_static! {
@@ -362,6 +374,7 @@ pub fn register_command_stream(
             log_path,
             job: None,
             detached: false,
+            thread_id: None,
         });
 }
 
@@ -408,6 +421,9 @@ pub struct BackgroundProcessRow {
     pub started_at_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_file: Option<String>,
+    /// The conversation that started it, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 /// The live process ledger, for the UI.
@@ -448,6 +464,7 @@ pub fn shell_background_processes() -> Vec<BackgroundProcessRow> {
             pid: stream.pid,
             started_at_ms: stream.started_at_ms,
             output_file: stream.log_path,
+            thread_id: stream.thread_id,
         })
         .collect()
 }
@@ -2141,6 +2158,10 @@ struct ProcessEnded {
     /// `"exited"` when the process ended by itself, `"stopped"` when something
     /// ended it — the same distinction the log's closing line draws.
     outcome: &'static str,
+    /// The conversation whose `shell_spawn` started it, so the ending is
+    /// told to that conversation — a sub-agent's, not whichever is on screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
 }
 
 /// Emit [`ProcessEnded`]. Called before the stream leaves the ledger, which is
@@ -2151,11 +2172,11 @@ fn emit_process_ended(
     exit_code: Option<i32>,
     outcome: &'static str,
 ) {
-    let process_id = ACTIVE_COMMAND_STREAMS
+    let owner = ACTIVE_COMMAND_STREAMS
         .read()
         .get(request_id)
-        .map(|stream| stream.process_id.clone());
-    let Some(process_id) = process_id else { return };
+        .map(|stream| (stream.process_id.clone(), stream.thread_id.clone()));
+    let Some((process_id, thread_id)) = owner else { return };
     let _ = app.emit(
         "shell-process-ended",
         ProcessEnded {
@@ -2163,6 +2184,7 @@ fn emit_process_ended(
             request_id: request_id.to_string(),
             exit_code,
             outcome,
+            thread_id,
         },
     );
 }
@@ -2606,11 +2628,17 @@ pub(crate) async fn run_command_lifecycle(
                 // git-bash wraps the real shell, so a plain ppid walk loses
                 // the chain the moment the wrapper dies.
                 let survivors: Vec<String> = match &shell_job {
-                    Some(job) => job
-                        .survivors()
-                        .iter()
-                        .map(process_tracking::Survivor::describe)
-                        .collect(),
+                    Some(job) => {
+                        let mut found = job.survivors();
+                        if process_tracking::caught_mid_fork(&found) {
+                            tokio::time::sleep(Duration::from_millis(
+                                process_tracking::SURVIVOR_SETTLE_MS,
+                            ))
+                            .await;
+                            found = job.survivors();
+                        }
+                        found.iter().map(process_tracking::Survivor::describe).collect()
+                    }
                     None => match pid {
                         Some(shell_pid) => {
                             tokio::task::spawn_blocking(move || surviving_descendants(shell_pid))

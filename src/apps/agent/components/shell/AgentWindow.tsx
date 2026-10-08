@@ -27,6 +27,8 @@ import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useLocalProviderDetection } from "@/apps/agent/hooks/providers/useLocalProviderDetection";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
 import { useBackgroundProcessWatch } from "@/apps/agent/hooks/useBackgroundProcessWatch";
+import { useSubagentWatch } from "@/apps/agent/hooks/useSubagentWatch";
+import { useSubagentLiveStream } from "@/apps/agent/hooks/subagents/useSubagentLiveStream";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
 import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
@@ -73,6 +75,13 @@ export const AgentWindow: React.FC = () => {
   // Background processes end whether or not anyone has the process panel open,
   // and a tool card in the transcript is one of the things that has to know.
   useBackgroundProcessWatch(currentThreadId);
+
+  // Sub-agents start and finish whether or not the Agents panel is open; the
+  // list, the tab glyphs and the report cards all read one copy of that.
+  useSubagentWatch(currentThreadId);
+  // And they stream whether or not their tab is open: one copy of each live
+  // reply, so a tab switched away from and back to resumes where it was.
+  useSubagentLiveStream();
 
   // Bind the window to its project + load that project's chats once. If this
   // mount is a RELOAD of the same window (Ctrl+R, or the native crash-recovery

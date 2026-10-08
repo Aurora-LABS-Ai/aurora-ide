@@ -530,6 +530,7 @@ where
         usage,
         stop_reason: final_stop,
         assistant_message,
+        notices: Vec::new(),
     })
 }
 

@@ -18,6 +18,7 @@ import { AgentQueuedDock } from "@/apps/agent/components/composer/AgentQueuedDoc
 import { ApprovalBar } from "@/apps/agent/components/tools/ApprovalBar";
 import { ContextRing } from "@/apps/agent/components/composer/ContextRing";
 import { TaskIndicator } from "@/apps/agent/components/panels/TaskIndicator";
+import { SubagentIndicator } from "@/apps/agent/components/panels/SubagentIndicator";
 import { EmptyState } from "@/apps/agent/components/conversation/EmptyState";
 import { MessageBubble } from "@/apps/agent/components/conversation/MessageBubble";
 import { JumpRail } from "@/apps/agent/components/shell/JumpRail";
@@ -26,12 +27,19 @@ import { CodeIndexStatus } from "@/apps/agent/components/conversation/CodeIndexS
 import { CompactionCard } from "@/apps/agent/components/conversation/CompactionCard";
 import { QuestionPrompt } from "@/apps/agent/components/tools/QuestionPrompt";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
-import { buildTurns, turnWorkedMs, type AgwTurn } from "@/apps/agent/components/conversation/timeline";
+import {
+  buildTurns,
+  newestQuestion,
+  turnWorkedMs,
+  type AgwTurn,
+} from "@/apps/agent/components/conversation/timeline";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { useIdleProcessReport } from "@/apps/agent/hooks/useIdleProcessReport";
+import { useIdleSubagentReport } from "@/apps/agent/hooks/useIdleSubagentReport";
+import type { AgentReportMeta } from "@/apps/agent/services/subagents/events";
 import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
@@ -172,6 +180,17 @@ export const ConversationPane: React.FC = () => {
       [send],
     ),
   );
+  // A sub-agent that finished while this chat was idle. Same shape as the
+  // process report above, for the same reason: with no turn in flight nothing
+  // delivers the report, so the report has to START a turn.
+  useIdleSubagentReport(
+    currentThreadId,
+    useCallback(
+      (detail: string, summary: string, agent: AgentReportMeta) =>
+        send.send(detail, undefined, { origin: "subagent", summary, agent }),
+      [send],
+    ),
+  );
 
   // Per-chat composer draft: what you were typing in THIS chat, restored when
   // you switch back (and cleared by the composer's own `onValueChange("")` on
@@ -253,7 +272,12 @@ export const ConversationPane: React.FC = () => {
     turns.forEach((turn, index) => {
       // A turn a background process opened is its own exchange as much as
       // one a person opened: nothing above it asked for it.
-      if (turn.role === "user" || turn.startedBy === "process" || out.length === 0) {
+      if (
+        turn.role === "user" ||
+        turn.startedBy === "process" ||
+        turn.startedBy === "subagent" ||
+        out.length === 0
+      ) {
         out.push({ key: turn.id, items: [] });
       }
       out[out.length - 1].items.push({ turn, index });
@@ -315,18 +339,23 @@ export const ConversationPane: React.FC = () => {
    * ancestor, and this transcript sits inside the window's own panes.
    */
   const stickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
+  // Pin when a NEW QUESTION appears, and only then. Keyed on the newest
+  // question's id rather than on the message count: a sub-agent's report or a
+  // process ending adds messages too, and re-pinning on those yanked the view
+  // up to the last thing the person typed, in one instant jump. Those arrive
+  // at the bottom like any other reply and the auto-scroll glides to them.
+  const newestQuestionId = useMemo(() => newestQuestion(turns), [turns]);
   useEffect(() => {
-    if (!stickyUser) return;
+    if (!stickyUser || !newestQuestionId) return;
     const el = containerRef.current;
     const content = contentRef.current;
     if (!el || !content) return;
-    const questions = content.querySelectorAll<HTMLElement>("[data-uturn]");
-    const newest = questions[questions.length - 1];
+    const newest = content.querySelector<HTMLElement>(`[data-uturn="${CSS.escape(newestQuestionId)}"]`);
     if (!newest) return;
     // Its section is what actually scrolls; the question is pinned inside it.
     const section = newest.closest<HTMLElement>(".agw-section") ?? newest;
     el.scrollTop = section.offsetTop - content.offsetTop;
-  }, [stickyUser, messages.length, containerRef, contentRef]);
+  }, [stickyUser, newestQuestionId, containerRef, contentRef]);
 
   // The suggestion drum mounts AFTER the turn settles (auto-scroll already
   // released) and grows the dock, shrinking the transcript viewport — without
@@ -461,8 +490,12 @@ export const ConversationPane: React.FC = () => {
         <div style={{ flex: 1 }} />
 
         <JustFinishedFlash />
-        {/* The two "how is this turn going" readouts, together: what the agent
-            is working through, and how much context it has left. */}
+        {/* The "how is this turn going" readouts, together: who the agent has
+            working for it, what it is working through, and how much context it
+            has left. The agents one is present whenever the conversation has
+            agents, running or not — the dock never opens by itself, so this is
+            where a new one is noticed. */}
+        <SubagentIndicator />
         <TaskIndicator />
         <ContextRing />
         {/* Starting a new chat lived only on left-rail hover, which meant it
@@ -606,7 +639,10 @@ export const ConversationPane: React.FC = () => {
                   // typed words to send again, and the ending it reported
                   // already happened.
                   const canRetry =
-                    isAssistant && !openIsStreaming && turn.startedBy !== "process";
+                    isAssistant &&
+                    !openIsStreaming &&
+                    turn.startedBy !== "process" &&
+                    turn.startedBy !== "subagent";
                   return (
                     <div
                       key={turn.id}

@@ -163,13 +163,19 @@ export type DockTabKind =
   // What `+` opens: a browser New tab page that also lists Aurora's panels.
   // Picking a panel turns this tab into it; entering an address turns it into
   // a browser tab. Several can be open at once.
-  | "newtab";
+  | "newtab"
+  // The sub-agents the OPEN conversation has started, by the names the agent
+  // gave them. One list, following the open conversation like Review does.
+  | "agents"
+  // One sub-agent's own conversation, read-only: the parent is its user, so
+  // there is no composer. Probe: Documents/aurora-agents-panel-designs.html.
+  | "agent";
 
 /** The singleton (one-instance) tab kinds — everything except the per-file,
- *  per-project, per-conversation, per-artifact and New tabs. */
+ *  per-project, per-conversation, per-artifact, per-agent and New tabs. */
 export type DockSingletonKind = Exclude<
   DockTabKind,
-  "file" | "project" | "chat" | "artifact" | "session" | "newtab"
+  "file" | "project" | "chat" | "artifact" | "session" | "newtab" | "agent"
 >;
 
 export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
@@ -179,6 +185,7 @@ export const DOCK_TAB_LABELS: Record<DockSingletonKind, string> = {
   browser: "Browser",
   terminal: "Terminal",
   memory: "Memory",
+  agents: "Agents",
 };
 
 /**
@@ -210,6 +217,10 @@ export interface DockTabInstance {
   threadSurface?: "chat" | "build";
   /** Saved artifact id — only for `kind === "artifact"`. */
   artifactId?: string;
+  /** The sub-agent shown — only for `kind === "agent"`. Its conversation
+   *  lives under `parentThreadId`'s folder, so both are needed to find it. */
+  agentId?: string;
+  parentThreadId?: string;
   /**
    * The project that conversation belongs to — only for `kind === "chat"`.
    *

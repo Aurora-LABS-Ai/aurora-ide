@@ -130,13 +130,16 @@ impl ToolExecutor for SearchReplaceTool {
             None
         };
 
-        Ok(render_response(
-            &raw_path,
-            &resolved_str,
-            response,
-            false,
-            impact.as_deref(),
-            super::read_tracker::last_window(&ctx.thread_id, &resolved_str),
+        Ok(with_line_number_hint(
+            render_response(
+                &raw_path,
+                &resolved_str,
+                response,
+                false,
+                impact.as_deref(),
+                super::read_tracker::last_window(&ctx.thread_id, &resolved_str),
+            ),
+            &[old_string],
         ))
     }
 }
@@ -191,6 +194,48 @@ pub(crate) fn diff_side(content: &str) -> Value {
     } else {
         Value::String(content.to_string())
     }
+}
+
+/// Does `text` look like lines copied out of a numbered `file_read` result
+/// (`  12\tlet x = 1;` on every non-blank line)? The model's copy of a read
+/// is numbered (`conversation::tool_results::number_read_content`); the file
+/// is not.
+pub(crate) fn carries_read_line_numbers(text: &str) -> bool {
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty()).peekable();
+    if lines.peek().is_none() {
+        return false;
+    }
+    lines.all(|line| {
+        let trimmed = line.trim_start_matches(' ');
+        let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+        digits > 0 && trimmed[digits..].starts_with('\t')
+    })
+}
+
+/// A failed edit, told plainly when its `old_string` carried read line
+/// numbers: the likeliest reason nothing matched, and a one-step fix. Only on
+/// a failure, so a file that really holds `12<tab>text` lines (TSV data)
+/// edits as normal.
+pub(crate) fn with_line_number_hint(rendered: String, old_strings: &[&str]) -> String {
+    if !old_strings.iter().any(|s| carries_read_line_numbers(s)) {
+        return rendered;
+    }
+    let Ok(mut payload) = serde_json::from_str::<Value>(&rendered) else {
+        return rendered;
+    };
+    if payload.get("success").and_then(Value::as_bool) != Some(false) {
+        return rendered;
+    }
+    let error = payload
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    payload["error"] = json!(format!(
+        "old_string starts every line with a line number and a tab, copied from file_read. \
+         Those are not in the file. Send only the text after each tab.\n{error}"
+    ));
+    serde_json::to_string(&payload).unwrap_or(rendered)
 }
 
 /// Spell a match failure out as text the caller can act on without reading the
@@ -633,6 +678,64 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["matchedAcrossCrlf"], false);
         assert!(!parsed["message"].as_str().unwrap_or_default().contains("CRLF"));
+    }
+
+    #[test]
+    fn copied_read_line_numbers_are_recognised_and_tab_data_is_not_mistaken_for_them() {
+        assert!(carries_read_line_numbers("12\tconst x = 1;\n13\t}"));
+        assert!(carries_read_line_numbers("  9\tif (a) {\n 10\t  b();\n\n 11\t}"));
+        assert!(!carries_read_line_numbers("const x = 1;"));
+        assert!(!carries_read_line_numbers("12\tok\nnot numbered"), "every line, not some");
+        assert!(!carries_read_line_numbers(""));
+        assert!(!carries_read_line_numbers("12 const x"), "a tab, not a space");
+    }
+
+    /// A model copying the numbered read into old_string is told so, first;
+    /// a file whose lines really are `number<tab>text` still edits normally.
+    #[tokio::test]
+    async fn a_miss_with_copied_line_numbers_says_so_and_real_tab_data_still_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ts"), "const x = 1;\nconst y = 2;\n").unwrap();
+        std::fs::write(tmp.path().join("data.tsv"), "1\talpha\n2\tbeta\n").unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(SearchReplaceTool::new(Arc::new(
+            crate::tools::shell_editor_todo::NoopIdeEventSink,
+        )));
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+
+        let missed = tool
+            .execute(
+                serde_json::json!({
+                    "path": "a.ts",
+                    "old_string": "1\tconst x = 1;\n2\tconst y = 2;",
+                    "new_string": "const x = 3;",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let missed: Value = serde_json::from_str(&missed).unwrap();
+        assert_eq!(missed["success"], false);
+        let error = missed["error"].as_str().unwrap();
+        assert!(error.starts_with("old_string starts every line with a line number"), "{error}");
+        assert!(error.contains("No match for old_string"), "the original reason is kept: {error}");
+
+        let edited = tool
+            .execute(
+                serde_json::json!({
+                    "path": "data.tsv",
+                    "old_string": "2\tbeta",
+                    "new_string": "2\tgamma",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let edited: Value = serde_json::from_str(&edited).unwrap();
+        assert_eq!(edited["success"], true, "{edited}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("data.tsv")).unwrap(),
+            "1\talpha\n2\tgamma\n"
+        );
     }
 
     #[tokio::test]

@@ -28,7 +28,11 @@ import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
-import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
+import {
+  selectActiveAgentTheme,
+  useAgentThemeStore,
+} from "@/apps/agent/store/ui/useAgentThemeStore";
+import { warmToolResult } from "@/apps/agent/components/tool-views/warm";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import {
   describeToolActivity,
@@ -241,9 +245,13 @@ const ToolTargetReel: React.FC<{
    * multi-file row in the history an empty grey pill where its icons were.
    */
   const [narrates] = useState(() => !settled);
-  const [index, setIndex] = useState(0);
+  const [tick, setTick] = useState(0);
 
   const readable = Math.min(targets.length, REEL_NAME_LIMIT);
+  // Settling drains the reel (see the note below): derived here rather than
+  // pushed into state from an effect, so the row lands in the same render the
+  // call settles in instead of one render later.
+  const index = narrates && settled ? Math.max(tick, readable) : tick;
   const drained = index >= readable;
   // While the call is still running, a drained reel HOLDS on its last name
   // rather than showing the summary early: a path arriving after that would
@@ -254,7 +262,7 @@ const ToolTargetReel: React.FC<{
 
   useEffect(() => {
     if (!narrates || drained) return;
-    const timer = window.setTimeout(() => setIndex((current) => current + 1), REEL_HOLD_MS);
+    const timer = window.setTimeout(() => setTick((current) => current + 1), REEL_HOLD_MS);
     return () => window.clearTimeout(timer);
   }, [narrates, drained, index]);
 
@@ -281,12 +289,9 @@ const ToolTargetReel: React.FC<{
    * reel, and the summary rides in on the standard glide one step later. Nothing
    * is swapped and no motion is cut — a slow call still walks its names, a fast
    * one simply has nothing to narrate, which is the truth about it.
+   *
+   * The drain is `index` above, computed from `settled` on every render.
    */
-  useEffect(() => {
-    if (!narrates || !settled) return;
-    setIndex((current) => (current >= readable ? current : readable));
-  }, [narrates, settled, readable]);
-
   const cellKey = showSummary || !active ? " summary" : `${index}:${active.path}`;
 
   /**
@@ -613,9 +618,28 @@ function toolIcon(name: string): AgentIconName {
   // `browser-screenshot` is a capture of something that already exists.
   if (lower === "generate_image" || lower === "generate_video") return "image";
   if (lower === "ask_question") return "help";
+  // Sub-agents: the agent family — the person the header's sub-agent
+  // indicator wears, plus the act. Before these, all seven fell to `diff` and
+  // a delegation looked like a file edit.
+  if (lower === "spawn_agent") return "agent-start";
+  if (lower === "send_message") return "agent-message";
+  if (lower === "get_task_output") return "agent-check";
+  if (lower === "stop_agent") return "agent-stop";
+  if (lower === "list_models") return "cpu";
+  if (lower === "message_parent") return "parent-message";
+  if (lower === "submit_report") return "report-submit";
   if (FILE_MODIFY_TOOLS.has(lower)) return "file-edit";
   return "diff";
 }
+
+/**
+ * The two rows that open and close a delegation: the parent starting an agent,
+ * and the agent handing in its report. Their marks rest in the accent (see
+ * `53-subagents.css`), the one exception to "tool marks never take a colour":
+ * in a long parent turn these are the rows you scroll for. Alvan's pick,
+ * card 5 of Documents\aurora-subagent-tool-icon-designs.html.
+ */
+const DELEGATION_LIFECYCLE_TOOLS = new Set(["spawn_agent", "submit_report"]);
 
 function pathOf(args: Record<string, unknown>): string {
   // `path` may be the ARRAY form (one slot, string or array). A batch names its
@@ -1002,6 +1026,7 @@ const StandardToolCallCard: React.FC<{
   const status = toolStatus(call, isActivelyStreaming);
   const defaultTitle = getProfessionalToolName(call.name, parsedArgs);
   const icon = toolIcon(call.name);
+  const delegationLifecycle = DELEGATION_LIFECYCLE_TOOLS.has(call.name.toLowerCase());
   const activity = useMemo(
     () => describeToolActivity(call.name, call.arguments),
     [call.name, call.arguments],
@@ -1357,6 +1382,12 @@ const StandardToolCallCard: React.FC<{
   // highlighter mount). Disarm both halves before the click lands: swallow
   // double/triple-click word selection on the header, and collapse any live
   // transcript selection before layout starts moving.
+  const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
+  const lightTheme = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance === "light");
+  const warmBody = () => {
+    if (hasDetail && !open) warmToolResult(parsed, lightTheme ? "light" : "dark", syntaxOn);
+  };
+
   const disarmSelectionBeforeClick = (event: React.MouseEvent) => {
     if (event.detail > 1) event.preventDefault();
     const selection = window.getSelection();
@@ -1374,6 +1405,10 @@ const StandardToolCallCard: React.FC<{
         aria-expanded={open}
         onMouseDown={disarmSelectionBeforeClick}
         onClick={() => hasDetail && toggle()}
+        // The diff and the colours a read or edit opens with are worked out
+        // while the pointer travels to the click, not under the opening motion.
+        onPointerEnter={warmBody}
+        onFocus={warmBody}
       >
         {/* While the call is running the status column is EMPTY on purpose: the
             mark beside it is the live sign now (33-tool-glyph-motion.css), and
@@ -1397,7 +1432,11 @@ const StandardToolCallCard: React.FC<{
         {/* Two copies while live: the mark itself, and a full-strength copy the
             scan is masked over. Only mounted for the running state, so a settled
             transcript carries no extra nodes. */}
-        <span className="agw-tool-glyph" data-live={status === "running" ? "" : undefined}>
+        <span
+          className="agw-tool-glyph"
+          data-live={status === "running" ? "" : undefined}
+          data-lifecycle={delegationLifecycle ? "" : undefined}
+        >
           <AgentIcon name={icon} size={16} strokeWidth={1.5} />
           {status === "running" && (
             <AgentIcon
@@ -1621,6 +1660,9 @@ const StandardToolCallCard: React.FC<{
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
+            // Stated, not the library default: the same ease-out and length
+            // the tool group and the agent tail open with.
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
             style={{ overflow: "hidden" }}
           >
             <div className="agw-tool-body">

@@ -537,6 +537,123 @@ fn a_normal_web_page_reaches_the_model_untouched() {
         .is_some_and(|c| c.len() > 25_000));
 }
 
+/// The 2026-10-08 live run: `get_task_output` returned a sub-agent's 15 KB
+/// report in a `result` field the shrinker cannot shorten, so the clamp's last
+/// resort DROPPED it and the model got `{"historyTruncated":true,…}`. Now a
+/// result the clamp could only fit by deleting fields moves to a file whole.
+#[test]
+fn a_result_the_clamp_would_gut_moves_whole_to_a_file() {
+    let report = format!("REPORT-HEAD {} REPORT-TAIL", "finding ".repeat(1_900));
+    let raw = serde_json::json!({
+        "agentId": "agent_1",
+        "status": "completed",
+        "result": report,
+        "hint": "Finished.",
+    })
+    .to_string();
+    let cap = super::tool_results::result_cap_for("get_task_output");
+    assert!(raw.len() > cap);
+
+    // Without a folder to write to, the old behaviour stands: fields dropped,
+    // and the note says so. This is what reached the model on the live run.
+    let gutted = super::tool_results::clamp_or_move("get_task_output", "call-1", raw.clone(), &raw, None);
+    assert!(super::tool_results::dropped_fields(&gutted), "{gutted}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let moved = super::tool_results::clamp_or_move(
+        "get_task_output",
+        "call-1",
+        raw.clone(),
+        &raw,
+        Some(dir.path()),
+    );
+    assert!(moved.len() <= cap, "{} > {cap}", moved.len());
+    assert!(!super::tool_results::dropped_fields(&moved), "{moved}");
+    let parsed: serde_json::Value = serde_json::from_str(&moved).unwrap();
+    assert_eq!(parsed["status"], "completed", "short fields stay inline");
+    assert_eq!(parsed["agentId"], "agent_1");
+    assert!(parsed["preview"].as_str().unwrap().contains("REPORT-HEAD"));
+    let file = parsed["fullResult"].as_str().expect("the path is given");
+    let on_disk = std::fs::read_to_string(file).unwrap();
+    assert!(on_disk.contains("REPORT-HEAD") && on_disk.contains("REPORT-TAIL"), "all of it");
+    assert!(on_disk.contains(&report), "nothing cut");
+}
+
+/// The 2026-10-08 harness run: agents reported `slugify:5` and `truncate:13`
+/// for lines 6 and 14, counting newlines in an unnumbered read and losing one
+/// at a blank line. The model's copy of a read now numbers every line.
+#[test]
+fn a_read_reaches_the_model_with_every_line_numbered_from_its_real_start() {
+    use super::tool_results::{number_lines, number_read_content};
+
+    assert_eq!(number_lines("a\n\nb\n", 1), "1\ta\n2\t\n3\tb\n");
+    assert_eq!(number_lines("x\r\ny", 9), " 9\tx\r\n10\ty", "right-aligned, CRLF kept");
+    assert_eq!(number_lines("", 1), "");
+
+    // A whole file, the shape the run used.
+    let source = "export function capitalize(s) {\n}\n\nexport function slugify(s) {\n}\n";
+    let raw = serde_json::json!({
+        "success": true, "exactRead": true, "path": "app/strings.js", "content": source,
+    })
+    .to_string();
+    let numbered: serde_json::Value =
+        serde_json::from_str(&number_read_content("file_read", &raw).unwrap()).unwrap();
+    let content = numbered["content"].as_str().unwrap();
+    assert!(content.contains("4\texport function slugify(s) {"), "{content}");
+    assert!(numbered["lineNumbers"].as_str().unwrap().contains("not part of the file"));
+    let reserialised = number_read_content("file_read", &raw).unwrap();
+    assert!(
+        reserialised.contains(crate::tools::file_workspace_search::EXACT_READ_MARKER),
+        "an exact read stays exempt from the clamp"
+    );
+
+    // A range numbers from where it starts, not from 1.
+    let ranged = serde_json::json!({
+        "success": true, "content": "line4\nline5\n", "range": { "startLine": 4, "endLine": 5 },
+    })
+    .to_string();
+    let ranged: serde_json::Value =
+        serde_json::from_str(&number_read_content("file_read", &ranged).unwrap()).unwrap();
+    assert_eq!(ranged["content"], "4\tline4\n5\tline5\n");
+
+    // A batch numbers each file on its own.
+    let batch = serde_json::json!({
+        "success": true,
+        "files": [
+            { "path": "a.ts", "content": "one\ntwo\n" },
+            { "path": "b.ts", "content": "x\n", "range": { "startLine": 30, "endLine": 30 } },
+        ],
+    })
+    .to_string();
+    let batch: serde_json::Value =
+        serde_json::from_str(&number_read_content("file_read", &batch).unwrap()).unwrap();
+    assert_eq!(batch["files"][0]["content"], "1\tone\n2\ttwo\n");
+    assert_eq!(batch["files"][1]["content"], "30\tx\n");
+
+    // Nothing to number: another tool, a failed read, an empty file.
+    assert!(number_read_content("grep", &raw).is_none());
+    let failed = serde_json::json!({ "success": false, "error": "missing" }).to_string();
+    assert!(number_read_content("file_read", &failed).is_none());
+    let empty = serde_json::json!({ "success": true, "content": "" }).to_string();
+    assert!(number_read_content("file_read", &empty).is_none());
+}
+
+/// Results the clamp CAN shrink keep doing so: the move is only for the case
+/// that would otherwise lose data.
+#[test]
+fn a_result_the_clamp_can_shrink_is_not_moved() {
+    let raw = serde_json::json!({
+        "success": true,
+        "stdout": "line\n".repeat(4_000),
+    })
+    .to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let out = super::tool_results::clamp_or_move("shell_execute", "call-2", raw.clone(), &raw, Some(dir.path()));
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(parsed.get("fullResult").is_none(), "{out}");
+    assert!(std::fs::read_dir(dir.path()).map(|d| d.count() == 0).unwrap_or(true));
+}
+
 /// The reported bug, reproduced end to end against the real page and the real
 /// runtime clamp.
 ///
@@ -796,6 +913,7 @@ fn turn_usage(message: ConversationMessage, stop_reason: &str) -> TurnUsage {
         },
         stop_reason: stop_reason.into(),
         assistant_message: message,
+        notices: Vec::new(),
     }
 }
 
@@ -1895,6 +2013,7 @@ async fn tools_receive_the_thread_id_never_the_ephemeral_session_id() {
                 },
                 stop_reason: "tool_use".into(),
                 assistant_message: assistant_tool_use("c1", "echo", serde_json::json!({})),
+                notices: Vec::new(),
             }),
         },
         TurnScript {
@@ -1910,6 +2029,7 @@ async fn tools_receive_the_thread_id_never_the_ephemeral_session_id() {
                 },
                 stop_reason: "end_turn".into(),
                 assistant_message: assistant_text("done"),
+                notices: Vec::new(),
             }),
         },
     ]));
@@ -1950,6 +2070,7 @@ async fn run_turn_aggregates_usage_across_iterations() {
                 },
                 stop_reason: "tool_use".into(),
                 assistant_message: assistant_tool_use("c1", "echo", serde_json::json!({"msg":"x"})),
+                notices: Vec::new(),
             }),
         },
         TurnScript {
@@ -1965,6 +2086,7 @@ async fn run_turn_aggregates_usage_across_iterations() {
                 },
                 stop_reason: "end_turn".into(),
                 assistant_message: assistant_text("done"),
+                notices: Vec::new(),
             }),
         },
     ]));
@@ -2030,6 +2152,7 @@ async fn persisted_assistant_messages_record_the_model_that_ran_them() {
             },
             stop_reason: "end_turn".into(),
             assistant_message: assistant_text("done"),
+            notices: Vec::new(),
         }),
     }]));
     let runtime =
@@ -2064,6 +2187,7 @@ async fn a_no_usage_provider_persists_a_flagged_estimate_not_zeros() {
             usage: TokenUsage::default(), // provider reported nothing
             stop_reason: "end_turn".into(),
             assistant_message: assistant_text("a reply with real content in it"),
+            notices: Vec::new(),
         }),
     }]));
     let runtime =

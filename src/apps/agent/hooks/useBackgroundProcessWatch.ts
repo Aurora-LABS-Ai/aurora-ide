@@ -22,6 +22,7 @@
 import { useEffect } from "react";
 
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
+import { isSubagentId } from "@/apps/agent/services/subagents/commands";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
   processById,
@@ -51,6 +52,8 @@ interface ProcessEnded {
   processId?: string;
   exitCode?: number | null;
   outcome?: "exited" | "stopped";
+  /** The conversation whose `shell_spawn` started it, when known. */
+  threadId?: string;
 }
 
 /** The thread a process is filed under, which is where its ending belongs. */
@@ -94,16 +97,23 @@ const reportEnding = (row: BackgroundProcess | null, ended: ProcessEnded) => {
   // model a note about a process it had just watched finish. Only what the
   // process list actually holds is a background process: a `shell_spawn`, or
   // something a person pressed "Run in background" on.
-  if (!row) return;
+  //
+  // A sub-agent's `shell_spawn` is the exception, because the ending names
+  // its owner: it is told to THAT agent, never to the conversation on screen
+  // (which never started it), and it needs no row in the parent's dock to be
+  // a background process — only a spawn is tagged with an owner.
+  const ownedByAgent = !!ended.threadId && isSubagentId(ended.threadId);
+  if (!row && !ownedByAgent) return;
   const chat = useAgentChatStore.getState();
-  const threadId =
-    threadOwning(useAgentBackgroundStore.getState().byThread, processId) ??
-    chat.currentThreadId;
+  const threadId = ownedByAgent
+    ? ended.threadId!
+    : (threadOwning(useAgentBackgroundStore.getState().byThread, processId) ??
+      chat.currentThreadId);
   if (!threadId) return;
 
   // The row is what named it — a spawn's required title, or the command line a
   // hand-off carried. There is no anonymous case left to invent a name for.
-  const name = row.title?.trim() || row.command?.trim() || "a background process";
+  const name = row?.title?.trim() || row?.command?.trim() || "a background process";
   const exit = ended.exitCode;
   // "Failed" and "Finished" are not the same event, and the exit code is the
   // only thing that knows which one happened.
@@ -118,7 +128,9 @@ const reportEnding = (row: BackgroundProcess | null, ended: ProcessEnded) => {
       ? ` Everything it printed is in ${row.outputFile}; read it with shell_read_output.`
       : "");
 
-  if (chat.liveTurns[threadId]) {
+  // A sub-agent has no window turn: Rust's queue for it is read at its next
+  // step, or — if it has finished — when the parent gives it more work.
+  if (ownedByAgent || chat.liveTurns[threadId]) {
     void chat
       .enqueueMessage(threadId, summary, { origin: "process", modelText: detail })
       .catch(() => {

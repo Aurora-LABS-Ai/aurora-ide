@@ -189,6 +189,106 @@ fn spill_json_fields(
     spilled_any.then_some(map)
 }
 
+/// Write a document Aurora composed (a sub-agent's report) to `dir/name`
+/// and return its head + tail preview with the path, or `None` when the file
+/// cannot be written, in which case the caller keeps the text whole.
+///
+/// `name` is a bare file name Aurora built; anything that could leave `dir`
+/// is refused.
+#[must_use]
+pub fn spill_document(dir: &Path, name: &str, text: &str) -> Option<String> {
+    let bare = Path::new(name)
+        .file_name()
+        .is_some_and(|f| f == std::ffi::OsStr::new(name));
+    if !bare || name.contains(['/', '\\']) {
+        return None;
+    }
+    fs::create_dir_all(dir).ok()?;
+    let path = dir.join(name);
+    fs::write(&path, text).ok()?;
+    let path = dunce::canonicalize(&path).unwrap_or(path);
+    Some(preview(text, &path))
+}
+
+/// Head kept from a whole JSON result moved by [`spill_whole_json`]. Smaller
+/// than [`PREVIEW_HEAD`]: the envelope must fit under the 8 KiB clamp that
+/// runs next, or the clamp would cut the very note that says where the rest
+/// went.
+const WHOLE_PREVIEW_HEAD: usize = 1_536;
+/// Tail kept from a whole JSON result. See [`WHOLE_PREVIEW_HEAD`].
+const WHOLE_PREVIEW_TAIL: usize = 2_560;
+/// Scalar fields of the original envelope carried over, and the longest
+/// string among them. Enough to keep `success`, `status`, `path`, `error`.
+const WHOLE_KEEP_FIELDS: usize = 12;
+const WHOLE_KEEP_FIELD_CHARS: usize = 300;
+
+/// Move a whole JSON tool result to a file, for the case no shrinking can
+/// handle: a result whose bulk is in a field the history clamp does not know
+/// how to shorten. The clamp's last resort used to DELETE such fields and say
+/// so. A sub-agent's 15 KB report met it inside `get_task_output` and was
+/// gone, with nothing on disk to recover. Now the whole result is written
+/// beside the other spills and the model gets a small envelope:
+///
+/// - the original's short scalar fields (`success`, `status`, `path`, …),
+/// - `fullResult` / `fullResultBytes`: where the whole of it is, and its size,
+/// - `preview`: the head and tail of the result as text,
+/// - `note`: that nothing was lost and how to read the rest.
+///
+/// `None` when the result is not a JSON object or the file cannot be written;
+/// the caller then keeps what the clamp produced.
+#[must_use]
+pub fn spill_whole_json(dir: &Path, tool_call_id: &str, raw: &str) -> Option<String> {
+    let Ok(Value::Object(original)) = serde_json::from_str::<Value>(raw) else {
+        return None;
+    };
+    let pretty = serde_json::to_string_pretty(&Value::Object(original.clone()))
+        .unwrap_or_else(|_| raw.to_string());
+    let path = write_spill(dir, tool_call_id, Some("result"), &pretty)?;
+
+    let mut envelope = Map::new();
+    for (key, value) in original.iter() {
+        if envelope.len() >= WHOLE_KEEP_FIELDS {
+            break;
+        }
+        let keep = match value {
+            Value::Bool(_) | Value::Number(_) => true,
+            Value::String(s) => s.chars().count() <= WHOLE_KEEP_FIELD_CHARS,
+            _ => false,
+        };
+        if keep {
+            envelope.insert(key.clone(), value.clone());
+        }
+    }
+    let head_end = floor_boundary(&pretty, WHOLE_PREVIEW_HEAD);
+    let tail_start = ceil_boundary(&pretty, pretty.len().saturating_sub(WHOLE_PREVIEW_TAIL));
+    let preview = if tail_start <= head_end {
+        pretty.clone()
+    } else {
+        format!(
+            "{}\n…[{} bytes in the file]…\n{}",
+            &pretty[..head_end],
+            tail_start - head_end,
+            &pretty[tail_start..]
+        )
+    };
+    envelope.insert(
+        "fullResult".into(),
+        Value::String(path.to_string_lossy().to_string()),
+    );
+    envelope.insert("fullResultBytes".into(), Value::from(pretty.len() as u64));
+    envelope.insert("preview".into(), Value::String(preview));
+    envelope.insert(
+        "note".into(),
+        Value::String(
+            "This result was too large to keep inline, so the whole of it was MOVED to \
+             fullResult; nothing was cut. Read it with file_read (start_line/end_line) or \
+             search it with grep."
+                .into(),
+        ),
+    );
+    serde_json::to_string(&Value::Object(envelope)).ok()
+}
+
 /// Head + elision note + tail.
 fn preview(text: &str, path: &Path) -> String {
     let head_end = floor_boundary(text, PREVIEW_HEAD);
@@ -272,6 +372,52 @@ fn ceil_boundary(text: &str, mut index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_document_is_written_whole_under_its_own_name_and_previewed() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!("START\n{}\nEND", "body line\n".repeat(3_000));
+        let preview = spill_document(dir.path(), "agent-report-agent_1-run1.md", &text)
+            .expect("written");
+        let written = std::fs::read_to_string(dir.path().join("agent-report-agent_1-run1.md")).unwrap();
+        assert_eq!(written, text);
+        assert!(preview.contains("START") && preview.contains("END"));
+        assert!(preview.contains("agent-report-agent_1-run1.md"));
+        assert!(preview.len() < text.len());
+    }
+
+    #[test]
+    fn a_document_name_that_could_leave_the_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["../x.md", "a/b.md", "a\\b.md", ""] {
+            assert!(spill_document(dir.path(), name, "text").is_none(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_whole_json_result_moves_and_keeps_only_short_scalars_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!({
+            "success": true,
+            "count": 3,
+            "status": "completed",
+            "result": "r".repeat(20_000),
+            "items": [1, 2, 3],
+        })
+        .to_string();
+        let out = spill_whole_json(dir.path(), "call-9", &raw).expect("moved");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["count"], 3);
+        assert_eq!(parsed["status"], "completed");
+        assert!(parsed.get("result").is_none() && parsed.get("items").is_none());
+        assert!(out.len() < 6_000, "fits well under an 8 KiB clamp: {}", out.len());
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(parsed["fullResult"].as_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(on_disk["result"].as_str().unwrap().len(), 20_000, "nothing cut");
+        assert!(spill_whole_json(dir.path(), "call-9", "plain text").is_none());
+    }
 
     /// A read that already bounded itself must reach the model byte for byte.
     /// Spilling it replaced the middle of a 739-line component with a pointer

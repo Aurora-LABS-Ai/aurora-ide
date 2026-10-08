@@ -812,6 +812,40 @@ function parseWebResult(parsed: Record<string, unknown>): WebData | null {
   return null;
 }
 
+/** One line of a numbered read: `  12<tab>text`. */
+const READ_LINE_NUMBER = /^ *\d+\t/;
+
+/**
+ * A `file_read` result as the file holds it.
+ *
+ * The MODEL's copy of a read numbers every line (`  12\tconst x = 1;`,
+ * `conversation/tool_results.rs::number_read_content`), and a reopened
+ * conversation draws its cards from that saved copy. Such a copy says so with
+ * a `lineNumbers` field, so the prefixes are stripped exactly when they were
+ * added and never from a file whose own lines start with digits and a tab.
+ * The live card gets the raw result and passes through untouched.
+ */
+export function withoutReadLineNumbers(
+  name: string,
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
+  if ((name !== "file_read" && name !== "multi_file_read") || parsed.lineNumbers === undefined) {
+    return parsed;
+  }
+  const strip = (entry: unknown): unknown => {
+    const record = rec(entry);
+    const content = record ? asStr(record.content) : undefined;
+    if (!record || content === undefined) return entry;
+    const lines = content.split("\n").map((line) => line.replace(READ_LINE_NUMBER, ""));
+    return { ...record, content: lines.join("\n") };
+  };
+  const out = strip(parsed) as Record<string, unknown>;
+  const files = asArr(parsed.files);
+  if (files) out.files = files.map(strip);
+  delete out.lineNumbers;
+  return out;
+}
+
 // ── Parser ───────────────────────────────────────────────────────────
 
 export function parseToolResult(
@@ -844,6 +878,7 @@ export function parseToolResult(
       parsed = null;
     }
   }
+  if (parsed) parsed = withoutReadLineNumbers(name, parsed);
 
   // Images — handled FIRST (before the non-JSON fallback) so the raw
   // `<aurora_image>…base64…` block a reloaded thread carries renders as a

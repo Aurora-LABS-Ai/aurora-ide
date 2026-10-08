@@ -322,10 +322,9 @@ impl ConversationRuntime {
                 // not contain the error, and the dropped bytes are unrecoverable
                 // once the process has exited. The UI keeps the untouched payload
                 // and applies its own display clamp, so a tool card never shows the
-                // model's "read this file" instruction.
-                let history_source =
-                    self.spill_tool_output(session, &name, &id, raw_content.clone());
-                let history_content = truncate_tool_content(&name, history_source);
+                // model's "read this file" instruction. A result the clamp could
+                // only fit by deleting fields moves to a file whole instead.
+                let history_content = self.history_copy(session, &name, &id, &raw_content);
 
                 // Edit results whose history copy was clamped get a full-fidelity
                 // sidecar copy (UI-shaped, so diffs render COMPLETE after a thread
@@ -622,28 +621,50 @@ pub(super) async fn emit_truncation_notice(
         "This reply is cut off — the model reached its output limit. Raise Max \
          output for this model in provider settings, or ask it to continue.";
 
+    emit_notice(session, turn_id, seq, event_sink, TRUNCATED_NOTICE).await;
+}
+
+/// Was this reply declined by the provider's safety check?
+///
+/// Anthropic's `refusal`. A refusal before any output arrives as an empty
+/// message, which must not be mistaken for a dropped response: re-sending the
+/// identical request is declined the same way, and the empty-reply notice
+/// would blame the provider for a decision it explained.
+pub(super) fn is_refusal_stop(stop_reason: &str) -> bool {
+    stop_reason == "refusal"
+}
+
+/// Show a notice under the current reply and keep it in the transcript.
+pub(super) async fn emit_notice(
+    session: &mut Session,
+    turn_id: &str,
+    seq: &mut u64,
+    event_sink: &mpsc::Sender<AgentEventEnvelope>,
+    message: &str,
+) {
     *seq += 1;
     let _ = event_sink
         .send(AgentEventEnvelope {
             turn_id: turn_id.to_string(),
             seq: *seq,
             event: AssistantEvent::Error {
-                message: TRUNCATED_NOTICE.to_string(),
+                message: message.to_string(),
                 recoverable: true,
             },
         })
         .await;
 
     // Persist it too. The event alone only reaches the window that is open now;
-    // without a session record, reopening the thread shows the truncated reply
-    // with no explanation for why it stops mid-sentence. Appended AFTER the
-    // assistant message so it reloads directly beneath it.
+    // without a session record, reopening the thread shows the reply with no
+    // explanation — a truncated one stopping mid-sentence, a declined one
+    // stopping for no stated reason. Appended AFTER the assistant message so
+    // it reloads directly beneath it.
     let now = chrono::Utc::now().timestamp_millis();
     session.append_message(ConversationMessage {
         event_id: None,
         role: MessageRole::System,
         blocks: vec![ContentBlock::Notice {
-            message: TRUNCATED_NOTICE.to_string(),
+            message: message.to_string(),
             created_at: now,
         }],
         usage: None,

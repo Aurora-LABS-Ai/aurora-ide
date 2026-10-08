@@ -455,7 +455,8 @@ fn responses_instructions_and_input(
                         | ContentBlock::Notice { .. }
                         // A process event rides the Tool message, never an
                         // assistant one — handled in that branch below.
-                        | ContentBlock::ProcessEvent { .. } => {}
+                        | ContentBlock::ProcessEvent { .. }
+                        | ContentBlock::AgentReport { .. } => {}
                     }
                 }
             }
@@ -491,7 +492,9 @@ fn responses_instructions_and_input(
                         // A background process ended while these tools ran.
                         // Rides out in the same trailing user message the
                         // injected text uses.
-                        ContentBlock::ProcessEvent { detail, .. } => {
+                        // A finished sub-agent's report rides the same way.
+                        ContentBlock::ProcessEvent { detail, .. }
+                        | ContentBlock::AgentReport { detail, .. } => {
                             if !injected_text.is_empty() {
                                 injected_text.push_str("\n\n");
                             }
@@ -1242,6 +1245,7 @@ where
         usage,
         stop_reason: final_stop,
         assistant_message,
+        notices: Vec::new(),
     })
 }
 
@@ -1973,6 +1977,56 @@ mod rejection_tests {
                 assert_eq!(kind, Some("message"), "message items must say so: {item}");
             }
         }
+    }
+
+    /// A sub-agent's report that arrives mid-turn rides out in the trailing
+    /// user item, exactly where a process ending does.
+    #[test]
+    fn a_mid_turn_agent_report_lands_in_the_trailing_user_item() {
+        let messages = vec![ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "ok".into(),
+                    is_error: None,
+                },
+                ContentBlock::AgentReport {
+                    agent_id: "agent-7".into(),
+                    name: None,
+                    status: "completed".into(),
+                    summary: "Finished \"Find it\" · completed".into(),
+                    detail: "Sub-agent agent-7 completed: found it in auth.rs.".into(),
+                    created_at: 0,
+                },
+            ],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }];
+        let request = ApiRequest {
+            model: "m",
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            tool_choice: Default::default(),
+            temperature: None,
+            max_output_tokens: 1024,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+        };
+
+        let (_, items) = responses_instructions_and_input(&request, false, false);
+        let trailing = items.last().expect("trailing user item");
+        assert_eq!(trailing["role"], "user");
+        let sent = trailing["content"].to_string();
+        assert!(sent.contains("found it in auth.rs"), "{sent}");
+        assert!(!sent.contains("Finished"), "the summary stays off the wire: {sent}");
     }
 
     /// A mid-turn injected message with an `<aurora_image>` marker must land

@@ -100,6 +100,13 @@ pub struct ModelPricing {
     pub cache_miss_per_mtok: f64,
     /// Per-1M-token rate for generated output.
     pub output_per_mtok: f64,
+    /// Per-1M-token rate for WRITING the prompt cache, where the provider
+    /// bills it apart from fresh input (Anthropic: 1.25x input for the
+    /// five-minute cache Aurora uses). Absent means the cost card prices
+    /// cache writes as fresh input, which under-reports Anthropic by a
+    /// quarter on every write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_per_mtok: Option<f64>,
 }
 
 impl ModelPricing {
@@ -109,12 +116,139 @@ impl ModelPricing {
             cache_hit_per_mtok: cache_hit,
             cache_miss_per_mtok: cache_miss,
             output_per_mtok: output,
+            cache_write_per_mtok: None,
         }
+    }
+
+    /// The same rates plus a separately billed cache write.
+    pub const fn with_cache_write(self, cache_write: f64) -> Self {
+        Self {
+            cache_write_per_mtok: Some(cache_write),
+            ..self
+        }
+    }
+}
+
+/// The effort picker the Claude 5 family takes, as the composer's
+/// `ModelReasoning` shape. `toggleable`: switching reasoning off is honoured
+/// as the lowest effort (see `anthropic_surface_for`), so the switch does
+/// something on every one of these models.
+fn claude_effort_control(default: &str) -> Value {
+    serde_json::json!({
+        "type": "effort",
+        "levels": ["low", "medium", "high", "xhigh", "max"],
+        "default": default,
+        "supported": ["effort", "toggle"],
+        "toggleable": true,
+        "enabled": true,
+    })
+}
+
+/// Anthropic's own API — the built-in Anthropic row.
+///
+/// Rates are Anthropic's published first-party prices (USD per 1M tokens) as
+/// of 2026-10-06. A cache read is 0.1x input except on Claude Fable 5.1,
+/// whose read rate is published separately ($0.25). A cache write is 1.25x
+/// input: Aurora marks its breakpoints with the default five-minute cache.
+///
+/// Claude Haiku 5.5 has two rate cards chosen by prompt length; the row holds
+/// the one for prompts of 100K tokens or fewer ($0.50 / $2.50 above that),
+/// because Aurora keeps one rate per model.
+fn anthropic_api_preset() -> ProviderCatalogPreset {
+    // Most capable first among the current generation, then the previous
+    // one: the first id is what a new chat on this row starts with.
+    const MODELS: [(&str, &str, &str, ModelPricing); 6] = [
+        (
+            "claude-opus-5-5",
+            "Claude Opus 5.5",
+            "medium",
+            ModelPricing::usd(0.20, 4.0, 20.0).with_cache_write(5.0),
+        ),
+        (
+            "claude-sonnet-5-5",
+            "Claude Sonnet 5.5",
+            "medium",
+            ModelPricing::usd(0.20, 2.0, 10.0).with_cache_write(2.5),
+        ),
+        (
+            "claude-haiku-5-5",
+            "Claude Haiku 5.5",
+            "medium",
+            ModelPricing::usd(0.01, 0.10, 0.50).with_cache_write(0.125),
+        ),
+        (
+            "claude-fable-5-1",
+            "Claude Fable 5.1",
+            "high",
+            ModelPricing::usd(0.25, 10.0, 50.0).with_cache_write(12.5),
+        ),
+        (
+            "claude-opus-5",
+            "Claude Opus 5",
+            "high",
+            ModelPricing::usd(0.50, 5.0, 25.0).with_cache_write(6.25),
+        ),
+        (
+            "claude-sonnet-5",
+            "Claude Sonnet 5",
+            "high",
+            ModelPricing::usd(0.20, 2.0, 10.0).with_cache_write(2.5),
+        ),
+    ];
+
+    ProviderCatalogPreset {
+        id: "anthropic".to_string(),
+        name: "Anthropic".to_string(),
+        nickname: Some("Claude".to_string()),
+        base_url: crate::api::anthropic_api::ANTHROPIC_API_BASE_URL.to_string(),
+        model: MODELS[0].0.to_string(),
+        // Every model here takes 1M tokens of context and up to 128K of output.
+        context_window: 1_000_000,
+        // The per-request cap, not the model's 128K ceiling. Thinking bills
+        // against it as well as the reply, and Anthropic's guidance for long
+        // agentic coding turns is 64K. Raise it per model where a longer
+        // single reply is needed.
+        max_output_tokens: 64_000,
+        supports_thinking: true,
+        // Tool-call arguments stream as `input_json_delta`, so the tool card
+        // and the live file preview fill in while the model types.
+        supports_tool_stream: Some(true),
+        supports_vision: Some(true),
+        custom_models: Some(MODELS.iter().map(|m| m.0.to_string()).collect()),
+        model_aliases: Some(
+            MODELS
+                .iter()
+                .map(|m| (m.0.to_string(), m.1.to_string()))
+                .collect(),
+        ),
+        provider_type: crate::api::anthropic_api::ANTHROPIC_API_PROVIDER_TYPE.to_string(),
+        // No temperature: every model here rejects a non-default value.
+        default_temperature: None,
+        default_max_tokens: None,
+        requires_api_key: true,
+        model_context_windows: None,
+        // The starting effort Anthropic recommends per model: `medium` for the
+        // 5.5 family (whose levels were recalibrated — 5.5 at `medium` beats
+        // 5 at `high` on Anthropic's coding evaluations), `high` otherwise.
+        model_reasoning: Some(
+            MODELS
+                .iter()
+                .map(|m| (m.0.to_string(), claude_effort_control(m.2)))
+                .collect(),
+        ),
+        model_vision: None,
+        model_pricing: Some(
+            MODELS
+                .iter()
+                .map(|m| (m.0.to_string(), m.3.clone()))
+                .collect(),
+        ),
     }
 }
 
 pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
     vec![
+        anthropic_api_preset(),
         ProviderCatalogPreset {
             id: "fireworks".to_string(),
             name: "Fireworks AI".to_string(),
@@ -175,54 +309,6 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             model_reasoning: None,
             model_vision: None,
             model_pricing: None,
-        },
-        ProviderCatalogPreset {
-            id: "anthropic".to_string(),
-            name: "Anthropic".to_string(),
-            nickname: Some("Claude".to_string()),
-            base_url: "https://api.anthropic.com/v1".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            context_window: 200000,
-            max_output_tokens: 8192,
-            supports_thinking: true,
-            supports_tool_stream: None,
-            supports_vision: None,
-            custom_models: Some(vec![
-                "claude-opus-4-5-20251101".to_string(),
-                "claude-sonnet-4-20250514".to_string(),
-                "claude-3-5-sonnet-20241022".to_string(),
-                "claude-3-5-haiku-20241022".to_string(),
-            ]),
-            model_aliases: None,
-            provider_type: "anthropic".to_string(),
-            default_temperature: Some(1.0),
-            default_max_tokens: None,
-            requires_api_key: true,
-            model_context_windows: None,
-            model_reasoning: None,
-            model_vision: None,
-            // Anthropic published pricing (USD per 1M tokens). Cache
-            // read = `cache_read_input_tokens` rate, cache write is a
-            // separate cost we don't currently expose; the cache_hit
-            // field here is the read rate (~10% of input list price).
-            model_pricing: Some(HashMap::from([
-                (
-                    "claude-opus-4-5-20251101".to_string(),
-                    ModelPricing::usd(1.50, 15.0, 75.0),
-                ),
-                (
-                    "claude-sonnet-4-20250514".to_string(),
-                    ModelPricing::usd(0.30, 3.0, 15.0),
-                ),
-                (
-                    "claude-3-5-sonnet-20241022".to_string(),
-                    ModelPricing::usd(0.30, 3.0, 15.0),
-                ),
-                (
-                    "claude-3-5-haiku-20241022".to_string(),
-                    ModelPricing::usd(0.08, 0.80, 4.0),
-                ),
-            ])),
         },
         ProviderCatalogPreset {
             id: "meta".to_string(),
@@ -900,6 +986,39 @@ mod tests {
             .into_iter()
             .find(|p| p.id == id)
             .unwrap_or_else(|| panic!("{id} is not in the catalogue"))
+    }
+
+    #[test]
+    fn anthropic_is_first_on_its_own_type_with_the_current_models() {
+        let presets = built_in_provider_presets();
+        assert_eq!(presets[0].id, "anthropic", "the built-in Anthropic row leads the catalogue");
+
+        let anthropic = preset("anthropic");
+        // Its own type, so a gateway row typed `anthropic` never receives the
+        // first-party-only fields this row sends.
+        assert_eq!(anthropic.provider_type, "anthropic-api");
+        assert_eq!(anthropic.base_url, "https://api.anthropic.com/v1");
+        assert_eq!(anthropic.model, "claude-opus-5-5");
+        assert_eq!(anthropic.context_window, 1_000_000);
+        assert!(anthropic.requires_api_key);
+
+        let models = anthropic.custom_models.expect("seeded models");
+        let pricing = anthropic.model_pricing.expect("pricing");
+        let reasoning = anthropic.model_reasoning.expect("effort pickers");
+        for id in &models {
+            // Bare ids only: Anthropic's current ids carry no date suffix.
+            assert!(!id.chars().any(|c| c.is_ascii_digit() && id.ends_with(c) && id.len() > 20));
+            let price = pricing.get(id).unwrap_or_else(|| panic!("{id} is priced"));
+            assert!(
+                price.cache_write_per_mtok.is_some_and(|w| w > price.cache_miss_per_mtok),
+                "{id}: a cache write costs more than fresh input"
+            );
+            assert!(price.cache_hit_per_mtok < price.cache_miss_per_mtok);
+            assert!(reasoning.contains_key(id), "{id} gets an effort picker");
+        }
+        for id in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"] {
+            assert!(models.iter().any(|m| m == id), "{id} is offered");
+        }
     }
 
     #[test]

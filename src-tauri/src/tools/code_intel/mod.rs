@@ -1810,10 +1810,14 @@ mod tests {
 
     #[test]
     fn a_supported_file_that_failed_to_read_is_named_in_the_tool_answer() {
+        // A file the index could not read at all. Source is read lossily, so
+        // no byte content fails any more; the failure is set the way a locked
+        // or vanished file leaves it, as the store's own test does.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("good.rs"), "pub fn visible() {}\n").unwrap();
-        std::fs::write(dir.path().join("broken.rs"), [0xff, 0xfe, 0xfd]).unwrap();
-        let idx = CodeIndex::build(dir.path()).unwrap();
+        let mut idx = CodeIndex::build(dir.path()).unwrap();
+        idx.stats.files_failed = 1;
+        idx.stats.failed_files = vec!["broken.rs".into()];
 
         let value = op_definition(&idx, "missing_from_broken_file", None);
         assert_eq!(value["found"], 0);
@@ -1824,6 +1828,24 @@ mod tests {
             message.contains("grep"),
             "the fallback must be named: {message}"
         );
+    }
+
+    #[test]
+    fn a_file_that_only_parsed_with_errors_is_named_in_the_tool_answer() {
+        // Bytes that are not text are read lossily and parsed with recovery.
+        // The answer used to say "1 file(s) contain syntax errors" without
+        // saying which, leaving nothing to open.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.rs"), "pub fn visible() {}\n").unwrap();
+        std::fs::write(dir.path().join("broken.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+        let idx = CodeIndex::build(dir.path()).unwrap();
+
+        let value = op_definition(&idx, "missing_from_broken_file", None);
+        assert_eq!(value["found"], 0);
+        let message = value["message"].as_str().unwrap();
+        assert!(message.contains("syntax errors"), "{message}");
+        assert!(message.contains("broken.rs"), "the file is named: {message}");
+        assert!(message.contains("grep"), "the fallback must be named: {message}");
     }
 
     #[test]

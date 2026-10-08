@@ -221,6 +221,13 @@ export interface SettingsState {
    * tools are discovered on demand; switching this off removes the bucket. */
   browserTools: boolean;
   setBrowserTools: (value: boolean) => void;
+  /** Let the agent hand work to subagents. Off by default. */
+  subagentsEnabled: boolean;
+  setSubagentsEnabled: (value: boolean) => void;
+  /** `providerId:modelKey` pin for subagents; null means "same as the
+   *  conversation's model". */
+  subagentModel: string | null;
+  setSubagentModel: (value: string | null) => void;
   /** Legacy persisted preference. Optional discovery is always enabled. */
   deferTools: boolean;
   setDeferTools: (value: boolean) => void;

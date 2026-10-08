@@ -36,10 +36,14 @@ describe("global instruction profiles", () => {
     });
   });
 
-  it("creates sets up to the cap of three, then refuses with null", () => {
-    const store = useAgentSettingsStore.getState();
-    const id = store.addGlobalInstructionProfile();
-    expect(id).not.toBeNull();
+  it("creates sets up to the cap, then refuses with null", () => {
+    // The fixture seeds two; add until the cap is reached, each add succeeds.
+    while (
+      useAgentSettingsStore.getState().globalInstructionProfiles.length <
+      GLOBAL_INSTRUCTION_PROFILE_LIMIT
+    ) {
+      expect(useAgentSettingsStore.getState().addGlobalInstructionProfile()).not.toBeNull();
+    }
     expect(useAgentSettingsStore.getState().globalInstructionProfiles).toHaveLength(
       GLOBAL_INSTRUCTION_PROFILE_LIMIT,
     );
@@ -128,12 +132,20 @@ describe("resolveGlobalInstructionState (what the DB row becomes on load)", () =
         { name: "No id", text: "x" },
         { id: "two", name: "  ", text: "2" },
         { id: "three", name: "Three", text: 42 },
-        { id: "four", name: "Past the cap", text: "4" },
+        // Fill to the cap, then one more that must be dropped.
+        ...Array.from({ length: GLOBAL_INSTRUCTION_PROFILE_LIMIT - 3 }, (_, i) => ({
+          id: `fill-${i}`,
+          name: `Fill ${i}`,
+          text: "f",
+        })),
+        { id: "past", name: "Past the cap", text: "p" },
       ],
       "two",
       "legacy text must lose to saved profiles",
     );
-    expect(resolved.profiles.map((p) => p.id)).toEqual(["one", "two", "three"]);
+    expect(resolved.profiles).toHaveLength(GLOBAL_INSTRUCTION_PROFILE_LIMIT);
+    expect(resolved.profiles.slice(0, 3).map((p) => p.id)).toEqual(["one", "two", "three"]);
+    expect(resolved.profiles.some((p) => p.id === "past")).toBe(false);
     // A blank name gets a stand-in, a non-string text becomes empty.
     expect(resolved.profiles[1].name).toBe("Persona 2");
     expect(resolved.profiles[2].text).toBe("");

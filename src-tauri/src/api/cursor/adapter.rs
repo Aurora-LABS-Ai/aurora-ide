@@ -301,6 +301,7 @@ impl StreamingApiClient for CursorAdapter {
                         usage,
                         stop_reason,
                         assistant_message,
+                        notices: Vec::new(),
                     })
                 }
             };

@@ -28,6 +28,22 @@ import { SquareTerminal, FolderTree } from 'lucide-react';
 import clsx from 'clsx';
 import { AppIcon } from '@/kernel/ui/AppIcon';
 
+// Module level: a component declared inside StatusBar is a new type on every
+// render, so React unmounted and remounted each divider each time.
+const StatusDivider: React.FC = () => (
+  <span
+    aria-hidden
+    className="block h-[12px] w-[1px]"
+    style={{
+      backgroundColor:
+        'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
+    }}
+  />
+);
+
+const statusButtonClass =
+  'flex items-center gap-1.5 px-2 h-[18px] rounded-[4px] transition-colors';
+
 export const StatusBar: React.FC = () => {
   const { tabs, activeTabId } = useEditorStore();
   const { toggleTerminal, isOpen: isTerminalOpen, sessions } = useTerminalStore();
@@ -36,20 +52,6 @@ export const StatusBar: React.FC = () => {
 
   const hasRunningProcess = sessions.some(s => s.isRunning);
   const workspaceName = rootPath ? rootPath.split(/[/\\]/).pop() : null;
-
-  const StatusDivider: React.FC = () => (
-    <span
-      aria-hidden
-      className="block h-[12px] w-[1px]"
-      style={{
-        backgroundColor:
-          'color-mix(in srgb, var(--aurora-common-border) 60%, transparent)',
-      }}
-    />
-  );
-
-  const statusButtonClass =
-    'flex items-center gap-1.5 px-2 h-[18px] rounded-[4px] transition-colors';
 
   return (
     <div

@@ -11,6 +11,8 @@ export interface ProviderCatalogModelPricing {
   cacheHitPerMtok: number;
   cacheMissPerMtok: number;
   outputPerMtok: number;
+  /** Writing the prompt cache, where billed apart from fresh input (Anthropic: 1.25x input). */
+  cacheWritePerMtok?: number;
 }
 
 export interface ProviderCatalogPreset {

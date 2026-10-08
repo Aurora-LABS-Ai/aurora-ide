@@ -20,29 +20,35 @@
  * See: src/apps/ide/services/theme-service.ts for theme utilities
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useEditorStore } from '@/kernel/store/useEditorStore';
 import { useWorkspaceStore } from '@/kernel/store/useWorkspaceStore';
 import { Search, FileCode, CornerDownLeft } from 'lucide-react';
 import { clsx } from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 import { readFileContent } from '@/kernel/lib/ipc/tauri';
+import type { FileNode } from '@/kernel/types';
+
+/** Rows shown at most. */
+const MAX_RESULTS = 50;
 
 // Helper to flatten file tree
-const flattenFiles = (files: any[]): string[] => {
-    let result: string[] = [];
-    files.forEach(f => {
+const flattenFiles = (files: FileNode[]): string[] => {
+    const result: string[] = [];
+    for (const f of files) {
         if (f.type === 'file') {
-            result.push(f.path);
+            if (f.path) result.push(f.path);
         } else if (f.children) {
-            result = result.concat(flattenFiles(f.children));
+            result.push(...flattenFiles(f.children));
         }
-    });
+    }
     return result;
 };
 
 export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
     const [query, setQuery] = useState('');
+    // The query the list is filtered by: `query`, 150 ms behind while typing.
+    const [searchedQuery, setSearchedQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
@@ -50,64 +56,67 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
     const { openFile } = useEditorStore();
     const { files } = useWorkspaceStore();
 
-    const [results, setResults] = useState<string[]>([]);
-    const [allFilePaths, setAllFilePaths] = useState<string[]>([]);
-
     // ────────────────────────────────────────────────────────────────────
-    // ⚠️  CRITICAL: keep these effects SEPARATE.
+    // ⚠️  The cursor must never follow `files`.
     //
-    // Bug we fixed: the original code combined "reset on open" and
-    // "rebuild file list when workspace changes" into one effect with
-    // deps [isOpen, files]. The workspace store re-emits a fresh `files`
-    // reference very frequently (filesystem watcher, refresh, expand
-    // collapse, etc.), which made the effect fire constantly while the
-    // modal was open — and every fire called `setSelectedIndex(0)`,
-    // snapping the selection back to the top file regardless of
-    // ArrowDown/ArrowUp or mouse hover. (Symptom: highlighted row never
-    // moves; hover paints a normal hover bg on a *different* row.)
-    //
-    // Splitting the concerns: the open transition resets cursor/query;
-    // file changes only update the path index, never the selection.
+    // Bug we fixed: "reset on open" and "rebuild the file list" once
+    // shared an effect on [isOpen, files]. The workspace store re-emits a
+    // fresh `files` reference very often (watcher, refresh, expand), so
+    // the cursor snapped back to the top on every emit, whatever ArrowDown
+    // or hover said. The path index and results below are derived from
+    // `files`; the cursor is only reset on open and on a new query, and is
+    // clamped (not reset) when the list shrinks.
     // ────────────────────────────────────────────────────────────────────
 
-    // (1) Reset cursor + query and focus the input ONLY when isOpen flips
-    //     from false → true. Decoupled from `files` deliberately.
+    // Reset cursor + query when the modal opens. Done while rendering (the
+    // React pattern for "adjust state when a prop changes"), not in an
+    // effect, so the first open frame already shows the cleared state.
+    const [wasOpen, setWasOpen] = useState(isOpen);
+    if (isOpen !== wasOpen) {
+        setWasOpen(isOpen);
+        if (isOpen) {
+            setQuery('');
+            setSearchedQuery('');
+            setSelectedIndex(0);
+        }
+    }
+
     useEffect(() => {
         if (!isOpen) return;
-        setQuery('');
-        setSelectedIndex(0);
         const t = window.setTimeout(() => inputRef.current?.focus(), 50);
         return () => window.clearTimeout(t);
     }, [isOpen]);
 
-    // (2) Keep the path index fresh as the workspace tree changes. We
-    //     intentionally do NOT touch selectedIndex here. We also clamp
-    //     it on the next render via the search effect if the row count
-    //     shrinks below the current cursor.
+    const allFilePaths = useMemo(() => (isOpen ? flattenFiles(files) : []), [isOpen, files]);
+
+    // Debounced filter on the path index.
     useEffect(() => {
-        if (!isOpen) return;
-        const paths = flattenFiles(files);
-        setAllFilePaths(paths);
-        setResults((prev) =>
-            // If there's no active query yet, surface the initial slice.
-            // Otherwise the search effect below will refilter on the
-            // next tick using the new allFilePaths.
-            prev.length === 0 ? paths.slice(0, 50) : prev,
-        );
-    }, [isOpen, files]);
+        const timer = window.setTimeout(() => setSearchedQuery(query), 150);
+        return () => window.clearTimeout(timer);
+    }, [query]);
+
+    const results = useMemo(() => {
+        if (!searchedQuery) return allFilePaths.slice(0, MAX_RESULTS);
+        const lowerQuery = searchedQuery.toLowerCase();
+        return allFilePaths.filter((f) => f.toLowerCase().includes(lowerQuery)).slice(0, MAX_RESULTS);
+    }, [searchedQuery, allFilePaths]);
+
+    // The cursor as shown: clamped when the list shrank under it (a
+    // workspace re-emit removed files while a search was active).
+    const activeIndex = results.length === 0 ? 0 : Math.min(selectedIndex, results.length - 1);
 
     // Handle Input
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'ArrowDown') {
             e.preventDefault();
-            setSelectedIndex(i => Math.min(i + 1, results.length - 1));
+            setSelectedIndex(Math.min(activeIndex + 1, results.length - 1));
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
-            setSelectedIndex(i => Math.max(i - 1, 0));
+            setSelectedIndex(Math.max(activeIndex - 1, 0));
         } else if (e.key === 'Enter') {
             e.preventDefault();
-            if (results[selectedIndex]) {
-                handleSelect(results[selectedIndex]);
+            if (results[activeIndex]) {
+                handleSelect(results[activeIndex]);
             }
         } else if (e.key === 'Escape') {
             e.preventDefault();
@@ -149,41 +158,6 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
         onClose();
     };
 
-    // Search Effect — debounced filter on the path index.
-    //
-    // selectedIndex is reset to 0 ONLY when the query changes (a fresh
-    // search makes the cursor stale). When `allFilePaths` updates from a
-    // workspace re-emit we leave selectedIndex alone and just clamp it
-    // below `results.length` on the next render — that way ArrowDown /
-    // mouse hover survive workspace activity while the modal is open.
-    useEffect(() => {
-        const timer = window.setTimeout(() => {
-            if (!query) {
-                setResults(allFilePaths.slice(0, 50));
-                return;
-            }
-            const lowerQuery = query.toLowerCase();
-            const filtered = allFilePaths
-                .filter((f) => f.toLowerCase().includes(lowerQuery))
-                .slice(0, 50);
-            setResults(filtered);
-        }, 150);
-        return () => window.clearTimeout(timer);
-    }, [query, allFilePaths]);
-
-    // Reset cursor only when the user actually types/clears a query.
-    useEffect(() => {
-        setSelectedIndex(0);
-    }, [query]);
-
-    // Clamp cursor if the result set shrank below the current index
-    // (e.g. workspace re-emit removed files while a search was active).
-    useEffect(() => {
-        if (selectedIndex >= results.length && results.length > 0) {
-            setSelectedIndex(results.length - 1);
-        }
-    }, [results.length, selectedIndex]);
-
     if (!isOpen) return null;
 
     return (
@@ -205,7 +179,11 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                             className="flex-1 bg-transparent border-none outline-none text-sm text-text-primary placeholder:text-text-disabled"
                             placeholder="Search files by name..."
                             value={query}
-                            onChange={e => setQuery(e.target.value)}
+                            onChange={e => {
+                                // A new query makes the old cursor meaningless.
+                                setQuery(e.target.value);
+                                setSelectedIndex(0);
+                            }}
                             onKeyDown={handleKeyDown}
                         />
                         <div className="text-[10px] text-muted-foreground bg-input/50 px-2 py-0.5 rounded">ESC to close</div>
@@ -224,17 +202,17 @@ export const QuickOpenModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                                         key={file}
                                         className={clsx(
                                             "px-3 py-2 flex items-center gap-3 cursor-pointer text-sm",
-                                            index === selectedIndex ? "bg-primary/20 text-text-primary" : "text-text-secondary hover:bg-sidebar-item-hover"
+                                            index === activeIndex ? "bg-primary/20 text-text-primary" : "text-text-secondary hover:bg-sidebar-item-hover"
                                         )}
                                         onMouseEnter={() => setSelectedIndex(index)}
                                         onClick={() => handleSelect(file)}
                                     >
-                                        <FileCode size={14} className={index === selectedIndex ? "text-primary" : "opacity-50"} />
+                                        <FileCode size={14} className={index === activeIndex ? "text-primary" : "opacity-50"} />
                                         <div className="flex-1 truncate flex items-center justify-between">
                                             <span>{filename}</span>
                                             <span className="text-[10px] opacity-50 truncate max-w-[200px] ml-2">{file}</span>
                                         </div>
-                                        {index === selectedIndex && <CornerDownLeft size={12} className="opacity-50" />}
+                                        {index === activeIndex && <CornerDownLeft size={12} className="opacity-50" />}
                                     </div>
                                 );
                             })

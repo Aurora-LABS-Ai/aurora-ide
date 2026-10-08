@@ -37,6 +37,11 @@ pub struct AgentRegistry {
     /// Err) or via [`AgentRegistry::cancel`].
     in_flight: DashMap<String, CancellationToken>,
 
+    /// `thread_id` → the turn running on it. A thread has at most one turn
+    /// at a time (its session mutex sees to that); this answers "is one
+    /// running" without touching the mutex.
+    active_turns: DashMap<String, String>,
+
     /// Builder for the per-turn API client. Stored as `Arc<dyn …>` so
     /// tests inject a mock factory and the real factory plugs in
     /// unchanged.
@@ -65,6 +70,14 @@ pub struct AgentRegistry {
     /// derives has to come from whichever store owns the conversation. Routed
     /// per turn by [`AgentRegistry::store_for`].
     chat_store: Arc<SessionStore>,
+
+    /// Every sub-agent this process has started, by id. Live state only; the
+    /// child's own files are the record. See `agent_runtime::subagents`.
+    subagent_tasks: Arc<crate::agent_runtime::subagents::TaskRegistry>,
+
+    /// How a sub-agent's `model` pin becomes a provider snapshot. `None` (tests,
+    /// the verify crate) means a child can only run on its parent's provider.
+    provider_lookup: Option<Arc<dyn crate::agent_runtime::subagents::ProviderLookup>>,
 }
 
 impl std::fmt::Debug for AgentRegistry {
@@ -93,6 +106,7 @@ impl AgentRegistry {
             sessions: DashMap::new(),
             queue_slots: DashMap::new(),
             in_flight: DashMap::new(),
+            active_turns: DashMap::new(),
             api_factory,
             tools: Arc::new(ToolRegistry::new()),
             bridge_router: Arc::new(BridgeRouter::new()),
@@ -100,7 +114,32 @@ impl AgentRegistry {
             project_dirs: ProjectDirs::with_root(projects_root),
             usage_ledger: None,
             chat_store: Arc::new(SessionStore::new_folder(chat_dir)),
+            subagent_tasks: Arc::new(crate::agent_runtime::subagents::TaskRegistry::new()),
+            provider_lookup: None,
         }
+    }
+
+    /// Let sub-agents run on any configured model, not only the parent's.
+    #[must_use]
+    pub fn with_provider_lookup(
+        mut self,
+        lookup: Arc<dyn crate::agent_runtime::subagents::ProviderLookup>,
+    ) -> Self {
+        self.provider_lookup = Some(lookup);
+        self
+    }
+
+    /// The live sub-agent records.
+    #[must_use]
+    pub fn subagent_tasks(&self) -> &Arc<crate::agent_runtime::subagents::TaskRegistry> {
+        &self.subagent_tasks
+    }
+
+    #[must_use]
+    pub fn provider_lookup(
+        &self,
+    ) -> Option<&Arc<dyn crate::agent_runtime::subagents::ProviderLookup>> {
+        self.provider_lookup.as_ref()
     }
 
     /// Point Aurora Chat's conversations at `dir`. Production wiring; see
@@ -324,17 +363,18 @@ impl AgentRegistry {
     }
 
     /// Enqueue a user message to be injected into the conversation at
-    /// the next tool-result boundary. Single-slot: a second call before
-    /// the first is drained replaces the previous text.
+    /// the next tool-result boundary. An ordered queue: a person's second
+    /// message replaces their first, machine reports are appended, and
+    /// everything is delivered in order (see `session::enqueue_into`).
     ///
     /// CRITICAL: writes ONLY to the registry-level queue slot, never
     /// touches the session mutex. `run_turn` holds the session mutex
     /// for the entire turn, so any attempt to lock it from here would
     /// block until the turn ended — at which point every tool-result
     /// boundary in the turn would have already passed with an empty
-    /// slot. The slot is an `Arc<std::sync::Mutex<Option<…>>>` shared
-    /// with the `Session`, so a write here is immediately visible to
-    /// `session.take_queued_message()` running inside the turn.
+    /// slot. The slot is shared with the `Session`, so a write here is
+    /// immediately visible to `session.take_queued_message()` running
+    /// inside the turn.
     pub async fn enqueue_message(
         &self,
         thread_id: &str,
@@ -342,6 +382,19 @@ impl AgentRegistry {
         display_text: Option<String>,
         chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
         origin: crate::agent_runtime::types::InjectedOrigin,
+    ) -> Result<(), String> {
+        self.enqueue_with_agent(thread_id, text, display_text, chips, origin, None)
+    }
+
+    /// [`Self::enqueue_message`] with the agent a sub-agent report is about.
+    pub fn enqueue_with_agent(
+        &self,
+        thread_id: &str,
+        text: String,
+        display_text: Option<String>,
+        chips: Option<Vec<crate::agent_runtime::types::AttachedPromptChip>>,
+        origin: crate::agent_runtime::types::InjectedOrigin,
+        agent: Option<crate::agent_runtime::types::AgentReportMeta>,
     ) -> Result<(), String> {
         use crate::agent_runtime::types::InjectedOrigin;
         if text.trim().is_empty() {
@@ -351,30 +404,146 @@ impl AgentRegistry {
         let mut guard = slot
             .lock()
             .map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
-        *guard = Some(crate::agent_runtime::session::QueuedUserMessage {
+        crate::agent_runtime::session::enqueue_into(
+            &mut guard,
+            crate::agent_runtime::session::QueuedUserMessage {
+                text,
+                display_text: display_text.filter(|t| !t.trim().is_empty()),
+                chips: chips.filter(|c| !c.is_empty()),
+                // The mid-turn preamble says "the user sent this while your tools
+                // were running". True of a composer message; a lie about a process
+                // that ended on its own, which carries its own framing instead.
+                mid_turn: origin == InjectedOrigin::User,
+                origin,
+                queued_at_ms: chrono::Utc::now().timestamp_millis(),
+                agent,
+            },
+        );
+        Ok(())
+    }
+
+    /// Append a message to a thread's queue without the "one pending message
+    /// per person" rule [`Self::enqueue_with_agent`] applies. For a sub-agent's
+    /// queue, where the parent is the only writer and every message it sends
+    /// has to arrive.
+    pub fn enqueue_in_order(
+        &self,
+        thread_id: &str,
+        text: String,
+        origin: crate::agent_runtime::types::InjectedOrigin,
+    ) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err("queued message text cannot be empty".to_string());
+        }
+        let slot = self.get_or_create_queue_slot(thread_id);
+        let mut guard = slot
+            .lock()
+            .map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
+        guard.push_back(crate::agent_runtime::session::QueuedUserMessage {
             text,
-            display_text: display_text.filter(|t| !t.trim().is_empty()),
-            chips: chips.filter(|c| !c.is_empty()),
-            // The mid-turn preamble says "the user sent this while your tools
-            // were running". True of a composer message; a lie about a process
-            // that ended on its own, which carries its own framing instead.
-            mid_turn: origin == InjectedOrigin::User,
+            display_text: None,
+            chips: None,
+            mid_turn: origin == crate::agent_runtime::types::InjectedOrigin::User,
             origin,
             queued_at_ms: chrono::Utc::now().timestamp_millis(),
+            agent: None,
         });
         Ok(())
     }
 
-    /// Clear the queued message for a session without consuming it.
-    /// Called by the frontend's Cancel button on the pill. Same
-    /// constraint as `enqueue_message`: must not lock the session.
+    /// Put a message taken off a thread's queue back at its end, unchanged.
+    pub fn requeue(&self, thread_id: &str, message: crate::agent_runtime::session::QueuedUserMessage) {
+        let slot = self.get_or_create_queue_slot(thread_id);
+        if let Ok(mut guard) = slot.lock() {
+            guard.push_back(message);
+        };
+    }
+
+    /// Take only the queued messages of `origin`, oldest first, leaving every
+    /// other one where it is and in order. A sub-agent waiting for its
+    /// parent's answer takes the parent's words (`User`) and must not swallow
+    /// a background process's ending queued beside them.
+    pub fn take_queued_from(
+        &self,
+        thread_id: &str,
+        origin: crate::agent_runtime::types::InjectedOrigin,
+    ) -> Vec<crate::agent_runtime::session::QueuedUserMessage> {
+        let Some(entry) = self.queue_slots.get(thread_id) else {
+            return Vec::new();
+        };
+        let Ok(mut guard) = entry.value().lock() else {
+            return Vec::new();
+        };
+        let (taken, kept): (Vec<_>, Vec<_>) = guard.drain(..).partition(|m| m.origin == origin);
+        guard.extend(kept);
+        taken
+    }
+
+    /// Take every queued message for a thread that is not a sub-agent report,
+    /// oldest first, leaving the reports where they are.
+    pub fn take_queued_messages(
+        &self,
+        thread_id: &str,
+    ) -> Vec<crate::agent_runtime::session::QueuedUserMessage> {
+        use crate::agent_runtime::types::InjectedOrigin;
+        let Some(entry) = self.queue_slots.get(thread_id) else {
+            return Vec::new();
+        };
+        let Ok(mut guard) = entry.value().lock() else {
+            return Vec::new();
+        };
+        let (taken, kept): (Vec<_>, Vec<_>) = guard
+            .drain(..)
+            .partition(|m| m.origin != InjectedOrigin::Subagent);
+        guard.extend(kept);
+        taken
+    }
+
+    /// Drop the person's queued message for a session. Called by the
+    /// frontend's Cancel button on the pill; machine reports stay queued.
+    /// Same constraint as `enqueue_message`: must not lock the session.
     pub async fn cancel_queued_message(&self, thread_id: &str) -> Result<(), String> {
         if let Some(entry) = self.queue_slots.get(thread_id) {
             if let Ok(mut g) = entry.value().lock() {
-                *g = None;
+                g.retain(|m| m.origin != crate::agent_runtime::types::InjectedOrigin::User);
             }
         }
         Ok(())
+    }
+
+    /// Take every message still queued for a thread, oldest first. Used at
+    /// the end of a turn to find reports that arrived after the last tool
+    /// boundary and never got injected.
+    pub fn drain_queued(
+        &self,
+        thread_id: &str,
+    ) -> Vec<crate::agent_runtime::session::QueuedUserMessage> {
+        self.queue_slots
+            .get(thread_id)
+            .and_then(|entry| entry.value().lock().ok().map(|mut g| g.drain(..).collect()))
+            .unwrap_or_default()
+    }
+
+    /// Mark `thread_id` as having a turn in flight. The sub-agent reporter
+    /// uses this to choose between injecting a report into the running turn
+    /// and waking an idle conversation.
+    pub fn mark_turn_active(&self, thread_id: &str, turn_id: &str) {
+        self.active_turns
+            .insert(thread_id.to_string(), turn_id.to_string());
+    }
+
+    /// The turn no longer runs. Only removes the entry if it is still THIS
+    /// turn's — a retry that started a new turn on the thread must not be
+    /// un-marked by the old one finishing.
+    pub fn clear_turn_active(&self, thread_id: &str, turn_id: &str) {
+        self.active_turns
+            .remove_if(thread_id, |_, active| active == turn_id);
+    }
+
+    /// Whether a turn is running on `thread_id` right now.
+    #[must_use]
+    pub fn is_turn_active(&self, thread_id: &str) -> bool {
+        self.active_turns.contains_key(thread_id)
     }
 
     /// On-disk path for a given thread's session JSONL. Delegates to

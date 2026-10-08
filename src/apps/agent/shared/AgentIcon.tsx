@@ -116,6 +116,12 @@ export type AgentIconName =
   | "mcp"
   | "sliders"
   | "users"
+  | "agent-start"
+  | "agent-message"
+  | "agent-check"
+  | "agent-stop"
+  | "parent-message"
+  | "report-submit"
   | "arrow-left"
   | "palette"
   | "upload"
@@ -938,6 +944,71 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
     </>
   ),
 
+  // ── The sub-agent family ────────────────────────────────────────────────
+  // Each is the person the header's sub-agent indicator wears (`users`, one
+  // figure of it) plus the one act the tool does: the subject-plus-act pairing
+  // the set already uses for skill-search and tool-search. Picked from
+  // Documents\aurora-subagent-tool-icon-designs.html, card 5.
+
+  // spawn_agent — a person and a plus: someone new joins the work.
+  "agent-start": (
+    <>
+      <circle cx="9.5" cy="8.2" r="3.2" />
+      <path d="M3.5 19.5a6 6 0 0 1 12 0" />
+      <path d="M18.5 4.5v6" data-part="pulse" />
+      <path d="M15.5 7.5h6" data-part="pulse" />
+    </>
+  ),
+
+  // send_message — an arrow arriving at the person.
+  "agent-message": (
+    <>
+      <circle cx="8.5" cy="8.2" r="3.2" />
+      <path d="M2.75 19.5a5.75 5.75 0 0 1 11.5 0" />
+      <path d="M21.25 12.5h-6.5" data-part="travel" />
+      <path d="M17.5 9.5l-3 3 3 3" data-part="travel" />
+    </>
+  ),
+
+  // get_task_output — the person under a lens.
+  "agent-check": (
+    <>
+      <circle cx="9" cy="8.2" r="3.2" />
+      <path d="M3 19.5a6 6 0 0 1 9.4-4.95" />
+      <circle cx="17" cy="16" r="3" data-part="lens" />
+      <path d="M19.2 18.2l2.05 2.05" data-part="lens" />
+    </>
+  ),
+
+  // stop_agent — the person and a stop square.
+  "agent-stop": (
+    <>
+      <circle cx="9" cy="8.2" r="3.2" />
+      <path d="M3 19.5a6 6 0 0 1 9.4-4.95" />
+      <rect x="14.5" y="13.5" width="6.75" height="6.75" rx="1.5" data-part="pulse" />
+    </>
+  ),
+
+  // message_parent — the child's side: an arrow going up to the person who
+  // started it.
+  "parent-message": (
+    <>
+      <circle cx="15" cy="7.8" r="3.2" />
+      <path d="M9.25 19.5a5.75 5.75 0 0 1 11.5 0" />
+      <path d="M5 20.25V10" data-part="travel-y" />
+      <path d="M2.25 12.75 5 10l2.75 2.75" data-part="travel-y" />
+    </>
+  ),
+
+  // submit_report — a page with a tick: the work, handed in.
+  "report-submit": (
+    <>
+      <path d="M6 3.5h7.5L18 8v12.5H6z" />
+      <path d="M13.5 3.5V8H18" />
+      <path d="M8.75 14.25l2.25 2.25 4.25-4.5" pathLength={1} data-part="tick" />
+    </>
+  ),
+
   // Arrow-left — back to app.
   "arrow-left": (
     <>
@@ -1068,7 +1139,8 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   cpu: (
     <>
       <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
-      <rect x="10" y="10" width="4" height="4" rx="0.8" />
+      {/* The die: what pulses on a running `list_models` row. */}
+      <rect x="10" y="10" width="4" height="4" rx="0.8" data-part="pulse" />
       <path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3" />
     </>
   ),

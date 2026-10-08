@@ -101,6 +101,17 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   TaskCreate: 'low',               // UI operation - the agent's own checklist
   TaskUpdate: 'low',
   TaskList: 'low',                 // read-only
+  // Sub-agents. Starting or messaging one is bookkeeping; the child's OWN
+  // tools carry their own risk and go through the same gate in Rust, where a
+  // tool set to ask is refused for a child rather than prompted.
+  spawn_agent: 'low',
+  send_message: 'low',
+  get_task_output: 'low',
+  // Stops work the agent itself started; the transcript is kept.
+  stop_agent: 'low',
+  list_models: 'low',
+  message_parent: 'low',
+  submit_report: 'low',
   todo: 'low',                     // retired names, kept so a stale roster can't escalate
   todo_write: 'low',
 

@@ -71,7 +71,11 @@ fn text_of(blocks: &[ContentBlock]) -> String {
             // the whole message when the ending is what woke the conversation.
             // Without this the active user text came out empty and the turn
             // was sent as a RESUME — the model was never told.
-            ContentBlock::ProcessEvent { detail, .. } if !detail.is_empty() => {
+            // A sub-agent's report wakes the conversation the same way.
+            ContentBlock::ProcessEvent { detail, .. }
+            | ContentBlock::AgentReport { detail, .. }
+                if !detail.is_empty() =>
+            {
                 parts.push(detail.as_str());
             }
             _ => {}
@@ -349,6 +353,35 @@ mod tests {
         assert!(!input.is_resume());
         assert!(input.user_text.contains("has ended with exit code 0"));
         assert!(input.user_text.contains("bg-1"));
+    }
+
+    /// Same for a turn a finished sub-agent started: the report is the action.
+    #[test]
+    fn an_agent_started_turn_is_the_action_not_a_resume() {
+        let report = ConversationMessage {
+            event_id: None,
+            role: crate::agent_runtime::types::MessageRole::User,
+            blocks: vec![ContentBlock::AgentReport {
+                agent_id: "agent-7".into(),
+                name: None,
+                status: "completed".into(),
+                summary: "Finished \"Find it\" · completed".into(),
+                detail: "Sub-agent agent-7 completed: found it in auth.rs.".into(),
+                created_at: 3,
+            }],
+            usage: None,
+            timestamp: 3,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = [user("find it"), assistant("Started."), report];
+
+        let input = build_turn_input(None, &messages);
+
+        assert!(!input.is_resume());
+        assert!(input.user_text.contains("found it in auth.rs"));
     }
 
     #[test]

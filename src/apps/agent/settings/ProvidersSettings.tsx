@@ -79,6 +79,13 @@ import {
 import { isModalProvider } from "@/apps/agent/services/providers/modal";
 import { isMinimaxProvider } from "@/apps/agent/services/providers/minimax";
 import {
+  isAnthropicApiProvider,
+  PROMPT_CACHE_TTLS,
+  promptCacheTtl,
+  withPromptCacheTtl,
+  type PromptCacheTtl,
+} from "@/apps/agent/services/providers/anthropic";
+import {
   deepseekBaseUrlForWire,
   deepseekWire,
   isDeepSeekProvider,
@@ -176,6 +183,7 @@ const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = 
  * `applyOpenCodeWire` has already made the choice per model.
  */
 const PINNED_WIRE_TYPES = new Set([
+  "anthropic-api",
   "codex",
   "claude-code",
   "cursor",
@@ -194,6 +202,7 @@ function apiFormatForProviderType(type: string | undefined): Exclude<EditableApi
   if (
     [
       "anthropic",
+      "anthropic-api",
       "claude-code",
       "minimax",
       "kenari-messages",
@@ -948,6 +957,7 @@ const ModelRow: React.FC<{
   const wireFormat: "chat" | "responses" | "messages" | "native" =
     [
       "anthropic",
+      "anthropic-api",
       "claude-code",
       "minimax",
       "kenari-messages",
@@ -1759,7 +1769,9 @@ export const ProviderDetail: React.FC<{
   // A boolean rather than a special case in the markup, so switching another
   // provider to this shape later is one name on this line.
   const minimax = isMinimaxProvider(provider);
-  const pinnedEndpoint = minimax;
+  const anthropicApi = isAnthropicApiProvider(provider);
+  const cacheTtl = promptCacheTtl(provider);
+  const pinnedEndpoint = minimax || anthropicApi;
   const deepseek = isDeepSeekProvider(provider);
   const deepseekWireValue = deepseekWire(provider);
   const wire = kenariWire(provider);
@@ -2071,6 +2083,28 @@ export const ProviderDetail: React.FC<{
             />
             <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
               {DEEPSEEK_WIRES.find((w) => w.value === deepseekWireValue)?.detail}
+            </span>
+          </div>
+        )}
+        {/* How long Anthropic keeps the reused start of each request. A real
+            cost trade, not a preference, so both prices are written under
+            the picker. Stored in the row's custom params; the Rust adapter
+            reads it and strips it from the request body. */}
+        {anthropicApi && (
+          <div className="agw-prov-edit-field" style={{ gridColumn: "1 / -1" }}>
+            <span>Prompt cache</span>
+            <AgwSegmented<PromptCacheTtl>
+              ariaLabel="How long Anthropic keeps the prompt cache"
+              value={cacheTtl}
+              options={PROMPT_CACHE_TTLS.map((t) => ({ value: t.value, label: t.label }))}
+              onChange={(next) =>
+                updateProvider(provider.id, {
+                  customParams: withPromptCacheTtl(provider.customParams, next),
+                })
+              }
+            />
+            <span style={{ fontSize: "var(--agw-fs-micro)", color: "var(--agw-text-subtle)" }}>
+              {PROMPT_CACHE_TTLS.find((t) => t.value === cacheTtl)?.detail}
             </span>
           </div>
         )}

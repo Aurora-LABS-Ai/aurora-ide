@@ -395,6 +395,29 @@ describe("ToolCallCard streamed file targets", () => {
     expect(html).not.toContain("data-live");
   });
 
+  it("gives the sub-agent tools their own marks, and the accent only to start and report", () => {
+    // All seven used to fall to the `diff` file mark, so starting an agent
+    // looked like editing a file. Start agent and Submit report — the rows
+    // that open and close a delegation — carry the lifecycle flag the accent
+    // rule in 53-subagents.css reads; the other five stay muted.
+    const render = (name: string) =>
+      renderToStaticMarkup(
+        <ToolCallCard call={{ id: name, name, arguments: "{}", result: '{"status":"started"}' }} />,
+      );
+    const start = render("spawn_agent");
+    expect(start).toContain("data-lifecycle");
+    expect(start).toContain('d="M18.5 4.5v6"'); // agent-start's plus
+    const report = render("submit_report");
+    expect(report).toContain("data-lifecycle");
+    expect(report).toContain('d="M8.75 14.25l2.25 2.25 4.25-4.5"'); // report-submit's tick
+    for (const quiet of ["send_message", "get_task_output", "stop_agent", "list_models", "message_parent"]) {
+      const html = render(quiet);
+      expect(html, quiet).not.toContain("data-lifecycle");
+      // Not the file-diff fallback any more.
+      expect(html, quiet).not.toContain('d="M9.5 13.5h5"');
+    }
+  });
+
   it("keeps its filename on the row when a call touched exactly one file", () => {
     const html = renderToStaticMarkup(
       <ToolCallCard

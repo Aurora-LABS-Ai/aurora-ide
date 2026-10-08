@@ -120,6 +120,27 @@ describe("live tool marks", () => {
     expect(motionRules).not.toMatch(/var\(--agw-added|var\(--agw-removed/);
   });
 
+  it("colours exactly two tool marks, and only from the sub-agent stylesheet", () => {
+    // The written exception to the rule above (Alvan's pick, 2026-10-08):
+    // Start agent and Submit report rest in the accent. It must stay those two
+    // and live with the sub-agent surface, not leak into the motion partial
+    // or onto any other tool.
+    const set = cardSource.match(/DELEGATION_LIFECYCLE_TOOLS = new Set\(\[([^\]]*)\]\)/)?.[1];
+    expect(set, "DELEGATION_LIFECYCLE_TOOLS not found").toBeTruthy();
+    expect([...(set ?? "").matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort()).toEqual([
+      "spawn_agent",
+      "submit_report",
+    ]);
+    const subagentCss = readFileSync(
+      `${cwd}/src/apps/agent/theme/agent-window/53-subagents.css`,
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(subagentCss).toMatch(
+      /\.agw-tool-glyph\[data-lifecycle\]\s*\{\s*color:\s*var\(--agw-accent\);?\s*\}/,
+    );
+    expect(motionRules).not.toContain("data-lifecycle");
+  });
+
   it("drops the spinner from the tool row and mounts the scan only while running", () => {
     // Anchored on the target chip's own class rather than the condition that
     // renders it: which targets earn the count chip is a display decision that

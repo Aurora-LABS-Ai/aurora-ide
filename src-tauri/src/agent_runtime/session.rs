@@ -84,12 +84,12 @@ impl Clone for Journal {
 /// previously the slot lived inside `Session` and enqueueing while a
 /// turn was streaming blocked on the session lock, so the queue was
 /// never drained.
-pub type QueueSlot = Arc<StdMutex<Option<QueuedUserMessage>>>;
+pub type QueueSlot = Arc<StdMutex<std::collections::VecDeque<QueuedUserMessage>>>;
 
 /// Build a fresh empty queue slot.
 #[must_use]
 pub fn empty_queue_slot() -> QueueSlot {
-    Arc::new(StdMutex::new(None))
+    Arc::new(StdMutex::new(std::collections::VecDeque::new()))
 }
 
 /// One user-typed message waiting to ride in on the next tool result.
@@ -113,6 +113,26 @@ pub fn empty_queue_slot() -> QueueSlot {
 /// message in real time; the framing is for the model only).
 pub const MID_TURN_PREAMBLE: &str =
     "[The user sent this while your tool calls were running — results above may predate it:]";
+
+/// The one rule for adding to a queue slot, shared by the session and the
+/// registry (which writes into the same slot without the session lock).
+///
+/// A person's message replaces the person's previous message — the pill is
+/// one message — and keeps its place in line if it had one. Anything else is
+/// appended. Order is otherwise preserved.
+pub fn enqueue_into(
+    queue: &mut std::collections::VecDeque<QueuedUserMessage>,
+    msg: QueuedUserMessage,
+) {
+    use crate::agent_runtime::types::InjectedOrigin;
+    if msg.origin == InjectedOrigin::User {
+        if let Some(slot) = queue.iter_mut().find(|m| m.origin == InjectedOrigin::User) {
+            *slot = msg;
+            return;
+        }
+    }
+    queue.push_back(msg);
+}
 
 #[derive(Debug, Clone)]
 pub struct QueuedUserMessage {
@@ -141,6 +161,10 @@ pub struct QueuedUserMessage {
     pub origin: crate::agent_runtime::types::InjectedOrigin,
     /// Unix epoch milliseconds when the user hit Send.
     pub queued_at_ms: i64,
+    /// Which agent a [`InjectedOrigin::Subagent`] report is about. `None`
+    /// for every other origin. Carried so the persisted block names the
+    /// agent rather than only quoting its words.
+    pub agent: Option<crate::agent_runtime::types::AgentReportMeta>,
 }
 
 /// Full-fidelity copy of one tool result whose model-history copy was
@@ -285,33 +309,57 @@ impl Session {
         self.queued_message.clone()
     }
 
-    /// Enqueue a user message to be injected at the next tool-result
-    /// boundary. Single-slot: replaces any previously queued message.
-    /// Now `&self` because the slot lives behind its own mutex.
+    /// Queue a message to be injected at the next tool-result boundary.
+    ///
+    /// An ordered queue, delivered in order. A PERSON's message is still
+    /// one slot — typing again before the first is delivered replaces it,
+    /// which is what the composer pill promises — but a machine report (a
+    /// process ending, a sub-agent finishing) is a fact, and two facts
+    /// arriving in one batch must both arrive. See [`enqueue_into`].
     pub fn enqueue_message(&self, msg: QueuedUserMessage) {
         if let Ok(mut g) = self.queued_message.lock() {
-            *g = Some(msg);
+            enqueue_into(&mut g, msg);
         }
     }
 
-    /// Take the queued message, leaving the slot empty. Called by the
-    /// conversation runtime when it's about to inject.
+    /// Take the oldest queued message. Called by the conversation runtime
+    /// when it's about to inject; it loops until this returns `None`.
     pub fn take_queued_message(&self) -> Option<QueuedUserMessage> {
-        self.queued_message.lock().ok().and_then(|mut g| g.take())
+        self.queued_message.lock().ok().and_then(|mut g| g.pop_front())
     }
 
-    /// Clear the queued message without consuming it. Called by the
-    /// frontend's Cancel button.
+    /// Take every queued message, oldest first.
+    #[must_use]
+    pub fn take_queued_messages(&self) -> Vec<QueuedUserMessage> {
+        self.queued_message
+            .lock()
+            .map(|mut g| g.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    /// Drop the person's queued message, if any. Called by the frontend's
+    /// Cancel button on the pill. Machine reports are not the pill's to
+    /// cancel and stay queued.
     pub fn cancel_queued_message(&self) {
         if let Ok(mut g) = self.queued_message.lock() {
-            *g = None;
+            g.retain(|m| m.origin != crate::agent_runtime::types::InjectedOrigin::User);
         }
     }
 
-    /// Read the queued message without taking it. For diagnostics.
+    /// Read the person's queued message without taking it. For diagnostics.
     #[must_use]
     pub fn peek_queued_message(&self) -> Option<QueuedUserMessage> {
-        self.queued_message.lock().ok().and_then(|g| g.clone())
+        self.queued_message.lock().ok().and_then(|g| {
+            g.iter()
+                .find(|m| m.origin == crate::agent_runtime::types::InjectedOrigin::User)
+                .cloned()
+        })
+    }
+
+    /// How many messages are waiting.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        self.queued_message.lock().map(|g| g.len()).unwrap_or(0)
     }
 
     /// Bind this session to a workspace root path.
@@ -1228,5 +1276,44 @@ mod tests {
             ContentBlock::Text { text } => assert_eq!(text, "fresh"),
             _ => panic!("expected text block"),
         }
+    }
+
+    fn queued(origin: crate::agent_runtime::types::InjectedOrigin, text: &str) -> QueuedUserMessage {
+        QueuedUserMessage {
+            text: text.into(),
+            display_text: None,
+            chips: None,
+            mid_turn: origin == crate::agent_runtime::types::InjectedOrigin::User,
+            origin,
+            queued_at_ms: 0,
+            agent: None,
+        }
+    }
+
+    /// The queue keeps order, a person's message stays one slot, and the
+    /// composer's Cancel never drops a machine report.
+    #[test]
+    fn the_queue_is_ordered_and_a_persons_message_is_one_slot() {
+        use crate::agent_runtime::types::InjectedOrigin::{Process, Subagent, User};
+        let session = Session::new("t");
+        session.enqueue_message(queued(Process, "process one"));
+        session.enqueue_message(queued(User, "first draft"));
+        session.enqueue_message(queued(Subagent, "agent report"));
+        session.enqueue_message(queued(User, "second draft"));
+        assert_eq!(session.queued_len(), 3, "the second draft replaced the first");
+        assert_eq!(
+            session.peek_queued_message().map(|m| m.text),
+            Some("second draft".to_string())
+        );
+        session.cancel_queued_message();
+        assert_eq!(session.queued_len(), 2, "cancel drops the person's message only");
+        assert!(session.peek_queued_message().is_none());
+        let drained: Vec<String> = session
+            .take_queued_messages()
+            .into_iter()
+            .map(|m| m.text)
+            .collect();
+        assert_eq!(drained, vec!["process one", "agent report"]);
+        assert!(session.take_queued_message().is_none());
     }
 }

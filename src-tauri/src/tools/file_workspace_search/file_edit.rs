@@ -37,6 +37,7 @@ use crate::tools::shell_editor_todo::IdeEventSink;
 use super::resolve_path_with_access;
 use super::search_replace::{
     describe_diagnosis, diff_side, emit_post_write, render_response, window_note,
+    with_line_number_hint,
 };
 use super::streaming_targets;
 
@@ -257,13 +258,16 @@ impl ToolExecutor for FileEditTool {
         }
 
         let _ = Path::new("");
-        Ok(render_response(
-            &raw_path,
-            &resolved_str,
-            response,
-            false,
-            impact.as_deref(),
-            super::read_tracker::last_window(&ctx.thread_id, &resolved_str),
+        Ok(with_line_number_hint(
+            render_response(
+                &raw_path,
+                &resolved_str,
+                response,
+                false,
+                impact.as_deref(),
+                super::read_tracker::last_window(&ctx.thread_id, &resolved_str),
+            ),
+            &[old_string],
         ))
     }
 }
@@ -467,11 +471,15 @@ impl FileEditTool {
                     });
                 }
                 let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
-                return Ok(if multi {
-                    render_multi_failure(&g.raw, &g.resolved, resp, window)
-                } else {
-                    render_response(&g.raw, &g.resolved, resp, true, None, window)
-                });
+                let sent: Vec<&str> = g.items.iter().map(|item| item.old_string.as_str()).collect();
+                return Ok(with_line_number_hint(
+                    if multi {
+                        render_multi_failure(&g.raw, &g.resolved, resp, window)
+                    } else {
+                        render_response(&g.raw, &g.resolved, resp, true, None, window)
+                    },
+                    &sent,
+                ));
             }
             prepared.push((g.raw.clone(), g.resolved.clone(), resp));
         }

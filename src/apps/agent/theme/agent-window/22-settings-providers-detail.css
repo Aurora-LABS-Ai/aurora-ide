@@ -1150,6 +1150,36 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
 }
+/* The settings model select (AgwSelect in settings/primitives.tsx) extends
+   .agw-csel. These rules lived in the team stylesheet and were deleted with it
+   (48d28aac), which left every settings dropdown row unstyled and overlapping. */
+.agw-agent-modelsel {
+  width: 240px;
+  max-width: 100%;
+}
+.agw-agent-modelsel .agw-csel-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agw-agent-modelsel-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-agent-modelsel-itemlabel {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-agent-modelsel-meta {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
 /* A provider (or other) heading between runs of options; not focusable. */
 .agw-csel-group {
   padding: 8px 10px 4px;

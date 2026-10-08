@@ -231,7 +231,10 @@ fn build_messages(messages: &[ConversationMessage], supports_vision: bool) -> Ve
                 ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
                 // A background process ending is not furniture — the agent
                 // started it and has to be told it is over.
-                ContentBlock::ProcessEvent { detail, .. } => {
+                // A finished sub-agent's report is the same: the parent asked
+                // for the work and has to be told the result.
+                ContentBlock::ProcessEvent { detail, .. }
+                | ContentBlock::AgentReport { detail, .. } => {
                     content_parts.push(json!({ "type": "text", "text": detail }));
                 }
             }
@@ -685,6 +688,7 @@ impl StreamingApiClient for CommandCodeAdapter {
                     unprefix_model(request.model, &self.config.provider_id)
                 )),
             },
+            notices: Vec::new(),
         })
     }
 }

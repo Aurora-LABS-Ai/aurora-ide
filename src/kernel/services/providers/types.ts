@@ -302,7 +302,8 @@ export type ProviderType =
   | 'claude-code'      // Claude via the claude.ai subscription (OAuth bearer, Anthropic Messages wire)
   | 'cursor'           // Cursor subscription via its native agent protocol
   | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
-  | 'anthropic'        // Native Anthropic Claude API
+  | 'anthropic'        // Any Anthropic Messages endpoint (also the gateways that speak it)
+  | 'anthropic-api'    // Anthropic's own API — the built-in row; adds fields only Anthropic accepts
   // DeepSeek — one `sk-` key, three wires, all three live. Like Ark's three
   // and unlike kenari's, these are not suffixes of one base URL: Messages is
   // served at `/anthropic`, so the picker rewrites the row's URL

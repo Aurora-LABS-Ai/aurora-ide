@@ -580,6 +580,9 @@
 .agw-gi-tabs {
   display: flex;
   align-items: center;
+  /* Eight sets may not fit one row on a narrow window; a second row beats
+     squeezing every name to an ellipsis. */
+  flex-wrap: wrap;
   gap: 2px;
   flex: 1;
   min-width: 0;

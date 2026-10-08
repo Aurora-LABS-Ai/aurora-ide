@@ -1,7 +1,39 @@
 import { describe, expect, it } from "vitest";
 
-import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
+import {
+  parseToolResult,
+  withoutReadLineNumbers,
+} from "@/apps/agent/components/tool-views/tool-result";
 import { toolStatus } from "@/apps/agent/components/tools/tool-call";
+
+describe("numbered reads from a reopened conversation", () => {
+  // The model's copy of a read numbers every line, and a reopened chat draws
+  // its cards from that copy. The card must show the file, not the numbers.
+  it("strips the numbers a saved read carries, and only when it says it has them", () => {
+    const saved = {
+      success: true,
+      content: " 9\tconst x = 1;\n10\t\n11\tconst y = 2;\n",
+      lineNumbers: "Each line starts with its line number and a tab.",
+    };
+    const plain = withoutReadLineNumbers("file_read", saved);
+    expect(plain.content).toBe("const x = 1;\n\nconst y = 2;\n");
+    expect(plain.lineNumbers).toBeUndefined();
+
+    const batch = withoutReadLineNumbers("file_read", {
+      success: true,
+      lineNumbers: "…",
+      files: [{ path: "a.ts", content: "1\tone\n2\ttwo" }],
+    });
+    expect((batch.files as Array<{ content: string }>)[0].content).toBe("one\ntwo");
+
+    // A live result (no marker) whose file really holds `1<tab>alpha` lines.
+    const tsv = { success: true, content: "1\talpha\n2\tbeta\n" };
+    expect(withoutReadLineNumbers("file_read", tsv)).toBe(tsv);
+    // Another tool is never touched.
+    const grep = { content: "1\tx", lineNumbers: "…" };
+    expect(withoutReadLineNumbers("grep", grep)).toBe(grep);
+  });
+});
 
 describe("glob results", () => {
   it("parses matches into a path list rather than falling through to raw JSON", () => {

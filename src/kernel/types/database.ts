@@ -98,6 +98,13 @@ export interface AppSettings {
   transcriptChapters?: boolean;
   /** Whether the browser toolset is advertised to the model. Defaults on. */
   browserTools?: boolean;
+  /** Whether the agent may delegate work to subagents. Defaults off. */
+  subagentsEnabled?: boolean;
+  /**
+   * `providerId:modelKey` pin for subagents; null/absent means "same as the
+   * conversation's model".
+   */
+  subagentModel?: string | null;
   /**
    * Hold the optional tool buckets (`mcp_*`, `browser_*`) out of the
    * advertised roster and let the model load them by name through

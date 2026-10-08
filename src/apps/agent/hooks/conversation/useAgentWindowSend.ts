@@ -95,7 +95,9 @@ import {
   useAgentSelectionStore,
 } from "@/apps/agent/store/composer/useAgentSelectionStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
+import type { AgentReportMeta } from "@/apps/agent/services/subagents/events";
 import {
+  appendAgentReport,
   appendCompaction,
   appendContent,
   appendNotice,
@@ -317,9 +319,11 @@ export interface SendOptions {
    * persisted as a process event rather than as words anybody typed — no user
    * bubble, no pill, no title derived from it.
    */
-  origin?: "user" | "process";
-  /** The transcript's one line when {@link SendOptions.origin} is `"process"`. */
+  origin?: "user" | "process" | "subagent";
+  /** The transcript's one line when {@link SendOptions.origin} is `"process"` or `"subagent"`. */
   summary?: string | null;
+  /** The agent a `"subagent"` report is about. */
+  agent?: AgentReportMeta | null;
 }
 
 export interface AgentWindowSend {
@@ -1249,6 +1253,30 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         content: options.summary?.trim() || contentForModel,
         timestamp: nowIso(),
       });
+    } else if (options?.origin === "subagent") {
+      // A sub-agent's report woke this conversation. Same shape `threads.rs`
+      // rebuilds from the persisted `AgentReport` block: a row of its own
+      // role, whose timeline carries the card's data, so live and reloaded
+      // draw the same agent card at the head of a fresh turn.
+      const agent = options.agent;
+      store.appendTurnMessage(threadId, {
+        id: genId(),
+        role: "agent_report",
+        content: options.summary?.trim() || contentForModel,
+        timestamp: nowIso(),
+        timeline: [
+          {
+            kind: "agent_report",
+            id: genId(),
+            agentId: agent?.agentId ?? "",
+            name: agent?.name ?? null,
+            status: agent?.status ?? "completed",
+            summary: options.summary?.trim() || "",
+            detail: contentForModel,
+            arrivedLive: true,
+          },
+        ],
+      } as DbMessage);
     } else {
       store.appendTurnMessage(threadId, {
         id: genId(),
@@ -1698,6 +1726,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // so a turn can never have the tool without the instruction or vice versa.
       transcriptChapters: settings.transcriptChapters,
       browserTools: settings.browserTools,
+      subagentsEnabled: settings.subagentsEnabled,
+      subagentModel: settings.subagentModel,
       deferTools: settings.deferTools,
       // Aurora Chat's `generate_image` reads these on the Rust side. Read per
       // turn, like every other setting here, so a provider added or fixed in
@@ -1767,7 +1797,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               },
             }));
           },
-          onQueuedMessageInjected: (text, chips, origin) => {
+          onQueuedMessageInjected: (text, chips, origin, agent, detail) => {
             // The runtime drained the queue and stapled the user's text onto the
             // tool message it's about to send. Render it inline in the streaming
             // assistant message — after the tool result, before the agent
@@ -1785,6 +1815,23 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               patchMessage(assistantId, (m) => ({
                 ...m,
                 timeline: appendProcessBeat(timelineOf(m), text),
+              }));
+              return;
+            }
+            if (origin === "subagent") {
+              // A sub-agent reported back mid-turn. `text` is the one-line
+              // summary, `detail` the report the model read; both ride the
+              // card, the same shape `threads.rs` rebuilds after a reload.
+              patchMessage(assistantId, (m) => ({
+                ...m,
+                timeline: appendAgentReport(timelineOf(m), {
+                  agentId: agent?.agentId ?? "",
+                  name: agent?.name ?? null,
+                  status: agent?.status ?? "completed",
+                  summary: text,
+                  detail: detail ?? "",
+                  arrivedLive: true,
+                }),
               }));
               return;
             }
@@ -2003,6 +2050,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           // it, so the turn appends to the cached prefix like any other.
           userMessageOrigin: options?.origin ?? "user",
           userMessageSummary: options?.summary ?? null,
+          userMessageAgent: options?.agent ?? null,
           workspacePath: projectRoot ?? undefined,
           isFirstMessage: wasDraft,
           // `/`-attached skills → resolved into the system prompt as explicit,

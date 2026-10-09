@@ -1,0 +1,313 @@
+/* ═══ Sub-agents on the icon rail, and their cards ═════════════════════════
+ *
+ * See `components/shell/SubagentRail.tsx` and `SubagentRailCard.tsx`. Probe:
+ * Documents/aurora-subagent-rail-designs.html, 03 (picked 2026-10-09).
+ *
+ * Frame budget. These sit beside a streaming conversation, so:
+ * - the matrix animates `opacity` and `transform` only. `agw-dot-matrix` (the
+ *   header's) also animates `filter`, which repaints every frame; five rail
+ *   cells of that would be five repaints a frame for as long as agents run;
+ * - cards are opaque, with no `backdrop-filter`. A pinned card can sit over a
+ *   streaming transcript for minutes, and a blur re-composites what is behind
+ *   it whenever that changes.
+ */
+
+/* The agents' group: shrinks before the rail overflows on a short window. */
+.agw-iconrail-agents {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
+  flex: 0 1 auto;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.agw-iconrail-agents::-webkit-scrollbar {
+  display: none;
+}
+
+/* A cell: the shared `.agw-iconrail-btn`, taller, mark over initial. */
+.agw-iconrail-btn.agw-iconrail-agent {
+  flex: none;
+  height: 44px;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Pinned: a 2px accent bar on the rail's inner edge, inside the cell's own
+   box — not a ring around it. */
+.agw-iconrail-agent[data-pinned]::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: var(--agw-radius-2xs);
+  background: var(--agw-accent);
+}
+
+.agw-railmx {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  grid-template-rows: repeat(3, 4px);
+  gap: 2px;
+}
+.agw-railmx > i {
+  width: 4px;
+  height: 4px;
+  border-radius: 2px;
+  opacity: 0.75;
+  background: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+}
+.agw-iconrail-agent[data-status="failed"] .agw-railmx > i {
+  background: var(--agw-danger);
+}
+.agw-iconrail-agent[data-status="killed"] .agw-railmx > i {
+  background: var(--agw-text-subtle);
+}
+.agw-railmx[data-running] > i {
+  background: var(--agw-accent);
+  opacity: 0.28;
+  transform: scale(0.82);
+  animation: agw-rail-matrix 1.9s ease-in-out infinite;
+  will-change: opacity, transform;
+}
+/* The header matrix's stagger, so the two read as one motion. */
+.agw-railmx[data-running] > i:nth-child(2) { animation-delay: 120ms; }
+.agw-railmx[data-running] > i:nth-child(3) { animation-delay: 240ms; }
+.agw-railmx[data-running] > i:nth-child(4) { animation-delay: 360ms; }
+.agw-railmx[data-running] > i:nth-child(5) { animation-delay: 480ms; }
+.agw-railmx[data-running] > i:nth-child(6) { animation-delay: 600ms; }
+.agw-railmx[data-running] > i:nth-child(7) { animation-delay: 720ms; }
+.agw-railmx[data-running] > i:nth-child(8) { animation-delay: 840ms; }
+.agw-railmx[data-running] > i:nth-child(9) { animation-delay: 960ms; }
+/* `agw-dot-matrix` without its filter step. */
+@keyframes agw-rail-matrix {
+  0%,
+  100% {
+    opacity: 0.24;
+    transform: scale(0.78);
+  }
+  35% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  65% {
+    opacity: 0.62;
+    transform: scale(0.96);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-railmx[data-running] > i {
+    animation: none;
+    opacity: 0.9;
+    transform: none;
+  }
+}
+
+.agw-railmx-init {
+  font-size: 11px;
+  font-weight: var(--agw-fw-strong);
+  line-height: 1;
+  color: var(--agw-text-muted);
+}
+.agw-iconrail-agent[data-status="running"] .agw-railmx-init,
+.agw-iconrail-agent[data-active] .agw-railmx-init {
+  color: var(--agw-text);
+}
+
+.agw-iconrail-btn.agw-iconrail-agent-more {
+  flex: none;
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── The card ─────────────────────────────────────────────────────────── */
+.agw-railcard {
+  /* The popover family's hover lift, restated: this card is not in that
+     family's selector because it does not take its glass. */
+  --agw-hover-paint: color-mix(
+    in srgb,
+    var(--agw-hover) 50%,
+    color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
+  );
+  position: fixed;
+  top: 0;
+  left: 56px;
+  z-index: var(--agw-z-popover-raised);
+  width: calc(360px * var(--agw-ui-text-scale, 1));
+  max-width: calc(100vw - 72px);
+  background: var(--agw-popover-surface);
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-lg);
+  box-shadow: var(--agw-shadow-pop);
+  color: var(--agw-text);
+  animation: agw-railcard-in var(--agw-dur-fast) var(--agw-ease-pop);
+}
+@keyframes agw-railcard-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-railcard {
+    animation: none;
+  }
+}
+
+.agw-railcard-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 8px 8px 12px;
+}
+.agw-railcard-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--agw-radius-sm);
+  border: 1px solid var(--agw-border-strong);
+  background: var(--agw-surface-elevated);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1;
+}
+.agw-railcard-tile[data-status="failed"] {
+  color: var(--agw-danger);
+}
+.agw-railcard-tile[data-status="killed"] {
+  color: var(--agw-text-subtle);
+}
+.agw-railcard-main {
+  min-width: 0;
+}
+.agw-railcard-name {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-railcard-desc {
+  margin-left: 6px;
+  font-weight: var(--agw-fw-body);
+  color: var(--agw-text-muted);
+}
+.agw-railcard-sub {
+  margin-top: 1px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agw-railcard-acts {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.agw-railcard-acts .agw-agents-stop {
+  margin-right: 4px;
+}
+.agw-railcard-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition:
+    background var(--agw-dur-fast) ease,
+    color var(--agw-dur-fast) ease;
+}
+.agw-railcard-btn:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-railcard-btn:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-railcard-btn[aria-pressed="true"] {
+  color: var(--agw-accent);
+}
+.agw-railcard-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.agw-railcard-body {
+  border-top: 1px solid var(--agw-border);
+  padding: 6px 12px 2px;
+}
+/* The tail sits in a card here, not under a row: no row indent to line up with. */
+.agw-railcard-body .agw-tail-more {
+  margin-left: 13px;
+}
+.agw-railcard-hint {
+  padding: 6px 12px 9px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+
+/* ── The "+N" list ────────────────────────────────────────────────────── */
+.agw-railcard-list {
+  width: calc(300px * var(--agw-ui-text-scale, 1));
+  padding: 6px;
+}
+.agw-railcard-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agw-railcard-row:hover {
+  background: var(--agw-hover-paint);
+}
+.agw-railcard-row:focus-visible {
+  outline: none;
+  background: var(--agw-hover-paint);
+  box-shadow: var(--agw-focus-ring);
+}
+.agw-railcard-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agw-railcard-row-name {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-railcard-row-sub {
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

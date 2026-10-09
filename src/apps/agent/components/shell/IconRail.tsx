@@ -4,8 +4,9 @@
  * The 48px strip on the window's left edge, present on every view. It carries
  * the things that are not chats: Home (the chat list and the conversation),
  * Images, Library and Plugins from `DESTINATIONS`; then, on Aurora Chat, the
- * Memory dock surface the rail used to hold as a row; then Settings and the
- * account at the foot.
+ * Memory dock surface the rail used to hold as a row; then the open
+ * conversation's sub-agents (`SubagentRail`); then Settings and the account at
+ * the foot.
  *
  * The chat sidebar beside it is unchanged and is what Home shows. A page
  * destination replaces the shell, sidebar included, so pressing Images folds
@@ -18,6 +19,7 @@
 import React from "react";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { SubagentRail } from "@/apps/agent/components/shell/SubagentRail";
 import {
   DESTINATIONS,
   litRailCell,
@@ -103,6 +105,10 @@ export const IconRail: React.FC = () => {
       )}
 
       <span className="agw-iconrail-grow" />
+
+      {/* The open conversation's sub-agents, low on the rail where the eye
+          drops to after the composer. Renders nothing when there are none. */}
+      <SubagentRail />
 
       {/* Providers has its own page: it carries its own list on the left, and
           inside Settings that made two sidebars side by side. */}

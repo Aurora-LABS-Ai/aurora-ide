@@ -1,5 +1,9 @@
 use super::*;
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, State};
+
+use crate::agent_runtime::event_batch::{Coalescer, FLUSH_INTERVAL};
 
 /// Production [`EventEmitter`] backed by Tauri's per-app
 /// `AppHandle::emit`. Constructed fresh per command invocation —
@@ -10,22 +14,44 @@ pub struct TauriEmitter {
 
 impl EventEmitter for TauriEmitter {
     fn emit_event(&self, envelope: &AgentEventEnvelope) {
-        // Channel name is hardcoded — the frontend hardcodes the
-        // matching literal in Phase 2.3, and we deliberately don't
-        // share a `const` so the contract is explicit at both ends.
-        let _ = self.app.emit("agent_event", envelope);
-
         // A turn dispatched from `aurora agent` is also being watched in a
         // terminal, so the same events are appended to its transcript. Guarded
         // by `is_active` because this runs per streamed token and the common
         // case — no CLI task anywhere — must cost one atomic check, not a hash
-        // lookup. See `cli_delegate::mirror`.
+        // lookup. See `cli_delegate::mirror`. Fed the raw event, before
+        // batching: the transcript is a record, not a frame rate.
         if crate::cli_delegate::mirror::is_active() {
             crate::cli_delegate::mirror::record(&envelope.turn_id, &envelope.event);
+        }
+
+        // Token deltas are held and merged per turn, then released at most
+        // every `FLUSH_INTERVAL` (`agent_runtime::event_batch`): one webview
+        // evaluation per frame per streaming turn, not one per token. Emitted
+        // under the lock so a timer's release and a push's release of the
+        // same turn cannot cross.
+        let arm_timer = {
+            let Ok(mut coalescer) = EVENT_BATCH.lock() else {
+                emit_agent_event(&self.app, envelope);
+                return;
+            };
+            let pushed = coalescer.push(envelope, Instant::now());
+            for ready in &pushed.emit {
+                emit_agent_event(&self.app, ready);
+            }
+            pushed.arm_timer
+        };
+        if arm_timer {
+            let app = self.app.clone();
+            let turn_id = envelope.turn_id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(FLUSH_INTERVAL).await;
+                flush_agent_events(&app, &turn_id);
+            });
         }
     }
 
     fn emit_turn_complete(&self, turn_id: &str, summary: &TurnCompletion) {
+        flush_agent_events(&self.app, turn_id);
         let _ = self.app.emit("agent_turn_complete", summary);
         // Closes the transcript with its `result` line. A follower in a
         // terminal stops on that line and nothing else, so a turn that ended
@@ -52,6 +78,7 @@ impl EventEmitter for TauriEmitter {
             #[serde(skip_serializing_if = "Option::is_none")]
             recovery_hint: Option<RecoveryHint>,
         }
+        flush_agent_events(&self.app, turn_id);
         let _ = self.app.emit(
             "agent_turn_error",
             ErrorPayload {
@@ -89,7 +116,7 @@ impl EventEmitter for TauriEmitter {
         };
         match self.app.emit(
             crate::agent_runtime::subagents::events::SUBAGENT_EVENT_CHANNEL,
-            event,
+            stamp_emitted_at(event),
         ) {
             Ok(()) => crate::logging::log_info(
                 "subagents.events",
@@ -100,6 +127,81 @@ impl EventEmitter for TauriEmitter {
                 &format!("failed to emit {kind} for {agent_id}: {err}"),
             ),
         }
+    }
+}
+
+/// A lifecycle event with `emittedAtMs` beside its own fields, so the window
+/// can measure how long the event channel took to deliver it. On 2026-10-08
+/// four `report` events were emitted on time and processed 58 s later; the
+/// two log lines (`emitted …` here, `received … lag N ms` in the window) are
+/// what showed it, and the stamp makes the lag a number instead of a diff of
+/// two timestamps by hand.
+fn stamp_emitted_at(event: &crate::agent_runtime::subagents::SubagentEvent) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "emittedAtMs".to_string(),
+            serde_json::Value::from(chrono::Utc::now().timestamp_millis()),
+        );
+    }
+    value
+}
+
+/// The held token runs of every streaming turn. One for the process: the
+/// emitter is built fresh per command, and a child's emitter wraps its
+/// parent's, so the state cannot live on either.
+static EVENT_BATCH: LazyLock<Mutex<Coalescer>> = LazyLock::new(|| Mutex::new(Coalescer::new()));
+
+/// One `agent_event` across the wire, counted.
+///
+/// Channel name is hardcoded — the frontend hardcodes the matching literal
+/// in Phase 2.3, and we deliberately don't share a `const` so the contract
+/// is explicit at both ends.
+fn emit_agent_event(app: &AppHandle, envelope: &AgentEventEnvelope) {
+    let _ = app.emit("agent_event", envelope);
+    note_agent_event_rate();
+}
+
+/// Release what the turn is holding. The timer's call, and the turn's
+/// ending's: a turn must not end with a token still held.
+fn flush_agent_events(app: &AppHandle, turn_id: &str) {
+    let Ok(mut coalescer) = EVENT_BATCH.lock() else {
+        return;
+    };
+    if let Some(ready) = coalescer.flush(turn_id) {
+        emit_agent_event(app, &ready);
+    }
+}
+
+/// Streamed `agent_event`s per second over which a log line is written.
+///
+/// Every emit is one main-thread script evaluation in the webview. Before
+/// token deltas were batched (2026-10-09), every token of every running turn
+/// was one emit: four sub-agents streaming at once held 400/s for two
+/// minutes, peaking at 1,234/s, the window drew at a few frames per second,
+/// and lifecycle events were delivered 34 s late. Batched, a streaming turn
+/// is at most 25/s, so the line now marks a regression, not the weather.
+const AGENT_EVENT_RATE_WARN_PER_SEC: u32 = 250;
+
+/// `(second, count)` for the second currently being counted.
+static AGENT_EVENT_RATE: std::sync::Mutex<(i64, u32)> = std::sync::Mutex::new((0, 0));
+
+fn note_agent_event_rate() {
+    let now = chrono::Utc::now().timestamp();
+    let Ok(mut window) = AGENT_EVENT_RATE.lock() else {
+        return;
+    };
+    if window.0 == now {
+        window.1 += 1;
+        return;
+    }
+    let (second, count) = *window;
+    *window = (now, 1);
+    if second != 0 && count > AGENT_EVENT_RATE_WARN_PER_SEC {
+        crate::logging::log_warn(
+            "agent_runtime.events",
+            &format!("agent_event rate {count}/s: lifecycle events may be delivered late"),
+        );
     }
 }
 
@@ -345,6 +447,91 @@ pub async fn agent_subagent_load(
     };
     let guard = session.lock().await;
     Ok(guard.messages().to_vec())
+}
+
+/// Sub-agent reports waiting to wake this conversation, oldest first. The
+/// window reads this on its list poll as well as on the `report` event, so a
+/// report reaches the parent within one poll even when the event channel is
+/// backed up (2026-10-08: four reports, 58 s late). Cheap: in memory.
+#[tauri::command]
+pub async fn agent_subagent_pending(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+) -> Result<Vec<crate::agent_runtime::subagents::outbox::PendingWake>, String> {
+    Ok(state.wake_outbox().pending(&parent_thread_id))
+}
+
+/// The window opened a turn carrying wake `wake_id`: take it out of the
+/// outbox. `false` when it was already claimed, which tells a second claimant
+/// (two drains racing for one idle moment) that the report is on its way and
+/// must not be sent again.
+#[tauri::command]
+pub async fn agent_subagent_claim(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+    wake_id: u64,
+) -> Result<bool, String> {
+    let claimed = state.wake_outbox().claim(&parent_thread_id, wake_id);
+    crate::logging::log_info(
+        "subagents.events",
+        &format!(
+            "wake {wake_id} for {parent_thread_id} {}",
+            if claimed.is_some() { "claimed" } else { "already claimed" }
+        ),
+    );
+    Ok(claimed.is_some())
+}
+
+/// Which of a conversation's agent cards are pinned beside the icon rail, and
+/// which are grown. Empty for a conversation that never pinned one, or one
+/// that is not on disk.
+#[tauri::command]
+pub async fn agent_subagent_rail_get(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+) -> Result<crate::agent_runtime::subagents::rail_state::RailState, String> {
+    let registry = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Default::default());
+        };
+        crate::agent_runtime::subagents::rail_state::read(&store, &parent_thread_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Save which agent cards are pinned and grown, and return what was stored
+/// (repeats dropped, pins held to three). Fails for a conversation that is not
+/// on disk rather than creating one.
+#[tauri::command]
+pub async fn agent_subagent_rail_set(
+    state: State<'_, Arc<AgentRegistry>>,
+    parent_thread_id: String,
+    pinned: Vec<String>,
+    expanded: Vec<String>,
+) -> Result<crate::agent_runtime::subagents::rail_state::RailState, String> {
+    let registry = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!("conversation {parent_thread_id} does not exist; its pinned agents were not saved")
+            })?;
+        crate::agent_runtime::subagents::rail_state::write(
+            &store,
+            &parent_thread_id,
+            crate::agent_runtime::subagents::rail_state::RailState { pinned, expanded },
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Stop a running sub-agent. Returns whether it was running. Its transcript

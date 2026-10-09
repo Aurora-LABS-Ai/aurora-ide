@@ -75,6 +75,11 @@ pub struct AgentRegistry {
     /// child's own files are the record. See `agent_runtime::subagents`.
     subagent_tasks: Arc<crate::agent_runtime::subagents::TaskRegistry>,
 
+    /// Sub-agent reports addressed to an IDLE parent, kept until the window
+    /// says a turn carrying each one has opened. The busy-parent twin of
+    /// `queue_slots`. See `agent_runtime::subagents::outbox`.
+    wake_outbox: crate::agent_runtime::subagents::outbox::WakeOutbox,
+
     /// How a sub-agent's `model` pin becomes a provider snapshot. `None` (tests,
     /// the verify crate) means a child can only run on its parent's provider.
     provider_lookup: Option<Arc<dyn crate::agent_runtime::subagents::ProviderLookup>>,
@@ -115,8 +120,15 @@ impl AgentRegistry {
             usage_ledger: None,
             chat_store: Arc::new(SessionStore::new_folder(chat_dir)),
             subagent_tasks: Arc::new(crate::agent_runtime::subagents::TaskRegistry::new()),
+            wake_outbox: crate::agent_runtime::subagents::outbox::WakeOutbox::new(),
             provider_lookup: None,
         }
+    }
+
+    /// Reports waiting to wake idle parents.
+    #[must_use]
+    pub fn wake_outbox(&self) -> &crate::agent_runtime::subagents::outbox::WakeOutbox {
+        &self.wake_outbox
     }
 
     /// Let sub-agents run on any configured model, not only the parent's.
@@ -270,13 +282,27 @@ impl AgentRegistry {
     ) -> Result<Option<Arc<SessionStore>>, RuntimeError> {
         project_dir::validate_thread_id(thread_id)?;
         if self.chat_store.exists(thread_id) {
-            Ok(Some(self.chat_store.clone()))
-        } else {
-            Ok(self
-                .project_dirs
-                .locate(thread_id)?
-                .map(|dir| self.project_store(dir)))
+            return Ok(Some(self.chat_store.clone()));
         }
+        if let Some(dir) = self.project_dirs.locate(thread_id)? {
+            return Ok(Some(self.project_store(dir)));
+        }
+        // A sub-agent's conversation lives under its parent's `agents/`
+        // directory, which the project index does not list. Anything that
+        // names the child's id as a thread (a background process the child
+        // spawned mirroring its output, 2026-10-09: one warning per poll) is
+        // answered with the child's own store.
+        if let Some(record) = self.subagent_tasks.get(thread_id) {
+            if let Some(parent) = self.store_for_thread(&record.parent_thread_id)? {
+                return Ok(Some(Arc::new(
+                    crate::agent_runtime::subagents::store::child_store_for(
+                        &parent,
+                        &record.parent_thread_id,
+                    ),
+                )));
+            }
+        }
+        Ok(None)
     }
 
     pub fn require_store_for_thread(

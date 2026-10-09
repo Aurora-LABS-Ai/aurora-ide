@@ -55,15 +55,19 @@ function initialOf(label: string): string {
  * The live tail under an open row, opening the way a tool group does: the
  * height grows from nothing while the lines rise out of a soft blur.
  */
-const AgentPreview: React.FC<{
+const AgentPreview = React.memo<{
   parentThreadId: string;
-  agent: SubagentSnapshot;
+  agentId: string;
+  label: string;
   id: string;
-}> = ({ parentThreadId, agent, id }) => {
+  // Memoised on strings only: the panel re-renders every second for the
+  // clocks on its rows and every poll for the list, and neither is a reason
+  // to re-render an open tail, which follows its own store.
+}>(function AgentPreview({ parentThreadId, agentId, label, id }) {
   const reduce = useReducedMotion();
-  const [more, setMore] = useState(() => isPreviewGrown(parentThreadId, agent.agentId));
+  const [more, setMore] = useState(() => isPreviewGrown(parentThreadId, agentId));
   const changeMore = (next: boolean) => {
-    setPreviewGrown(parentThreadId, agent.agentId, next);
+    setPreviewGrown(parentThreadId, agentId, next);
     setMore(next);
   };
   const duration = reduce ? 0 : 0.22;
@@ -85,15 +89,15 @@ const AgentPreview: React.FC<{
       >
         <SubagentTail
           parentThreadId={parentThreadId}
-          agentId={agent.agentId}
-          label={subagentLabel(agent)}
+          agentId={agentId}
+          label={label}
           more={more}
           onMoreChange={changeMore}
         />
       </motion.div>
     </motion.div>
   );
-};
+});
 
 const AgentRow: React.FC<{
   parentThreadId: string;
@@ -163,7 +167,8 @@ const AgentRow: React.FC<{
           <AgentPreview
             key="preview"
             parentThreadId={parentThreadId}
-            agent={agent}
+            agentId={agent.agentId}
+            label={label}
             id={previewId}
           />
         )}

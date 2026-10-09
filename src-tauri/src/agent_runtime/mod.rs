@@ -42,6 +42,7 @@ pub mod context_limits;
 pub mod conversation;
 pub(crate) mod diagnostics;
 pub mod error;
+pub mod event_batch;
 pub mod events;
 pub mod hooks;
 pub mod ipc;

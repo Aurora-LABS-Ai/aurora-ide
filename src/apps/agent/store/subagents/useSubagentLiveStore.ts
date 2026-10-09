@@ -22,6 +22,7 @@ import {
   type LiveTranscript,
 } from "@/apps/agent/lib/subagents/live-transcript";
 import type { AgentEventEnvelope } from "@/apps/agent/services/runtime/agent-runtime-client";
+import type { DbMessage } from "@/apps/agent/services/threads/thread-service";
 
 type AssistantEvent = AgentEventEnvelope["event"];
 
@@ -38,8 +39,8 @@ interface SubagentLiveState {
   fold: (agentId: string, event: AssistantEvent, now?: number) => boolean;
   /** Number a re-read of the agent's file about to be issued. */
   beginRead: (agentId: string) => number;
-  /** A re-read came back holding `count` messages. */
-  settle: (agentId: string, seq: number, count: number) => void;
+  /** A re-read came back holding `messages`. */
+  settle: (agentId: string, seq: number, messages: DbMessage[]) => void;
   /** Ask every view of the agent to re-read its file. */
   requestReread: (agentId: string) => void;
   /** The run is over: the file has everything. */
@@ -72,10 +73,10 @@ export const useSubagentLiveStore = create<SubagentLiveState>()((set, get) => ({
     return next;
   },
 
-  settle: (agentId, seq, count) => {
+  settle: (agentId, seq, messages) => {
     const prev = get().byAgent[agentId];
     if (!prev) return;
-    const next = settleWithRead(prev, seq, count);
+    const next = settleWithRead(prev, seq, messages);
     if (next !== prev) set((s) => ({ byAgent: { ...s.byAgent, [agentId]: next } }));
   },
 

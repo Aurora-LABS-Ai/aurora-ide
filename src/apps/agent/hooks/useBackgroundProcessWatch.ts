@@ -153,7 +153,7 @@ const reportEnding = (row: BackgroundProcess | null, ended: ProcessEnded) => {
  * still parked appends to it, so two processes finishing together produce one
  * turn rather than two.
  */
-interface IdleReport {
+export interface IdleReport {
   summary: string;
   detail: string;
   endedAtMs: number;
@@ -181,6 +181,26 @@ export const takeIdleReport = (threadId: string): IdleReport | null => {
   const report = idleReports.get(threadId) ?? null;
   if (report) idleReports.delete(threadId);
   return report;
+};
+
+/**
+ * Put a taken report back, ahead of anything parked since: the send that
+ * took it did not open a turn (another turn got there first), so it is
+ * still news nobody has read.
+ */
+export const requeueIdleReport = (threadId: string, report: IdleReport): void => {
+  const existing = idleReports.get(threadId);
+  idleReports.set(
+    threadId,
+    existing
+      ? {
+          summary: `${report.summary} · ${existing.summary}`,
+          detail: `${report.detail}\n\n${existing.detail}`,
+          endedAtMs: report.endedAtMs,
+        }
+      : report,
+  );
+  idleReportChanged.forEach((listener) => listener());
 };
 
 export const peekIdleReport = (threadId: string): IdleReport | null =>

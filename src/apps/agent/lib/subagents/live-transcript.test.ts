@@ -41,14 +41,66 @@ describe("live transcript", () => {
 
   it("drops the live reply once a re-read issued after it began holds more messages", () => {
     let state = fold([{ type: "stream_attempt_started" }, { type: "text_delta", delta: "Done." }], 1);
+    const two: DbMessage[] = [...disk, { ...disk[0], id: "u2" }];
     // A re-read that was already in flight when the reply began (#1) does not
     // set its base: it may not reflect the message before this one.
-    state = settleWithRead(state, 1, 2);
+    state = settleWithRead(state, 1, two);
     expect(state.reply?.base).toBeNull();
-    state = settleWithRead(state, 2, 2);
+    state = settleWithRead(state, 2, two);
     expect(state.reply?.base).toBe(2);
     expect(mergeLive(disk, state)).toHaveLength(2);
-    state = settleWithRead(state, 3, 3);
+    state = settleWithRead(state, 3, [...two, { ...disk[0], id: "u3" }]);
+    expect(state.reply).toBeNull();
+  });
+
+  it("keeps a finished reply drawn across the next call's start until the file holds it", () => {
+    // Tool round one: a thought, a call. The model's next call starts before
+    // the re-read of the file has landed.
+    let state = fold([
+      { type: "stream_attempt_started" },
+      { type: "thinking", text: "Read the file first." },
+      { type: "tool_use", id: "c1", name: "file_read", input: { path: "a.rs" } },
+      { type: "message_stop", stop_reason: "tool_use" },
+      { type: "stream_attempt_started" },
+      { type: "thinking", text: "Now " },
+    ]);
+    let merged = mergeLive(disk, state);
+    // Both the ended reply and the new one are drawn, in order.
+    expect(merged).toHaveLength(3);
+    expect(merged[1].timeline).toEqual([
+      expect.objectContaining({ kind: "thinking", text: "Read the file first." }),
+      expect.objectContaining({ kind: "tool", id: "c1" }),
+    ]);
+    expect(merged[2].timeline).toEqual([expect.objectContaining({ kind: "thinking", text: "Now " })]);
+
+    // The re-read lands with the first round on disk: it is drawn from there
+    // once, and the live copy is gone.
+    const onDisk: DbMessage[] = [
+      ...disk,
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-10-09T03:00:01Z",
+        timeline: [{ kind: "thinking", id: "a1-t", text: "Read the file first." }],
+        tool_calls: [{ id: "c1", name: "file_read", arguments: '{"path":"a.rs"}' }],
+      },
+    ];
+    merged = mergeLive(onDisk, state);
+    expect(merged.map((m) => m.id)).toEqual(["u1", "a1", expect.stringMatching(/^live-/)]);
+    state = settleWithRead(state, 1, onDisk);
+    expect(state.ended).toEqual([]);
+    expect(state.reply?.events).toHaveLength(1);
+  });
+
+  it("never draws a quick reply twice when the first re-read after it began already holds it", () => {
+    let state = fold([{ type: "stream_attempt_started" }, { type: "text_delta", delta: "Done." }], 1);
+    const onDisk: DbMessage[] = [
+      ...disk,
+      { id: "a1", role: "assistant", content: "Done.", timestamp: "2026-10-09T03:00:01Z" },
+    ];
+    expect(mergeLive(onDisk, state).map((m) => m.id)).toEqual(["u1", "a1"]);
+    state = settleWithRead(state, 2, onDisk);
     expect(state.reply).toBeNull();
   });
 

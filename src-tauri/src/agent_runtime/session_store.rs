@@ -413,6 +413,17 @@ impl SessionStore {
         }
     }
 
+    /// Path to the sub-agent rail sidecar for `thread_id`: which of its agents'
+    /// cards are pinned beside the icon rail, and which are grown. Owned by
+    /// [`crate::agent_runtime::subagents::rail_state`].
+    #[must_use]
+    pub fn subagent_rail_path(&self, thread_id: &str) -> PathBuf {
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.subagent-rail.json")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("subagent-rail.json"),
+        }
+    }
+
     /// Path to the full-fidelity tool-result sidecar for `thread_id`.
     /// One JSON-serialized [`RichToolResult`] per line, append-only.
     #[must_use]
@@ -1291,6 +1302,7 @@ impl SessionStore {
             self.artifacts_path(thread_id),
             self.artifacts_temp_path(thread_id),
             self.artifacts_backup_path(thread_id),
+            self.subagent_rail_path(thread_id),
         ] {
             match fs::remove_file(&path) {
                 Ok(()) => {}

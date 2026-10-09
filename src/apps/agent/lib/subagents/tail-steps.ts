@@ -89,3 +89,51 @@ export function tailSteps(messages: DbMessage[], pending: PendingParentMessage[]
   }
   return steps;
 }
+
+/** Whether two steps would draw the same thing. */
+function sameStep(a: TailStep, b: TailStep): boolean {
+  if (a.kind !== b.kind || a.id !== b.id || a.live !== b.live) return false;
+  if (a.kind === "tool" && b.kind === "tool") {
+    const x = a.call;
+    const y = b.call;
+    return (
+      x.id === y.id &&
+      x.name === y.name &&
+      x.arguments === y.arguments &&
+      (x.result ?? null) === (y.result ?? null) &&
+      x.durationMs === y.durationMs &&
+      x.startedAt === y.startedAt
+    );
+  }
+  if (a.kind === "parent" && b.kind === "parent") {
+    return a.text === b.text && a.waiting === b.waiting;
+  }
+  return (a as { text: string }).text === (b as { text: string }).text;
+}
+
+/**
+ * The new steps, with every step that would draw the same thing as before
+ * being the SAME object as before, and the previous array itself when
+ * nothing changed.
+ *
+ * `tailSteps` rebuilds every step from the transcript on every streamed
+ * event, so without this each of a tail's rows (up to 150 tool cards) was a
+ * new object to React on every token, and four open tails re-drew every card
+ * twenty-five times a second. With it, a row's card re-renders only when its
+ * own call changed: the one running, not the hundred finished.
+ */
+export function stabilizeSteps(prev: readonly TailStep[], next: TailStep[]): TailStep[] {
+  const byId = new Map<string, TailStep>();
+  for (const step of prev) byId.set(step.id, step);
+  let unchanged = prev.length === next.length;
+  const out = next.map((step, index) => {
+    const before = byId.get(step.id);
+    if (before && sameStep(before, step)) {
+      if (unchanged && prev[index] !== before) unchanged = false;
+      return before;
+    }
+    unchanged = false;
+    return step;
+  });
+  return unchanged ? (prev as TailStep[]) : out;
+}

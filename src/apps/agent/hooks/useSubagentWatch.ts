@@ -4,85 +4,44 @@
  * Rust announces each child's lifecycle once, on the app-wide `agent_subagent`
  * channel. Mounted once from `AgentWindow`, for the life of the window, this:
  *
- * - keeps the sub-agent store current (`started` / `finished`), so the Agents
- *   panel, the tab glyphs and the report cards all read one copy;
- * - parks a `report` — a background child finished while its parent was idle
- *   — for the conversation it belongs to. `useIdleSubagentReport` starts a
- *   turn with it when that conversation is open and idle, exactly as a
- *   process ending is announced. A report for a conversation nobody is
- *   looking at waits; it is never dropped and never sent out of sight.
- * - reads the open conversation's agents from disk when it changes, so a
- *   conversation reopened days later lists what it delegated.
+ * - keeps the sub-agent store current (`started` / `finished` / `report`), so
+ *   the Agents panel, the tab glyphs, the report cards and the idle-report
+ *   drain all read one copy;
+ * - re-reads the open conversation's agents AND Rust's wake outbox on a clock
+ *   while anything can change, so a report reaches its parent within one
+ *   poll even when the event that announced it is delivered late. On
+ *   2026-10-08 four `report` events were emitted on time and processed 58 s
+ *   later; the parent sat silent the whole time. Rust's list is the truth,
+ *   events only make it arrive sooner;
+ * - logs each event's delivery lag, from the `emittedAtMs` Rust stamps on it.
+ *
+ * `useIdleSubagentReport` starts a turn with the oldest wake when its
+ * conversation is open and idle, and claims it from Rust once the turn opens.
  */
 
 import { useEffect } from "react";
 
-import {
-  listenSubagentEvents,
-  type AgentReportMeta,
-  type SubagentReportEvent,
-} from "@/apps/agent/services/subagents/events";
+import { listenSubagentEvents } from "@/apps/agent/services/subagents/events";
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
 
 /**
- * How often the open conversation's list is re-read from Rust while anything
- * about it can change: an agent of its is running, or its own turn is (a
- * spawn may be about to happen). Rust's list merges the live records with
- * the sidecars, so this is the backend's answer, not the window's guess; the
- * events above only make it arrive sooner.
+ * How often the open conversation's list and wakes are re-read from Rust
+ * while anything about it can change: an agent of its is running, its own
+ * turn is (a spawn may be about to happen), or a report is waiting to wake
+ * it. Rust's list merges the live records with the sidecars, so this is the
+ * backend's answer, not the window's guess; the events above only make it
+ * arrive sooner.
  */
 export const SUBAGENT_REFRESH_MS = 2_000;
 
-export interface ParkedSubagentReport {
-  agent: AgentReportMeta;
-  summary: string;
-  detail: string;
-  arrivedAtMs: number;
-}
-
 /**
- * Reports waiting for their conversation to be open and idle. Module-level,
- * like the process reports: no surface renders the queue itself, the card
- * appears once the turn starts. Several for one conversation queue in order.
+ * Delivery lag above which an event's log line is a warning. The channel is
+ * one main-thread script evaluation per emit; a lag this long means it is
+ * backed up behind streamed tokens, and the poll is what delivers.
  */
-const parked = new Map<string, ParkedSubagentReport[]>();
-const listeners = new Set<() => void>();
-
-const park = (event: SubagentReportEvent): void => {
-  const list = parked.get(event.parentThreadId) ?? [];
-  list.push({
-    agent: event.agent,
-    summary: event.summary,
-    detail: event.detail,
-    arrivedAtMs: Date.now(),
-  });
-  parked.set(event.parentThreadId, list);
-  listeners.forEach((listener) => listener());
-};
-
-/** The oldest parked report for a conversation, removed. */
-export const takeSubagentReport = (threadId: string): ParkedSubagentReport | null => {
-  const list = parked.get(threadId);
-  if (!list || list.length === 0) return null;
-  const report = list.shift() ?? null;
-  if (list.length === 0) parked.delete(threadId);
-  return report;
-};
-
-export const peekSubagentReport = (threadId: string): ParkedSubagentReport | null =>
-  parked.get(threadId)?.[0] ?? null;
-
-export const subscribeToSubagentReports = (listener: () => void): (() => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-/** Test seam. */
-export const clearSubagentReports = (): void => {
-  parked.clear();
-};
+export const SLOW_EVENT_MS = 2_000;
 
 export const useSubagentWatch = (currentThreadId: string | null): void => {
   useEffect(() => {
@@ -95,25 +54,24 @@ export const useSubagentWatch = (currentThreadId: string | null): void => {
       // event without its keys is a wire-shape bug (it happened: snake_case
       // fields), and is reported as such rather than quietly dropped.
       const shaped = !!event.agentId && !!event.parentThreadId;
+      const lagMs =
+        typeof event.emittedAtMs === "number" ? Math.max(0, Date.now() - event.emittedAtMs) : null;
+      const lag = lagMs === null ? "" : ` (lag ${lagMs} ms)`;
       void auroraInvoke("logs_report", {
-        level: shaped ? "info" : "error",
+        level: !shaped ? "error" : lagMs !== null && lagMs > SLOW_EVENT_MS ? "warn" : "info",
         component: "subagents.events",
         message: shaped
-          ? `received ${event.type} for ${event.agentId}`
+          ? `received ${event.type} for ${event.agentId}${lag}`
           : `received ${String(event.type)} with missing keys: ${JSON.stringify(event).slice(0, 300)}`,
       }).catch(() => {});
       if (!shaped) return;
-      const store = useAgentSubagentStore.getState();
-      store.applyEvent(event);
-      if (event.type !== "report") return;
-      // Rust sends a report only when no turn is running on the parent, so it
-      // always waits for the conversation to be open and idle and then starts
-      // a turn (`useIdleSubagentReport`). It is never pushed into a turn the
-      // window still shows as live: the end-of-turn sweep sends its report
-      // BEFORE the turn's own completion event, so "live" here meant a turn
-      // Rust had already finished, and the report sat in a queue nobody
-      // would read until some later turn happened to call a tool.
-      park(event);
+      // A `report` joins the window's copy of Rust's outbox here; the
+      // conversation it belongs to starts a turn with it when it is idle
+      // (`useIdleSubagentReport`). It is never pushed into a turn the window
+      // still shows as live: Rust decided the parent was idle when it sent
+      // this, and the end-of-turn sweep sends its reports BEFORE the turn's
+      // own completion event.
+      useAgentSubagentStore.getState().applyEvent(event);
     })
       .then((dispose) => {
         if (disposed) dispose();
@@ -121,7 +79,8 @@ export const useSubagentWatch = (currentThreadId: string | null): void => {
       })
       .catch(() => {
         // Without the listener the Agents panel still lists from disk on
-        // open; only live updates are lost.
+        // open and the poll below still finds reports; only live updates
+        // are lost.
       });
     return () => {
       disposed = true;
@@ -136,15 +95,17 @@ export const useSubagentWatch = (currentThreadId: string | null): void => {
 
   // Re-read from Rust on a clock while the list can change. A missed event
   // then costs a couple of seconds of lag, never a wrong state: the header
-  // count, the Agents tab and the tab glyphs all read this one list.
+  // count, the Agents tab, the tab glyphs and the idle-report drain all read
+  // this one store.
   useEffect(() => {
     if (!currentThreadId) return;
     const tick = () => {
       const subagents = useAgentSubagentStore.getState();
       const list = subagents.byParent[currentThreadId] ?? [];
       const anyRunning = list.some((agent) => agent.status === "running");
+      const anyWaiting = (subagents.wakesByParent[currentThreadId]?.length ?? 0) > 0;
       const parentLive = !!useAgentChatStore.getState().liveTurns[currentThreadId];
-      if (anyRunning || parentLive) void subagents.load(currentThreadId);
+      if (anyRunning || anyWaiting || parentLive) void subagents.load(currentThreadId);
     };
     const timer = window.setInterval(tick, SUBAGENT_REFRESH_MS);
     return () => window.clearInterval(timer);

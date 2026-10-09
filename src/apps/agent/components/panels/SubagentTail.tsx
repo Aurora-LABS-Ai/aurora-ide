@@ -20,7 +20,7 @@ import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
 import { useAgentAutoScroll } from "@/apps/agent/hooks/conversation/useAgentAutoScroll";
 import { useSubagentTranscript } from "@/apps/agent/hooks/subagents/useSubagentTranscript";
-import { tailSteps, type TailStep } from "@/apps/agent/lib/subagents/tail-steps";
+import { stabilizeSteps, tailSteps, type TailStep } from "@/apps/agent/lib/subagents/tail-steps";
 import { transcriptGrowth } from "@/apps/agent/lib/subagents/transcript-growth";
 
 /** The window's height change lasts this long; follow lands after it. */
@@ -36,40 +36,52 @@ const OPEN_STEPS = 150;
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
-const Step: React.FC<{ step: TailStep; running: boolean }> = ({ step, running }) => {
+/**
+ * One row. Memoised on its step's identity: `stabilizeSteps` keeps a step's
+ * object while it would draw the same thing, so a token streaming into the
+ * newest line re-renders that line and not the hundred tool cards above it.
+ */
+const Step = React.memo<{ step: TailStep; running: boolean }>(function Step({ step, running }) {
   switch (step.kind) {
     case "tool":
       return <ToolCallCard call={step.call} isActivelyStreaming={running} />;
+    // The text sits in its own span so the row can be a column whose last
+    // lines show (`.agw-tail-text`): a thought that keeps growing shows its
+    // newest words, not its first two lines for as long as it runs.
     case "thought":
       return (
         <div className="agw-tail-text" data-kind="thought">
-          <span className="agw-tail-tag">Thought</span>
-          {step.text}
+          <span className="agw-tail-line">
+            <span className="agw-tail-tag">Thought</span>
+            {step.text}
+          </span>
         </div>
       );
     case "said":
       return (
         <div className="agw-tail-text" data-kind="said">
-          {step.text}
+          <span className="agw-tail-line">{step.text}</span>
         </div>
       );
     case "note":
       return (
         <div className="agw-tail-text" data-kind="note">
-          {step.text}
+          <span className="agw-tail-line">{step.text}</span>
         </div>
       );
     case "parent":
       return (
         <div className="agw-tail-text" data-kind="parent" data-waiting={step.waiting ? "" : undefined}>
-          <span className="agw-tail-tag">{step.waiting ? "Waiting" : "From parent"}</span>
-          {step.text}
+          <span className="agw-tail-line">
+            <span className="agw-tail-tag">{step.waiting ? "Waiting" : "From parent"}</span>
+            {step.text}
+          </span>
         </div>
       );
     default:
       return null;
   }
-};
+});
 
 export const SubagentTail: React.FC<{
   parentThreadId: string;
@@ -82,7 +94,16 @@ export const SubagentTail: React.FC<{
     parentThreadId,
     agentId,
   );
-  const allSteps = useMemo(() => tailSteps(messages, pending), [messages, pending]);
+  const rebuilt = useMemo(() => tailSteps(messages, pending), [messages, pending]);
+  // Rebuilt on every streamed event; stabilised against the previous render's
+  // steps so an unchanged row keeps its object (and `Step`'s memo holds) and
+  // an unchanged run keeps its array. The previous steps are state, set
+  // during render when they differ: React re-runs this render with the new
+  // value before anything is committed (its "information from previous
+  // renders" pattern), so nothing below ever sees a stale list.
+  const [previous, setPrevious] = useState<TailStep[]>(rebuilt);
+  const allSteps = stabilizeSteps(previous, rebuilt);
+  if (allSteps !== previous) setPrevious(allSteps);
   const steps = useMemo(
     () => allSteps.slice(-(more ? OPEN_STEPS : CLOSED_STEPS)),
     [allSteps, more],

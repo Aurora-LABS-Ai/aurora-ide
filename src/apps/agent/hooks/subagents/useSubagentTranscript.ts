@@ -119,7 +119,7 @@ export function useSubagentTranscript(parentThreadId: string, agentId: string): 
       .then((loaded) => {
         // The live reply is the window's, so its base is learned whether or
         // not this view is still mounted.
-        if (loaded) useSubagentLiveStore.getState().settle(agentId, seq, loaded.messages.length);
+        if (loaded) useSubagentLiveStore.getState().settle(agentId, seq, loaded.messages);
         if (!aliveRef.current) return;
         if (loaded) rememberTranscript(key, loaded);
         setRecord({ key, thread: loaded ?? null, missing: !loaded });

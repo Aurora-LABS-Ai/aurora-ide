@@ -9,7 +9,7 @@
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import type { DbThread } from "@/apps/agent/services/threads/thread-service";
 
-import type { SubagentStatus, SubagentUsage } from "./events";
+import type { AgentReportMeta, SubagentStatus, SubagentUsage } from "./events";
 
 /** Mirrors Rust `TaskSnapshot` (camelCase on the wire). */
 export interface SubagentSnapshot {
@@ -52,6 +52,63 @@ export function loadSubagentThread(
 /** Stop a running sub-agent. Resolves to whether it was running. */
 export function killSubagent(agentId: string): Promise<boolean> {
   return auroraInvoke<boolean>("agent_subagent_kill", { agentId });
+}
+
+/**
+ * Mirrors Rust `RailState`: which of a conversation's agent cards are pinned
+ * beside the icon rail (in pin order) and which are grown with "Show more".
+ * Saved with the conversation, in its `subagent-rail.json`.
+ */
+export interface SubagentRailState {
+  pinned: string[];
+  expanded: string[];
+}
+
+/** A conversation's saved rail state. Empty when it has none. */
+export function getSubagentRail(parentThreadId: string): Promise<SubagentRailState> {
+  return auroraInvoke<SubagentRailState>("agent_subagent_rail_get", { parentThreadId });
+}
+
+/** Save a conversation's rail state; resolves to what Rust stored. */
+export function setSubagentRail(
+  parentThreadId: string,
+  state: SubagentRailState,
+): Promise<SubagentRailState> {
+  return auroraInvoke<SubagentRailState>("agent_subagent_rail_set", {
+    parentThreadId,
+    pinned: state.pinned,
+    expanded: state.expanded,
+  });
+}
+
+/**
+ * Mirrors Rust `PendingWake`: a report addressed to an idle parent that no
+ * turn has carried yet. Rust keeps it until the window claims it.
+ */
+export interface PendingWake {
+  /** Unique for the life of the process, increasing in delivery order. */
+  id: number;
+  parentThreadId: string;
+  agent: AgentReportMeta;
+  /** The one-line transcript message. */
+  summary: string;
+  /** What the model reads. */
+  detail: string;
+  queuedAtMs: number;
+}
+
+/** Reports waiting to wake this conversation, oldest first. */
+export function pendingSubagentWakes(parentThreadId: string): Promise<PendingWake[]> {
+  return auroraInvoke<PendingWake[]>("agent_subagent_pending", { parentThreadId });
+}
+
+/**
+ * Tell Rust a turn carrying wake `wakeId` has opened. Resolves to `false`
+ * when it was already claimed: the report is on its way and must not be
+ * sent again.
+ */
+export function claimSubagentWake(parentThreadId: string, wakeId: number): Promise<boolean> {
+  return auroraInvoke<boolean>("agent_subagent_claim", { parentThreadId, wakeId });
 }
 
 /**

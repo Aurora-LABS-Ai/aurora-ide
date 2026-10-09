@@ -38,11 +38,13 @@
 
 import { useEffect, useRef } from "react";
 
+import type { SendOutcome } from "@/apps/agent/hooks/conversation/send-outcome";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import {
   IDLE_REPORT_MAX_AGE_MS,
   peekIdleReport,
+  requeueIdleReport,
   subscribeToIdleReports,
   takeIdleReport,
 } from "@/apps/agent/hooks/useBackgroundProcessWatch";
@@ -51,7 +53,20 @@ import {
 type SendProcessReport = (
   text: string,
   summary: string,
-) => Promise<void>;
+) => Promise<SendOutcome>;
+
+/**
+ * Threads with a report send in flight. The pipeline awaits before it marks
+ * the turn live, and every chat-store change in that window re-runs the
+ * drain; without this, two drains took two reports for one idle moment and
+ * the loser's report was gone. See `useIdleSubagentReport`.
+ */
+const inFlight = new Set<string>();
+
+/** Test seam. */
+export const clearProcessReportFlights = (): void => {
+  inFlight.clear();
+};
 
 export const useIdleProcessReport = (
   threadId: string | null,
@@ -73,6 +88,7 @@ export const useIdleProcessReport = (
 
     const drain = (): void => {
       if (disposed) return;
+      if (inFlight.has(threadId)) return;
       const report = peekIdleReport(threadId);
       if (!report) return;
 
@@ -92,10 +108,21 @@ export const useIdleProcessReport = (
       if (!claimed) return;
       if (Date.now() - claimed.endedAtMs > IDLE_REPORT_MAX_AGE_MS) return;
 
-      void sendRef.current(claimed.detail, claimed.summary).catch(() => {
-        // The dock row and the log still say what happened. A failed
-        // announcement costs the agent a notification, not the record.
-      });
+      inFlight.add(threadId);
+      void sendRef
+        .current(claimed.detail, claimed.summary)
+        .then((outcome) => {
+          // Another turn opened on this conversation first. Still news:
+          // back at the front for the next idle moment.
+          if (outcome === "skipped") requeueIdleReport(threadId, claimed);
+        })
+        .catch(() => {
+          // The dock row and the log still say what happened. A failed
+          // announcement costs the agent a notification, not the record.
+        })
+        .finally(() => {
+          inFlight.delete(threadId);
+        });
     };
 
     const unsubscribe = subscribeToIdleReports(drain);

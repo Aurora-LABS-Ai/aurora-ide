@@ -3550,10 +3550,21 @@ mod subagents {
             agent,
             summary,
             detail,
+            wake_id,
         } = &reports[0]
         else {
             unreachable!()
         };
+        // The event is the wake-up call; the outbox is the record. The window
+        // claims the entry by the id the event carries, once, and the second
+        // drain racing for the same idle moment gets `None`.
+        let pending = registry.wake_outbox().pending("thread-idle");
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].id, *wake_id);
+        assert_eq!(&pending[0].detail, detail);
+        assert!(registry.wake_outbox().claim("thread-idle", *wake_id).is_some());
+        assert!(registry.wake_outbox().claim("thread-idle", *wake_id).is_none());
+        assert!(registry.wake_outbox().is_empty("thread-idle"));
         assert_eq!(reported, &agent_id);
         assert_eq!(parent_thread_id, "thread-idle");
         assert_eq!(agent.name.as_deref(), Some("worker"));
@@ -4321,6 +4332,12 @@ mod subagents {
         let reports = report_events(&emitter);
         assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(matches!(&reports[0], SubagentEvent::Report { agent_id, .. } if agent_id == "agent_late"));
+        // Swept reports are recorded like any other wake, so the window's poll
+        // finds them even if this event is never processed.
+        let pending = registry.wake_outbox().pending("thread-sweep");
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].agent.agent_id, "agent_late");
+        assert_eq!(pending[0].summary, "Finished \"Late\" · completed");
         let left = registry.drain_queued("thread-sweep");
         assert_eq!(left.len(), 1, "the person's message is still waiting");
         assert_eq!(left[0].text, "and also this");

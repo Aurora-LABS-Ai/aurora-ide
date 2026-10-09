@@ -10,7 +10,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useIdleProcessReport } from "@/apps/agent/hooks/useIdleProcessReport";
+import type { SendOutcome } from "@/apps/agent/hooks/conversation/send-outcome";
+import {
+  clearProcessReportFlights,
+  useIdleProcessReport,
+} from "@/apps/agent/hooks/useIdleProcessReport";
 import { clearIdleReports } from "@/apps/agent/hooks/useBackgroundProcessWatch";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
@@ -26,8 +30,8 @@ vi.mock("@/kernel/lib/ipc/runtime", () => ({
 }));
 
 const THREAD = "thread-1";
-const send = vi.fn<(text: string, summary: string) => Promise<void>>(() =>
-  Promise.resolve(),
+const send = vi.fn<(text: string, summary: string) => Promise<SendOutcome>>(() =>
+  Promise.resolve("started"),
 );
 
 /** Mounts the watch (which parks endings) and the drain (which sends them). */
@@ -58,10 +62,10 @@ const seedRunning = () => {
 };
 
 /** Rust announcing the ending on its app-wide event. */
-const endProcess = async (exitCode: number | null = 1) => {
+const endProcess = async (exitCode: number | null = 1, processId = "bg-1") => {
   await act(async () => {
     listeners.forEach((handler) =>
-      handler({ payload: { processId: "bg-1", exitCode, outcome: "exited" } }),
+      handler({ payload: { processId, exitCode, outcome: "exited" } }),
     );
     await Promise.resolve();
   });
@@ -88,7 +92,9 @@ describe("waking an idle conversation for a finished process", () => {
     document.body.appendChild(container);
     listeners.clear();
     clearIdleReports();
+    clearProcessReportFlights();
     send.mockClear();
+    send.mockImplementation(() => Promise.resolve("started"));
     useAgentChatStore.setState({
       currentThreadId: THREAD,
       liveTurns: {},
@@ -178,6 +184,87 @@ describe("waking an idle conversation for a finished process", () => {
     const [detail] = send.mock.calls[0];
     // Both endings are in it, in the order they happened.
     expect(detail.match(/has ended/g)).toHaveLength(2);
+  });
+
+  it("keeps the report when the send did not open a turn, and sends it at the next idle moment", async () => {
+    // The pipeline awaits before it marks the turn live; a turn that opens in
+    // that window makes the send return `skipped`. The report used to be
+    // taken already and gone.
+    send.mockImplementationOnce(() => Promise.resolve("skipped"));
+    await mount();
+    await endProcess(1);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // The other turn runs and ends.
+    await act(async () => {
+      useAgentChatStore.setState({ liveTurns: { [THREAD]: { id: THREAD } as never } });
+      await Promise.resolve();
+      useAgentChatStore.setState({ liveTurns: {} });
+      await Promise.resolve();
+    });
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toContain("bg-1");
+  });
+
+  it("holds the next report while a send is still in flight", async () => {
+    // Every chat-store change re-runs the drain. While the first send has
+    // not settled the turn is not live yet, so a second drain used to take a
+    // second report and race it. Both finished processes must still arrive.
+    let settleFirst: (outcome: SendOutcome) => void = () => {};
+    send.mockImplementationOnce(
+      () =>
+        new Promise<SendOutcome>((resolve) => {
+          settleFirst = resolve;
+        }),
+    );
+    useAgentBackgroundStore.setState({
+      byThread: {
+        [THREAD]: [
+          {
+            processId: "bg-1",
+            title: "pnpm test",
+            command: "pnpm test",
+            status: "running",
+            startedAtMs: 0,
+            outputFile: "C:/tmp/x.log",
+          },
+          {
+            processId: "bg-2",
+            title: "pnpm lint",
+            command: "pnpm lint",
+            status: "running",
+            startedAtMs: 0,
+            outputFile: "C:/tmp/y.log",
+          },
+        ],
+      },
+    });
+    await mount();
+    await endProcess(1);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // A second ending lands and the store churns while the first send waits.
+    await endProcess(0, "bg-2");
+    await act(async () => {
+      useAgentChatStore.setState({ sending: true } as never);
+      await Promise.resolve();
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // The first turn opens, runs, ends: the second report goes now.
+    await act(async () => {
+      useAgentChatStore.setState({ liveTurns: { [THREAD]: { id: THREAD } as never } });
+      settleFirst("started");
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      useAgentChatStore.setState({ liveTurns: {} });
+      for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][0]).toContain("bg-2");
   });
 
   it("sends nothing at all when no process was ever tracked", async () => {

@@ -14,8 +14,11 @@
 import { create } from "zustand";
 
 import {
+  claimSubagentWake,
   killSubagent,
   listSubagents,
+  pendingSubagentWakes,
+  type PendingWake,
   type SubagentSnapshot,
 } from "@/apps/agent/services/subagents/commands";
 import type { SubagentEvent } from "@/apps/agent/services/subagents/events";
@@ -25,6 +28,18 @@ interface AgentSubagentState {
   byParent: Record<string, SubagentSnapshot[]>;
   /** Parent threads whose list has been read from disk at least once. */
   loaded: Record<string, true>;
+  /**
+   * Reports waiting to wake an idle parent, oldest first: the window's copy
+   * of Rust's outbox. Filled by the `report` event and by every `load`, so a
+   * late event costs a poll's worth of lag and a lost one costs nothing.
+   * `useIdleSubagentReport` starts a turn with the first one and claims it.
+   */
+  wakesByParent: Record<string, PendingWake[]>;
+  /**
+   * A turn carrying this wake has opened: drop it here and tell Rust.
+   * Resolves to whether Rust still had it (a second claimant gets `false`).
+   */
+  claimWake: (parentThreadId: string, wakeId: number) => Promise<boolean>;
   /** The turn id a RUNNING child currently streams under. */
   liveTurnByAgent: Record<string, string>;
   /**
@@ -54,7 +69,19 @@ export interface PendingParentMessage {
 
 const EMPTY: SubagentSnapshot[] = [];
 const NO_PENDING: PendingParentMessage[] = [];
+const NO_WAKES: PendingWake[] = [];
 let pendingSeq = 0;
+
+/** `wakes` with `wake` in place of its twin by id, or inserted in id order. */
+function upsertWake(wakes: PendingWake[], wake: PendingWake): PendingWake[] {
+  const index = wakes.findIndex((row) => row.id === wake.id);
+  if (index >= 0) {
+    const copy = wakes.slice();
+    copy[index] = wake;
+    return copy;
+  }
+  return [...wakes, wake].sort((a, b) => a.id - b.id);
+}
 
 /** A parent's list with `next` in place of the matching row, or appended. */
 function upsert(list: SubagentSnapshot[], next: SubagentSnapshot): SubagentSnapshot[] {
@@ -68,8 +95,27 @@ function upsert(list: SubagentSnapshot[], next: SubagentSnapshot): SubagentSnaps
 export const useAgentSubagentStore = create<AgentSubagentState>()((set, get) => ({
   byParent: {},
   loaded: {},
+  wakesByParent: {},
   liveTurnByAgent: {},
   pendingByAgent: {},
+
+  claimWake: async (parentThreadId, wakeId) => {
+    // Local copy first, so the drain that claimed it never sees it again
+    // whatever the IPC does; Rust's answer is the truth about who carried it.
+    set((s) => {
+      const left = (s.wakesByParent[parentThreadId] ?? NO_WAKES).filter((w) => w.id !== wakeId);
+      const wakesByParent = { ...s.wakesByParent };
+      if (left.length > 0) wakesByParent[parentThreadId] = left;
+      else delete wakesByParent[parentThreadId];
+      return { wakesByParent };
+    });
+    try {
+      return await claimSubagentWake(parentThreadId, wakeId);
+    } catch (err) {
+      console.warn("[subagents] agent_subagent_claim failed for", wakeId, err);
+      return false;
+    }
+  },
 
   settlePending: (agentId, seen) => {
     const list = get().pendingByAgent[agentId];
@@ -85,9 +131,20 @@ export const useAgentSubagentStore = create<AgentSubagentState>()((set, get) => 
   },
 
   load: async (parentThreadId) => {
+    // The list and the outbox in one go: the poll that notices an agent has
+    // finished is the poll that finds its report, whether or not the `report`
+    // event has been processed yet. A failed outbox read keeps the last copy;
+    // a failed list read keeps everything.
     let rows: SubagentSnapshot[];
+    let wakes: PendingWake[] | null;
     try {
-      rows = await listSubagents(parentThreadId);
+      [rows, wakes] = await Promise.all([
+        listSubagents(parentThreadId),
+        pendingSubagentWakes(parentThreadId).catch((err: unknown) => {
+          console.warn("[subagents] agent_subagent_pending failed for", parentThreadId, err);
+          return null;
+        }),
+      ]);
     } catch (err) {
       console.warn("[subagents] agent_subagent_list failed for", parentThreadId, err);
       return;
@@ -100,10 +157,19 @@ export const useAgentSubagentStore = create<AgentSubagentState>()((set, get) => 
       for (const row of rows) {
         if (row.status !== "running") delete liveTurnByAgent[row.agentId];
       }
+      let wakesByParent = s.wakesByParent;
+      if (wakes) {
+        // Rust's outbox is the truth here too: a wake it no longer holds was
+        // claimed (by this window or another path) and must not be sent.
+        wakesByParent = { ...s.wakesByParent };
+        if (wakes.length > 0) wakesByParent[parentThreadId] = wakes.slice().sort((a, b) => a.id - b.id);
+        else delete wakesByParent[parentThreadId];
+      }
       return {
         byParent: { ...s.byParent, [parentThreadId]: rows },
         loaded: { ...s.loaded, [parentThreadId]: true },
         liveTurnByAgent,
+        wakesByParent,
       };
     });
   },
@@ -195,10 +261,26 @@ export const useAgentSubagentStore = create<AgentSubagentState>()((set, get) => 
         });
         return;
       }
-      case "report":
-        // Does not change what the list shows. The report is handled by the
-        // conversation that receives it (`useIdleSubagentReport`).
+      case "report": {
+        // Does not change what the list shows. The wake joins the window's
+        // copy of the outbox; the conversation it belongs to starts a turn
+        // with it when it is open and idle (`useIdleSubagentReport`).
+        const wakes = get().wakesByParent[event.parentThreadId] ?? NO_WAKES;
+        set({
+          wakesByParent: {
+            ...get().wakesByParent,
+            [event.parentThreadId]: upsertWake(wakes, {
+              id: event.wakeId,
+              parentThreadId: event.parentThreadId,
+              agent: event.agent,
+              summary: event.summary,
+              detail: event.detail,
+              queuedAtMs: event.emittedAtMs ?? Date.now(),
+            }),
+          },
+        });
         return;
+      }
       default:
         return;
     }
@@ -217,11 +299,19 @@ export const useAgentSubagentStore = create<AgentSubagentState>()((set, get) => 
     set((s) => {
       const byParent = { ...s.byParent };
       const loaded = { ...s.loaded };
+      const wakesByParent = { ...s.wakesByParent };
       delete byParent[parentThreadId];
       delete loaded[parentThreadId];
-      return { byParent, loaded };
+      delete wakesByParent[parentThreadId];
+      return { byParent, loaded, wakesByParent };
     }),
 }));
+
+/** Reports waiting to wake one conversation, oldest first. Stable empty array. */
+export const selectWakesFor =
+  (parentThreadId: string | null) =>
+  (s: AgentSubagentState): PendingWake[] =>
+    parentThreadId ? (s.wakesByParent[parentThreadId] ?? NO_WAKES) : NO_WAKES;
 
 /** Messages waiting for an agent to take them in. Stable empty array. */
 export const selectPendingFor =

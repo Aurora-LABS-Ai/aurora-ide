@@ -409,8 +409,10 @@ pub struct AllowedTool {
 /// Backend → frontend event envelope.
 ///
 /// `seq` is monotonic per `turn_id`, starting at 0 with the first
-/// event of a turn. The frontend uses it to detect dropped or out-of-
-/// order events; in correct operation it always increments by 1.
+/// event of a turn. It is assigned per streamed event, but the Tauri
+/// emitter merges runs of token deltas before they cross the wire
+/// (`event_batch`), and a merged envelope carries the seq of its LAST
+/// event. Gaps are therefore normal; the order is what holds.
 ///
 /// `Serialize`-only because envelopes flow strictly Rust → frontend.
 /// Wire format keeps the Phase 2.2 snake_case shape.

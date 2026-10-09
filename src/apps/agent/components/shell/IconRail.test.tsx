@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
 vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
   useAgentSettingsStore: (select: (value: unknown) => unknown) => select(state.settings),
 }));
+// The sub-agent cells have their own test (`SubagentRail.test.tsx`).
+vi.mock("@/apps/agent/components/shell/SubagentRail", () => ({ SubagentRail: () => null }));
 vi.mock("@/apps/agent/store/workspace/useAgentWorkspaceStore", () => {
   const useAgentWorkspaceStore = (select: (value: unknown) => unknown) => select(state.workspace);
   useAgentWorkspaceStore.getState = () => state.workspace;

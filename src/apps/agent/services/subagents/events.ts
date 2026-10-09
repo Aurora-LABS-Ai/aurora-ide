@@ -79,6 +79,11 @@ export interface SubagentMessageEvent {
  * the window must start a turn on `parentThreadId` with
  * `userMessageOrigin: "subagent"`. Not sent when the report was queued into a
  * running parent turn.
+ *
+ * The event is a wake-up call, not the record: Rust holds the same report in
+ * its outbox under `wakeId` until the window claims it after the turn opens
+ * (`agent_subagent_claim`). The list poll reads that outbox too, so a report
+ * reaches the parent even when this event is delivered late or never.
  */
 export interface SubagentReportEvent {
   type: "report";
@@ -89,13 +94,27 @@ export interface SubagentReportEvent {
   summary: string;
   /** What the model reads. */
   detail: string;
+  /** The outbox entry this event announces. */
+  wakeId: number;
 }
 
-export type SubagentEvent =
+/**
+ * Stamped by Rust as it emits, beside the event's own fields. The window logs
+ * `now - emittedAtMs` on receipt: the event channel is one main-thread script
+ * evaluation per emit, and under four streaming children it once delivered
+ * four reports 58 s late. Optional so a test payload need not carry it.
+ */
+export interface SubagentEventStamp {
+  emittedAtMs?: number;
+}
+
+export type SubagentEvent = (
   | SubagentStartedEvent
   | SubagentFinishedEvent
   | SubagentMessageEvent
-  | SubagentReportEvent;
+  | SubagentReportEvent
+) &
+  SubagentEventStamp;
 
 /** Subscribe to subagent lifecycle events. Resolves to the unlisten function. */
 export function listenSubagentEvents(

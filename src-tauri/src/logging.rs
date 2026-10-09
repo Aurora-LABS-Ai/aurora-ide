@@ -115,11 +115,7 @@ pub fn log_info(component: &str, message: &str) {
 /// `level` is clamped to `ERROR`/`WARN` and the component is namespaced, so a
 /// caller in the renderer cannot forge a line that reads as backend output.
 pub fn log_from_ui(level: &str, component: &str, message: &str) {
-    let level = if level.eq_ignore_ascii_case("warn") {
-        "WARN"
-    } else {
-        "ERROR"
-    };
+    let level = ui_level(level);
     let component = component.trim();
     let component = if component.is_empty() {
         "ui".to_string()
@@ -127,6 +123,21 @@ pub fn log_from_ui(level: &str, component: &str, message: &str) {
         format!("ui.{}", component.trim_start_matches("ui."))
     };
     write_entry(level, &component, message);
+}
+
+/// The level a UI report is written at. `info` used to fall through to
+/// `ERROR`, so the sub-agent watch's "received report for …" confirmations
+/// filled Settings → Diagnostics with eleven red rows for a run in which
+/// nothing had failed. Anything the window does not name is still an error:
+/// the renderer reports failures far more often than it reports facts.
+fn ui_level(level: &str) -> &'static str {
+    if level.eq_ignore_ascii_case("warn") {
+        "WARN"
+    } else if level.eq_ignore_ascii_case("info") {
+        "INFO"
+    } else {
+        "ERROR"
+    }
 }
 
 // ── Reading it back ─────────────────────────────────────────────────────────
@@ -383,6 +394,16 @@ mod tests {
             };
             assert_eq!(component, expected);
         }
+    }
+
+    #[test]
+    fn ui_reports_keep_their_level_and_unknown_levels_are_errors() {
+        assert_eq!(ui_level("info"), "INFO");
+        assert_eq!(ui_level("INFO"), "INFO");
+        assert_eq!(ui_level("warn"), "WARN");
+        assert_eq!(ui_level("error"), "ERROR");
+        assert_eq!(ui_level("debug"), "ERROR");
+        assert_eq!(ui_level(""), "ERROR");
     }
 
     #[test]

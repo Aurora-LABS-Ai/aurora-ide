@@ -978,6 +978,14 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::agent_v2::agent_subagent_list,
             commands::agent_v2::agent_subagent_load,
             commands::agent_v2::agent_subagent_kill,
+            // Reports waiting to wake an idle parent, and the window's claim
+            // once a turn carries one (`agent_runtime::subagents::outbox`).
+            commands::agent_v2::agent_subagent_pending,
+            commands::agent_v2::agent_subagent_claim,
+            // Which agent cards a conversation keeps pinned beside the icon
+            // rail (`agent_runtime::subagents::rail_state`).
+            commands::agent_v2::agent_subagent_rail_get,
+            commands::agent_v2::agent_subagent_rail_set,
             commands::threads::subagent_thread_load,
             // Phase 4 permission gate — frontend modal posts the
             // user's Allow/Deny verdict here. The router lives in

@@ -37,7 +37,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,6 +56,9 @@ pub const HEARTBEAT_SECS: u64 = 20;
 /// gone. Generous on purpose: a laptop that slept mid-connection should drop
 /// the row, not a server that was briefly descheduled.
 pub const STALE_AFTER_SECS: u64 = 60;
+
+/// Registrations made by this process so far; part of each session id.
+static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// One agent connected to this machine's Aurora.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +83,11 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// A connection's id, which is also its file name. See [`register`].
+fn session_id_for(pid: u32, started_ms: i64, seq: u64) -> String {
+    format!("{pid}-{started_ms}-{seq}")
 }
 
 fn session_path(session_id: &str) -> std::path::PathBuf {
@@ -124,9 +132,12 @@ impl Drop for SessionHandle {
 pub fn register(client_name: Option<String>, client_version: Option<String>) -> Option<SessionHandle> {
     let pid = std::process::id();
     let started = now_ms();
-    // Pid plus start time: unique across reconnects by the same process, and
-    // readable in a directory listing when something needs debugging.
-    let session_id = format!("{pid}-{started}");
+    // Pid, start time and a per-process sequence: readable in a directory
+    // listing when something needs debugging, and unique even for two
+    // registrations in the same millisecond. Without the sequence those two
+    // shared one file name and one `.tmp`; the second rename found nothing to
+    // move and the registration was lost (seen as a flaky parallel test).
+    let session_id = session_id_for(pid, started, SESSION_SEQ.fetch_add(1, Ordering::Relaxed));
 
     let session = McpClientSession {
         version: CLIENT_FORMAT_VERSION,
@@ -261,6 +272,14 @@ mod tests {
         let id = handle.session_id.clone();
         drop(handle);
         assert!(!session_path(&id).exists(), "drop must clean up");
+    }
+
+    /// Two registrations by one process in one millisecond must not share a
+    /// file name: they used to, and the second one's rename found nothing to
+    /// move. The race itself cannot be forced, so the rule is tested.
+    #[test]
+    fn one_process_in_one_millisecond_still_gets_distinct_ids() {
+        assert_ne!(session_id_for(42, 1_000, 0), session_id_for(42, 1_000, 1));
     }
 
     #[test]

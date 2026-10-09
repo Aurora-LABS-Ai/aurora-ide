@@ -475,20 +475,33 @@
 .agw-tail-step[data-arrive] {
   animation: agw-agent-arrive var(--agw-dur-slow) var(--agw-ease-enter) both;
 }
+/* A line is a window of its LAST lines, not a clamp of its first: a column
+   aligned to its end overflows at its top, and that is what is clipped. A
+   thought that keeps growing then shows its newest words as it runs, where
+   a line clamp froze on the first two lines for the whole think. Open
+   ("Show more"), the line is whole, as the probe says. */
 .agw-tail-text {
   padding: 2px 0 4px 24px;
   font-size: var(--agw-fs-label);
   line-height: 1.5;
   color: var(--agw-text-subtle);
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(2 * 1.5em + 6px);
   overflow: hidden;
   overflow-wrap: anywhere;
 }
+.agw-tail-line {
+  flex: none;
+  min-width: 0;
+}
 .agw-tail-text[data-kind="said"] {
   color: var(--agw-text);
-  -webkit-line-clamp: 3;
+  max-height: calc(3 * 1.5em + 6px);
+}
+.agw-tail[data-more] .agw-tail-text {
+  max-height: none;
 }
 .agw-tail-text[data-kind="parent"] {
   color: var(--agw-text-muted);

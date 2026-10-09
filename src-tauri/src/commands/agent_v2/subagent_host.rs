@@ -933,8 +933,9 @@ impl<E: EventEmitter> ChildRun<E> {
 /// slot a person's mid-turn message uses — and lands on the next tool message
 /// as an `AgentReport` block, which the window draws as the agent's card. If
 /// the turn ends before another boundary, the driver's end-of-turn sweep
-/// turns the leftover into a `Report` event. The parent is idle: the window
-/// gets the `Report` event and starts a turn with it.
+/// hands the leftover to [`wake_parent`]. The parent is idle: [`wake_parent`]
+/// records it in the registry's outbox and sends the `Report` event; the
+/// window starts a turn with it and claims it.
 fn deliver_to_parent<E: EventEmitter + ?Sized>(
     registry: &AgentRegistry,
     emitter: &E,
@@ -973,14 +974,34 @@ fn deliver_to_parent<E: EventEmitter + ?Sized>(
         }
         return Ok(MessageDelivery::QueuedIntoTurn);
     }
-    emitter.emit_subagent(&SubagentEvent::Report {
-        agent_id: record.agent_id.clone(),
-        parent_thread_id: parent.clone(),
-        agent: meta,
-        summary: report.summary,
-        detail: report.detail,
-    });
+    wake_parent(registry, emitter, parent, meta, report.summary, report.detail);
     Ok(MessageDelivery::WokeParent)
+}
+
+/// Wake an idle parent with a report: record it in the outbox FIRST, then
+/// announce it. The window starts a turn from whichever copy reaches it
+/// first (the event, or its next list poll reading the outbox) and claims
+/// the entry by id once that turn has opened, so a report is carried once
+/// and never depends on one event being processed.
+pub(super) fn wake_parent<E: EventEmitter + ?Sized>(
+    registry: &AgentRegistry,
+    emitter: &E,
+    parent_thread_id: &str,
+    agent: AgentReportMeta,
+    summary: String,
+    detail: String,
+) {
+    let wake = registry
+        .wake_outbox()
+        .push(parent_thread_id, agent, summary, detail);
+    emitter.emit_subagent(&SubagentEvent::Report {
+        agent_id: wake.agent.agent_id.clone(),
+        parent_thread_id: parent_thread_id.to_string(),
+        agent: wake.agent,
+        summary: wake.summary,
+        detail: wake.detail,
+        wake_id: wake.id,
+    });
 }
 
 /// The child's hand back to its parent while it runs (`message_parent`).

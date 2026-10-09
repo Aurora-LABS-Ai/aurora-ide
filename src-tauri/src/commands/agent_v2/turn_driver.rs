@@ -173,7 +173,6 @@ pub(super) fn sweep_leftover_reports<E: EventEmitter + ?Sized>(
     emitter: &E,
     thread_id: &str,
 ) {
-    use crate::agent_runtime::subagents::SubagentEvent;
     use crate::agent_runtime::types::InjectedOrigin;
     let leftover = registry.drain_queued(thread_id);
     if leftover.is_empty() {
@@ -191,13 +190,14 @@ pub(super) fn sweep_leftover_reports<E: EventEmitter + ?Sized>(
                 name: None,
                 status: "completed".to_string(),
             });
-        emitter.emit_subagent(&SubagentEvent::Report {
-            agent_id: agent.agent_id.clone(),
-            parent_thread_id: thread_id.to_string(),
+        super::subagent_host::wake_parent(
+            registry,
+            emitter,
+            thread_id,
             agent,
-            summary: queued.display_text.unwrap_or_else(|| queued.text.clone()),
-            detail: queued.text,
-        });
+            queued.display_text.unwrap_or_else(|| queued.text.clone()),
+            queued.text,
+        );
     }
 }
 

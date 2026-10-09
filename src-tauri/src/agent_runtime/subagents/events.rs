@@ -84,6 +84,10 @@ pub enum SubagentEvent {
         agent: crate::agent_runtime::types::AgentReportMeta,
         summary: String,
         detail: String,
+        /// The entry in the registry's wake outbox this event announces. The
+        /// window claims it (`agent_subagent_claim`) once a turn carrying it
+        /// has opened; until then the report is Rust's, not the event's.
+        wake_id: u64,
     },
 }
 
@@ -136,6 +140,7 @@ mod tests {
                 },
                 summary: "Finished".into(),
                 detail: "d".into(),
+                wake_id: 7,
             },
         ];
         for (event, tag) in events.iter().zip(["started", "finished", "message", "report"]) {
@@ -154,5 +159,7 @@ mod tests {
         let started = serde_json::to_value(&events[0]).unwrap();
         assert_eq!(started["parentTurnId"], "turn-1");
         assert_eq!(started["outputFile"], "p");
+        let report = serde_json::to_value(&events[3]).unwrap();
+        assert_eq!(report["wakeId"], 7);
     }
 }

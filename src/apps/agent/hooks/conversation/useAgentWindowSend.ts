@@ -35,6 +35,7 @@ import {
   resolveTemperature,
 } from "@/apps/agent/services/runtime/model-request-config";
 import { classifyError } from "@/apps/agent/lib/error-classifier";
+import type { SendOutcome } from "./send-outcome";
 import type {
   AttachedPromptChip,
   DbMessage,
@@ -329,12 +330,18 @@ export interface SendOptions {
 export interface AgentWindowSend {
   /** True while a turn is streaming. */
   sending: boolean;
-  /** Send (or resend) a turn. No-op on empty text or while already sending. */
+  /**
+   * Send (or resend) a turn. Resolves to what happened: a turn `started`,
+   * the text was `queued` into a turn already running, or it was `skipped`
+   * (empty text, no thread, or a turn opened on the thread first). A caller
+   * handing over something it cannot regenerate — a sub-agent's report, a
+   * process ending — keeps it on `skipped`.
+   */
   send: (
     text: string,
     fileChips?: AttachedPromptChip[],
     options?: SendOptions,
-  ) => Promise<void>;
+  ) => Promise<SendOutcome>;
   /** Compact the open thread immediately. No-op when no idle thread is open. */
   compact: () => Promise<void>;
   /** Cancel the in-flight turn. */
@@ -726,7 +733,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         target?: BackgroundSendTarget,
         fileChips?: AttachedPromptChip[],
         options?: SendOptions,
-      ) => Promise<void>)
+      ) => Promise<SendOutcome>)
     | null
   >(null);
 
@@ -939,9 +946,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     target?: BackgroundSendTarget,
     fileChips: AttachedPromptChip[] = [],
     options?: SendOptions,
-  ) => {
+  ): Promise<SendOutcome> => {
     const content = raw.trim();
-    if (!content) return;
+    if (!content) return "skipped";
     const scopedFileChips =
       useAgentSettingsStore.getState().auroraSurface === "chat" ? [] : fileChips;
 
@@ -1088,7 +1095,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           chips: chips.length > 0 ? chips : undefined,
           imageCount: steeringImages.length > 0 ? steeringImages.length : undefined,
         });
-        return;
+        return "queued";
       }
     }
 
@@ -1164,7 +1171,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
     // Per-THREAD guard: block a second turn on the SAME thread, but allow other
     // threads to run concurrently (that's the whole point of parallel turns).
-    if (useAgentChatStore.getState().liveTurns[threadId]) return;
+    // Reported as `skipped`, never silently: the await above is a window in
+    // which another send can open the turn first, and the loser's text is the
+    // caller's to keep. Four sub-agent reports arriving together lost one here.
+    if (useAgentChatStore.getState().liveTurns[threadId]) return "skipped";
 
     // The model belongs to the CONVERSATION, so it can only be resolved once we
     // know which thread this turn is for — which is why it's read here and not
@@ -1211,7 +1221,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         projectRoot,
         executionMode,
       });
-      return;
+      return "started";
     }
 
     // Open a LIVE turn keyed to this thread. Streaming targets `liveTurns[id]`,
@@ -1317,7 +1327,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         timestamp: nowIso(),
       });
       store.endTurn(threadId);
-      return;
+      // A turn opened and ended with the reason on screen. `started`, not
+      // `skipped`: a caller that retried on this would loop on a dead provider.
+      return "started";
     }
     if (!resolvedRequest) {
       store.appendTurnMessage(threadId, {
@@ -1328,7 +1340,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         timestamp: nowIso(),
       });
       store.endTurn(threadId);
-      return;
+      return "started";
     }
     const {
       providerConfig,
@@ -2228,6 +2240,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         }
       }
     }
+    return "started";
   }, []);
 
   // Keep the ref pointing at the latest `send` so the post-turn auto-flush can
@@ -2245,7 +2258,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // screen; a live turn already in flight is the newer one, so it wins.
       const live = useAgentChatStore.getState().liveTurns[bound.threadId];
       const seed = live ?? bound.getSeed();
-      if (!seed) return Promise.resolve();
+      if (!seed) return Promise.resolve<SendOutcome>("skipped");
       return sendTurn(
         text,
         {

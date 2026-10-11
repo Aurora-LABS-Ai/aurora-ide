@@ -2964,7 +2964,7 @@ mod subagents {
     use crate::agent_runtime::subagents::store::{child_store_for, AgentSidecar};
     use crate::agent_runtime::subagents::SubagentEvent;
 
-    fn scripted_host(
+    pub(super) fn scripted_host(
         emitter: Arc<MockEmitter>,
         registry: Arc<AgentRegistry>,
     ) -> (AgentV2SubagentHost<MockEmitter>, tempfile::TempDir) {
@@ -2974,7 +2974,11 @@ mod subagents {
         (host, catalog_dir)
     }
 
-    fn parent_turn(registry: &AgentRegistry, request: AgentChatRequest) -> ParentTurn {
+    pub(super) fn parent_turn(registry: &AgentRegistry, request: AgentChatRequest) -> ParentTurn {
+        if registry.tools().is_empty() {
+            crate::tools::register_builtin_tools(&registry.tools(),
+                Arc::new(crate::tools::shell_editor_todo::NoopIdeEventSink), None);
+        }
         let store = registry
             .store_for_conversation(
                 request.execution_mode,
@@ -2994,7 +2998,7 @@ mod subagents {
         }
     }
 
-    fn spawn(description: &str, prompt: &str, agent_type: Option<&str>) -> SpawnRequest {
+    pub(super) fn spawn(description: &str, prompt: &str, agent_type: Option<&str>) -> SpawnRequest {
         SpawnRequest {
             description: description.into(),
             prompt: prompt.into(),
@@ -3002,6 +3006,7 @@ mod subagents {
             model: None,
             background: false,
             name: None,
+            tools: None,
         }
     }
 
@@ -3009,8 +3014,8 @@ mod subagents {
         let emitter: Arc<MockEmitter> = Arc::new(MockEmitter::default());
         let scope = match kind {
             TurnKind::Child {
-                allow, messenger, ..
-            } => ToolScope::Child { allow, messenger },
+                allow, messenger, report_required, ..
+            } => ToolScope::Child { allow, messenger, report_required },
             TurnKind::Conversation
                 if request.subagents_enabled.unwrap_or(false)
                     && request.execution_mode == AgentExecutionMode::Agent =>
@@ -3094,6 +3099,7 @@ mod subagents {
         let names = roster(
             &request,
             TurnKind::Child {
+                report_required: true,
                 allow: READ_ONLY_TOOLS.iter().map(|t| (*t).to_string()).collect(),
                 cancel: CancellationToken::new(),
                 messenger: None,
@@ -3123,6 +3129,7 @@ mod subagents {
         let names = roster(
             &request,
             TurnKind::Child {
+                report_required: true,
                 allow: vec!["file_read".into(), "spawn_agent".into(), "ask_question".into()],
                 cancel: CancellationToken::new(),
                 messenger: None,
@@ -3134,6 +3141,7 @@ mod subagents {
         let names = roster(
             &request,
             TurnKind::Child {
+                report_required: true,
                 allow: GENERAL_PURPOSE_TOOLS.iter().map(|t| (*t).to_string()).collect(),
                 cancel: CancellationToken::new(),
                 messenger: None,
@@ -3458,7 +3466,7 @@ mod subagents {
         }
     }
 
-    fn text_reply(text: &str) -> TurnScript {
+    pub(super) fn text_reply(text: &str) -> TurnScript {
         TurnScript::Reply {
             events: vec![],
             result: Ok(turn_usage(assistant_text_msg(text), "end_turn")),
@@ -3466,7 +3474,7 @@ mod subagents {
     }
 
     /// A child's model call that hands in its report with `submit_report`.
-    fn submit_reply(call_id: &str, summary: &str, report: &str) -> TurnScript {
+    pub(super) fn submit_reply(call_id: &str, summary: &str, report: &str) -> TurnScript {
         TurnScript::Reply {
             events: vec![],
             result: Ok(turn_usage(
@@ -3487,17 +3495,17 @@ mod subagents {
     /// A child finishing the way it is told to: submit the report (here the
     /// answer is both summary and report), then close with the answer as its
     /// one line. Two model calls.
-    fn submits(call_id: &str, answer: &str) -> Vec<TurnScript> {
+    pub(super) fn submits(call_id: &str, answer: &str) -> Vec<TurnScript> {
         vec![submit_reply(call_id, answer, answer), text_reply(answer)]
     }
 
     /// What a run that submitted `answer` via [`submits`] records as its
     /// result: summary and report, one after the other.
-    fn submitted_text(answer: &str) -> String {
+    pub(super) fn submitted_text(answer: &str) -> String {
         format!("{answer}\n\n{answer}")
     }
 
-    async fn wait_until_done(record: &TaskRecord) {
+    pub(super) async fn wait_until_done(record: &TaskRecord) {
         assert!(
             record.wait_finished(std::time::Duration::from_secs(5)).await,
             "the agent must finish"
@@ -4223,8 +4231,12 @@ mod subagents {
         assert_eq!(asked[0].display_text.as_deref(), Some("Question from \"prober\""));
         assert!(asked[0].text.contains("waiting for your answer"));
 
+        let note = host.send_message_kind(&parent, "prober", "Good job, keep going.", crate::agent_runtime::subagents::messaging::ParentMessageKind::Message).await.unwrap();
+        assert!(matches!(note, SendOutcome::Queued { taken_now: false, .. }));
+        assert!(record.is_waiting_for_reply(), "a courtesy message must not answer its question");
+
         let outcome = host
-            .send_message(&parent, "prober", "Yes, skip them and submit partial.")
+            .send_message_kind(&parent, "prober", "Yes, skip them and submit partial.", crate::agent_runtime::subagents::messaging::ParentMessageKind::Reply)
             .await
             .unwrap();
         assert!(
@@ -4423,8 +4435,8 @@ mod subagents {
         assert!(texts[1].contains("and the docs"));
         for text in &texts {
             assert!(
-                text.starts_with(crate::agent_runtime::session::MID_TURN_PREAMBLE),
-                "framed as arriving mid-turn: {text}"
+                text.starts_with("[Parent task:"),
+                "the boundary must name the parent and the task purpose: {text}"
             );
         }
         let first_tool_msg = &session.messages()[2];
@@ -4586,3 +4598,18 @@ mod subagents {
         assert!(list_agents_for(&registry, &parent.store, "thread-none").is_empty());
     }
 }
+
+#[path = "tests/subagent_delivery.rs"]
+mod subagent_delivery;
+
+#[path = "tests/subagent_models.rs"]
+mod subagent_models;
+
+#[path = "tests/subagent_lifecycle.rs"]
+mod subagent_lifecycle;
+
+#[path = "tests/subagent_grants.rs"]
+mod subagent_grants;
+
+#[path = "tests/subagent_messaging.rs"]
+mod subagent_messaging;

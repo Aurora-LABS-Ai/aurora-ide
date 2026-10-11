@@ -46,12 +46,27 @@ pub struct PendingWake {
 pub struct WakeOutbox {
     next_id: AtomicU64,
     by_parent: DashMap<String, VecDeque<PendingWake>>,
+    closed: parking_lot::RwLock<std::collections::HashSet<String>>,
 }
 
 impl WakeOutbox {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn forget(&self, parent_thread_id: &str) {
+        let mut closed = self.closed.write();
+        closed.insert(parent_thread_id.to_string());
+        self.by_parent.remove(parent_thread_id);
+    }
+
+    pub fn retire(&self, parent_thread_id: &str) {
+        self.closed.write().insert(parent_thread_id.to_string());
+    }
+
+    pub fn restore(&self, parent_thread_id: &str) {
+        self.closed.write().remove(parent_thread_id);
     }
 
     /// Record a wake for `parent_thread_id`. Returns the entry with its id,
@@ -62,7 +77,9 @@ impl WakeOutbox {
         agent: AgentReportMeta,
         summary: String,
         detail: String,
-    ) -> PendingWake {
+    ) -> Option<PendingWake> {
+        let closed = self.closed.read();
+        if closed.contains(parent_thread_id) { return None; }
         let wake = PendingWake {
             id: self.next_id.fetch_add(1, Ordering::SeqCst) + 1,
             parent_thread_id: parent_thread_id.to_string(),
@@ -75,12 +92,14 @@ impl WakeOutbox {
             .entry(parent_thread_id.to_string())
             .or_default()
             .push_back(wake.clone());
-        wake
+        Some(wake)
     }
 
     /// Everything still waiting for `parent_thread_id`, oldest first.
     #[must_use]
     pub fn pending(&self, parent_thread_id: &str) -> Vec<PendingWake> {
+        let closed = self.closed.read();
+        if closed.contains(parent_thread_id) { return Vec::new(); }
         self.by_parent
             .get(parent_thread_id)
             .map(|entry| entry.iter().cloned().collect())
@@ -129,11 +148,32 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_parent_cannot_receive_a_late_wake() {
+        let outbox = WakeOutbox::new();
+        outbox.forget("deleted");
+        let _ = outbox.push("deleted", meta("a"), "late".into(), "late report".into());
+        assert!(outbox.pending("deleted").is_empty());
+    }
+
+    #[test]
+    fn aborted_deletion_restores_wakes_that_were_already_pending() {
+        let outbox = WakeOutbox::new();
+        let first = outbox.push("p", meta("a"), "first".into(), "first report".into()).unwrap();
+        outbox.retire("p");
+        assert!(outbox.pending("p").is_empty());
+        assert!(outbox.push("p", meta("b"), "late".into(), "late report".into()).is_none());
+        outbox.restore("p");
+        assert_eq!(outbox.pending("p")[0].id, first.id);
+        outbox.forget("p");
+        assert!(outbox.push("p", meta("c"), "later".into(), "later report".into()).is_none());
+    }
+
+    #[test]
     fn wakes_are_kept_in_delivery_order_per_parent() {
         let outbox = WakeOutbox::new();
-        let a = outbox.push("p1", meta("a"), "A done".into(), "a".into());
-        let b = outbox.push("p1", meta("b"), "B done".into(), "b".into());
-        let other = outbox.push("p2", meta("c"), "C done".into(), "c".into());
+        let a = outbox.push("p1", meta("a"), "A done".into(), "a".into()).unwrap();
+        let b = outbox.push("p1", meta("b"), "B done".into(), "b".into()).unwrap();
+        let other = outbox.push("p2", meta("c"), "C done".into(), "c".into()).unwrap();
         assert!(a.id < b.id && b.id < other.id);
         let pending = outbox.pending("p1");
         assert_eq!(pending.iter().map(|w| w.id).collect::<Vec<_>>(), vec![a.id, b.id]);
@@ -144,9 +184,9 @@ mod tests {
     #[test]
     fn a_wake_is_claimed_exactly_once_and_the_rest_stay() {
         let outbox = WakeOutbox::new();
-        let a = outbox.push("p1", meta("a"), "A".into(), "a".into());
-        let b = outbox.push("p1", meta("b"), "B".into(), "b".into());
-        let c = outbox.push("p1", meta("c"), "C".into(), "c".into());
+        let a = outbox.push("p1", meta("a"), "A".into(), "a".into()).unwrap();
+        let b = outbox.push("p1", meta("b"), "B".into(), "b".into()).unwrap();
+        let c = outbox.push("p1", meta("c"), "C".into(), "c".into()).unwrap();
         // Claiming the middle one leaves the others in order: the window
         // claims whichever it carried, which is not always the oldest.
         assert_eq!(outbox.claim("p1", b.id).map(|w| w.summary), Some("B".into()));
@@ -165,7 +205,7 @@ mod tests {
     #[test]
     fn a_wake_goes_out_in_camel_case() {
         let outbox = WakeOutbox::new();
-        let wake = outbox.push("p1", meta("a"), "A".into(), "a".into());
+        let wake = outbox.push("p1", meta("a"), "A".into(), "a".into()).unwrap();
         let json = serde_json::to_value(&wake).unwrap();
         let obj = json.as_object().unwrap();
         assert_eq!(obj["parentThreadId"], "p1");

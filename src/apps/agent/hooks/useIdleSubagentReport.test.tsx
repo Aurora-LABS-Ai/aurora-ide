@@ -134,6 +134,8 @@ describe("waking an idle conversation with a sub-agent's report", () => {
       byParent: {},
       loaded: {},
       wakesByParent: {},
+      carriedWakeIds: new Set(),
+      deletedParents: new Set(),
       liveTurnByAgent: {},
       pendingByAgent: {},
     });
@@ -254,6 +256,23 @@ describe("waking an idle conversation with a sub-agent's report", () => {
     await act(async () => {
       useAgentDraftStore.setState({ drafts: {} });
       useAgentChatStore.setState({ liveTurns: {} });
+    });
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("does not redeliver a wake whose event arrives after polling carried it", async () => {
+    const w = wake(1, "backend");
+    outbox.push(w);
+    await mount();
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(claims()).toEqual([1]);
+    await act(async () => {
+      listeners.forEach((handler) => handler({ payload: {
+        type: "report", agentId: w.agent.agentId, parentThreadId: w.parentThreadId,
+        agent: w.agent, summary: w.summary, detail: w.detail, wakeId: w.id,
+        emittedAtMs: Date.now(),
+      }}));
     });
     await settle();
     expect(send).toHaveBeenCalledTimes(1);

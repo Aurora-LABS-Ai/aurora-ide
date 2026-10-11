@@ -96,6 +96,7 @@ pub(crate) enum ToolScope {
     /// parent's turn id and would never arrive); no discovery wrappers.
     /// Plus `message_parent`, when the run has a way back to its parent.
     Child {
+        report_required: bool,
         allow: Vec<String>,
         messenger: Option<Arc<dyn crate::agent_runtime::subagents::host::ParentMessenger>>,
     },
@@ -109,8 +110,8 @@ impl ToolScope {
     /// Child scope: may the child call `name`?
     fn child_allows(&self, name: &str) -> bool {
         match self {
-            Self::Child { allow, .. } => {
-                !crate::agent_runtime::subagents::catalog::NEVER_FOR_CHILDREN.contains(&name)
+            Self::Child { allow, report_required, .. } => {
+                *report_required && !crate::agent_runtime::subagents::catalog::NEVER_FOR_CHILDREN.contains(&name)
                     && allow.iter().any(|t| t == name)
             }
             _ => true,
@@ -203,11 +204,11 @@ pub(super) fn build_per_turn_tool_registry_scoped(
     // `agent_post_tool_result` keyed by the PARENT's turn id; a child's call
     // would park on a reply the window never sends. And no discovery pair:
     // there is nothing deferred for it to find.
-    if let ToolScope::Child { messenger, .. } = scope {
+    if let ToolScope::Child { messenger, report_required, .. } = scope {
         // The one tool every child has whatever its definition says: the way
         // to tell the parent it cannot do the task as asked.
         if let Some(messenger) = messenger {
-            crate::tools::subagents::install_child(&registry, messenger.clone());
+            crate::tools::subagents::install_child(&registry, messenger.clone(), *report_required);
         }
         return registry;
     }

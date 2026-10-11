@@ -1356,7 +1356,9 @@ impl ConversationRuntime {
                         // were running — "don't run pnpm" landing after the
                         // lint output is otherwise a contradiction the model
                         // has to guess at.
-                        let injected_text = if queued.mid_turn {
+                        let injected_text = if let Some(kind) = queued.subagent_kind {
+                            kind.frame(&queued.text)
+                        } else if queued.mid_turn {
                             format!(
                                 "{}\n{}",
                                 crate::agent_runtime::session::MID_TURN_PREAMBLE,

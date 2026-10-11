@@ -54,6 +54,8 @@ pub mod activity;
 pub mod catalog;
 pub mod events;
 pub mod host;
+pub mod messaging;
+pub mod grant;
 pub mod outbox;
 pub mod prompt;
 pub mod rail_state;

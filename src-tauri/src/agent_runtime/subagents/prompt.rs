@@ -14,8 +14,8 @@ use crate::tools::subagents::{
 /// What a child that ended without `submit_report` is told, once. Arrives as
 /// Aurora's note (a process beat in the agent's tab), not as the parent's
 /// words.
-pub const REPORT_REMINDER: &str = "You ended your turn without calling submit_report. The \
-     parent receives nothing until you do: it does not see your messages or your tool calls. \
+pub const REPORT_REMINDER: &str = "This work run ended without calling submit_report. The \
+     parent needs the work result, not a repeated acknowledgement or a tool transcript. \
      Call submit_report now with outcome, summary and the full report of what you did and \
      found (exact paths and line numbers), and changedFiles if you changed any. If the work is \
      not finished, submit what you have with outcome \"partial\" or \"blocked\" and say what is \
@@ -31,6 +31,18 @@ pub const REPORT_REMINDER: &str = "You ended your turn without calling submit_re
 /// `file_read`'s argument shape under a name from some other agent. A main
 /// conversation on the same model, which gets the full guide, does not.
 const TOOL_GUIDE: &[(&str, &str)] = &[
+    (
+        "auroro_websearch",
+        "`auroro_websearch` searches the web and reads source pages. Use primary documentation for technical claims, read the supporting page, and include the source URL in your report.",
+    ),
+    (
+        "design_guidelines",
+        "Call `design_guidelines` before creating or reviewing user-facing UI or copy. Choose its `topic` for the work: `build`, `writing`, `audit`, or `redesign`.",
+    ),
+    (
+        "canvas_guidelines",
+        "Read `canvas_guidelines` before writing Aurora canvas code. Use its actual SDK and contracts rather than inventing component APIs.",
+    ),
     (
         "file_read",
         "`file_read` takes `path` as an ARRAY of paths: one entry for one file, several to read \
@@ -76,9 +88,10 @@ const TOOL_GUIDE: &[(&str, &str)] = &[
     ),
     (
         "move_path",
-        "`move_path`, `delete_path` and `folder_create` move, delete and create files and \
-         folders inside the workspace.",
+        "`move_path` moves files or folders inside the workspace.",
     ),
+    ("delete_path", "`delete_path` deletes a file or folder inside the workspace. Check the exact target first."),
+    ("folder_create", "`folder_create` creates folders inside the workspace."),
     (
         "shell_execute",
         "`shell_execute` runs a command. Name the `shell` (bash, pwsh, …) and write the `command` \
@@ -89,10 +102,11 @@ const TOOL_GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shell_spawn",
-        "`shell_spawn` starts something with no natural end (a dev server, a watcher). Follow it \
-         with `shell_read_output` (`start_line`, `wait_ms`), list what you started with \
-         `shell_list_processes`, and stop it with `shell_kill` before you finish.",
+        "`shell_spawn` starts something with no natural end, such as a dev server or watcher. Keep its process id. If you lack the tools to read or stop it, ask the parent to manage that process.",
     ),
+    ("shell_read_output", "`shell_read_output` reads a background process's output. Use `start_line` and `wait_ms` to follow it."),
+    ("shell_list_processes", "`shell_list_processes` lists tracked processes. Check ownership before acting on one."),
+    ("shell_kill", "`shell_kill` stops a tracked process. Stop processes you started before finishing unless the parent explicitly wants them kept running."),
 ];
 
 /// The "## Your tools" section for a child holding `roster`.
@@ -118,13 +132,7 @@ fn tools_section(roster: &[String]) -> String {
          it.\n\n"
     );
     for (tool, line) in TOOL_GUIDE {
-        // `move_path` speaks for its two siblings; any of the three brings it.
-        let present = if *tool == "move_path" {
-            has("move_path") || has("delete_path") || has("folder_create")
-        } else {
-            has(tool)
-        };
-        if present {
+        if has(tool) {
             out.push_str("- ");
             out.push_str(line);
             out.push('\n');
@@ -138,7 +146,7 @@ fn tools_section(roster: &[String]) -> String {
         out.push_str(
             "- Large tool output is MOVED to a file, never cut. A result that says `bytes hidden \
              — full output: <path>`, or carries `fullResult`, keeps the rest at that path: read \
-             it with `file_read` or search it with `grep`.\n",
+             it with `file_read`.\n",
         );
     }
     out.push_str(
@@ -156,8 +164,8 @@ pub fn child_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> St
     let mut out = String::new();
     out.push_str(&format!(
         "You are `{}`, a sub-agent running inside Aurora. A parent agent started you to do one \
-         task and carries on with its own work while you do. Nobody watches this conversation: \
-         the parent sees only the report you submit at the end.\n\n",
+         task and carries on with its own work while you do. The parent receives messages you \
+         send with message_parent and the work report you submit at the end.\n\n",
         def.name
     ));
     out.push_str(def.system_prompt.trim());
@@ -166,7 +174,9 @@ pub fn child_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> St
     out.push_str("\n## Working as a sub-agent\n\n");
     out.push_str(&format!(
         "- There is no user here. Nobody on this conversation can answer a question. The parent \
-         can: `{MESSAGE_PARENT_TOOL}` sends it a message while you keep working, and its answer \
+         can: `{MESSAGE_PARENT_TOOL}` is your one messaging tool. Choose kind `question` for \
+         an answer or decision, `message` for useful information, and `reply` to answer the \
+         parent. Every kind reaches and wakes an idle parent. Its answer \
          comes back to you as a message. Use it the MOMENT the task cannot be done as asked: a \
          tool you need and do not have (name it), a path that does not exist, a contradiction in \
          the brief, a decision only the parent can make. Say exactly what you need. Do not use it \
@@ -178,14 +188,17 @@ pub fn child_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> St
          in your report, and continue.\n\
          - Stay on the task you were given. Do not start adjacent work, and do not undo or \
          rewrite things outside its scope.\n\
-         - The parent may send you a message while you work or after you finish. Treat it as the \
-         next instruction, and submit a new report when that work is done.\n"
+         - Parent communication has an explicit purpose: `message` is information, discussion \
+         or acknowledgement and does not assign work; `reply` answers your question so you can \
+         continue the existing task; `task` assigns or changes work and requires a fresh report \
+         covering it. A message such as thanks or good job does not require repeating your \
+         report or rerunning checks. If you need to answer during work, use `message_parent`.\n"
     ));
     out.push_str("\n## Finishing\n\n");
     out.push_str(&format!(
-        "- You finish by calling `{SUBMIT_REPORT_TOOL}`. The parent reads that report and \
-         nothing else: not your messages, not your tool calls, not their output. A turn that ends \
-         without it leaves the parent with nothing.\n\
+        "- You finish a work assignment by calling `{SUBMIT_REPORT_TOOL}`. The parent needs \
+         this work report because it cannot see your tool calls or their output. Ordinary \
+         messages and acknowledgements do not create another work assignment.\n\
          - `outcome`: `done` when the task is complete as asked, `partial` when some of it is, \
          `blocked` when it could not be done. Say which part is missing or what stopped you.\n\
          - `summary`: one to three sentences the parent can act on without reading further.\n\
@@ -213,6 +226,26 @@ pub fn child_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> St
     out
 }
 
+/// An idle child answering a message has its history, but no task tools or report obligation.
+pub fn message_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> String {
+    format!(
+        "You are `{}`, an Aurora sub-agent answering a message from your parent. Your earlier \
+         conversation is available for context. This exchange is conversation only. It does \
+         not assign new work. Do not repeat your old work report, changed-file list or checks. \
+         Answer the actual message briefly. For thanks or acknowledgement, one short sentence \
+         is sufficient. Do not claim new verification or changes.\n\n\
+         Your only tool is `message_parent`, for a question or information that must reach the \
+         parent before you finish. It wakes an idle parent. Set `waitForReply: true` if you \
+         cannot answer without its reply. You have no file, shell, browser, delegation or \
+         submit_report tool. Your final text is delivered to the parent automatically as a \
+         conversation reply, so do not also send that same text through message_parent.\n\n\
+         Parent messages are marked message, reply or task. Only an explicit task starts work \
+         again; the runtime will then give you your saved task tools and require a new report.\n\n\
+         Workspace: {}\nPlatform: {}",
+        def.name, workspace.unwrap_or("none"), std::env::consts::OS
+    )
+}
+
 /// The section appended to the PARENT's system prompt when sub-agents are
 /// on: when to delegate, what each definition is, and the mechanics of
 /// waiting, messaging and background work.
@@ -230,7 +263,7 @@ pub fn parent_instructions(catalog: &Catalog) -> String {
          How it works: every agent you start runs in the background. You are told, as messages \
          in this conversation, when an agent finishes (its report) and whenever it needs \
          something from you before that: a tool it lacks, a path that is wrong, a decision only \
-         you can make. Answer those with `send_message`. A message titled `Question from` is \
+         you can make. Answer those with `send_message` kind `reply`. A message titled `Question from` is \
          an agent paused for your answer (for up to two minutes): answer it before anything \
          else, and it continues in the same run. Do not poll, check on or wait for \
          agents. Do work that does not depend on them, or, when there is none, tell the user \
@@ -250,10 +283,18 @@ pub fn parent_instructions(catalog: &Catalog) -> String {
          - `spawn_agent` starts one and returns at once with its id. Give it a `description` \
          (3–6 words), the full `prompt` (it sees nothing else — include every path, constraint \
          and acceptance criterion), a short `name` to address it by, and optionally `agentType` \
-         and `model`. Start several in one message when their work is independent.\n\
-         - `send_message` sends a message to an agent by `name` or id: an answer to what it \
-         asked, or more work. A running agent gets it at its next safe point; a finished agent \
-         is resumed with it and remembers everything it did before.\n\
+         and `model`. Use `tools` to choose exact native task tools within that type's allowed \
+         tools; omit it for defaults, or pass an empty array for only the child's communication \
+         tools. The grant is saved and preserved on resume. A tool grant does not bypass user \
+         permissions. Start several in one message when their work is independent.\n\
+         - `send_message` is your one tool for talking to an agent by `name` or id. Always \
+         choose `kind`: `message` for information, discussion, thanks or acknowledgement; \
+         `reply` to answer its question; `task` for new or changed work. A running agent reads \
+         it at a safe boundary, and a held question takes a reply immediately. Only task \
+         requires a new work report. A finished child answers message or reply briefly with \
+         its history but no task tools or report reminder. That response reaches you and \
+         wakes you if idle. Do not send acknowledgements back and forth or thank an agent \
+         again merely because it acknowledged you. Use task only when actual work is needed.\n\
          - `get_task_output` looks at a running agent for up to ten seconds and returns its \
          timeline since your last look: tools it ran, what it thought and said, never tool \
          results. It never returns a report; reports arrive only as messages. Use it when you \
@@ -308,7 +349,7 @@ mod tests {
         }
 
         let general = child_system_prompt(catalog.get("general-purpose").unwrap(), None);
-        for present in ["`shell_execute` runs", "`file_edit` replaces", "`move_path`, `delete_path`"] {
+        for present in ["`shell_execute` runs", "`file_edit` replaces", "`move_path` moves", "`delete_path` deletes"] {
             assert!(general.contains(present), "missing {present}");
         }
     }
@@ -317,7 +358,7 @@ mod tests {
     fn a_child_is_told_that_submit_report_is_how_it_finishes() {
         let catalog = Catalog::built_in();
         let prompt = child_system_prompt(catalog.get("reviewer").unwrap(), None);
-        assert!(prompt.contains("You finish by calling `submit_report`"));
+        assert!(prompt.contains("You finish a work assignment by calling `submit_report`"));
         for field in ["`outcome`", "`summary`", "`report`", "`changedFiles`"] {
             assert!(prompt.contains(field), "missing {field}");
         }

@@ -37,18 +37,22 @@ use std::time::Instant;
 use crate::agent_runtime::subagents::{
     catalog::{Catalog, DEFAULT_AGENT_TYPE},
     host::{
-        Activity, MessageDelivery, ModelChoice, ParentMessenger, ParentTurn, SendOutcome,
+        Activity, MessageDelivery, ModelChoice, ParentMessenger, ParentResponse, ParentTurn, SendOutcome,
         SpawnOutcome, SpawnRequest, StopOutcome, SubagentError, SubagentHost, SubagentUsage,
         SubmittedReport,
     },
     new_agent_id, new_child_turn_id,
-    prompt::{child_system_prompt, REPORT_REMINDER},
+    messaging::{ChildMessageKind, ParentMessageKind},
+    prompt::{child_system_prompt, message_system_prompt, REPORT_REMINDER},
     record::{StopBy, TaskRecord, TaskSnapshot, TaskStatus},
     report,
     store::{self as child_store, AgentSidecar},
     AgentDefinition, SubagentEvent,
 };
 use crate::agent_runtime::types::{AgentReportMeta, ContentBlock, InjectedOrigin};
+
+#[path = "subagent_messaging.rs"]
+mod messaging;
 
 /// Steps of a run that ended without a report listed in that report: enough
 /// to see where it got to, few enough to read at a glance.
@@ -83,6 +87,26 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
         Catalog::load(&self.catalog_dir)
     }
 
+    fn resolve_tools(
+        &self,
+        parent: &ParentTurn,
+        definition: &AgentDefinition,
+        requested: Option<&[String]>,
+        model: &ChildModel,
+    ) -> Result<Vec<String>, SubagentError> {
+        if parent.request.execution_mode != AgentExecutionMode::Agent {
+            return Err(SubagentError::Unavailable);
+        }
+        let available: Vec<String> = self.registry.tools().names().into_iter().filter(|name| {
+            !super::tool_policy::is_withdrawn_tool(name)
+                && super::tool_policy::is_tool_available_this_turn(name,
+                    parent.request.execution_mode, false, false,
+                    parent.request.browser_tools.unwrap_or(true))
+                && (model.config.supports_vision || !crate::tools::browser::VISION_REQUIRED_TOOLS.contains(&name.as_str()))
+        }).collect();
+        crate::agent_runtime::subagents::grant::resolve(definition, requested, &available)
+    }
+
     /// The parent's own model, as a request-ready bundle.
     fn parents_model(parent: &ParentTurn) -> ChildModel {
         let req = &parent.request;
@@ -93,6 +117,7 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
             config: req.provider_config.clone(),
             context_window: req.context_window,
             max_output_tokens: req.max_output_tokens,
+            temperature: req.temperature,
         }
     }
 
@@ -118,16 +143,16 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
         }
         if let Some(lookup) = self.registry.provider_lookup() {
             return lookup
-                .resolve(pin)
+                .resolve(pin, req.thinking_enabled.unwrap_or(false))
                 .map(|resolved| ChildModel {
                     pin: format!("{}:{}", resolved.provider_id, resolved.model_key),
                     provider_id: resolved.provider_id,
                     wire_model: resolved.model_key,
+                    temperature: resolved.config.default_temperature,
                     config: resolved.config,
                     context_window: resolved.context_window,
                     max_output_tokens: resolved.max_output_tokens,
-                })
-                .map_err(SubagentError::UnknownModel);
+                });
         }
         // No database to ask. A different model on the PARENT's provider is
         // still answerable: same key, same URL, another model name.
@@ -182,7 +207,7 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
             ide_context: None,
             // No frontend-bridged tools: a child's roster is natives only.
             tools: Vec::new(),
-            temperature: p.temperature,
+            temperature: model.temperature,
             max_output_tokens: model.max_output_tokens.or(p.max_output_tokens),
             thinking_enabled: p.thinking_enabled,
             thinking_budget_tokens: p.thinking_budget_tokens,
@@ -246,10 +271,11 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
         existing: Option<Arc<TaskRecord>>,
         mut sidecar: AgentSidecar,
         message: &str,
+        kind: ParentMessageKind,
     ) -> Result<SendOutcome, SubagentError> {
         let agent_id = sidecar.agent_id.clone();
         let catalog = self.catalog();
-        let (def, note) = match catalog.get(&sidecar.agent_type) {
+        let (mut def, mut note) = match catalog.get(&sidecar.agent_type) {
             Some(def) => (def.clone(), None),
             None => (
                 catalog
@@ -278,24 +304,55 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
             Err(other) => return Err(other),
         };
 
+        let legacy_grant = if sidecar.tool_grant.is_none()
+            && ((sidecar.agent_type == DEFAULT_AGENT_TYPE
+                && (sidecar.source.is_none() || sidecar.source == Some(crate::agent_runtime::subagents::catalog::DefinitionSource::BuiltIn)))
+                || note.is_some()) {
+            Some(crate::agent_runtime::subagents::catalog::GENERAL_PURPOSE_TOOLS.iter()
+                .map(|tool| (*tool).to_string()).collect::<Vec<_>>())
+        } else { None };
+        let requested = sidecar.tool_grant.as_deref().or(legacy_grant.as_deref());
+        let grant = self.resolve_tools(parent, &def, requested, &model)?;
+        if sidecar.tool_grant.is_none() {
+            let legacy_note = "This older agent had no saved tool grant. The resolved grant is now saved and will remain stable on resume.";
+            note = Some(note.map_or_else(|| legacy_note.to_string(), |old| format!("{old}. {legacy_note}")));
+        }
+        def.tools = grant.clone();
+        sidecar.tool_grant = Some(grant);
+
+        let message_only = kind != ParentMessageKind::Task;
+        if message_only {
+            sidecar = sidecar.as_loaded();
+        } else {
+            sidecar.record_resume(message);
+        }
+        let work_before = message_only.then(|| existing.as_ref().map_or_else(
+            || TaskSnapshot::from_sidecar(&sidecar), |record| record.snapshot()
+        ));
+        sidecar.model = Some(model.pin.clone());
+        sidecar.save(&store)
+            .map_err(|e| SubagentError::Start(format!("could not update agent.json: {e}")))?;
+
         let cancel = CancellationToken::new();
         let record = match existing {
             Some(record) => {
-                record.resume(cancel.clone());
+                if message_only {
+                    record.resume_message(cancel.clone());
+                } else {
+                    record.resume(cancel.clone());
+                }
                 record
             }
             None => {
                 let record = Arc::new(TaskRecord::resumed_from_disk(&sidecar, cancel.clone()));
+                if message_only {
+                    record.resume_message(cancel.clone());
+                }
                 self.registry.subagent_tasks().insert(record.clone());
                 record
             }
         };
         record.set_model(Some(model.pin.clone()));
-        sidecar.record_resume(message);
-        sidecar.model = Some(model.pin.clone());
-        sidecar
-            .save(&store)
-            .map_err(|e| SubagentError::Start(format!("could not update agent.json: {e}")))?;
 
         let child_turn_id = new_child_turn_id();
         let output_file = child_store::output_file(&store, &agent_id)
@@ -318,6 +375,9 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
         });
 
         let run = ChildRun {
+            message_only,
+            work_before,
+            message_prompt: message_system_prompt(&def, parent.request.workspace_path.as_deref()),
             registry: self.registry.clone(),
             emitter: self.emitter.clone(),
             store,
@@ -332,11 +392,11 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
         tokio::spawn(async move {
             let _ = run.execute().await;
         });
-        Ok(SendOutcome::Resumed {
-            agent_id,
-            output_file,
-            note,
-        })
+        if message_only {
+            Ok(SendOutcome::Messaging { agent_id })
+        } else {
+            Ok(SendOutcome::Resumed { agent_id, output_file, note })
+        }
     }
 }
 
@@ -349,6 +409,7 @@ struct ChildModel {
     config: crate::api::ProviderConfigSnapshot,
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
+    temperature: Option<f32>,
 }
 
 #[async_trait::async_trait]
@@ -395,12 +456,20 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
         parent: &ParentTurn,
         request: SpawnRequest,
     ) -> Result<SpawnOutcome, SubagentError> {
+        let admission = tokio::select! {
+            guard = self.registry.subagent_tasks().lock_agent(&parent.thread_id) => guard,
+            () = parent.cancel.cancelled() => return Err(SubagentError::Unavailable),
+        };
+        self.registry.ensure_thread_live(&parent.thread_id)
+            .map_err(|e| SubagentError::Start(e.to_string()))?;
         let catalog = self.catalog();
-        let def = catalog
+        let mut def = catalog
             .resolve(request.agent_type.as_deref())
             .map_err(SubagentError::Invalid)?
             .clone();
         let model = self.pick_model(parent, &def, request.model.as_deref())?;
+        let grant = self.resolve_tools(parent, &def, request.tools.as_deref(), &model)?;
+        def.tools = grant.clone();
 
         let agent_id = new_agent_id();
         let child_turn_id = new_child_turn_id();
@@ -427,6 +496,7 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
             model: Some(model.pin.clone()),
             background: request.background,
             source: Some(def.source.clone()),
+            tool_grant: Some(grant),
             status: TaskStatus::Running,
             created_at: now.clone(),
             updated_at: now,
@@ -485,6 +555,9 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
         });
 
         let run = ChildRun {
+            message_only: false,
+            work_before: None,
+            message_prompt: message_system_prompt(&def, parent.request.workspace_path.as_deref()),
             registry: self.registry.clone(),
             emitter: self.emitter.clone(),
             store,
@@ -496,6 +569,7 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
             output_file: output_file.clone(),
             parent_results_dir: parent.store.tool_results_dir(&parent.thread_id),
         };
+        drop(admission);
 
         if request.background {
             tokio::spawn(async move {
@@ -524,12 +598,32 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
         to: &str,
         message: &str,
     ) -> Result<SendOutcome, SubagentError> {
+        self.send_message_kind(parent, to, message, ParentMessageKind::Task).await
+    }
+
+    async fn send_message_kind(
+        &self,
+        parent: &ParentTurn,
+        to: &str,
+        message: &str,
+        kind: ParentMessageKind,
+    ) -> Result<SendOutcome, SubagentError> {
         let message = message.trim();
         if message.is_empty() {
             return Err(SubagentError::Invalid("`message` is empty".into()));
         }
+        let _parent_admission = tokio::select! {
+            guard = self.registry.subagent_tasks().lock_agent(&parent.thread_id) => guard,
+            () = parent.cancel.cancelled() => return Err(SubagentError::Unavailable),
+        };
+        self.registry.ensure_thread_live(&parent.thread_id)
+            .map_err(|e| SubagentError::Start(e.to_string()))?;
         let store = Self::store_for(parent);
-        let Some((record, sidecar)) = self.locate(parent, &store, to) else {
+        let Some((_, located)) = self.locate(parent, &store, to) else {
+            return Err(SubagentError::NotFound(to.to_string()));
+        };
+        let _handoff = self.registry.subagent_tasks().lock_agent(&located.agent_id).await;
+        let Some((record, sidecar)) = self.locate(parent, &store, &located.agent_id) else {
             return Err(SubagentError::NotFound(to.to_string()));
         };
         if let Some(record) = record.as_ref().filter(|r| r.is_running()) {
@@ -544,9 +638,9 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
             // A child holding in `message_parent` for this very answer takes it
             // from the queue at once (`ChildMessenger::wait_for_reply`); read
             // the flag before waking it, since the wake ends the hold.
-            let taken_now = record.is_waiting_for_reply();
+            let taken_now = kind == ParentMessageKind::Reply && record.is_waiting_for_reply();
             self.registry
-                .enqueue_in_order(&record.agent_id, message.to_string(), InjectedOrigin::User)
+                .enqueue_child_message(&record.agent_id, message.to_string(), InjectedOrigin::User, Some(kind))
                 .map_err(SubagentError::Start)?;
             self.emitter.emit_subagent(&SubagentEvent::Message {
                 agent_id: record.agent_id.clone(),
@@ -560,7 +654,7 @@ impl<E: EventEmitter> SubagentHost for AgentV2SubagentHost<E> {
                 taken_now,
             });
         }
-        self.resume(parent, store, record, sidecar, message).await
+        self.resume(parent, store, record, sidecar, message, kind).await
     }
 
     async fn output(
@@ -643,6 +737,9 @@ pub fn list_agents_for(registry: &AgentRegistry, parent_store: &SessionStore, pa
 
 /// One run of one child, from "start the turn" to "record how it ended".
 struct ChildRun<E: EventEmitter> {
+    message_only: bool,
+    work_before: Option<TaskSnapshot>,
+    message_prompt: String,
     registry: Arc<AgentRegistry>,
     emitter: Arc<E>,
     store: Arc<SessionStore>,
@@ -696,6 +793,7 @@ impl<E: EventEmitter> ChildRun<E> {
         //   way, with a stop hook. A second miss falls back to its last
         //   message, which the report then says was never submitted.
         let mut request = self.request.clone();
+        let task_prompt = request.system_prompt.clone();
         let mut usage = SubagentUsage::default();
         let mut tool_uses = 0u64;
         let mut asked_for_report = false;
@@ -706,7 +804,10 @@ impl<E: EventEmitter> ChildRun<E> {
         // The last thing it said in any of the run's turns. A reminder turn
         // that only calls `submit_report` says nothing new.
         let mut last_said = String::new();
+        let mut finishing = None;
         let outcome: Result<(), RuntimeError> = loop {
+            let report_required = self.record.requires_report();
+            request.system_prompt = if report_required { task_prompt.clone() } else { Some(self.message_prompt.clone()) };
             // No person watches a child's turn, so a tool set to "ask" is
             // refused with the reason rather than parked on a prompt. See
             // `prompter.rs`.
@@ -716,7 +817,8 @@ impl<E: EventEmitter> ChildRun<E> {
                     request.clone(),
                     self.store.clone(),
                     TurnKind::Child {
-                        allow: self.allow.clone(),
+                        report_required,
+                        allow: if report_required { self.allow.clone() } else { Vec::new() },
                         cancel: self.cancel.clone(),
                         messenger: Some(messenger.clone()),
                     },
@@ -749,29 +851,38 @@ impl<E: EventEmitter> ChildRun<E> {
                 last_said = said;
             }
             if self.cancel.is_cancelled() {
-                break Ok(());
+                break Err(RuntimeError::Cancelled);
             }
+            let handoff = self.registry.subagent_tasks().lock_agent(&agent_id).await;
             let waiting = self.registry.take_queued_messages(&agent_id);
             if !waiting.is_empty() {
                 request.user_message = waiting
                     .into_iter()
-                    .map(|m| m.text)
+                    .map(|m| m.subagent_kind.map_or_else(|| m.text.clone(), |kind| kind.frame(&m.text)))
                     .collect::<Vec<_>>()
                     .join("\n\n");
                 request.user_message_origin = InjectedOrigin::User;
                 request.user_message_summary = None;
+                asked_for_report = false;
+                drop(handoff);
                 continue;
             }
-            if self.record.submitted_report().is_none() && !asked_for_report {
+            if self.record.requires_report() && self.record.submitted_report().is_none() && !asked_for_report {
                 asked_for_report = true;
                 request.user_message = REPORT_REMINDER.to_string();
                 // Aurora's words, not the parent's: the agent's tab draws it
                 // as a one-line beat, never as a message from the parent.
                 request.user_message_origin = InjectedOrigin::Process;
                 request.user_message_summary = Some("Asked for its report".to_string());
+                drop(handoff);
                 continue;
             }
+            finishing = Some(handoff);
             break Ok(());
+        };
+        let _finishing = match finishing {
+            Some(guard) => guard,
+            None => self.registry.subagent_tasks().lock_agent(&agent_id).await,
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         usage.duration_ms = duration_ms;
@@ -805,6 +916,14 @@ impl<E: EventEmitter> ChildRun<E> {
                 (status, partial, error)
             }
         };
+        if !self.record.requires_report() {
+            return self.finish_message(status, &said, error.as_deref(), &usage, &turn_id);
+        }
+        if self.message_only {
+            let task = self.record.task_hint().unwrap_or_else(|| "Additional work received during messaging".into());
+            self.sidecar.record_resume(&task);
+            self.request.user_message = task;
+        }
         // What it handed in wins over what it last said, whatever the ending:
         // a report submitted before a failure is still its report.
         let submitted = self.record.submitted_report();
@@ -875,6 +994,9 @@ impl<E: EventEmitter> ChildRun<E> {
         usage: &SubagentUsage,
         ending: report::RunEnding<'_>,
     ) -> bool {
+        if self.registry.ensure_thread_live(&self.record.parent_thread_id).is_err() {
+            return false;
+        }
         if !self.record.claim_notification() {
             return false;
         }
@@ -949,6 +1071,7 @@ fn deliver_to_parent<E: EventEmitter + ?Sized>(
         status: status.to_string(),
     };
     let parent = &record.parent_thread_id;
+    registry.ensure_thread_live(parent).map_err(|e| e.to_string())?;
     if registry.is_turn_active(parent) {
         registry
             .enqueue_with_agent(
@@ -991,9 +1114,9 @@ pub(super) fn wake_parent<E: EventEmitter + ?Sized>(
     summary: String,
     detail: String,
 ) {
-    let wake = registry
+    let Some(wake) = registry
         .wake_outbox()
-        .push(parent_thread_id, agent, summary, detail);
+        .push(parent_thread_id, agent, summary, detail) else { return; };
     emitter.emit_subagent(&SubagentEvent::Report {
         agent_id: wake.agent.agent_id.clone(),
         parent_thread_id: parent_thread_id.to_string(),
@@ -1014,16 +1137,21 @@ struct ChildMessenger<E: EventEmitter> {
 #[async_trait::async_trait]
 impl<E: EventEmitter> ParentMessenger for ChildMessenger<E> {
     fn message_parent(&self, text: &str, waiting: bool) -> Result<MessageDelivery, SubagentError> {
+        self.message_parent_kind(text, if waiting { ChildMessageKind::Question } else { ChildMessageKind::Message }, waiting)
+    }
+
+    fn message_parent_kind(&self, text: &str, kind: ChildMessageKind, waiting: bool) -> Result<MessageDelivery, SubagentError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(SubagentError::Invalid("`message` must not be empty".into()));
         }
-        let report = report::message(
+        let report = report::message_with_kind(
             &self.record.agent_id,
             self.record.name.as_deref(),
             &self.record.agent_type,
             &self.record.description,
             text,
+            kind,
             waiting,
         );
         deliver_to_parent(
@@ -1037,9 +1165,13 @@ impl<E: EventEmitter> ParentMessenger for ChildMessenger<E> {
     }
 
     fn submit_report(&self, report: SubmittedReport) -> Result<bool, SubagentError> {
+        if !self.record.requires_report() {
+            return Err(SubagentError::Invalid("this is a conversation-only response; no work report is required".into()));
+        }
         // Held on the record, delivered by `ChildRun::execute` when the run
         // ends: once, whatever the ending, never while it is still working.
-        Ok(self.record.submit_report(report))
+        self.registry.submit_subagent_report(&self.record.agent_id, report)
+            .map_err(SubagentError::Invalid)
     }
 
     async fn wait_for_reply(
@@ -1047,6 +1179,17 @@ impl<E: EventEmitter> ParentMessenger for ChildMessenger<E> {
         timeout: std::time::Duration,
         cancel: &CancellationToken,
     ) -> Option<String> {
+        match self.wait_for_response(timeout, cancel).await {
+            Some(ParentResponse::Answer(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    async fn wait_for_response(
+        &self,
+        timeout: std::time::Duration,
+        cancel: &CancellationToken,
+    ) -> Option<ParentResponse> {
         // The parent's answer is whatever it sends this agent while it holds:
         // `send_message` queues it in this agent's own queue and wakes the
         // record. Taken from the queue here, so it is not injected a second
@@ -1057,7 +1200,10 @@ impl<E: EventEmitter> ParentMessenger for ChildMessenger<E> {
         let answer = self
             .record
             .wait_for_reply(timeout, cancel, || {
-                let taken = registry.take_queued_from(&agent_id, InjectedOrigin::User);
+                if registry.has_child_task(&agent_id) {
+                    return Some(ParentResponse::TaskChanged);
+                }
+                let taken = registry.take_child_replies(&agent_id);
                 (!taken.is_empty()).then(|| {
                     taken
                         .into_iter()
@@ -1065,14 +1211,16 @@ impl<E: EventEmitter> ParentMessenger for ChildMessenger<E> {
                         .collect::<Vec<_>>()
                         .join("\n\n")
                 })
+                .map(ParentResponse::Answer)
             })
             .await?;
+        let ParentResponse::Answer(text) = &answer else { return Some(answer); };
         // Tell the window the waiting message was taken in, so the agent's
         // views stop showing it as pending.
         self.emitter.emit_subagent(&SubagentEvent::Message {
             agent_id: self.record.agent_id.clone(),
             parent_thread_id: self.record.parent_thread_id.clone(),
-            text: answer.clone(),
+            text: text.clone(),
             delivered: true,
         });
         Some(answer)

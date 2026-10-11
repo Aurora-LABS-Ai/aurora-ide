@@ -194,6 +194,7 @@ mod process_ending_tests {
 
     fn note(origin: InjectedOrigin, text: &str) -> QueuedUserMessage {
         QueuedUserMessage {
+            subagent_kind: None,
             text: text.into(),
             display_text: None,
             chips: None,

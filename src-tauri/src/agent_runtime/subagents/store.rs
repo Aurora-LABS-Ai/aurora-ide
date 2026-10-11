@@ -59,6 +59,8 @@ pub struct AgentSidecar {
     pub background: bool,
     #[serde(default)]
     pub source: Option<DefinitionSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_grant: Option<Vec<String>>,
     /// Last known state. `running` on disk after a crash means the run was
     /// interrupted; a load treats it as `failed` with that explanation.
     pub status: TaskStatus,
@@ -225,6 +227,7 @@ mod tests {
             model: Some("mock:model".into()),
             background: false,
             source: Some(DefinitionSource::BuiltIn),
+            tool_grant: None,
             status: TaskStatus::Running,
             created_at: now.clone(),
             updated_at: now,

@@ -47,11 +47,14 @@ pub const CHILD_TOOL_NAMES: &[&str] = &[
 pub fn install_child(
     registry: &ToolRegistry,
     messenger: Arc<dyn crate::agent_runtime::subagents::host::ParentMessenger>,
+    report_required: bool,
 ) {
     registry.register(Arc::new(message_parent::MessageParentTool::new(
         messenger.clone(),
     )));
-    registry.register(Arc::new(submit_report::SubmitReportTool::new(messenger)));
+    if report_required {
+        registry.register(Arc::new(submit_report::SubmitReportTool::new(messenger)));
+    }
 }
 
 /// Install the parent-side tools into a per-turn registry.
@@ -121,6 +124,7 @@ pub(crate) mod test_support {
         pub next: Mutex<Option<Result<SpawnOutcome, SubagentError>>>,
         pub models: Mutex<Vec<ModelChoice>>,
         pub sends: Mutex<Vec<(String, String)>>,
+        pub message_kinds: Mutex<Vec<crate::agent_runtime::subagents::messaging::ParentMessageKind>>,
         pub next_send: Mutex<Option<Result<SendOutcome, SubagentError>>>,
         pub next_output: Mutex<Option<Result<TaskSnapshot, SubagentError>>>,
         pub outputs: Mutex<Vec<(String, Option<std::time::Duration>)>>,
@@ -179,6 +183,17 @@ pub(crate) mod test_support {
                 .unwrap()
                 .take()
                 .unwrap_or(Err(SubagentError::NotFound(to.to_string())))
+        }
+
+        async fn send_message_kind(
+            &self,
+            parent: &ParentTurn,
+            to: &str,
+            message: &str,
+            kind: crate::agent_runtime::subagents::messaging::ParentMessageKind,
+        ) -> Result<SendOutcome, SubagentError> {
+            self.message_kinds.lock().unwrap().push(kind);
+            self.send_message(parent, to, message).await
         }
 
         async fn output(

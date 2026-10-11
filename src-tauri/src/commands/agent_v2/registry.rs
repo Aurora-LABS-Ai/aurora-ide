@@ -41,6 +41,8 @@ pub struct AgentRegistry {
     /// at a time (its session mutex sees to that); this answers "is one
     /// running" without touching the mutex.
     active_turns: DashMap<String, String>,
+    deleted_threads: dashmap::DashSet<String>,
+    turns_finished: tokio::sync::Notify,
 
     /// Builder for the per-turn API client. Stored as `Arc<dyn …>` so
     /// tests inject a mock factory and the real factory plugs in
@@ -112,6 +114,8 @@ impl AgentRegistry {
             queue_slots: DashMap::new(),
             in_flight: DashMap::new(),
             active_turns: DashMap::new(),
+            deleted_threads: dashmap::DashSet::new(),
+            turns_finished: tokio::sync::Notify::new(),
             api_factory,
             tools: Arc::new(ToolRegistry::new()),
             bridge_router: Arc::new(BridgeRouter::new()),
@@ -433,6 +437,7 @@ impl AgentRegistry {
         crate::agent_runtime::session::enqueue_into(
             &mut guard,
             crate::agent_runtime::session::QueuedUserMessage {
+                subagent_kind: None,
                 text,
                 display_text: display_text.filter(|t| !t.trim().is_empty()),
                 chips: chips.filter(|c| !c.is_empty()),
@@ -458,6 +463,16 @@ impl AgentRegistry {
         text: String,
         origin: crate::agent_runtime::types::InjectedOrigin,
     ) -> Result<(), String> {
+        self.enqueue_child_message(thread_id, text, origin, None)
+    }
+
+    pub(super) fn enqueue_child_message(
+        &self,
+        thread_id: &str,
+        text: String,
+        origin: crate::agent_runtime::types::InjectedOrigin,
+        kind: Option<crate::agent_runtime::subagents::messaging::ParentMessageKind>,
+    ) -> Result<(), String> {
         if text.trim().is_empty() {
             return Err("queued message text cannot be empty".to_string());
         }
@@ -465,7 +480,19 @@ impl AgentRegistry {
         let mut guard = slot
             .lock()
             .map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
+        if origin == crate::agent_runtime::types::InjectedOrigin::User
+            && kind != Some(crate::agent_runtime::subagents::messaging::ParentMessageKind::Message)
+        {
+            if let Some(record) = self.subagent_tasks.get(thread_id) {
+                if kind != Some(crate::agent_runtime::subagents::messaging::ParentMessageKind::Reply)
+                    || record.requires_report()
+                {
+                    record.require_report(&text)?;
+                }
+            }
+        }
         guard.push_back(crate::agent_runtime::session::QueuedUserMessage {
+            subagent_kind: kind,
             text,
             display_text: None,
             chips: None,
@@ -475,6 +502,43 @@ impl AgentRegistry {
             agent: None,
         });
         Ok(())
+    }
+
+    /// Queue and report use the same lock: a submission cannot race past
+    /// an accepted instruction that the child has not read yet.
+    pub fn submit_subagent_report(
+        &self,
+        agent_id: &str,
+        report: crate::agent_runtime::subagents::host::SubmittedReport,
+    ) -> Result<bool, String> {
+        let record = self.subagent_tasks.get(agent_id)
+            .ok_or_else(|| format!("agent {agent_id} is no longer registered"))?;
+        let slot = self.get_or_create_queue_slot(agent_id);
+        let guard = slot.lock().map_err(|e| format!("queue slot mutex poisoned: {e}"))?;
+        if guard.iter().any(|m| m.origin == crate::agent_runtime::types::InjectedOrigin::User
+            && m.subagent_kind != Some(crate::agent_runtime::subagents::messaging::ParentMessageKind::Message)) {
+            return Err("The parent sent new instructions that you have not read yet. Read them at the next step, complete that work, then submit a fresh report.".into());
+        }
+        Ok(record.submit_report(report))
+    }
+
+    /// Only explicit replies (or legacy untyped instructions) answer a held question.
+    pub(super) fn take_child_replies(&self, thread_id: &str) -> Vec<crate::agent_runtime::session::QueuedUserMessage> {
+        use crate::agent_runtime::subagents::messaging::ParentMessageKind;
+        let Some(entry) = self.queue_slots.get(thread_id) else { return Vec::new(); };
+        let Ok(mut guard) = entry.value().lock() else { return Vec::new(); };
+        let (taken, kept): (Vec<_>, Vec<_>) = guard.drain(..).partition(|m| {
+            m.origin == crate::agent_runtime::types::InjectedOrigin::User
+                && matches!(m.subagent_kind, None | Some(ParentMessageKind::Reply))
+        });
+        guard.extend(kept);
+        taken
+    }
+
+    pub(super) fn has_child_task(&self, thread_id: &str) -> bool {
+        self.queue_slots.get(thread_id).is_some_and(|entry| entry.value().lock().is_ok_and(|queue| {
+            queue.iter().any(|m| m.subagent_kind == Some(crate::agent_runtime::subagents::messaging::ParentMessageKind::Task))
+        }))
     }
 
     /// Put a message taken off a thread's queue back at its end, unchanged.
@@ -564,6 +628,45 @@ impl AgentRegistry {
     pub fn clear_turn_active(&self, thread_id: &str, turn_id: &str) {
         self.active_turns
             .remove_if(thread_id, |_, active| active == turn_id);
+        self.turns_finished.notify_waiters();
+    }
+
+    pub fn ensure_thread_live(&self, thread_id: &str) -> Result<(), RuntimeError> {
+        if self.deleted_threads.contains(thread_id) {
+            return Err(RuntimeError::InvalidState(format!("conversation {thread_id} is being deleted or was deleted")));
+        }
+        Ok(())
+    }
+
+    pub fn mark_thread_deleted(&self, thread_id: &str) {
+        self.deleted_threads.insert(thread_id.to_string());
+        self.wake_outbox.retire(thread_id);
+    }
+
+    pub fn rollback_thread_deletion(&self, thread_id: &str) {
+        self.deleted_threads.remove(thread_id);
+        self.wake_outbox.restore(thread_id);
+    }
+
+    pub fn cancel_thread(&self, thread_id: &str) {
+        let turn_id = self.active_turns.get(thread_id).map(|entry| entry.value().clone());
+        if let Some(turn_id) = turn_id { self.cancel(&turn_id); }
+    }
+
+    pub async fn wait_thread_idle(&self, thread_id: &str) {
+        loop {
+            let finished = self.turns_finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            if !self.is_turn_active(thread_id) { return; }
+            finished.await;
+        }
+    }
+
+    pub fn forget_thread_runtime(&self, thread_id: &str) {
+        self.sessions.remove(thread_id);
+        self.queue_slots.remove(thread_id);
+        self.wake_outbox.forget(thread_id);
     }
 
     /// Whether a turn is running on `thread_id` right now.
@@ -615,6 +718,7 @@ impl AgentRegistry {
         store: &SessionStore,
     ) -> Result<Arc<Mutex<Session>>, RuntimeError> {
         project_dir::validate_thread_id(thread_id)?;
+        self.ensure_thread_live(thread_id)?;
         if let Some(existing) = self.sessions.get(thread_id) {
             return Ok(existing.value().clone());
         }

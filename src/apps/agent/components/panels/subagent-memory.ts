@@ -18,6 +18,9 @@ import type { DbThread } from "@/apps/agent/services/threads/thread-service";
 
 const transcripts = new Map<string, DbThread>();
 const scroll = new Map<string, number | "bottom">();
+const deletedParents = new Set<string>();
+
+const isDeleted = (key: string): boolean => deletedParents.has(key.split(":", 1)[0]);
 
 /** Within this many px of the end counts as "at the bottom". */
 export const SUBAGENT_BOTTOM_PX = 140;
@@ -28,6 +31,7 @@ export const subagentMemoryKey = (parentThreadId: string, agentId: string): stri
 export const recallTranscript = (key: string): DbThread | undefined => transcripts.get(key);
 
 export const rememberTranscript = (key: string, thread: DbThread): void => {
+  if (isDeleted(key)) return;
   transcripts.set(key, thread);
 };
 
@@ -39,6 +43,7 @@ export const recallScrollTop = (key: string): number | null => {
 
 /** Record where a scroller was when its tab went away. */
 export const rememberScroll = (key: string, el: HTMLElement): void => {
+  if (isDeleted(key)) return;
   const fromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight);
   scroll.set(key, fromBottom <= SUBAGENT_BOTTOM_PX ? "bottom" : el.scrollTop);
 };
@@ -50,6 +55,7 @@ export const isPreviewOpen = (parentThreadId: string, agentId: string): boolean 
   openPreviews.has(subagentMemoryKey(parentThreadId, agentId));
 
 export const setPreviewOpen = (parentThreadId: string, agentId: string, open: boolean): void => {
+  if (deletedParents.has(parentThreadId)) return;
   const key = subagentMemoryKey(parentThreadId, agentId);
   if (open) openPreviews.add(key);
   else openPreviews.delete(key);
@@ -62,9 +68,20 @@ export const isPreviewGrown = (parentThreadId: string, agentId: string): boolean
   grownPreviews.has(subagentMemoryKey(parentThreadId, agentId));
 
 export const setPreviewGrown = (parentThreadId: string, agentId: string, grown: boolean): void => {
+  if (deletedParents.has(parentThreadId)) return;
   const key = subagentMemoryKey(parentThreadId, agentId);
   if (grown) grownPreviews.add(key);
   else grownPreviews.delete(key);
+};
+
+export const forgetParentMemory = (parentThreadId: string): void => {
+  deletedParents.add(parentThreadId);
+  const prefix = `${parentThreadId}:`;
+  for (const collection of [transcripts, scroll, openPreviews, grownPreviews]) {
+    for (const key of collection.keys()) {
+      if (key.startsWith(prefix)) collection.delete(key);
+    }
+  }
 };
 
 /** Test seam. */
@@ -73,4 +90,5 @@ export const clearSubagentMemory = (): void => {
   scroll.clear();
   openPreviews.clear();
   grownPreviews.clear();
+  deletedParents.clear();
 };

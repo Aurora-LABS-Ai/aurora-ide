@@ -147,6 +147,8 @@ pub struct TaskRecord {
 
 #[derive(Debug, Clone, Default)]
 struct TaskState {
+    report_required: bool,
+    task_hint: Option<String>,
     status: Option<TaskStatus>,
     ended_at_ms: Option<i64>,
     result: Option<String>,
@@ -175,6 +177,7 @@ pub enum StopBy {
     Parent,
     /// The Agent Window closed with the agent still running.
     WindowClosed,
+    ParentDeleted,
 }
 
 impl TaskRecord {
@@ -196,6 +199,7 @@ impl TaskRecord {
             description: description.into(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             state: Mutex::new(TaskState {
+                report_required: true,
                 status: Some(TaskStatus::Running),
                 runs: 1,
                 background,
@@ -257,6 +261,60 @@ impl TaskRecord {
     #[must_use]
     pub fn submitted_report(&self) -> Option<super::host::SubmittedReport> {
         self.state.lock().ok().and_then(|s| s.submitted.clone())
+    }
+
+    pub fn invalidate_report(&self) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| format!("agent state mutex poisoned: {e}"))?;
+        state.submitted = None;
+        Ok(())
+    }
+
+    pub fn requires_report(&self) -> bool {
+        self.state.lock().map(|s| s.report_required).unwrap_or(true)
+    }
+
+    pub fn task_hint(&self) -> Option<String> {
+        self.state.lock().ok().and_then(|s| s.task_hint.clone())
+    }
+
+    /// An explicit task may arrive while a conversation-only turn is answering.
+    pub fn require_report(&self, task: &str) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|e| format!("agent state mutex poisoned: {e}"))?;
+        if !state.report_required {
+            state.runs = state.runs.saturating_add(1);
+        }
+        state.report_required = true;
+        state.task_hint = Some(task.to_string());
+        state.submitted = None;
+        Ok(())
+    }
+
+    /// Answer a normal message while keeping the previous work result and run count.
+    pub fn resume_message(&self, cancel: CancellationToken) {
+        if let Ok(mut state) = self.state.lock() {
+            state.status = Some(TaskStatus::Running);
+            state.report_required = false;
+            state.task_hint = None;
+            state.stopped_by = None;
+            state.background = true;
+        }
+        if let Ok(mut slot) = self.cancel.lock() {
+            *slot = cancel;
+        }
+        self.notified.store(false, Ordering::SeqCst);
+    }
+
+    pub fn finish_message(&self, previous: &TaskSnapshot, usage: SubagentUsage) {
+        if let Ok(mut state) = self.state.lock() {
+            state.status = Some(previous.status);
+            state.ended_at_ms = previous.ended_at_ms;
+            state.result = previous.result.clone();
+            state.error = previous.error.clone();
+            state.background = previous.background;
+            state.report_required = true;
+            state.usage.add(&usage);
+        }
+        self.finished.notify_waiters();
     }
 
     /// A record rebuilt from an agent's files for one that finished in an
@@ -372,6 +430,8 @@ impl TaskRecord {
     /// cancel token. The old result stays readable until the new run ends.
     pub fn resume(&self, cancel: CancellationToken) {
         if let Ok(mut state) = self.state.lock() {
+            state.report_required = true;
+            state.task_hint = None;
             state.status = Some(TaskStatus::Running);
             state.ended_at_ms = None;
             state.error = None;
@@ -418,14 +478,14 @@ impl TaskRecord {
     /// between an ask and the wait is never missed. Marks the agent as waiting
     /// for the whole hold, so the parent can be told its message was taken at
     /// once.
-    pub async fn wait_for_reply<F>(
+    pub async fn wait_for_reply<F, T>(
         &self,
         timeout: std::time::Duration,
         cancel: &CancellationToken,
         mut take: F,
-    ) -> Option<String>
+    ) -> Option<T>
     where
-        F: FnMut() -> Option<String>,
+        F: FnMut() -> Option<T>,
     {
         struct Waiting<'a>(&'a AtomicBool);
         impl Drop for Waiting<'_> {
@@ -512,12 +572,20 @@ pub struct TaskRegistry {
     /// `(parent thread id, name)` → agent id. A name is the parent's handle;
     /// two parents may each have a `tests` agent.
     names: DashMap<(String, String), String>,
+    /// Serializes accepting messages, resume setup, and committing a finish.
+    lifecycle: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl TaskRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn lock_agent(&self, agent_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.lifecycle.entry(agent_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone();
+        lock.lock_owned().await
     }
 
     pub fn insert(&self, record: Arc<TaskRecord>) {
@@ -689,7 +757,7 @@ mod tests {
 
         // Nothing comes: the time limit ends it, asking once more at the end.
         let asks = AtomicUsize::new(0);
-        let none = r
+        let none: Option<String> = r
             .wait_for_reply(short, &CancellationToken::new(), || {
                 asks.fetch_add(1, Ordering::SeqCst);
                 None
@@ -703,7 +771,7 @@ mod tests {
         cancel.cancel();
         let started = std::time::Instant::now();
         assert!(r
-            .wait_for_reply(std::time::Duration::from_secs(5), &cancel, || None)
+            .wait_for_reply(std::time::Duration::from_secs(5), &cancel, || None::<String>)
             .await
             .is_none());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));

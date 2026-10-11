@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::subagents::host::{ParentTurn, SendOutcome, SubagentError, SubagentHost};
+use crate::agent_runtime::subagents::messaging::ParentMessageKind;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
 use super::required_str;
@@ -43,14 +44,15 @@ impl ToolExecutor for SendMessageTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "send_message".into(),
-            description: "Send a message to a sub-agent you started, by the `name` you gave it or \
-                          its agent id. If it is still running, the message is queued and reaches \
-                          it at its next safe point (between tool calls). If it has finished, it is \
-                          resumed in the background with your message as its next task — it keeps \
-                          everything it knew: its original task, what it did, and its own last \
-                          report. Its report arrives in this conversation when it finishes, as \
-                          before. Works for agents from earlier sessions too; they are picked up \
-                          from disk."
+            description: "Communicate with a sub-agent by name or id, during its work or afterward. \
+                          Choose kind explicitly: message for information, discussion, thanks or \
+                          acknowledgement; reply for an answer to its question; task for new or \
+                          changed work. A running child reads messages at its next safe boundary; \
+                          a held question takes a reply immediately. Message and reply do not \
+                          assign new work. A finished child answers them in a conversation-only \
+                          turn, without file/shell tools or another work report. Its response \
+                          reaches you and can wake you. Only task resumes work with its saved \
+                          tools and requires a fresh report. Works with saved agents too."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -61,10 +63,15 @@ impl ToolExecutor for SendMessageTool {
                     },
                     "message": {
                         "type": "string",
-                        "description": "What to tell it. For a finished agent this is its next task."
+                        "description": "The information, answer, or work instructions to send."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["message", "reply", "task"],
+                        "description": "message: conversation or information, including thanks. reply: answer its question. task: assign or change work and require a new report. Never use task for acknowledgement."
                     }
                 },
-                "required": ["to", "message"]
+                "required": ["to", "message", "kind"]
             }),
         }
     }
@@ -73,6 +80,11 @@ impl ToolExecutor for SendMessageTool {
         ctx.bail_if_cancelled()?;
         let to = required_str(&input, "to")?;
         let message = required_str(&input, "message")?;
+        let kind = match input.get("kind") {
+            None => ParentMessageKind::Message,
+            Some(value) => serde_json::from_value::<ParentMessageKind>(value.clone())
+                .map_err(|_| ToolError::InvalidInput("`kind` must be message, reply or task".into()))?,
+        };
         let parent = ParentTurn {
             thread_id: self.parent.thread_id.clone(),
             turn_id: self.parent.turn_id.clone(),
@@ -82,7 +94,7 @@ impl ToolExecutor for SendMessageTool {
         };
         let outcome = self
             .host
-            .send_message(&parent, &to, &message)
+            .send_message_kind(&parent, &to, &message, kind)
             .await
             .map_err(map_error)?;
         Ok(match outcome {
@@ -97,7 +109,7 @@ impl ToolExecutor for SendMessageTool {
                 "status": "queued",
                 "agentId": agent_id,
                 "hint": "Queued for delivery at the agent's next safe point. Its report will \
-                         include what it did with this."
+                         reflect task instructions. Ordinary messages do not require another work report."
             }))
             .unwrap_or_default(),
             SendOutcome::Resumed {
@@ -119,6 +131,11 @@ impl ToolExecutor for SendMessageTool {
                 }
                 serde_json::to_string_pretty(&body).unwrap_or_default()
             }
+            SendOutcome::Messaging { agent_id } => serde_json::to_string_pretty(&json!({
+                "status": "messaging",
+                "agentId": agent_id,
+                "hint": "The finished agent is answering your message in the background. Its previous work report stays intact. This is conversation only, with no task tools or report reminder. Its response arrives as a message; do other work or end your turn."
+            })).unwrap_or_default(),
         })
     }
 }
@@ -127,6 +144,32 @@ impl ToolExecutor for SendMessageTool {
 mod tests {
     use super::super::test_support::{context, parent_turn, ScriptedHost};
     use super::*;
+
+    #[tokio::test]
+    async fn invalid_message_kinds_are_rejected_before_delivery() {
+        let host = Arc::new(ScriptedHost::default());
+        let parent = parent_turn();
+        let tool = SendMessageTool::new(host.clone(), parent.clone());
+        for kind in [json!("thanks"), json!(null), json!(3), json!(false)] {
+            assert!(tool.execute(json!({"to":"worker", "message":"hello", "kind":kind}), &context(&parent)).await.is_err());
+        }
+        assert!(host.sends.lock().unwrap().is_empty());
+        assert_eq!(tool.schema().input_schema["properties"]["kind"]["enum"], json!(["message", "reply", "task"]));
+    }
+
+    #[tokio::test]
+    async fn purpose_is_explicit_and_legacy_omission_is_a_message() {
+        let host = Arc::new(ScriptedHost::default());
+        let parent = parent_turn();
+        let tool = SendMessageTool::new(host.clone(), parent.clone());
+        for kind in [None, Some("message"), Some("reply"), Some("task")] {
+            *host.next_send.lock().unwrap() = Some(Ok(SendOutcome::Messaging { agent_id: "agent_1".into() }));
+            let mut input = json!({"to":"worker", "message":"Thanks"});
+            if let Some(kind) = kind { input["kind"] = json!(kind); }
+            tool.execute(input, &context(&parent)).await.unwrap();
+        }
+        assert_eq!(*host.message_kinds.lock().unwrap(), [ParentMessageKind::Message, ParentMessageKind::Message, ParentMessageKind::Reply, ParentMessageKind::Task]);
+    }
 
     #[tokio::test]
     async fn queued_and_resumed_are_both_reported_with_the_id() {

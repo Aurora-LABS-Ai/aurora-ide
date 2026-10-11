@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   clearSubagentMemory,
+  forgetParentMemory,
+  recallTranscript,
+  rememberTranscript,
   recallScrollTop,
   rememberScroll,
   subagentMemoryKey,
@@ -29,5 +32,21 @@ describe("subagent tab memory", () => {
   it("is per agent, and knows nothing about a tab never shown", () => {
     rememberScroll(subagentMemoryKey("parent", "a"), scroller(300));
     expect(recallScrollTop(subagentMemoryKey("parent", "b"))).toBeNull();
+  });
+
+  it("forgets only the deleted parent and rejects a late transcript read", () => {
+    const key = subagentMemoryKey("parent", "agent");
+    const other = subagentMemoryKey("other", "agent");
+    const thread = { id: "agent", title: "Agent", summary: null, messages: [],
+      created_at: "2026-10-10T00:00:00Z", updated_at: "2026-10-10T00:00:00Z" };
+    rememberTranscript(key, thread);
+    rememberTranscript(other, thread);
+    rememberScroll(key, scroller(300));
+    forgetParentMemory("parent");
+    expect(recallTranscript(key)).toBeUndefined();
+    expect(recallTranscript(other)).toBe(thread);
+    expect(recallScrollTop(key)).toBeNull();
+    rememberTranscript(key, thread);
+    expect(recallTranscript(key)).toBeUndefined();
   });
 });

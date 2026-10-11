@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
-use crate::agent_runtime::subagents::host::{MessageDelivery, ParentMessenger, SubagentError};
+use crate::agent_runtime::subagents::host::{MessageDelivery, ParentMessenger, ParentResponse, SubagentError};
+use crate::agent_runtime::subagents::messaging::ChildMessageKind;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 
 use super::required_str;
@@ -43,21 +44,25 @@ impl ToolExecutor for MessageParentTool {
     }
 
     fn concurrency_safe(&self) -> bool {
-        true
+        false // A held question has one answer consumer.
     }
 
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: MESSAGE_PARENT_TOOL.into(),
             description: format!(
-                "Send a message to the parent agent that started you. Use it the moment you are \
+                "Your one tool for communicating with the parent during work. Choose kind: \
+                 question for an answer or decision, message for useful information, reply \
+                 to answer the parent. Every kind reaches and wakes an idle parent. Use it the moment you are \
                  blocked or the task cannot be done as asked: a tool you need and do not have \
                  (say which), a file or path that does not exist, a contradiction in the brief, \
-                 a decision only the parent can make. Be specific and short. Not for progress \
-                 updates, and not for your final report (that is submit_report).\n\n\
+                 a decision only the parent can make. Be specific and short. Avoid routine progress \
+                 chatter. Work results belong in submit_report. Do not repeat a submitted report \
+                 to acknowledge thanks.\n\n\
                  Set waitForReply: true when you cannot continue without the answer: the call \
                  holds for up to {} minutes and returns the parent's answer as its result. \
-                 Leave it off when you only need the parent to know and can carry on; its \
+                 Questions wait by default; set false when you can carry on. Only questions \
+                 can wait. Leave it off when you only need the parent to know; its \
                  answer then arrives later as a message.",
                 crate::agent_runtime::subagents::WAIT_FOR_REPLY_SECS / 60
             ),
@@ -70,10 +75,15 @@ impl ToolExecutor for MessageParentTool {
                     },
                     "waitForReply": {
                         "type": "boolean",
-                        "description": "Hold for the parent's answer and get it back as this call's result. For questions you cannot continue without."
+                        "description": "For questions: wait for the parent's answer, default true. Set false if you can continue. Only explicit parent replies satisfy the wait."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["message", "question", "reply"],
+                        "description": "question: ask for an answer or decision. message: pass information. reply: answer the parent. All reach and can wake the parent."
                     }
                 },
-                "required": ["message"]
+                "required": ["message", "kind"]
             }),
         }
     }
@@ -81,10 +91,21 @@ impl ToolExecutor for MessageParentTool {
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
         let message = required_str(&input, "message")?;
-        let wait = input.get("waitForReply").and_then(Value::as_bool) == Some(true);
+        let explicit_wait = input.get("waitForReply").map(|value| value.as_bool()
+            .ok_or_else(|| ToolError::InvalidInput("`waitForReply` must be a boolean".into()))).transpose()?;
+        let kind = match input.get("kind") {
+            None if explicit_wait == Some(true) => ChildMessageKind::Question,
+            None => ChildMessageKind::Message,
+            Some(value) => serde_json::from_value::<ChildMessageKind>(value.clone())
+                .map_err(|_| ToolError::InvalidInput("`kind` must be message, question or reply".into()))?,
+        };
+        let wait = explicit_wait.unwrap_or(kind == ChildMessageKind::Question);
+        if wait && kind != ChildMessageKind::Question {
+            return Err(ToolError::InvalidInput("only kind question can wait for a reply".into()));
+        }
         let delivery = self
             .messenger
-            .message_parent(&message, wait)
+            .message_parent_kind(&message, kind, wait)
             .map_err(|e| match e {
                 SubagentError::Invalid(msg) => ToolError::InvalidInput(msg),
                 other => ToolError::Execution(other.to_string()),
@@ -96,14 +117,20 @@ impl ToolExecutor for MessageParentTool {
             // run with a second report.
             let timeout =
                 std::time::Duration::from_secs(crate::agent_runtime::subagents::WAIT_FOR_REPLY_SECS);
-            let reply = self.messenger.wait_for_reply(timeout, &ctx.cancel_token).await;
+            let reply = self.messenger.wait_for_response(timeout, &ctx.cancel_token).await;
             ctx.bail_if_cancelled()?;
             let body = match reply {
-                Some(answer) => json!({
+                Some(ParentResponse::Answer(answer)) => json!({
                     "delivered": delivery,
                     "answered": true,
                     "reply": answer,
-                    "hint": "The parent answered (`reply`). Continue with it.",
+                    "hint": "The parent answered (`reply`). Continue this conversation with its answer.",
+                }),
+                Some(ParentResponse::TaskChanged) => json!({
+                    "delivered": delivery,
+                    "answered": false,
+                    "taskChanged": true,
+                    "hint": "The parent sent new task instructions. The question wait has ended; read those instructions at the next tool boundary and follow the changed assignment. Do not keep waiting for the old answer."
                 }),
                 None => json!({
                     "delivered": delivery,
@@ -119,12 +146,12 @@ impl ToolExecutor for MessageParentTool {
         }
         let hint = match delivery {
             MessageDelivery::QueuedIntoTurn => {
-                "Delivered: the parent is working and reads it at its next step. Its answer \
-                 arrives as a message in this conversation. Carry on meanwhile."
+                "Delivered: the parent is working and reads it at its next step. If an answer \
+                 is needed, it arrives as a reply. Carry on meanwhile."
             }
             MessageDelivery::WokeParent => {
-                "Delivered: the parent was idle and has been woken with it. Its answer arrives \
-                 as a message in this conversation. Carry on meanwhile."
+                "Delivered: the parent was idle and has been woken with it. If an answer is \
+                 needed, it arrives as a reply. Carry on meanwhile."
             }
         };
         Ok(serde_json::to_string_pretty(&json!({
@@ -145,12 +172,14 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         sent: Mutex<Vec<String>>,
+        waits: Mutex<Vec<bool>>,
         delivery: Mutex<Option<MessageDelivery>>,
     }
 
     impl ParentMessenger for Recorder {
-        fn message_parent(&self, text: &str, _waiting: bool) -> Result<MessageDelivery, SubagentError> {
+        fn message_parent(&self, text: &str, waiting: bool) -> Result<MessageDelivery, SubagentError> {
             self.sent.lock().unwrap().push(text.to_string());
+            self.waits.lock().unwrap().push(waiting);
             Ok(self
                 .delivery
                 .lock()
@@ -164,6 +193,36 @@ mod tests {
         ) -> Result<bool, SubagentError> {
             Ok(false)
         }
+    }
+
+    #[tokio::test]
+    async fn invalid_kinds_and_non_question_waits_are_rejected_before_delivery() {
+        let recorder = Arc::new(Recorder::default());
+        let tool = MessageParentTool::new(recorder.clone());
+        let parent = parent_turn();
+        for input in [
+            json!({"message":"hello", "kind":"task"}),
+            json!({"message":"hello", "kind":"reply", "waitForReply":true}),
+            json!({"message":"hello", "kind":"message", "waitForReply":true}),
+            json!({"message":"hello", "kind":"question", "waitForReply":"yes"}),
+        ] {
+            assert!(tool.execute(input, &context(&parent)).await.is_err());
+        }
+        assert!(recorder.sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_kind_can_wake_an_idle_parent_and_only_questions_wait_by_default() {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.delivery.lock().unwrap() = Some(MessageDelivery::WokeParent);
+        let tool = MessageParentTool::new(recorder.clone());
+        let parent = parent_turn();
+        for kind in ["message", "question", "reply"] {
+            let result = tool.execute(json!({"message":"hello", "kind":kind}), &context(&parent)).await.unwrap();
+            let parsed: Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(parsed["delivered"], "woke_parent");
+        }
+        assert_eq!(*recorder.waits.lock().unwrap(), [false, true, false]);
     }
 
     #[tokio::test]

@@ -1541,40 +1541,10 @@ pub async fn thread_delete(
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let registry = registry.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let Some(store) = registry
-            .store_for_thread(&thread_id)
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok(());
-        };
-        // Drop it from the search index BEFORE the folder goes. Left behind, the
-        // index would keep returning hits for a conversation that can no longer be
-        // opened — a worse failure than a missing one, because it looks like a bug
-        // in `recall` rather than like a deleted chat.
-        //
-        // Its FACTS are deliberately untouched: a fact is about the user, not about
-        // the conversation that happened to teach it.
-        if store.dir() == registry.chat_store().dir() {
-            if let Some(memory) = crate::chat_memory::service() {
-                let _ = memory.forget_chat(&thread_id);
-            }
-        }
-        store
-            .delete(&thread_id)
-            .map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
-        emit(
-            &app,
-            "thread-deleted",
-            &ThreadDeletedPayload {
-                thread_id: thread_id.clone(),
-            },
-        );
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("Thread operation failed: {e}"))?
+    crate::commands::agent_v2::delete_conversation(registry.inner().clone(), thread_id.clone())
+        .await.map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
+    emit(&app, "thread-deleted", &ThreadDeletedPayload { thread_id });
+    Ok(())
 }
 
 /// List threads newest-first.

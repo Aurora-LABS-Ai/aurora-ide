@@ -91,6 +91,8 @@ pub struct SpawnRequest {
     pub background: bool,
     /// A handle the parent can address later, instead of the id.
     pub name: Option<String>,
+    /// Exact task-tool grant. `None` uses the definition's defaults; empty means no task tools.
+    pub tools: Option<Vec<String>>,
 }
 
 /// What the parent gets back.
@@ -175,7 +177,7 @@ pub trait ProviderLookup: Send + Sync + 'static {
     fn models(&self) -> Result<Vec<ModelChoice>, String>;
 
     /// Build the provider snapshot for `providerId:modelKey`.
-    fn resolve(&self, pin: &str) -> Result<ResolvedModel, String>;
+    fn resolve(&self, pin: &str, thinking_preference: bool) -> Result<ResolvedModel, SubagentError>;
 }
 
 /// What `send_message` did.
@@ -200,6 +202,10 @@ pub enum SendOutcome {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// A finished child's conversation is answering, without restarting its work.
+    Messaging {
+        agent_id: String,
+    },
 }
 
 /// How a child's mid-run message reached the parent.
@@ -211,6 +217,12 @@ pub enum MessageDelivery {
     QueuedIntoTurn,
     /// The parent was idle; the window starts a turn with the message.
     WokeParent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParentResponse {
+    Answer(String),
+    TaskChanged,
 }
 
 /// How far a child got, in its own words (`submit_report`'s `outcome`).
@@ -275,6 +287,10 @@ pub trait ParentMessenger: Send + Sync + 'static {
     /// answer, so the parent is told to reply now.
     fn message_parent(&self, text: &str, waiting: bool) -> Result<MessageDelivery, SubagentError>;
 
+    fn message_parent_kind(&self, text: &str, _kind: super::messaging::ChildMessageKind, waiting: bool) -> Result<MessageDelivery, SubagentError> {
+        self.message_parent(text, waiting)
+    }
+
     /// Hold for the parent's answer to a `message_parent` call, up to
     /// `timeout`. `None` when nothing came, or `cancel` fired. An answer taken
     /// here is consumed: it does not arrive a second time as a message.
@@ -284,6 +300,11 @@ pub trait ParentMessenger: Send + Sync + 'static {
         _cancel: &CancellationToken,
     ) -> Option<String> {
         None
+    }
+
+    /// A task update releases a held question without masquerading as its answer.
+    async fn wait_for_response(&self, timeout: std::time::Duration, cancel: &CancellationToken) -> Option<ParentResponse> {
+        self.wait_for_reply(timeout, cancel).await.map(ParentResponse::Answer)
     }
 
     /// Hold `report` as this run's report. Delivered when the run ends, not
@@ -361,6 +382,22 @@ pub trait SubagentHost: Send + Sync + 'static {
         to: &str,
         message: &str,
     ) -> Result<SendOutcome, SubagentError>;
+
+    /// Typed messaging. Legacy internal callers retain task semantics; the model-facing tool
+    /// always selects a purpose and defaults an omitted purpose to an ordinary message.
+    async fn send_message_kind(
+        &self,
+        parent: &ParentTurn,
+        to: &str,
+        message: &str,
+        kind: super::messaging::ParentMessageKind,
+    ) -> Result<SendOutcome, SubagentError> {
+        if kind == super::messaging::ParentMessageKind::Task {
+            self.send_message(parent, to, message).await
+        } else {
+            Err(SubagentError::Invalid("this host does not support conversational messages".into()))
+        }
+    }
 
     /// One agent's state, waiting up to `wait` for it to finish when asked.
     /// Only a look: a finished agent's report still reaches the parent as a

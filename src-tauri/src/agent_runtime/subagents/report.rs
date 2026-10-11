@@ -46,6 +46,7 @@ fn stop_line(by: Option<StopBy>) -> &'static str {
         }
         Some(StopBy::Parent) => "You stopped it with stop_agent.\n",
         Some(StopBy::WindowClosed) => "It was stopped because the Aurora window closed.\n",
+        Some(StopBy::ParentDeleted) => "It was stopped because its parent conversation was deleted.\n",
         None => "It was stopped when your turn was stopped.\n",
     }
 }
@@ -221,7 +222,7 @@ pub fn build(
     }
     detail.push_str(&format!("\nTranscript: {output_file}\n"));
     detail.push_str(&format!(
-        "To continue this agent with more work, call send_message with to=\"{}\".\n",
+        "To continue this agent with more work, call send_message with to=\"{}\" and kind=\"task\". Use kind=\"message\" for conversation or thanks, which does not require another work report.\n",
         name.unwrap_or(agent_id)
     ));
     detail.push_str("</subagent_report>");
@@ -240,17 +241,31 @@ pub fn message(
     text: &str,
     waiting: bool,
 ) -> Report {
+    message_with_kind(agent_id, name, agent_type, description, text,
+        if waiting { super::messaging::ChildMessageKind::Question } else { super::messaging::ChildMessageKind::Message }, waiting)
+}
+
+pub fn message_with_kind(
+    agent_id: &str,
+    name: Option<&str>,
+    agent_type: &str,
+    description: &str,
+    text: &str,
+    kind: super::messaging::ChildMessageKind,
+    waiting: bool,
+) -> Report {
     let handle = name.map_or_else(|| agent_id.to_string(), |n| format!("{n} ({agent_id})"));
     let who = name.unwrap_or(description);
     let to = name.unwrap_or(agent_id);
-    let summary = if waiting {
-        format!("Question from \"{who}\"")
-    } else {
-        format!("Message from \"{who}\"")
+    let label = match kind {
+        super::messaging::ChildMessageKind::Question => "Question",
+        super::messaging::ChildMessageKind::Message => "Message",
+        super::messaging::ChildMessageKind::Reply => "Reply",
     };
+    let summary = format!("{label} from \"{who}\"");
     let waiting_attr = if waiting { " waiting=\"true\"" } else { "" };
     let mut detail = format!(
-        "<subagent_message agent=\"{handle}\" type=\"{agent_type}\" status=\"running\"{waiting_attr}>\n"
+        "<subagent_message agent=\"{handle}\" type=\"{agent_type}\" status=\"running\"{waiting_attr} kind=\"{}\">\n", kind.as_str()
     );
     if waiting {
         detail.push_str(&format!(
@@ -258,7 +273,7 @@ pub fn message(
             text.trim()
         ));
         detail.push_str(&format!(
-            "It cannot ask the user. Answer it with send_message to=\"{to}\" now: it is holding \
+            "It cannot ask the user. Answer it with send_message to=\"{to}\" kind=\"reply\" now: it is holding \
              for your reply for up to {} minutes, and your answer reaches it at once. Without \
              an answer it carries on with what it can.\n",
             super::WAIT_FOR_REPLY_SECS / 60
@@ -269,12 +284,22 @@ pub fn message(
             text.trim()
         ));
         detail.push_str(&format!(
-            "It cannot ask the user. Answer it with send_message to=\"{to}\"; it keeps working \
+            "It cannot ask the user. Answer it with send_message to=\"{to}\" kind=\"reply\" if it asked a question; otherwise no reply is required. It keeps working \
              meanwhile and will still send its report when it finishes.\n"
         ));
     }
     detail.push_str("</subagent_message>");
     Report { summary, detail }
+}
+
+/// A finished child can answer a message without submitting its old work again.
+pub fn conversation_reply(agent_id: &str, name: Option<&str>, agent_type: &str, description: &str, text: &str) -> Report {
+    let who = name.unwrap_or(description);
+    let handle = name.map_or_else(|| agent_id.to_string(), |n| format!("{n} ({agent_id})"));
+    Report {
+        summary: format!("Reply from \"{who}\""),
+        detail: format!("<subagent_message agent=\"{handle}\" type=\"{agent_type}\" kind=\"reply\">\nSub-agent \"{description}\" replies to your message:\n\n{}\n\nThis is a conversation reply, not a new work report. No response is required unless it asks a question.\n</subagent_message>", text.trim()),
+    }
 }
 
 #[cfg(test)]
@@ -301,7 +326,7 @@ mod tests {
         assert_eq!(r.summary, "Question from \"prober\"");
         assert!(r.detail.contains("waiting=\"true\""));
         assert!(r.detail.contains("is paused, waiting for your answer"));
-        assert!(r.detail.contains("send_message to=\"prober\" now"));
+        assert!(r.detail.contains("send_message to=\"prober\" kind=\"reply\" now"));
         assert!(r.detail.contains("up to 2 minutes"));
         // The window strips this line from the card by its opening words.
         assert!(r.detail.contains("\nIt cannot ask the user. Answer it with send_message"));

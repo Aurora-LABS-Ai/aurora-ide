@@ -17,6 +17,20 @@ To continue this agent with more work, call send_message with to="scout".
 </subagent_report>`;
 
 describe("reportBody", () => {
+  it("shows an acknowledgement without presenting it as another work report", () => {
+    const reply = `<subagent_message agent="worker (agent_1)" type="general-purpose" kind="reply">
+Sub-agent "Fix the home page" replies to your message:
+
+Thank you. No further work needed.
+
+This is a conversation reply, not a new work report. No response is required unless it asks a question.
+</subagent_message>`;
+    expect(reportBody(reply)).toEqual({
+      body: "Thank you. No further work needed.",
+      meta: null,
+      outcome: null,
+    });
+  });
   it("puts a submitted report's summary first and drops the labels", () => {
     const { body, meta, outcome } = reportBody(submitted);
     expect(outcome).toBe("partial");

@@ -89,6 +89,11 @@ impl ToolExecutor for SpawnAgentTool {
                         "type": "string",
                         "description": "providerId:modelKey to run the agent on, from list_models. Default: the user's sub-agent model setting, else this conversation's model."
                     },
+                    "tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact native task tools for this child. Omit for the type's defaults; [] gives only message_parent and submit_report. Tools must fit the selected type's allowed tools and the current user's access. The grant is saved and kept on resume. MCP and skill tools cannot be granted yet."
+                    },
                     "name": {
                         "type": "string",
                         "description": "A short handle (letters, digits, - or _) to address this agent later with send_message and get_task_output, instead of its id."
@@ -107,6 +112,14 @@ impl ToolExecutor for SpawnAgentTool {
         let agent_type = optional_str(&input, "agentType");
         let model = optional_str(&input, "model");
         let name = optional_str(&input, "name");
+        let tools = match input.get("tools") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(items)) => Some(items.iter().map(|item| {
+                item.as_str().map(str::trim).filter(|name| !name.is_empty())
+                    .map(str::to_string).ok_or_else(|| ToolError::InvalidInput("`tools` entries must be non-empty strings".into()))
+            }).collect::<Result<Vec<_>, _>>()?),
+            _ => return Err(ToolError::InvalidInput("`tools` must be an array of tool names".into())),
+        };
         if let Some(name) = name.as_deref() {
             if !name
                 .chars()
@@ -126,6 +139,7 @@ impl ToolExecutor for SpawnAgentTool {
             // Always. See the module note.
             background: true,
             name: name.clone(),
+            tools,
         };
 
         // The parent turn the tool was built for, with THIS call's cancel
@@ -242,6 +256,22 @@ mod tests {
         assert_eq!(parsed["status"], "started");
         assert!(parsed["hint"].as_str().unwrap().contains("to=\"agent_bg\""));
         assert!(host.spawns.lock().unwrap()[0].background);
+    }
+
+    #[tokio::test]
+    async fn explicit_tool_grants_are_forwarded_and_bad_shapes_are_rejected() {
+        let host = launching("agent_granted");
+        let parent = parent_turn();
+        let tool = SpawnAgentTool::new(host.clone(), parent.clone());
+        tool.execute(json!({"description": "Task", "prompt": "Work", "tools": ["file_read", "grep"]}),
+            &context(&parent)).await.unwrap();
+        assert_eq!(host.spawns.lock().unwrap()[0].tools, Some(vec!["file_read".into(), "grep".into()]));
+        for value in [json!("file_read"), json!(["file_read", 7]), json!([""])] {
+            assert!(matches!(tool.execute(json!({"description": "Task", "prompt": "Work", "tools": value}),
+                &context(&parent)).await, Err(ToolError::InvalidInput(_))));
+        }
+        assert_eq!(host.spawns.lock().unwrap().len(), 1);
+        assert_eq!(tool.schema().input_schema["properties"]["tools"]["type"], "array");
     }
 
     #[tokio::test]

@@ -136,6 +136,8 @@ pub fn enqueue_into(
 
 #[derive(Debug, Clone)]
 pub struct QueuedUserMessage {
+    /// Present only for parent-to-child communication. Replies alone satisfy a reply waiter.
+    pub subagent_kind: Option<super::subagents::messaging::ParentMessageKind>,
     /// The model-facing text: what the user typed (including serialized
     /// `@path` mentions) plus any `<steering_context>` block the composer
     /// resolved from staged `/` directives (rules verbatim, skill
@@ -1280,6 +1282,7 @@ mod tests {
 
     fn queued(origin: crate::agent_runtime::types::InjectedOrigin, text: &str) -> QueuedUserMessage {
         QueuedUserMessage {
+            subagent_kind: None,
             text: text.into(),
             display_text: None,
             chips: None,

@@ -1,7 +1,7 @@
 //! Agent definitions — the templates a sub-agent is started from.
 //!
 //! A definition is a name, a description the parent reads when choosing, a
-//! system prompt, the tools the child may call, and optionally a model. Three
+//! system prompt, default tools, a capability ceiling, and optionally a model. Five
 //! ship built in; the user adds more as one Markdown file each under
 //! `~/.aurora/agents/`, in the shape skills already use:
 //!
@@ -70,7 +70,7 @@ pub const NEVER_FOR_CHILDREN: &[&str] = &[
     "call_tool",
 ];
 
-/// The general-purpose roster: files, search, shell, and the code index.
+/// The original file/shell roster, retained for legacy grants and custom defaults.
 ///
 /// This is the contract's "read, search, file edit, file write, shell, and
 /// nothing else to start with", plus `code`, which is how Aurora searches a
@@ -117,6 +117,8 @@ pub struct AgentDefinition {
     /// Tools the child may call, already filtered against
     /// [`NEVER_FOR_CHILDREN`]. Order is the roster order.
     pub tools: Vec<String>,
+    /// Capability ceiling. A per-spawn grant may narrow this, never exceed it.
+    pub allowed_tools: Vec<String>,
     /// `providerId:modelKey` the child should run on, when the definition
     /// pins one. `None` defers to the parent's choice.
     pub model: Option<String>,
@@ -127,15 +129,16 @@ impl AgentDefinition {
     /// Whether this definition lets its child call `tool`.
     #[must_use]
     pub fn allows(&self, tool: &str) -> bool {
-        !NEVER_FOR_CHILDREN.contains(&tool) && self.tools.iter().any(|t| t == tool)
+        !NEVER_FOR_CHILDREN.contains(&tool) && self.allowed_tools.iter().any(|t| t == tool)
     }
 
-    fn built_in(name: &str, description: &str, prompt: &str, tools: &[&str]) -> Self {
+    fn built_in(name: &str, description: &str, prompt: &str, tools: &[&str], allowed: &[&str]) -> Self {
         Self {
             name: name.to_string(),
             description: description.to_string(),
             system_prompt: prompt.trim().to_string(),
             tools: filter_tools(tools.iter().map(|t| (*t).to_string())),
+            allowed_tools: filter_tools(allowed.iter().map(|t| (*t).to_string())),
             model: None,
             source: DefinitionSource::BuiltIn,
         }
@@ -198,28 +201,55 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// The three built-ins and nothing else.
+    /// The five built-ins and nothing else.
     #[must_use]
     pub fn built_in() -> Self {
         let mut catalog = Self::default();
+        let mut general = GENERAL_PURPOSE_TOOLS.to_vec();
+        general.extend(["auroro_websearch", "design_guidelines"]);
+        let mut general_allowed = general.clone();
+        general_allowed.push("canvas_guidelines");
+        let mut research = READ_ONLY_TOOLS.to_vec();
+        research.push("auroro_websearch");
+        let mut read_allowed = research.clone();
+        read_allowed.extend(["design_guidelines", "canvas_guidelines"]);
+        let mut verifier = READ_ONLY_TOOLS.to_vec();
+        verifier.extend(["shell_execute", "shell_spawn", "shell_kill", "shell_list_processes", "shell_read_output"]);
         for def in [
             AgentDefinition::built_in(
                 DEFAULT_AGENT_TYPE,
-                "Does one coding task end to end: read, change, run, report. Full file and shell access.",
+                "Does one coding task end to end, with files, shell, web research and design guidance.",
                 GENERAL_PURPOSE_PROMPT,
-                GENERAL_PURPOSE_TOOLS,
+                &general,
+                &general_allowed,
             ),
             AgentDefinition::built_in(
                 "explore",
                 "Answers a question about the codebase by reading it. Read-only.",
                 EXPLORE_PROMPT,
                 READ_ONLY_TOOLS,
+                &read_allowed,
             ),
             AgentDefinition::built_in(
                 "reviewer",
                 "Reviews a change and reports problems in order of severity. Read-only.",
                 REVIEWER_PROMPT,
                 READ_ONLY_TOOLS,
+                &read_allowed,
+            ),
+            AgentDefinition::built_in(
+                "researcher",
+                "Researches source code and official web documentation. No file editing or shell tools.",
+                "You research one question using source code and primary documentation. Cite real file locations and source URLs. Distinguish facts from inference, record uncertainty, and never invent findings.",
+                &research,
+                &read_allowed,
+            ),
+            AgentDefinition::built_in(
+                "verifier",
+                "Runs tests, builds and checks, then reports commands, results and failures. No file editing tools.",
+                "You verify one implementation. Read the project instructions and relevant code, run the actual checks, and report the commands, exit codes and useful output. Do not fix source code or change scope. Stop processes you started before submitting your report. A passing command proves only what it checked.",
+                &verifier,
+                &verifier,
             ),
         ] {
             catalog.by_name.insert(def.name.clone(), def);
@@ -309,7 +339,8 @@ impl Catalog {
     #[must_use]
     pub fn describe(&self) -> String {
         self.iter()
-            .map(|def| format!("- `{}`: {}", def.name, def.description))
+            .map(|def| format!("- `{}`: {} Default tools: {}. Allowed tools: {}.",
+                def.name, def.description, def.tools.join(", "), def.allowed_tools.join(", ")))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -368,11 +399,18 @@ fn parse_definition_file(path: &Path, text: &str) -> Result<AgentDefinition, Str
         .get("model")
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty());
+    let allowed_tools = fields.get("allowed-tools").map(|list| {
+        filter_tools(list.split(',').map(str::to_string))
+    }).unwrap_or_else(|| tools.clone());
+    if tools.iter().any(|tool| !allowed_tools.contains(tool)) {
+        return Err("`allowed-tools` must include every default tool named in `tools`".into());
+    }
     Ok(AgentDefinition {
         name,
         description,
         system_prompt: prompt.to_string(),
         tools,
+        allowed_tools,
         model,
         source: DefinitionSource::User(path.to_path_buf()),
     })
@@ -406,7 +444,7 @@ mod tests {
     #[test]
     fn built_ins_exist_and_never_carry_forbidden_tools() {
         let catalog = Catalog::built_in();
-        assert_eq!(catalog.names(), vec!["explore", "general-purpose", "reviewer"]);
+        assert_eq!(catalog.names(), vec!["explore", "general-purpose", "researcher", "reviewer", "verifier"]);
         for def in catalog.iter() {
             for tool in &def.tools {
                 assert!(
@@ -464,14 +502,14 @@ mod tests {
         assert_eq!(docs.tools, GENERAL_PURPOSE_TOOLS);
 
         assert!(catalog.get("broken").is_none());
-        assert_eq!(catalog.names().len(), 4);
+        assert_eq!(catalog.names().len(), 6);
     }
 
     #[test]
     fn a_missing_user_dir_is_just_the_built_ins() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = Catalog::load(&dir.path().join("does-not-exist"));
-        assert_eq!(catalog.names().len(), 3);
+        assert_eq!(catalog.names().len(), 5);
     }
 
     #[test]

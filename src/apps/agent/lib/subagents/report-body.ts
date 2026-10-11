@@ -61,6 +61,7 @@ export function reportBody(detail: string): ReportBody {
     if (/^Transcript:\s/.test(line)) continue;
     if (/^To continue this agent/.test(line)) continue;
     if (/^It cannot ask the user\. Answer it with send_message/.test(line)) continue;
+    if (/^This is a conversation reply, not a new work report\./.test(line)) continue;
     if (!inBody) {
       if (/^(?:Report|Last message):\s*$/i.test(line)) {
         inBody = true;

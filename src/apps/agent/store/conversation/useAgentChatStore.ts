@@ -22,6 +22,9 @@ import { create } from "zustand";
 import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
+import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
+import { toast } from "@/apps/agent/store/ui/useAgentToastStore";
+import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
 import {
   recentSurfaceThread,
@@ -615,6 +618,13 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       await threadService.deleteThread(id);
     } catch (err) {
       console.error(`[agent-chat] failed to delete chat ${id}:`, err);
+      toast("Could not finish deleting the chat. Stop its work and try again.", { tone: "error" });
+      return;
+    }
+    useAgentSubagentStore.getState().forget(id);
+    const workspace = useAgentWorkspaceStore.getState();
+    for (const tab of workspace.tabs) {
+      if (tab.kind === "agent" && tab.parentThreadId === id) workspace.closeTab(tab.id);
     }
     set((state) => ({
       threads: state.threads.filter((t) => t.id !== id),

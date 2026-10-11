@@ -207,12 +207,14 @@ impl<E: EventEmitter + ?Sized> BridgeEmitter for E {
 
 mod registry;
 mod subagent_host;
+mod lifecycle;
 #[cfg(test)]
 mod tests;
 mod tool_policy;
 mod turn_driver;
 
 pub use registry::*;
+pub use lifecycle::delete_conversation;
 pub use subagent_host::*;
 use tool_policy::*;
 pub use turn_driver::*;

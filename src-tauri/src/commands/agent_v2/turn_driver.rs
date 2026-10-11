@@ -69,6 +69,7 @@ pub(crate) enum TurnKind {
     /// record's own for a background agent. The driver must not mint its
     /// own, or Stop on the parent would never reach the child.
     Child {
+        report_required: bool,
         allow: Vec<String>,
         cancel: CancellationToken,
         /// The run's way back to its parent, for `message_parent`. `None`
@@ -219,6 +220,13 @@ impl<E: EventEmitter> TurnDriver<E> {
         let mut request = request.scoped_to_mode();
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
+        let admission = loop {
+            let admission = self.registry.subagent_tasks().lock_agent(&thread_id).await;
+            self.registry.ensure_thread_live(&thread_id)?;
+            if !self.registry.is_turn_active(&thread_id) { break admission; }
+            drop(admission);
+            self.registry.wait_thread_idle(&thread_id).await;
+        };
 
         let store = self.registry.store_for_conversation(
             request.execution_mode,
@@ -246,8 +254,6 @@ impl<E: EventEmitter> TurnDriver<E> {
             .api_factory()
             .build(&request.provider_config)?;
         let cancel_token = CancellationToken::new();
-        self.registry
-            .register_in_flight(turn_id.clone(), cancel_token.clone());
 
         let runtime = with_compaction_model(
             ConversationRuntime::new(
@@ -276,6 +282,9 @@ impl<E: EventEmitter> TurnDriver<E> {
             &request,
         )?;
 
+        self.registry.register_in_flight(turn_id.clone(), cancel_token.clone());
+        self.registry.mark_turn_active(&thread_id, &turn_id);
+        drop(admission);
         let (event_tx, mut event_rx) = mpsc::channel::<AgentEventEnvelope>(64);
         let emitter_for_task = self.emitter.clone();
         let forwarder = tokio::spawn(async move {
@@ -320,6 +329,8 @@ impl<E: EventEmitter> TurnDriver<E> {
 
         self.registry.unregister_in_flight(&turn_id);
         self.registry.bridge_router().drop_turn(&turn_id);
+        self.registry.clear_turn_active(&thread_id, &turn_id);
+        self.sweep_leftover_reports(&thread_id);
 
         Ok(result)
     }
@@ -379,19 +390,30 @@ impl<E: EventEmitter> TurnDriver<E> {
 
         // 1. Resolve the session (cache → disk → fresh).
         let session_arc = self.registry.load_session_from_store(&thread_id, &store)?;
-        {
-            let mut session = session_arc.lock().await;
-            if request.execution_mode.is_chat() {
-                store.clear_chat_workspace_root(&thread_id)?;
-                session.workspace_root = None;
-                request.workspace_path = None;
-            } else if session.workspace_root.is_none() {
-                session.workspace_root = request.workspace_path.clone();
+        let admission = loop {
+            let admission = self.registry.subagent_tasks().lock_agent(&thread_id).await;
+            self.registry.ensure_thread_live(&thread_id)?;
+            if self.registry.is_turn_active(&thread_id) {
+                drop(admission);
+                self.registry.wait_thread_idle(&thread_id).await;
+                continue;
             }
-            if !request.execution_mode.is_chat() {
-                request.workspace_path = session.workspace_root.clone();
+            if let Ok(mut session) = session_arc.try_lock() {
+                if request.execution_mode.is_chat() {
+                    store.clear_chat_workspace_root(&thread_id)?;
+                    session.workspace_root = None;
+                    request.workspace_path = None;
+                } else if session.workspace_root.is_none() {
+                    session.workspace_root = request.workspace_path.clone();
+                }
+                if !request.execution_mode.is_chat() {
+                    request.workspace_path = session.workspace_root.clone();
+                }
+                break admission;
             }
-        }
+            drop(admission);
+            drop(session_arc.lock().await);
+        };
 
         // 2. Build the API client BEFORE registering the cancel token —
         //    if the factory fails we don't want a stale `in_flight`
@@ -417,6 +439,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         // From here until step 10 a sub-agent finishing can queue its report
         // into this turn instead of waking the conversation.
         self.registry.mark_turn_active(&thread_id, &turn_id);
+        drop(admission);
 
         // 3. Build the per-turn ToolRegistry. Start with the
         //    registry-level base (empty in Phase 2.3) and overlay one
@@ -430,8 +453,8 @@ impl<E: EventEmitter> TurnDriver<E> {
         //    mode plans, Chat has no workspace to delegate in.
         let scope = match kind {
             TurnKind::Child {
-                allow, messenger, ..
-            } => ToolScope::Child { allow, messenger },
+                allow, messenger, report_required, ..
+            } => ToolScope::Child { allow, messenger, report_required },
             TurnKind::Conversation
                 if request.subagents_enabled.unwrap_or(false)
                     && request.execution_mode == AgentExecutionMode::Agent =>
@@ -485,11 +508,15 @@ impl<E: EventEmitter> TurnDriver<E> {
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
         //    every per-turn override the request carries.
+        let mut runtime_config = build_runtime_config(&request);
+        if matches!(&scope, ToolScope::Child { report_required: false, .. }) {
+            runtime_config.max_iterations = Some(crate::agent_runtime::subagents::messaging::MESSAGE_MAX_ITERATIONS);
+        }
         let runtime = with_compaction_model(
             ConversationRuntime::new(
                 api_client,
                 Arc::new(per_turn_tools),
-                build_runtime_config(&request),
+                runtime_config,
             )
             // Oversized tool output lands beside the thread rather than being
             // clamped away, so the model can read the part it needs back.

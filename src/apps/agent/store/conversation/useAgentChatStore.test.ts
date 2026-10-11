@@ -3,15 +3,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbThread, ThreadSummary } from "@/apps/agent/services/threads/thread-service";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
+import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 
-const { listThreadsMock } = vi.hoisted(() => ({
+const { listThreadsMock, deleteThreadMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn<(_root: string | null, _surface: "chat" | "build") => Promise<ThreadSummary[]>>(async () => []),
+  deleteThreadMock: vi.fn<(id: string) => Promise<void>>(async () => {}),
 }));
 
 vi.mock("@/kernel/lib/ipc/tauri", () => ({ isTauri: () => true }));
 
 vi.mock("@/apps/agent/services/threads/thread-service", () => ({
-  threadService: { listThreads: listThreadsMock },
+  threadService: { listThreads: listThreadsMock, deleteThread: deleteThreadMock },
 }));
 
 const seed: DbThread = {
@@ -126,5 +129,31 @@ describe("surface switch requests", () => {
 
     expect(useAgentSettingsStore.getState().auroraSurface).toBe("build");
     expect(useAgentChatStore.getState().error).toBeNull();
+  });
+});
+
+describe("deleting a conversation with subagents", () => {
+  beforeEach(() => {
+    deleteThreadMock.mockReset();
+    deleteThreadMock.mockResolvedValue(undefined);
+    useAgentChatStore.setState({ currentThreadId: seed.id, currentThread: seed });
+    useAgentSubagentStore.setState({ deletedParents: new Set() });
+    useAgentWorkspaceStore.setState({ tabs: [], activeTabId: null });
+  });
+
+  it("clears subagent state only after backend deletion succeeds", async () => {
+    useAgentWorkspaceStore.getState().openAgentTab(seed.id, "owned", "Owned agent");
+    useAgentWorkspaceStore.getState().openAgentTab("other-parent", "other", "Other agent");
+    await useAgentChatStore.getState().deleteThread(seed.id);
+    expect(useAgentChatStore.getState().currentThreadId).toBeNull();
+    expect(useAgentSubagentStore.getState().deletedParents.has(seed.id)).toBe(true);
+    expect(useAgentWorkspaceStore.getState().tabs.map((tab) => tab.id)).toEqual(["agent:other"]);
+  });
+
+  it("keeps the conversation and its agents when deletion fails", async () => {
+    deleteThreadMock.mockRejectedValueOnce(new Error("work did not stop"));
+    await useAgentChatStore.getState().deleteThread(seed.id);
+    expect(useAgentChatStore.getState().currentThreadId).toBe(seed.id);
+    expect(useAgentSubagentStore.getState().deletedParents.has(seed.id)).toBe(false);
   });
 });

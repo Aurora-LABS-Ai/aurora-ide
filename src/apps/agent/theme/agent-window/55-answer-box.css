@@ -1,0 +1,146 @@
+/* ── Answer box — a small working tool inside a reply ──────────────────────
+ * Probe: Documents/aurora-chat-interactive-answer-designs.html, 03 ("one quiet
+ * box"). This partial is ONLY the frame and the transcript-scale adjustments;
+ * the stepper, rows and bars inside are the canvas SDK's own (`ac-*`, in
+ * `src/canvas-sdk/canvas.css`).
+ *
+ * The frame is the canvas card's surface and line (`--agw-card-paint`,
+ * `--agw-card-line`, `radius-lg`), so the transcript gains no new surface.
+ * One box per tool, never a box inside a box. */
+
+.agw-abox {
+  margin: 12px 0 14px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+  color: var(--agw-text);
+}
+
+/* The SDK is set at dock-panel scale (13px). In a reply it sits beside 15px
+ * prose, so the parts people read and change step up to the control size. */
+.agw-abox .ac-row-title,
+.agw-abox .ac-row-value,
+.agw-abox .ac-field > .ac-field-label {
+  font-size: var(--agw-fs-ui);
+}
+.agw-abox .ac-row {
+  padding: 9px 0;
+}
+/* Read like the prose around it: labels at body weight, values carry the
+ * weight, and only the `total` row goes bold — so the answer is the one line
+ * that stands out. */
+.agw-abox .ac-row-title {
+  font-weight: var(--agw-fw-body);
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+}
+.agw-abox .ac-row-value {
+  font-weight: var(--agw-fw-medium);
+}
+.agw-abox .ac-row-strong .ac-row-title,
+.agw-abox .ac-row-strong .ac-row-value {
+  font-weight: var(--agw-fw-strong);
+  color: var(--agw-text);
+}
+/* Inputs already end on a hairline; a list's own top line would double it. */
+.agw-abox .ac-list {
+  border-top: 0;
+}
+.agw-abox .ac-list > .ac-row:last-child {
+  border-bottom: 0;
+}
+.agw-abox .ac-chart {
+  margin-top: 12px;
+}
+/* A box's rows carry no rank and their values are short, so they stay on one
+ * line at every width: the label wraps, the value keeps its edge. The SDK's
+ * narrow rule drops the value under the title, indented for a rank column. */
+@media (max-width: 520px) {
+  .agw-abox .ac-row {
+    flex-wrap: nowrap;
+  }
+  .agw-abox .ac-row-trail {
+    width: auto;
+    padding-left: 0;
+  }
+}
+
+.agw-abox-title {
+  margin: 14px 0 2px;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1.35;
+  color: var(--agw-text);
+}
+.agw-abox-title:first-child {
+  margin-top: 0;
+}
+
+.agw-abox-pending {
+  margin: 0;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* Lines the box skipped. Named, so a missing row is never a silent gap. */
+.agw-abox-problems {
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--agw-border);
+  list-style: none;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-warning);
+}
+.agw-abox-problems li {
+  margin: 2px 0;
+}
+
+.agw-abox-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+}
+.agw-abox-note {
+  min-width: 0;
+}
+
+.agw-abox-reset {
+  flex: none;
+  margin: -2px -6px -2px auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--agw-radius-xs);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color var(--agw-dur-fast) ease,
+    background var(--agw-dur-fast) ease;
+}
+.agw-abox-reset:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-abox-reset:active {
+  background: var(--agw-press-paint);
+}
+.agw-abox-reset:focus-visible {
+  outline: none;
+  box-shadow: var(--agw-focus-ring);
+}
+
+/* A box nothing could be drawn from: say so, then show what was written. */
+.agw-abox-failed {
+  margin: 12px 0 14px;
+}
+.agw-abox-failed-note {
+  margin: 0 0 6px;
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-warning);
+}

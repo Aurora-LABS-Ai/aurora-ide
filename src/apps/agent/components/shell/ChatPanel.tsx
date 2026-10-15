@@ -80,6 +80,9 @@ export const ChatPanel: React.FC<{
     void threadService
       .loadThread(threadId)
       .then((thread) => {
+        // Before the unmount check: the model is the conversation's, not this
+        // panel's, and every other view of it should learn it too.
+        useAgentChatStore.getState().adoptThreadSettings(threadId, thread);
         if (!aliveRef.current) return;
         setRecord({ id: threadId, thread: thread ?? null, missing: !thread });
       })

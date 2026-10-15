@@ -46,6 +46,10 @@ impl ToolExecutor for GrepTool {
         ToolSchema {
             name: "grep".into(),
             description: "Search the codebase for exact text or regex patterns using ripgrep. \
+                          Best for TEXT: string literals, comments, config keys, error messages, regexes, docs and non-code files. \
+                          Looking for where a function, component, class or type is defined or who calls it? `code` answers that \
+                          directly from the project index (`definition` / `usages`, several names at once as `a|b|c`) without the \
+                          lines that only mention the word. \
                           Hidden files are included; ignore files are respected when applicable, but unignored build output is searchable. Scope source searches with path or exclude folders with a negated glob. \
                           Output modes: 'content' (default), 'files_with_matches', 'count'."
                 .into(),

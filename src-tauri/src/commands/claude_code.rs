@@ -52,10 +52,14 @@ pub async fn claude_code_auth_logout() -> Result<(), String> {
         .map_err(|err| format!("Logout task failed: {err}"))?
 }
 
-/// Live plan usage (five-hour + seven-day windows) for the card.
+/// Plan usage (five-hour + seven-day windows) for the card and the ring.
+///
+/// Answered from the last chat reply's headers when they are recent; the
+/// usage endpoint is asked only otherwise, or when `force` is set (the card's
+/// refresh button). The endpoint refuses a handful of reads a minute.
 #[tauri::command]
-pub async fn claude_code_usage_get() -> Result<ClaudeCodeUsageSnapshot, String> {
-    usage::fetch_usage().await
+pub async fn claude_code_usage_get(force: Option<bool>) -> Result<ClaudeCodeUsageSnapshot, String> {
+    usage::fetch_usage(force.unwrap_or(false)).await
 }
 
 /// One row in the account list.
@@ -86,7 +90,7 @@ pub async fn claude_code_accounts_list() -> Result<Vec<ClaudeCodeAccountRow>, St
 
     let polls = store.accounts.iter().map(|account| {
         let id = account.id.clone();
-        async move { usage::fetch_usage_for(&id).await }
+        async move { usage::fetch_usage_for(&id, false).await }
     });
     let results = futures_util::future::join_all(polls).await;
 

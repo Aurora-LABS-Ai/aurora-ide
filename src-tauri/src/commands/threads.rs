@@ -1057,6 +1057,8 @@ fn build_thread_state(
             .context_usage
             .as_ref()
             .map(meta_to_db_context),
+        model: loaded.metadata.model,
+        execution_mode: loaded.metadata.execution_mode,
         created_at: loaded.metadata.created_at,
         updated_at: loaded.metadata.updated_at,
     }))
@@ -1146,6 +1148,16 @@ pub async fn thread_create(
     // `deep_research`: stamped ONCE, here, and never changed. This is the only
     // place it can be set — see `SessionMetadata::deep_research`.
     deep_research: Option<bool>,
+    // `model`: the model the conversation is born on (`"providerId:modelKey"`).
+    // Written into the sidecar before the id is returned, so the conversation
+    // owns its model from its first instant. Without it the model existed
+    // nowhere until the first turn ENDED, and for that whole turn every window
+    // showed — and a second send ran on — whichever model was picked last
+    // anywhere else.
+    model: Option<String>,
+    // `execution_mode`: Build's Agent/Plan, recorded with the model and for
+    // the same reason. Ignored for Aurora Chat, which has no modes.
+    execution_mode: Option<crate::agent_runtime::ipc::AgentExecutionMode>,
     registry: State<'_, Arc<AgentRegistry>>,
     app: AppHandle,
 ) -> Result<ThreadState, String> {
@@ -1153,9 +1165,19 @@ pub async fn thread_create(
     tauri::async_runtime::spawn_blocking(move || {
         let store = store_for_surface(&registry, surface.as_deref(), workspace_root.as_deref())?;
         let thread_id = uuid::Uuid::new_v4().to_string();
-        let meta = store
+        let mut meta = store
             .ensure_thread(&thread_id, title, workspace_root)
             .map_err(|e| format!("Failed to create thread: {e}"))?;
+        if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
+            meta = store
+                .set_model(&thread_id, Some(model))
+                .map_err(|e| format!("Failed to record the new chat's model: {e}"))?;
+        }
+        if let Some(mode) = execution_mode.filter(|m| !m.is_chat()) {
+            meta = store
+                .set_execution_mode(&thread_id, mode)
+                .map_err(|e| format!("Failed to record the new chat's mode: {e}"))?;
+        }
 
         // Best-effort: a conversation that failed to record its framing is still a
         // conversation, and refusing to create it would be the worse outcome.
@@ -1176,6 +1198,8 @@ pub async fn thread_create(
             messages: Vec::new(),
             token_usage: None,
             context_usage: None,
+            model: meta.model.clone(),
+            execution_mode: meta.execution_mode,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
         };
@@ -1189,9 +1213,7 @@ pub async fn thread_create(
                     message_count: 0,
                     preview: String::new(),
                     workspace_root: ws_root,
-                    // A brand-new chat has no model yet — the composer resolves the
-                    // user's default until a pick or a turn writes one.
-                    model: None,
+                    model: state.model.clone(),
                     pinned: false,
                     archived_at: None,
                     deep_research: deep_research.unwrap_or(false),
@@ -1674,6 +1696,29 @@ pub async fn thread_set_model(
             .set_model(&thread_id, model)
             .map(|_| ())
             .map_err(|e| format!("Failed to set model: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Put a Build conversation in Agent or Plan mode, on its own sidecar.
+///
+/// Written when the user flips the mode in a conversation's composer, so the
+/// choice belongs to that conversation and survives reopening it. Does not bump
+/// `updated_at`.
+#[tauri::command]
+pub async fn thread_set_execution_mode(
+    thread_id: String,
+    mode: crate::agent_runtime::ipc::AgentExecutionMode,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<(), String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_execution_mode(&thread_id, mode)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set mode: {e}"))
     })
     .await
     .map_err(|e| format!("Thread operation failed: {e}"))?

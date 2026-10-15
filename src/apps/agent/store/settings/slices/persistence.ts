@@ -15,6 +15,7 @@ import { providerCatalogService } from "@/apps/agent/services/providers/provider
 import { AGENT_ROUTER_PRESET, isAgentRouterWireChoice } from "@/apps/agent/services/providers/presets/agentrouter";
 import { isArkWireChoice } from "@/apps/agent/services/providers/presets/ark";
 import { ATLAS_CLOUD_PRESET } from "@/apps/agent/services/providers/presets/atlascloud";
+import { ANTIGRAVITY_PRESET } from "@/apps/agent/services/providers/presets/antigravity";
 import { CLAUDE_CODE_PRESET } from "@/apps/agent/services/providers/presets/claude-code";
 import { CODEX_PRESET } from "@/apps/agent/services/providers/presets/codex";
 import { COMMANDCODE_PRESET } from "@/apps/agent/services/providers/presets/commandcode";
@@ -92,6 +93,13 @@ export const createPersistenceSlice = (set: SettingsSet, get: SettingsGet) =>
       // the user's `~/.claude`.
       if (!presetProviders.some((p) => p.id === CLAUDE_CODE_PRESET.id)) {
         presetProviders.push(CLAUDE_CODE_PRESET);
+      }
+
+      // Antigravity (Google account): no API key, auth + routing owned by
+      // Rust (`api::antigravity`), Aurora's own account list. Like Cursor, its
+      // models are pulled from the signed-in account rather than seeded.
+      if (!presetProviders.some((p) => p.id === ANTIGRAVITY_PRESET.id)) {
+        presetProviders.push(ANTIGRAVITY_PRESET);
       }
 
       // Cursor (subscription) — same shape again: no API key, the Rust side

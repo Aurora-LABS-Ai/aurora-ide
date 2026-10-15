@@ -29,6 +29,7 @@ import {
   type ToolCallRequest,
 } from "@/apps/agent/services";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequest,
@@ -59,7 +60,10 @@ import {
 import { asChatFormat, runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { imageModelFromSelection } from "@/apps/agent/services/providers/image-providers";
-import { runCloudReplySuggestions } from "@/apps/agent/services/providers/reply-suggest-cloud";
+import {
+  recordSuggestionOutcome,
+  runCloudReplySuggestions,
+} from "@/apps/agent/services/providers/reply-suggest-cloud";
 import { runDirectImageTurn } from "./direct-image-turn";
 import {
   refineConfig,
@@ -590,6 +594,43 @@ async function maybeGenerateTitle(threadId: string, firstMessage: string): Promi
 const runningAgents = new Map<string, AgentService>();
 
 /**
+ * The model each running turn was started on, keyed by thread id, for exactly
+ * as long as `runningAgents` holds the turn.
+ *
+ * A message sent while a turn runs normally steers it — it rides in at the
+ * next tool boundary. But a turn cannot change model mid-flight, so when the
+ * conversation's model has moved since the turn started, steering would hand
+ * the new message to the OLD model. Comparing against this is how a send knows
+ * to end the turn and start a fresh one on the model now chosen.
+ */
+const turnModels = new Map<string, string>();
+
+/** How long a model switch waits for the cancelled turn to wind down. */
+const MODEL_SWITCH_END_TIMEOUT_MS = 15_000;
+
+/**
+ * Resolve once `threadId` has no live turn, or `false` after `timeoutMs`.
+ *
+ * Reads the store rather than the agent map: the live turn is what the rest of
+ * the pipeline checks before it will open another one on the same thread.
+ */
+function waitForTurnEnd(threadId: string, timeoutMs: number): Promise<boolean> {
+  if (!useAgentChatStore.getState().liveTurns[threadId]) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const unsubscribe = useAgentChatStore.subscribe((state) => {
+      if (state.liveTurns[threadId]) return;
+      window.clearTimeout(timer);
+      unsubscribe();
+      resolve(true);
+    });
+    const timer = window.setTimeout(() => {
+      unsubscribe();
+      resolve(false);
+    }, timeoutMs);
+  });
+}
+
+/**
  * Reply suggestions — after a turn settles, ask the picked model (the local
  * prompt-refine model unless a configured one is chosen in Preferences) for
  * up to 4 short replies the user could tap instead of typing. Fire-and-
@@ -598,6 +639,10 @@ const runningAgents = new Map<string, AgentService>();
  * after this is invoked. Results are dropped if a new turn started meanwhile,
  * and any failure simply means no chips. Gated on the shared composer-assists
  * preference.
+ *
+ * Every run gets an id, written with it to the conversation's
+ * `suggestions.jsonl` and held in the suggest store while it runs, so the
+ * user's next send can be recorded against the run it answered.
  */
 function generateSuggestionsFrom(
   threadId: string,
@@ -609,28 +654,45 @@ function generateSuggestionsFrom(
     .find((m) => m.role === "assistant" && (m.content ?? "").trim());
   const text = (lastAssistant?.content ?? "").trim();
   if (!text) return;
-  // The model role-plays as the USER — it needs to see what the user asked
-  // for, not just what the assistant answered.
-  const lastUser = [...messages]
-    .reverse()
-    .find((m) => m.role === "user" && (m.content ?? "").trim());
-  const userText = (lastUser?.content ?? "").trim();
 
-  // A picked model writes them in the cloud; none picked means the local
-  // llama.cpp model, as before.
+  const runId = crypto.randomUUID();
+  const suggest = useAgentSuggestStore.getState();
+  suggest.startRun(threadId, runId);
+
+  // A picked model writes them in the cloud from the whole conversation, which
+  // Rust reads from disk. None picked means the local llama.cpp model, which
+  // stays light: it reads the last exchange only — the user's message (it
+  // role-plays as the user, so it needs what they asked for) and the reply.
   const cloudModel = refine.replySuggestModel.trim();
-  const request = cloudModel
-    ? runCloudReplySuggestions(cloudModel, userText, text)
-    : runReplySuggestions(`suggest_${threadId}_${Date.now()}`, userText, text, refineConfig(refine));
+  let request: Promise<string[]>;
+  if (cloudModel) {
+    request = runCloudReplySuggestions(cloudModel, threadId, runId);
+  } else {
+    const lastUser = [...messages]
+      .reverse()
+      .find((m) => m.role === "user" && (m.content ?? "").trim());
+    const userText = (lastUser?.content ?? "").trim();
+    request = runReplySuggestions(
+      `suggest_${threadId}_${Date.now()}`,
+      userText,
+      text,
+      refineConfig(refine),
+      { threadId, runId },
+    );
+  }
 
   void request
     .then((suggestions) => {
       // A newer turn owns the conversation now — these chips describe a
       // message that's no longer the latest.
-      if (runningAgents.has(threadId)) return;
-      useAgentSuggestStore.getState().setSuggestions(threadId, suggestions);
+      if (runningAgents.has(threadId)) {
+        useAgentSuggestStore.getState().failRun(threadId, runId);
+        return;
+      }
+      useAgentSuggestStore.getState().finishRun(threadId, runId, suggestions);
     })
     .catch((err) => {
+      useAgentSuggestStore.getState().failRun(threadId, runId);
       console.warn("[agent-window] reply suggestions skipped:", err);
     });
 }
@@ -767,6 +829,24 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       runningAgents.get(targetThreadId)?.stop();
     }
   }, [resolveApproval, targetThreadId]);
+
+  /**
+   * Cancel `threadId`'s turn from inside the send pipeline, which is not bound
+   * to one thread the way `stop` is. A tool waiting on approval is refused
+   * first, or the cancelled turn would sit on that prompt forever.
+   */
+  const cancelThreadTurn = useCallback((threadId: string) => {
+    const resolver = approvalResolversRef.current.get(threadId);
+    approvalResolversRef.current.delete(threadId);
+    setPendingApprovals((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+    resolver?.(false);
+    runningAgents.get(threadId)?.stop();
+  }, []);
 
   const compact = useCallback(async () => {
     const store = useAgentChatStore.getState();
@@ -943,18 +1023,33 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
   const sendTurn = useCallback(async (
     raw: string,
-    target?: BackgroundSendTarget,
+    requestedTarget?: BackgroundSendTarget,
     fileChips: AttachedPromptChip[] = [],
     options?: SendOptions,
   ): Promise<SendOutcome> => {
     const content = raw.trim();
     if (!content) return "skipped";
+    // Re-seeded below when a model switch ends the running turn first: the
+    // seed captured at send time predates whatever that turn wrote since.
+    let target = requestedTarget;
     const scopedFileChips =
       useAgentSettingsStore.getState().auroraSurface === "chat" ? [] : fileChips;
 
     // Did a person press send, or is the pipeline resubmitting on their behalf?
     // Only a human send consumes what a composer staged and may queue mid-turn.
     const fromComposer = !target || target.interactive === true;
+
+    // What the person did with the reply suggestions on offer — tapped one,
+    // changed it, typed their own, or sent before they arrived — recorded once
+    // against the run that wrote them. Only a person's send says anything
+    // about the suggestions; a resubmission does not.
+    if (fromComposer) {
+      const outcomeThread = target ? target.threadId : useAgentChatStore.getState().currentThreadId;
+      if (outcomeThread) {
+        const outcome = useAgentSuggestStore.getState().takeOutcome(outcomeThread, content);
+        if (outcome) recordSuggestionOutcome(outcomeThread, outcome);
+      }
+    }
 
     // Which composer's staging tray this turn drains. Composers file under their
     // own thread (`"draft"` before one exists), so a docked chat's send can
@@ -979,6 +1074,37 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // text, and nothing said whether the model ever saw the elements. It had
     // not. An element block is plain text and rides a tool-result boundary as
     // well as any rule does.
+    //
+    // Unless the conversation's model changed after the turn started. A turn
+    // cannot switch model, so steering would give this message to the model
+    // the user just moved away from. The running turn is ended instead, and
+    // this message starts a fresh turn on the model now chosen (Alvan's call,
+    // 2026-10-12: end the turn, never steer across a model change).
+    if (fromComposer) {
+      const switchFrom = target?.threadId ?? useAgentChatStore.getState().currentThreadId;
+      const runningOn = switchFrom ? turnModels.get(switchFrom) : undefined;
+      if (
+        switchFrom &&
+        runningOn &&
+        useAgentChatStore.getState().liveTurns[switchFrom] &&
+        (options?.model?.trim() || resolveThreadModel(switchFrom)) !== runningOn
+      ) {
+        cancelThreadTurn(switchFrom);
+        if (await waitForTurnEnd(switchFrom, MODEL_SWITCH_END_TIMEOUT_MS)) {
+          if (target) {
+            // The docked seed was read before the cancelled turn's last
+            // writes; the file now holds them.
+            const fresh = await threadService.loadThread(switchFrom).catch(() => null);
+            if (fresh) target = { ...target, seed: fresh };
+          }
+        } else {
+          console.warn(
+            `[agent-window] turn on ${switchFrom} did not end within ` +
+              `${MODEL_SWITCH_END_TIMEOUT_MS} ms of a model switch; steering it instead`,
+          );
+        }
+      }
+    }
     if (fromComposer) {
       const chat = useAgentChatStore.getState();
       const liveThreadId = target?.threadId ?? chat.currentThreadId;
@@ -1157,7 +1283,15 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // global setter would leave the window in plan mode after the dispatch
     // finished, and two concurrent dispatches in different modes would each
     // overwrite the other's.
-    const requestedMode = options?.executionMode ?? settings.agentExecutionMode;
+    //
+    // Below the override, the CONVERSATION's own mode, then the window's
+    // default (what a new chat is born with). Reading only the window's
+    // setting let switching one chat to Plan put the chat beside it in Plan.
+    const knownThreadId = target?.threadId ?? store.currentThreadId;
+    const requestedMode =
+      options?.executionMode ??
+      (knownThreadId ? store.threadModes[knownThreadId] : undefined) ??
+      settings.agentExecutionMode;
     // `aurora agent --plan` can override the Build mode for one turn, but it
     // cannot reach across into Chat: a CLI task addresses a project, and Chat
     // has none. So the surface is applied AFTER the override, not before.
@@ -1167,7 +1301,20 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // failed creation doesn't leave a half-rendered turn. Only the main pane can
     // be a draft — a docked chat always addresses a thread that already exists.
     const wasDraft = !target && !store.currentThreadId;
-    const threadId = target?.threadId ?? await store.ensureThreadForSend(content);
+    // A draft has no conversation yet, so its model is the default (or the one
+    // a dispatch named). It is handed to the creation so the conversation is
+    // born owning it, rather than borrowing the default until a turn ends.
+    const threadId =
+      target?.threadId ??
+      (await store.ensureThreadForSend(
+        content,
+        wasDraft ? options?.model?.trim() || resolveThreadModel(null) : undefined,
+        // The window's default, never a one-turn `--plan` override: that
+        // describes this turn, not the conversation.
+        wasDraft && settings.agentExecutionMode !== "chat"
+          ? settings.agentExecutionMode
+          : undefined,
+      ));
 
     // Per-THREAD guard: block a second turn on the SAME thread, but allow other
     // threads to run concurrently (that's the whole point of parallel turns).
@@ -1232,6 +1379,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // composer reads this so it shows what is running rather than what is
     // configured.
     store.beginTurn(threadId, target?.seed, projectRoot, executionMode);
+    turnModels.set(threadId, modelSelection);
 
     // Reset the turn's running cost. Every request this turn makes folds into
     // it, so a long tool-using turn shows a cost that climbs instead of one
@@ -1383,9 +1531,15 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     store.appendTurnMessage(threadId, assistantSeed);
     let streamAttemptCheckpoint: DbMessage | null = null;
 
-    const patchTurn = useAgentChatStore.getState().patchTurnMessage;
+    // Every streaming write is queued for the next frame and lands together
+    // with every other conversation's in one store update (`queueTurnPatch`).
+    // Patches still apply in the order they are made, so a patch that reads
+    // the message (the stream checkpoint below) sees exactly what came before.
+    // Anything that READS the live turn back synchronously must call
+    // `flushTurnPatches()` first.
+    const queueTurn = useAgentChatStore.getState().queueTurnPatch;
     const patchMessage = (id: string, patch: (m: DbMessage) => DbMessage) =>
-      patchTurn(threadId, id, patch);
+      queueTurn(threadId, id, patch);
     // Header narrator: a short, plain-language line of what the agent is doing
     // right now. Written on phase changes (thinking → tool → responding); the
     // store setter no-ops when unchanged, so calling it per token is free.
@@ -1394,27 +1548,26 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
 
     // ── Streaming-text coalescing ─────────────────────────────────────
     // Tokens arrive far faster than the display refreshes (bursty, often
-    // several per millisecond). Patching the store per token re-renders the
-    // whole transcript per token — the streaming jank that grows with the
-    // size of the active turn. Text deltas buffer here and flush as ONE
-    // store patch per animation frame (a timer backstops hidden windows,
-    // where rAF doesn't fire). Anything that appends a NON-text timeline
-    // event flushes first, so the ordered timeline stays exact.
-    const pendingText: Array<{ kind: "content" | "thinking"; text: string }> = [];
-    let textFlushRaf: number | null = null;
-    let textFlushTimer: number | null = null;
+    // several per millisecond). Text deltas collect in an OPEN buffer that is
+    // already queued as one patch; the patch reads the buffer when the frame
+    // applies it, so every token up to that moment lands in one write.
+    // Anything that appends a NON-text timeline event seals the buffer first
+    // (`flushStreamText`), so text that arrives after it starts a new buffer
+    // queued AFTER that event, and the ordered timeline stays exact.
+    type TextDelta = { kind: "content" | "thinking"; text: string };
+    let openText: TextDelta[] | null = null;
+    // Buffers queued since the current stream attempt began, which a
+    // discarded attempt empties before they are applied.
+    let attemptText: TextDelta[][] = [];
     const flushStreamText = () => {
-      if (textFlushRaf !== null) {
-        cancelAnimationFrame(textFlushRaf);
-        textFlushRaf = null;
-      }
-      if (textFlushTimer !== null) {
-        window.clearTimeout(textFlushTimer);
-        textFlushTimer = null;
-      }
-      if (pendingText.length === 0) return;
-      const deltas = pendingText.splice(0, pendingText.length);
+      openText = null;
+    };
+    const queueTextPatch = (deltas: TextDelta[]) =>
       patchMessage(assistantId, (m) => {
+        // Applied now: the next token opens a new buffer. Without this it
+        // would land in this one, after it had already been read.
+        if (openText === deltas) openText = null;
+        if (deltas.length === 0) return m;
         // The retry is streaming, so the "reconnecting" marker has done its
         // job. Removed in the SAME patch that appends the recovered text, so
         // the marker never blinks out a frame before the reply resumes.
@@ -1437,34 +1590,29 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         }
         return { ...m, content, thinking, isThinking, timeline };
       });
-    };
     /**
-     * Throw the buffered deltas away instead of flushing them.
+     * Throw the not-yet-applied text of the current attempt away.
      *
      * Only for a reply the runtime has abandoned: those tokens are about to be
-     * re-sent from the start, so flushing them would render text that is then
+     * re-sent from the start, so applying them would render text that is then
      * immediately truncated — one wasted frame of the duplicate we are here to
-     * prevent.
+     * prevent. Text queued before the attempt began is kept; it is real.
      */
     const dropPendingStreamText = () => {
-      if (textFlushRaf !== null) {
-        cancelAnimationFrame(textFlushRaf);
-        textFlushRaf = null;
-      }
-      if (textFlushTimer !== null) {
-        window.clearTimeout(textFlushTimer);
-        textFlushTimer = null;
-      }
-      pendingText.length = 0;
+      for (const buffer of attemptText) buffer.length = 0;
+      attemptText = [];
+      openText = null;
     };
     const queueStreamText = (kind: "content" | "thinking", text: string) => {
-      const last = pendingText[pendingText.length - 1];
-      if (last && last.kind === kind) last.text += text;
-      else pendingText.push({ kind, text });
-      if (textFlushRaf === null && textFlushTimer === null) {
-        textFlushRaf = requestAnimationFrame(flushStreamText);
-        textFlushTimer = window.setTimeout(flushStreamText, 200);
+      if (!openText) {
+        const buffer: TextDelta[] = [];
+        openText = buffer;
+        attemptText.push(buffer);
+        queueTextPatch(buffer);
       }
+      const last = openText[openText.length - 1];
+      if (last && last.kind === kind) last.text += text;
+      else openText.push({ kind, text });
     };
 
     // Wall-clock timing per tool call, anchored on the runtime's
@@ -1737,6 +1885,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // `composeAgentSystemPrompt` AND what the runtime client forwards to Rust,
       // so a turn can never have the tool without the instruction or vice versa.
       transcriptChapters: settings.transcriptChapters,
+      // Transcript → Reply layout lives with the other transcript switches in
+      // the theme store (it is how a reply is drawn); read per turn so the
+      // instruction follows the switch from the next message on.
+      replyLayout: useAgentThemeStore.getState().transcriptReplyLayout,
       browserTools: settings.browserTools,
       subagentsEnabled: settings.subagentsEnabled,
       subagentModel: settings.subagentModel,
@@ -1995,6 +2147,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           },
           onStreamAttemptStarted: () => {
             flushStreamText();
+            // Text queued before this point belongs to an earlier attempt and
+            // survives a discard of this one.
+            attemptText = [];
             // Store patches and timeline appenders replace their values; this
             // immutable snapshot also preserves text merged into an older row.
             patchMessage(assistantId, (m) => {
@@ -2091,6 +2246,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // ring survives reopening the thread (the runtime only persists usage it
       // actually received from the provider).
       if (!usageFired) {
+        useAgentChatStore.getState().flushTurnPatches();
         const liveMsgs =
           useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
         const contextWindow = providerConfig.contextWindow || 128_000;
@@ -2182,8 +2338,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         timeline: clearReconnect(timelineOf(m)),
       }));
       const s = useAgentChatStore.getState();
-      const settledThread = s.liveTurns[threadId];
+      // The settle patch above is queued; the turn is read back below.
+      s.flushTurnPatches();
+      const settledThread = useAgentChatStore.getState().liveTurns[threadId];
       runningAgents.delete(threadId);
+      turnModels.delete(threadId);
       // Order matters: refresh the rail (which pulls THIS thread's now-persisted
       // row into `allThreads`) BEFORE closing the live turn. The rail dedupes a
       // live row against its persisted twin by thread id, so doing the disk
@@ -2241,7 +2400,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       }
     }
     return "started";
-  }, []);
+  }, [cancelThreadTurn]);
 
   // Keep the ref pointing at the latest `send` so the post-turn auto-flush can
   // resubmit a queued injection without `send` depending on itself.

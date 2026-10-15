@@ -131,8 +131,14 @@ export function claudeCodeAuthLogout(): Promise<void> {
   return invoke<void>("claude_code_auth_logout");
 }
 
-export function claudeCodeUsageGet(): Promise<ClaudeCodeUsageSnapshot> {
-  return invoke<ClaudeCodeUsageSnapshot>("claude_code_usage_get");
+/**
+ * Plan usage. Answered from the last chat reply's headers when recent, so
+ * opening the card or hovering the ring costs nothing. `force` asks the usage
+ * endpoint itself, which refuses a handful of reads a minute — only the
+ * card's refresh button should pass it.
+ */
+export function claudeCodeUsageGet(force = false): Promise<ClaudeCodeUsageSnapshot> {
+  return invoke<ClaudeCodeUsageSnapshot>("claude_code_usage_get", { force });
 }
 
 /** Every stored account, each with its own usage. */

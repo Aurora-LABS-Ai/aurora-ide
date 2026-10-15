@@ -36,6 +36,7 @@
 // build in false positives without exposing any real bug.
 #![allow(dead_code)]
 
+pub mod answer_boxes;
 pub mod api_client;
 pub mod bridge;
 pub mod context_limits;
@@ -59,6 +60,7 @@ pub mod tool_pairing;
 pub mod tool_spill;
 pub mod tool_suggest;
 pub mod types;
+pub mod work_cards;
 
 // No top-level `pub use submodule::*;` re-exports. Every internal
 // caller in the workspace already imports through the long path

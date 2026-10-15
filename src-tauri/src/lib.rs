@@ -66,6 +66,9 @@ mod sidecar;
 // crates under `target/__verify_phase3_*/` can mount it via
 // `#[path]` without dragging in heavy Tauri/ONNX deps.
 mod prompt_refine;
+/// Reply suggestions from a cloud model: the conversation brief, the
+/// `suggest_replies` tool, and the per-conversation suggestion log.
+mod reply_suggest;
 /// Live dictation: a warm `audiocpp_cli` child that transcribes while you talk.
 /// The batch path stays in `commands::speech`.
 mod speech_stream;
@@ -655,6 +658,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::state::save_explorer_state,
             commands::state::get_explorer_state,
             explorer::commands::explorer_open_workspace,
+            explorer::file_list::explorer_list_files,
             explorer::commands::explorer_refresh,
             explorer::commands::explorer_apply_fs_changes,
             explorer::commands::explorer_toggle_folder,
@@ -726,6 +730,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::chat_memory::chat_memory_rebuild_index,
             commands::threads::thread_set_archived,
             commands::threads::thread_set_model,
+            commands::threads::thread_set_execution_mode,
             commands::threads::thread_cancel_current_turn,
             commands::project_stats::project_stats_get,
             commands::conversation_stats::conversation_stats_get,
@@ -780,6 +785,17 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::claude_code::claude_code_account_set_main,
             commands::claude_code::claude_code_account_remove,
             commands::claude_code::claude_code_account_import_cli,
+            // Antigravity (Google account) provider
+            commands::antigravity::antigravity_auth_status,
+            commands::antigravity::antigravity_auth_login,
+            commands::antigravity::antigravity_auth_cancel_login,
+            commands::antigravity::antigravity_auth_logout,
+            commands::antigravity::antigravity_accounts_list,
+            commands::antigravity::antigravity_account_set_main,
+            commands::antigravity::antigravity_account_remove,
+            commands::antigravity::antigravity_account_import_ide,
+            commands::antigravity::antigravity_models_list,
+            commands::antigravity::antigravity_quota_get,
             commands::commandcode::commandcode_auth_status,
             commands::commandcode::commandcode_auth_login,
             commands::commandcode::commandcode_auth_cancel_login,
@@ -986,6 +1002,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             // rail (`agent_runtime::subagents::rail_state`).
             commands::agent_v2::agent_subagent_rail_get,
             commands::agent_v2::agent_subagent_rail_set,
+            // What the reader set in a conversation's answer boxes
+            // (`agent_runtime::answer_boxes`).
+            commands::agent_v2::agent_answer_boxes_get,
+            commands::agent_v2::agent_answer_box_set,
+            commands::agent_v2::agent_work_cards_get,
+            commands::agent_v2::agent_work_card_set,
             commands::threads::subagent_thread_load,
             // Phase 4 permission gate — frontend modal posts the
             // user's Allow/Deny verdict here. The router lives in
@@ -1008,6 +1030,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::prompt_refine::prompt_refine_dictation,
             commands::prompt_refine::prompt_refine_suggest,
             commands::prompt_refine::reply_suggest_cloud,
+            commands::prompt_refine::reply_suggest_outcome,
             commands::prompt_refine::prompt_refine_cancel,
         ])
         // The IDE window is created INVISIBLE (`"visible": false` in

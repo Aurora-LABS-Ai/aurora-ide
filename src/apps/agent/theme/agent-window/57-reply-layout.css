@@ -1,0 +1,335 @@
+/* ── Reply layout — page parts inside a reply (Transcript → Reply layout) ──
+ * `components/reply-layout/ReplyLayout.tsx`. Three parts the model can write
+ * between its sentences: a row of facts, a top-to-bottom flow, a note. All
+ * three sit on the canvas card's surface and line (`--agw-card-paint`,
+ * `--agw-card-line`), the same frame as an answer box, so the transcript
+ * gains no new surface. Nothing glows, nothing is raised: the hierarchy is
+ * type size and one hairline. Quiet by default so the few values that matter
+ * (the fact values, the flow titles) are the loudest things in the block. */
+
+.agw-rl-wrap {
+  margin: 12px 0 14px;
+  min-width: 0;
+}
+.agw-rl {
+  margin: 0;
+  padding: 0;
+  color: var(--agw-text);
+}
+/* Code inside a block is plain mono text: no chip. In prose a chip marks a
+   name out from the sentence around it; in a block the name IS the content,
+   and a bordered pill on every one turned a flow node and a fact value into
+   pill soup (Alvan, 2026-10-15). Same colour as the text it sits in. */
+.agw-rl code,
+.agw-rl-problems code {
+  font-family: var(--agw-font-code);
+  font-size: 0.92em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+/* ── Facts: rows in one quiet frame, the answer box's shape ───────────── */
+/* Label in a fixed column on the left, value and caption on the right, a
+   hairline between rows. Not tiles: a grid of bordered tiles with 17px values
+   wrapped at six different heights on the model's real content and read as a
+   dashboard pasted into a chat. */
+.agw-rl-facts {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+  container-type: inline-size;
+}
+.agw-rl-fact {
+  display: grid;
+  grid-template-columns: minmax(96px, 150px) minmax(0, 1fr);
+  gap: 2px 18px;
+  align-items: baseline;
+  margin: 0;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-rl-fact:last-child {
+  border-bottom: 0;
+}
+.agw-rl-fact-label {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-muted);
+  overflow-wrap: anywhere;
+}
+.agw-rl-fact-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  min-width: 0;
+}
+.agw-rl-fact-value {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-rl-fact-caption {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+  overflow-wrap: anywhere;
+}
+/* A narrow column (the docked chat): label above value. */
+@container (max-width: 380px) {
+  .agw-rl-fact {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+}
+
+/* ── Flow: a stepper. A rail with a dot per step, words beside it ──────── */
+/* No frame, no node boxes, no arrows: the rail carries the order. The dot and
+   rail are the timeline spine's own marks (`11-transcript-bubbles.css`), so a
+   flow inside a reply looks like the transcript around it. */
+.agw-rl-flow {
+  list-style: none;
+  padding: 2px 0 2px 20px;
+}
+.agw-rl-step {
+  position: relative;
+  min-width: 0;
+  padding: 3px 0;
+}
+.agw-rl-step + .agw-rl-step {
+  margin-top: 8px;
+}
+/* The dot, level with the title's first line. */
+.agw-rl-step::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: -20px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+/* The rail, from this dot down to the next; the last step has none. */
+.agw-rl-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 19px;
+  bottom: -9px;
+  left: -17.5px;
+  width: 1px;
+  background: var(--agw-border-strong);
+}
+.agw-rl-node-title {
+  font-size: var(--agw-fs-md);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.45;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-rl-node-caption {
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+  overflow-wrap: anywhere;
+}
+/* Branches: the alternatives at one step, on one line, a middle dot between. */
+.agw-rl-branches {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 0;
+  min-width: 0;
+}
+.agw-rl-branch {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.agw-rl-branch + .agw-rl-branch::before {
+  content: "·";
+  margin: 0 9px;
+  color: var(--agw-text-subtle);
+}
+.agw-rl-branch .agw-rl-node-caption {
+  display: inline;
+}
+
+/* ── Note: one boxed caveat, a rule on its left ───────────────────────── */
+.agw-rl-note {
+  padding: 10px 14px 10px 16px;
+  border: 1px solid var(--agw-card-line);
+  border-left: 2px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-card-paint);
+}
+.agw-rl-note-title {
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-rl-pair {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-ui);
+}
+.agw-rl-note-title + .agw-rl-pair {
+  margin-top: 6px;
+}
+.agw-rl-pair:last-child {
+  border-bottom: 0;
+}
+.agw-rl-pair-label {
+  flex: 0 1 auto;
+  color: var(--agw-text-muted);
+}
+.agw-rl-pair-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: right;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-rl-note-text {
+  margin: 8px 0 0;
+  font-size: var(--agw-fs-ui);
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+}
+
+/* ── Shared: a block's title line, inside the frame ───────────────────── */
+.agw-rl-block-title {
+  padding: 8px 0 6px;
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+
+/* ── Bars: label and number on one line, a thin track under it ────────── */
+.agw-rl-bars {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px 6px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+}
+.agw-rl-bar {
+  padding: 7px 0 8px;
+}
+.agw-rl-bar + .agw-rl-bar {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-rl-bar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: var(--agw-fs-ui);
+}
+.agw-rl-bar-label {
+  min-width: 0;
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-rl-bar-amount {
+  flex: none;
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-rl-bar-track {
+  position: relative;
+  height: 4px;
+  margin-top: 7px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-state-quiet);
+  overflow: hidden;
+}
+.agw-rl-bar-fill {
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  background: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-card-paint));
+}
+.agw-rl-bar-caption {
+  margin-top: 5px;
+  font-size: var(--agw-fs-label);
+  line-height: 1.45;
+  color: var(--agw-text-subtle);
+}
+
+/* ── Pairs: a titled key / value table, the note's rows without its rule ── */
+.agw-rl-pairs {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 14px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+  container-type: inline-size;
+}
+/* A lookup's values sit in a left-aligned column beside the label, the facts
+   rows' grid: a right-aligned sentence ("Storefront — AnnouncementBar,
+   Header, Footer, BottomNav") wrapped against the right edge and read back to
+   front (live, 2026-10-15). The note keeps its right-aligned pairs; its
+   values are a path or a number, and the layout says "this versus that". */
+.agw-rl-pairs .agw-rl-pair {
+  display: grid;
+  grid-template-columns: minmax(96px, 220px) minmax(0, 1fr);
+  gap: 2px 18px;
+  align-items: baseline;
+  margin: 0;
+}
+.agw-rl-pairs .agw-rl-pair dt,
+.agw-rl-pairs .agw-rl-pair dd {
+  margin: 0;
+}
+.agw-rl-pairs .agw-rl-pair-label {
+  color: var(--agw-text);
+}
+.agw-rl-pairs .agw-rl-pair-value {
+  text-align: left;
+  color: var(--agw-text-muted);
+}
+@container (max-width: 380px) {
+  .agw-rl-pairs .agw-rl-pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+}
+.agw-rl-block-title + .agw-rl-pair {
+  border-top: 1px solid var(--agw-border);
+}
+
+/* ── Streaming placeholder and skipped lines ──────────────────────────── */
+.agw-rl-pending {
+  height: 12px;
+}
+.agw-rl-problems {
+  margin: 6px 0 0;
+  padding: 0 0 0 16px;
+  font-size: var(--agw-fs-micro);
+  line-height: 1.5;
+  color: var(--agw-warning);
+}
+
+@media (max-width: 520px) {
+  .agw-rl-pair {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .agw-rl-pair-value {
+    text-align: left;
+  }
+}

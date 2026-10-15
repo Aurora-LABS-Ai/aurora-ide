@@ -22,7 +22,7 @@ Behavior:
 - A source-identical update is rejected instead of creating a meaningless duplicate version.
 - The user can switch artifacts, inspect any saved version, and toggle Preview/Source after reopening the conversation.
 - Use mermaid for architecture, flowchart, sequence, state, class, ER, journey, timeline, quadrant, or mind-map diagrams. Send raw Mermaid syntax without Markdown fences. Canvas provides pan, zoom, fit, Source view, and themed rendering.
-- Use react for a LIVE canvas: one component file Aurora compiles and runs, so it can have working controls, sortable tables, filters, and tabs. Prefer it whenever the deliverable is a dataset or a set of findings the user will study — anything you were about to render as a large markdown table. Call canvas_guidelines before your first react artifact; the source is compiled and a contract violation rejects the write.
+- Use react for a LIVE canvas: one component file Aurora compiles and runs, so it can have working controls, sortable tables, filters, and tabs. It is the default whenever the deliverable is a dataset or a set of findings the user will study — anything you were about to render as a large markdown table. Call canvas_guidelines before your first react artifact for the components and the rules the compiler checks.
 - Use html for custom interactive compositions, svg for bespoke graphics Mermaid cannot express, and markdown for document-style artifacts. Prefer mermaid over hand-writing diagram SVG, and react over hand-writing an interactive HTML page.
 - Produce self-contained content. HTML, SVG, and react canvases render in a sandbox with no network access; embed the data instead of fetching it, and do not depend on the parent app or local files.
 
@@ -62,6 +62,12 @@ Returns artifactId, title, kind, and the saved immutable versionTag. Mermaid sou
         artifactTitle: {
           type: "string",
           description: "Short customer-facing title shown in Canvas (max 120 characters).",
+        },
+        artifactPlacement: {
+          type: "string",
+          enum: ["dock", "inline"],
+          description:
+            'Where a react canvas is shown. "inline" draws it inside your reply, at the point you call this, sized to its content — for a small interactive piece the reader uses while reading: a picker over a few items, tabs over a few views, a chart with one control, a short set of headline figures. "dock" (the default) opens it in the Canvas side panel — for a report, a dashboard, a long table, anything taller than a screen. Only react canvases can be inline; other kinds always dock.',
         },
         content: {
           type: "string",

@@ -137,6 +137,12 @@ export interface AgentConfig {
    */
   transcriptChapters?: boolean;
   /**
+   * Transcript → Reply layout (Settings → Preferences → Transcript): teach the
+   * model the facts / flow / note blocks the transcript draws. Read per turn
+   * from the window's own switch, like `transcriptChapters`.
+   */
+  replyLayout?: boolean;
+  /**
    * Aurora Chat: the CONVERSATION was started in deep research.
    *
    * Fixed at creation and read from the thread, never from a live setting —

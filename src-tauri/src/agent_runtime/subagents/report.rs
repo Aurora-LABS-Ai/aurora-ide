@@ -31,6 +31,32 @@ pub struct RunEnding<'a> {
     /// for life, so "Fix truncate bug" headed the report of the run that
     /// fixed `div`, and nothing said which follow-up it answered.
     pub run: Option<(u32, &'a str)>,
+    /// The parent's OTHER agents still running when this report is handed
+    /// in, by the name the parent gave them. `Some(&[])` means this was the
+    /// last one; `None` means it was not looked up (nothing is said).
+    ///
+    /// Said in the report because the parent otherwise has to keep count:
+    /// on 2026-10-12 a parent with four explorers out reasoned at length, at
+    /// each report, about whether it was allowed to end its turn — and filled
+    /// the wait by re-reading files an agent was already mapping.
+    pub still_running: Option<&'a [String]>,
+}
+
+/// The line that tells the parent where the rest of its agents stand.
+fn running_line(others: &[String]) -> String {
+    match others {
+        [] => "No other agents are running: this was the last report.\n".to_string(),
+        [one] => format!(
+            "Still running: {one}. Its report starts you again — if nothing can be done until \
+             it arrives, say so in one line and end your turn.\n"
+        ),
+        many => format!(
+            "Still running: {} ({}). Their reports start you again — if nothing can be done \
+             until they arrive, say so in one line and end your turn.\n",
+            many.join(", "),
+            many.len()
+        ),
+    }
 }
 
 /// Longest excerpt of a resumed run's task in its report.
@@ -219,6 +245,10 @@ pub fn build(
             detail.push_str(line);
             detail.push('\n');
         }
+    }
+    if let Some(others) = ending.still_running {
+        detail.push('\n');
+        detail.push_str(&running_line(others));
     }
     detail.push_str(&format!("\nTranscript: {output_file}\n"));
     detail.push_str(&format!(
@@ -424,6 +454,52 @@ mod tests {
         assert!(r.detail.ends_with("</subagent_report>"));
     }
 
+    /// The parent should not have to keep count of its agents: each report
+    /// names the ones still out, or says it was the last.
+    #[test]
+    fn a_report_says_which_agents_are_still_running_or_that_it_was_the_last() {
+        let report = submitted("## Found");
+        let others = vec!["cloud-arch".to_string(), "web-admin".to_string()];
+        let with_two = build(
+            "agent_1",
+            Some("client-arch"),
+            "explore",
+            "Map the client",
+            TaskStatus::Completed,
+            ReportBody::Submitted(&report),
+            None,
+            &SubagentUsage::default(),
+            "p",
+            None,
+            RunEnding { still_running: Some(&others), ..RunEnding::default() },
+        );
+        assert!(with_two.detail.contains("Still running: cloud-arch, web-admin (2)."), "{}", with_two.detail);
+        assert!(with_two.detail.contains("say so in one line and end your turn"));
+
+        let one = vec!["web-admin".to_string()];
+        let with_one = build(
+            "agent_1", Some("client-arch"), "explore", "Map the client", TaskStatus::Completed,
+            ReportBody::Submitted(&report), None, &SubagentUsage::default(), "p", None,
+            RunEnding { still_running: Some(&one), ..RunEnding::default() },
+        );
+        assert!(with_one.detail.contains("Still running: web-admin. Its report starts you again"));
+
+        let last = build(
+            "agent_1", Some("client-arch"), "explore", "Map the client", TaskStatus::Completed,
+            ReportBody::Submitted(&report), None, &SubagentUsage::default(), "p", None,
+            RunEnding { still_running: Some(&[]), ..RunEnding::default() },
+        );
+        assert!(last.detail.contains("No other agents are running: this was the last report."));
+
+        // Not looked up (a foreground run, a test): nothing is said.
+        let unknown = build(
+            "agent_1", Some("client-arch"), "explore", "Map the client", TaskStatus::Completed,
+            ReportBody::Submitted(&report), None, &SubagentUsage::default(), "p", None,
+            RunEnding::default(),
+        );
+        assert!(!unknown.detail.contains("Still running") && !unknown.detail.contains("last report"));
+    }
+
     #[test]
     fn a_run_that_never_submitted_says_so_and_carries_its_last_message() {
         let r = build(
@@ -474,6 +550,7 @@ mod tests {
                 stopped_by: Some(StopBy::User),
                 recent: &recent,
                 run: None,
+                still_running: None,
             },
         );
         assert_eq!(r.summary, "Stopped \"Long job\" · killed");
@@ -499,6 +576,7 @@ mod tests {
                 stopped_by: Some(StopBy::Parent),
                 recent: &[],
                 run: None,
+                still_running: None,
             },
         );
         assert!(by_parent.detail.contains("You stopped it with stop_agent."));

@@ -34,6 +34,7 @@ import { lookupModel, type ModelsDevEntry } from "@/apps/agent/services/provider
 import { isAtlasCloudProvider } from "@/apps/agent/services/providers/atlascloud";
 import { isCodexProvider } from "@/apps/agent/services/providers/codex";
 import { isClaudeCodeProvider } from "@/apps/agent/services/providers/claude-code";
+import { isAntigravityProvider } from "@/apps/agent/services/providers/antigravity";
 import { isCursorProvider } from "@/apps/agent/services/providers/cursor";
 import {
   defaultOpenCodeWire,
@@ -107,6 +108,7 @@ import { ModelTestButton } from "./ModelTestButton";
 import { AtlasCloudUsageCard } from "./AtlasCloudUsageCard";
 import { CodexUsageCard } from "./CodexUsageCard";
 import { ClaudeCodeProviderCard } from "./ClaudeCodeProviderCard";
+import { AntigravityProviderCard } from "./AntigravityProviderCard";
 import { KenariUsageCard } from "./KenariUsageCard";
 import { ArkUsageCard } from "./ArkUsageCard";
 import { MinimaxUsageCard } from "./MinimaxUsageCard";
@@ -184,6 +186,7 @@ const API_FORMAT_LABEL: Record<Exclude<EditableApiFormat, "inherit">, string> = 
  */
 const PINNED_WIRE_TYPES = new Set([
   "anthropic-api",
+  "antigravity",
   "codex",
   "claude-code",
   "cursor",
@@ -974,7 +977,7 @@ const ModelRow: React.FC<{
             "deepseek-responses",
           ].includes(effectiveWire)
         ? "responses"
-        : ["codex", "cursor"].includes(effectiveWire)
+        : ["codex", "cursor", "antigravity"].includes(effectiveWire)
           ? "native"
           : "chat";
   const replayApplies = !!reasoning && wireFormat === "chat";
@@ -1754,6 +1757,7 @@ export const ProviderDetail: React.FC<{
   const atlas = isAtlasCloudProvider(provider);
   const codex = isCodexProvider(provider);
   const claudeCode = isClaudeCodeProvider(provider);
+  const antigravity = isAntigravityProvider(provider);
   const cursor = isCursorProvider(provider);
   const opencode = isOpenCodeProvider(provider);
   const commandcode = isCommandCodeProvider(provider);
@@ -1805,8 +1809,8 @@ export const ProviderDetail: React.FC<{
   // Providers whose usage / sign-in card owns the enable switch and the
   // identity; the band shows no second switch for them.
   const hasCard =
-    atlas || codex || claudeCode || cursor || opencode || commandcode || kenari || ark ||
-    minimax || deepseek || modal;
+    atlas || codex || claudeCode || antigravity || cursor || opencode || commandcode || kenari ||
+    ark || minimax || deepseek || modal;
   const ready = providerReady(provider);
   const name = provider.nickname || provider.name;
   const defaultModel =
@@ -1900,6 +1904,13 @@ export const ProviderDetail: React.FC<{
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />
+      ) : antigravity ? (
+        /* Sign-in, quota and the account's model list. No key or endpoint to
+           edit: Rust pins both. */
+        <AntigravityProviderCard
+          enabled={provider.enabled}
+          onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
+        />
       ) : cursor ? (
         <CursorProviderCard
           enabled={provider.enabled}
@@ -1986,7 +1997,7 @@ export const ProviderDetail: React.FC<{
           are managed by the card above, and both Rust adapters pin the URL so
           a stale field could not reroute a turn anyway. Cursor also owns its
           own model list, which the generic model editor must not duplicate. */}
-      {!codex && !claudeCode && !cursor && !modal && (
+      {!codex && !claudeCode && !antigravity && !cursor && !modal && (
       <div className="agw-prov-conn">
         {/* Where this provider sits in the rail. First field, because it is
             identity rather than connection: it is the same kind of fact as the
@@ -2346,8 +2357,10 @@ export const ProviderDetail: React.FC<{
             </div>
             {/* Only once the row can actually ask — see `FetchModelsRow`. A
                 provider that needs no key (a local runtime, or a preset with
-                `requiresApiKey: false`) can ask from the start. */}
-            {(hasAnyKey(provider) || provider.requiresApiKey === false) && (
+                `requiresApiKey: false`) can ask from the start. Antigravity's
+                list comes from its card, which reads the signed-in account;
+                there is no plain `/models` to ask. */}
+            {!antigravity && (hasAnyKey(provider) || provider.requiresApiKey === false) && (
               <FetchModelsRow
                 providerId={provider.id}
                 baseUrl={provider.baseUrl}
@@ -2374,7 +2387,7 @@ export const ProviderDetail: React.FC<{
         {/* Headers ride on the request Aurora builds; for the providers whose
             adapter owns the request outright there is nothing to add them to,
             and the panel says so instead of offering a field that does nothing. */}
-        {codex || claudeCode || cursor || modal ? (
+        {codex || claudeCode || antigravity || cursor || modal ? (
           <div className="agw-prov-detail-note" style={{ borderTop: "none", paddingTop: 0 }}>
             Address and headers are fixed by Aurora for this provider; the fields above still
             apply to its requests.
@@ -2388,6 +2401,11 @@ export const ProviderDetail: React.FC<{
         <div className="agw-prov-detail-note">
           Comes with Aurora. Your plan decides which models exist — switch on the
           ones you want and they appear in the model picker.
+        </div>
+      ) : antigravity ? (
+        <div className="agw-prov-detail-note">
+          Comes with Aurora. The signed-in account decides which models exist;
+          the card above refreshes them.
         </div>
       ) : builtIn ? (
         <div className="agw-prov-detail-note">

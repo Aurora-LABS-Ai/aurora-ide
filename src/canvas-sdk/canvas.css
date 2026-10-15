@@ -1,9 +1,12 @@
 /**
  * `aurora/canvas` component styles.
  *
- * Injected into the canvas sandbox document, never loaded by the window. Every
- * colour is an `--agw-*` token forwarded from the host, so a canvas follows the
- * user's theme — including themes that do not exist yet.
+ * Injected into the canvas sandbox document, and loaded by the Agent Window for
+ * answer boxes (`components/answer-box/`). Every selector is an `ac-*` class so
+ * it can sit in the window without touching anything else. Every colour is an
+ * `--agw-*` token — forwarded from the host in the sandbox, inherited from
+ * `.agw-root` in the window — so both follow the user's theme, including
+ * themes that do not exist yet.
  *
  * Density note: this is a narrow analytical panel beside a conversation, not a
  * marketing page. Where the doctrine specifies 50–60px stat numerals and
@@ -772,6 +775,59 @@ button.ac-quote-from:hover {
   padding-top: 14px;
 }
 
+/* Picker: a few named things to choose between. One hairline grid like
+   `.ac-stats`, the chosen item marked by a top rule in the accent and its
+   weight, never by colour alone and never by a glow. */
+.ac-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1px;
+  background: var(--agw-border);
+  border: 1px solid var(--agw-border);
+}
+
+.ac-picker-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px 10px;
+  border: 0;
+  border-top: 2px solid transparent;
+  background: var(--agw-conversation);
+  color: var(--agw-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ac-picker-item:hover {
+  color: var(--agw-text);
+}
+
+.ac-picker-item:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.ac-picker-item[data-active] {
+  border-top-color: var(--agw-accent);
+  color: var(--agw-text);
+}
+
+.ac-picker-label {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.ac-picker-item[data-active] .ac-picker-label {
+  font-weight: 600;
+}
+
+.ac-picker-caption {
+  font-size: 11.5px;
+  color: var(--agw-text-subtle);
+}
+
 .ac-timeline {
   margin: 0;
   padding: 0 0 0 14px;
@@ -829,8 +885,11 @@ button.ac-quote-from:hover {
     grid-template-columns: 1fr auto;
   }
 
+  /* The bar takes its own line UNDER label and value. Without the explicit row
+     the value was auto-placed after the bar, a third line on its own. */
   .ac-chart-row .ac-bar {
     grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .ac-facts {
@@ -842,6 +901,256 @@ button.ac-quote-from:hover {
   .ac-detail summary,
   .ac-detail summary::before,
   .ac-tablist button {
+    transition: none;
+  }
+}
+
+/* ── inputs: stepper, number field, choice ───────────────────────────────── */
+
+/* The answer row of a list: same line, more weight, never a colour. */
+.ac-row-strong .ac-row-title,
+.ac-row-strong .ac-row-value {
+  font-weight: 600;
+  color: var(--agw-text);
+}
+
+/* Label left, control right, a hairline under it — the same rhythm as a Row,
+   so inputs and results read as one list. */
+.ac-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.ac-field-label {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--agw-text-muted);
+}
+
+.ac-field-error {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--agw-removed);
+}
+
+.ac-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ac-step-btn {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--agw-text);
+  cursor: pointer;
+  /* Restraint law: colour only, no transform, no shadow. */
+  transition:
+    background-color 180ms cubic-bezier(0, 0, 0.2, 1),
+    border-color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-step-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+.ac-step-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--agw-text) 28%, transparent);
+  background: var(--agw-hover);
+}
+
+.ac-step-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+}
+
+.ac-step-btn:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+/* At a limit the button stays where it is, plainly unavailable. */
+.ac-step-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ac-step-value {
+  min-width: 2.5ch;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--agw-text);
+}
+
+.ac-step-value:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+.ac-stepper-unit {
+  font-size: 12px;
+  color: var(--agw-text-subtle);
+}
+
+/* The one input a tool turns on: the number takes the centre, at the size a
+   Stat's figure has, and the buttons sit at the edges. */
+.ac-stepper-large {
+  padding: 2px 0 14px;
+  border-bottom: 1px solid var(--agw-border);
+}
+
+.ac-stepper-large > .ac-field-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+}
+
+.ac-stepper-hero {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.ac-stepper-hero .ac-step-btn {
+  width: 32px;
+  height: 32px;
+}
+
+.ac-stepper-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.ac-stepper-hero .ac-step-value {
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.ac-stepper-mid .ac-stepper-unit {
+  font-size: 12.5px;
+  color: var(--agw-text-muted);
+}
+
+/* Focus is the field's own border going to the ring colour, not a halo. */
+.ac-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md, 8px);
+  background: var(--agw-conversation);
+  transition: border-color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-number:focus-within {
+  border-color: var(--agw-ring);
+}
+
+.ac-number[data-invalid] {
+  border-color: var(--agw-removed);
+}
+
+.ac-number input {
+  width: 9ch;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: right;
+}
+
+.ac-number-affix {
+  font-size: 12px;
+  color: var(--agw-text-subtle);
+}
+
+.ac-choice {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--agw-radius-md, 8px);
+  background: color-mix(in srgb, var(--agw-text) 5%, transparent);
+}
+
+.ac-choice button {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--agw-radius-sm, 6px);
+  background: transparent;
+  color: var(--agw-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 180ms cubic-bezier(0, 0, 0.2, 1),
+    background-color 180ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.ac-choice button:hover {
+  background: var(--agw-hover);
+  color: var(--agw-text);
+}
+
+.ac-choice button:active {
+  background: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+}
+
+/* Chosen: fill AND weight, so it never rests on colour alone. */
+.ac-choice button[aria-checked="true"] {
+  background: color-mix(in srgb, var(--agw-text) 9%, transparent);
+  color: var(--agw-text);
+  font-weight: 500;
+}
+
+.ac-choice button:focus-visible {
+  outline: 2px solid var(--agw-ring);
+  outline-offset: -2px;
+}
+
+@media (max-width: 520px) {
+  .ac-field {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-step-btn,
+  .ac-number,
+  .ac-choice button {
     transition: none;
   }
 }

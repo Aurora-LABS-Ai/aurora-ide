@@ -30,6 +30,7 @@
 // Colour marks — brands that publish one.
 import React from "react";
 
+import AntigravityColor from "@lobehub/icons/es/Antigravity/components/Color";
 import BedrockColor from "@lobehub/icons/es/Bedrock/components/Color";
 import CerebrasColor from "@lobehub/icons/es/Cerebras/components/Color";
 import ClaudeColor from "@lobehub/icons/es/Claude/components/Color";
@@ -125,6 +126,7 @@ export const PROVIDER_MARKS: Readonly<Record<BrandKey, MarkComponent>> = {
   // and the orange one is what reads at 26px.
   anthropic: ClaudeColor,
   openai: OpenAIMono,
+  antigravity: AntigravityColor,
   codex: CodexColor,
   cursor: CursorMono,
   opencode: OpenCodeMono,

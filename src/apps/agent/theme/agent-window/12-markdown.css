@@ -438,7 +438,8 @@
   background-size: 200% 100%;
   /* Match the tool-call "Running…" sweep: highlight travels left → right. */
   background-position: 200% center;
-  animation: agw-skeleton-sweep 1.6s linear infinite;
+  /* Stepped like every sweep (see `.agw-shimmer`): ~24 repaints a second. */
+  animation: agw-skeleton-sweep 1.6s steps(38) infinite;
 }
 .agw-skeleton span:first-child {
   width: 75%;

@@ -1259,6 +1259,52 @@ async fn later_turn_cannot_move_live_session_to_another_workspace() {
     );
 }
 
+/// The sidecar names the turn's model the moment the turn starts, and a model
+/// picked WHILE it runs is still the conversation's model when it ends. The
+/// turn used to write its own model only at the end, so for the whole of a
+/// first turn the conversation had no model on disk, and the end-of-turn write
+/// then put the old model back over a pick made in the meantime.
+#[tokio::test]
+async fn a_turn_records_its_model_at_the_start_and_leaves_a_mid_turn_pick_alone() {
+    let (api, gate) = MockApi::gated(vec![TurnScript::Reply {
+        events: vec![],
+        result: Ok(turn_usage(assistant_text_msg("done"), "end_turn")),
+    }]);
+    let api = Arc::new(api);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(
+        Arc::new(MockApiFactory::from_api(api.clone())),
+        dir.path().to_path_buf(),
+    ));
+    let driver = Arc::new(TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default())));
+
+    let request = make_request("turn-pick", "pick-thread", "hello");
+    let running = {
+        let driver = driver.clone();
+        tokio::spawn(async move { driver.run_turn(request).await })
+    };
+    api.wait_for_calls(1).await;
+
+    let store = registry.require_store_for_thread("pick-thread").unwrap();
+    assert_eq!(
+        store.load_metadata("pick-thread").unwrap().model.as_deref(),
+        Some("mock-provider:mock-model"),
+        "the model is on disk while the turn runs",
+    );
+    store
+        .set_model("pick-thread", Some("other:picked".into()))
+        .unwrap();
+
+    gate.add_permits(1);
+    running.await.expect("join").expect("turn");
+
+    assert_eq!(
+        store.load_metadata("pick-thread").unwrap().model.as_deref(),
+        Some("other:picked"),
+        "the end of the turn must not undo the pick",
+    );
+}
+
 // ── Test 2 ──────────────────────────────────────────────────────
 // Non-existent file → fresh empty session, no error.
 

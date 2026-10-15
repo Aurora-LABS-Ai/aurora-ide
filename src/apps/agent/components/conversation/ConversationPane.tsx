@@ -62,12 +62,32 @@ const DRUM_STEP_COOLDOWN_MS = 110;
  * cylinder picker (the centered row is active; neighbors curve away with a
  * rotateX falloff). Click the centered row to fill the composer. Naked text,
  * no chrome — a quiet "i / n" on the right signals there's more to roll.
+ *
+ * While the replies are still being written (`pending`, no suggestions yet)
+ * the drum already holds its place, with a single sheened hairline across it
+ * (probe: Documents/aurora-suggest-placeholder-designs.html, 04 — Alvan's
+ * pick), so the composer does not jump a second time when they land. It is the
+ * same element in both states, so the replies replace the line instead of a
+ * new drum popping in.
+ *
+ * Tapping a reply fills the composer and KEEPS the drum: the other replies
+ * are often wanted after the first. The × dismisses it; sending clears it.
  */
 const SuggestDrum: React.FC<{
   suggestions: string[];
+  pending: boolean;
   onPick: (text: string) => void;
-}> = ({ suggestions, onPick }) => {
+  onDismiss: () => void;
+}> = ({ suggestions, pending, onPick, onDismiss }) => {
   const [active, setActive] = useState(0);
+  // The drum stays mounted from the hairline to the replies and across turns,
+  // so a new set of replies starts at its first, not wherever the last set
+  // was left.
+  const [shownSet, setShownSet] = useState(suggestions);
+  if (shownSet !== suggestions) {
+    setShownSet(suggestions);
+    setActive(0);
+  }
   const lastStepRef = useRef(0);
   const drumRef = useRef<HTMLDivElement>(null);
   const count = suggestions.length;
@@ -95,6 +115,15 @@ const SuggestDrum: React.FC<{
     drum.addEventListener("wheel", onWheel, { passive: false });
     return () => drum.removeEventListener("wheel", onWheel);
   }, [count]);
+
+  if (count === 0) {
+    if (!pending) return null;
+    return (
+      <div className="agw-suggest-drum" role="status" aria-label="Writing suggested replies">
+        <span className="agw-suggest-hairline" aria-hidden />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -146,6 +175,15 @@ const SuggestDrum: React.FC<{
           {index + 1} / {count}
         </span>
       )}
+      <button
+        type="button"
+        className="agw-suggest-close"
+        onClick={onDismiss}
+        aria-label="Dismiss suggested replies"
+        title="Dismiss"
+      >
+        <AgentIcon name="close" size={11} />
+      </button>
     </div>
   );
 };
@@ -205,6 +243,11 @@ export const ConversationPane: React.FC = () => {
     currentThreadId ? (s.byThread[currentThreadId] ?? EMPTY_SUGGESTIONS) : EMPTY_SUGGESTIONS,
   );
   const clearSuggestions = useAgentSuggestStore((s) => s.clear);
+  const markSuggestionTapped = useAgentSuggestStore((s) => s.markTapped);
+  // Replies still being written for this chat: the drum holds its place.
+  const suggestionsPending = useAgentSuggestStore((s) =>
+    currentThreadId ? currentThreadId in s.pendingByThread : false,
+  );
 
   // `send.sending` already reflects ONLY the open thread (a backgrounded turn in
   // another chat/project doesn't lock or animate the view you're reading).
@@ -357,11 +400,16 @@ export const ConversationPane: React.FC = () => {
     el.scrollTop = section.offsetTop - content.offsetTop;
   }, [stickyUser, newestQuestionId, containerRef, contentRef]);
 
+  // The drum, with its replies or holding their place while they are written.
+  const showDrum = !openIsStreaming && (suggestions.length > 0 || suggestionsPending);
+
   // The suggestion drum mounts AFTER the turn settles (auto-scroll already
   // released) and grows the dock, shrinking the transcript viewport — without
   // this, the reply's last lines hide behind it and the user must scroll.
   // Re-stick to the bottom, but only when they were already reading the end.
-  const hasSuggestions = suggestions.length > 0;
+  // Keyed on the drum appearing (which is when the hairline goes up), not on
+  // the replies landing in it, which no longer changes its height.
+  const hasSuggestions = showDrum;
   useEffect(() => {
     if (!hasSuggestions) return;
     const el = containerRef.current;
@@ -708,7 +756,7 @@ export const ConversationPane: React.FC = () => {
               top of the card. */}
           <div
             className="agw-composer-dock"
-            data-drum={(!openIsStreaming && suggestions.length > 0) || undefined}
+            data-drum={showDrum || undefined}
           >
             {/* A retry that didn't happen says why, next to where the user
                 just clicked. Dismissible, and cleared by the next attempt. */}
@@ -750,12 +798,22 @@ export const ConversationPane: React.FC = () => {
                 rounded corners, tucked ~12px behind its top edge. */}
             <QuestionPrompt />
             {/* Reply-suggestion drum — hidden while streaming; a new send
-                clears the suggestions themselves. */}
-            {!openIsStreaming && suggestions.length > 0 && (
+                clears the suggestions themselves. Shown as a hairline while
+                the replies are still being written. */}
+            {showDrum && (
               <SuggestDrum
                 suggestions={suggestions}
+                pending={suggestionsPending}
                 onPick={(text) => {
                   setDraft(draftKey, text);
+                  // The drum stays: the other replies are often wanted after
+                  // the first. The tap is remembered so the send that follows
+                  // is recorded as this reply (or as an edit of it).
+                  if (currentThreadId) {
+                    markSuggestionTapped(currentThreadId, suggestions.indexOf(text), text);
+                  }
+                }}
+                onDismiss={() => {
                   if (currentThreadId) clearSuggestions(currentThreadId);
                 }}
               />

@@ -12,6 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AgentThinkingBlock } from "./AgentThinkingBlock";
+import { WorkCardWindowContext } from "./work-card-context";
 
 describe("AgentThinkingBlock", () => {
   let container: HTMLDivElement;
@@ -80,5 +81,23 @@ describe("AgentThinkingBlock", () => {
     render({ content: "reasoning…", isGenerating: false });
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(toggle().textContent).toContain("Thought");
+  });
+
+  it("stays folded inside a work card's running window, and still opens on a click", () => {
+    // The window is a list of steps; a live thought opening there filled it
+    // with reasoning and pushed the steps out (2026-10-15).
+    act(() => {
+      root ??= createRoot(container);
+      root.render(
+        <WorkCardWindowContext.Provider value={true}>
+          <AgentThinkingBlock content="reasoning…" isGenerating startedAt={Date.now()} />
+        </WorkCardWindowContext.Provider>,
+      );
+    });
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().textContent).toContain("Thinking…");
+
+    act(() => toggle().click());
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
   });
 });

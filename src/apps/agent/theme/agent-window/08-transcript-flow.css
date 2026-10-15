@@ -38,7 +38,14 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: agw-shimmer 2.5s linear infinite;
+  /* steps(60): 24 repaints a second, not one per frame. A sweep moves
+   * `background-position`, which no compositor can animate; every step is a
+   * real repaint of the text and of what it shares a layer with. At one per
+   * frame, a handful of these on screen while two chats streamed cost a third
+   * of the frame budget (measured 2026-10-12: 36 → 46 fps under 4× CPU
+   * throttle with only the sweeps changed). At this rate the band still moves
+   * ~2px a step. Every sweep below uses the same rate for its own duration. */
+  animation: agw-shimmer 2.5s steps(60) infinite;
 }
 @keyframes agw-shimmer {
   /* Scroll DECREASING position by exactly ONE period (200% → 0%, which are the
@@ -94,7 +101,8 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: agw-shimmer 30s linear infinite;
+  /* A slow drift: 8 repaints a second is already smooth at this speed. */
+  animation: agw-shimmer 30s steps(240) infinite;
 }
 .agw-compaction-failed .agw-compaction-chip,
 .agw-compaction-cancelled .agw-compaction-chip {
@@ -490,7 +498,7 @@
     color-mix(in srgb, var(--agw-text) 7%, transparent) 100%
   );
   background-size: 200% 100%;
-  animation: agw-shimmer 2.5s linear infinite;
+  animation: agw-shimmer 2.5s steps(60) infinite;
 }
 
 /* State is stated in WORDS here — "Writing", "revised", "Couldn't compile" —

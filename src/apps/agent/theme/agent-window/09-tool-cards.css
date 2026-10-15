@@ -241,48 +241,53 @@
   flex-shrink: 0;
   object-fit: contain;
 }
-/* Inline `/` command pill — reuses .agw-pill-inline (accent = skill). Rule and
-   MCP keep a distinct tint so the three directive kinds stay scannable. */
+/* Pill kinds. Every pill is the same quiet capsule (`.agw-pill-inline`,
+   13-composer-input.css); what tells a skill from a rule from an MCP server
+   is its GLYPH, and only the glyph takes a colour — the accent for a skill (a
+   directive the user chose), green for an MCP server, muted for the rest.
+   Files and folders carry their real icon (`.agw-pill-ico`). The kinds used
+   to repaint the whole pill, three unrelated tag colours in one sentence. */
 .agw-pill-cmd-ico {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-}
-.agw-pill-cmd[data-cmd-kind="rule"] {
-  background: color-mix(in srgb, var(--agw-text-subtle) 20%, transparent);
   color: var(--agw-text-muted);
 }
-.agw-pill-cmd[data-cmd-kind="mcp"] {
-  background: color-mix(in srgb, var(--agw-added, var(--agw-accent)) 16%, transparent);
+.agw-pill-cmd .agw-pill-cmd-ico,
+.agw-pill-cmd[data-cmd-kind="skill"] .agw-pill-cmd-ico,
+.agw-pill-cmd[data-cmd-kind="image"] .agw-pill-cmd-ico {
+  color: var(--agw-accent);
+}
+.agw-pill-cmd[data-cmd-kind="rule"] .agw-pill-cmd-ico,
+.agw-pill-cmd[data-cmd-kind="action"] .agw-pill-cmd-ico {
+  color: var(--agw-text-muted);
+}
+.agw-pill-cmd[data-cmd-kind="mcp"] .agw-pill-cmd-ico {
   color: var(--agw-added, var(--agw-accent));
 }
-/* Inline `@terminal` pill — a fourth attachment kind, same form as the others.
-   Its tint is the code font's own neutral rather than a hue: a terminal is not
-   a directive to obey or a file to open, it is a place output came from, and a
-   fifth colour on this row would make the strip read as a legend. */
-.agw-pill-term {
-  background: color-mix(in srgb, var(--agw-text) 10%, transparent);
-  color: var(--agw-text-muted);
-  font-family: var(--agw-font-code);
-}
+/* Inline `@terminal` pill: a place output came from, not a file or a
+   directive, so its name keeps the code font and its glyph stays neutral. */
 .agw-pill-term > span:last-child {
+  font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
 }
-/* Inline inspector-pick pill — same form as the `@` file and `/` directive
-   pills so all three attachment kinds read as one object type. The tag keeps
-   the code font (it IS markup) and the element's text stays muted, so the pill
-   scans as "<td> · its label" rather than one undifferentiated string. */
+/* Inline inspector-pick pill: the tag in the code font (it IS markup), the
+   element's own text muted after it, so it scans as "<button> Send". */
 .agw-pill-sel .agw-sel-tag {
   font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
+  /* The global `.agw-sel-tag` is accent ink (16-dock-terminal-browser.css);
+     inside a pill the text is the text colour like every other kind. */
+  color: var(--agw-text);
 }
 .agw-pill-sel .agw-sel-text {
   max-width: 15ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-text-muted));
-  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text-subtle);
+  font-weight: var(--agw-fw-body);
 }
 /* Which shell a command ran in — collapsed Run Command row. The text is the
  * canonical id ("bash", "pwsh", "cmd"); the dot's tint groups the family
@@ -724,7 +729,12 @@
 .agw-tool-stream,
 .agw-injection > span,
 .agw-notice > span,
-.agw-shell-command code {
+.agw-shell-command code,
+/* The composer's @ and / picker rows (ComposerMenu): the same "more below"
+   edge as a locked tool card, gone once the list is scrolled to its end. */
+.agw-mention-list,
+/* An opened sub-agent report card's text area (53-subagents.css). */
+.agw-agent-card[data-open] .agw-agent-card-text {
   animation-name: agw-scroll-fade-b;
   animation-duration: auto; /* span the full scroll range (scroll-driven) */
   animation-timing-function: linear;
@@ -843,7 +853,7 @@
 .agw-suggest-item {
   position: absolute;
   left: 8px;
-  right: 64px;
+  right: 84px; /* clears the counter and the dismiss × */
   top: calc(50% - 12px);
   height: 24px;
   border: none;
@@ -871,16 +881,70 @@
   border-radius: var(--agw-radius-sm);
   box-shadow: var(--agw-focus-ring);
 }
-/* Quiet position marker — signals there's more to roll. */
+/* Quiet position marker — signals there's more to roll. Sits left of the ×. */
 .agw-suggest-count {
   position: absolute;
-  right: 8px;
+  right: 30px;
   top: 50%;
   transform: translateY(-50%);
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-micro);
   color: var(--agw-text-subtle);
   pointer-events: none;
+}
+/* Dismiss. Tapping a reply keeps the drum (the others are often wanted next),
+ * so closing it is its own small act. In the middle row: the drum's mask fades
+ * its top and bottom out, so a corner there would be half invisible. No ring
+ * on focus — the glyph steps up to full text, like hover. */
+.agw-suggest-close {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: none;
+  color: var(--agw-text-subtle);
+  cursor: pointer;
+  transition: color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
+}
+.agw-suggest-close:hover,
+.agw-suggest-close:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+  background: var(--agw-hover);
+}
+/* While the replies are written: one sheened hairline across the row they
+ * will land in (probe: aurora-suggest-placeholder-designs.html, 04). The same
+ * left-to-right sheen as every live label; nothing pulses. */
+.agw-suggest-hairline {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--agw-border) 0%,
+    var(--agw-border) 30%,
+    var(--agw-text-muted) 50%,
+    var(--agw-border) 70%,
+    var(--agw-border) 100%
+  );
+  background-size: 200% 100%;
+  animation: agw-shimmer 2.5s steps(60) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-suggest-hairline {
+    animation: none;
+    background: var(--agw-border-strong);
+  }
 }
 
 /* Quiet footer note when a persisted diff/read was clamped by history
@@ -1604,32 +1668,132 @@
   color: var(--agw-text);
 }
 
-/* ── Smooth tool arrival (opt-in) ───────────────────────────────────────
- * Settings → Preferences → Transcript. A step that mounts during a live turn
- * carries `data-enter` and its slot in the batch as an inline
- * `animation-delay` (see `ToolGroup.tsx` / `tool-arrival.ts`), so a parallel
- * batch rolls in 40ms apart instead of landing in one frame.
+/* ── Smooth tool arrival (on by default) ───────────────────────────────
+ * Settings → Preferences → Transcript. Probe:
+ * Documents/aurora-tool-arrival-designs.html, "Grows off the spine".
  *
- * `both` holds the start frame through the delay, so a step waiting for its
- * slot is invisible rather than drawn and then faded. It ends on
- * `transform: none`, which creates no containing block, so the spine markers
- * and the sticky question are unaffected once it lands. */
+ * The jolt was never the fade. A row that lands at its full height in one
+ * frame shoves everything on screen up by a row at once, and a model that makes
+ * one call per request does that every few seconds. So a step that mounts
+ * during a live turn carries `data-enter` and OPENS its height from 0 — the
+ * transcript glides up instead of jumping — and then its content slides the
+ * last 8px in. With the timeline spine on, its marker lands and its branch
+ * draws out first (`11-transcript-bubbles.css`).
+ *
+ * The delay is the step's slot in a parallel batch (`tool-arrival.ts`), set as
+ * `--agw-enter-delay` so the content and the spine parts share it. `both`
+ * holds the closed frame through the delay. The clip the opening needs lives
+ * only as long as `data-enter`, which `ToolStep` drops when the opening ends. */
 .agw-tool-step[data-enter] {
-  animation: agw-tool-arrive var(--agw-dur-base) ease-out both;
+  display: grid;
+  animation: agw-tool-open var(--agw-dur-slow) var(--agw-ease-enter) both;
+  animation-delay: var(--agw-enter-delay, 0ms);
 }
-@keyframes agw-tool-arrive {
+.agw-tool-step[data-enter] > * {
+  min-height: 0;
+  overflow: clip;
+  animation: agw-tool-slide-in var(--agw-dur-base) var(--agw-ease-enter) both;
+  animation-delay: calc(var(--agw-enter-delay, 0ms) + 0.12s);
+}
+@keyframes agw-tool-open {
+  from {
+    grid-template-rows: 0fr;
+  }
+  to {
+    grid-template-rows: 1fr;
+  }
+}
+@keyframes agw-tool-slide-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateX(-8px);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
+/* No animation runs, so nothing would ever end it: undo the open state's
+ * layout and clip too, or the step would stay clipped for good. */
 @media (prefers-reduced-motion: reduce) {
   .agw-tool-step[data-enter] {
+    display: block;
     animation: none;
   }
+  .agw-tool-step[data-enter] > * {
+    overflow: visible;
+    animation: none;
+  }
+}
+
+/* ── One live line for tool calls (opt-in) ─────────────────────────────
+ * Settings → Preferences → Transcript. While a run is the live edge it is ONE
+ * row whose content rolls over in place (`LiveLine` in `ToolGroup.tsx`). The
+ * reel clips the roll so the leaving slide never paints over the row above;
+ * the perspective is the suggestion drum's. The step class on the line gives
+ * it the spine marker and branch, outside the clip. */
+.agw-tool-liveline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.agw-tool-liveline-reel {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: clip;
+  perspective: 340px;
+}
+.agw-tool-liveline-slide {
+  min-width: 0;
+  transform-origin: 50% 50%;
+  backface-visibility: hidden;
+}
+/* Between calls: the finished call stays on the line and its outcome shimmers
+ * (the same sheen as `.agw-shimmer`) until the next call lands or anything
+ * appears below. The line never claims "Thinking" — a real reasoning row does. */
+.agw-tool-liveline[data-waiting] .agw-tool-summary {
+  background: linear-gradient(
+    90deg,
+    var(--agw-text-subtle) 0%,
+    var(--agw-text-subtle) 28%,
+    var(--agw-text) 50%,
+    var(--agw-text-subtle) 72%,
+    var(--agw-text-subtle) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agw-shimmer 2.5s steps(60) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-tool-liveline[data-waiting] .agw-tool-summary {
+    animation: none;
+    background: none;
+    color: var(--agw-text-muted);
+  }
+}
+.agw-tool-liveline-count {
+  flex: none;
+  margin-top: 5px;
+  padding: 1px 6px;
+  border: none;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font: inherit;
+  font-size: var(--agw-fs-label);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
+}
+.agw-tool-liveline-count:hover,
+.agw-tool-liveline-count:focus-visible {
+  outline: none;
+  background: var(--agw-hover);
+  color: var(--agw-text-muted);
 }
 

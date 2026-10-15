@@ -134,6 +134,12 @@ export const PreferencesSettings: React.FC = () => {
   const setTranscriptTimestamps = useAgentThemeStore((s) => s.setTranscriptTimestamps);
   const transcriptSmoothTools = useAgentThemeStore((s) => s.transcriptSmoothTools);
   const setTranscriptSmoothTools = useAgentThemeStore((s) => s.setTranscriptSmoothTools);
+  const transcriptLiveLine = useAgentThemeStore((s) => s.transcriptLiveLine);
+  const setTranscriptLiveLine = useAgentThemeStore((s) => s.setTranscriptLiveLine);
+  const transcriptWorkCards = useAgentThemeStore((s) => s.transcriptWorkCards);
+  const setTranscriptWorkCards = useAgentThemeStore((s) => s.setTranscriptWorkCards);
+  const transcriptReplyLayout = useAgentThemeStore((s) => s.transcriptReplyLayout);
+  const setTranscriptReplyLayout = useAgentThemeStore((s) => s.setTranscriptReplyLayout);
   const transcriptTextPace = useAgentThemeStore((s) => s.transcriptTextPace);
   const setTranscriptTextPace = useAgentThemeStore((s) => s.setTranscriptTextPace);
   const transcriptTurnSummary = useAgentThemeStore((s) => s.transcriptTurnSummary);
@@ -953,14 +959,38 @@ export const PreferencesSettings: React.FC = () => {
           label="Smooth tool arrival"
           hint={
             reduceMotion
-              ? "New tool calls appear without the fade because Reduce motion is on. A finished run still stays open for a moment before it folds."
-              : "New tool calls fade in one after another instead of all landing at once, and a finished run stays open for a moment before it folds. Helps most with fast models that call several tools together."
+              ? "New tool calls appear at once because Reduce motion is on. A finished run still stays open for a moment before it folds."
+              : transcriptSpine
+                ? "Each new tool call opens its own space and grows off the timeline spine, so the reply glides up instead of jumping. A finished run stays open for a moment before it folds."
+                : "Each new tool call opens its own space and slides in, so the reply glides up instead of jumping. A finished run stays open for a moment before it folds. With the timeline spine on, calls also grow off the spine."
           }
         >
           <AgwSwitch
             checked={transcriptSmoothTools}
             onChange={setTranscriptSmoothTools}
-            ariaLabel="Fade tool calls in one after another"
+            ariaLabel="Open each new tool call's space instead of letting it jump in"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="One live line for tool calls"
+          hint="While the agent works through tools, show them as one line that changes in place: the call running now, which stays on the line until the next one. The reply stops moving with every call. When the agent moves on, two or more calls fold to one “N calls” line in the same place; click it to see them. Keep tool runs open doesn't reopen runs shown this way."
+        >
+          <AgwSwitch
+            checked={transcriptLiveLine}
+            onChange={setTranscriptLiveLine}
+            ariaLabel="Show a run of tool calls as one live line while it runs"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Work cards"
+          hint="When the agent works for a while without writing to you, fold that stretch into one card: what it is doing now, how many thoughts and calls, and how long. Closed, the newest steps show at the bottom of the card and the reply stops moving. Open it to see every step as usual; each thought and tool still opens on its own. Cards you open stay open when you come back to the chat."
+        >
+          <AgwSwitch
+            checked={transcriptWorkCards}
+            onChange={setTranscriptWorkCards}
+            ariaLabel="Fold long stretches of work into one card"
           />
         </SettingsRow>
 
@@ -1027,6 +1057,20 @@ export const PreferencesSettings: React.FC = () => {
             checked={transcriptTurnSummary}
             onChange={setTranscriptTurnSummary}
             ariaLabel="Show a summary line under each finished reply"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          alignTop
+          label="Reply layout"
+          // Like Chapters below: stated plainly, because this switch changes
+          // what the agent writes, not only how the reply is drawn.
+          hint="Let the agent lay out an explanation with a few page parts inside its reply: a row of key facts, a top-to-bottom flow, a note for a trap or caveat. This adds a short section to the agent's instructions, so it changes what the agent writes. Off, replies are plain markdown as today, and any such part in an old reply shows as code."
+        >
+          <AgwSwitch
+            checked={transcriptReplyLayout}
+            onChange={setTranscriptReplyLayout}
+            ariaLabel="Let the agent lay out explanations with facts, flows and notes"
           />
         </SettingsRow>
 

@@ -144,6 +144,15 @@ pub struct ThreadState {
     pub messages: Vec<Message>,
     pub token_usage: Option<TokenUsage>,
     pub context_usage: Option<ContextUsage>,
+    /// The conversation's model (`"providerId:modelKey"`), from its sidecar.
+    /// Carried on every load so a window showing this conversation reads the
+    /// model from the conversation itself, never from whichever was picked last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Build: the conversation's Agent/Plan mode from its sidecar (`"agent"` /
+    /// `"plan"`), for the same reason as `model`. Absent when never set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<crate::agent_runtime::ipc::AgentExecutionMode>,
     pub created_at: String, // ISO string or timestamp string
     pub updated_at: String, // ISO string or timestamp string
 }

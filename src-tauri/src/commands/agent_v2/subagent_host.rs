@@ -954,10 +954,21 @@ impl<E: EventEmitter> ChildRun<E> {
         } else {
             self.record.recent_activity(RECENT_STEPS_IN_REPORT)
         };
+        // The parent's other agents still out, by the name it gave them, so
+        // the report can say who is still to come (or that this was the last).
+        let still_running: Vec<String> = self
+            .registry
+            .subagent_tasks()
+            .for_parent(&self.record.parent_thread_id)
+            .into_iter()
+            .filter(|other| other.agent_id != self.record.agent_id && other.is_running())
+            .map(|other| other.name.clone().unwrap_or_else(|| other.description.clone()))
+            .collect();
         let ending = report::RunEnding {
             stopped_by: self.record.stopped_by(),
             recent: &recent,
             run: Some((self.record.snapshot().runs, self.request.user_message.as_str())),
+            still_running: Some(&still_running),
         };
         let reported_to_parent = self.record.is_background()
             && self.report_to_parent(status, body, error.as_deref(), &usage, ending);

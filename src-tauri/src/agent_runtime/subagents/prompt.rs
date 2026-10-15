@@ -180,10 +180,10 @@ pub fn child_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> St
          comes back to you as a message. Use it the MOMENT the task cannot be done as asked: a \
          tool you need and do not have (name it), a path that does not exist, a contradiction in \
          the brief, a decision only the parent can make. Say exactly what you need. Do not use it \
-         for progress updates or for your report. When you cannot go on without the answer, set \
-         `waitForReply: true`: the call holds for up to two minutes and returns the parent's \
-         answer, so you act on it in this same run. When you can carry on regardless, leave it \
-         off and continue; the answer arrives later as a message.\n\
+         for progress updates or for your report. A `question` waits for the answer by default: \
+         the call holds for up to two minutes and returns the parent's answer, so you act on it \
+         in this same run. If you can carry on without it, set `waitForReply: false` and \
+         continue; the answer then arrives later as a message. Only questions wait.\n\
          - When something is merely ambiguous, pick the reasonable reading, state the assumption \
          in your report, and continue.\n\
          - Stay on the task you were given. Do not start adjacent work, and do not undo or \
@@ -235,8 +235,8 @@ pub fn message_system_prompt(def: &AgentDefinition, workspace: Option<&str>) -> 
          Answer the actual message briefly. For thanks or acknowledgement, one short sentence \
          is sufficient. Do not claim new verification or changes.\n\n\
          Your only tool is `message_parent`, for a question or information that must reach the \
-         parent before you finish. It wakes an idle parent. Set `waitForReply: true` if you \
-         cannot answer without its reply. You have no file, shell, browser, delegation or \
+         parent before you finish. It wakes an idle parent. A `question` waits for the reply by \
+         default; set `waitForReply: false` if you can answer without it. You have no file, shell, browser, delegation or \
          submit_report tool. Your final text is delivered to the parent automatically as a \
          conversation reply, so do not also send that same text through message_parent.\n\n\
          Parent messages are marked message, reply or task. Only an explicit task starts work \
@@ -266,8 +266,15 @@ pub fn parent_instructions(catalog: &Catalog) -> String {
          you can make. Answer those with `send_message` kind `reply`. A message titled `Question from` is \
          an agent paused for your answer (for up to two minutes): answer it before anything \
          else, and it continues in the same run. Do not poll, check on or wait for \
-         agents. Do work that does not depend on them, or, when there is none, tell the user \
-         what is running and end your turn; their reports start you again.\n\n\
+         agents. What you gave an agent is its job now: do not read, explore or redo that part \
+         yourself while it runs — you would pay twice for one answer. Do other work that does \
+         not overlap with any agent's task, or, when there is none, tell the user what is \
+         running and end your turn; their reports start you again.\n\n\
+         When several agents are out, each report starts you again and says which are still \
+         running. Take in what it says. If you can act on it now, do; if what you need waits \
+         on the others, write one short line — who finished, who is still running — and end \
+         your turn. That short turn is expected, not wasted, and it is not a reason to start \
+         work an agent is already doing. Give your answer once the last report is in.\n\n\
          Reports: each one arrives as a `<subagent_report>` with an `outcome` (`done`, \
          `partial`, `blocked`), a `Summary:` line, the files it changed, and the full report. \
          `partial` and `blocked` say what is missing; decide whether to send more work, do it \
@@ -382,5 +389,35 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }
+    }
+
+    /// The code waits on a question unless told not to (`message_parent`:
+    /// `wait = explicit.unwrap_or(kind == Question)`). The instructions said
+    /// the opposite — "set waitForReply: true when you cannot go on … leave it
+    /// off when you can carry on" — so an agent following them paused up to
+    /// two minutes for answers it did not need.
+    #[test]
+    fn the_instructions_state_the_waiting_default_the_code_has() {
+        let catalog = Catalog::built_in();
+        let def = catalog.get("general-purpose").expect("a built-in type");
+        for text in [child_system_prompt(def, Some("E:/p")), message_system_prompt(def, Some("E:/p"))] {
+            assert!(text.contains("waits for the"), "{text}");
+            assert!(text.contains("`waitForReply: false`"), "{text}");
+            assert!(!text.contains("set `waitForReply: true`"), "{text}");
+            assert!(!text.contains("Set `waitForReply: true`"), "{text}");
+        }
+    }
+
+    /// 2026-10-12, four explorers out: the parent re-read the areas it had
+    /// handed to them, and at each report debated whether a one-line turn was
+    /// allowed. Both are now said outright.
+    #[test]
+    fn parent_instructions_say_an_agents_task_is_its_job_and_what_to_do_between_reports() {
+        let text = parent_instructions(&Catalog::built_in());
+        assert!(text.contains("What you gave an agent is its job now"), "{text}");
+        assert!(text.contains("do not read, explore or redo that part"), "{text}");
+        assert!(text.contains("says which are still running"), "{text}");
+        assert!(text.contains("That short turn is expected, not wasted"), "{text}");
+        assert!(text.contains("once the last report is in"), "{text}");
     }
 }

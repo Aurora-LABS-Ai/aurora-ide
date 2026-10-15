@@ -1,10 +1,26 @@
-//! Subscription usage for the settings card.
+//! Subscription usage for the settings card and the composer ring.
 //!
-//! `GET /api/oauth/usage` is what Claude Code's own `/usage` reads: the
-//! rolling five-hour window, the seven-day window, and per-family
-//! seven-day windows when the plan has them. Needs the `user:profile`
-//! scope, which the sign-in requests.
+//! Two sources, cheapest first:
+//!
+//! - **Every model reply.** Anthropic answers each Messages request on a
+//!   subscription token with `anthropic-ratelimit-unified-5h-utilization` /
+//!   `-5h-reset` and the `7d` pair (a 0–1 fraction and epoch seconds). Claude
+//!   Code reads them per reply (`claudeAiLimits.ts::extractRawUtilization`);
+//!   the adapter hands them to [`record_headers`], so a chat keeps the numbers
+//!   current at no cost.
+//! - **`GET /api/oauth/usage`**, what Claude Code's own `/usage` screen reads:
+//!   the same two windows plus per-family weekly windows and extra usage. It
+//!   is rate limited hard (three reads in a minute were refused), so it is
+//!   asked only when nothing recent is known or the person presses refresh.
+//!   Needs the `user:profile` scope, which the sign-in requests.
+//!
+//! Both land in one per-account copy; a failed endpoint read falls back to
+//! that copy rather than replacing numbers with an error.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
 use super::auth;
@@ -190,19 +206,171 @@ fn snapshot_of(wire: WireUsage, now_ms: i64, plan: Option<String>) -> ClaudeCode
     }
 }
 
-/// Live usage for the main account.
-pub async fn fetch_usage() -> Result<ClaudeCodeUsageSnapshot, String> {
-    let access = auth::fresh_access().await?;
+// ---------------------------------------------------------------------------
+// Per-account copy
+// ---------------------------------------------------------------------------
+
+/// How long a known reading is good enough to answer without asking the
+/// endpoint. Chats refresh it on every reply; this only bounds an idle one.
+const FRESH_FOR_MS: i64 = 5 * 60 * 1000;
+
+fn known() -> &'static Mutex<HashMap<String, ClaudeCodeUsageSnapshot>> {
+    static KNOWN: OnceLock<Mutex<HashMap<String, ClaudeCodeUsageSnapshot>>> = OnceLock::new();
+    KNOWN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn known_for(account_id: &str) -> Option<ClaudeCodeUsageSnapshot> {
+    known()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(account_id)
+        .cloned()
+}
+
+fn remember(account_id: &str, snapshot: &ClaudeCodeUsageSnapshot) {
+    known()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(account_id.to_string(), snapshot.clone());
+}
+
+/// One window from a reply's headers: `-utilization` is a 0–1 fraction,
+/// `-reset` epoch seconds. Both must be there, as Claude Code requires.
+fn header_window(headers: &HeaderMap, abbrev: &str, now_ms: i64) -> Option<ClaudeCodeUsageWindow> {
+    let read = |suffix: &str| {
+        headers
+            .get(format!("anthropic-ratelimit-unified-{abbrev}-{suffix}"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+    };
+    let utilization = read("utilization")?;
+    let reset_secs = read("reset")?;
+    let resets_at_ms = (reset_secs * 1000.0) as i64;
+    Some(ClaudeCodeUsageWindow {
+        used_percent: (utilization * 100.0).clamp(0.0, 100.0),
+        resets_at_ms: Some(resets_at_ms),
+        resets_in_seconds: Some(((resets_at_ms - now_ms) / 1000).max(0)),
+    })
+}
+
+/// The two windows a reply's headers carry, laid over what is already known
+/// about the account. The per-family weekly windows and extra usage only
+/// come from the endpoint, so they are kept as they were.
+fn merge_headers(
+    previous: Option<ClaudeCodeUsageSnapshot>,
+    headers: &HeaderMap,
+    now_ms: i64,
+) -> Option<ClaudeCodeUsageSnapshot> {
+    let five_hour = header_window(headers, "5h", now_ms);
+    let seven_day = header_window(headers, "7d", now_ms);
+    if five_hour.is_none() && seven_day.is_none() {
+        return None;
+    }
+    let mut snapshot = previous.unwrap_or(ClaudeCodeUsageSnapshot {
+        plan: None,
+        five_hour: None,
+        seven_day: None,
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        seven_day_models: Vec::new(),
+        extra_usage: None,
+        fetched_at_ms: now_ms,
+    });
+    if five_hour.is_some() {
+        snapshot.five_hour = five_hour;
+    }
+    if seven_day.is_some() {
+        snapshot.seven_day = seven_day;
+    }
+    snapshot.fetched_at_ms = now_ms;
+    Some(snapshot)
+}
+
+/// Note the usage a model reply reported for `account_id`. Called by the
+/// adapter on every response, successful or refused; a response without the
+/// headers changes nothing.
+pub fn record_headers(account_id: &str, headers: &HeaderMap) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if let Some(snapshot) = merge_headers(known_for(account_id), headers, now_ms) {
+        remember(account_id, &snapshot);
+    }
+}
+
+/// Countdowns move with the clock; recompute them for a stored reading.
+fn as_of(mut snapshot: ClaudeCodeUsageSnapshot, now_ms: i64) -> ClaudeCodeUsageSnapshot {
+    let tick = |w: &mut ClaudeCodeUsageWindow| {
+        w.resets_in_seconds = w.resets_at_ms.map(|at| ((at - now_ms) / 1000).max(0));
+    };
+    for w in [
+        &mut snapshot.five_hour,
+        &mut snapshot.seven_day,
+        &mut snapshot.seven_day_opus,
+        &mut snapshot.seven_day_sonnet,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        tick(w);
+    }
+    for m in &mut snapshot.seven_day_models {
+        tick(&mut m.window);
+    }
+    snapshot
+}
+
+/// Usage for the main account. `force` asks the endpoint even when a recent
+/// reading is known (the card's refresh button); nothing else should.
+pub async fn fetch_usage(force: bool) -> Result<ClaudeCodeUsageSnapshot, String> {
+    let main = tokio::task::spawn_blocking(super::accounts::load)
+        .await
+        .map_err(|err| format!("Accounts task failed: {err}"))??
+        .main()
+        .map(|a| a.id.clone())
+        .ok_or("Not signed in to Claude.")?;
     // Best effort: the plan only titles the block. A sign-in whose profile
     // never came back still has real windows worth drawing.
     let plan = auth::status().ok().and_then(|status| status.plan);
-    fetch_with(&access.access_token, plan).await
+    let mut snapshot = usage_for(&main, force).await?;
+    snapshot.plan = plan.or(snapshot.plan);
+    Ok(snapshot)
 }
 
-/// Live usage for one stored account, for the account list.
-pub async fn fetch_usage_for(id: &str) -> Result<ClaudeCodeUsageSnapshot, String> {
-    let access = auth::fresh_access_for(id).await?;
-    fetch_with(&access.access_token, None).await
+/// Usage for one stored account, for the account list.
+pub async fn fetch_usage_for(id: &str, force: bool) -> Result<ClaudeCodeUsageSnapshot, String> {
+    usage_for(id, force).await
+}
+
+async fn usage_for(id: &str, force: bool) -> Result<ClaudeCodeUsageSnapshot, String> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cached = known_for(id);
+    if !force {
+        if let Some(snapshot) = cached.as_ref().filter(|s| now_ms - s.fetched_at_ms < FRESH_FOR_MS) {
+            return Ok(as_of(snapshot.clone(), now_ms));
+        }
+    }
+    let fetched = async {
+        let access = auth::fresh_access_for(id).await?;
+        fetch_with(&access.access_token, None).await
+    }
+    .await;
+    match fetched {
+        Ok(snapshot) => {
+            remember(id, &snapshot);
+            Ok(snapshot)
+        }
+        // An older reading beats an error in place of the numbers; the card
+        // says how old it is.
+        Err(err) => match cached {
+            Some(snapshot) => {
+                crate::logging::log_warn(
+                    "claude_code.usage",
+                    &format!("usage read failed, showing the last known numbers: {err}"),
+                );
+                Ok(as_of(snapshot, now_ms))
+            }
+            None => Err(err),
+        },
+    }
 }
 
 async fn fetch_with(
@@ -241,6 +409,87 @@ async fn fetch_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (k, v) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    /// The header pair Claude Code reads: a 0–1 fraction and epoch seconds.
+    #[test]
+    fn reply_headers_become_the_two_windows() {
+        let now = 1_700_000_000_000;
+        let h = headers(&[
+            ("anthropic-ratelimit-unified-5h-utilization", "0.42"),
+            ("anthropic-ratelimit-unified-5h-reset", "1700003600"),
+            ("anthropic-ratelimit-unified-7d-utilization", "0.07"),
+            ("anthropic-ratelimit-unified-7d-reset", "1700600000"),
+        ]);
+        let snap = merge_headers(None, &h, now).expect("windows");
+        let five = snap.five_hour.expect("5h");
+        assert!((five.used_percent - 42.0).abs() < 1e-9);
+        assert_eq!(five.resets_in_seconds, Some(3_600));
+        assert!((snap.seven_day.expect("7d").used_percent - 7.0).abs() < 1e-9);
+        assert_eq!(snap.fetched_at_ms, now);
+    }
+
+    /// The endpoint's extra windows survive a reply that only knows two.
+    #[test]
+    fn reply_headers_keep_what_only_the_endpoint_knows() {
+        let now = 1_700_000_000_000;
+        let wire: WireUsage = serde_json::from_value(serde_json::json!({
+            "five_hour": { "utilization": 10.0, "resets_at": null },
+            "seven_day_opus": { "utilization": 55.0, "resets_at": null },
+            "extra_usage": { "is_enabled": true }
+        }))
+        .unwrap();
+        let earlier = snapshot_of(wire, now - 60_000, Some("max".into()));
+        let h = headers(&[
+            ("anthropic-ratelimit-unified-5h-utilization", "0.5"),
+            ("anthropic-ratelimit-unified-5h-reset", "1700003600"),
+        ]);
+        let snap = merge_headers(Some(earlier), &h, now).expect("merged");
+        assert!((snap.five_hour.unwrap().used_percent - 50.0).abs() < 1e-9);
+        assert_eq!(snap.seven_day_opus.unwrap().used_percent, 55.0);
+        assert!(snap.extra_usage.unwrap().enabled);
+        assert_eq!(snap.plan.as_deref(), Some("max"));
+        assert_eq!(snap.fetched_at_ms, now);
+    }
+
+    #[test]
+    fn a_reply_without_the_headers_changes_nothing() {
+        assert!(merge_headers(None, &HeaderMap::new(), 0).is_none());
+        // Half a pair is not a reading.
+        let h = headers(&[("anthropic-ratelimit-unified-5h-utilization", "0.5")]);
+        assert!(merge_headers(None, &h, 0).is_none());
+    }
+
+    /// A reading answers without the endpoint while fresh; the countdown is
+    /// recomputed for the moment it is read.
+    #[tokio::test]
+    async fn a_fresh_reading_is_served_without_asking_the_endpoint() {
+        let id = "usage-test-fresh-account";
+        let now = chrono::Utc::now().timestamp_millis();
+        let reset = now / 1000 + 7_200;
+        record_headers(
+            id,
+            &headers(&[
+                ("anthropic-ratelimit-unified-5h-utilization", "0.25"),
+                ("anthropic-ratelimit-unified-5h-reset", &reset.to_string()),
+            ]),
+        );
+        // No such stored account: reaching the endpoint path would fail.
+        let snap = fetch_usage_for(id, false).await.expect("served from the reply's reading");
+        let five = snap.five_hour.unwrap();
+        assert!((five.used_percent - 25.0).abs() < 1e-9);
+        assert!((7_190..=7_200).contains(&five.resets_in_seconds.unwrap()));
+    }
 
     #[test]
     fn maps_the_windows_claude_code_reads() {

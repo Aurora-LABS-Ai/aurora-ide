@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use super::agent_v2::AgentRegistry;
 use crate::prompt_refine::{self, RefineConfig, RefineState, RefineValidation};
+use crate::reply_suggest::{self, log as suggest_log};
 
 /// Check that the llama.cpp binary + model are present and usable.
 #[tauri::command]
@@ -75,120 +77,183 @@ pub async fn prompt_refine_dictation(
     .map_err(|e| format!("dictation task failed: {e}"))?
 }
 
-/// Generate up to 4 tappable reply suggestions from the last exchange — the
-/// model sees the user's message AND the assistant's reply and answers as
-/// the user (fewer chips when outputs fail the quality filters).
+/// The conversation folder and its project folder, for the suggestion log.
+/// `None` for a conversation that is not on disk (nothing to log beside).
+fn suggestion_dirs(
+    registry: &AgentRegistry,
+    thread_id: &str,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    match registry.store_for_thread(thread_id) {
+        Ok(Some(store)) => Some((store.thread_dir(thread_id), store.dir().to_path_buf())),
+        Ok(None) => None,
+        Err(err) => {
+            crate::logging::log_warn(
+                "reply_suggest",
+                &format!("could not locate conversation {thread_id} for the suggestion log: {err}"),
+            );
+            None
+        }
+    }
+}
+
+/// Write a run to the conversation's suggestion log. A failed write is logged
+/// and never fails the suggestions themselves.
+fn log_run(thread_dir: &std::path::Path, record: &suggest_log::RunRecord) {
+    if let Err(err) = suggest_log::write_run(thread_dir, record) {
+        crate::logging::log_warn("reply_suggest", &format!("suggestion log not written: {err}"));
+    }
+}
+
+/// Generate up to 4 tappable reply suggestions from the last exchange on the
+/// LOCAL model — the model sees the user's message AND the assistant's reply
+/// and answers as the user (fewer chips when outputs fail the quality filters).
+/// Kept light on purpose: one exchange in, no tools, no conversation brief.
+///
+/// With `thread_id` and `run_id`, the run is written to that conversation's
+/// `suggestions.jsonl` like a cloud run.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn prompt_refine_suggest(
     state: State<'_, Arc<RefineState>>,
+    registry: State<'_, Arc<AgentRegistry>>,
     request_id: String,
     user_text: String,
     text: String,
     config: RefineConfig,
+    thread_id: Option<String>,
+    run_id: Option<String>,
 ) -> Result<Vec<String>, String> {
     let st = state.inner().clone();
+    let registry = registry.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        prompt_refine::suggest_replies(&st, &request_id, &user_text, &text, &config)
+        let started = std::time::Instant::now();
+        let result = prompt_refine::suggest_replies_traced(&st, &request_id, &user_text, &text, &config);
+
+        if let (Some(thread_id), Some(run_id)) = (thread_id.as_deref(), run_id.as_deref()) {
+            if let Some((thread_dir, _)) = suggestion_dirs(&registry, thread_id) {
+                let (input, raw, suggestions, error) = match &result {
+                    Ok(run) => (run.input.clone(), run.raw.clone(), run.suggestions.clone(), None),
+                    Err(err) => (String::new(), String::new(), Vec::new(), Some(err.clone())),
+                };
+                let model = std::path::Path::new(&config.model_path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| config.model_path.clone());
+                log_run(
+                    &thread_dir,
+                    &suggest_log::RunRecord {
+                        kind: "run",
+                        run_id: run_id.to_string(),
+                        at: chrono::Utc::now().to_rfc3339(),
+                        thread_id: thread_id.to_string(),
+                        path: "local",
+                        model,
+                        prompt_version: "local-v1",
+                        thinking_requested: false,
+                        input_chars: input.chars().count(),
+                        input,
+                        brief: None,
+                        thinking: String::new(),
+                        raw_text: raw,
+                        tool_input: None,
+                        answered_via: if suggestions.is_empty() { "none" } else { "text" },
+                        suggestions,
+                        usage: None,
+                        stop_reason: None,
+                        latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        error,
+                    },
+                );
+            }
+        }
+        result.map(|run| run.suggestions)
     })
     .await
     .map_err(|e| format!("suggest task failed: {e}"))?
 }
 
-/// How long a cloud suggestion call may take before it is dropped. The chips
-/// are only useful while the user is still deciding what to type.
-const CLOUD_SUGGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Room for four short numbered lines, with slack for a model that adds a
-/// sentence before the list.
-const CLOUD_SUGGEST_MAX_TOKENS: u32 = 300;
-
-/// Reply suggestions from one of the user's configured models instead of the
-/// local llama.cpp one.
+/// Reply suggestions from one of the user's configured models, written from
+/// the whole conversation (see [`crate::reply_suggest`]).
 ///
-/// Same instruction, same input, and same filtering as the local path
-/// ([`prompt_refine::suggestion_exchange`] / [`prompt_refine::parse_suggestions`]),
-/// so switching model changes who writes the chips, not what they look like.
-/// Goes through [`crate::api::build_api_client`], the factory a real turn uses,
-/// so every provider kind works here, including the OAuth ones. Reasoning is
-/// off: four short replies do not need it, and it is the expensive part.
+/// Reads the conversation from disk by `thread_id`, so the window sends only
+/// which conversation and which model. Every run — answered, empty, timed out
+/// or failed — is written to the conversation's `suggestions.jsonl` under
+/// `run_id`, which the window echoes back when it reports what the developer
+/// did with the chips.
 #[tauri::command]
 pub async fn reply_suggest_cloud(
+    registry: State<'_, Arc<AgentRegistry>>,
     config: crate::api::client::ProviderConfigSnapshot,
     model: String,
-    user_text: String,
-    text: String,
+    thread_id: String,
+    run_id: String,
 ) -> Result<Vec<String>, String> {
-    use crate::agent_runtime::api_client::{ApiRequest, ReasoningRequest};
-    use crate::agent_runtime::events::AssistantEvent;
-    use crate::agent_runtime::types::{ContentBlock, ConversationMessage};
-
     if model.trim().is_empty() {
         return Err("no model selected for reply suggestions".to_string());
     }
-    let exchange = prompt_refine::suggestion_exchange(&user_text, &text)?;
+    let registry = registry.inner().clone();
+    let lookup_id = thread_id.clone();
+    let located = tauri::async_runtime::spawn_blocking(move || {
+        let store = registry
+            .store_for_thread(&lookup_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("conversation {lookup_id} is not on disk"))?;
+        let loaded = store
+            .load(&lookup_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("conversation {lookup_id} has no messages on disk"))?;
+        // Aurora Chat's conversations live in their own store; anything else
+        // is a project's.
+        let chat = Arc::ptr_eq(&store, registry.chat_store());
+        Ok::<_, String>((
+            store.thread_dir(&lookup_id),
+            store.dir().to_path_buf(),
+            loaded.session.messages().to_vec(),
+            chat,
+        ))
+    })
+    .await
+    .map_err(|e| format!("suggestion lookup failed: {e}"))??;
+    let (thread_dir, project_dir, messages, chat) = located;
 
-    let client = crate::api::build_api_client(&config);
-    let messages = vec![ConversationMessage::user_text(&exchange, 0)];
-    let request = ApiRequest {
-        model: &model,
-        system_prompt: Some(prompt_refine::suggestion_system_prompt()),
-        messages: &messages,
-        tools: &[],
-        tool_choice: Default::default(),
-        temperature: Some(0.7),
-        max_output_tokens: CLOUD_SUGGEST_MAX_TOKENS,
-        reasoning: ReasoningRequest::disabled(),
-        tool_bridge: None,
-        // Belongs to no conversation, so no cache-affinity key.
-        session_key: None,
-    };
-
-    // Drain the sink concurrently: the adapters `.send().await` into it, so a
-    // full buffer would deadlock the stream against itself.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<AssistantEvent>(64);
-    let collector = tokio::spawn(async move {
-        let mut streamed = String::new();
-        while let Some(event) = rx.recv().await {
-            if let AssistantEvent::TextDelta { delta } = event {
-                streamed.push_str(&delta);
-            }
-        }
-        streamed
-    });
-
-    let outcome = tokio::time::timeout(
-        CLOUD_SUGGEST_TIMEOUT,
-        client.stream(request, tx, tokio_util::sync::CancellationToken::new()),
+    let run = reply_suggest::run_cloud(
+        &config,
+        &model,
+        reply_suggest::RunContext {
+            run_id: &run_id,
+            thread_id: &thread_id,
+            thread_dir: &thread_dir,
+            project_dir: &project_dir,
+            messages: &messages,
+            think: false,
+            chat,
+        },
     )
     .await;
-    let streamed = collector.await.unwrap_or_default();
+    let error = run.record.error.clone();
+    log_run(&thread_dir, &run.record);
+    if run.suggestions.is_empty() {
+        return Err(error.unwrap_or_else(|| "no suggestions".to_string()));
+    }
+    Ok(run.suggestions)
+}
 
-    let usage = match outcome {
-        Err(_) => {
-            return Err(format!(
-                "no reply within {}s",
-                CLOUD_SUGGEST_TIMEOUT.as_secs()
-            ))
-        }
-        Ok(Err(err)) => return Err(err.to_string()),
-        Ok(Ok(usage)) => usage,
-    };
-
-    // Prefer the assembled message; fall back to the raw deltas for a provider
-    // that only streams and returns an empty final message.
-    let assembled: String = usage
-        .assistant_message
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    let raw = if assembled.trim().is_empty() {
-        streamed
-    } else {
-        assembled
-    };
-    Ok(prompt_refine::parse_suggestions(&raw))
+/// Record what the developer did with a set of chips: sent one unchanged,
+/// changed one, typed their own, or sent before the chips arrived. Written to
+/// the conversation's log and the project's outcome file; the cloud model
+/// learns from the latter.
+#[tauri::command]
+pub async fn reply_suggest_outcome(
+    registry: State<'_, Arc<AgentRegistry>>,
+    thread_id: String,
+    outcome: suggest_log::OutcomeInput,
+) -> Result<(), String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (thread_dir, project_dir) = suggestion_dirs(&registry, &thread_id)
+            .ok_or_else(|| format!("conversation {thread_id} is not on disk"))?;
+        suggest_log::write_outcome(&thread_dir, &project_dir, &thread_id, outcome)
+    })
+    .await
+    .map_err(|e| format!("outcome task failed: {e}"))?
 }

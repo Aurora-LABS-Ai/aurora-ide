@@ -251,11 +251,51 @@ export const APPEARANCE_PREFS = {
     parse: bool,
   } satisfies PrefSpec<boolean>,
 
-  /** Fade each new tool call in, one after another, and keep a finished run
-   *  open for a moment before it folds, so a fast model's parallel batch does
-   *  not snap onto the screen and away again. Reduce motion drops the fade and
-   *  keeps the pause. */
+  /** Each new tool call opens its own space instead of landing at full height
+   *  in one frame, so the transcript glides up rather than jumping; with the
+   *  timeline spine on, the call also grows off the spine. A finished run stays
+   *  open for a moment before it folds. Reduce motion drops the motion and
+   *  keeps the pause. On by default since 2026-10-12 (probe:
+   *  Documents/aurora-tool-arrival-designs.html, "Grows off the spine"). */
   transcriptSmoothTools: {
+    default: true,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** While a run of tool calls is the live edge of a streaming turn, draw it
+   *  as ONE line that changes in place — the call running now, then
+   *  "Thinking" until the next — instead of a new row per call. A model that
+   *  makes one call per request (Gemini Flash: ten calls, four seconds apart)
+   *  otherwise moves the whole conversation every few seconds. Once the run is
+   *  no longer the live edge it is drawn exactly as before. Opt-in. */
+  transcriptLiveLine: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Fold each long stretch of a reply that has no text for the reader —
+   *  thoughts and tool calls only — into one work card. A model that thinks
+   *  and calls tools seventy times before it writes a word (DeepSeek V4.1
+   *  Flash, 2026-10-12: 72 requests, 21 minutes) otherwise grows the page by
+   *  a row every few seconds. Inside, every row is today's row, so each
+   *  thought and each tool still opens on its own. Opt-in. Probe:
+   *  Documents/aurora-work-card-designs.html, 02. */
+  transcriptWorkCards: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Transcript → Reply layout: the model may lay out an explanation with a
+   *  row of facts, a flow and a note inside its reply (`lib/reply-layout`).
+   *  Like Chapters, this adds a section to the agent's instructions, so it
+   *  changes what the agent writes; off, those fences are code blocks. Opt-in. */
+  transcriptReplyLayout: {
     default: false,
     exported: true,
     reset: true,

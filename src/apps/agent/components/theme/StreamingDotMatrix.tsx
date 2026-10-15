@@ -42,8 +42,12 @@ export const StreamingDotMatrix: React.FC<{ size?: number }> = ({ size = 22 }) =
         gridTemplateColumns: `repeat(3, ${cell}px)`,
         gridTemplateRows: `repeat(3, ${cell}px)`,
         gap: `${gap}px`,
-        filter:
-          "drop-shadow(0 0 6px color-mix(in srgb, var(--agw-accent) 18%, transparent))",
+        // No `filter: drop-shadow` on the grid. A filter on the PARENT of
+        // nine moving dots re-renders the whole shadowed group every frame,
+        // and one of these sits in every running chat's header, rail row and
+        // composer. With two chats streaming it was the second-largest cost
+        // per frame (measured 2026-10-12: 50 → 58 fps under 4× CPU throttle
+        // with only this removed). Each dot still carries its own glow below.
       }}
     >
       {DOT_DELAYS.map((delay, index) => (

@@ -1,10 +1,13 @@
 /**
  * `aurora/canvas` — the component surface a live canvas is built from.
  *
- * This module never runs in the window. It is transformed at build time and
- * inlined into the canvas sandbox document (see `auroraCanvasRuntime` in
- * `vite.config.ts`), where it becomes the `aurora/canvas` module the agent's
- * compiled source requires.
+ * It runs in two places. It is transformed at build time and inlined into the
+ * canvas sandbox document (see `auroraCanvasRuntime` in `vite.config.ts`),
+ * where it becomes the `aurora/canvas` module the agent's compiled source
+ * requires. And the Agent Window imports it directly to draw an answer box
+ * (`components/answer-box/`), so a box in a reply and a canvas in the dock are
+ * built from the same parts. Nothing here may import anything but `react`:
+ * the sandbox build refuses any other import.
  *
  * ## Why these components and not others
  *
@@ -38,7 +41,14 @@
  * component tree. It is transformed at build time and executed inside the
  * canvas sandbox, so `useHostTheme` sitting beside the components costs
  * nothing and keeps the public surface in one file. */
-import { isValidElement, useMemo, useState, type ReactNode } from "react";
+import {
+  isValidElement,
+  useId,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 /**
  * Semantic emphasis. Deliberately small: one accent hue plus real status.
@@ -129,11 +139,16 @@ export interface RowProps {
   value?: string | number;
   /** Unit for `value`. A bare number is not a measurement. */
   unit?: string;
+  /**
+   * The row that answers the question — "Each pays", "Total". One per list:
+   * a list where every row is emphasised has no answer in it.
+   */
+  emphasis?: boolean;
 }
 
-export function Row({ rank, title, description, badge, badgeTone, value, unit }: RowProps) {
+export function Row({ rank, title, description, badge, badgeTone, value, unit, emphasis }: RowProps) {
   return (
-    <li className="ac-row">
+    <li className={emphasis ? "ac-row ac-row-strong" : "ac-row"}>
       {rank === undefined ? null : <span className="ac-row-rank">{rank}</span>}
       <div className="ac-row-main">
         <span className="ac-row-title">{title}</span>
@@ -761,6 +776,59 @@ export function Tabs({ tabs }: TabsProps) {
   );
 }
 
+export interface PickerItem {
+  id: string;
+  label: string;
+  /** One short line under the label. */
+  caption?: string;
+}
+
+export interface PickerProps {
+  /** What the choice is of, read by assistive tech. */
+  label: string;
+  items: PickerItem[];
+  /** The chosen id. Omit to let the picker keep its own choice, starting at the first item. */
+  value?: string;
+  onChange?: (id: string) => void;
+}
+
+/**
+ * A grid of a few named things to choose between, one chosen at a time, for a
+ * canvas whose detail below changes with the choice. Not a wall of cards: the
+ * items are small, the chosen one is marked by its line and weight, and the
+ * grid exists only because something else reads the choice.
+ */
+export function Picker({ label, items, value, onChange }: PickerProps) {
+  const [own, setOwn] = useState(items[0]?.id);
+  if (items.length === 0) return null;
+  const chosen = value ?? own;
+  const choose = (id: string) => {
+    setOwn(id);
+    onChange?.(id);
+  };
+  return (
+    <div className="ac-picker" role="radiogroup" aria-label={label}>
+      {items.map((item) => {
+        const active = item.id === chosen;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            className="ac-picker-item"
+            data-active={active || undefined}
+            onClick={() => choose(item.id)}
+          >
+            <span className="ac-picker-label">{item.label}</span>
+            {item.caption ? <span className="ac-picker-caption">{item.caption}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function Timeline({ children }: { children?: ReactNode }) {
   if (isEmpty(children)) return null;
   return <ol className="ac-timeline">{children}</ol>;
@@ -783,6 +851,315 @@ export function Event({
       <span className="ac-event-title">{title}</span>
       {description ? <span className="ac-event-desc">{description}</span> : null}
     </li>
+  );
+}
+
+/* ----------------------------------------------------------------- inputs */
+
+/**
+ * State that is the caller's when it passes `value`, and the component's own
+ * when it does not. A canvas can drop a `<Stepper>` in with a `defaultValue`
+ * and read nothing back; a page that computes from it passes `value` and
+ * `onChange` and owns the number.
+ */
+function useControllable<T>(
+  value: T | undefined,
+  defaultValue: T,
+  onChange: ((next: T) => void) | undefined,
+): [T, (next: T) => void] {
+  const [own, setOwn] = useState(defaultValue);
+  const controlled = value !== undefined;
+  const current = controlled ? value : own;
+  const set = (next: T) => {
+    if (!controlled) setOwn(next);
+    onChange?.(next);
+  };
+  return [current, set];
+}
+
+/** Decimal places in a step, so 0.1 + 0.2 lands on 0.3 and not 0.30000000000000004. */
+const decimalsOf = (step: number): number => {
+  const text = String(step);
+  const dot = text.indexOf(".");
+  return dot === -1 ? 0 : text.length - dot - 1;
+};
+
+/** "person/people" → the right word for the number; a plain unit passes through. */
+const unitFor = (unit: string | undefined, value: number): string | undefined => {
+  if (!unit) return undefined;
+  const slash = unit.indexOf("/");
+  if (slash === -1) return unit;
+  return value === 1 ? unit.slice(0, slash) : unit.slice(slash + 1);
+};
+
+export interface StepperProps {
+  /** What the number counts. Required, like every input's label. */
+  label: string;
+  value?: number;
+  defaultValue?: number;
+  onChange?: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  /** "kg", or "person/people" to follow the number. */
+  unit?: string;
+  /**
+   * `large` is for the ONE input a tool turns on: the number takes the centre
+   * and the buttons sit at the edges. Everything else stays `default`, a row
+   * with its label on the left.
+   */
+  size?: "default" | "large";
+}
+
+/**
+ * A whole number you change with − and +, or with the arrow keys on the
+ * number itself (Page Up/Down move five steps, Home/End jump to the ends).
+ * The buttons disable at the limits rather than doing nothing.
+ */
+export function Stepper({
+  label,
+  value,
+  defaultValue,
+  onChange,
+  min = 0,
+  max = 1_000_000,
+  step = 1,
+  unit,
+  size = "default",
+}: StepperProps) {
+  const start = Math.min(max, Math.max(min, defaultValue ?? min));
+  const [current, setCurrent] = useControllable(value, start, onChange);
+  const places = decimalsOf(step);
+  const go = (next: number) => {
+    const clamped = Math.min(max, Math.max(min, Number(next.toFixed(places))));
+    if (clamped !== current) setCurrent(clamped);
+  };
+  const onKeyDown = (event: KeyboardEvent) => {
+    const moves: Record<string, number> = {
+      ArrowUp: step,
+      ArrowRight: step,
+      ArrowDown: -step,
+      ArrowLeft: -step,
+      PageUp: step * 5,
+      PageDown: -step * 5,
+    };
+    if (event.key in moves) go(current + moves[event.key]);
+    else if (event.key === "Home") go(min);
+    else if (event.key === "End") go(max);
+    else return;
+    event.preventDefault();
+  };
+  const word = unitFor(unit, current);
+  const minus = (
+    <button
+      type="button"
+      className="ac-step-btn"
+      aria-label={`Decrease ${label}`}
+      disabled={current <= min}
+      onClick={() => go(current - step)}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3.5 8h9" />
+      </svg>
+    </button>
+  );
+  const plus = (
+    <button
+      type="button"
+      className="ac-step-btn"
+      aria-label={`Increase ${label}`}
+      disabled={current >= max}
+      onClick={() => go(current + step)}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 3.5v9M3.5 8h9" />
+      </svg>
+    </button>
+  );
+  const number = (
+    <span
+      className="ac-step-value ac-num"
+      role="spinbutton"
+      tabIndex={0}
+      aria-label={label}
+      aria-valuenow={current}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuetext={word ? `${format(current)} ${word}` : undefined}
+      onKeyDown={onKeyDown}
+    >
+      {format(current)}
+    </span>
+  );
+
+  if (size === "large") {
+    return (
+      <div className="ac-stepper-large">
+        <span className="ac-field-label">{label}</span>
+        <div className="ac-stepper-hero">
+          {minus}
+          <span className="ac-stepper-mid">
+            {number}
+            {word ? <span className="ac-stepper-unit">{word}</span> : null}
+          </span>
+          {plus}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="ac-field">
+      <span className="ac-field-label">{label}</span>
+      <span className="ac-stepper">
+        {minus}
+        {number}
+        {plus}
+        {word ? <span className="ac-stepper-unit">{word}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+export interface NumberFieldProps {
+  label: string;
+  value?: number;
+  defaultValue?: number;
+  onChange?: (value: number) => void;
+  min?: number;
+  max?: number;
+  /** Shown before the number, inside the field: "$". */
+  prefix?: string;
+  /** Shown after it: "kg", "%". */
+  suffix?: string;
+}
+
+/**
+ * A typed number. While what is typed is not a number in range, the field
+ * says why underneath and keeps reporting the last good value — so whatever
+ * is computed from it never flips to NaN mid-keystroke.
+ */
+export function NumberField({
+  label,
+  value,
+  defaultValue,
+  onChange,
+  min,
+  max,
+  prefix,
+  suffix,
+}: NumberFieldProps) {
+  const id = useId();
+  const [current, setCurrent] = useControllable(value, defaultValue ?? 0, onChange);
+  const [text, setText] = useState(() => String(current));
+  const [error, setError] = useState<string | null>(null);
+  // A value changed from outside (a reset) replaces what was typed.
+  const [seen, setSeen] = useState(current);
+  if (seen !== current) {
+    setSeen(current);
+    if (Number(text.replace(/[,\s]/g, "")) !== current) setText(String(current));
+  }
+  const onInput = (raw: string) => {
+    setText(raw);
+    const cleaned = raw.replace(/[,\s]/g, "").replace(prefix ?? "", "");
+    const parsed = cleaned === "" ? Number.NaN : Number(cleaned);
+    let problem: string | null = null;
+    if (!Number.isFinite(parsed)) problem = cleaned === "" ? "Enter a number." : "That isn't a number.";
+    else if (min !== undefined && parsed < min) problem = `It can't be less than ${format(min)}.`;
+    else if (max !== undefined && parsed > max) problem = `It can't be more than ${format(max)}.`;
+    setError(problem);
+    if (!problem && parsed !== current) {
+      setSeen(parsed);
+      setCurrent(parsed);
+    }
+  };
+  return (
+    <div className="ac-field">
+      <label className="ac-field-label" htmlFor={id}>
+        {label}
+      </label>
+      <span className="ac-number" data-invalid={error ? "" : undefined}>
+        {prefix ? <span className="ac-number-affix">{prefix}</span> : null}
+        <input
+          id={id}
+          className="ac-num"
+          inputMode="decimal"
+          value={text}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+          onChange={(event) => onInput(event.target.value)}
+        />
+        {suffix ? <span className="ac-number-affix">{suffix}</span> : null}
+      </span>
+      {error ? (
+        <span className="ac-field-error" id={`${id}-error`}>
+          {error}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export interface ChoiceOption {
+  label: string;
+  value: string | number;
+}
+
+export interface ChoiceProps {
+  label: string;
+  /** Two to five. Past that it is a list to pick from, not a choice. */
+  options: ChoiceOption[];
+  value?: string | number;
+  defaultValue?: string | number;
+  onChange?: (value: string | number) => void;
+}
+
+/**
+ * One of a few options, side by side. A real radio group: the arrow keys move
+ * the choice, and the chosen option is told apart by its fill AND its weight.
+ */
+export function Choice({ label, options, value, defaultValue, onChange }: ChoiceProps) {
+  const [current, setCurrent] = useControllable<string | number>(
+    value,
+    defaultValue ?? options[0]?.value ?? "",
+    onChange,
+  );
+  if (options.length === 0) return null;
+  const index = Math.max(
+    0,
+    options.findIndex((option) => option.value === current),
+  );
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const delta =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? -1
+          : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    const next = (index + delta + options.length) % options.length;
+    setCurrent(options[next].value);
+    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+    buttons[next]?.focus();
+  };
+  return (
+    <div className="ac-field">
+      <span className="ac-field-label">{label}</span>
+      <div className="ac-choice" role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+        {options.map((option, i) => (
+          <button
+            key={String(option.value)}
+            type="button"
+            role="radio"
+            aria-checked={i === index}
+            tabIndex={i === index ? 0 : -1}
+            onClick={() => setCurrent(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -4,6 +4,7 @@ import {
   buildCanvasDocument,
   CanvasCompileError,
   compileCanvasSource,
+  repairCanvasImports,
 } from "@/apps/agent/services/artifacts/canvas-react";
 
 describe("compileCanvasSource", () => {
@@ -181,5 +182,69 @@ describe("component imports are checked against the real SDK surface", () => {
 
     expect(failure.message).toContain("There is no Card");
     expect(failure.message).toContain("List + Row");
+  });
+
+  /**
+   * Thread 22a43243 (2026-10-12): the import listed eleven components and the
+   * JSX used a twelfth. It compiled, was saved, and the panel showed
+   * "ReferenceError: Facts is not defined" instead of the canvas.
+   */
+  it("rejects a component that is used but missing from the import, naming the fix", async () => {
+    const failure = (await compileCanvasSource(
+      `import { Canvas, Section } from "aurora/canvas";
+       export default function R() {
+         return <Canvas><Section><Facts><Fact label="a" value="b" /></Facts></Section></Canvas>;
+       }`,
+    ).catch((error: unknown) => error)) as CanvasCompileError;
+
+    expect(failure).toBeInstanceOf(CanvasCompileError);
+    expect(failure.diagnostics.map((d) => d.message)).toEqual([
+      '<Facts> is used but not imported. Add Facts to the import from "aurora/canvas".',
+      '<Fact> is used but not imported. Add Fact to the import from "aurora/canvas".',
+    ]);
+    expect(failure.diagnostics[0].line).toBe(3);
+  });
+
+  it("shows an already-saved canvas that forgot an import, without loosening the save gate", async () => {
+    const saved = `import { Canvas } from "aurora/canvas";
+export default function R() { return <Canvas><Facts><Fact label="a" value="b" /></Facts></Canvas>; }`;
+    // Saving still refuses it…
+    await expect(compileCanvasSource(saved)).rejects.toBeInstanceOf(CanvasCompileError);
+    // …showing it imports the two real components it forgot, on line 1.
+    const repaired = await repairCanvasImports(saved);
+    expect(repaired.split("\n")).toHaveLength(saved.split("\n").length);
+    expect(repaired.startsWith('import { Facts, Fact } from "aurora/canvas"; ')).toBe(true);
+    await expect(compileCanvasSource(repaired)).resolves.toBeDefined();
+  });
+
+  it("repairs nothing that is not a real aurora/canvas component", async () => {
+    const saved = `export default function R() { return <Widget />; }`;
+    expect(await repairCanvasImports(saved)).toBe(saved);
+    await expect(compileCanvasSource(await repairCanvasImports(saved))).rejects.toBeInstanceOf(CanvasCompileError);
+  });
+
+  it("rejects a component tag nothing defines, even when it is not an SDK name", async () => {
+    const failure = (await compileCanvasSource(
+      `export default function R() { return <Widget />; }`,
+    ).catch((error: unknown) => error)) as CanvasCompileError;
+    expect(failure.message).toContain("<Widget> is used but never defined or imported");
+  });
+
+  it("accepts components the canvas defines itself, in every way it can", async () => {
+    await expect(
+      compileCanvasSource(
+        `import { Section } from "aurora/canvas";
+         import * as Sdk from "aurora/canvas";
+         function Local() { return <span />; }
+         const Arrow = () => <span />;
+         class Klass extends Object {}
+         const { Row: Renamed } = Sdk;
+         function Wrap({ As }: { As: any }) { return <As />; }
+         export default function R() {
+           return <Section><Local /><Arrow /><Renamed /><Wrap As={Local} /><Sdk.List /></Section>;
+         }
+         void Klass;`,
+      ),
+    ).resolves.toBeDefined();
   });
 });

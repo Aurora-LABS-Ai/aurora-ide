@@ -51,18 +51,96 @@ fn index_for(ctx: &ToolContext) -> Result<Arc<CodeIndex>, ToolError> {
         })
 }
 
-fn required_name(input: &Value, op: &str) -> Result<String, ToolError> {
-    input
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            ToolError::InvalidInput(format!(
-                "`{op}` needs a `name` — the function, React component, class, type or method to look up."
-            ))
-        })
+/// Most names one `definition`/`usages` call answers. Each is an in-memory
+/// lookup, so the cap is about the size of the answer, not the time.
+const MAX_NAMES: usize = 20;
+
+/// The names a `definition`/`usages` call asks about, in the order given.
+///
+/// Models arrive with grep habits, so `name` accepts a grep-style alternation
+/// (`a|b|c`, or the escaped `a\|b\|c`) and commas as well as one name, and
+/// `names` takes a list. Word-boundary and call-paren decorations a model
+/// carries over from a regex (`\bfoo\b`, `foo(`) are stripped: the index
+/// matches whole identifiers anyway. Duplicates are asked once.
+fn requested_names(input: &Value, op: &str) -> Result<Vec<String>, ToolError> {
+    let mut raw: Vec<&str> = Vec::new();
+    if let Some(list) = input.get("names").and_then(Value::as_array) {
+        raw.extend(list.iter().filter_map(Value::as_str));
+    }
+    if let Some(name) = input.get("name").and_then(Value::as_str) {
+        raw.push(name);
+    }
+    let mut names: Vec<String> = Vec::new();
+    for chunk in raw {
+        for piece in chunk.split(['|', ',']) {
+            let mut name = piece.trim().trim_end_matches('\\').trim();
+            name = name.strip_prefix("\\b").unwrap_or(name);
+            name = name.strip_suffix("\\b").unwrap_or(name);
+            name = name.trim_end_matches(['(', ')']).trim();
+            if !name.is_empty() && !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        return Err(ToolError::InvalidInput(format!(
+            "`{op}` needs a `name` — the function, React component, class, type or method to look up. \
+             Several at once: `\"name\": \"a|b|c\"`."
+        )));
+    }
+    if names.len() > MAX_NAMES {
+        return Err(ToolError::InvalidInput(format!(
+            "`{op}` takes at most {MAX_NAMES} names per call; this asked for {}. Split it into two calls.",
+            names.len()
+        )));
+    }
+    Ok(names)
+}
+
+/// Answer `definition` or `usages` for every requested name.
+///
+/// One name keeps the single-answer shape every earlier transcript has, so a
+/// model that asks for one thing reads exactly what it always read. Several
+/// names come back as one result per name, in the order asked, plus a line
+/// saying which were not found — the grep-alternation answer, but per symbol.
+fn op_lookup_many(
+    idx: &CodeIndex,
+    op: &str,
+    names: &[String],
+    in_file: Option<&str>,
+    one: fn(&CodeIndex, &str, Option<&str>) -> Value,
+) -> Value {
+    if let [name] = names {
+        return one(idx, name, in_file);
+    }
+    let results: Vec<Value> = names.iter().map(|n| one(idx, n, in_file)).collect();
+    let answered = |r: &Value| match op {
+        "definition" => r.get("found").and_then(Value::as_u64).unwrap_or(0) > 0,
+        _ => r.get("resolved").and_then(Value::as_bool) == Some(true),
+    };
+    let missing: Vec<&str> = names
+        .iter()
+        .zip(&results)
+        .filter(|(_, r)| !answered(r))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    let message = if missing.is_empty() {
+        format!("{} names, each answered below.", names.len())
+    } else {
+        format!(
+            "{} names; {} answered. Not answered (each result says why): {}.",
+            names.len(),
+            names.len() - missing.len(),
+            missing.join(", ")
+        )
+    };
+    serde_json::json!({
+        "success": true,
+        "op": op,
+        "names": names,
+        "message": message,
+        "results": results,
+    })
 }
 
 /// One explicit definition answer. Signature and documentation stay here,
@@ -782,44 +860,28 @@ impl ToolExecutor for CodeTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "code".into(),
-            description: "Look up symbols, dependencies, and ranked source passages in this project's code index.
+            description: "This project's code index: find code by NAME. Reach for it first whenever you know or can guess \
+the name of a function, component, class, type or method — it answers from memory in milliseconds, \
+with exact file:line, and never returns lines that merely mention the word.
 
-Use it instead of `grep` whenever you are looking for a FUNCTION, REACT COMPONENT, CLASS, TYPE or METHOD:
-  • `definition` — where is `X` defined? Returns its exact file, line, declaration signature and \
-documentation summary when present, instead of every line that mentions the word.
-  • `usages` — who calls `X`? The list of functions that use it, so you know what a change breaks \
-before you make it.
-  • `outline` — what does this file define? Names and line numbers only, so you can pick the one \
-line to read instead of loading a 3000-line file.
-  • `modules` — how is this project wired? Which areas depend on which, what is most depended upon, \
-and which directories import each other in a circle. Use it to orient before a refactor.
-  • `search` — ranked word search across source and file names using `query`, e.g. refresh session. \
-Splits camelCase and snake_case identifiers. Returns bounded source passages, complete functions when \
-they fit, exact file/line locations, matched terms and truncation/coverage flags. Rankings are text \
-relevance, not proof of a call or dependency. Follow with definition/usages and file_read. \
-Use `in_file` to restrict paths. No model, embeddings or network requests.
-  • `refresh` — update the local index, reusing syntax from unchanged files.
+ops:
+  • `definition` — where is it defined: file, line, signature, doc summary.
+  • `usages` — who calls, imports or renders it, grouped by caller. Check this before changing a symbol.
+    Both take SEVERAL names in one call, like a grep alternation: `\"name\": \"loadAccounts|refreshFolders|Session::append\"` \
+(or a `names` list). One result per name.
+  • `outline` — what a file or directory defines, with line numbers. Read the lines you need instead of the whole file.
+  • `modules` — which folders depend on which, and any import cycles. Orient before a refactor.
+  • `search` — ranked word search over source with `query` (e.g. `refresh session`); returns whole functions with file:line.
+  • `refresh` — re-index now (it normally keeps itself current, including external edits).
 
-Keep using `grep` for text: string literals, comments, config keys, error messages, TODOs.
+Use `grep` instead for TEXT: string literals, comments, config keys, error messages, regex patterns, and files the index \
+does not cover (docs, config, unsupported languages). Indexed languages: Rust, TypeScript/JavaScript (TSX/JSX), Python, \
+C, C++, Go, Java, C#, Ruby, PHP, Kotlin, Swift, Dart.
 
-Structural lookups read Rust, TypeScript/JavaScript (including TSX/JSX), Python, C, C++, Go, Java, \
-C#, Ruby, PHP, Kotlin, Swift and Dart/Flutter. Other source languages are not indexed; answers \
-report that gap. `grep` can search documentation and unsupported files.
-
-Usages are resolved through each file's own import statements, so callers of a same-named function \
-in another module are not counted. When one name still has several possible definitions the result \
-lists them with a caller count each — re-ask with `in_file` to pick one. Do NOT choose from that \
-list by eye: those entries are different symbols that merely share a name, so picking the \
-biggest-looking one and carrying on produces a confident answer about the wrong code.
-
-Structural lookups check content freshness, including external edits, and rebuild when needed. \
-Use `refresh` to request an update. Projects with automatic indexing disabled or past the file cap \
-require Build in Settings → Agent → Code index. Search returns only matching source, never generated explanations.
-
-Limits worth knowing: the index reads syntax, not types, so it cannot tell you what something \
-RETURNS and will not catch type errors — run the project's type checker for that. Dynamic dispatch \
-and unknown receivers can be omitted; no usages is not proof that a symbol is unused. It identifies \
-possible affected files; the project's own check command reports errors after the change."
+When one name has several definitions the answer lists them with caller counts. Re-ask with `in_file` or a qualified \
+name (`Type::method`) — never pick one by eye; they are different symbols that share a name. The index reads syntax, not \
+types: run the type checker for type errors, and \"no usages\" is not proof a symbol is unused (dynamic calls are missed). \
+A project with automatic indexing off needs Build in Settings → Agent → Code index."
                 .into(),
             input_schema: json!({
                 "type": "object",
@@ -836,7 +898,12 @@ possible affected files; the project's own check command reports errors after th
                     },
                     "name": {
                         "type": "string",
-                        "description": "For `definition` and `usages`: the symbol. Accepts a bare name (`append`) or a qualified one (`Session::append`, `Session.append`) — qualify it when a bare name turns out to be ambiguous."
+                        "description": "For `definition` and `usages`: the symbol, or several separated by `|` (`a|b|c`, up to 20). Bare (`append`) or qualified (`Session::append`, `Session.append`) — qualify a name that turns out to be ambiguous."
+                    },
+                    "names": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For `definition` and `usages`: several symbols as a list, instead of `a|b|c` in `name`."
                     },
                     "query": {
                         "type": "string",
@@ -903,16 +970,13 @@ possible affected files; the project's own check command reports errors after th
 
         let idx = index_for(ctx)?;
         let result = match op {
-            "definition" => op_definition(
-                &idx,
-                &required_name(&input, "definition")?,
-                input.get("in_file").and_then(Value::as_str),
-            ),
-            "usages" => op_usages(
-                &idx,
-                &required_name(&input, "usages")?,
-                input.get("in_file").and_then(Value::as_str),
-            ),
+            "definition" | "usages" => {
+                let names = requested_names(&input, op)?;
+                let in_file = input.get("in_file").and_then(Value::as_str);
+                let one: fn(&CodeIndex, &str, Option<&str>) -> Value =
+                    if op == "definition" { op_definition } else { op_usages };
+                op_lookup_many(&idx, op, &names, in_file, one)
+            }
             "modules" => op_modules(&idx, input.get("granularity").and_then(Value::as_str)),
             "outline" => {
                 let path = input
@@ -1121,6 +1185,85 @@ mod tests {
         );
         let msg = v["message"].as_str().unwrap();
         assert!(msg.contains("grep"), "must point at the fallback: {msg}");
+    }
+
+    /// Grep habits arrive intact: an alternation, its escaped form, word
+    /// boundaries, a call paren, a list — all mean the same names, once each.
+    #[test]
+    fn several_names_parse_the_way_a_grep_alternation_reads() {
+        let names = |v: Value| requested_names(&v, "definition").unwrap();
+        assert_eq!(names(json!({ "name": "flush" })), ["flush"]);
+        assert_eq!(names(json!({ "name": "flush|Session::append" })), ["flush", "Session::append"]);
+        assert_eq!(names(json!({ "name": "flush\\|go\\|flush" })), ["flush", "go"]);
+        assert_eq!(names(json!({ "name": "\\bflush\\b|go(" })), ["flush", "go"]);
+        assert_eq!(names(json!({ "names": ["flush", "go"], "name": "Session" })), ["flush", "go", "Session"]);
+        assert!(requested_names(&json!({ "name": " | " }), "usages").is_err());
+        let many = (0..21).map(|i| format!("n{i}")).collect::<Vec<_>>().join("|");
+        assert!(requested_names(&json!({ "name": many }), "usages").is_err());
+    }
+
+    /// Timing on a real project: one 10-name call vs ten single calls.
+    /// `AURORA_INDEX_ROOT=<repo> cargo test --lib code_intel::tests::multi_lookup_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing against AURORA_INDEX_ROOT"]
+    fn multi_lookup_timing() {
+        let root = std::env::var("AURORA_INDEX_ROOT").expect("set AURORA_INDEX_ROOT");
+        let t = std::time::Instant::now();
+        let idx = CodeIndex::build(std::path::Path::new(&root)).unwrap();
+        println!("build: {:?}", t.elapsed());
+        let names: Vec<String> = [
+            "fresh_access", "build_api_client", "log_error", "parse_tool_input", "now_unix_ms",
+            "useAgentSettingsStore", "replaceModelsForProvider", "split_aurora_images", "record_headers", "nowhere_at_all",
+        ]
+        .map(String::from)
+        .to_vec();
+        for op in ["definition", "usages"] {
+            let one: fn(&CodeIndex, &str, Option<&str>) -> Value =
+                if op == "definition" { op_definition } else { op_usages };
+            let t = std::time::Instant::now();
+            let all = op_lookup_many(&idx, op, &names, None, one);
+            let many = t.elapsed();
+            let t = std::time::Instant::now();
+            for n in &names {
+                let _ = one(&idx, n, None);
+            }
+            let singles = t.elapsed();
+            println!(
+                "{op}: 10 names in one call {many:?} ({} bytes) | ten single calls {singles:?} | {}",
+                all.to_string().len(),
+                all["message"]
+            );
+        }
+    }
+
+    #[test]
+    fn one_name_keeps_the_single_answer_shape() {
+        let (_d, idx) = fixture();
+        let names = vec!["flush".to_string()];
+        assert_eq!(
+            op_lookup_many(&idx, "definition", &names, None, op_definition),
+            op_definition(&idx, "flush", None)
+        );
+    }
+
+    /// The point of the change: one call answers several symbols, each with
+    /// exactly the answer a single call would give, and says which missed.
+    #[test]
+    fn several_names_come_back_one_result_each_in_order() {
+        let (_d, idx) = fixture();
+        let names: Vec<String> = ["flush", "Session::append", "nowhere"].map(String::from).to_vec();
+        let defs = op_lookup_many(&idx, "definition", &names, None, op_definition);
+        assert_eq!(defs["names"], json!(["flush", "Session::append", "nowhere"]));
+        let results = defs["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], op_definition(&idx, "flush", None));
+        assert_eq!(results[1], op_definition(&idx, "Session::append", None));
+        let msg = defs["message"].as_str().unwrap();
+        assert!(msg.contains("2 answered") && msg.contains("nowhere"), "{msg}");
+
+        let uses = op_lookup_many(&idx, "usages", &names[..2], None, op_usages);
+        assert_eq!(uses["results"][0], op_usages(&idx, "flush", None));
+        assert_eq!(uses["message"], "2 names, each answered below.");
     }
 
     #[test]

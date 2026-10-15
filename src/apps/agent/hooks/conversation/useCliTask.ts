@@ -23,6 +23,7 @@ import { useEffect, useRef } from "react";
 
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import type { AgentWindowSend } from "./useAgentWindowSend";
 
 /** Wire shape of a dispatched task. Mirrors Rust's `TaskRequest`. */
@@ -111,15 +112,15 @@ export function useCliTask(send: AgentWindowSend["send"]): void {
         //
         // Without this, `--model` was silently dropped on every new
         // conversation: there was no thread id to pin it to yet.
-        const threadId = await useAgentChatStore
-          .getState()
-          .ensureThreadForSend(task.prompt);
-
         // Pin the model the dispatch named, when it named one. Skipped
         // otherwise, so the thread keeps whatever it already runs on — which
         // is what "use the window's selection" means.
         const pin =
           task.providerId && task.model ? `${task.providerId}:${task.model}` : null;
+        // A new conversation is born on the named model (or the default).
+        const threadId = await useAgentChatStore
+          .getState()
+          .ensureThreadForSend(task.prompt, pin ?? resolveThreadModel(null));
         if (pin && threadId) {
           await useAgentChatStore.getState().setThreadModel(threadId, pin);
         }

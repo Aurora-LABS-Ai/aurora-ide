@@ -34,6 +34,11 @@ import { CompactionCard } from "@/apps/agent/components/conversation/CompactionC
 import { DirectImage } from "@/apps/agent/components/conversation/DirectImage";
 import { NoticeCard } from "@/apps/agent/components/conversation/NoticeCard";
 import { ReconnectCard } from "@/apps/agent/components/conversation/ReconnectCard";
+import { WorkCard } from "@/apps/agent/components/conversation/WorkCard";
+import { BoundedRows } from "@/apps/agent/components/conversation/BoundedRows";
+import { groupWorkStretches, lastWorkRowIndex } from "@/apps/agent/components/conversation/work-stretches";
+import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
+import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
   buildRows,
   buildSections,
@@ -917,6 +922,25 @@ const AssistantTurn: React.FC<{
     return Number.isFinite(start) ? start + workedMs : undefined;
   }, [streaming, startedAt, workedMs]);
   const sections = useMemo(() => buildSections(rows, turnEndedAt), [rows, turnEndedAt]);
+
+  // Transcript → Work cards: the turn as ordinary rows and folded stretches of
+  // quiet work. `null` when the setting is off, which leaves the chapter
+  // sections below exactly as they were.
+  const workCardsOn = useAgentThemeStore((s) => s.transcriptWorkCards);
+  // `streaming` is passed so narration the model is still writing stays
+  // inside the card; after the turn, trailing text is the answer.
+  const blocks = useMemo(
+    () => (workCardsOn ? groupWorkStretches(rows, { streaming }) : null),
+    [workCardsOn, rows, streaming],
+  );
+  // Where the answer starts: after the turn's last thought or tool run.
+  const lastWorkIndex = useMemo(() => lastWorkRowIndex(rows), [rows]);
+  // The conversation a card saves its open state to. A docked chat declares
+  // its own; the main pane is the open chat.
+  const scope = useConversationScope();
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const cardThreadId = scope?.threadId ?? openThreadId;
+  const turnStartedMs = startedAt ? Date.parse(startedAt) : NaN;
   const activeChapterId = useMemo(() => {
     for (let i = sections.length - 1; i >= 0; i--) {
       const id = sections[i].chapter?.id;
@@ -969,6 +993,7 @@ const AssistantTurn: React.FC<{
         <AgentMarkdown
           content={row.text}
           streaming={streaming && row.id === lastContentId}
+          answerBoxes
         />
       );
     }
@@ -992,9 +1017,16 @@ const AssistantTurn: React.FC<{
       return <AgentReportCard report={row.report} />;
     }
     if (row.type === "chapter") {
-      // Unreachable: `buildSections` lifts every chapter row out into a section
-      // header. Kept so this stays exhaustive over `TimelineRow`.
-      return null;
+      // Reached only with work cards on: otherwise `buildSections` lifts every
+      // chapter row out into a collapsible section header. With cards on, the
+      // card does the folding, so a chapter is a named divider in the flow — a
+      // heading, with no toggle that would have nothing to fold.
+      return (
+        <h4 className="agw-chapter agw-chapter-static">
+          <span className="agw-chapter-title">{row.title}</span>
+          <span className="agw-timeline-rule agw-rule-tail" aria-hidden="true" />
+        </h4>
+      );
     }
     if (row.type === "notice") {
       // A runtime message (output limit hit, stream dropped), rendered where
@@ -1111,9 +1143,48 @@ const AssistantTurn: React.FC<{
         </span>
       )}
 
-      {sections.map((section) => {
-        const body = section.rows.map(({ row, index }) => renderRowWrapper(row, index));
-        if (!section.chapter) return body;
+      {blocks?.map((block, i) =>
+        block.kind === "row" ? (
+          renderRowWrapper(block.row, block.index)
+        ) : (
+          <WorkCard
+            // The first row's id, not the card's: the card id moves to the
+            // first tool call once one arrives, and remounting the card at
+            // that moment would throw away what it was showing.
+            key={`work-${block.items[0].row.id}`}
+            stretch={block}
+            live={streaming && i === blocks.length - 1}
+            isLast={block.items[block.items.length - 1].index === rows.length - 1}
+            threadId={cardThreadId}
+            turnStartedAt={Number.isFinite(turnStartedMs) ? turnStartedMs : undefined}
+            renderItem={({ row, index }) => renderRowWrapper(row, index)}
+          />
+        ),
+      )}
+
+      {!blocks && sections.map((section, sectionIndex) => {
+        if (!section.chapter) {
+          return section.rows.map(({ row, index }) => renderRowWrapper(row, index));
+        }
+
+        // A chapter's body is a bounded area that scrolls inside itself, the
+        // open work card's shape: a long chapter no longer grows the page by
+        // a row every few seconds. The answer must NOT be trapped in it, so
+        // a chapter's rows end at the turn's last thought or tool run, and
+        // what follows (the reply itself) renders below the chapter at full
+        // size — the same line the work card draws (`lastWorkRowIndex`).
+        const inside = section.rows.filter(({ index }) => index <= lastWorkIndex);
+        const after = section.rows.filter(({ index }) => index > lastWorkIndex);
+        const body =
+          inside.length > 0 ? (
+            <BoundedRows
+              follow={streaming && sectionIndex === sections.length - 1}
+              label={`${inside.length} steps`}
+            >
+              {inside.map(({ row, index }) => renderRowWrapper(row, index))}
+            </BoundedRows>
+          ) : null;
+        const tail = after.map(({ row, index }) => renderRowWrapper(row, index));
 
         const { id, title, index, durationMs: chapterMs } = section.chapter;
         const open = isChapterOpen(id);
@@ -1159,6 +1230,7 @@ const AssistantTurn: React.FC<{
             >
               {body}
             </motion.div>
+            {tail}
           </React.Fragment>
         );
       })}

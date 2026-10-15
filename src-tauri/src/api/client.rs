@@ -33,6 +33,8 @@ use crate::agent_runtime::api_client::{ReasoningConfig, StreamingApiClient};
 use super::anthropic::AnthropicAdapter;
 use super::anthropic_api::adapter::AnthropicApiAdapter;
 use super::anthropic_api::ANTHROPIC_API_PROVIDER_TYPE;
+use super::antigravity::adapter::AntigravityAdapter;
+use super::antigravity::ANTIGRAVITY_PROVIDER_TYPE;
 use super::claude_code::adapter::ClaudeCodeAdapter;
 use super::claude_code::CLAUDE_CODE_PROVIDER_TYPE;
 use super::codex::adapter::CodexAdapter;
@@ -195,6 +197,10 @@ pub enum ProviderKind {
     /// JSON response, so it shares no builder with the OpenAI or Anthropic
     /// wires. See [`super::commandcode`].
     CommandCode,
+    /// Gemini, Claude and GPT-OSS on a Google account's Antigravity plan:
+    /// Google OAuth, the Cloud Code envelope around Gemini's
+    /// `generateContent` shape. See [`super::antigravity`].
+    Antigravity,
     OpenAICompat,
 }
 
@@ -268,6 +274,7 @@ impl ProviderKind {
             super::commandcode::COMMANDCODE_PROVIDER_TYPE | "command-code" => {
                 ProviderKind::CommandCode
             }
+            ANTIGRAVITY_PROVIDER_TYPE => ProviderKind::Antigravity,
             _ => ProviderKind::OpenAICompat,
         }
     }
@@ -340,6 +347,9 @@ pub fn reasoning_replay_for(
         // text}` part: no signature to echo, nothing encrypted. It costs
         // its own text and must be counted, not dropped.
         ProviderKind::CommandCode => ReasoningReplay::Text,
+        // Only the signature travels back, never the thought text (see
+        // `antigravity::wire`), so stored reasoning costs nothing on replay.
+        ProviderKind::Antigravity => ReasoningReplay::Dropped,
         // The SAME resolution the builder runs — learned demand, then the
         // user's `reasoning_replay` directive, then the vendor table. Any
         // half missing here puts the estimate out of step with the wire —
@@ -399,6 +409,7 @@ pub fn build_single_api_client(config: &ProviderConfigSnapshot) -> Arc<dyn Strea
         ProviderKind::ClaudeCode => Arc::new(ClaudeCodeAdapter::new(config.clone())),
         ProviderKind::Cursor => Arc::new(CursorAdapter::new(config.clone())),
         ProviderKind::CommandCode => Arc::new(CommandCodeAdapter::new(config.clone())),
+        ProviderKind::Antigravity => Arc::new(AntigravityAdapter::new(config.clone())),
         ProviderKind::OpenAICompat => Arc::new(OpenAICompatAdapter::new(config.clone())),
     }
 }
@@ -722,6 +733,7 @@ mod tests {
             ("deepseek", ProviderKind::DeepSeek),
             ("codex", ProviderKind::Codex),
             ("claude-code", ProviderKind::ClaudeCode),
+            ("antigravity", ProviderKind::Antigravity),
             ("openai", ProviderKind::OpenAICompat),
             ("glm", ProviderKind::OpenAICompat),
             ("custom", ProviderKind::OpenAICompat),

@@ -64,7 +64,8 @@
 }
 .agw-model-trigger[data-streaming] .agw-model-trigger-shine {
   opacity: 1;
-  animation: agw-model-icon-shimmer 1.9s ease-in-out infinite;
+  /* Stepped like every sweep (see `.agw-shimmer`): ~24 repaints a second. */
+  animation: agw-model-icon-shimmer 1.9s steps(46) infinite;
 }
 /* Bottom-left corner → top-right corner. */
 @keyframes agw-model-icon-shimmer {
@@ -112,7 +113,8 @@
 }
 .agw-model-trigger[data-streaming] .agw-model-trigger-fast-shine {
   opacity: 1;
-  animation: agw-model-icon-shimmer 1.9s ease-in-out infinite;
+  /* Stepped like every sweep (see `.agw-shimmer`): ~24 repaints a second. */
+  animation: agw-model-icon-shimmer 1.9s steps(46) infinite;
 }
 .agw-root[data-reduce-motion] .agw-model-trigger-fast-shine {
   display: none;
@@ -258,7 +260,7 @@
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: agw-model-name-shimmer 2.4s linear infinite;
+  animation: agw-model-name-shimmer 2.4s steps(58) infinite;
 }
 /* Reduce motion: no shimmer, no icon shine — just the plain chip. */
 .agw-root[data-reduce-motion] .agw-model-trigger[data-streaming] .agw-model-trigger-name {

@@ -45,8 +45,20 @@ static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// bounded no matter how the file grows.
 const TAIL_READ_BYTES: u64 = 512 * 1024;
 
+#[cfg(not(test))]
 pub fn log_file() -> PathBuf {
     crate::paths::logs_dir().join("aurora.log")
+}
+
+/// Tests write somewhere of their own. They used to append to the real
+/// `aurora.log`, so every `cargo test` run filled the app's Diagnostics with
+/// errors from fake hosts and temp folders (2026-10-12: 85 of 103 entries in
+/// a copied report came from one test run).
+#[cfg(test)]
+pub fn log_file() -> PathBuf {
+    let dir = std::env::temp_dir().join("aurora-test-logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("aurora.log")
 }
 
 fn backup_file() -> PathBuf {

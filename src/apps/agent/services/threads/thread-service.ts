@@ -25,6 +25,9 @@ import type { AuroraSurface } from '@/apps/agent/services/runtime/agent-executio
 // Types — wire shapes returned by the Rust commands
 // ============================================================
 
+/** The modes a Build conversation can be in. Chat is a product, not a mode. */
+export type ConversationMode = 'agent' | 'plan';
+
 export interface ThreadSummary {
   id: string;
   title: string;
@@ -180,6 +183,10 @@ export interface DbThread {
     estimated?: boolean;
   } | null;
   context_usage?: { usedTokens: number; contextWindow: number; percentage: number } | null;
+  /** The conversation's model (`providerId:modelKey`), read from its sidecar. */
+  model?: string | null;
+  /** Build: the conversation's own Agent/Plan mode, when it has one. */
+  execution_mode?: ConversationMode | null;
   created_at: string;
   updated_at: string;
 }
@@ -266,6 +273,10 @@ class ThreadServiceClass {
     workspaceRoot?: string | null,
     surface?: AuroraSurface,
     deepResearch?: boolean,
+    /** The model the conversation is born on, written to its sidecar at once. */
+    model?: string | null,
+    /** Build: the Agent/Plan mode it is born in. Ignored for Aurora Chat. */
+    executionMode?: ConversationMode | null,
   ): Promise<DbThread> {
     return await invoke<DbThread>('thread_create', {
       title: title ?? null,
@@ -274,6 +285,8 @@ class ThreadServiceClass {
       // The ONLY place deep research can be set. It is fixed on the
       // conversation from here on, so there is no setter to call later.
       deepResearch: deepResearch ?? false,
+      model: model ?? null,
+      executionMode: executionMode ?? null,
     });
   }
 
@@ -384,6 +397,11 @@ class ThreadServiceClass {
    */
   async setModel(threadId: string, model: string | null): Promise<void> {
     await invoke('thread_set_model', { threadId, model });
+  }
+
+  /** Put a Build conversation in Agent or Plan mode, on its own sidecar. */
+  async setExecutionMode(threadId: string, mode: ConversationMode): Promise<void> {
+    await invoke('thread_set_execution_mode', { threadId, mode });
   }
 
   /**

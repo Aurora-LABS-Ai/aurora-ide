@@ -209,6 +209,9 @@ interface AgentThemeState extends AppearancePrefs {
   setTranscriptActionsVisible: (v: boolean) => void;
   setTranscriptTimestamps: (v: boolean) => void;
   setTranscriptSmoothTools: (v: boolean) => void;
+  setTranscriptLiveLine: (v: boolean) => void;
+  setTranscriptWorkCards: (v: boolean) => void;
+  setTranscriptReplyLayout: (v: boolean) => void;
   setTranscriptTextPace: (v: TranscriptTextPace) => void;
   setTranscriptTurnSummary: (v: boolean) => void;
   /**
@@ -316,6 +319,9 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setTranscriptActionsVisible: (v) => set({ transcriptActionsVisible: v }),
       setTranscriptTimestamps: (v) => set({ transcriptTimestamps: v }),
       setTranscriptSmoothTools: (v) => set({ transcriptSmoothTools: v }),
+      setTranscriptLiveLine: (v) => set({ transcriptLiveLine: v }),
+      setTranscriptWorkCards: (v) => set({ transcriptWorkCards: v }),
+      setTranscriptReplyLayout: (v) => set({ transcriptReplyLayout: v }),
       setTranscriptTextPace: (v) => set({ transcriptTextPace: v }),
       setTranscriptTurnSummary: (v) => set({ transcriptTurnSummary: v }),
 
@@ -364,7 +370,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
     }),
     {
       name: "aurora-agent-window-theme",
-      version: 1,
+      version: 2,
       // v0 → v1: prune STALE typography overrides so old snapshots stop
       // silently overriding the shipped baseline. Two cases only, both safe:
       //   - an override equal to a RETIRED default (the pre-variable Inter
@@ -372,10 +378,19 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       //   - an override equal to the CURRENT default — a render no-op that
       //     would still pin the user to today's value if the default improves.
       // Anything else is a deliberate choice and is never touched.
-      migrate: (persisted) => {
+      //
+      // v1 → v2: "Smooth tool arrival" became the default. Every preference
+      // persists, so the old default `false` is in every saved snapshot and
+      // would keep it off for everyone who already has Aurora. Nothing tells a
+      // saved default apart from a choice, and the switch was off by default
+      // for its whole life, so it is turned on once here; turning it off again
+      // afterwards sticks.
+      migrate: (persisted, version) => {
         const state = persisted as {
           customizations?: Record<string, Partial<AgentThemeTokens>>;
+          transcriptSmoothTools?: boolean;
         } | null;
+        if (state && version < 2) state.transcriptSmoothTools = true;
         const customizations = state?.customizations;
         if (!customizations) return persisted;
         const retired = new Set<string>([

@@ -52,6 +52,73 @@ describe("useAgentChatStore background turns", () => {
   });
 });
 
+describe("useAgentChatStore frame-queued turn patches", () => {
+  const text = (id: string, content: string) => ({
+    id,
+    role: "assistant",
+    content,
+    timestamp: "2026-10-12T00:00:00.000Z",
+  });
+  const append = (suffix: string) => (m: { content: string }) => ({
+    ...m,
+    content: m.content + suffix,
+  }) as never;
+
+  beforeEach(() => {
+    useAgentChatStore.getState().flushTurnPatches();
+    useAgentChatStore.setState({
+      currentThreadId: "a",
+      currentThread: null,
+      liveTurns: {},
+      liveProjects: {},
+      sending: false,
+    });
+    const s = useAgentChatStore.getState();
+    s.beginTurn("a", { ...seed, id: "a", messages: [text("m", "")] }, null);
+    s.beginTurn("b", { ...seed, id: "b", messages: [text("n", "")] }, null);
+  });
+
+  it("holds queued patches until the frame, then lands every chat's in ONE update", () => {
+    const s = useAgentChatStore.getState();
+    let updates = 0;
+    const unsubscribe = useAgentChatStore.subscribe(() => {
+      updates += 1;
+    });
+    s.queueTurnPatch("a", "m", append("1"));
+    s.queueTurnPatch("b", "n", append("x"));
+    s.queueTurnPatch("a", "m", append("2"));
+    expect(useAgentChatStore.getState().liveTurns.a.messages[0].content).toBe("");
+
+    useAgentChatStore.getState().flushTurnPatches();
+    unsubscribe();
+
+    const state = useAgentChatStore.getState();
+    expect(updates).toBe(1);
+    expect(state.liveTurns.a.messages[0].content).toBe("12");
+    expect(state.liveTurns.b.messages[0].content).toBe("x");
+    // The open chat's view follows its live turn, as a direct patch does.
+    expect(state.currentThread).toBe(state.liveTurns.a);
+  });
+
+  it("applies the queue before a direct write so order never changes", () => {
+    const s = useAgentChatStore.getState();
+    s.queueTurnPatch("a", "m", append("queued "));
+    s.patchTurnMessage("a", "m", append("direct"));
+    expect(useAgentChatStore.getState().liveTurns.a.messages[0].content).toBe("queued direct");
+  });
+
+  it("applies the queue before a turn closes, so its last words are kept", () => {
+    const s = useAgentChatStore.getState();
+    s.queueTurnPatch("a", "m", append("tail"));
+    const before = useAgentChatStore.getState().liveTurns.a;
+    s.endTurn("a");
+    expect(before.messages[0].content).toBe("");
+    // Gone from the live turns, but its view kept the tail it was given.
+    expect(useAgentChatStore.getState().liveTurns.a).toBeUndefined();
+    expect(useAgentChatStore.getState().currentThread?.messages[0].content).toBe("tail");
+  });
+});
+
 describe("useAgentChatStore boot", () => {
   beforeEach(() => {
     listThreadsMock.mockClear();

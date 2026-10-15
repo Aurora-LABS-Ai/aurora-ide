@@ -321,11 +321,9 @@ impl<E: EventEmitter> TurnDriver<E> {
         }
 
         let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
-        let _ = store.set_workspace_and_model(
-            &thread_id,
-            request.workspace_path.clone(),
-            Some(pinned_model(&request)),
-        );
+        // Workspace only. Compacting does not choose the conversation's model,
+        // and a model picked while it ran must survive it.
+        let _ = store.set_workspace_and_model(&thread_id, request.workspace_path.clone(), None);
 
         self.registry.unregister_in_flight(&turn_id);
         self.registry.bridge_router().drop_turn(&turn_id);
@@ -675,8 +673,19 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     user message a second time. One durability fix would have
         //     re-introduced a duplicate-message bug. One path owns the
         //     append now.
+        //
+        //     The model is recorded HERE, as the turn starts, and never at its
+        //     end. The sidecar says which model the conversation is on, and a
+        //     model picked while this turn runs belongs to the NEXT turn: an
+        //     end-of-turn write put this turn's model back over that pick.
         {
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
+            if let Err(err) = store.set_model(&thread_id, Some(pinned_model(&request))) {
+                crate::logging::log_warn(
+                    "agent_v2",
+                    &format!("could not record the model for thread {thread_id}: {err}"),
+                );
+            }
         }
 
         // 7. Bounded channel + forwarder task. The forwarder exits when
@@ -826,11 +835,8 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     advertises work the rail cannot open.
         if turn_appended && uncommitted.is_none() {
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
-            let _ = store.set_workspace_and_model(
-                &thread_id,
-                request.workspace_path.clone(),
-                Some(pinned_model(&request)),
-            );
+            // Workspace only: the model was recorded when the turn started (5b).
+            let _ = store.set_workspace_and_model(&thread_id, request.workspace_path.clone(), None);
             // Auto-title from the first user message: derive a clean
             // chat-list label by stripping markdown fences, JSON
             // blobs, and decorative noise. Only fires when the

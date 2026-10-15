@@ -169,6 +169,9 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           onSubmit={onSubmit}
           sending={sending}
           onStop={onStop}
+          // Centred under the heading: the @ and / menus open into the room
+          // below instead of over the heading.
+          menuPlacement="down"
           placeholder={
             chatSurface
               ? "Ask anything"

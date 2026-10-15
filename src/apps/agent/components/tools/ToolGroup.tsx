@@ -52,11 +52,17 @@ import {
 /**
  * One step of a run, and the one place its arrival is decided.
  *
- * Whether it fades in, and after what delay, is fixed ONCE, when the step
- * first mounts (a lazy state initializer, so it is free to read the clock).
- * A step that mounts while the turn is streaming arrives; one that mounts from
+ * Whether it enters, and after what delay, is fixed ONCE, when the step first
+ * mounts (a lazy state initializer, so it is free to read the clock). A step
+ * that mounts while the turn is streaming arrives; one that mounts from
  * history, or while the setting is off, is simply there. Later re-renders
  * never re-run the entrance, so a card patched by its result does not blink.
+ *
+ * The entrance opens the step's height from 0 (see `09-tool-cards.css`), which
+ * needs its content clipped while it opens. `data-enter` is dropped when the
+ * entrance's LAST part — the content sliding in — ends, so the clip never
+ * outlives it and a card that later grows (expanded output, a popover) is
+ * never cut off.
  */
 const ToolStep: React.FC<{
   animate: boolean;
@@ -66,16 +72,147 @@ const ToolStep: React.FC<{
   const [delayMs] = useState<number | null>(() =>
     animate ? stagger.next(performance.now()) : null,
   );
+  const [entering, setEntering] = useState(delayMs !== null);
   return (
     <div
       className="agw-tool-step"
-      data-enter={delayMs !== null || undefined}
-      style={delayMs ? { animationDelay: `${Math.round(delayMs)}ms` } : undefined}
+      data-enter={entering || undefined}
+      style={
+        entering
+          ? ({ "--agw-enter-delay": `${Math.round(delayMs ?? 0)}ms` } as React.CSSProperties)
+          : undefined
+      }
+      onAnimationEnd={(e) => {
+        if (
+          e.animationName === "agw-tool-slide-in" &&
+          (e.target as Element).parentElement === e.currentTarget
+        ) {
+          setEntering(false);
+        }
+      }}
     >
       {children}
     </div>
   );
 };
+
+/**
+ * Transcript → "One live line for tool calls": while a run is the live edge,
+ * this is the whole run — one row whose content rolls over in place.
+ *
+ * The newest step is drawn exactly as the run would draw it (`renderRun`), so
+ * its card, chip, result and expand work unchanged; only the frame around it
+ * is new. The roll is the suggestion drum's (`.agw-suggest-drum`): 0.18s,
+ * tipped 48° in a 340px perspective.
+ *
+ * Between calls the line keeps the call that just finished and shimmers
+ * (`data-waiting`) until the next call lands or anything else — the model's
+ * own reasoning, its reply — appears below it. It never says "Thinking" itself:
+ * when the model really thinks, its reasoning row says so, and a second label
+ * here only duplicated it. With parallel calls the newest can finish before an
+ * older one, so the shimmer waits for the whole run (`allDone`).
+ *
+ * The count on the right opens the whole run as ordinary rows. What the line
+ * becomes once the run is no longer live is decided by `ToolGroupImpl`.
+ */
+const LiveLine: React.FC<{
+  runs: ToolCall[][];
+  callCount: number;
+  /** Every call in the run has finished. */
+  allDone: boolean;
+  /** Nothing has landed below the run yet. */
+  isLastRow: boolean;
+  reduceMotion: boolean;
+  renderRun: (run: ToolCall[]) => React.ReactNode;
+  onShowAll: () => void;
+}> = ({ runs, callCount, allDone, isLastRow, reduceMotion, renderRun, onShowAll }) => {
+  const newest = runs[runs.length - 1];
+  const newestId = newest[0].id;
+  const waiting = allDone && isLastRow;
+
+  const roll = reduceMotion
+    ? { initial: false as const, transition: { duration: 0 } }
+    : {
+        initial: { opacity: 0, y: "60%", rotateX: -48 },
+        transition: { duration: 0.18, ease: "easeInOut" as const },
+      };
+
+  return (
+    <div className="agw-tool-step agw-tool-liveline" data-waiting={waiting || undefined}>
+      <div className="agw-tool-liveline-reel">
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.div
+            key={newestId}
+            className="agw-tool-liveline-slide"
+            initial={roll.initial}
+            animate={{ opacity: 1, y: 0, rotateX: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: "-60%", rotateX: 48 }}
+            transition={roll.transition}
+          >
+            {renderRun(newest)}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+      {/* Rows, not calls: three checklist updates are one row, and a count
+          that opens onto the same single row would promise more than it has. */}
+      {runs.length > 1 && (
+        <button
+          type="button"
+          className="agw-tool-liveline-count"
+          onClick={onShowAll}
+          title="Show every call in this run"
+        >
+          {callCount} calls
+        </button>
+      )}
+    </div>
+  );
+};
+
+/**
+ * One step's content: its card, behind its own error boundary.
+ *
+ * Memoised on the step's CALLS, compared one by one. `groupToolRuns` rebuilds
+ * every run array whenever the group's `tools` change, which happens each time
+ * a call arrives or a result lands anywhere in the run. Without this every card
+ * in the run drew again for each of those events, so a 40-call run did 40 card
+ * renders per event. With two chats streaming tool-heavy turns that was the
+ * dropped frames. A call object keeps its identity until that call itself is
+ * patched (see `upsertToolEvent`), so identity is the right comparison.
+ */
+const RunView = React.memo(
+  function RunView({
+    run,
+    isActivelyStreaming,
+  }: {
+    run: ToolCall[];
+    isActivelyStreaming: boolean;
+  }) {
+    return (
+      // One step's card can fail to draw (a model sends an argument in a shape
+      // no card expects). That is this step's problem, not the transcript's: the
+      // row says so and the rest of the window stays up. Retried once the call's
+      // result arrives, in case the failure was a half-streamed argument.
+      <ErrorBoundary
+        where={`tool step ${run[0].name}`}
+        resetKey={run[0].result ?? run[0].arguments}
+        fallback={() => <StepRenderFailed name={run[0].name} />}
+      >
+        {isChecklistCall(run[0]) ? (
+          <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
+        ) : mcpServerIdForCard(run[0]) !== null ? (
+          <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
+        ) : (
+          <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
+        )}
+      </ErrorBoundary>
+    );
+  },
+  (prev, next) =>
+    prev.isActivelyStreaming === next.isActivelyStreaming &&
+    prev.run.length === next.run.length &&
+    prev.run.every((call, i) => call === next.run[i]),
+);
 
 /**
  * What a step shows when its card threw while drawing. The call itself ran
@@ -112,12 +249,20 @@ const ToolGroupImpl: React.FC<{
   // MCP server; everything else is a step of one. Computed from `tools` so the
   // header's "N calls" keeps counting calls.
   const runs = useMemo(() => groupToolRuns(tools), [tools]);
+  // Transcript → "One live line for tool calls" (see `LiveLine`).
+  const liveLineOn = useAgentThemeStore((s) => s.transcriptLiveLine);
   // The threshold is about how many ROWS the reader faces, not how many calls
   // the model made. Three `TaskUpdate` calls — close one, close another, start
   // the next — are one row, and putting a "3 calls · 3 done" header above a
   // single line asks the reader what the other two were when the answer is
   // "this line". A mixed run still groups, because its rows are still rows.
-  const grouped = runs.length >= TOOL_GROUP_MIN;
+  //
+  // With the live line on, a run of TWO rows groups as well. The line showed
+  // the run as one row the whole time it was live; handing it back as two
+  // separate rows split that one line in two the moment the model moved on,
+  // and moved the reply. It folds to the same one-line header a longer run
+  // does — live, and when the conversation is reopened later.
+  const grouped = runs.length >= TOOL_GROUP_MIN || (liveLineOn && runs.length >= 2);
 
   const stats = useMemo(() => {
     let done = 0;
@@ -151,25 +296,68 @@ const ToolGroupImpl: React.FC<{
   // explicit click still wins, exactly as it does without the setting.
   const keepOpen = useAgentThemeStore((s) => s.transcriptToolRunsOpen);
 
-  // Transcript → "Smooth tool arrival": steps fade in one after another, and
-  // the run stays open for `RUN_LINGER_MS` after it stops being the live edge
+  // Transcript → "Smooth tool arrival" (on by default): each step opens its own
+  // space and grows off the spine instead of landing at full height, and the
+  // run stays open for `RUN_LINGER_MS` after it stops being the live edge
   // instead of folding in the same frame the model starts writing below it.
-  // Reduce motion drops the fade (it is motion) and keeps the pause (it is not).
+  // Reduce motion drops the entrance (it is motion) and keeps the pause (it is not).
   const smooth = useAgentThemeStore((s) => s.transcriptSmoothTools);
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const [stagger] = useState(createArrivalStagger);
-  const animateArrivals = smooth && !reduceMotion && isActivelyStreaming;
   const liveEdge = useLinger(isActivelyStreaming && isLastRow, smooth ? RUN_LINGER_MS : 0);
 
   const mode = openState.streaming === isActivelyStreaming ? openState.mode : null;
+
+  // While this run is the live edge it is one line that changes in place. An
+  // explicit open or fold wins, as it does everywhere else in this component.
+  // Once it stops being the live edge it is drawn by the ordinary path below:
+  // a single row stays that row, two or more fold to their header (`grouped`)
+  // in the same place the line was, so the reply does not move.
+  const lineMode = liveLineOn && isActivelyStreaming && liveEdge && mode === null;
+  // How many steps the line has already shown. Those steps are not new when the
+  // run is handed back to ordinary rows (or opened by its count), so they must
+  // not play their entrance as if they had just arrived; a call that lands
+  // after that point still does. State adjusted during render (React's pattern
+  // for derived state), so it takes effect in this same render.
+  const [shownOnLine, setShownOnLine] = useState(0);
+  if (lineMode && shownOnLine !== runs.length) setShownOnLine(runs.length);
+  const animateArrivals = smooth && !reduceMotion && isActivelyStreaming;
   // Below the grouping threshold there's no header → the cards are always shown.
   // With no explicit choice on record, the run is open only while it IS the
   // live edge; anything appearing beneath it collapses it to its summary.
+  //
+  // With the live line on, a run never opens on its own: while it is live the
+  // line IS the run, and afterwards opening it would burst every row out at
+  // once — exactly the movement the line exists to prevent. That covers "Keep
+  // tool runs open", and the moment the turn ends, when `liveEdge` is still
+  // lingering but the line has already handed over. It opens on a click.
   const isOpen =
-    !grouped || (mode === null ? keepOpen || liveEdge : mode === "shown");
+    !grouped ||
+    (mode === null ? !liveLineOn && (keepOpen || liveEdge) : mode === "shown");
 
   const toggle = () =>
     setOpenState({ mode: isOpen ? "hidden" : "shown", streaming: isActivelyStreaming });
+
+  // One step's content, shared by the rows below and the live line.
+  const renderRun = (run: ToolCall[]) => (
+    <RunView run={run} isActivelyStreaming={isActivelyStreaming} />
+  );
+
+  if (lineMode) {
+    return (
+      <div className="agw-tool-group">
+        <LiveLine
+          runs={runs}
+          callCount={tools.length}
+          allDone={stats.running === 0}
+          isLastRow={isLastRow}
+          reduceMotion={reduceMotion}
+          renderRun={renderRun}
+          onShowAll={() => setOpenState({ mode: "shown", streaming: isActivelyStreaming })}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="agw-tool-group">
@@ -258,7 +446,7 @@ const ToolGroupImpl: React.FC<{
             paddingTop: grouped ? 6 : 0,
           }}
         >
-          {runs.map((run) => (
+          {runs.map((run, index) => (
             // One wrapper per STEP, unstyled by default. `ToolCallCard` renders
             // five different roots depending on the tool (standard card, canvas
             // launch, plan beat, checklist beat), so this is the only element
@@ -270,25 +458,12 @@ const ToolGroupImpl: React.FC<{
             // consecutive `TaskCreate` / `TaskUpdate` calls is one step,
             // because laying out a five-task plan is five calls and one
             // decision. The header above still counts the real calls.
-            <ToolStep key={run[0].id} animate={animateArrivals} stagger={stagger}>
-              {/* One step's card can fail to draw (a model sends an argument in
-                  a shape no card expects). That is this step's problem, not the
-                  transcript's: the row says so and the rest of the window stays
-                  up. Retried once the call's result arrives, in case the
-                  failure was a half-streamed argument. */}
-              <ErrorBoundary
-                where={`tool step ${run[0].name}`}
-                resetKey={run[0].result ?? run[0].arguments}
-                fallback={() => <StepRenderFailed name={run[0].name} />}
-              >
-                {isChecklistCall(run[0]) ? (
-                  <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
-                ) : mcpServerIdForCard(run[0]) !== null ? (
-                  <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
-                ) : (
-                  <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
-                )}
-              </ErrorBoundary>
+            <ToolStep
+              key={run[0].id}
+              animate={animateArrivals && index >= shownOnLine}
+              stagger={stagger}
+            >
+              {renderRun(run)}
             </ToolStep>
           ))}
         </div>

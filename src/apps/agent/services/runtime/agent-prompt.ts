@@ -14,6 +14,8 @@ import {
   type AgentExecutionMode,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
 import { getActivePlan } from "@/apps/agent/services/plans/agent-plans";
+import { answerBoxInstructions } from "@/apps/agent/lib/answer-box/instructions";
+import { REPLY_LAYOUT_INSTRUCTIONS } from "@/apps/agent/lib/reply-layout/instructions";
 import { SURFACE_DOCTRINE_CORE } from "@/apps/agent/services/skills/surface-doctrine";
 import type {
   AttachedPromptChip,
@@ -137,7 +139,8 @@ Your main goal is to follow the USER's instructions at each message.
 - Large tool output is MOVED, never cut. A result reading \`bytes hidden — full output: <path>\` keeps its head and tail inline and the whole text sits at that path: take a range of it with \`file_read\` or search it with \`grep\`. Nothing was destroyed, so treat the gap as one call away rather than as missing evidence
 - Aurora also bounds the results of a single message in aggregate. Ask for ten large files at once and the biggest few come back as previews even though each was individually within its own limit — the parallel call was still the right move, and the paths are all there. Carry what you needed from a result into your reply while you have it; recovering it afterwards costs a round trip you can avoid
 - On unfamiliar code, understand structure first using workspace_tree and \`code\`, then read the most relevant files
-- Use \`code\` definition/usages/outline/modules for symbols and structure, \`code\` with \`op: "search"\` and \`query\` for ranked word matches in source code, and \`grep\` for literal text across other files. Search splits camelCase and snake_case and returns source passages with file/line locations. It runs locally without a model.
+- This project has a code index. When you know or can guess a symbol's name, ask \`code\` first: \`definition\` for where it lives, \`usages\` for who calls it — several names in one call (\`"name": "a|b|c"\`), the same way you would write a grep alternation. \`outline\` shows what a file or folder defines, \`modules\` how folders depend on each other, and \`op: "search"\` with \`query\` gives ranked word matches in source code as whole passages with file/line. Use \`grep\` for text: strings, comments, config keys, error messages, regexes, docs. Either is fine; pick the one that answers the question you have
+- Search and read with Aurora's own tools (\`code\`, \`grep\`, \`glob\`, \`workspace_tree\`, \`file_read\`), not \`grep\`/\`rg\`/\`cat\`/\`ls\`/\`find\` through the shell: the tools return bounded, numbered, workspace-relative results the conversation can keep, and the shell returns raw text that floods it
 - Search ranking is relevance, not a confirmed relationship. Read the returned source and follow definitions/usages before editing. Respect truncated passages and coverage gaps. No matches or usages does not prove code is absent or unused. Refresh updates local syntax, reusing unchanged files; automatic builds can be disabled per project.
 - Pair a search with file_read to confirm context before editing — a match is a location, not yet a reason
 - Before changing a function, class or type others may depend on, look up who calls it. Those callers are part of the same job: update them in this turn, or say plainly which ones you left and why
@@ -283,11 +286,19 @@ const CHAT_DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
  * Exported so `agent-prompt.test.ts` can pin the kind-choice rule. It is the
  * one line shared with `canvas_guidelines`; see the note in that tool's
  * `guide.rs` for why a second copy is correct here.
+ *
+ * The rule decides by what the reader will DO with the result, not by cost.
+ * Until 2026-10-11 it said "pick the cheapest kind … react only when", and
+ * across 218 saved canvas writes models chose react 23 times — data and
+ * findings went out as markdown tables and mermaid. The compile rules stay in
+ * the guide, where they help a write succeed; here they only made react sound
+ * like the risky choice.
  */
 export const CANVAS_INSTRUCTIONS = `## Canvas
-- When the answer is a standalone artifact the user will study rather than read once — analysis, findings, comparisons, any dataset you were about to render as a large markdown table — present it on the Canvas instead of in chat.
-- Pick the cheapest kind that works: \`markdown\` for a document, \`mermaid\` for a diagram, \`react\` only when it needs to be interactive or when layout carries meaning that text cannot.
-- Call \`canvas_guidelines\` before your first \`present_artifact\` with \`artifactKind: "react"\`; those canvases are compiled, so an unread contract is a failed write.`;
+- When the answer is something the user will study rather than read once — analysis, findings, comparisons, any dataset — present it on the Canvas instead of in chat.
+- Pick the kind by what the reader will do with it: read it top to bottom → \`markdown\`; see how parts connect (a flow, a structure, a sequence) → \`mermaid\`; work out one number → an answer box in your reply, not a canvas; compare, rank, sort or explore numbers — headline figures, a chart, a table past about eight rows, findings with figures → \`react\`. \`react\` is the default for data: a large markdown table is the wrong answer.
+- Before your first \`present_artifact\` with \`artifactKind: "react"\`, call \`canvas_guidelines\` for the components and the rules the compiler checks.
+- Where a react canvas goes: \`artifactPlacement: "inline"\` draws it inside your reply at the point you call the tool, sized to its content — use it for a small interactive piece the reader uses while reading: a \`Picker\` over a few items with a detail that changes, \`Tabs\` over a few views, a chart with one \`Choice\` or \`Stepper\`, two or three \`Stats\`. Keep an inline canvas under a screen tall and say in the sentence before it what it lets the reader do. \`"dock"\` (the default) opens the side panel — a report, a dashboard, a long table, anything the reader will study.`;
 
 const MAX_PREVIEW_SNIPPET_CHARS = 200;
 
@@ -452,7 +463,7 @@ export function formatEnvironment(input: {
     `  Workspace root: ${root}`,
     `  Today's date: ${new Date().toISOString().slice(0, 10)}`,
     "</env>",
-    "You are working inside this project directory. Use your tools (workspace_tree, file_read, grep, …) to explore and edit files here.",
+    "You are working inside this project directory. Use your tools (code, workspace_tree, file_read, grep, …) to explore and edit files here.",
   ];
   const access = WORKSPACE_ACCESS_RULES[input.workspaceAccess ?? "workspace"];
   if (access) lines.push(access);
@@ -486,6 +497,12 @@ export async function composeAgentSystemPrompt(options: {
    */
   transcriptChapters?: boolean;
   /**
+   * Transcript → Reply layout: tell the model about the facts / flow / note
+   * blocks the transcript draws. Read from the same switch the transcript
+   * draws by, so the model is never taught a fence the reader sees as code.
+   */
+  replyLayout?: boolean;
+  /**
    * Aurora Chat: this conversation was started in deep research.
    *
    * Read from the CONVERSATION, never from a live setting. It is fixed at
@@ -511,6 +528,7 @@ export async function composeAgentSystemPrompt(options: {
     executionMode = "agent",
     promptContext,
     transcriptChapters = false,
+    replyLayout = false,
     deepResearch = false,
     browserTools = true,
   } = options;
@@ -578,6 +596,9 @@ export async function composeAgentSystemPrompt(options: {
   // Canvas survives into chat mode: presenting research on one is half of what
   // that side is for, and `present_artifact` is on its roster.
   sections.push(CANVAS_INSTRUCTIONS);
+  // Answer boxes: a working tool inside the reply itself, drawn with the same
+  // SDK parts as a canvas. Static per mode, so it stays in the cached half.
+  sections.push(answerBoxInstructions(chatMode ? "chat" : "build"));
   if (!chatMode) {
     // Build has an enabled-skill catalog. Chat can load an explicitly attached
     // global skill, but it never receives Build's enabled-skill catalog.
@@ -603,6 +624,12 @@ export async function composeAgentSystemPrompt(options: {
   // the model is never told to announce chapters it has no way to mark.
   if (transcriptChapters) {
     sections.push(CHAPTER_INSTRUCTIONS);
+  }
+
+  // Reply layout is opt-in the same way: the switch that draws the blocks is
+  // the switch that teaches them.
+  if (replyLayout) {
+    sections.push(REPLY_LAYOUT_INSTRUCTIONS);
   }
 
   // The wrappers are always advertised, including with an empty catalog.

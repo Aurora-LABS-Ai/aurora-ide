@@ -163,3 +163,26 @@ describe("persisted-state migration (v0 → v1)", () => {
     expect(out.customizations[DEFAULT_AGENT_THEME_ID]).toBeUndefined();
   });
 });
+
+describe("persisted-state migration (v1 → v2)", () => {
+  /**
+   * Every preference persists, so the old default `false` sits in every saved
+   * snapshot. Changing the default alone would leave smooth tool arrival off
+   * for everyone who already had Aurora, which is everyone it was meant for.
+   */
+  it("turns smooth tool arrival on for a snapshot saved while it was off by default", () => {
+    const migrate = useAgentThemeStore.persist.getOptions().migrate;
+    const out = migrate!({ transcriptSmoothTools: false }, 1) as {
+      transcriptSmoothTools: boolean;
+    };
+    expect(out.transcriptSmoothTools).toBe(true);
+  });
+
+  it("does not touch it again once a snapshot is already at v2", () => {
+    const migrate = useAgentThemeStore.persist.getOptions().migrate;
+    const out = migrate!({ transcriptSmoothTools: false }, 2) as {
+      transcriptSmoothTools: boolean;
+    };
+    expect(out.transcriptSmoothTools).toBe(false);
+  });
+});

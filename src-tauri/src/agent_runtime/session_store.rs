@@ -142,6 +142,13 @@ pub struct SessionMetadata {
     /// reads as a normal chat rather than failing to load.
     #[serde(default)]
     pub deep_research: bool,
+    /// Build: whether this conversation works in Agent or Plan mode. Like the
+    /// model, a property of the conversation: switching one chat to Plan must
+    /// not flip the chat beside it. `None` for conversations written before
+    /// this existed, which follow the window's default. Never `Chat` — that is
+    /// a product, not a mode a Build conversation can be in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<super::ipc::AgentExecutionMode>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -161,6 +168,7 @@ impl SessionMetadata {
             pinned: false,
             archived_at: None,
             deep_research: false,
+            execution_mode: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -421,6 +429,27 @@ impl SessionStore {
         match self.layout {
             StoreLayout::Flat => self.dir.join(format!("{thread_id}.subagent-rail.json")),
             StoreLayout::Folder => self.thread_dir(thread_id).join("subagent-rail.json"),
+        }
+    }
+
+    /// Path to the answer box sidecar for `thread_id`: what the reader set in
+    /// the conversation's answer boxes. Owned by
+    /// [`crate::agent_runtime::answer_boxes`].
+    #[must_use]
+    pub fn answer_boxes_path(&self, thread_id: &str) -> PathBuf {
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.answer-boxes.json")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("answer-boxes.json"),
+        }
+    }
+
+    /// Path to the conversation's open work cards. Owned by
+    /// [`crate::agent_runtime::work_cards`].
+    #[must_use]
+    pub fn work_cards_path(&self, thread_id: &str) -> PathBuf {
+        match self.layout {
+            StoreLayout::Flat => self.dir.join(format!("{thread_id}.work-cards.json")),
+            StoreLayout::Folder => self.thread_dir(thread_id).join("work-cards.json"),
         }
     }
 
@@ -900,38 +929,37 @@ impl SessionStore {
                 .open(&jsonl_path)?;
         }
 
-        let mut meta = self.load_metadata(thread_id)?;
         // A brand-new thread has no sidecar yet — its bootstrap metadata
         // MUST be persisted so the scope (workspace_root) sticks even
         // before the first turn runs.
-        let mut dirty = !self.meta_path(thread_id).exists();
-        let was_default = meta.title == "New Chat";
-        if let Some(t) = title {
-            if !t.is_empty() && (was_default || meta.title != t) {
-                meta.title = t;
-                meta.updated_at = chrono::Utc::now().to_rfc3339();
-                dirty = true;
+        let fresh = !self.meta_path(thread_id).exists();
+        self.update_metadata(thread_id, |meta| {
+            let mut dirty = fresh;
+            let was_default = meta.title == "New Chat";
+            if let Some(t) = title {
+                if !t.is_empty() && (was_default || meta.title != t) {
+                    meta.title = t;
+                    meta.updated_at = chrono::Utc::now().to_rfc3339();
+                    dirty = true;
+                }
             }
-        }
-        // Tag the thread with its project at creation so it's scoped
-        // immediately. Scope is set ONCE and is STICKY: `ensure_thread` runs
-        // every turn with the turn's workspace, and OVERWRITING here silently
-        // "moved" whole conversations to another project whenever that path
-        // drifted (e.g. a repointed runtime workspace). Only adopt a workspace
-        // when the thread has none yet (fresh, or a legacy unscoped thread
-        // getting its first scope); a thread's project must never change as a
-        // turn side effect.
-        if let Some(ws) = workspace_root {
-            let ws = ws.trim();
-            if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
-                meta.workspace_root = Some(ws.to_string());
-                dirty = true;
+            // Tag the thread with its project at creation so it's scoped
+            // immediately. Scope is set ONCE and is STICKY: `ensure_thread` runs
+            // every turn with the turn's workspace, and OVERWRITING here silently
+            // "moved" whole conversations to another project whenever that path
+            // drifted (e.g. a repointed runtime workspace). Only adopt a workspace
+            // when the thread has none yet (fresh, or a legacy unscoped thread
+            // getting its first scope); a thread's project must never change as a
+            // turn side effect.
+            if let Some(ws) = workspace_root {
+                let ws = ws.trim();
+                if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
+                    meta.workspace_root = Some(ws.to_string());
+                    dirty = true;
+                }
             }
-        }
-        if dirty {
-            self.save_metadata(&meta)?;
-        }
-        Ok(meta)
+            dirty
+        })
     }
 
     /// Update the title in the metadata sidecar. No-op when the title
@@ -941,14 +969,14 @@ impl SessionStore {
         thread_id: &str,
         title: String,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        if meta.title == title {
-            return Ok(meta);
-        }
-        meta.title = title;
-        meta.updated_at = chrono::Utc::now().to_rfc3339();
-        self.save_metadata(&meta)?;
-        Ok(meta)
+        self.update_metadata(thread_id, |meta| {
+            if meta.title == title {
+                return false;
+            }
+            meta.title = title;
+            meta.updated_at = chrono::Utc::now().to_rfc3339();
+            true
+        })
     }
 
     /// Toggle the pinned flag on the sidecar. No-op when unchanged.
@@ -959,13 +987,13 @@ impl SessionStore {
         thread_id: &str,
         pinned: bool,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        if meta.pinned == pinned {
-            return Ok(meta);
-        }
-        meta.pinned = pinned;
-        self.save_metadata(&meta)?;
-        Ok(meta)
+        self.update_metadata(thread_id, |meta| {
+            if meta.pinned == pinned {
+                return false;
+            }
+            meta.pinned = pinned;
+            true
+        })
     }
 
     /// Archive / unarchive a chat. Archiving stamps `archived_at` with the
@@ -978,17 +1006,17 @@ impl SessionStore {
         thread_id: &str,
         archived: bool,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        if meta.archived_at.is_some() == archived {
-            return Ok(meta);
-        }
-        meta.archived_at = if archived {
-            Some(chrono::Utc::now().to_rfc3339())
-        } else {
-            None
-        };
-        self.save_metadata(&meta)?;
-        Ok(meta)
+        self.update_metadata(thread_id, |meta| {
+            if meta.archived_at.is_some() == archived {
+                return false;
+            }
+            meta.archived_at = if archived {
+                Some(chrono::Utc::now().to_rfc3339())
+            } else {
+                None
+            };
+            true
+        })
     }
 
     /// Update token + context usage on the sidecar. Each call also
@@ -1000,16 +1028,16 @@ impl SessionStore {
         token_usage: Option<TokenUsageMeta>,
         context_usage: Option<ContextUsageMeta>,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        if let Some(tu) = token_usage {
-            meta.token_usage = Some(tu);
-        }
-        if let Some(cu) = context_usage {
-            meta.context_usage = Some(cu);
-        }
-        meta.updated_at = chrono::Utc::now().to_rfc3339();
-        self.save_metadata(&meta)?;
-        Ok(meta)
+        self.update_metadata(thread_id, |meta| {
+            if let Some(tu) = token_usage {
+                meta.token_usage = Some(tu);
+            }
+            if let Some(cu) = context_usage {
+                meta.context_usage = Some(cu);
+            }
+            meta.updated_at = chrono::Utc::now().to_rfc3339();
+            true
+        })
     }
 
     /// Update workspace_root + model on the sidecar without touching
@@ -1021,34 +1049,34 @@ impl SessionStore {
         workspace_root: Option<String>,
         model: Option<String>,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        let mut dirty = false;
-        // Scope is STICKY (see `ensure_thread`): adopt a workspace only when the
-        // thread has none yet; never let a later turn's path overwrite an
-        // existing scope — that repointed whole conversations to another project
-        // whenever the runtime workspace drifted.
-        if let Some(ws) = workspace_root {
-            let ws = ws.trim();
-            if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
-                meta.workspace_root = Some(ws.to_string());
-                dirty = true;
+        self.update_metadata(thread_id, |meta| {
+            let mut dirty = false;
+            // Scope is STICKY (see `ensure_thread`): adopt a workspace only when the
+            // thread has none yet; never let a later turn's path overwrite an
+            // existing scope — that repointed whole conversations to another project
+            // whenever the runtime workspace drifted.
+            if let Some(ws) = workspace_root {
+                let ws = ws.trim();
+                if !ws.is_empty() && meta.workspace_root.as_deref().unwrap_or("").is_empty() {
+                    meta.workspace_root = Some(ws.to_string());
+                    dirty = true;
+                }
             }
-        }
-        // The model is NOT sticky, unlike the scope above: it records the model
-        // this conversation is currently on, so switching models mid-thread has
-        // to move it. Write-once meant a thread was branded forever by whatever
-        // model happened to run its first turn.
-        if let Some(m) = model {
-            if !m.is_empty() && meta.model.as_deref() != Some(m.as_str()) {
-                meta.model = Some(m);
-                dirty = true;
+            // The model is NOT sticky, unlike the scope above: it records the model
+            // this conversation is currently on, so switching models mid-thread has
+            // to move it. Write-once meant a thread was branded forever by whatever
+            // model happened to run its first turn.
+            if let Some(m) = model {
+                if !m.is_empty() && meta.model.as_deref() != Some(m.as_str()) {
+                    meta.model = Some(m);
+                    dirty = true;
+                }
             }
-        }
-        if dirty {
-            meta.updated_at = chrono::Utc::now().to_rfc3339();
-            self.save_metadata(&meta)?;
-        }
-        Ok(meta)
+            if dirty {
+                meta.updated_at = chrono::Utc::now().to_rfc3339();
+            }
+            dirty
+        })
     }
 
     /// Repair a Chat sidecar that acquired a Build workspace before surface
@@ -1060,10 +1088,7 @@ impl SessionStore {
                 "cannot clear a Build conversation's workspace".into(),
             ));
         }
-        let mut meta = self.load_metadata(thread_id)?;
-        if meta.workspace_root.take().is_some() {
-            self.save_metadata(&meta)?;
-        }
+        self.update_metadata(thread_id, |meta| meta.workspace_root.take().is_some())?;
         Ok(())
     }
 
@@ -1083,14 +1108,37 @@ impl SessionStore {
         thread_id: &str,
         model: Option<String>,
     ) -> Result<SessionMetadata, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
         let next = model.filter(|m| !m.is_empty());
-        if meta.model == next {
-            return Ok(meta);
+        self.update_metadata(thread_id, |meta| {
+            if meta.model == next {
+                return false;
+            }
+            meta.model = next;
+            true
+        })
+    }
+
+    /// Put a Build conversation in Agent or Plan mode. `Chat` is refused: it
+    /// is the other product, and a Build conversation cannot be moved into it.
+    ///
+    /// Does not bump `updated_at`, for the same reason as [`Self::set_model`].
+    pub fn set_execution_mode(
+        &self,
+        thread_id: &str,
+        mode: super::ipc::AgentExecutionMode,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        if mode.is_chat() {
+            return Err(RuntimeError::InvalidState(
+                "a conversation's mode is Agent or Plan; Chat is not a mode".into(),
+            ));
         }
-        meta.model = next;
-        self.save_metadata(&meta)?;
-        Ok(meta)
+        self.update_metadata(thread_id, |meta| {
+            if meta.execution_mode == Some(mode) {
+                return false;
+            }
+            meta.execution_mode = Some(mode);
+            true
+        })
     }
 
     /// Mark a conversation as deep research, **once**.
@@ -1103,13 +1151,16 @@ impl SessionStore {
     ///
     /// Returns whether this call was the one that set it.
     pub fn mark_deep_research(&self, thread_id: &str) -> Result<bool, RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        if meta.deep_research {
-            return Ok(false);
-        }
-        meta.deep_research = true;
-        self.save_metadata(&meta)?;
-        Ok(true)
+        let mut marked = false;
+        self.update_metadata(thread_id, |meta| {
+            if meta.deep_research {
+                return false;
+            }
+            meta.deep_research = true;
+            marked = true;
+            true
+        })?;
+        Ok(marked)
     }
 
     /// Is this conversation a deep-research one?
@@ -1127,9 +1178,10 @@ impl SessionStore {
     /// every successful turn so the chat list reflects activity even
     /// when the title and usage didn't change.
     pub fn touch(&self, thread_id: &str) -> Result<(), RuntimeError> {
-        let mut meta = self.load_metadata(thread_id)?;
-        meta.updated_at = chrono::Utc::now().to_rfc3339();
-        self.save_metadata(&meta)?;
+        self.update_metadata(thread_id, |meta| {
+            meta.updated_at = chrono::Utc::now().to_rfc3339();
+            true
+        })?;
         Ok(())
     }
 
@@ -1187,6 +1239,7 @@ impl SessionStore {
             // ordinary chat would make every reply after the copy read as a
             // sudden drop in effort.
             deep_research: loaded.metadata.deep_research,
+            execution_mode: loaded.metadata.execution_mode,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -1207,8 +1260,38 @@ impl SessionStore {
         Ok(metadata)
     }
 
+    /// Read, change and write one conversation's sidecar as a single step.
+    ///
+    /// Every writer of `meta.json` goes through here. They used to each load,
+    /// edit and save on their own, from different threads — the title maker,
+    /// a model pick, the turn's end, the usage write — so two of them landing
+    /// together each saved the copy THEY had loaded and the other's change
+    /// vanished. They also shared one `meta.json.tmp`, so a crossed rename
+    /// could fail outright. The lock is per sidecar file and process-wide,
+    /// because a `SessionStore` is a cheap clone made per call and holds no
+    /// state of its own.
+    ///
+    /// `change` returns whether it changed anything; nothing is written when
+    /// it did not.
+    fn update_metadata(
+        &self,
+        thread_id: &str,
+        change: impl FnOnce(&mut SessionMetadata) -> bool,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        let lock = metadata_lock(&self.meta_path(thread_id));
+        let _held = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut meta = self.load_metadata(thread_id)?;
+        if change(&mut meta) {
+            self.save_metadata(&meta)?;
+        }
+        Ok(meta)
+    }
+
     /// Atomically replace the metadata sidecar. The actual JSONL is
     /// owned by `Session::save_to_path` / `Session::append_to_path`.
+    ///
+    /// Callers other than [`Self::update_metadata`] must be writing a sidecar
+    /// nobody else can reach yet (a duplicate being created).
     fn save_metadata(&self, meta: &SessionMetadata) -> Result<(), RuntimeError> {
         self.ensure_dir_for(&meta.thread_id)?;
         let path = self.meta_path(&meta.thread_id);
@@ -1303,6 +1386,8 @@ impl SessionStore {
             self.artifacts_temp_path(thread_id),
             self.artifacts_backup_path(thread_id),
             self.subagent_rail_path(thread_id),
+            self.answer_boxes_path(thread_id),
+            self.work_cards_path(thread_id),
         ] {
             match fs::remove_file(&path) {
                 Ok(()) => {}
@@ -1329,6 +1414,21 @@ impl SessionStore {
 /// guess would answer differently before and after the directory exists, and
 /// the one caller that must never disagree is `delete`.
 #[must_use]
+/// The lock that serialises every read-change-write of the sidecar at `path`.
+///
+/// One entry per sidecar the process has written, which is bounded by the
+/// conversations on disk; an entry is a few dozen bytes and outliving its
+/// conversation costs nothing.
+fn metadata_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    locks.entry(path.to_path_buf()).or_default().clone()
+}
+
 pub fn tool_results_dir_in(root: &Path, thread_id: &str, layout: StoreLayout) -> PathBuf {
     match layout {
         StoreLayout::Flat => root.join(format!("{thread_id}.tool-results")),
@@ -1905,6 +2005,71 @@ mod tests {
         // An empty string is a cleared choice, not a model named "".
         store.set_model("w", Some(String::new())).unwrap();
         assert_eq!(store.load_metadata("w").unwrap().model, None);
+    }
+
+    #[test]
+    fn a_conversation_keeps_its_own_mode_and_refuses_chat() {
+        use crate::agent_runtime::ipc::AgentExecutionMode;
+        let (_g, store) = tmp_store();
+        store.ensure_thread("a", None, None).unwrap();
+        store.ensure_thread("b", None, None).unwrap();
+        assert_eq!(store.load_metadata("a").unwrap().execution_mode, None);
+
+        store.set_execution_mode("a", AgentExecutionMode::Plan).unwrap();
+        assert_eq!(
+            store.load_metadata("a").unwrap().execution_mode,
+            Some(AgentExecutionMode::Plan)
+        );
+        assert_eq!(
+            store.load_metadata("b").unwrap().execution_mode,
+            None,
+            "another conversation's mode is untouched",
+        );
+        assert!(store.set_execution_mode("a", AgentExecutionMode::Chat).is_err());
+        assert_eq!(
+            store.load_metadata("a").unwrap().execution_mode,
+            Some(AgentExecutionMode::Plan),
+            "a refused write changes nothing",
+        );
+        // Written in the lowercase form the window sends and reads.
+        let raw = std::fs::read_to_string(store.meta_path("a")).unwrap();
+        assert!(raw.contains("\"executionMode\": \"plan\""), "{raw}");
+    }
+
+    /// Writers on different threads each change a different field of one
+    /// sidecar. Every change must survive: without the per-sidecar lock each
+    /// writer saved the copy it had loaded, and the others' changes vanished.
+    #[test]
+    fn concurrent_sidecar_writes_keep_every_change() {
+        let (_g, store) = tmp_store();
+        store.ensure_thread("w", None, None).unwrap();
+        for round in 0..20 {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let title = format!("Title {round}");
+            let model = format!("prov:model-{round}");
+            let pinned = round % 2 == 0;
+            std::thread::scope(|scope| {
+                let (s1, b1, t) = (store.clone(), barrier.clone(), title.clone());
+                scope.spawn(move || {
+                    b1.wait();
+                    s1.set_title("w", t).unwrap();
+                });
+                let (s2, b2, m) = (store.clone(), barrier.clone(), model.clone());
+                scope.spawn(move || {
+                    b2.wait();
+                    s2.set_model("w", Some(m)).unwrap();
+                });
+                let (s3, b3) = (store.clone(), barrier.clone());
+                scope.spawn(move || {
+                    b3.wait();
+                    s3.set_pinned("w", pinned).unwrap();
+                });
+            });
+            let meta = store.load_metadata("w").unwrap();
+            assert_eq!(meta.title, title, "round {round}: title lost");
+            assert_eq!(meta.model.as_deref(), Some(model.as_str()), "round {round}: model lost");
+            assert_eq!(meta.pinned, pinned, "round {round}: pin lost");
+        }
     }
 
     #[test]

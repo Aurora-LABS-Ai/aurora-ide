@@ -14,6 +14,9 @@ import React, { useCallback, useContext, useMemo, useRef, useState } from "react
 import { Streamdown, defaultRehypePlugins, defaultRemarkPlugins } from "streamdown";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
+import { AnswerBox } from "@/apps/agent/components/answer-box/AnswerBox";
+import { splitReply } from "@/apps/agent/lib/answer-box/split";
+import { ReplyLayout } from "@/apps/agent/components/reply-layout/ReplyLayout";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useSmoothReveal } from "@/apps/agent/hooks/conversation/useSmoothReveal";
 import { selectActiveAgentTheme, useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
@@ -205,14 +208,10 @@ const components = {
   ),
 };
 
-const AgentMarkdownImpl: React.FC<{
-  content: string;
-  /** Live turn — enables Streamdown's incremental animation + incomplete parse. */
-  streaming?: boolean;
-}> = ({ content, streaming = false }) => {
+/** One run of markdown, rendered by Streamdown with the window's theme. */
+const MarkdownBody: React.FC<{ text: string }> = ({ text }) => {
   const appearance = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance);
   const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
-  const textPace = useAgentThemeStore((s) => s.transcriptTextPace);
 
   // Stable tuple so Streamdown's internal memo isn't busted every render.
   //
@@ -227,13 +226,6 @@ const AgentMarkdownImpl: React.FC<{
     [appearance],
   );
 
-  // Even out the bursty token stream into a steady, weighty reveal. Streamdown's
-  // own per-token fade is turned OFF — this owns the motion instead. The curve
-  // is Transcript → Text streaming.
-  const revealed = useSmoothReveal(content, streaming, textPace);
-
-  if (!content) return null;
-
   return (
     <div className={syntaxOn ? "agw-md" : "agw-md agw-syntax-off"}>
       <Streamdown
@@ -247,9 +239,73 @@ const AgentMarkdownImpl: React.FC<{
         // code blocks (we render our own copy button via the custom `pre`).
         controls={{ table: false, code: false }}
       >
-        {revealed}
+        {text}
       </Streamdown>
     </div>
+  );
+};
+
+const AgentMarkdownImpl: React.FC<{
+  content: string;
+  /** Live turn — enables Streamdown's incremental animation + incomplete parse. */
+  streaming?: boolean;
+  /**
+   * Draw `aurora-box` fences as working answer boxes. Only the transcript turns
+   * this on: a box saves what the reader sets with the conversation, so a file
+   * viewer or a canvas showing the same text keeps it as code.
+   */
+  answerBoxes?: boolean;
+}> = ({ content, streaming = false, answerBoxes = false }) => {
+  const textPace = useAgentThemeStore((s) => s.transcriptTextPace);
+  // Transcript → Reply layout. Only where boxes are drawn (the transcript);
+  // off, a layout fence is a code block, which is what "off" means.
+  const replyLayout = useAgentThemeStore((s) => s.transcriptReplyLayout);
+
+  // Even out the bursty token stream into a steady, weighty reveal. Streamdown's
+  // own per-token fade is turned OFF — this owns the motion instead. The curve
+  // is Transcript → Text streaming.
+  const revealed = useSmoothReveal(content, streaming, textPace);
+
+  // Boxes are cut out of the raw text before markdown sees it: only here is it
+  // known whether a box's closing fence has arrived yet.
+  const segments = useMemo(
+    () => (answerBoxes ? splitReply(revealed, { layouts: replyLayout }) : null),
+    [answerBoxes, replyLayout, revealed],
+  );
+
+  if (!content) return null;
+
+  if (!segments || (segments.length === 1 && segments[0].kind === "markdown")) {
+    return <MarkdownBody text={revealed} />;
+  }
+
+  return (
+    <>
+      {segments.map((segment, index) => {
+        if (segment.kind === "markdown") return <MarkdownBody key={index} text={segment.text} />;
+        // A fence the model never closed is still finished once the turn is.
+        const closed = segment.closed || !streaming;
+        if (segment.kind === "layout") {
+          return (
+            <ReplyLayout
+              key={index}
+              language={segment.language}
+              source={segment.source}
+              closed={closed}
+              fallback={<MarkdownBody text={segment.closed ? segment.raw : `${segment.raw}\n\`\`\``} />}
+            />
+          );
+        }
+        return (
+          <AnswerBox
+            key={index}
+            source={segment.source}
+            closed={closed}
+            fallback={<MarkdownBody text={segment.closed ? segment.raw : `${segment.raw}\n\`\`\``} />}
+          />
+        );
+      })}
+    </>
   );
 };
 
@@ -257,7 +313,7 @@ const AgentMarkdownImpl: React.FC<{
  * Memoized: the transcript re-renders the whole ACTIVE turn on every streamed
  * frame, but only the newest content segment actually changes — every earlier
  * segment would otherwise re-run Streamdown (markdown parse + Shiki) per frame
- * for identical props. Props are a string + a bool, so the default shallow
- * compare is exact.
+ * for identical props. Props are a string and two bools, so the default
+ * shallow compare is exact.
  */
 export const AgentMarkdown = React.memo(AgentMarkdownImpl);

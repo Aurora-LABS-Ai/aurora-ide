@@ -53,6 +53,7 @@
 
 pub mod anthropic;
 pub mod anthropic_api;
+pub mod antigravity;
 pub mod aurora_image;
 pub mod claude_code;
 pub mod client;

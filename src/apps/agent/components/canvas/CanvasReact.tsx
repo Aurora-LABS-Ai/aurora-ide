@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   buildCanvasDocument,
   compileCanvasSource,
+  repairCanvasImports,
   CanvasCompileError,
 } from "@/apps/agent/services/artifacts/canvas-react";
 import { AgentIcon } from "@/apps/agent/shared";
@@ -13,6 +14,12 @@ interface CanvasReactProps {
   source: string;
   title: string;
   refreshKey: number;
+  /**
+   * `fill` (default) fills its panel, the dock. `content` sizes the frame to
+   * what the canvas draws, from the height the frame reports — a canvas
+   * inline in a reply, which must never scroll inside itself.
+   */
+  fit?: "fill" | "content";
 }
 
 /**
@@ -75,7 +82,16 @@ const readThemeVariables = (element: HTMLElement): Record<string, string> => {
   return variables;
 };
 
-export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refreshKey }) => {
+/** An inline canvas taller than this scrolls inside itself; past a screen it
+ *  belongs in the dock, and the prompt says so. */
+const MAX_INLINE_HEIGHT = 720;
+
+/** First paint before the frame has reported: a short, quiet space, not a hole. */
+const INITIAL_INLINE_HEIGHT = 120;
+
+export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refreshKey, fit = "fill" }) => {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [contentHeight, setContentHeight] = useState(INITIAL_INLINE_HEIGHT);
   const activeThemeId = useAgentThemeStore((state) => state.activeThemeId);
   const activeCustomization = useAgentThemeStore(
     (state) => state.customizations[state.activeThemeId],
@@ -98,7 +114,9 @@ export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refresh
     void (async () => {
       try {
         const [compiled, { CANVAS_RUNTIME, CANVAS_STYLES, CANVAS_FONTS }] = await Promise.all([
-          compileCanvasSource(source),
+          // A saved canvas may predate the gate's import check; showing it
+          // imports what it forgot (`repairCanvasImports`). Saving stays strict.
+          repairCanvasImports(source).then(compileCanvasSource),
           import("@/apps/agent/services/artifacts/canvas-runtime"),
         ]);
         if (cancelled) return;
@@ -144,8 +162,17 @@ export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refresh
         type?: string;
         message?: string;
         href?: string;
+        height?: number;
       } | null;
       if (!data || data.source !== "aurora-canvas") return;
+      // Several canvases can be on screen (one inline per reply, one in the
+      // dock); a size report is only believed from THIS frame.
+      if (data.type === "size") {
+        if (fit !== "content" || event.source !== frameRef.current?.contentWindow) return;
+        const height = Number(data.height);
+        if (Number.isFinite(height) && height > 0) setContentHeight(Math.min(height, MAX_INLINE_HEIGHT));
+        return;
+      }
       if (data.type === "error") {
         setRuntimeError(String(data.message ?? "").slice(0, 2000));
         return;
@@ -160,10 +187,10 @@ export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refresh
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [fit]);
 
   return (
-    <div className="agw-canvas-react" ref={hostRef}>
+    <div className="agw-canvas-react" ref={hostRef} data-fit={fit}>
       {compiling && (
         <div className="agw-diagram-state" aria-live="polite">
           <AgentIcon name="retry" size={18} className="agw-canvas-spin" />
@@ -184,11 +211,13 @@ export const CanvasReact: React.FC<CanvasReactProps> = ({ source, title, refresh
       {document && (
         <iframe
           key={`${refreshKey}:${document.length}`}
+          ref={frameRef}
           className="agw-canvas-frame"
           title={`${title} canvas`}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           srcDoc={document}
+          style={fit === "content" ? { height: contentHeight } : undefined}
         />
       )}
 

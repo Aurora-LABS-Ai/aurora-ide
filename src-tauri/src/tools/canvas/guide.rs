@@ -3,13 +3,14 @@
 //! One home for this text. The system prompt points at the tool; the tool
 //! returns this.
 //!
-//! ONE deliberate exception: the "pick the cheapest kind that works" rule below
-//! is also stated in `agent-prompt.ts`'s `CANVAS_INSTRUCTIONS`. It has to be,
-//! because it is the only line here that decides something BEFORE this tool is
-//! called — a model that has already chosen `react` and called the guide can no
-//! longer be told to have chosen `markdown`. Left only here, the encouraging
-//! half of the choice ("prefer react for datasets", in the `present_artifact`
-//! description) was visible at decision time and the sobering half was not.
+//! ONE deliberate exception: the "pick the kind by what the reader will do with
+//! it" rule below is also stated in `agent-prompt.ts`'s `CANVAS_INSTRUCTIONS`.
+//! It has to be, because it is the only line here that decides something BEFORE
+//! this tool is called — by the time a model reads the guide it has already
+//! chosen. Until 2026-10-11 the rule read "pick the cheapest kind … react only
+//! when", and models chose react for 23 of 218 saved canvas writes: data went
+//! out as markdown tables. It now decides by what the reader does with the
+//! result, and makes react the default for data.
 //!
 //! Both copies are pinned: `the_kind_choice_rule_is_stated_up_front` below, and
 //! `agent-prompt.test.ts`. Change the wording in one and a test fails.
@@ -47,9 +48,15 @@ Do **not** use one when:
 - The data was an intermediate step toward a different answer
 - The answer is short, or is prose
 
-Pick the cheapest kind that works: `markdown` for a document, `mermaid` for a
-diagram, `react` only when it needs to be interactive or when layout carries
-meaning that text cannot.
+Pick the kind by what the reader will do with it:
+
+- read it top to bottom → `markdown`
+- see how parts connect (a flow, a structure, a sequence) → `mermaid`
+- work out one number → an answer box in your reply, not a canvas
+- compare, rank, sort or explore numbers — headline figures, a chart, a table
+  past about eight rows, findings with figures → `react`
+
+`react` is the default for data: a large markdown table is the wrong answer.
 
 ## The contract the compiler enforces
 
@@ -165,6 +172,10 @@ export default function Report() {
 - `Timeline` + `Event` — ordered events: `<Event when="14:02" title="Deploy failed" tone="bad" />`.
 - `Tabs` — for content competing for the same space:
   `<Tabs tabs={[{ id: "a", label: "Errors", content: <…/> }]} />`.
+- `Picker` — a few named things to choose between, when the detail below changes
+  with the choice. Keep the chosen id in `useState` and render the detail from it:
+  `<Picker label="Project" items={[{ id: "shop", label: "Storefront", caption: "Next.js" }]} value={id} onChange={setId} />`.
+  Not a wall of cards: three to eight items, and something must read the choice.
 - `Detail` — progressive disclosure: `<Detail summary="Full trace">…</Detail>`.
   Put the long evidence behind a short claim here rather than dropping it.
 - `Image` — a picture, with what it shows and where it came from:
@@ -181,6 +192,23 @@ export default function Report() {
   `from` is required — an unattributed quotation is just text in italics.
 - `Columns` — side by side on a wide panel, stacked when narrow.
 - `Divider` — a rule between unrelated groups. Rarely needed; whitespace first.
+- `Stepper`, `NumberField`, `Choice` — inputs, for a canvas that recomputes as
+  the reader changes something. Every one takes a required `label`, and either
+  a `defaultValue` (it keeps its own state) or `value` + `onChange` (you own the
+  number and compute from it):
+  ```tsx
+  const [people, setPeople] = useState(6);
+  <Stepper label="Number of people" value={people} onChange={setPeople}
+           min={1} max={30} unit="person/people" size="large" />
+  <NumberField label="Bill total" defaultValue={186.4} min={0} prefix="$" />
+  <Choice label="Tip" defaultValue={0.15}
+          options={[{ label: "None", value: 0 }, { label: "15%", value: 0.15 }]} />
+  ```
+  `size="large"` is for the ONE input the whole canvas turns on. `unit` may be
+  `"singular/plural"`. `NumberField` shows its own error under the field and
+  keeps reporting the last valid number, so nothing computed from it goes NaN.
+  Put the result in a `List` of `Row`s and mark the answer with
+  `<Row emphasis … />` — one per list.
 - `Badge` — short qualifier. `tone`: `neutral | info | good | warn | bad`.
 - `Note` — a caveat, a definition, a consequence. Takes a `tone`.
 - `Text`, `Code` — prose and inline identifiers.

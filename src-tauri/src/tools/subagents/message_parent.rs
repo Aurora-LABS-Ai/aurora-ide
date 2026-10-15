@@ -59,11 +59,10 @@ impl ToolExecutor for MessageParentTool {
                  a decision only the parent can make. Be specific and short. Avoid routine progress \
                  chatter. Work results belong in submit_report. Do not repeat a submitted report \
                  to acknowledge thanks.\n\n\
-                 Set waitForReply: true when you cannot continue without the answer: the call \
-                 holds for up to {} minutes and returns the parent's answer as its result. \
-                 Questions wait by default; set false when you can carry on. Only questions \
-                 can wait. Leave it off when you only need the parent to know; its \
-                 answer then arrives later as a message.",
+                 A question waits for the answer by default: the call holds for up to {} \
+                 minutes and returns the parent's answer as its result. If you can carry on \
+                 without it, set waitForReply: false; the answer then arrives later as a \
+                 message. Only questions wait; a message or reply never does.",
                 crate::agent_runtime::subagents::WAIT_FOR_REPLY_SECS / 60
             ),
             input_schema: json!({

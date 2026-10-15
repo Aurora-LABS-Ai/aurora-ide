@@ -28,6 +28,7 @@
 export const BUILT_IN_PROVIDER_ORDER: readonly string[] = [
   "anthropic",
   "claude-code",
+  "antigravity",
   "openai-responses",
   "codex",
   "cursor",

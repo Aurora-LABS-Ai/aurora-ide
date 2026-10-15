@@ -78,7 +78,7 @@ export interface LLMProvider {
   // `deepseek` / `deepseek-messages` / `deepseek-responses` likewise — one
   // `sk-` key, three shapes, and on this one the Messages wire also lives on
   // its own path, so the picker rewrites the row's URL alongside the type.
-  providerType?: "openai" | "openai-responses" | "codex" | "claude-code" | "cursor" | "fireworks" | "deepseek" | "deepseek-messages" | "deepseek-responses" | "glm" | "anthropic" | "anthropic-api" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "ark" | "ark-messages" | "ark-responses" | "modal" | "modal-messages" | "modal-responses" | "meta" | "meta-messages" | "meta-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
+  providerType?: "openai" | "openai-responses" | "codex" | "claude-code" | "antigravity" | "cursor" | "fireworks" | "deepseek" | "deepseek-messages" | "deepseek-responses" | "glm" | "anthropic" | "anthropic-api" | "minimax" | "lmstudio" | "ollama" | "kenari" | "kenari-messages" | "kenari-responses" | "ark" | "ark-messages" | "ark-responses" | "modal" | "modal-messages" | "modal-responses" | "meta" | "meta-messages" | "meta-responses" | "opencode-go" | "opencode-go-chat" | "opencode-go-messages" | "custom"; // Explicit provider type
   requiresApiKey?: boolean; // Whether API key is required (false for local)
   /** @deprecated v15 — read the active `LLMModel.supportsThinking` instead. */
   supportsThinking: boolean;

@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
+import {
+  classifyOutcome,
+  useAgentSuggestStore,
+} from "@/apps/agent/store/composer/useAgentSuggestStore";
+
+beforeEach(() => {
+  useAgentSuggestStore.setState({ byThread: {}, pendingByThread: {}, offerByThread: {} });
+});
 
 describe("useAgentSuggestStore", () => {
   it("keeps suggestions per thread and clears them independently", () => {
@@ -21,5 +28,80 @@ describe("useAgentSuggestStore", () => {
     store.setSuggestions("t3", ["One thing"]);
     store.setSuggestions("t3", []);
     expect(useAgentSuggestStore.getState().byThread.t3).toBeUndefined();
+  });
+
+  it("shows a run's suggestions only while it is still the pending one", () => {
+    const store = useAgentSuggestStore.getState();
+    store.startRun("t", "old");
+    store.startRun("t", "new");
+    store.finishRun("t", "old", ["Stale reply"]);
+    expect(useAgentSuggestStore.getState().byThread.t).toBeUndefined();
+    expect(useAgentSuggestStore.getState().pendingByThread.t).toBe("new");
+
+    store.finishRun("t", "new", ["Fresh reply"]);
+    expect(useAgentSuggestStore.getState().byThread.t).toEqual(["Fresh reply"]);
+    expect(useAgentSuggestStore.getState().pendingByThread.t).toBeUndefined();
+  });
+
+  /** Tapping a chip clears the chips, but the send that follows still has to
+   *  know which one it was. */
+  it("remembers the tapped chip after the chips are cleared, until the send", () => {
+    const store = useAgentSuggestStore.getState();
+    store.startRun("t", "r1");
+    store.finishRun("t", "r1", ["Run the tests", "Show the diff"]);
+    store.markTapped("t", 1, "Show the diff");
+    store.clear("t");
+
+    const outcome = useAgentSuggestStore.getState().takeOutcome("t", "Show the diff");
+    expect(outcome).toEqual({
+      runId: "r1",
+      shown: ["Run the tests", "Show the diff"],
+      action: "tapped",
+      tappedIndex: 1,
+      sentText: "Show the diff",
+    });
+    // Recorded once.
+    expect(useAgentSuggestStore.getState().takeOutcome("t", "again")).toBeNull();
+  });
+
+  it("records a send before the suggestions arrived", () => {
+    const store = useAgentSuggestStore.getState();
+    store.startRun("t", "r1");
+    expect(useAgentSuggestStore.getState().takeOutcome("t", "  go  ")).toEqual({
+      runId: "r1",
+      shown: [],
+      action: "sent_before_ready",
+      sentText: "go",
+    });
+    // The late answer is not shown for a conversation that has moved on.
+    store.finishRun("t", "r1", ["Late"]);
+    expect(useAgentSuggestStore.getState().byThread.t).toBeUndefined();
+  });
+
+  it("has nothing to record when nothing was offered", () => {
+    expect(useAgentSuggestStore.getState().takeOutcome("t", "hello")).toBeNull();
+  });
+});
+
+describe("classifyOutcome", () => {
+  const offer = { runId: "r", shown: ["Run the tests", "Show the diff"] };
+
+  it("calls a tapped chip sent with changes an edit", () => {
+    const outcome = classifyOutcome(
+      { ...offer, tapped: { index: 0, text: "Run the tests" } },
+      "Run the tests and lint",
+    );
+    expect(outcome.action).toBe("tapped_edited");
+    expect(outcome.tappedIndex).toBe(0);
+  });
+
+  it("counts a typed message that matches a chip as that chip", () => {
+    const outcome = classifyOutcome(offer, "show the diff");
+    expect(outcome.action).toBe("tapped");
+    expect(outcome.tappedIndex).toBe(1);
+  });
+
+  it("calls anything else typed", () => {
+    expect(classifyOutcome(offer, "fix it, don't ask me").action).toBe("typed");
   });
 });

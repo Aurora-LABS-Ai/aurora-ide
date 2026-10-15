@@ -46,6 +46,22 @@ describe("pinnedThreadModel", () => {
     expect(pinnedThreadModel(source([row("a", "prov:alpha")]), "ghost")).toBeNull();
   });
 
+  /**
+   * The 2026-10-12 bug: a chat whose first turn was still running was in
+   * neither list, so it showed the model last picked in ANOTHER chat. Its own
+   * record in `threadModels` must answer for it.
+   */
+  it("answers from the per-conversation record for a chat the lists do not hold", () => {
+    const state = { ...source([row("other", "glm:5.3")]), threadModels: { fresh: "gemini:flash" } };
+    expect(pinnedThreadModel(state, "fresh")).toBe("gemini:flash");
+    expect(pinnedThreadModel(state, "other")).toBe("glm:5.3");
+  });
+
+  it("prefers the per-conversation record over a stale list row", () => {
+    const state = { ...source([row("a", "prov:old")]), threadModels: { a: "prov:new" } };
+    expect(pinnedThreadModel(state, "a")).toBe("prov:new");
+  });
+
   /** `allThreads` covers every project; `threads` is only the active one. A
    *  chat docked from another project must still resolve. */
   it("falls back to the scoped list when the global one hasn't caught up", () => {

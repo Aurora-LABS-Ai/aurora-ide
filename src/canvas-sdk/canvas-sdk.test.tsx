@@ -29,6 +29,35 @@ afterEach(() => {
   host = null;
 });
 
+describe("Picker", () => {
+  it("is a radio group whose chosen item is marked and reported", () => {
+    const seen: string[] = [];
+    const el = render(
+      <sdk.Picker
+        label="Project"
+        items={[
+          { id: "shop", label: "Storefront", caption: "Next.js" },
+          { id: "ide", label: "Aurora IDE" },
+        ]}
+        onChange={(id) => seen.push(id)}
+      />,
+    );
+    const radios = el.querySelectorAll<HTMLButtonElement>("[role=radio]");
+    expect(radios).toHaveLength(2);
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+    expect(radios[0].querySelector(".ac-picker-caption")?.textContent).toBe("Next.js");
+    act(() => radios[1].click());
+    expect(seen).toEqual(["ide"]);
+    expect(el.querySelector("[role=radio][aria-checked=true]")?.textContent).toContain("Aurora IDE");
+  });
+
+  it("follows a controlled value and draws nothing for no items", () => {
+    const el = render(<sdk.Picker label="x" items={[{ id: "a", label: "A" }, { id: "b", label: "B" }]} value="b" />);
+    expect(el.querySelector("[role=radio][aria-checked=true]")?.textContent).toBe("B");
+    expect(render(<sdk.Picker label="x" items={[]} />).innerHTML).toBe("");
+  });
+});
+
 describe("the exported surface", () => {
   it("is exactly what canvas_guidelines documents", () => {
     // Both sides are pinned: the Rust test asserts the guide names each of
@@ -36,10 +65,11 @@ describe("the exported surface", () => {
     // list fails in the other.
     expect(Object.keys(sdk).sort()).toEqual(
       [
-        "Badge", "Bar", "BarChart", "Canvas", "Cite", "Code", "Columns",
-        "Detail", "Divider", "Event", "Fact", "Facts", "Image", "List", "Note",
-        "Quote", "Row", "Section", "Sparkline", "Stat", "Stats", "Table",
-        "Tabs", "Text", "Timeline", "useHostTheme",
+        "Badge", "Bar", "BarChart", "Canvas", "Choice", "Cite", "Code",
+        "Columns", "Detail", "Divider", "Event", "Fact", "Facts", "Image",
+        "List", "Note", "NumberField", "Picker", "Quote", "Row", "Section", "Sparkline",
+        "Stat", "Stats", "Stepper", "Table", "Tabs", "Text", "Timeline",
+        "useHostTheme",
       ].sort(),
     );
   });
@@ -249,5 +279,117 @@ describe("numbers", () => {
   it("leaves pre-formatted strings alone", () => {
     const output = render(<Stat label="Ratio" value="18%" />);
     expect(output.querySelector(".ac-num")?.textContent).toBe("18%");
+  });
+});
+
+/** Type into a controlled input the way a person does, so React's onChange fires. */
+const typeInto = (input: HTMLInputElement, text: string) => {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+
+const press = (target: Element, key: string) =>
+  act(() => {
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  });
+
+describe("inputs", () => {
+  it("steps within its limits and disables the button at each end", () => {
+    const seen: number[] = [];
+    const output = render(
+      <sdk.Stepper label="People" defaultValue={2} min={1} max={3} onChange={(v) => seen.push(v)} />,
+    );
+    const [minus, plus] = output.querySelectorAll<HTMLButtonElement>("button");
+    const value = output.querySelector('[role="spinbutton"]')!;
+    act(() => plus.click());
+    expect(value.textContent).toBe("3");
+    expect(plus.disabled).toBe(true);
+    act(() => minus.click());
+    act(() => minus.click());
+    expect(value.textContent).toBe("1");
+    expect(minus.disabled).toBe(true);
+    expect(seen).toEqual([3, 2, 1]);
+  });
+
+  it("answers the arrow keys, Home and End on the number itself", () => {
+    const output = render(<sdk.Stepper label="People" defaultValue={6} min={1} max={30} />);
+    const value = output.querySelector('[role="spinbutton"]')!;
+    press(value, "ArrowUp");
+    expect(value.getAttribute("aria-valuenow")).toBe("7");
+    press(value, "PageDown");
+    expect(value.getAttribute("aria-valuenow")).toBe("2");
+    press(value, "End");
+    expect(value.getAttribute("aria-valuenow")).toBe("30");
+  });
+
+  it("names its unit in the singular or the plural to match the number", () => {
+    const output = render(
+      <sdk.Stepper label="People" defaultValue={2} min={1} unit="person/people" size="large" />,
+    );
+    expect(output.querySelector(".ac-stepper-unit")?.textContent).toBe("people");
+    act(() => output.querySelector<HTMLButtonElement>('[aria-label="Decrease People"]')!.click());
+    expect(output.querySelector(".ac-stepper-unit")?.textContent).toBe("person");
+  });
+
+  it("lands a decimal step on the decimal, not on floating-point noise", () => {
+    const output = render(<sdk.Stepper label="Rate" defaultValue={0.1} step={0.1} min={0} max={1} />);
+    act(() => output.querySelector<HTMLButtonElement>('[aria-label="Increase Rate"]')!.click());
+    expect(output.querySelector('[role="spinbutton"]')?.getAttribute("aria-valuenow")).toBe("0.2");
+  });
+
+  it("keeps the last good number while what is typed is not one, and says why", () => {
+    const seen: number[] = [];
+    const output = render(
+      <sdk.NumberField label="Bill total" defaultValue={100} min={0} prefix="$" onChange={(v) => seen.push(v)} />,
+    );
+    const input = output.querySelector("input")!;
+    typeInto(input, "");
+    expect(output.querySelector(".ac-field-error")?.textContent).toBe("Enter a number.");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    typeInto(input, "-4");
+    expect(output.querySelector(".ac-field-error")?.textContent).toBe("It can't be less than 0.");
+    typeInto(input, "1,250.5");
+    expect(output.querySelector(".ac-field-error")).toBeNull();
+    expect(seen).toEqual([1250.5]);
+  });
+
+  it("is a real radio group: one checked, arrow keys move the choice", () => {
+    const seen: Array<string | number> = [];
+    const output = render(
+      <sdk.Choice
+        label="Tip"
+        defaultValue={0.1}
+        options={[
+          { label: "None", value: 0 },
+          { label: "10%", value: 0.1 },
+          { label: "15%", value: 0.15 },
+        ]}
+        onChange={(v) => seen.push(v)}
+      />,
+    );
+    const group = output.querySelector('[role="radiogroup"]')!;
+    const checked = () =>
+      [...output.querySelectorAll('[role="radio"]')].map((b) => b.getAttribute("aria-checked"));
+    expect(checked()).toEqual(["false", "true", "false"]);
+    press(group, "ArrowRight");
+    expect(checked()).toEqual(["false", "false", "true"]);
+    press(group, "ArrowRight");
+    expect(checked()).toEqual(["true", "false", "false"]);
+    expect(seen).toEqual([0.15, 0]);
+  });
+
+  it("marks the answer row without colouring it", () => {
+    const output = render(
+      <List>
+        <Row title="Tip" value="$27.96" />
+        <Row title="Each pays" value="$53.59" emphasis />
+      </List>,
+    );
+    const rows = output.querySelectorAll(".ac-row");
+    expect(rows[0].classList.contains("ac-row-strong")).toBe(false);
+    expect(rows[1].classList.contains("ac-row-strong")).toBe(true);
   });
 });

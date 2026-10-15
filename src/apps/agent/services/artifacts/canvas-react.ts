@@ -14,8 +14,10 @@
  *    model repairs its source instead of being told it succeeded.
  *
  *    What that covers today is precise, and the tool description must not
- *    overstate it: **syntax**, the **import allow-list**, and the **required
- *    default export**. It is `transpileModule`, so it does NOT yet catch type
+ *    overstate it: **syntax**, the **import allow-list**, `aurora/canvas`
+ *    names that **do not exist**, component tags **used but never imported or
+ *    defined**, and the **required default export**. It is `transpileModule`
+ *    plus those two AST walks, so it does NOT yet catch type
  *    errors — `<Table colums={…}>` compiles and fails at run time, where the
  *    frame reports it back into the panel.
  *
@@ -194,22 +196,118 @@ const checkCanvasImports = async (source: string, ts: TypeScriptApi): Promise<vo
       });
     });
   });
-  if (requested.length === 0) return;
 
   const { CANVAS_EXPORTS } = await import("virtual:aurora-canvas-exports");
   const available = new Set<string>(CANVAS_EXPORTS);
   const unknown = requested.filter((entry) => !available.has(entry.name));
-  if (unknown.length === 0) return;
+  const undeclared = findUndeclaredComponents(file, ts);
 
-  throw new CanvasCompileError(
-    unknown.map(({ name, line, column }) => ({
+  if (unknown.length === 0 && undeclared.length === 0) return;
+
+  throw new CanvasCompileError([
+    ...unknown.map(({ name, line, column }) => ({
       line,
       column,
       message:
         `"${name}" is not exported by "aurora/canvas". ` +
         (CANVAS_SUBSTITUTIONS[name] ?? `Available: ${CANVAS_EXPORTS.join(", ")}.`),
     })),
-  );
+    ...undeclared.map(({ name, line, column }) => ({
+      line,
+      column,
+      message: available.has(name)
+        ? `<${name}> is used but not imported. Add ${name} to the import from "aurora/canvas".`
+        : `<${name}> is used but never defined or imported. ` +
+          (CANVAS_SUBSTITUTIONS[name] ?? `Available from "aurora/canvas": ${CANVAS_EXPORTS.join(", ")}.`),
+    })),
+  ]);
+};
+
+/**
+ * Capitalised JSX tags whose name nothing in the file declares.
+ *
+ * The other half of the import check. A canvas that imports eleven components
+ * and then uses a twelfth (`<Facts>` with `Facts` missing from the import) is
+ * valid TypeScript to `transpileModule`, so it was saved, and then the frame
+ * died on `ReferenceError: Facts is not defined` with the whole canvas blank
+ * (thread 22a43243, 2026-10-12). Every binding a component tag could resolve
+ * to — an import, a function, a class, a variable, a parameter — is a
+ * declaration somewhere in this one file, so collecting them is enough; there
+ * is no outer scope a canvas can see. Member tags (`<Foo.Bar>`) are skipped:
+ * their head is an ordinary identifier the transpiler already treats as such.
+ */
+const findUndeclaredComponents = (
+  file: import("typescript").SourceFile,
+  ts: TypeScriptApi,
+): Array<{ name: string; line: number; column: number }> => {
+  const declared = new Set<string>();
+  const used: Array<{ name: string; node: import("typescript").Node }> = [];
+
+  const bindName = (name: import("typescript").BindingName | undefined) => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) {
+      declared.add(name.text);
+      return;
+    }
+    name.elements.forEach((element) => {
+      if (!ts.isOmittedExpression(element)) bindName(element.name);
+    });
+  };
+
+  const visit = (node: import("typescript").Node) => {
+    if (ts.isImportClause(node) && node.name) declared.add(node.name.text);
+    else if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) declared.add(node.name.text);
+    else if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isClassExpression(node)) &&
+      node.name
+    ) {
+      declared.add(node.name.text);
+    } else if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) {
+      bindName(node.name);
+    } else if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const tag = node.tagName;
+      if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) used.push({ name: tag.text, node: tag });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+
+  const seen = new Set<string>();
+  const out: Array<{ name: string; line: number; column: number }> = [];
+  for (const { name, node } of used) {
+    if (declared.has(name) || seen.has(name)) continue;
+    seen.add(name);
+    const { line, character } = file.getLineAndCharacterOfPosition(node.getStart(file));
+    out.push({ name, line: line + 1, column: character + 1 });
+  }
+  return out;
+};
+
+/**
+ * A SAVED canvas, ready to show: any `aurora/canvas` component it uses without
+ * importing is imported for it.
+ *
+ * The save gate rejects that mistake, so the model fixes its own source before
+ * anything is written. But canvases saved before the gate learned to catch it
+ * are on disk with it — `<Facts>` used, `Facts` never imported (thread
+ * 22a43243) — and reopening one must show the canvas, not a compile error the
+ * reader cannot act on. Only names `aurora/canvas` really exports are added;
+ * anything else still fails as before. The import goes in front of line 1, on
+ * line 1, so every later line number in an error still points at the source.
+ */
+export const repairCanvasImports = async (source: string): Promise<string> => {
+  const ts = await loadTypeScript();
+  const file = ts.createSourceFile("canvas.tsx", source, ts.ScriptTarget.ES2020, true, ts.ScriptKind.TSX);
+  const { CANVAS_EXPORTS } = await import("virtual:aurora-canvas-exports");
+  const available = new Set<string>(CANVAS_EXPORTS);
+  const missing = findUndeclaredComponents(file, ts)
+    .map((entry) => entry.name)
+    .filter((name) => available.has(name));
+  if (missing.length === 0) return source;
+  return `import { ${missing.join(", ")} } from "aurora/canvas"; ${source}`;
 };
 
 /** Module ids the emitted CommonJS actually requires. */
@@ -320,6 +418,22 @@ html{scrollbar-width:thin;scrollbar-color:var(--agw-scroll-thumb,#80808033) tran
   };
   window.addEventListener("error", function (event) { report(event.message); });
   window.addEventListener("unhandledrejection", function (event) { report(event.reason); });
+
+  // Height report, for a canvas drawn inline in a reply: the host sizes the
+  // frame to the content so the reply never scrolls inside itself. Posted on
+  // every size change; a docked canvas's host simply ignores it.
+  var lastHeight = -1;
+  var postHeight = function () {
+    var height = Math.ceil(document.documentElement.scrollHeight);
+    if (height === lastHeight) return;
+    lastHeight = height;
+    try { parent.postMessage({ source: "aurora-canvas", type: "size", height: height }, "*"); } catch (e) {}
+  };
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(postHeight).observe(document.documentElement);
+  }
+  window.addEventListener("load", postHeight);
+  setTimeout(postHeight, 0);
 
   // The allow-list from compileCanvasSource, enforced again at run time so a
   // require that somehow slipped through fails loudly instead of silently

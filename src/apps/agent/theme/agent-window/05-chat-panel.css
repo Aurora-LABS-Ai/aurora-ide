@@ -58,6 +58,13 @@
   min-width: 0;
   min-height: 100%;
 }
+/* Finished turns skip layout and paint while off screen — see `.agw-section`
+ * in `11-transcript-bubbles.css`. The last two children are the newest turn
+ * and the scroll sentinel, so `n+3` leaves the turn that is moving alone. */
+.agw-chatpanel-turns > div:nth-last-child(n + 3) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}
 
 /* The composer at dock width. The main pane can afford 16px of gutter either
  * side of a 768px column; here that gutter is a visible share of the width. */

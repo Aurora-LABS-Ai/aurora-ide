@@ -13,23 +13,23 @@
  * Nothing here pulses. Running is the dot matrix the chat tab already uses.
  */
 
+/* The card (probe: aurora-subagent-report-designs.html, round 3 B, picked
+ * 2026-10-12). In the agent's column, full width, like the work around it; a
+ * soft fill and NO edge — the way a code block sits in a reply. It replaced a
+ * right-hand bubble in the user bubble's fill that read as the user's own
+ * message. */
 .agw-agent-card {
-  align-self: flex-end;
-  max-width: 82%;
-  min-width: min(280px, 100%);
-  background: var(--agw-bubble-user);
+  --agw-agent-card-fold: 4.8em; /* the closed text area: about three lines */
+  width: 100%;
+  min-width: 0;
+  background: color-mix(in srgb, var(--agw-text) 4%, transparent);
   border-radius: var(--agw-radius-lg);
-  padding: 8px 12px 10px;
+  padding: 3px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 0;
 }
-/* Row-level, not column-level: the assistant turn's column is left-aligned,
- * so a card that wants the right edge has to be wrapped. */
 .agw-agent-card-row {
   display: flex;
-  justify-content: flex-end;
   min-width: 0;
 }
 /* A report that arrived while the window watched rises in from just below,
@@ -55,17 +55,83 @@
     animation: none;
   }
 }
+/* The top row: dot, name (its own link to the agent's tab), and the rest of
+ * the row as the open/close toggle — a tool card's row. */
 .agw-agent-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  padding: 4px 4px 4px 10px;
+  border-radius: calc(var(--agw-radius-lg) - 3px);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-label);
   line-height: 1.4;
+  transition: background var(--agw-dur-fast) ease;
 }
-.agw-agent-card-head > span {
+.agw-agent-card[data-foldable] .agw-agent-card-head:hover {
+  background: var(--agw-hover);
+}
+.agw-agent-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px 3px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agw-agent-card-toggle:disabled {
+  cursor: default;
+}
+.agw-agent-card-toggle:focus-visible {
+  outline: none;
+  color: var(--agw-text);
+}
+.agw-agent-card-words {
+  display: inline-flex;
+  gap: 8px;
+  min-width: 0;
   white-space: nowrap;
+}
+.agw-agent-card-words[data-status="failed"] > span:last-child {
+  color: var(--agw-removed);
+}
+.agw-agent-card-stats {
+  margin-left: auto;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.agw-agent-card-chev {
+  flex: none;
+  color: var(--agw-text-subtle);
+  transition: transform var(--agw-dur-fast) ease;
+}
+.agw-agent-card-stats + .agw-agent-card-chev {
+  margin-left: 0;
+}
+.agw-agent-card-toggle > .agw-agent-card-chev:first-child,
+.agw-agent-card-words + .agw-agent-card-chev {
+  margin-left: auto;
+}
+.agw-agent-card[data-open] .agw-agent-card-chev {
+  transform: rotate(180deg);
+}
+.agw-agent-name-static {
+  cursor: default;
+}
+.agw-agent-name-static:hover {
+  text-decoration: none;
 }
 .agw-agent-name {
   color: var(--agw-text);
@@ -103,60 +169,44 @@
 .agw-agent-dot[data-status="running"] {
   background: var(--agw-accent);
 }
-.agw-agent-card-summary {
-  color: var(--agw-text);
-  line-height: 1.5;
+/* ONE text area: the report as the agent wrote it, summary first, the rest
+ * after it. Closed, its first lines fading out; open, the SAME area grows to
+ * the locked height every tool card uses (400px, its own scroller) and takes
+ * the shared scroll-aware bottom fade (`agw-scroll-fade-b`, 09-tool-cards.css).
+ * A text that fits in the closed height is never clipped and cannot open. */
+.agw-agent-card-text {
+  margin: 0 11px 9px;
   min-width: 0;
+  max-height: var(--agw-agent-card-fold);
+  overflow: hidden;
   overflow-wrap: anywhere;
-}
-.agw-agent-card-summary[data-status="failed"] {
-  color: var(--agw-removed);
-}
-.agw-agent-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--agw-text-subtle);
-  font-size: var(--agw-fs-micro);
-  font-variant-numeric: tabular-nums;
-}
-.agw-agent-card-open {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--agw-text-subtle);
-  font-size: var(--agw-fs-micro);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-.agw-agent-card-open:hover,
-.agw-agent-card-open:focus-visible {
-  outline: none;
   color: var(--agw-text);
+  line-height: 1.6;
+  transition: max-height var(--agw-dur-slow) var(--agw-ease-out);
 }
-.agw-agent-card-open svg {
-  transition: transform var(--agw-dur-fast) ease;
+.agw-agent-card[data-foldable]:not([data-open]) .agw-agent-card-text {
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
-.agw-agent-card-open[aria-expanded="true"] svg {
-  transform: rotate(180deg);
+.agw-agent-card[data-open] .agw-agent-card-text {
+  max-height: 400px; /* the tool cards' locked area (.agw-tool-group-body) */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--agw-scroll-thumb) transparent;
 }
-.agw-agent-card-body {
-  border-top: 1px solid var(--agw-border);
-  padding-top: 8px;
-  margin-top: 2px;
-  min-width: 0;
-}
-/* The report body is prose from the child; it uses the transcript's markdown
- * styles. Only the measure is ours. */
-.agw-agent-card-body .agw-markdown {
+/* The report is prose from the child; it uses the transcript's markdown
+ * styles, at the card's measure, with no gap above its first line. */
+.agw-agent-card-text .agw-markdown {
   font-size: var(--agw-fs-label);
 }
+.agw-agent-card-text .agw-markdown > :first-child {
+  margin-top: 0;
+}
 @media (prefers-reduced-motion: reduce) {
-  .agw-agent-card-open svg {
+  .agw-agent-card-text,
+  .agw-agent-card-chev,
+  .agw-agent-card-head {
     transition: none;
   }
 }
@@ -164,16 +214,17 @@
 /* A message FROM THE PARENT inside a child's transcript. Same card, flipped
  * reading: it says who sent it, and that it is not a person. The agent tab
  * uses it for every user-role message in the child's conversation. */
-.agw-agent-card[data-from="parent"] .agw-agent-card-summary {
+.agw-agent-card-plain {
   white-space: pre-wrap;
+  font-size: var(--agw-fs-label);
 }
 /* Sent, not yet taken in: the agent reads it at its next step. Shown at once
- * so the message never seems to vanish; the open fill says it has not landed. */
+ * so the message never seems to vanish; no fill says it has not landed. */
 .agw-agent-card[data-waiting] {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--agw-border-strong);
 }
-.agw-agent-card[data-waiting] .agw-agent-card-summary {
+.agw-agent-card[data-waiting] .agw-agent-card-text {
   color: var(--agw-text-muted);
 }
 

@@ -114,18 +114,24 @@ export async function runDictationCleanup(
  * model sees the user's own message AND the assistant's reply, and answers as
  * the user. May resolve with fewer (or an empty array) when the model's
  * output fails the backend quality filters.
+ *
+ * With `log`, the run is written to that conversation's `suggestions.jsonl`
+ * under `runId`, like a cloud run.
  */
 export async function runReplySuggestions(
   requestId: string,
   userText: string,
   text: string,
   config: RefineConfig,
+  log?: { threadId: string; runId: string },
 ): Promise<string[]> {
   return auroraInvoke<string[]>("prompt_refine_suggest", {
     requestId,
     userText,
     text,
     config,
+    threadId: log?.threadId ?? null,
+    runId: log?.runId ?? null,
   });
 }
 

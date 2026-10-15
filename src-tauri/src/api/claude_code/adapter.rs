@@ -232,6 +232,11 @@ impl StreamingApiClient for ClaudeCodeAdapter {
             break response;
         };
 
+        // Every reply, refused ones included, carries the plan's usage
+        // windows; keeping them is what lets the card and ring skip the
+        // rate-limited usage endpoint.
+        super::usage::record_headers(&access.account_id, response.headers());
+
         let status = response.status();
         if !status.is_success() {
             let headers = response.headers().clone();
@@ -398,5 +403,42 @@ mod tests {
             json!({ "type": "ephemeral" }),
             "the message breakpoint stays at five minutes"
         );
+    }
+
+    /// Live: one minimal reply on the stored main account carries the usage
+    /// headers, and they become a reading. Spends one Haiku token.
+    ///
+    /// `cargo test --lib claude_code::adapter::tests::live -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "live: needs a Claude Code account in Aurora, spends a request"]
+    async fn live_reply_headers_carry_plan_usage() {
+        let access = auth::fresh_access().await.expect("signed in");
+        let model = "claude-haiku-4-5-20251001";
+        let body = json!({
+            "model": model,
+            "max_tokens": 1,
+            "system": [{ "type": "text", "text": CLAUDE_CODE_IDENTITY }],
+            "messages": [{ "role": "user", "content": "Say hi." }],
+        });
+        let headers = build_claude_code_headers(&access, &select_betas(model, &body)).unwrap();
+        let response = reqwest::Client::new()
+            .post(messages_url())
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+            .expect("send");
+        println!("HTTP {}", response.status());
+        for (name, value) in response.headers() {
+            if name.as_str().starts_with("anthropic-ratelimit-unified") {
+                println!("  {name}: {}", value.to_str().unwrap_or("?"));
+            }
+        }
+        super::super::usage::record_headers(&access.account_id, response.headers());
+        let snap = super::super::usage::fetch_usage_for(&access.account_id, false)
+            .await
+            .expect("served from the reply");
+        println!("5h {:?}\n7d {:?}", snap.five_hour, snap.seven_day);
+        assert!(snap.five_hour.is_some() || snap.seven_day.is_some());
     }
 }

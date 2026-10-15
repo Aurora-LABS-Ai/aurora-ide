@@ -116,6 +116,10 @@ mod tests {
             "Note",
             "Text",
             "Code",
+            "Stepper",
+            "NumberField",
+            "Choice",
+            "Picker",
             "useHostTheme",
         ] {
             assert!(
@@ -131,8 +135,9 @@ mod tests {
     /// of the two fails rather than both silently disagreeing.
     #[test]
     fn the_kind_choice_rule_is_stated_up_front() {
-        assert!(guide::CANVAS_GUIDE.contains("Pick the cheapest kind that works"));
-        assert!(guide::CANVAS_GUIDE.contains("only when it needs to be interactive"));
+        assert!(guide::CANVAS_GUIDE.contains("Pick the kind by what the reader will do with it"));
+        assert!(guide::CANVAS_GUIDE.contains("`react` is the default for data"));
+        assert!(!guide::CANVAS_GUIDE.contains("cheapest"));
     }
 
     #[test]

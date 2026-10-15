@@ -52,6 +52,11 @@ import {
   type ClaudeCodeUsageSnapshot,
 } from "@/apps/agent/services/providers/claude-code";
 import {
+  antigravityQuotaGet,
+  ANTIGRAVITY_PROVIDER_ID,
+  type AntigravityQuota,
+} from "@/apps/agent/services/providers/antigravity";
+import {
   codexUsageGet,
   CODEX_PROVIDER_ID,
   type CodexUsageSnapshot,
@@ -92,6 +97,7 @@ import {
   type DeepSeekBalanceSnapshot,
 } from "@/apps/agent/services/providers/deepseek";
 import {
+  antigravityPlanView,
   arkPlanView,
   claudeCodePlanView,
   codexPlanView,
@@ -197,6 +203,25 @@ async function getClaudeCodeUsageCached(): Promise<ClaudeCodeUsageSnapshot | nul
     // Signed out, or the sign-in lacks the profile scope the usage endpoint
     // needs — the tooltip omits the section rather than explaining it. The
     // provider card is where a broken sign-in gets a reason.
+    return null;
+  }
+}
+
+/** Antigravity's quota, cached like the others: one main account, one entry. */
+let antigravityQuotaCache: { at: number; quota: AntigravityQuota } | null = null;
+
+async function getAntigravityQuotaCached(): Promise<AntigravityQuota | null> {
+  if (antigravityQuotaCache && Date.now() - antigravityQuotaCache.at < PLAN_USAGE_TTL_MS) {
+    lastPlanReadAt = antigravityQuotaCache.at;
+    return antigravityQuotaCache.quota;
+  }
+  try {
+    const quota = await antigravityQuotaGet();
+    antigravityQuotaCache = { at: Date.now(), quota };
+    lastPlanReadAt = antigravityQuotaCache.at;
+    return quota;
+  } catch {
+    // Signed out or unreachable: the card is where that gets explained.
     return null;
   }
 }
@@ -680,6 +705,8 @@ export const ContextRing: React.FC = () => {
   // no per-token bill — so the cost figures above are $0.00 for a conversation
   // that is genuinely spending, and the windows are the whole reading.
   const isClaudeCode = selectedModel.startsWith(`${CLAUDE_CODE_PROVIDER_ID}:`);
+  // Antigravity meters by quota windows too; the ring shows the 5-hour ones.
+  const isAntigravity = selectedModel.startsWith(`${ANTIGRAVITY_PROVIDER_ID}:`);
   // Same question for the other subscription Aurora can read: a plan bills by
   // headroom, not by the token, so the ring's cost figures say nothing useful
   // and the limit windows say everything.
@@ -869,6 +896,7 @@ export const ContextRing: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [claudeCodeUsage, setClaudeCodeUsage] = useState<ClaudeCodeUsageSnapshot | null>(null);
+  const [antigravityQuota, setAntigravityQuota] = useState<AntigravityQuota | null>(null);
   const [openCodeUsage, setOpenCodeUsage] = useState<OpenCodeUsage | null>(null);
   const [commandCodeUsage, setCommandCodeUsage] = useState<CommandCodeUsageSnapshot | null>(
     null,
@@ -906,6 +934,13 @@ export const ContextRing: React.FC = () => {
     if (isClaudeCode) {
       void getClaudeCodeUsageCached().then((snap) => {
         if (snap) setClaudeCodeUsage(snap);
+        stampPlanRead();
+      });
+      return;
+    }
+    if (isAntigravity) {
+      void getAntigravityQuotaCached().then((quota) => {
+        if (quota) setAntigravityQuota(quota);
         stampPlanRead();
       });
       return;
@@ -973,6 +1008,7 @@ export const ContextRing: React.FC = () => {
   }, [
     isCodex,
     isClaudeCode,
+    isAntigravity,
     isOpenCode,
     isCommandCode,
     isKenari,
@@ -1138,6 +1174,8 @@ export const ContextRing: React.FC = () => {
     ? codexPlanView(codexUsage)
     : isClaudeCode
       ? claudeCodePlanView(claudeCodeUsage)
+      : isAntigravity
+        ? antigravityPlanView(antigravityQuota)
       : isOpenCode && openCodeUsage
         ? openCodePlanView(openCodeUsage)
         : isCommandCode && commandCodeUsage

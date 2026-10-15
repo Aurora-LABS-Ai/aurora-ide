@@ -57,6 +57,10 @@ vi.mock("framer-motion", () => {
   };
 });
 
+vi.mock("@/apps/agent/components/canvas/InlineCanvas", () => ({
+  InlineCanvas: () => <div data-inline-canvas />,
+}));
+import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 vi.mock("@/apps/agent/components/tool-views/ToolCode", () => ({
   ToolCode: ({ code }: { code: string }) => <pre data-tool-code>{code}</pre>,
 }));
@@ -1560,5 +1564,41 @@ describe("a settled card whose command is still running elsewhere", () => {
     expect(html).toContain("Moved to the background");
     expect(html).not.toContain("Running in the background");
     expect(html).not.toContain("agw-tool-dot-live");
+  });
+});
+
+describe("a react canvas placed inline", () => {
+  const call = (placement?: string) => ({
+    id: "canvas-inline",
+    name: "present_artifact",
+    arguments: JSON.stringify({
+      artifactCategory: "overview",
+      artifactId: "pick",
+      artifactKind: "react",
+      artifactTitle: "Projects",
+      ...(placement ? { artifactPlacement: placement } : {}),
+      content: "export default () => null",
+    }),
+    result: JSON.stringify({ artifactId: "pick", versionTag: "v1" }),
+  });
+
+  it("draws the canvas in the reply when the call asked for inline, and the launch card otherwise", async () => {
+    useAgentChatStore.setState({ currentThreadId: "t1" } as never);
+    const inline = document.createElement("div");
+    document.body.appendChild(inline);
+    mountedRoot = createRoot(inline);
+    await act(async () => mountedRoot!.render(<ToolCallCard call={call("inline")} />));
+    expect(inline.querySelector("[data-inline-canvas]")).not.toBeNull();
+    expect(inline.querySelector(".agw-canvas-launch")).toBeNull();
+    await act(async () => mountedRoot?.unmount());
+    inline.remove();
+
+    const docked = document.createElement("div");
+    document.body.appendChild(docked);
+    mountedRoot = createRoot(docked);
+    await act(async () => mountedRoot!.render(<ToolCallCard call={call()} />));
+    expect(docked.querySelector("[data-inline-canvas]")).toBeNull();
+    expect(docked.querySelector(".agw-canvas-launch")).not.toBeNull();
+    docked.remove();
   });
 });

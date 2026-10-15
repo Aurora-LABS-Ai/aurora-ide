@@ -1,25 +1,33 @@
 /**
  * Agent Window — a sub-agent's report in its parent's transcript [view].
  *
- * Probe: Documents/aurora-agents-panel-designs.html, 02 (picked 2026-10-08).
+ * Probe: Documents/aurora-subagent-report-designs.html, round 3 "B — no
+ * edge, only the fill" (Alvan's pick, 2026-10-12). It replaced the right-hand
+ * bubble picked on 2026-10-08 (aurora-agents-panel-designs.html, 02), which
+ * wore the user bubble's fill and read as the user's own message, and whose
+ * "Open report" poured the whole report into the conversation with no ceiling.
  *
- * The report arrives from the agent's side, so it sits on the right like a
- * message and borrows the user bubble's fill and measure — but it is not the
- * user's words. The first line says who: a static status dot, the agent's
- * name (a link to its tab), its type and how it ended. The body is the
- * report's opening summary; "Open report" shows the rest inline.
+ * Now it sits in the agent's column like the work around it: a soft fill, no
+ * edge. One row says who and how it went — status dot, the agent's name (a
+ * link to its tab), its type, how it ended, the numbers — and the rest of the
+ * row opens and closes the card the way a tool card's row does, with its
+ * chevron. Under it is ONE text area: the report as the agent wrote it, summary
+ * first and everything after it. Closed, it shows the first lines and fades
+ * out; open, the same area grows to the locked height every tool card uses
+ * and scrolls inside itself.
  *
  * The same component, flipped, draws a message FROM the parent inside a
  * child's transcript (`from="parent"`): there the "who" is the parent.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import type { AgentReportEvent } from "@/apps/agent/components/conversation/timeline";
-import { reportBody, reportLead } from "@/apps/agent/lib/subagents/report-body";
+import { reportBody } from "@/apps/agent/lib/subagents/report-body";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
+import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
 import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
 
@@ -32,6 +40,91 @@ const STATUS_WORD: Record<string, string> = {
   running: "message",
 };
 
+/**
+ * The card's text area: the whole text in one place. Closed it is clipped to
+ * its first lines with a fade; open it is the locked, scrolling area. A text
+ * short enough to fit is never clipped, and then there is nothing to open.
+ */
+function useFoldable(text: string) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [foldable, setFoldable] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      // Measured against the CLOSED height (the CSS cap, in `em` so it follows
+      // the text size), whatever state the card is in, so opening it never
+      // makes the chevron disappear.
+      const style = getComputedStyle(el);
+      const raw = style.getPropertyValue("--agw-agent-card-fold").trim();
+      const value = parseFloat(raw) || 0;
+      const cap = raw.endsWith("em") ? value * (parseFloat(style.fontSize) || 16) : value;
+      setFoldable(cap > 0 && el.scrollHeight > cap + 1);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+  return { ref, foldable };
+}
+
+const CardShell: React.FC<{
+  who: React.ReactNode;
+  dotStatus?: string;
+  words: React.ReactNode;
+  stats?: string | null;
+  text: string;
+  plain?: boolean;
+  failed?: boolean;
+  from?: "agent" | "parent";
+  waiting?: boolean;
+  arrive?: boolean;
+  label: string;
+}> = ({ who, dotStatus, words, stats, text, plain = false, failed = false, from, waiting, arrive, label }) => {
+  const [open, setOpen] = useState(false);
+  const { ref, foldable } = useFoldable(text);
+  const isOpen = open && foldable;
+  return (
+    <div className="agw-agent-card-row" data-arrive={arrive ? "" : undefined}>
+      <div
+        className="agw-agent-card"
+        role="group"
+        aria-label={label}
+        data-from={from === "parent" ? "parent" : undefined}
+        data-waiting={waiting ? "" : undefined}
+        data-open={isOpen ? "" : undefined}
+        data-foldable={foldable ? "" : undefined}
+      >
+        <div className="agw-agent-card-head">
+          {dotStatus && <span className="agw-agent-dot" data-status={dotStatus} aria-hidden />}
+          {who}
+          {/* The rest of the row is the toggle — a tool card's row, so the
+              name stays its own link to the agent's tab. */}
+          <button
+            type="button"
+            className="agw-agent-card-toggle"
+            aria-expanded={foldable ? isOpen : undefined}
+            disabled={!foldable}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <span className="agw-agent-card-words" data-status={failed ? "failed" : undefined}>
+              {words}
+            </span>
+            {stats && <span className="agw-agent-card-stats">{stats}</span>}
+            {foldable && (
+              <AgentIcon name="chevron-down" size={13} className="agw-agent-card-chev" />
+            )}
+          </button>
+        </div>
+        <div className="agw-agent-card-text" ref={ref}>
+          {plain ? <div className="agw-agent-card-plain">{text}</div> : <AgentMarkdown content={text} />}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const AgentReportCard: React.FC<{
   report: AgentReportEvent;
   /** `"agent"` (default): the child reporting to this parent. `"parent"`:
@@ -42,12 +135,16 @@ export const AgentReportCard: React.FC<{
   /** For `from="parent"`: sent, but the agent has not taken it in yet. */
   waiting?: boolean;
 }> = ({ report, from = "agent", parentTitle, waiting = false }) => {
-  const [open, setOpen] = useState(false);
-  const currentThreadId = useAgentChatStore((s) => s.currentThreadId);
+  // The conversation this card is drawn in. A docked chat declares its own
+  // through the scope; reading the open chat looked the agent up under the
+  // main pane's conversation, where it is not.
+  const scope = useConversationScope();
+  const openThreadId = useAgentChatStore((s) => s.currentThreadId);
+  const parentThreadId = scope?.threadId ?? openThreadId;
   const openAgentTab = useAgentWorkspaceStore((s) => s.openAgentTab);
   const live = useAgentSubagentStore((s) =>
-    currentThreadId
-      ? s.byParent[currentThreadId]?.find((row) => row.agentId === report.agentId)
+    parentThreadId
+      ? s.byParent[parentThreadId]?.find((row) => row.agentId === report.agentId)
       : undefined,
   );
 
@@ -61,89 +158,47 @@ export const AgentReportCard: React.FC<{
   const type = live?.agentType ?? null;
 
   if (from === "parent") {
-    // A brief from the parent is often hundreds of words. Lead with its first
-    // paragraph, like the report card, and fold the rest behind one button.
-    const text = report.summary.trim();
-    const lead = reportLead(text);
-    const folded = lead.length < text.length;
+    // A brief from the parent is often hundreds of words — the same text
+    // area folds it to its first lines.
     return (
-      <div className="agw-agent-card-row">
-        <div
-          className="agw-agent-card"
-          data-from="parent"
-          data-waiting={waiting ? "" : undefined}
-        >
-          <div className="agw-agent-card-head">
-            <AgentIcon name="chat" size={12} />
-            <span className="agw-agent-name" style={{ cursor: "default" }}>
-              {parentTitle?.trim() || "Parent agent"}
-            </span>
-            <span>·</span>
-            <span>{waiting ? "waiting for its next step" : "from the parent"}</span>
-          </div>
-          <div className="agw-agent-card-summary">{open ? text : lead}</div>
-          {folded && (
-            <div className="agw-agent-card-foot">
-              <span />
-              <button
-                type="button"
-                className="agw-agent-card-open"
-                aria-expanded={open}
-                onClick={() => setOpen((v) => !v)}
-              >
-                {open ? "Hide message" : "Show full message"}
-                <AgentIcon name="chevron-down" size={12} />
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
+      <CardShell
+        from="parent"
+        waiting={waiting}
+        label={`Message from ${parentTitle?.trim() || "the parent agent"}`}
+        who={<span className="agw-agent-name agw-agent-name-static">{parentTitle?.trim() || "Parent agent"}</span>}
+        words={waiting ? "waiting for its next step" : "from the parent"}
+        text={report.summary.trim()}
+        plain
+      />
     );
   }
 
   const openTab = () => {
-    if (!currentThreadId || !report.agentId) return;
-    openAgentTab(currentThreadId, report.agentId, name);
+    if (!parentThreadId || !report.agentId) return;
+    openAgentTab(parentThreadId, report.agentId, name);
   };
 
   return (
-    <div className="agw-agent-card-row" data-arrive={report.arrivedLive ? "" : undefined}>
-      <div className="agw-agent-card" role="group" aria-label={`Report from ${name}`}>
-        <div className="agw-agent-card-head">
-          <span className="agw-agent-dot" data-status={status} aria-hidden />
-          <button type="button" className="agw-agent-name" onClick={openTab} title={`Open ${name}`}>
-            {name}
-          </button>
+    <CardShell
+      arrive={report.arrivedLive}
+      label={`Report from ${name}`}
+      dotStatus={status}
+      who={
+        <button type="button" className="agw-agent-name" onClick={openTab} title={`Open ${name}`}>
+          {name}
+        </button>
+      }
+      words={
+        <>
           {type && <span>{type}</span>}
-          <span>·</span>
-          <span>
-            {word}
-            {meta ? ` in ${meta.split(" · ")[0]}` : ""}
-          </span>
-        </div>
-        <div className="agw-agent-card-summary" data-status={status === "failed" ? "failed" : undefined}>
-          {body ? reportLead(body) : report.summary}
-        </div>
-        <div className="agw-agent-card-foot">
-          <span>{meta ? meta.split(" · ").slice(1).join(" · ") : ""}</span>
-          {body && (
-            <button
-              type="button"
-              className="agw-agent-card-open"
-              aria-expanded={open}
-              onClick={() => setOpen((v) => !v)}
-            >
-              {open ? "Hide report" : "Open report"}
-              <AgentIcon name="chevron-down" size={12} />
-            </button>
-          )}
-        </div>
-        {open && body && (
-          <div className="agw-agent-card-body">
-            <AgentMarkdown content={body} />
-          </div>
-        )}
-      </div>
-    </div>
+          {type && <span aria-hidden>·</span>}
+          <span>{word}</span>
+        </>
+      }
+      // `7m 55s · 80 tool calls · 252023 tokens` — the numbers, on the right.
+      stats={meta}
+      failed={status === "failed"}
+      text={body || report.summary}
+    />
   );
 };

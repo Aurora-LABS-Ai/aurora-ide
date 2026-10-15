@@ -7,12 +7,12 @@
  * indicator at all.
  *
  * The rule, in order:
- *   1. the conversation's own pinned model (`ThreadSummary.model`, persisted on
- *      the thread's sidecar — written when the user picks one, and again by the
- *      runtime at the end of every turn);
+ *   1. the conversation's own model (`useAgentChatStore.threadModels`, a copy of
+ *      the thread's sidecar — written when the chat is created, when the user
+ *      picks one, and by the runtime as each turn starts);
  *   2. the user's default (`useAgentSettingsStore.selectedModel`) — used by a draft
  *      that has no thread yet, and by chats that predate per-conversation
- *      models or have never run a turn.
+ *      models.
  *
  * Step 2 is a FALLBACK, not the state: it is what a NEW chat inherits, which is
  * why picking a model also updates it. Before this existed, `selectedModel` was
@@ -31,6 +31,8 @@ import { endpointIdentity, isEndpointModelKey } from "@/apps/agent/services/prov
 interface ThreadModelSource {
   threads: Array<{ id: string; model?: string | null }>;
   allThreads: Array<{ id: string; model?: string | null }>;
+  /** Per-conversation models from the sidecars; the first place looked. */
+  threadModels?: Record<string, string>;
 }
 
 interface ModelRowIdentity {
@@ -161,6 +163,10 @@ export function pinnedThreadModel(
   threadId: string | null | undefined,
 ): string | null {
   if (!threadId) return null;
+  // The per-conversation copy first: it holds conversations the lists do not
+  // (a chat whose first turn is still running, one docked from elsewhere).
+  const own = state.threadModels?.[threadId];
+  if (own) return own;
   const row =
     state.allThreads.find((t) => t.id === threadId) ??
     state.threads.find((t) => t.id === threadId);

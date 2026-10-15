@@ -28,6 +28,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
+import { useInWorkCardWindow } from "@/apps/agent/components/conversation/work-card-context";
 
 const AgentThinkingBlockImpl: React.FC<{
   content: string;
@@ -46,7 +47,10 @@ const AgentThinkingBlockImpl: React.FC<{
   // Transcript → Reasoning "Folded" drops the auto-open; the header still
   // shimmers and ticks, and a click still opens it.
   const autoOpen = useAgentThemeStore((s) => s.transcriptReasoning === "live");
-  const expanded = override ?? (autoOpen && isGenerating);
+  // Inside a work card's running window the row is one line of a step list;
+  // opening the reasoning there filled the window with it (`work-card-context`).
+  const inWindow = useInWorkCardWindow();
+  const expanded = override ?? (autoOpen && isGenerating && !inWindow);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // A clock, not derived state: the interval only advances `now` and the

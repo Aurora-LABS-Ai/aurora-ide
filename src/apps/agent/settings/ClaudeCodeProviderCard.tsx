@@ -84,9 +84,10 @@ function useClaudeCode() {
     error: null,
   });
 
-  const loadUsage = useCallback(() => {
+  /** `force` only from the refresh and retry buttons; see `claudeCodeUsageGet`. */
+  const loadUsage = useCallback((force = false) => {
     setState((s) => ({ ...s, usageLoading: true, usageError: null }));
-    claudeCodeUsageGet()
+    claudeCodeUsageGet(force)
       .then((usage) =>
         setState((s) => ({ ...s, usage, usageLoading: false, usageError: null })),
       )
@@ -438,7 +439,7 @@ export const ClaudeCodeProviderCard: React.FC<{
               className="agw-prov-icon-btn"
               title="Refresh usage"
               aria-label="Refresh usage"
-              onClick={loadUsage}
+              onClick={() => loadUsage(true)}
             >
               <AgentIcon name="retry" size={14} />
             </button>
@@ -535,7 +536,7 @@ export const ClaudeCodeProviderCard: React.FC<{
           {usageError && !usage && (
             <div className="agw-atlas-error">
               <span>{usageError}</span>
-              <button type="button" className="agw-atlas-retry" onClick={loadUsage}>
+              <button type="button" className="agw-atlas-retry" onClick={() => loadUsage(true)}>
                 <AgentIcon name="retry" size={13} /> Retry
               </button>
             </div>

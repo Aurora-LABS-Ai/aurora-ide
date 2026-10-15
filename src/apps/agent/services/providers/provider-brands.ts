@@ -28,6 +28,7 @@
 export const BRAND_KEYS = [
   "anthropic",
   "openai",
+  "antigravity",
   "codex",
   "cursor",
   "opencode",
@@ -87,6 +88,9 @@ const BY_ID: Readonly<Record<string, BrandKey>> = {
   // The subscription row serves Claude and nothing else, so it wears
   // Claude's mark — the account is Anthropic's, only the billing differs.
   "claude-code": "anthropic",
+  // Serves Gemini, Claude and GPT-OSS on one Google account; the account is
+  // Antigravity's, so it wears that mark rather than any one vendor's.
+  antigravity: "antigravity",
   openai: "openai",
   "openai-responses": "openai",
   codex: "codex",
@@ -135,6 +139,9 @@ const DETECT: ReadonlyArray<readonly [BrandKey, readonly string[]]> = [
   ["bedrock", ["bedrock", "amazonaws"]],
   ["vertex", ["vertex", "vertexai", "aiplatform"]],
   ["codex", ["codex"]],
+  // Above `google` and `anthropic`: the row reaches Gemini and Claude, and the
+  // account is Antigravity's.
+  ["antigravity", ["antigravity"]],
   // Above `openai` and `anthropic`: a Cursor row reaches GPT and Claude models,
   // so its name or URL can mention either, and Cursor's own mark is the honest
   // one for a row whose account is Cursor's.

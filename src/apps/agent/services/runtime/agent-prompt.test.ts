@@ -282,16 +282,20 @@ describe("the base system prompt does not contradict the tools", () => {
 });
 
 describe("the canvas section decides the KIND before the guide is reachable", () => {
-  it("carries the cheapest-kind rule in the always-present text", () => {
-    // This rule lived only in `canvas_guidelines`, which is read AFTER a model
-    // has already chosen `react` — far too late to talk it out of the choice.
-    // Meanwhile `present_artifact`'s description, which IS always visible, says
-    // "prefer react for datasets". The encouraging half was in the room at
-    // decision time and the sobering half was not, so every ambiguous case
-    // resolved the same way. Mirrors `the_kind_choice_rule_is_stated_up_front`
-    // on the Rust side; change one wording and one of the two fails.
-    expect(CANVAS_INSTRUCTIONS).toMatch(/Pick the cheapest kind that works/);
-    expect(CANVAS_INSTRUCTIONS).toMatch(/`react` only when it needs to be interactive/);
+  it("carries the kind-choice rule in the always-present text", () => {
+    // The rule has to be visible BEFORE the model picks a kind; the guide is
+    // read after. It decides by what the reader will do with the result: the
+    // older "pick the cheapest kind … react only when" wording steered data and
+    // findings away from react (23 of 218 saved canvas writes). Mirrors
+    // `the_kind_choice_rule_is_stated_up_front` on the Rust side; change one
+    // wording and one of the two fails.
+    expect(CANVAS_INSTRUCTIONS).toMatch(/Pick the kind by what the reader will do with it/);
+    expect(CANVAS_INSTRUCTIONS).toMatch(/`react` is the default for data/);
+    expect(CANVAS_INSTRUCTIONS).not.toMatch(/cheapest/);
+  });
+
+  it("sends a single-number answer to an answer box, not a canvas", () => {
+    expect(CANVAS_INSTRUCTIONS).toMatch(/work out one number → an answer box/);
   });
 
   it("still points at the guide before a compiled canvas is written", () => {

@@ -1,0 +1,90 @@
+/* ── Inline canvas — a react canvas drawn inside a reply ───────────────────
+ * `components/canvas/InlineCanvas.tsx`. The dock's sandboxed frame, placed
+ * where the model called `present_artifact` with `artifactPlacement:
+ * "inline"`, sized to its content from the height the frame reports
+ * (`CanvasReact fit="content"`). One quiet frame on the canvas card surface,
+ * a one-line head with the title and a way to the dock, the canvas under it.
+ * Nothing here styles what is INSIDE the frame; that is the SDK's own css. */
+
+.agw-canvas-inline {
+  margin: 12px 0 14px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+  overflow: hidden;
+}
+.agw-canvas-inline-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px 0 14px;
+  border-bottom: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-label);
+}
+.agw-canvas-inline-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+.agw-canvas-inline-version {
+  flex: none;
+  color: var(--agw-text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.agw-canvas-inline-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--agw-radius-sm);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
+}
+.agw-canvas-inline-open:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-canvas-inline-open:focus-visible {
+  box-shadow: var(--agw-focus-ring);
+  outline: none;
+}
+
+/* The frame follows its content: the dock's `height: 100%` is replaced by
+   the height the canvas reports, capped in `CanvasReact`. The host box takes
+   that height too instead of flexing to a panel it is not in. */
+.agw-canvas-inline .agw-canvas-react[data-fit="content"] {
+  height: auto;
+  min-height: 0;
+}
+.agw-canvas-inline .agw-canvas-react[data-fit="content"] > .agw-canvas-frame {
+  flex: none;
+  width: 100%;
+  display: block;
+  transition: height var(--agw-dur-base) ease;
+}
+.agw-canvas-inline-missing {
+  padding: 12px 14px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-canvas-inline .agw-canvas-react[data-fit="content"] > .agw-canvas-frame {
+    transition: none;
+  }
+}
+.agw-root[data-reduce-motion] .agw-canvas-inline .agw-canvas-react[data-fit="content"] > .agw-canvas-frame {
+  transition: none;
+}

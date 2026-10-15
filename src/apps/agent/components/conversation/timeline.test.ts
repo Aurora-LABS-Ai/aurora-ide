@@ -26,6 +26,50 @@ import {
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
 
+describe("buildTurns never writes into the messages it reads", () => {
+  /**
+   * `eventsOf` hands back a message's own `timeline` array when every tool
+   * event already carries its call (the live shape, and any message with no
+   * tool call). `buildTurns` used that array as the turn's events and then
+   * pushed the NEXT messages' events into it, so each render wrote the rest
+   * of the turn into the first message's stored timeline: it grew without
+   * bound and every row after it was drawn again and again (found 2026-10-12
+   * rendering work cards: a 22-step turn showed 335 events).
+   */
+  it("leaves every message's timeline as it was, however many times it runs", () => {
+    const call = (id: string) => ({ id, name: "file_read", arguments: "{}", result: "ok" });
+    const first: DbMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "",
+      timestamp: "2026-10-12T10:00:01Z",
+      timeline: [
+        { kind: "thinking", id: "ev1", text: "one" },
+        { kind: "tool", id: "c1", call: call("c1") },
+      ],
+    };
+    const second: DbMessage = {
+      id: "a2",
+      role: "assistant",
+      content: "",
+      timestamp: "2026-10-12T10:00:02Z",
+      timeline: [
+        { kind: "thinking", id: "ev2", text: "two" },
+        { kind: "tool", id: "c2", call: call("c2") },
+      ],
+    };
+    const ask: DbMessage = { id: "u1", role: "user", content: "go", timestamp: "2026-10-12T10:00:00Z" };
+    const messages = [ask, first, second];
+
+    for (let i = 0; i < 3; i++) {
+      const turns = buildTurns(messages);
+      expect(turns[1].events.map((e) => e.id)).toEqual(["ev1", "c1", "ev2", "c2"]);
+    }
+    expect((first.timeline as unknown[]).length).toBe(2);
+    expect((second.timeline as unknown[]).length).toBe(2);
+  });
+});
+
 describe("the pinned question", () => {
   const ask: DbMessage = { id: "q1", role: "user", content: "Build it", timestamp: "2026-10-08T10:00:00Z" };
   const reply: DbMessage = { id: "a1", role: "assistant", content: "Started two agents.", timestamp: "2026-10-08T10:00:05Z" };

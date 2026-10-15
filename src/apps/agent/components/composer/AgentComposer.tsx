@@ -17,7 +17,7 @@ import { AnimatePresence } from "framer-motion";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { openFileDialog } from "@/kernel/lib/ipc/tauri";
-import { FileIcon } from "@/kernel/ui/FileIcons";
+import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { resolveExplorerIcon } from "@/kernel/lib/icons/icon-registry";
 import {
   listTerminalSessions,
@@ -39,11 +39,18 @@ import { deletePillBeforeCaret } from "@/apps/agent/lib/composer/pill-backspace"
 import { ComposerRail } from "@/apps/agent/components/composer-rail/ComposerRail";
 import {
   invalidateFileIndex,
+  isFileIndexStale,
   loadFileIndex,
-  rankFiles,
   relativize,
   type MentionFile,
 } from "@/apps/agent/adapters/file-index";
+import {
+  buildMentionGroups,
+  chatFiles,
+  flattenGroups,
+  openFiles,
+  type MentionRow,
+} from "@/apps/agent/components/composer/mention-groups";
 import {
   invalidatePromptCommands,
   loadPromptCommands,
@@ -118,9 +125,72 @@ interface AgentComposerProps {
    * skills `/` offers — both would silently be the wrong project's otherwise.
    */
   projectRoot?: string | null;
+  /**
+   * Which way the `@` and `/` menus open. `"up"` (the default) for a composer
+   * at the bottom of a conversation; `"down"` for the home screen, where the
+   * composer sits in the middle under the heading and opening upward covered
+   * the heading with less room than there is below.
+   */
+  menuPlacement?: "up" | "down";
 }
 
 const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
+
+/** Commands the `/` menu lists; it scrolls past what fits. */
+const COMMAND_RESULT_LIMIT = 80;
+
+/** How a bare `/` groups its commands, in this order. */
+const COMMAND_GROUP_ORDER: PromptCommandKind[] = ["action", "skill", "rule", "mcp", "image"];
+const COMMAND_GROUP_LABEL: Record<PromptCommandKind, string> = {
+  action: "Actions",
+  skill: "Skills",
+  rule: "Rules",
+  mcp: "MCP servers",
+  image: "Images",
+};
+
+/** Positions in `title` that match `query` (as a prefix or anywhere), for highlighting. */
+function titleMatches(title: string, query: string): number[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const at = title.toLowerCase().indexOf(q);
+  return at < 0 ? [] : Array.from({ length: q.length }, (_, k) => at + k);
+}
+
+/** A name with its matched letters picked out, so the reader sees why it is listed. */
+const MatchedName: React.FC<{ text: string; matches: number[] }> = ({ text, matches }) => {
+  if (matches.length === 0) return <>{text}</>;
+  const hit = new Set(matches);
+  const parts: React.ReactNode[] = [];
+  let run = "";
+  let runHit = hit.has(0);
+  const flush = (i: number) => {
+    if (!run) return;
+    parts.push(runHit ? <mark key={i} className="agw-mention-hit">{run}</mark> : run);
+    run = "";
+  };
+  [...text].forEach((ch, i) => {
+    if (hit.has(i) !== runHit) {
+      flush(i);
+      runHit = hit.has(i);
+    }
+    run += ch;
+  });
+  flush(text.length);
+  return <>{parts}</>;
+};
+
+/** The picker's foot: the keys it answers to, and how many rows it holds. */
+const MenuKeys: React.FC<{ count: number }> = ({ count }) => (
+  <div className="agw-mention-foot" aria-hidden>
+    <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+    <span><kbd>↵</kbd> add</span>
+    <span><kbd>esc</kbd> close</span>
+    <span className="agw-mention-foot-count">
+      {count} {count === 1 ? "match" : "matches"}
+    </span>
+  </div>
+);
 /** `/` directive trigger: at line start or after whitespace, word/dash query. */
 const SLASH_RE = /(^|\s)\/([\w-]{0,48})$/;
 
@@ -242,6 +312,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   connectedTop = false,
   threadId,
   projectRoot,
+  menuPlacement = "up",
 }) => {
   // The conversation this composer belongs to. `undefined` (the common case)
   // means "the open chat"; an explicit value — including `null` for a draft —
@@ -282,6 +353,8 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
   const editorRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  /** The message box itself — what a downward `@` / `/` menu hangs from. */
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const lastEmittedRef = useRef<string>("");
   // `isEmpty` = nothing SENDABLE (drives the send button + submit). A `/` command
   // pill serializes to nothing, so a command-only composer is still "empty".
@@ -442,33 +515,34 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const [fileIndex, setFileIndex] = useState<MentionFile[]>([]);
   const [sel, setSel] = useState(0);
 
-  const results = useMemo(
-    () => (mention ? rankFiles(fileIndex, mention.query, 8) : []),
-    [mention, fileIndex],
-  );
-
-  /**
-   * Open terminals offered by the same `@` menu as files.
-   *
-   * Matched on the word "terminal" as well as each session's own title, so
-   * both `@terminal` and `@pwsh` find them — the user thinks of it either as
-   * "a terminal" or as the tab they named. Listed above files because when
-   * the query matches a terminal it is almost never a file the user meant.
-   */
-  const terminalResults = useMemo(() => {
+  // What the `@` menu lists, grouped (see `mention-groups.ts`): a bare `@`
+  // leads with what is in front of the user — files open in the dock, files
+  // this chat read or changed, terminals, the project's top folders — and a
+  // query is a search over files, folders and terminals. The dock tabs and
+  // the chat's tool calls are read when the menu (re)computes, not subscribed
+  // to: they only matter at the moment the list is drawn.
+  const mentionGroups = useMemo(() => {
     if (!mention) return [];
-    const query = mention.query.trim().toLowerCase();
-    const sessions = listTerminalSessions();
-    if (!query) return sessions.slice(0, 5);
-    return sessions
-      .filter(
-        (session) =>
-          session.title.toLowerCase().includes(query) ||
-          session.shell.toLowerCase().includes(query) ||
-          "terminal".startsWith(query),
-      )
-      .slice(0, 5);
-  }, [mention]);
+    const chat = useAgentChatStore.getState();
+    const messages =
+      (composerThreadId ? chat.liveTurns[composerThreadId]?.messages : undefined) ??
+      (composerThreadId && chat.currentThreadId === composerThreadId
+        ? chat.currentThread?.messages
+        : undefined) ??
+      [];
+    const tabPaths = useAgentWorkspaceStore
+      .getState()
+      .tabs.flatMap((tab) => (tab.kind === "file" && typeof tab.path === "string" ? [tab.path] : []));
+    return buildMentionGroups({
+      query: mention.query,
+      files: fileIndex,
+      root: composerProjectRoot,
+      open: openFiles(tabPaths, fileIndex, composerProjectRoot),
+      inChat: chatFiles(messages, fileIndex, composerProjectRoot),
+      terminals: listTerminalSessions(),
+    });
+  }, [mention, fileIndex, composerProjectRoot, composerThreadId]);
+  const mentionRows = useMemo(() => flattenGroups(mentionGroups), [mentionGroups]);
 
   // ── /-command state (skills · rules · MCP — never files) ────────────
   const [slash, setSlash] = useState<{ query: string } | null>(null);
@@ -500,8 +574,24 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         (command.kind !== "image" || canMakeImages) &&
         (!chatSurface || isChatPromptCommand(command)),
     );
-    return rankCommands(available, slash.query, 8);
+    // Was 8: a bare `/` showed the first eight commands and nothing said there
+    // were more. The menu scrolls now.
+    return rankCommands(available, slash.query, COMMAND_RESULT_LIMIT);
   }, [slash, commandIndex, onActionCommand, canMakeImages, chatSurface]);
+
+  // A bare `/` is grouped by kind, so a long list of skills reads as a list
+  // of skills; a query is one ranked list, best first.
+  const commandGroups = useMemo(() => {
+    if (!slash) return [];
+    if (slash.query.trim() !== "") {
+      return commandResults.length ? [{ label: "Matches", rows: commandResults }] : [];
+    }
+    return COMMAND_GROUP_ORDER.flatMap((kind) => {
+      const rows = commandResults.filter((c) => c.kind === kind);
+      return rows.length ? [{ label: COMMAND_GROUP_LABEL[kind], rows }] : [];
+    });
+  }, [slash, commandResults]);
+  const commandRows = useMemo(() => commandGroups.flatMap((g) => g.rows), [commandGroups]);
 
   const syncEmpty = useCallback(() => {
     const el = editorRef.current;
@@ -584,7 +674,9 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       return;
     }
     applyMentionQuery(m[2]);
-    if (fileIndex.length === 0) {
+    // An empty or stale list is (re)loaded; a stale one keeps showing until the
+    // fresh one replaces it, so the menu never goes blank after a turn.
+    if (fileIndex.length === 0 || isFileIndexStale(composerProjectRoot)) {
       void loadFileIndex(composerProjectRoot).then(setFileIndex);
     }
   };
@@ -743,9 +835,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     pill.contentEditable = "false";
     pill.dataset.rel = f.rel;
     pill.dataset.path = f.path;
+    // A folder picked from the menu is the same pill a dropped folder makes, so
+    // the model is told it was handed a folder to look inside.
+    const isFolder = f.kind === "folder";
+    if (isFolder) pill.dataset.kind = "dir";
     try {
       const resolved = resolveExplorerIcon(
-        { name: f.name, path: f.path, isFolder: false },
+        { name: f.name, path: f.path, isFolder },
         useSettingsStore.getState().explorerIconPack,
       );
       if (resolved.src) {
@@ -778,6 +874,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     setMention(null);
     handleInput();
     el.focus();
+  };
+
+  /** Add the picked `@` row: a file or folder pill, or a terminal pill. */
+  const pickMentionRow = (row: MentionRow | undefined) => {
+    if (!row) return;
+    if (row.kind === "terminal") insertTerminalPill(row.session);
+    else insertPill(row.file);
   };
 
   // Pick a `/` directive (skill / rule / MCP): drop an INLINE pill right where you
@@ -1029,11 +1132,11 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       // files in its own project, and invalidating the window's cache would
       // both miss those and needlessly drop an unrelated project's index.
       const root = composerProjectRoot;
-      // A finished turn may have changed files/commands — drop the cached
-      // indexes so the next @/ picker reloads them fresh.
+      // A finished turn may have changed files/commands — mark the file list
+      // stale (the next @ reloads it while still showing this one) and drop the
+      // command index so the next / picker reloads it.
       invalidateFileIndex(root ?? undefined);
       invalidatePromptCommands(root);
-      setFileIndex([]);
       setCommandIndex([]);
     }
     prevSending.current = sending;
@@ -1215,7 +1318,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     const outgoing =
       folders.length === 0
         ? text
-        : `${text}\n\n(${folders.length === 1 ? "Folder" : "Folders"} dragged in by the user: ` +
+        : `${text}\n\n(${folders.length === 1 ? "Folder" : "Folders"} the user pointed to: ` +
           `${folders.map((chip) => chip.value).join(", ")} — look inside ` +
           `${folders.length === 1 ? "it" : "them"}.)`;
     onSubmit(outgoing, [...fileChips, ...terminalChips]);
@@ -1251,10 +1354,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       handleInput();
       return;
     }
-    if (slash && commandResults.length > 0) {
+    if (slash && commandRows.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setCmdSel((s) => Math.min(s + 1, commandResults.length - 1));
+        setCmdSel((s) => Math.min(s + 1, commandRows.length - 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -1267,7 +1370,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         // The list can shrink under a highlight that was valid a moment ago
         // (the command index loads asynchronously); fall back rather than
         // handing `undefined` to the picker.
-        pickCommand(commandResults[cmdSel] ?? commandResults[0]);
+        pickCommand(commandRows[cmdSel] ?? commandRows[0]);
         return;
       }
       if (e.key === "Escape") {
@@ -1279,10 +1382,10 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         return;
       }
     }
-    if (mention && results.length > 0) {
+    if (mention && mentionRows.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSel((s) => Math.min(s + 1, results.length - 1));
+        setSel((s) => Math.min(s + 1, mentionRows.length - 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -1292,7 +1395,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        insertPill(results[sel] ?? results[0]);
+        pickMentionRow(mentionRows[sel] ?? mentionRows[0]);
         return;
       }
       if (e.key === "Escape") {
@@ -1343,6 +1446,14 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
   const annotateImg = images.find((i) => i.id === annotateId) ?? null;
 
+  // Rows are numbered across groups, because ↑ ↓ move through all of them.
+  let mentionIndex = 0;
+  let commandIndexAt = 0;
+  // A query that matches nothing says so instead of the menu vanishing, which
+  // read as the picker breaking — but only once the list has loaded.
+  const mentionEmpty =
+    !!mention && mentionRows.length === 0 && mention.query.trim() !== "" && fileIndex.length > 0;
+
   return (
     <div
       ref={composerRef}
@@ -1354,87 +1465,135 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
         micTranscribing || refine.phase === "refining" ? " agw-composer-busy" : ""
       }`}
     >
-      {/* @-mention file picker — floats above the input. */}
+      {/* @-mention picker — files, folders, terminals, grouped (probe:
+          aurora-mention-picker-designs.html, 02). Opens toward the room. */}
       <AnimatePresence>
-        {mention && (results.length > 0 || terminalResults.length > 0) && (
-          <ComposerMenu resetKey={mention.query}>
-            {terminalResults.map((session) => (
-              <button
-                key={`term-${session.id}`}
-                type="button"
-                className="agw-mention-item"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  insertTerminalPill(session);
-                }}
-              >
-                <AgentIcon name="terminal" size={13} className="agw-file-ico" />
-                <span className="agw-mention-name">{session.title}</span>
-                <span className="agw-mention-path">
-                  {session.running ? session.cwd ?? session.shell : "exited"}
-                </span>
-              </button>
-            ))}
-            {results.map((f, i) => (
-              <button
-                key={f.path}
-                ref={i === sel ? activeMentionRef : undefined}
-                type="button"
-                className="agw-mention-item"
-                data-active={i === sel || undefined}
-                // `onMouseMove`, not `onMouseEnter`: scrolling the list under a
-                // stationary cursor fires enter and would drag the highlight
-                // back to whatever row slid beneath the pointer.
-                onMouseMove={() => setSel(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  insertPill(f);
-                }}
-              >
-                <FileIcon name={f.name} path={f.path} className="agw-file-ico" />
-                <span className="agw-mention-name">{f.name}</span>
-                <span className="agw-mention-path">{f.rel}</span>
-              </button>
+        {mention && (mentionRows.length > 0 || mentionEmpty) && (
+          <ComposerMenu
+            resetKey={mention.query}
+            placement={menuPlacement}
+            anchorRef={surfaceRef}
+            footer={<MenuKeys count={mentionRows.length} />}
+          >
+            {mentionEmpty && (
+              <div className="agw-mention-empty">
+                No file, folder or terminal matches “{mention.query.trim()}”.
+              </div>
+            )}
+            {mentionGroups.map((group) => (
+              <React.Fragment key={group.label}>
+                <div className="agw-mention-group" role="presentation">
+                  {group.label}
+                </div>
+                {group.rows.map((row) => {
+                  const i = mentionIndex++;
+                  const active = i === sel;
+                  const common = {
+                    ref: active ? activeMentionRef : undefined,
+                    type: "button" as const,
+                    className: "agw-mention-item",
+                    "data-active": active || undefined,
+                    // `onMouseMove`, not `onMouseEnter`: scrolling the list
+                    // under a stationary cursor fires enter and would drag the
+                    // highlight back to whatever row slid beneath the pointer.
+                    onMouseMove: () => setSel(i),
+                    onMouseDown: (e: React.MouseEvent) => {
+                      e.preventDefault();
+                      pickMentionRow(row);
+                    },
+                  };
+                  if (row.kind === "terminal") {
+                    const { session } = row;
+                    return (
+                      <button key={`term-${session.id}`} {...common}>
+                        <AgentIcon name="terminal" size={13} className="agw-file-ico" />
+                        <span className="agw-mention-name">{session.title}</span>
+                        <span className="agw-mention-where">
+                          {session.running ? session.cwd ?? session.shell : "exited"}
+                        </span>
+                      </button>
+                    );
+                  }
+                  const { file, matches } = row;
+                  const folder = file.rel.includes("/")
+                    ? file.rel.slice(0, file.rel.lastIndexOf("/"))
+                    : "";
+                  return (
+                    <button key={`${row.kind}-${file.rel}`} {...common}>
+                      {row.kind === "folder" ? (
+                        <FolderIcon name={file.name} path={file.path} className="agw-file-ico" />
+                      ) : (
+                        <FileIcon name={file.name} path={file.path} className="agw-file-ico" />
+                      )}
+                      <span className="agw-mention-name">
+                        <MatchedName text={file.name} matches={matches} />
+                      </span>
+                      {folder && (
+                        // Read from its END: the last folders are what tell two
+                        // `index.ts` apart, so the start is what gets cut.
+                        <span className="agw-mention-where" dir="rtl">
+                          <bdi>{folder}</bdi>
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </React.Fragment>
             ))}
           </ComposerMenu>
         )}
       </AnimatePresence>
 
-      {/* /-command picker (skills · rules · MCP) — floats above the input. */}
+      {/* /-command picker (skills · rules · MCP · actions) — same shell and
+          rows as `@`; grouped by kind when nothing is typed. */}
       <AnimatePresence>
-        {slash && commandResults.length > 0 && (
-          <ComposerMenu resetKey={slash.query}>
-            {commandResults.map((c, i) => (
-              <button
-                key={c.key}
-                ref={i === cmdSel ? activeCommandRef : undefined}
-                type="button"
-                className="agw-mention-item"
-                data-active={i === cmdSel || undefined}
-                // See the mention list: movement, not mere entry, changes the
-                // highlight, so keyboard navigation is never undone by a
-                // cursor that simply happens to be resting over the menu.
-                onMouseMove={() => setCmdSel(i)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  pickCommand(c);
-                }}
-              >
-                <AgentIcon
-                  name={COMMAND_ICON[c.kind]}
-                  size={14}
-                  className="agw-file-ico"
-                />
-                <span className="agw-mention-name">{c.title}</span>
-                <span className="agw-cmd-source">{c.sourceLabel}</span>
-                <span className="agw-mention-path">{c.subtitle}</span>
-              </button>
+        {slash && commandRows.length > 0 && (
+          <ComposerMenu
+            resetKey={slash.query}
+            placement={menuPlacement}
+            anchorRef={surfaceRef}
+            footer={<MenuKeys count={commandRows.length} />}
+          >
+            {commandGroups.map((group) => (
+              <React.Fragment key={group.label}>
+                <div className="agw-mention-group" role="presentation">
+                  {group.label}
+                </div>
+                {group.rows.map((c) => {
+                  const i = commandIndexAt++;
+                  return (
+                    <button
+                      key={c.key}
+                      ref={i === cmdSel ? activeCommandRef : undefined}
+                      type="button"
+                      className="agw-mention-item"
+                      data-active={i === cmdSel || undefined}
+                      // See the mention list: movement, not mere entry, changes
+                      // the highlight, so keyboard navigation is never undone by
+                      // a cursor that simply happens to be resting over the menu.
+                      onMouseMove={() => setCmdSel(i)}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        pickCommand(c);
+                      }}
+                    >
+                      <AgentIcon name={COMMAND_ICON[c.kind]} size={14} className="agw-file-ico" />
+                      <span className="agw-mention-name">
+                        <MatchedName text={c.title} matches={titleMatches(c.title, slash.query)} />
+                      </span>
+                      <span className="agw-cmd-source">{c.sourceLabel}</span>
+                      <span className="agw-mention-path">{c.subtitle}</span>
+                    </button>
+                  );
+                })}
+              </React.Fragment>
             ))}
           </ComposerMenu>
         )}
       </AnimatePresence>
 
       <div
+        ref={surfaceRef}
         className={`agw-composer-surface cursor-text relative ${
           /* Radius — sharper, closer to Codex. Change 16px to taste. */
           connectedTop ? "rounded-t-none rounded-b-[16px]" : "rounded-[16px]"

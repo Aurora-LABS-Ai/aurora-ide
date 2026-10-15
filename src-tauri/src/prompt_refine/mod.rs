@@ -390,17 +390,28 @@ const SUGGEST_USER_INPUT_CHARS: usize = 600;
 /// Longest suggestion list generation (4 short numbered lines).
 const SUGGEST_N_PREDICT: u32 = 160;
 
+/// One local suggestion run, with what went in and what came out, for the
+/// suggestion log.
+pub struct LocalSuggestRun {
+    pub input: String,
+    pub raw: String,
+    pub suggestions: Vec<String>,
+}
+
 /// Generate up to 4 tappable reply suggestions from the last exchange — ONE
 /// model call that sees BOTH the user's message and the assistant's reply
 /// and answers as the user. Output lines are individually filtered and
 /// deduped, so the result may hold fewer entries (possibly zero).
-pub fn suggest_replies(
+///
+/// Returns what went in and the model's raw output beside the suggestions, for
+/// the suggestion log.
+pub fn suggest_replies_traced(
     state: &RefineState,
     request_id: &str,
     user_text: &str,
     assistant_text: &str,
     config: &RefineConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<LocalSuggestRun, String> {
     let exchange = suggestion_exchange(user_text, assistant_text)?;
     let raw = run_completion(
         state,
@@ -411,19 +422,18 @@ pub fn suggest_replies(
         SUGGEST_N_PREDICT,
         Some("0.7"),
     )?;
-    Ok(parse_suggestions(&raw))
+    let suggestions = parse_suggestions(&raw);
+    Ok(LocalSuggestRun {
+        input: exchange,
+        raw,
+        suggestions,
+    })
 }
 
-/// The instruction every suggestion model gets, local or cloud.
-#[must_use]
-pub fn suggestion_system_prompt() -> &'static str {
-    SUGGEST_SYSTEM
-}
-
-/// The exchange a suggestion model reads: the user's message and the
+/// The exchange the LOCAL suggestion model reads: the user's message and the
 /// assistant's reply, flattened to prose and labelled exactly like the
-/// few-shot examples in [`SUGGEST_SYSTEM`]. Shared by the local and cloud
-/// paths so both models see the same input.
+/// few-shot examples in [`SUGGEST_SYSTEM`]. A cloud model reads the whole
+/// conversation instead (`crate::reply_suggest::brief`).
 pub fn suggestion_exchange(user_text: &str, assistant_text: &str) -> Result<String, String> {
     let assistant = plain_prose(assistant_text);
     if assistant.is_empty() {
@@ -447,10 +457,21 @@ pub fn suggestion_exchange(user_text: &str, assistant_text: &str) -> Result<Stri
 /// fewer entries (possibly zero).
 #[must_use]
 pub fn parse_suggestions(raw: &str) -> Vec<String> {
+    parse_suggestions_up_to(raw, LOCAL_SUGGESTION_MAX_WORDS)
+}
+
+/// The longest reply the local model's chips accept.
+const LOCAL_SUGGESTION_MAX_WORDS: usize = 12;
+
+/// [`parse_suggestions`] with the word limit set by the caller. The cloud path
+/// writes in the developer's own voice, which runs longer than a small local
+/// model's replies.
+#[must_use]
+pub fn parse_suggestions_up_to(raw: &str, max_words: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(4);
     for line in raw.lines() {
         let reply = sanitize_suggestion(line);
-        if !acceptable_suggestion(&reply) {
+        if !acceptable_suggestion(&reply, max_words) {
             continue;
         }
         if out.iter().any(|prev| suggestions_overlap(prev, &reply)) {
@@ -733,9 +754,9 @@ fn sanitize_suggestion(raw: &str) -> String {
 /// The rejected patterns are the failure modes observed in smoke tests
 /// (assistant-voice offers and meta-narration). First-person "I'll…" replies
 /// are LEGITIMATE here — the role-play prompt answers as the user.
-fn acceptable_suggestion(s: &str) -> bool {
+fn acceptable_suggestion(s: &str, max_words: usize) -> bool {
     let words = s.split_whitespace().count();
-    if !(1..=12).contains(&words) {
+    if !(1..=max_words).contains(&words) {
         return false;
     }
     let lower = s.to_lowercase();

@@ -201,6 +201,7 @@ export class AgentService {
         // switched by one value. A surface that doesn't set it (the IDE chat)
         // gets neither, instead of an instruction with no tool behind it.
         transcriptChapters: this.config.transcriptChapters,
+        replyLayout: this.config.replyLayout,
         // The conversation's own framing, set at creation. See
         // `AgentConfig.deepResearch`.
         deepResearch: this.config.deepResearch,

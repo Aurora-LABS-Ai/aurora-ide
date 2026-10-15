@@ -19,6 +19,7 @@ import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { CanvasCategoryMark } from "@/apps/agent/components/tools/CanvasCategoryMark";
+import { InlineCanvas } from "@/apps/agent/components/canvas/InlineCanvas";
 import {
   artifactCategoryLabel,
   normalizeArtifactCategory,
@@ -871,6 +872,14 @@ const CanvasLaunchCard: React.FC<{
   const category = normalizeArtifactCategory(readArg("artifactCategory"));
   const versionTag = typeof result.versionTag === "string" ? result.versionTag : "";
   const canOpen = status === "done" && artifactId.length > 0;
+  // `artifactPlacement: "inline"` on a saved react canvas draws the canvas
+  // here, in the reply, instead of a card that opens the dock. The placement
+  // is an argument of the call, so a reloaded conversation draws it the same.
+  const inline =
+    canOpen &&
+    readArg("artifactPlacement") === "inline" &&
+    readArg("artifactKind", "kind") === "react" &&
+    versionTag.length > 0;
 
   // The failure's reason belongs on the card. It cost an expand before, and a
   // compile error is one short clause.
@@ -928,6 +937,19 @@ const CanvasLaunchCard: React.FC<{
         .catch(() => undefined);
     }
   };
+
+  const inlineThreadId = scope?.threadId ?? useAgentChatStore.getState().currentThreadId;
+  if (inline && inlineThreadId) {
+    return (
+      <InlineCanvas
+        threadId={inlineThreadId}
+        artifactId={artifactId}
+        versionTag={versionTag}
+        title={artifactTitle || "Canvas"}
+        onOpenInDock={openCanvas}
+      />
+    );
+  }
 
   return (
     <button

@@ -300,6 +300,7 @@ export type ProviderType =
   | 'openai-responses' // OpenAI Responses API (/responses, typed streaming events)
   | 'codex'            // Codex via ChatGPT backend (subscription OAuth, Responses dialect)
   | 'claude-code'      // Claude via the claude.ai subscription (OAuth bearer, Anthropic Messages wire)
+  | 'antigravity'      // Gemini/Claude/GPT-OSS on a Google account's Antigravity plan (Cloud Code envelope)
   | 'cursor'           // Cursor subscription via its native agent protocol
   | 'fireworks'        // Fireworks AI (OpenAI-compatible with reasoning_content)
   | 'anthropic'        // Any Anthropic Messages endpoint (also the gateways that speak it)

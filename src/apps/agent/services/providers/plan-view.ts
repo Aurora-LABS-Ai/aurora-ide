@@ -24,6 +24,11 @@
  */
 
 import {
+  antigravityResetLabel,
+  antigravityRingBucket,
+  type AntigravityQuota,
+} from "./antigravity";
+import {
   ARK_WINDOWS,
   arkResetLabel,
   arkTierLabel,
@@ -230,6 +235,39 @@ export function claudeCodePlanView(snap: ClaudeCodeUsageSnapshot | null): PlanVi
   const plan = claudeCodePlanLabel(snap.plan);
   return {
     title: plan ? `Claude ${plan} plan` : "Claude plan",
+    limits,
+    balance: null,
+    notice: null,
+    flag: null,
+  };
+}
+
+// ── Antigravity ──────────────────────────────────────────────────────────────
+
+/**
+ * One line per model group, and only the window that stops the NEXT turn:
+ * the 5-hour bucket on a paid plan, the weekly one on a free plan that has
+ * nothing shorter. The weekly figures stay on the provider card (Alvan's
+ * call, 2026-10-12: the ring is a glance, the card is the full reading).
+ */
+export function antigravityPlanView(quota: AntigravityQuota | null): PlanView | null {
+  if (!quota) return null;
+  const limits: LimitLine[] = [];
+  for (const group of quota.groups) {
+    const bucket = antigravityRingBucket(group);
+    if (!bucket) continue;
+    const window = bucket.window === "5h" ? "5-hour" : bucket.window === "weekly" ? "weekly" : null;
+    limits.push(
+      quotaLine(
+        window ? `${group.name} · ${window}` : group.name,
+        100 - bucket.remainingPercent,
+        antigravityResetLabel(bucket.resetsAt),
+      ),
+    );
+  }
+  if (limits.length === 0) return null;
+  return {
+    title: quota.plan ? `Antigravity · ${quota.plan}` : "Antigravity plan",
     limits,
     balance: null,
     notice: null,

@@ -148,8 +148,18 @@ export const ModelSelector: React.FC<{
 
   // Agent/Plan execution mode lives inside this picker (no separate chip).
   // Same `agentExecutionMode` the settings page writes, so they never disagree.
-  const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
-  const setExecutionMode = useAgentSettingsStore((s) => s.setAgentExecutionMode);
+  // The CONVERSATION's mode first, like its model; the window's setting is the
+  // default a new chat is born with. Picking writes both, for the same reason
+  // picking a model does.
+  const defaultMode = useAgentSettingsStore((s) => s.agentExecutionMode);
+  const setDefaultMode = useAgentSettingsStore((s) => s.setAgentExecutionMode);
+  const threadMode = useAgentChatStore((s) => (forThread ? s.threadModes[forThread] : undefined));
+  const setThreadMode = useAgentChatStore((s) => s.setThreadMode);
+  const executionMode = threadMode ?? defaultMode;
+  const setExecutionMode = (mode: "agent" | "plan") => {
+    if (forThread) void setThreadMode(forThread, mode);
+    setDefaultMode(mode);
+  };
   /** The seed for the NEXT chat. Only meaningful when none is open. */
   const deepResearchNext = useAgentSettingsStore((s) => s.deepResearchNext);
   const setDeepResearchNext = useAgentSettingsStore((s) => s.setDeepResearchNext);
@@ -157,14 +167,16 @@ export const ModelSelector: React.FC<{
    * What the OPEN conversation is, which outranks the seed whenever there is
    * one — and cannot be changed, because deep research is fixed at creation.
    */
+  // THIS picker's conversation (`forThread`), never the open one: the docked
+  // chat's picker used to describe whatever the main pane had open.
   const threadDeepResearch = useAgentChatStore((s) => {
-    const id = s.currentThreadId;
-    if (!id) return false;
+    if (!forThread) return false;
     const found =
-      s.allThreads.find((t) => t.id === id) ?? s.threads.find((t) => t.id === id);
+      s.allThreads.find((t) => t.id === forThread) ??
+      s.threads.find((t) => t.id === forThread);
     return found?.deepResearch === true;
   });
-  const deepResearchLocked = useAgentChatStore((s) => s.currentThreadId !== null);
+  const deepResearchLocked = !!forThread;
   /**
    * Deep research, as it stands right now — what the OPEN conversation is, or
    * what the next one will be born as. On the composer pill, not only inside
@@ -178,7 +190,7 @@ export const ModelSelector: React.FC<{
   // that turn without repointing the window — so while it runs, the setting is
   // not what is happening, and showing it would be a lie.
   const liveMode = useAgentChatStore((s) =>
-    s.currentThreadId ? s.liveModes[s.currentThreadId] : undefined,
+    forThread ? s.liveModes[forThread] : undefined,
   );
   const shownMode = liveMode ?? executionMode;
   const planned = shownMode === "plan";

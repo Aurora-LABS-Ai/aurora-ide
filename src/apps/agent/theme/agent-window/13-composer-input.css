@@ -227,7 +227,7 @@
 }
 
 .agw-mention-list {
-  max-height: 256px;
+  max-height: 360px; /* MAX_LIST_HEIGHT in ComposerMenu.tsx */
   overflow-y: auto;
   /* A picker is a small list over a long transcript; without this, reaching the
      end of it scrolls the conversation behind it. */
@@ -271,6 +271,97 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Grouped picker (probe: aurora-mention-picker-designs.html, 02) ──── */
+
+/* Opening DOWN, from the home screen's centred composer: hangs under the box
+ * instead of over the heading, and lifts itself off the page below. */
+.agw-mention[data-placement="down"] {
+  bottom: auto;
+  /* Fallback only: ComposerMenu sets `top` from the message box's own bottom
+     edge, so the menu hangs from the box, not from the block that also holds
+     the rail line under it. */
+  top: calc(100% + 6px);
+  /* Over the rail line it now covers ("AI can make mistakes…"), which is
+     drawn after the box at the default level; the upward menu's -1 would put
+     that line's text on top of the rows. */
+  z-index: 2;
+  transform-origin: top center;
+  box-shadow: 0 14px 30px -16px color-mix(in srgb, var(--agw-overlay) 65%, transparent);
+}
+/* …and the box casts onto it downward, the mirror of the rule above. */
+.agw-composer:has(.agw-mention[data-placement="down"]) .agw-composer-surface {
+  box-shadow: 0 7px 18px -8px color-mix(in srgb, var(--agw-overlay) 80%, transparent);
+}
+
+/* What a group is: "Open", "In this chat", "Files", "Skills". */
+.agw-mention-group {
+  padding: 8px 9px 4px;
+  font-size: var(--agw-fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--agw-text-subtle);
+  user-select: none;
+}
+.agw-mention-group:first-child {
+  padding-top: 4px;
+}
+
+/* The letters that matched the query: accent ink, no fill — the reason the row
+ * is listed, readable at a glance. */
+.agw-mention-hit {
+  background: none;
+  color: var(--agw-accent);
+}
+
+/* The folder a file is in, right after its name and read from its END: the
+ * last folders tell two `index.ts` apart, so the start is what gets cut.
+ * (`dir="rtl"` on the element, a `<bdi>` keeps the path itself in order.) */
+.agw-mention-where {
+  min-width: 0;
+  margin-left: 2px;
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.agw-mention-empty {
+  padding: 8px 9px;
+  font-size: var(--agw-fs-label);
+  color: var(--agw-text-subtle);
+}
+
+/* The keys the menu answers to, and how many rows it holds. Pinned under the
+ * scroller, so it stays put while the list scrolls. */
+.agw-mention-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 6px -6px -6px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--agw-border);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-text-subtle);
+  user-select: none;
+}
+.agw-mention-foot kbd {
+  margin-right: 3px;
+  padding: 0 4px;
+  border: 1px solid var(--agw-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--agw-radius-xs, 4px);
+  font-family: var(--agw-font-code);
+  font-size: 11px;
+  color: var(--agw-text-muted);
+}
+.agw-mention-foot-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 /* The content measures at its natural height; only the space around it eases.
@@ -428,23 +519,46 @@
 /* Composer top band — only rendered when the model selector is top-positioned
    (mode now lives inside the picker, so nothing else needs reserving). Sized by
    its own padding + the selector pill; no fixed reserve. */
-/* Inline file pill — sits in the sentence right where `@` was typed. */
+/* Inline pill — a file, folder, skill, rule, MCP server, terminal or picked
+ * element, sitting in the sentence right where it was typed. Same object in
+ * the composer, a sent message and the queued-message card.
+ *
+ * A quiet raised capsule (probe: aurora-composer-pill-designs.html, 02 —
+ * Alvan's pick, 2026-10-12): a hair lighter than whatever it sits on, a
+ * hairline edge, a faint top highlight, and the TEXT in the text colour. The
+ * kind is carried by the icon — the real file icon, or the kind's glyph,
+ * coloured in 09-tool-cards.css. It replaced accent text on a 15% accent
+ * tint, which was the loudest thing in the box (louder than what was being
+ * written) and, with a warm accent, read as a gold label.
+ *
+ * Tints are mixed over `transparent` rather than a surface token so the same
+ * pill reads right on the composer, a user bubble and the queued card. */
 .agw-pill-inline {
   display: inline-flex;
   align-items: center;
   vertical-align: middle;
-  gap: 3px;
-  padding: 1px 7px;
-  margin: 0 1px;
-  border-radius: var(--agw-radius-sm);
-  background: color-mix(in srgb, var(--agw-accent) 15%, transparent);
-  color: var(--agw-accent);
-  font-size: var(--agw-fs-md);
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px 0 5px;
+  margin: 0 2px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--agw-text) 6%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--agw-text) 5%, transparent);
+  color: var(--agw-text);
+  font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
-  line-height: 1.45;
+  line-height: 1;
   white-space: nowrap;
   cursor: default;
   user-select: none;
+  transition:
+    background var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease;
+}
+.agw-pill-inline:hover {
+  background: color-mix(in srgb, var(--agw-text) 10%, transparent);
+  border-color: color-mix(in srgb, var(--agw-text) 22%, var(--agw-border-strong));
 }
 
 /* ── Interactive question prompt (`ask_question`) ─────────────────────

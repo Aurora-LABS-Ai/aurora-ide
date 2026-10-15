@@ -187,7 +187,9 @@ impl ToolExecutor for WorkspaceTreeTool {
                           A directory with no children and none of those markers is genuinely \
                           empty. Files carry lineCount, so a large one can be read with \
                           start_line/end_line. Use this to learn the LAYOUT; to find a file by \
-                          name use `glob`, and by content use `grep`."
+                          name use `glob`, a symbol by name (and who uses it) `code`, what a \
+                          file or folder defines `code` outline, how folders depend on each \
+                          other `code` modules, and other text `grep`."
                 .into(),
             input_schema: json!({
                 "type": "object",

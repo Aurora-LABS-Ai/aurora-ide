@@ -349,6 +349,22 @@
   min-height: calc(100vh - 300px);
 }
 
+/* Finished exchanges skip layout and paint while they are off screen.
+ *
+ * Every streamed frame changes the newest exchange, and without this the
+ * browser laid out and painted the whole conversation above it as well — a
+ * cost that grew with the chat's length and doubled with a second chat
+ * streaming in the dock (measured 2026-10-12: 19 → 24 fps text-only, 23 → 29
+ * mixed, two chats, 4× CPU throttle). `auto` keeps an exchange that scrolls
+ * into view rendering normally, and the `auto` in the size makes the browser
+ * remember each exchange's real height once it has drawn it, so the scrollbar
+ * does not jump. The newest exchange is never skipped: it is the one moving.
+ * The docked chat's twin rule is in `05-chat-panel.css`. */
+.agw-section:not(:last-child) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
+}
+
 /* ── Transcript spine (opt-in) ──────────────────────────────────────────
  * Settings → Preferences → Transcript. Draws one continuous hairline down the
  * turn with a marker per row, so a long turn reads as a single thread of work
@@ -519,6 +535,43 @@
   border-bottom-left-radius: 6px;
   pointer-events: none;
 }
+/* Smooth tool arrival with the spine on: a step that is entering
+ * (`data-enter`, see `09-tool-cards.css`) grows off the spine — its marker
+ * lands first, then its branch draws out to the row the content slides in on.
+ * A running step's marker keeps the live sheen below, which outranks this. */
+.agw-root[data-transcript-spine] .agw-tool-step[data-enter]::after {
+  animation: agw-tool-marker-land var(--agw-dur-base) var(--agw-ease-enter) both;
+  animation-delay: var(--agw-enter-delay, 0ms);
+}
+.agw-root[data-transcript-spine] .agw-tool-step[data-enter]::before {
+  animation: agw-tool-branch-draw var(--agw-dur-fast) var(--agw-ease-out) both;
+  animation-delay: calc(var(--agw-enter-delay, 0ms) + 0.04s);
+}
+@keyframes agw-tool-marker-land {
+  from {
+    opacity: 0;
+    transform: scale(0.2);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes agw-tool-branch-draw {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-root[data-transcript-spine] .agw-tool-step[data-enter]::after,
+  .agw-root[data-transcript-spine] .agw-tool-step[data-enter]::before {
+    animation: none;
+  }
+}
+
 /* A run of six or more collapses behind one "N calls" header and its cards live
    in a bounded internal scroller. There the run genuinely IS one step — and a
    marker inside a scroll box would be clipped by it and drift as it scrolled —
@@ -572,7 +625,7 @@
     var(--agw-border-strong) 100%
   );
   background-size: 200% 100%;
-  animation: agw-shimmer 2.5s linear infinite;
+  animation: agw-shimmer 2.5s steps(60) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   /* Motion off, state kept: the live marker holds at full text strength instead

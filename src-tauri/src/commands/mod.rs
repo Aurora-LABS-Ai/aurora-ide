@@ -34,6 +34,7 @@ pub mod chat_gallery;
 pub mod chat_video;
 pub mod image_direct;
 pub mod image_providers;
+pub mod antigravity;
 pub mod checkpoints;
 pub mod claude_code;
 pub mod code_index;

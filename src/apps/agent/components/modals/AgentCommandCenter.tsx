@@ -85,7 +85,12 @@ export const AgentCommandCenter: React.FC = () => {
   const dockOpen = useAgentWorkspaceStore((s) => s.dockOpen);
   const notifyOnTurnComplete = useAgentSettingsStore((s) => s.notifyOnTurnComplete);
   const showActivityInTitle = useAgentSettingsStore((s) => s.showActivityInTitle);
-  const executionMode = useAgentSettingsStore((s) => s.agentExecutionMode);
+  // The open chat's own mode when it has one, as the composer shows it.
+  const defaultMode = useAgentSettingsStore((s) => s.agentExecutionMode);
+  const openThreadMode = useAgentChatStore((s) =>
+    s.currentThreadId ? s.threadModes[s.currentThreadId] : undefined,
+  );
+  const executionMode = openThreadMode ?? defaultMode;
   /** Aurora Chat: no project, so none of the project-shaped commands. */
   const chatSurface = useAgentSettingsStore((s) => s.auroraSurface) === "chat";
 
@@ -249,10 +254,12 @@ export const AgentCommandCenter: React.FC = () => {
             keywords: "execution mode agent plan enable disable",
             group: "Quick switches",
             icon: executionMode === "plan" ? "book" : "facet",
-            run: () =>
-              useAgentSettingsStore
-                .getState()
-                .setAgentExecutionMode(executionMode === "plan" ? "agent" : "plan"),
+            run: () => {
+              const next = executionMode === "plan" ? "agent" : "plan";
+              const openId = useAgentChatStore.getState().currentThreadId;
+              if (openId) void useAgentChatStore.getState().setThreadMode(openId, next);
+              useAgentSettingsStore.getState().setAgentExecutionMode(next);
+            },
           } satisfies CommandItem]
         : []),
     ];

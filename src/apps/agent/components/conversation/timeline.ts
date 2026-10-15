@@ -155,7 +155,16 @@ export interface DirectImageEvent {
 export type TimelineRow =
   | { type: "thinking"; id: string; text: string; startedAt?: number; durationMs?: number }
   | { type: "content"; id: string; text: string }
-  | { type: "tools"; id: string; tools: ToolCall[] }
+  | {
+      type: "tools";
+      id: string;
+      tools: ToolCall[];
+      /** When the run's first and last calls were made (event `at`, epoch ms).
+       *  Absent when the events carry no clock. Read by work cards for how
+       *  long a stretch took; calls reloaded from disk have no `durationMs`. */
+      at?: number;
+      lastAt?: number;
+    }
   | { type: "user_injection"; id: string; text: string; chips?: AttachedPromptChip[] | null }
   | { type: "process_beat"; id: string; text: string }
   | { type: "agent_report"; id: string; report: AgentReportEvent }
@@ -880,7 +889,11 @@ export function buildTurns(messages: DbMessage[]): AgwTurn[] {
         id: m.id,
         role: "assistant",
         content: m.content || "",
-        events: eventsOf(m),
+        // A copy, always. `eventsOf` can return the message's own `timeline`
+        // array, and the merge above pushes the turn's later messages into
+        // `events` — which wrote them into the stored message on every
+        // render, so the timeline grew without bound and rows repeated.
+        events: [...eventsOf(m)],
         isThinking: !!m.isThinking,
         startedAt: lastUserTs,
         endedAt: m.timestamp,
@@ -1134,12 +1147,23 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
   const rows: TimelineRow[] = [];
   let run: ToolCall[] = [];
   let runStart = "";
+  let runAt: number | undefined;
+  let runLastAt: number | undefined;
 
   const flush = () => {
     if (run.length > 0) {
-      rows.push({ type: "tools", id: `tools-${runStart}`, tools: run });
+      const row: Extract<TimelineRow, { type: "tools" }> = {
+        type: "tools",
+        id: `tools-${runStart}`,
+        tools: run,
+      };
+      if (runAt !== undefined) row.at = runAt;
+      if (runLastAt !== undefined) row.lastAt = runLastAt;
+      rows.push(row);
       run = [];
       runStart = "";
+      runAt = undefined;
+      runLastAt = undefined;
     }
   };
 
@@ -1159,6 +1183,10 @@ export function buildRows(events: TimelineEvent[]): TimelineRow[] {
       }
       if (run.length === 0) runStart = e.id;
       run.push(e.call);
+      if (typeof e.at === "number") {
+        runAt ??= e.at;
+        runLastAt = e.at;
+      }
     } else {
       // A content segment with no visible text is not speech, and must not
       // break a run of tool calls.

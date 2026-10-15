@@ -274,6 +274,11 @@ fn describe_route(kind: ProviderKind, config: &ProviderConfigSnapshot) -> (&'sta
         // Fixed endpoint too, for the same reason: the base URL on the row
         // is not what a request goes to.
         ProviderKind::CommandCode => ("Command Code", COMMANDCODE_GENERATE_URL.to_string()),
+        // Fixed endpoint; the row's base URL is not where requests go.
+        ProviderKind::Antigravity => (
+            "Antigravity",
+            crate::api::antigravity::adapter::stream_url(),
+        ),
         ProviderKind::DeepSeek | ProviderKind::OpenAICompat => {
             ("Chat Completions", build_openai_url(&config.base_url))
         }

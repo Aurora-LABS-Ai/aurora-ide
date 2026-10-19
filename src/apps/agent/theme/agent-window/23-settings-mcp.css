@@ -198,6 +198,31 @@
   overflow-wrap: anywhere;
 }
 
+/* A failed start: Aurora's sentence, then the server's own output in a code
+   box with a fixed ceiling. A long npm log scrolls in place instead of
+   growing the card and pushing everything under it. */
+.agw-mcp-failure {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.agw-mcp-output {
+  max-height: 132px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Command check under the Command field: "Runs C:\…\foo.cmd" in the hint
+   colour, or why nothing was found in the status warning colour. Long paths
+   wrap instead of widening the form. */
+.agw-mcp-form .agw-set-row-hint {
+  overflow-wrap: anywhere;
+}
+.agw-mcp-form .agw-set-row-hint[data-tone="warning"] {
+  color: var(--agw-warning);
+}
+
 /* Form layout (add + edit share these). */
 .agw-mcp-form {
   display: flex;

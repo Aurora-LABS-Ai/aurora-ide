@@ -41,6 +41,9 @@ reqwest = { version = "0.12", features = [
     "brotli",
     "deflate",
     "cookies",
+    # `api/cursor` builds its clients with `use_rustls_tls()`. This used to be
+    # switched on silently by rmcp 0.1's own reqwest dependency; say it here.
+    "rustls-tls",
 ] }
 eventsource-stream = "0.2"
 futures = "0.3"
@@ -116,7 +119,18 @@ memchr = "2.7"          # SIMD-accelerated byte search powering native search/re
 tauri-plugin-pty = "0.1"
 
 # MCP (Model Context Protocol) client support
-rmcp = { version = "0.1", features = ["client", "transport-child-process", "transport-sse"] }
+# The official Rust SDK carries the protocol (handshake, id correlation,
+# notifications, pagination, cancellation). Aurora keeps process launch,
+# timeouts and the legacy HTTP+SSE transport (dropped from the SDK) in `mcp/`.
+rmcp = { version = "3.5", default-features = false, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest-native-tls",
+] }
+# Same version rmcp's child-process transport is built on: on Windows each
+# server runs in its own job object so stopping it ends every process under it.
+process-wrap = { version = "10", features = ["tokio1"] }
 
 # Code index — structural symbol/reference index over the workspace
 # (src/code_index). tree-sitter parses syntax only: no toolchain on the user's
@@ -215,6 +229,10 @@ comfy-table = "8.0.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# `process_wrap::tokio::CreationFlags` takes this exact version's flag type, so
+# MCP servers can start with CREATE_NO_WINDOW inside their job object. It is the
+# copy process-wrap already builds; the rename keeps it apart from `windows` 0.61.
+windows-pw = { package = "windows", version = "0.62", features = ["Win32_System_Threading"] }
 # `Win32_Globalization` supplies MultiByteToWideChar, used to decode console
 # output that PowerShell / cmd emit in the OEM code page rather than UTF-8.
 # `Win32_System_Diagnostics_Debug` + `Win32_System_Threading` are the fatal-crash
@@ -363,3 +381,17 @@ opt-level = "s"
 # crash logs you may need to read.
 strip = false
 debug = "line-tables-only"
+
+# Local test builds: `pnpm tauri:build:fast` (output under `build/release-fast/`).
+# Same optimisation level and panic strategy as `release`, so the app behaves
+# like the shipped one; what goes is the single-core tail. `codegen-units = 1`
+# plus fat `lto` turn the last step (`aurora` itself) into one long job on one
+# core — 25% CPU on a 16-thread machine while it runs (2026-10-16). Sixteen
+# units, no LTO and incremental reuse spread that step across cores and let a
+# second build skip unchanged code. The binary is somewhat larger and slightly
+# slower than `release`; ship only `release`.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+incremental = true

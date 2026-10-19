@@ -25,6 +25,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
+import { GLIDE } from "@/apps/agent/lib/motion/glide";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
@@ -92,7 +93,7 @@ const AgentThinkingBlockImpl: React.FC<{
           size={12}
           style={{
             transform: expanded ? "none" : "rotate(-90deg)",
-            transition: "transform 0.15s ease",
+            transition: "transform var(--agw-glide-dur) var(--agw-glide-ease)",
             color: "var(--agw-text-subtle)",
           }}
         />
@@ -120,10 +121,11 @@ const AgentThinkingBlockImpl: React.FC<{
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
+            transition={GLIDE}
             style={{ overflow: "hidden" }}
           >
             <div className="agw-think-rail">
-              <div ref={bodyRef} className="agw-think-body agw-scroll">
+              <div ref={bodyRef} className="agw-think-body agw-scroll-hair">
                 <pre className="agw-code agw-think-pre">
                   {content || "…"}
                 </pre>

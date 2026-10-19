@@ -79,12 +79,21 @@ pub const LOAD_CODE_ASSIST_URL: &str =
 pub const ONBOARD_USER_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 pub const API_BASE: &str = "https://daily-cloudcode-pa.googleapis.com/v1internal";
 
-/// The client version requests carry. The generation endpoints serve 2.x
-/// clients; this is the version 9router sends and the one the 2026-10-12
-/// probe passed with (the IDE installed on the probe machine was 2.0.4).
-pub const ANTIGRAVITY_IDE_VERSION: &str = "2.11.0";
+/// The client version requests carry: the Antigravity desktop app's current
+/// release (2.23.1 on 2026-10-16).
+pub const ANTIGRAVITY_CLIENT_VERSION: &str = "2.23.1";
 
-/// `antigravity/ide/<version> <os>/<arch>`, the IDE's own format.
+/// `antigravity/hub/<version> <os>/<arch>`, the Antigravity desktop app's
+/// format.
+///
+/// The backend picks the model list and the quota groups from this header,
+/// not from the account. Probed 2026-10-16 on one Google AI Pro account:
+/// `antigravity/ide/<any version>` gets 26 models and two quota groups;
+/// `antigravity/hub/2.15.1` and later also gets Gemini 4 Argon
+/// (`gemini-4-argon-low/medium/high`) and its own "Gemini 4 Argon" weekly
+/// group, and a chat on Argon answers 200 where the `ide` agent got 404.
+/// `hub/2.11.0` and older lose Argon (and below that, the Gemini group).
+/// Sign-in (`loadCodeAssist`) and the other models answer the same either way.
 #[must_use]
 pub fn user_agent() -> String {
     let os = match std::env::consts::OS {
@@ -96,7 +105,7 @@ pub fn user_agent() -> String {
         "aarch64" => "arm64",
         other => other,
     };
-    format!("antigravity/ide/{ANTIGRAVITY_IDE_VERSION} {os}/{arch}")
+    format!("antigravity/hub/{ANTIGRAVITY_CLIENT_VERSION} {os}/{arch}")
 }
 
 /// `ClientMetadata` for `loadCodeAssist` / `onboardUser`: ideType 9 is
@@ -112,4 +121,17 @@ pub fn client_metadata() -> serde_json::Value {
         _ => 0,
     };
     serde_json::json!({ "ideType": 9, "platform": platform, "pluginType": 2 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ide` loses Gemini 4 Argon whatever the version; see [`user_agent`].
+    #[test]
+    fn requests_present_as_the_desktop_app() {
+        let ua = user_agent();
+        assert!(ua.starts_with("antigravity/hub/2.23.1 "), "{ua}");
+        assert_eq!(ua.split(' ').count(), 2, "{ua}");
+    }
 }

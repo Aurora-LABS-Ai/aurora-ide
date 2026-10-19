@@ -1,0 +1,39 @@
+{
+  "title": "Soundrop | October 2026 royalty report",
+  "subtitle": "Reported streams and earnings by platform",
+  "source": "Supplied royalty report | October 2026 | USD",
+  "data": [
+    { "platform": "Deezer", "streams": 8612, "earnings": 8.6845, "period": "2026-10-01" },
+    { "platform": "Spotify", "streams": 1269, "earnings": 5.1168, "period": "2026-10-01" },
+    { "platform": "Apple Music", "streams": 740, "earnings": 4.1079, "period": "2026-10-01" },
+    { "platform": "Pandora Radio", "streams": 4, "earnings": 0.0044, "period": "2026-10-01" },
+    { "platform": "YouTube", "streams": 1, "earnings": 0.0002, "period": "2026-10-01" }
+  ],
+  "filters": [
+    { "field": "platform", "label": "Platforms", "kind": "multi" },
+    { "field": "streams", "label": "Stream count", "kind": "range" }
+  ],
+  "sections": [
+    { "blocks": [
+      { "type": "metrics", "items": [
+        { "label": "Total earnings", "field": "earnings", "format": { "style": "currency", "currency": "USD", "digits": 4 }, "tone": "good" },
+        { "label": "Reported streams", "field": "streams", "format": { "digits": 0 } },
+        { "label": "Platforms", "field": "platform", "aggregate": "distinct" }
+      ] }
+    ] },
+    { "view": "Earnings", "blocks": [
+      { "type": "chart", "kind": "column", "title": "Earnings by platform", "x": "platform", "y": ["earnings"], "format": { "style": "currency", "currency": "USD", "digits": 4 }, "yLabel": "Earnings (USD)" }
+    ] },
+    { "view": "Streams", "blocks": [
+      { "type": "chart", "kind": "bar", "title": "Streams by platform", "x": "platform", "y": ["streams"], "format": { "digits": 0 } }
+    ] },
+    { "blocks": [
+      { "type": "table", "title": "Who paid how much?", "columns": [
+        { "key": "platform", "label": "Platform" },
+        { "key": "streams", "label": "Streams", "total": "sum", "format": { "digits": 0 } },
+        { "key": "earnings", "label": "Your earnings (USD)", "total": "sum", "format": { "style": "currency", "currency": "USD", "digits": 4 } }
+      ], "details": ["platform", "streams", "earnings", "period"] },
+      { "type": "note", "title": "Reading this report", "text": "Filters update totals, charts and tables together. Choose a bar to inspect a platform. Very small earnings remain available in the table.", "tone": "info" }
+    ] }
+  ]
+}

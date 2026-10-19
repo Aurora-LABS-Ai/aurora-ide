@@ -295,11 +295,8 @@ const CHAT_DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
  * like the risky choice.
  */
 export const CANVAS_INSTRUCTIONS = `## Canvas
-- When the answer is something the user will study rather than read once — analysis, findings, comparisons, any dataset — present it on the Canvas instead of in chat.
-- Pick the kind by what the reader will do with it: read it top to bottom → \`markdown\`; see how parts connect (a flow, a structure, a sequence) → \`mermaid\`; work out one number → an answer box in your reply, not a canvas; compare, rank, sort or explore numbers — headline figures, a chart, a table past about eight rows, findings with figures → \`react\`. \`react\` is the default for data: a large markdown table is the wrong answer.
-- Before your first \`present_artifact\` with \`artifactKind: "react"\`, call \`canvas_guidelines\` for the components and the rules the compiler checks.
-- Where a react canvas goes: \`artifactPlacement: "inline"\` draws it inside your reply at the point you call the tool, sized to its content — use it for a small interactive piece the reader uses while reading: a \`Picker\` over a few items with a detail that changes, \`Tabs\` over a few views, a chart with one \`Choice\` or \`Stepper\`, two or three \`Stats\`. Keep an inline canvas under a screen tall and say in the sentence before it what it lets the reader do. \`"dock"\` (the default) opens the side panel — a report, a dashboard, a long table, anything the reader will study.`;
-
+Use artifacts for requested standalone deliverables and custom interactive behavior. Pick the kind by what the reader will do with it: read a document → \`markdown\`; follow connections → \`mermaid\`; work out one number → an answer box in the reply; explore data with custom logic → \`react\`. \`react\` is the default for data artifacts.
+Before \`present_artifact\` with \`artifactKind: "react"\`, load \`canvas_guidelines\` with \`topic: "canvas"\`. Use \`artifactPlacement: "inline"\` for a compact interactive part in the reply, or \`"dock"\` for a long report or app. Keep detailed API rules in the guide.`;
 const MAX_PREVIEW_SNIPPET_CHARS = 200;
 
 function clipPreviewLine(line: string): string {
@@ -497,7 +494,7 @@ export async function composeAgentSystemPrompt(options: {
    */
   transcriptChapters?: boolean;
   /**
-   * Transcript → Reply layout: tell the model about the facts / flow / note
+   * Transcript → Reply layout: tell the model about the structured explanation
    * blocks the transcript draws. Read from the same switch the transcript
    * draws by, so the model is never taught a fence the reader sees as code.
    */

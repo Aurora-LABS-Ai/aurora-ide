@@ -314,6 +314,12 @@ pub struct ConversationRuntime {
     /// first user message, which is the head of every request's cacheable
     /// prefix, so it must be byte-identical on every turn.
     memory: Arc<std::sync::OnceLock<Option<String>>>,
+    /// Repeat-failure counts for the turn in progress, tagged with its id and
+    /// reset when a new turn starts. Owned here, not by one batch of tool
+    /// calls: a model that retries alone sends each retry in its own message,
+    /// and a per-batch count never reached two (Kimi K3, 2026-10-15: nine
+    /// identical failing `TaskUpdate` calls, nine separate messages, no note).
+    failure_guard: Arc<std::sync::Mutex<(String, tool_exec::FailureLoopGuard)>>,
 }
 
 impl std::fmt::Debug for ConversationRuntime {
@@ -343,6 +349,7 @@ impl ConversationRuntime {
             tool_schema_tokens: Arc::new(std::sync::OnceLock::new()),
             repo_map: Arc::new(std::sync::OnceLock::new()),
             memory: Arc::new(std::sync::OnceLock::new()),
+            failure_guard: Arc::default(),
         }
     }
 
@@ -403,6 +410,13 @@ impl ConversationRuntime {
         let Some(root) = self.store_dir.as_deref() else {
             return raw;
         };
+        // A guide is a fixed text the model is told to follow, bounded by its
+        // own 32 KiB cap. Moving it to a file handed the model 3 KB of head and
+        // 5 KB of tail and a path (the canvas guide, ~13 KB, 2026-10-16), and it
+        // spent a turn reading back "the hidden middle".
+        if tool_results::is_standing_guide(tool) {
+            return raw;
+        }
         let dir = super::session_store::tool_results_dir_in(root, &session.thread_id, self.store_layout);
         let clamp_keeps = tool_results::result_cap_for(tool)
             .saturating_sub(tool_results::TRUNCATION_MARKER_RESERVE);
@@ -1304,8 +1318,11 @@ impl ConversationRuntime {
             // person's note and two agents' reports can all be waiting; each
             // gets its own block on this one tool message, in the order they
             // arrived, so the model reads them in the order they happened.
+            for id in endings_read_in(&tool_msg.blocks, &read_output_calls) {
+                session.endings_read.insert(id);
+            }
             for queued in session.take_queued_messages() {
-                if process_ending_already_read(&queued, &tool_msg.blocks, &read_output_calls) {
+                if process_ending_already_read(&queued, &session.endings_read) {
                     continue;
                 }
                 // Three things ride this queue, and they are not the same kind

@@ -190,7 +190,8 @@ export const useAgentBackgroundStore = create<BackgroundState>((set) => ({
 
   reconcile: (adoptInto, live) =>
     set((state) => {
-      const liveIds = new Set(live.map((entry) => entry.processId));
+      const liveById = new Map(live.map((entry) => [entry.processId, entry]));
+      const liveIds = new Set(liveById.keys());
       const known = new Set(
         Object.values(state.byThread).flat().map((entry) => entry.processId),
       );
@@ -204,6 +205,13 @@ export const useAgentBackgroundStore = create<BackgroundState>((set) => ({
           // over a dead process and offers a stop button that does nothing.
           if (entry.status === "running" && !liveIds.has(entry.processId)) {
             return { ...entry, status: "exited" as const, exitCode: entry.exitCode ?? null };
+          }
+          // A row seeded without its log file (a "Run in background" hand-off,
+          // or one restored from before a reload) takes it from the ledger;
+          // otherwise its panel says it is not recording for the whole run.
+          const ledgerFile = liveById.get(entry.processId)?.outputFile;
+          if (!entry.outputFile && ledgerFile) {
+            return { ...entry, outputFile: ledgerFile };
           }
           return entry;
         });

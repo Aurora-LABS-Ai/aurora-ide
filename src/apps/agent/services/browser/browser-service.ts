@@ -39,6 +39,20 @@ export interface PickedElement {
   url: string | null;
   boundingRect: PickedElementBoundingRect | null;
   attributes: PickedElementAttribute[] | null;
+  /** Ancestor chain, one class each: `main.flex-1 > section.hero`. For reading. */
+  path?: string | null;
+  /** A short fixed list of computed styles. */
+  styles?: PickedElementAttribute[] | null;
+  /** The parent as a one-line stub. */
+  parent?: string | null;
+  /** The pick's row in its parent, stubs only, the pick marked `<!-- SELECTED -->`. */
+  siblings?: string[] | null;
+  /** `react` / `vue` when a framework handle was found on the node. */
+  framework?: string | null;
+  /** The owning component's name, possibly minified. */
+  component?: string | null;
+  /** That component's props, values shortened. */
+  props?: PickedElementAttribute[] | null;
   source: PickSource;
   note: string | null;
 }
@@ -147,62 +161,11 @@ export async function onPickedElement(
   return unlisten;
 }
 
-/**
- * Render a single picked element as XML the agent can consume. Used
- * by `formatSelectedElementsBlock` below; rarely called directly.
- */
-function formatPickedElement(element: PickedElement, index: number): string {
-  const lines: string[] = [];
-  lines.push(`  <element index="${index}" source="${element.source}">`);
-  lines.push(`    <selector>${escapeXml(element.selector)}</selector>`);
-  lines.push(`    <tag>${escapeXml(element.tagName)}</tag>`);
-  if (element.id) lines.push(`    <id>${escapeXml(element.id)}</id>`);
-  if (element.className) lines.push(`    <class>${escapeXml(element.className)}</class>`);
-  if (element.text) {
-    lines.push(`    <text>${escapeXml(element.text.replace(/\n/g, ' '))}</text>`);
-  }
-  if (element.url) lines.push(`    <url>${escapeXml(element.url)}</url>`);
-  if (element.boundingRect) {
-    const r = element.boundingRect;
-    lines.push(
-      `    <bounds>x=${Math.round(r.x)} y=${Math.round(r.y)} w=${Math.round(r.width)} h=${Math.round(r.height)}</bounds>`,
-    );
-  }
-  if (element.note) lines.push(`    <note>${escapeXml(element.note)}</note>`);
-  if (element.outerHtml) {
-    // CDATA escapes everything except the literal `]]>` marker, which
-    // we split across two CDATA sections so even pages whose HTML
-    // contains that sequence stay parseable.
-    const safe = element.outerHtml.replace(/]]>/g, ']]]]><![CDATA[>');
-    lines.push('    <outer_html><![CDATA[');
-    lines.push(safe);
-    lines.push('    ]]></outer_html>');
-  }
-  lines.push('  </element>');
-  return lines.join('\n');
-}
-
-/**
- * Wrap a list of picked elements into a single `<selected_elements>`
- * block. Intended to be prepended to the user's typed message at
- * submit time so the agent can refer to them as `selected 1`,
- * `selected 2`, etc.
- *
- * Returns `''` if the list is empty so callers can unconditionally
- * concatenate.
- */
-export function formatSelectedElementsBlock(elements: PickedElement[]): string {
-  if (elements.length === 0) return '';
-  const body = elements.map((el, i) => formatPickedElement(el, i + 1)).join('\n');
-  return `<selected_elements count="${elements.length}">\n${body}\n</selected_elements>`;
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
+// The block the model reads for a pick is built in ONE place,
+// `buildSelectionContext` in `store/composer/useAgentSelectionStore.ts`. A
+// second formatter used to live here with bounds and the full HTML, wired
+// through `context-builder.ts`, and nothing ever called it — so the richer
+// record was written and the poorer one sent.
 
 /**
  * Theme tokens forwarded to the Stagewise toolbar so the floating UI

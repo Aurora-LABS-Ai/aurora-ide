@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { transformWithEsbuild, type Plugin } from "vite";
+import { build, type Plugin } from "vite";
 
 /**
  * `virtual:aurora-canvas-runtime` — the React UMD pair as one string.
@@ -94,60 +94,32 @@ export function auroraCanvasRuntime(): Plugin {
         ].join("\n");
     };
 
-    /**
-     * `aurora/canvas`, transformed for the frame.
-     *
-     * The SDK is authored as ordinary TSX in `src/canvas-sdk/` so it
-     * type-checks with the rest of the app. Here it is transformed to
-     * CommonJS, which turns its `import … from "react"` into a `require`
-     * call the wrapper below intercepts — the exact mechanism the agent's own
-     * compiled canvas already goes through, rather than a second one. A
-     * single file with one external import needs no bundler.
-     *
-     * `transformWithEsbuild` is deprecated in favour of `transformWithOxc`,
-     * which CANNOT replace it here: oxc transforms syntax but does not convert
-     * module format, so there is no CommonJS output to intercept. When the
-     * esbuild helper is finally removed, the migration is to run this file
-     * through Vite's own `build()` in library mode with `format: "iife"` and
-     * `globalName: "AuroraCanvas"`, marking `react` external — same output,
-     * real bundler. Nothing outside this function changes.
-     */
-    const buildSdk = async (): Promise<string> => {
-        const source = readFileSync(sdkEntry, "utf8");
-        const { code } = await transformWithEsbuild(source, "canvas-sdk/index.tsx", {
-            loader: "tsx",
-            format: "cjs",
-            target: "es2020",
-            jsx: "transform",
+    /** Bundle local SDK modules, CSS and public exports from one library build.
+     * React stays external and uses the sandbox's existing UMD runtime. */
+    let sdkBuild: Promise<{ code: string; styles: string; names: string[] }> | undefined;
+    const buildSdk = () => sdkBuild ??= (async () => {
+        const result = await build({
+            configFile: false,
+            envFile: false,
+            publicDir: false,
+            logLevel: "error",
+            oxc: { jsx: { runtime: "classic" } },
+            css: { postcss: { plugins: [] } },
+            build: {
+                write: false,
+                minify: false,
+                target: "es2020",
+                lib: { entry: fileURLToPath(sdkEntry), name: "AuroraCanvas", formats: ["iife"] },
+                rolldownOptions: { external: ["react"], output: { globals: { react: "React" } } },
+            },
         });
-        return `var AuroraCanvas = (function () {
-  var module = { exports: {} };
-  var exports = module.exports;
-  function require(id) {
-    if (id === "react") return React;
-    throw new Error('aurora/canvas cannot import "' + id + '".');
-  }
-  (function (module, exports, require) {
-${code}
-  })(module, exports, require);
-  return module.exports;
-})();`;
-    };
-
-    /**
-     * The SDK's export names, in their own module so the compile gate can
-     * check an `import { Card } from "aurora/canvas"` without pulling 140 KB
-     * of React text in behind it. Read from the source rather than maintained
-     * by hand — a list that can drift is a list that will.
-     */
-    const readSdkExportNames = (): string[] => {
-        const source = readFileSync(sdkEntry, "utf8");
-        const names = new Set<string>();
-        for (const match of source.matchAll(/^export (?:function|const) (\w+)/gm)) {
-            names.add(match[1]);
-        }
-        return [...names].sort();
-    };
+        const outputs = (Array.isArray(result) ? result : [result]).flatMap((output) => "output" in output ? output.output : []);
+        const entry = outputs.find((output) => output.type === "chunk" && output.isEntry);
+        if (!entry || entry.type !== "chunk") throw new Error("The canvas SDK build produced no entry chunk.");
+        const styles = outputs.filter((output) => output.type === "asset" && output.fileName.endsWith(".css"))
+            .map((output) => output.type === "asset" ? String(output.source) : "").join("\n");
+        return { code: entry.code, styles, names: [...entry.exports].sort() };
+    })();
 
     return {
         name: "aurora-canvas-runtime",
@@ -158,18 +130,18 @@ ${code}
         },
         async load(id) {
             if (id === RESOLVED_EXPORTS_ID) {
-                return `export const CANVAS_EXPORTS = ${JSON.stringify(readSdkExportNames())};`;
+                return `export const CANVAS_EXPORTS = ${JSON.stringify((await buildSdk()).names)};`;
             }
             if (id !== RESOLVED_ID) return null;
+            const sdk = await buildSdk();
             const runtime = [
                 readUmd("react", "react.production.min.js"),
                 readUmd("react-dom", "react-dom.production.min.js"),
-                await buildSdk(),
+                sdk.code,
             ].join("\n");
-            const styles = readFileSync(new URL("canvas.css", sdkDir), "utf8");
             return [
                 `export const CANVAS_RUNTIME = ${JSON.stringify(runtime)};`,
-                `export const CANVAS_STYLES = ${JSON.stringify(styles)};`,
+                `export const CANVAS_STYLES = ${JSON.stringify(sdk.styles)};`,
                 `export const CANVAS_FONTS = ${JSON.stringify(readFontFaces())};`,
             ].join("\n");
         },
@@ -177,6 +149,7 @@ ${code}
         handleHotUpdate({ file, server }) {
             const sdkPath = fileURLToPath(sdkDir);
             if (!file.startsWith(sdkPath.replace(/\\/g, "/")) && !file.startsWith(sdkPath)) return;
+            sdkBuild = undefined;
             for (const virtualId of [RESOLVED_ID, RESOLVED_EXPORTS_ID]) {
                 const mod = server.moduleGraph.getModuleById(virtualId);
                 if (mod) server.moduleGraph.invalidateModule(mod);

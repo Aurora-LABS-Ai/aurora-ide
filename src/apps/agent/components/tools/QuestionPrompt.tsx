@@ -27,6 +27,7 @@ import type {
   AskQuestionRequest,
 } from "@/apps/agent/services/tools/question-bridge";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { GLIDE } from "@/apps/agent/lib/motion/glide";
 import { useAgentQuestionStore } from "@/apps/agent/store/tools/useAgentQuestionStore";
 
 const OTHER_ID = "__other__";
@@ -281,7 +282,7 @@ export const QuestionPrompt: React.FC = () => {
           initial={{ height: 0, opacity: 0 }}
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
-          transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          transition={GLIDE}
           style={{ overflow: "hidden", marginBottom: -12 }}
         >
           <div ref={rootRef} tabIndex={-1} style={{ outline: "none" }}>

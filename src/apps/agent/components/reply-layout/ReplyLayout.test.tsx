@@ -48,20 +48,42 @@ describe("ReplyLayout", () => {
     expect(el.querySelector("[data-fallback]")).toBeNull();
   });
 
-  it("draws a flow top to bottom with side-by-side branches", () => {
+  it("draws a flow across with one step's caption open, switched by click or arrow keys", () => {
     const el = mount(
       <ReplyLayout
         language="aurora-flow"
-        source={"Request\nproxy.ts | the gate\nStorefront || Admin || API\nPostgreSQL\n"}
+        source={"Request\nproxy.ts | the gate\nStorefront | public || Admin | gated\nPostgreSQL\n"}
         closed
         fallback={fallback}
       />,
     );
-    const steps = el.querySelectorAll(".agw-rl-step");
-    expect(steps).toHaveLength(4);
-    expect(steps[2].getAttribute("data-branches")).toBe("3");
-    expect(steps[2].querySelectorAll(".agw-rl-branch")).toHaveLength(3);
-    expect(steps[1].querySelector(".agw-rl-node-caption")?.textContent).toBe("the gate");
+    const steps = [...el.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const panel = () => el.querySelector('[role="tabpanel"]')!;
+    expect(steps.map((s) => s.textContent)).toEqual(["1Request", "2proxy.ts", "3Storefront · Admin", "4PostgreSQL"]);
+    expect(steps[0].getAttribute("aria-selected")).toBe("true");
+    expect(panel().textContent).toBe("");
+
+    act(() => steps[1].click());
+    expect(steps[1].getAttribute("aria-selected")).toBe("true");
+    expect(panel().textContent).toBe("the gate");
+
+    act(() => steps[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(steps[2].getAttribute("aria-selected")).toBe("true");
+    expect(steps[2].getAttribute("data-branches")).toBe("2");
+    expect([...panel().querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Storefront public", "Admin gated"]);
+    expect(document.activeElement).toBe(steps[2]);
+
+    act(() => steps[2].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    expect(steps[3].getAttribute("aria-selected")).toBe("true");
+    act(() => steps[3].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(steps[0].getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("draws a flow with no captions as a plain path, nothing to click", () => {
+    const el = mount(<ReplyLayout language="aurora-flow" source={"Request\nGate\nDatabase\n"} closed fallback={fallback} />);
+    expect(el.querySelector('[role="tab"]')).toBeNull();
+    expect(el.querySelector(".agw-rl-flow[data-plain]")).not.toBeNull();
+    expect([...el.querySelectorAll(".agw-rl-step")].map((s) => s.textContent)).toEqual(["1Request", "→2Gate", "→3Database"]);
   });
 
   it("draws a note with its title, pairs and sentences", () => {

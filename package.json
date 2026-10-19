@@ -17,7 +17,8 @@
     "test:coverage": "vitest --run --coverage",
     "tauri": "tauri",
     "tauri:dev": "node scripts/tauri-dev-stable.mjs",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:fast": "tauri build -- --profile release-fast"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",

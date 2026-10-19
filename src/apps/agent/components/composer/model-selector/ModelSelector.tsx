@@ -2,24 +2,33 @@
  * Agent Window — model selector [view].
  *
  * The agent window's OWN model picker. A compact trigger pill (mode glyph +
- * model label + effort + chevron) opens a menu in three parts:
+ * model label + effort + chevron) opens a menu:
  *
  *   head      Agent / Plan (Build) or Deep research (Chat)
- *   card      the selected model and its settings (`SelectedModelCard`)
- *   list      search, Text / Image tabs, Frequent, one section per provider
+ *   search    and the Text / Image tabs when Chat has picture models
+ *   list      your short list — the selected model and the most used ones —
+ *             then "All models", which opens every provider's section in the
+ *             same menu (a back row returns). Typing searches everything.
  *
- * The list is for PICKING only (`ModelRow`). Reasoning lives on the card, for
- * the model you are using; to change another model's, pick it first. That is
- * what keeps rows short and the list a real listbox: focus stays in the search
- * box and the arrow keys walk the rows (the combobox pattern).
+ * Each row shows the reasoning it would run at as a grey word and, when there
+ * is something to choose, a `›` that opens `EffortFlyout` beside the menu:
+ * choosing a line there sets the reasoning AND picks the model. Focus stays in
+ * the search box throughout (the combobox pattern): ↑ ↓ rows, → the reasoning
+ * list, ← back, Enter picks.
  *
- * Probe: Documents/aurora-model-selector-menu-designs.html, variant 02.
+ * Probe: Documents/aurora-model-picker-rows-designs.html, card 04 (picked
+ * 2026-10-16). It replaced the selected-model card of
+ * aurora-model-selector-menu-designs.html variant 02.
  */
 
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { reasoningIsOn, useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import {
+  reasoningIsOn,
+  useAgentSettingsStore,
+  type LLMModel,
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   formatModelDisplayName,
   formatProviderNickname,
@@ -42,7 +51,6 @@ import {
   type ModelUsage,
 } from "@/apps/agent/lib/model/model-usage";
 import {
-  FREQUENT_GROUP_KEY,
   isModelGroupOpen,
   readModelGroupsOpen,
   readModelScroll,
@@ -65,20 +73,35 @@ import {
   imageProviderReady,
   isImageModelSelection,
 } from "@/apps/agent/services/providers/image-providers";
-import { cursorFastAvailable } from "@/apps/agent/services/providers/cursor-run";
+import { cursorFastAvailable, resolveCursorFast } from "@/apps/agent/services/providers/cursor-run";
 
+import { EffortFlyout, type FlyoutFast } from "./EffortFlyout";
 import { ModelRow } from "./ModelRow";
-import { SelectedModelCard } from "./SelectedModelCard";
 import { levelLabel, optionKey, type RichOption } from "./model-option";
+import { placeFlyout, placeMenu, visibleBounds, visibleRect } from "./menu-room";
+import { reasoningChoices, reasoningSummary, type ReasoningChoice } from "./model-settings";
+
+/** One line of the list, in drawing order — what the arrow keys walk. */
+type ListRow =
+  | { kind: "model"; opt: RichOption; showProvider: boolean }
+  | { kind: "all" }
+  | { kind: "back" };
+
+/** How long the pointer rests on a row before its reasoning list opens. Long
+ *  enough to cross other rows on the way to an open list without switching it. */
+const HOVER_OPEN_MS = 220;
 
 /**
  * The menu's height cap, in ONE place. Placement (open up or down) is decided
- * before the menu renders, from this number; the CSS reads the same value back
- * through `--agw-model-menu-max-h`. Taller than the old 420 because the card
- * now sits above the list and the list still needs room for a screen of rows.
+ * before the menu renders, from this number and the room the panel leaves
+ * (`menu-room.ts`); the CSS reads the resulting height back through
+ * `--agw-model-menu-max-h`. Taller than the old 420 because the card now sits
+ * above the list and the list still needs room for a screen of rows.
  */
 const MENU_MAX_HEIGHT = 480;
-/** How many models surface in the "Frequent" strip. */
+/** Space between the pill and the menu. */
+const MENU_GAP = 8;
+/** How many most-used models join the selected one in the short list. */
 const RECENT_MAX = 5;
 
 export const ModelSelector: React.FC<{
@@ -200,6 +223,7 @@ export const ModelSelector: React.FC<{
 
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<"up" | "down">("up");
+  const [menuHeight, setMenuHeight] = useState(MENU_MAX_HEIGHT);
   const [query, setQuery] = useState("");
   const [recent, setRecent] = useState<Record<string, ModelUsage>>(() => readModelUsage());
   // Which provider sections are open. Read from storage rather than reset per
@@ -208,7 +232,19 @@ export const ModelSelector: React.FC<{
   const [openGroups, setOpenGroups] = useState<ModelGroupsOpen>(() => readModelGroupsOpen());
   /** A query is on, so it — not the fold — decides what is on screen. */
   const searching = query.trim().length > 0;
-  const frequentOpen = isModelGroupOpen(openGroups, FREQUENT_GROUP_KEY);
+  /** The short list, or every provider's section. Each opening starts short. */
+  const [view, setView] = useState<"short" | "all">("short");
+  /** The row whose reasoning list is open, by position in `visibleRows`. */
+  const [fly, setFly] = useState<{ index: number; key: string } | null>(null);
+  const [flyIndex, setFlyIndex] = useState(0);
+  const [flyPos, setFlyPos] = useState<{ left: number; top: number } | null>(null);
+  const flyRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  // Read by the document key listener, which is bound once per opening.
+  const flyOpenRef = useRef(false);
+  flyOpenRef.current = fly !== null;
+  const updateModel = useAgentSettingsStore((s) => s.updateModel);
   const toggleGroup = (providerId: string) => {
     const next = toggleModelGroup(openGroups, providerId);
     setOpenGroups(next);
@@ -324,9 +360,7 @@ export const ModelSelector: React.FC<{
 
   // Provider sections, in the order Settings › Providers draws them (built-in
   // first, then added); models inside each in the user's configured order
-  // (`sortOrder` ascending — the provider page's order). The selected model
-  // stays in its own section with the check: the card above already names it,
-  // so lifting it into a separate "Selected" strip would show it a third time.
+  // (`sortOrder` ascending — the provider page's order).
   const groups = useMemo(() => {
     const byProvider = new Map<string, RichOption[]>();
     for (const o of filtered) {
@@ -348,10 +382,10 @@ export const ModelSelector: React.FC<{
     return ordered;
   }, [filtered, providers]);
 
-  // "Frequent" — ranked by frecency, hidden while searching (the query owns the
-  // list). `now` is sampled when the menu OPENS, not per render: decay is
-  // continuous, so reading the clock during render could reorder rows under
-  // the cursor mid-click.
+  // The most used models, ranked by frecency, hidden while searching (the
+  // query owns the list). `now` is sampled when the menu OPENS, not per
+  // render: decay is continuous, so reading the clock during render could
+  // reorder rows under the cursor mid-click.
   const [openedAt, setOpenedAt] = useState(() => Date.now());
   useEffect(() => {
     if (open) setOpenedAt(Date.now());
@@ -360,7 +394,7 @@ export const ModelSelector: React.FC<{
   const recentRows = useMemo(() => {
     if (searching) return [];
     const byKey = new Map(tabOptions.map((o) => [optionKey(o), o]));
-    // The selected model owns the card; repeating it here is noise.
+    // The selected model heads the short list on its own; not twice.
     const candidates = [...byKey.keys()].filter((key) => key !== selectedModel);
     return rankByUsage(candidates, recent, openedAt, RECENT_MAX)
       .map((key) => byKey.get(key))
@@ -430,38 +464,159 @@ export const ModelSelector: React.FC<{
     return lines.join("\n");
   }, [planned, selectedModel, currentProviderName, currentLabel, selectedModelKey, currentEffort, currentFast]);
 
+  /** The short list: the selected model (when it is in this tab), then the
+   *  most used ones. Empty on a fresh install, which opens on everything. */
+  const shortRows = useMemo(() => {
+    if (searching) return [];
+    const head = current && tabOptions.some((o) => optionKey(o) === selectedModel) ? [current] : [];
+    return [...head, ...recentRows];
+  }, [searching, current, tabOptions, selectedModel, recentRows]);
+  const shownView = view === "short" && shortRows.length === 0 ? "all" : view;
+
   /**
    * Every row on screen, in the order it is drawn — what the arrow keys walk.
-   * A model can appear twice (Frequent and its provider section), which is why
-   * rows are addressed by POSITION, not by model id.
+   * A model can appear in the short list and in its provider section, which is
+   * why rows are addressed by POSITION, not by model id.
    */
   const visibleRows = useMemo(() => {
-    const rows: Array<{ opt: RichOption; showProvider: boolean }> = [];
-    if (frequentOpen) for (const opt of recentRows) rows.push({ opt, showProvider: true });
+    const rows: ListRow[] = [];
+    if (searching) {
+      for (const g of groups) for (const opt of g.items) rows.push({ kind: "model", opt, showProvider: false });
+      return rows;
+    }
+    if (shownView === "short") {
+      for (const opt of shortRows) rows.push({ kind: "model", opt, showProvider: true });
+      rows.push({ kind: "all" });
+      return rows;
+    }
+    if (shortRows.length > 0) rows.push({ kind: "back" });
     for (const g of groups) {
-      if (searching || isModelGroupOpen(openGroups, g.providerId)) {
-        for (const opt of g.items) rows.push({ opt, showProvider: false });
+      if (isModelGroupOpen(openGroups, g.providerId)) {
+        for (const opt of g.items) rows.push({ kind: "model", opt, showProvider: false });
       }
     }
     return rows;
-  }, [frequentOpen, recentRows, groups, searching, openGroups]);
+  }, [searching, groups, shownView, shortRows, openGroups]);
 
   const listId = useId();
   const optionId = (index: number) => `${listId}-opt-${index}`;
+  const flyId = `${listId}-fly`;
   /** Where the arrow keys start: the selected model's row, else the top. */
   const homeIndex = useMemo(() => {
-    const at = visibleRows.findIndex((r) => optionKey(r.opt) === selectedModel);
+    const at = visibleRows.findIndex((r) => r.kind === "model" && optionKey(r.opt) === selectedModel);
     return at === -1 ? 0 : at;
     // Recomputed per opening/query only — see the effect below.
   }, [visibleRows, selectedModel]);
   const [activeIndex, setActiveIndex] = useState(0);
-  // A new opening, query or tab is a new list: start again from its home row.
+  // A new opening, query, tab or view is a new list: start again from its home row.
   useEffect(() => {
     setActiveIndex(searching ? 0 : homeIndex);
     // `homeIndex` deliberately omitted: folding a section must not yank the
     // highlight back to the selected row while you are mid-list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, tab, open]);
+  }, [query, tab, open, shownView]);
+
+  // ── Reasoning list ──────────────────────────────────────────────────────────
+
+  /** A model's reasoning choices; none when it has no row to write them to. */
+  const choicesFor = (opt: RichOption): ReasoningChoice[] =>
+    opt.id ? reasoningChoices(opt.reasoning, opt.maxOutputTokens) : [];
+  const fastFor = (opt: RichOption): FlyoutFast | null => {
+    if (opt.providerId !== CURSOR_PROVIDER_ID || !opt.id) return null;
+    const lane = resolveCursorFast({ modelKey: opt.model, reasoning: opt.reasoning });
+    const on = fast[opt.id] === true;
+    if (!lane.ok && !on) return null;
+    const rowId = opt.id;
+    return { available: lane.ok, on, onChange: (next) => setFast(setFastOn(rowId, next)) };
+  };
+  const hasSettings = (opt: RichOption) => choicesFor(opt).length > 1 || fastFor(opt) !== null;
+
+  const flyRow = fly ? visibleRows[fly.index] : undefined;
+  const flyOpt = flyRow?.kind === "model" && optionKey(flyRow.opt) === fly?.key ? flyRow.opt : undefined;
+  const flyChoices = flyOpt ? choicesFor(flyOpt) : [];
+  const flyFast = flyOpt ? fastFor(flyOpt) : null;
+
+  const closeFly = () => {
+    window.clearTimeout(hoverTimer.current);
+    setFly(null);
+    setFlyPos(null);
+  };
+  const openFly = (index: number) => {
+    const row = visibleRows[index];
+    if (row?.kind !== "model" || !hasSettings(row.opt)) return;
+    const at = choicesFor(row.opt).findIndex((c) => c.current);
+    setFly({ index, key: optionKey(row.opt) });
+    setFlyIndex(at === -1 ? 0 : at);
+    setFlyPos(null);
+  };
+  // The list under it changed (a section folded, the view or query moved on):
+  // the row it belonged to may be somewhere else now.
+  useEffect(() => {
+    closeFly();
+  }, [visibleRows, open]);
+
+  // Place it once it has a size: beside the menu, level with its row, inside
+  // the panel that clips both.
+  useLayoutEffect(() => {
+    if (!fly || flyPos) return;
+    const root = rootRef.current;
+    const menu = menuRef.current;
+    const flyout = flyRef.current;
+    const row = document.getElementById(optionId(fly.index));
+    if (!root || !menu || !flyout || !row) return;
+    const rootRect = root.getBoundingClientRect();
+    const at = placeFlyout(
+      menu.getBoundingClientRect(),
+      row.getBoundingClientRect(),
+      { width: flyout.offsetWidth, height: flyout.offsetHeight },
+      visibleRect(root, window.innerWidth, window.innerHeight),
+    );
+    setFlyPos({ left: at.left - rootRect.left, top: at.top - rootRect.top });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fly, flyPos]);
+
+  /** Write a model's reasoning, keeping Cursor's Fast honest. */
+  const commitReasoning = (opt: RichOption, next: NonNullable<LLMModel["reasoning"]>) => {
+    if (!opt.id) return;
+    // A reasoning choice with no Fast twin turns Fast off rather than leaving a
+    // preference on that the next turn cannot honour.
+    if (
+      opt.providerId === CURSOR_PROVIDER_ID &&
+      fast[opt.id] === true &&
+      !cursorFastAvailable({ modelKey: opt.model, reasoning: next })
+    ) {
+      setFast(setFastOn(opt.id, false));
+    }
+    updateModel(opt.id, { reasoning: next });
+  };
+
+  const chooseInFly = (index: number) => {
+    if (!flyOpt) return;
+    if (index === flyChoices.length && flyFast) {
+      flyFast.onChange(!(flyFast.on && flyFast.available));
+      return;
+    }
+    const choice = flyChoices[index];
+    if (!choice) return;
+    commitReasoning(flyOpt, choice.next);
+    pick(flyOpt);
+  };
+
+  /** Rest on a row: it becomes the active one, and after a moment its
+   *  reasoning list opens (or the open one closes). */
+  const pointRow = (index: number) => {
+    setActiveIndex(index);
+    window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = window.setTimeout(() => {
+      const row = visibleRows[index];
+      if (row?.kind === "model" && hasSettings(row.opt)) {
+        if (fly?.index !== index) openFly(index);
+      } else if (fly) {
+        closeFly();
+      }
+    }, HOVER_OPEN_MS);
+  };
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
   useEffect(() => {
     if (!open) return;
     document.getElementById(`${listId}-opt-${activeIndex}`)?.scrollIntoView({ block: "nearest" });
@@ -472,13 +627,19 @@ export const ModelSelector: React.FC<{
       setOpen(false);
       return;
     }
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) {
-      const below = window.innerHeight - rect.bottom;
-      const above = rect.top;
-      setPlacement(below >= MENU_MAX_HEIGHT || below >= above ? "down" : "up");
+    const trigger = triggerRef.current;
+    if (trigger) {
+      const place = placeMenu(
+        trigger.getBoundingClientRect(),
+        visibleBounds(rootRef.current, window.innerHeight),
+        MENU_MAX_HEIGHT,
+        MENU_GAP,
+      );
+      setPlacement(place.placement);
+      setMenuHeight(place.height);
     }
     setQuery("");
+    setView("short");
     setOpen(true);
   };
 
@@ -494,6 +655,12 @@ export const ModelSelector: React.FC<{
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // Esc steps back one layer: an open reasoning list first, then the menu.
+      if (flyOpenRef.current) {
+        setFly(null);
+        setFlyPos(null);
+        return;
+      }
       setOpen(false);
       // Hand focus back to the pill — the search box held it and is about to
       // unmount; without this a keyboard user is dropped onto <body>.
@@ -518,11 +685,40 @@ export const ModelSelector: React.FC<{
     const next = bumpUsage(recent, selection, Date.now());
     setRecent(next);
     writeModelUsage(next);
+    closeFly();
     setOpen(false);
   };
 
+  /** Enter on a row, or a click: pick a model, or move between the views. */
+  const activate = (index: number) => {
+    const row = visibleRows[index];
+    if (!row) return;
+    if (row.kind === "model") pick(row.opt);
+    else setView(row.kind === "all" ? "all" : "short");
+    searchRef.current?.focus();
+  };
+
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (fly && flyOpt) {
+      const lastLine = flyChoices.length - (flyFast ? 0 : 1);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setFlyIndex((i) => Math.min(i + 1, lastLine));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setFlyIndex((i) => Math.max(i - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        chooseInFly(flyIndex);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        closeFly();
+      }
+      return;
+    }
     const last = visibleRows.length - 1;
+    // → and ← only steer the list when they could not be moving the caret.
+    const caretAtEnd = e.currentTarget.selectionStart === e.currentTarget.value.length;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setActiveIndex((i) => Math.min(i + 1, last));
@@ -530,10 +726,21 @@ export const ModelSelector: React.FC<{
       e.preventDefault();
       setActiveIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
-      const row = visibleRows[activeIndex];
-      if (!row) return;
+      if (!visibleRows[activeIndex]) return;
       e.preventDefault();
-      pick(row.opt);
+      activate(activeIndex);
+    } else if (e.key === "ArrowRight" && caretAtEnd) {
+      const row = visibleRows[activeIndex];
+      if (row?.kind === "model" && hasSettings(row.opt)) {
+        e.preventDefault();
+        openFly(activeIndex);
+      } else if (row?.kind === "all") {
+        e.preventDefault();
+        activate(activeIndex);
+      }
+    } else if (e.key === "ArrowLeft" && !query && shownView === "all" && shortRows.length > 0) {
+      e.preventDefault();
+      setView("short");
     }
   };
 
@@ -552,10 +759,54 @@ export const ModelSelector: React.FC<{
         selected={optionKey(opt) === selectedModel}
         active={index === activeIndex}
         showProvider={showProvider}
+        effort={opt.id ? reasoningSummary(opt.reasoning, opt.maxOutputTokens) : null}
+        hasSettings={hasSettings(opt)}
+        settingsOpen={fly?.index === index}
         fastOn={isFastOn(opt)}
-        onPoint={() => setActiveIndex(index)}
+        onPoint={() => pointRow(index)}
         onPick={() => pick(opt)}
+        onOpenSettings={() => (fly?.index === index ? closeFly() : openFly(index))}
       />
+    );
+  };
+  /** A row that moves between the two views. */
+  const renderNav = (kind: "all" | "back") => {
+    const index = rowCursor++;
+    const active = index === activeIndex;
+    return kind === "all" ? (
+      <div
+        key="nav:all"
+        id={optionId(index)}
+        role="option"
+        aria-selected={false}
+        tabIndex={-1}
+        className="agw-model-item agw-model-nav"
+        data-kbd-active={active || undefined}
+        onMouseEnter={() => pointRow(index)}
+        onClick={() => activate(index)}
+      >
+        <AgentIcon name="rows" size={14} className="agw-model-cap" />
+        <span className="agw-model-nav-label">All models</span>
+        <span className="agw-model-controls">
+          <span className="agw-model-group-count">{tabOptions.length}</span>
+          <AgentIcon name="chevron-right" size={13} className="agw-model-cap" />
+        </span>
+      </div>
+    ) : (
+      <div
+        key="nav:back"
+        id={optionId(index)}
+        role="option"
+        aria-selected={false}
+        tabIndex={-1}
+        className="agw-model-item agw-model-nav agw-model-back"
+        data-kbd-active={active || undefined}
+        onMouseEnter={() => pointRow(index)}
+        onClick={() => activate(index)}
+      >
+        <AgentIcon name="chevron-right" size={13} className="agw-model-cap agw-model-back-caret" />
+        <span className="agw-model-nav-label">All models · {tabOptions.length}</span>
+      </div>
     );
   };
 
@@ -614,6 +865,7 @@ export const ModelSelector: React.FC<{
       <AnimatePresence>
         {open && (
           <motion.div
+            ref={menuRef}
             // A dialog holding a search combobox and its list — not itself a
             // listbox, which may only contain options.
             role="dialog"
@@ -629,9 +881,11 @@ export const ModelSelector: React.FC<{
             style={{
               position: "absolute",
               ...(align === "left" ? { left: 0 } : { right: 0 }),
-              ...(down ? { top: "calc(100% + 8px)" } : { bottom: "calc(100% + 8px)" }),
+              ...(down
+                ? { top: `calc(100% + ${MENU_GAP}px)` }
+                : { bottom: `calc(100% + ${MENU_GAP}px)` }),
               transformOrigin: `${down ? "top" : "bottom"} ${align}`,
-              ["--agw-model-menu-max-h" as string]: `${MENU_MAX_HEIGHT}px`,
+              ["--agw-model-menu-max-h" as string]: `${menuHeight}px`,
             }}
           >
             {/* Head — Agent/Plan (Build) or Deep research (Chat). Agent and Plan
@@ -713,18 +967,6 @@ export const ModelSelector: React.FC<{
               )}
             </div>
 
-            {selectedModel && (
-              <SelectedModelCard
-                opt={current}
-                label={currentLabel}
-                providerName={currentProviderName}
-                fastOn={!!current?.id && fast[current.id] === true}
-                onFastChange={(next) => {
-                  if (current?.id) setFast(setFastOn(current.id, next));
-                }}
-              />
-            )}
-
             <div className="agw-model-search">
               <AgentIcon name="search" size={14} />
               <input
@@ -735,11 +977,17 @@ export const ModelSelector: React.FC<{
                 aria-expanded="true"
                 aria-controls={listId}
                 aria-autocomplete="list"
-                aria-activedescendant={visibleRows[activeIndex] ? optionId(activeIndex) : undefined}
+                aria-activedescendant={
+                  fly
+                    ? `${flyId}-${flyIndex}`
+                    : visibleRows[activeIndex]
+                      ? optionId(activeIndex)
+                      : undefined
+                }
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={onSearchKeyDown}
-                placeholder="Search models"
+                placeholder={`Search ${options.length + pictureOptions.length} models`}
                 spellCheck={false}
                 autoComplete="off"
               />
@@ -780,38 +1028,35 @@ export const ModelSelector: React.FC<{
               // take it away again, or the last row pointed at stays lit as if
               // it were still under the cursor. The next arrow key restarts
               // from the top.
-              onMouseLeave={() => setActiveIndex(-1)}
-              // Put the list back where it was left, in the same frame it paints.
-              ref={(node) => {
-                if (node) node.scrollTop = readModelScroll(tab);
+              onMouseLeave={() => {
+                setActiveIndex(-1);
+                window.clearTimeout(hoverTimer.current);
               }}
-              onScroll={(e) => writeModelScroll(tab, e.currentTarget.scrollTop)}
+              // Put the list back where it was left, in the same frame it paints.
+              // Only the full list: the short one is a few rows and starts at the top.
+              ref={(node) => {
+                if (node && shownView === "all") node.scrollTop = readModelScroll(tab);
+              }}
+              onScroll={(e) => {
+                // The open reasoning list is placed against its row; once the
+                // row moves it would point at the wrong model.
+                if (fly) closeFly();
+                if (shownView === "all") writeModelScroll(tab, e.currentTarget.scrollTop);
+              }}
             >
               {filtered.length === 0 ? (
                 <div className="agw-model-empty">
                   {tabOptions.length === 0 ? "No models configured." : "No models match."}
                 </div>
+              ) : !searching && shownView === "short" ? (
+                <>
+                  {shortRows.map((opt) => renderRow(opt, true))}
+                  <div className="agw-model-sep" role="presentation" />
+                  {renderNav("all")}
+                </>
               ) : (
                 <>
-                  {recentRows.length > 0 && (
-                    <div className="agw-model-group" role="group" aria-label="Frequent">
-                      {/* "Frequent", not "Recent" — the ranking is frecency. Folds
-                          like a provider section and remembers, but starts OPEN:
-                          it exists to save clicks. */}
-                      <button
-                        type="button"
-                        className="agw-model-group-label"
-                        aria-expanded={frequentOpen}
-                        onClick={() => toggleGroup(FREQUENT_GROUP_KEY)}
-                        title={frequentOpen ? "Collapse Frequent" : "Expand Frequent"}
-                      >
-                        <AgentIcon name="chevron-down" size={11} className="agw-model-group-caret" />
-                        Frequent
-                        <span className="agw-model-group-count">{recentRows.length}</span>
-                      </button>
-                      {frequentOpen && recentRows.map((opt) => renderRow(opt, true))}
-                    </div>
-                  )}
+                  {!searching && shortRows.length > 0 && renderNav("back")}
                   {groups.map((g) => {
                     // A search owns the list: every match shows whatever the fold
                     // says. The fold state is left alone.
@@ -840,6 +1085,20 @@ export const ModelSelector: React.FC<{
           </motion.div>
         )}
       </AnimatePresence>
+      {open && flyOpt && (
+        <EffortFlyout
+          ref={flyRef}
+          idBase={flyId}
+          modelLabel={flyOpt.label}
+          choices={flyChoices}
+          activeIndex={flyIndex}
+          fast={flyFast}
+          position={flyPos}
+          onPoint={setFlyIndex}
+          onChoose={chooseInFly}
+          onEnter={() => window.clearTimeout(hoverTimer.current)}
+        />
+      )}
     </div>
   );
 };

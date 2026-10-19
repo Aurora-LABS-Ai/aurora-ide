@@ -1,14 +1,32 @@
 /**
- * What the model is told about reply layout blocks. Pushed into the system
- * prompt only while Transcript → Reply layout is on, the way the chapter
- * instruction follows its switch, so a reply never carries a fence the window
- * will not draw.
+ * What the model is told about reply layout. Pushed into the system prompt
+ * only while Transcript → Reply layout is on, the way the chapter instruction
+ * follows its switch, so a reply never carries a fence the window will not
+ * draw.
  *
- * Every example here parses clean — `instructions.test.ts` runs them through
- * `parseLayout`, so the instruction cannot teach a line the parser rejects.
+ * Since 2026-10-16 the model is taught one fence, `aurora-ui` (`ui.ts`), in
+ * place of the nine single-block fences (Alvan's call, after the probe
+ * `Documents/aurora-reply-language-designs.html`). Every example here parses
+ * with no problems — `instructions.test.ts` runs them through the parsers, so
+ * the instruction cannot teach a line the parser rejects.
  */
 
+import royalties from "@/canvas-sdk/reporting/examples/royalties.json";
+
+/** The three parts the standing prompt shows, one line each. */
+export const UI_PROMPT_LINES = [
+  `root = Page([stack, steps, risk])`,
+  `stack = Facts("Stack", ["Runtime | Rust | Tauri backend", "Interface | React | Two windows"])`,
+  `steps = Flow("Request", ["Gate | \`proxy.ts\` checks the cookie", "Render | Server component reads the database"])`,
+  `risk = Note("Not verified", ["File | \`app/page.tsx\`"], "Not run in a browser.")`,
+] as const;
+
+/**
+ * The single-block fences the model was taught before `aurora-ui`. Old chats
+ * still hold them and they still draw; tests use these as fixtures.
+ */
 export const REPLY_LAYOUT_EXAMPLES = {
+  report: JSON.stringify(royalties, null, 2),
   facts: `Framework | Next.js 16.2.3 | App Router · React 19
 Database | PostgreSQL | Prisma 7 · adapter-pg
 Authentication | NextAuth v5 | Beta · JWT strategy
@@ -31,39 +49,43 @@ The folder is under the group, so the URL drops it and a folder-tree search for 
 \`app/auth/(shell)/\` | Auth
 \`app/api/\` | 95 handlers
 \`proxy.ts\` | 4 access gates`,
+  compare: `Rendering choices
+Aspect | Server rendering | Client rendering
+Execution | Server | Browser
+Interactivity | Needs client islands | Local event handlers
+Best fit | Data loading | Interactive controls`,
+  checklist: `Release readiness
+done | Build | Production bundle generated
+doing | Regression checks | Two scenarios remain
+blocked | Signing | Certificate required
+todo | Publish | After checks and signing`,
+  timeline: `Incident timeline
+09:10 UTC | First failed request | Database connection refused
+09:18 UTC | Service restored | Connection settings corrected
+09:30 UTC | Verification complete | Error rate returned to baseline`,
+  tree: `Module ownership
+0 | Agent window | Conversation interface
+1 | Components | Render the transcript
+2 | Reply layout | Draw explanation blocks
+1 | Services | Compose prompts and call the runtime
+0 | Kernel | Shared state and types`,
 } as const;
 
+/**
+ * Measured 2026-10-15/16: about 31 long replies went out without a block and
+ * 9 used one, several only after Alvan asked. The old text made a guide call a
+ * precondition ("before the first layout block, load …") and named no moment
+ * to use a block, so models paid nothing by skipping it. The three common
+ * formats are now taught in one line each, the final summary is the named
+ * trigger, and the guide is for the rest.
+ *
+ * Same day, first live run (DeepSeek V4.1 Flash, rules off): blocks came
+ * unprompted, but each opened with a header row (`Surface | Location | Notes`,
+ * `Step | Detail`) copied from placeholder words. The rows are real examples,
+ * and in `aurora-ui` the title is its own argument, so a title can no longer
+ * be mistaken for a row.
+ */
 export const REPLY_LAYOUT_INSTRUCTIONS = `## Reply layout
-When you explain how something is built or report what you found — an architecture, a review, a flow, a comparison of parts — lay the reply out so it can be scanned, not only read. The same parts fit any explanation, not only code: a plan with its steps, a few options weighed against each other, how a process works, what something costs or contains. Five page parts are drawn inline by Aurora, between your normal sentences. Keep ordinary markdown for everything else, including headings for the sections of a long reply; a short answer or a direct reply needs none of them.
-
-- Key facts, near the top, after the first sentence: three to five lines with the names and figures the reader will look for first. One per line, \`Label | Value | Caption\`; the caption is optional. A label is one or two words, a value is a name or a figure (under five words), a caption is a short phrase. File paths and line numbers go in the sentences, not in a fact.
-
-\`\`\`aurora-facts
-${REPLY_LAYOUT_EXAMPLES.facts}
-\`\`\`
-
-- A flow, when things happen in order: a request path, a pipeline, a build, a sign-in. One step per line, top to bottom, \`Title | Caption\`; \`||\` between items on one line draws them side by side as alternatives at that step. Three to seven steps.
-
-\`\`\`aurora-flow
-${REPLY_LAYOUT_EXAMPLES.flow}
-\`\`\`
-
-- A note, for one trap, exception or caveat worth a box of its own: the first line is its title, \`Label | Value\` lines become pairs, other lines are sentences. At most two notes in a reply.
-
-\`\`\`aurora-note
-${REPLY_LAYOUT_EXAMPLES.note}
-\`\`\`
-
-- Bars, when a few counts or shares are the point — how much of the code is client-side, how many of each kind, how far along something is. The first line is the title; then one bar per line, \`Label | 31 / 97\` or \`Label | 64%\`, with an optional \`| Caption\`. Two to six bars.
-
-\`\`\`aurora-bars
-${REPLY_LAYOUT_EXAMPLES.bars}
-\`\`\`
-
-- Pairs, for a lookup the reader will come back to: a route map, a set of config values, who owns what. The first line is the title; then \`Label | Value\` lines. Three to eight pairs. A note is for one caveat; pairs are for a plain list.
-
-\`\`\`aurora-pairs
-${REPLY_LAYOUT_EXAMPLES.pairs}
-\`\`\`
-
-Rules: fields hold plain text and \`code\` only, no markdown. Keep every field short; a block is for scanning, and anything that needs a clause belongs in the sentences. A block never repeats what the sentences beside it say, and the sentences never repeat the block. One facts block per reply, at the top. Never put one of these fences inside another code block. A line the block cannot read is skipped and shown to the user as an error, so write only the shapes above.`;
+Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, lays out its scannable parts in a fence named \`aurora-ui\` instead of bullet lists: one part per line, root first, each part drawn as its line ends. Text in quotes; rows are \`a | b | c\` strings with no header row:
+${UI_PROMPT_LINES.join("\n")}
+Facts for results, changes and checks; Flow for steps in order; Note for one caveat or what is unverified. Prose explains around the fence and never repeats a part. \`canvas_guidelines\` with \`topic: "reply-layout"\` has the other parts (Stats, Diagram, Link, Sources, Pairs, Compare, Checklist, Timeline, Tree, Text); \`topic: "reports"\` has the \`aurora-report\` JSON for data with filters and charts. Load one only when you use those.`;

@@ -125,12 +125,33 @@ export type WorkspaceAccess = 'workspace' | 'read' | 'full';
 export type SpeechMode = 'batch' | 'live';
 
 /**
- * Live dictation settings — the user's own audio.cpp build running
- * Confucius4-R2T2. Grouped rather than spread across the store because they
- * configure one program, and every flat field here costs an edit in nine
+ * Which program runs "As I speak".
+ *
+ * - `phonon`: Phonon-2 on the same CrispASR the "On stop" path uses. The
+ *   default. English only; rewrites the open sentence as it hears more.
+ * - `r2t2`: Confucius4-R2T2 on the user's own audio.cpp build.
+ */
+export type SpeechLiveEngine = 'phonon' | 'r2t2';
+
+/**
+ * Live dictation settings. Grouped rather than spread across the store because
+ * they configure one feature, and every flat field here costs an edit in nine
  * places across TypeScript and Rust.
+ *
+ * `runtimePath`/`modelPath`/`libraryPath`/`chunkMs`/`holdBack`/`idleSeconds`
+ * are R2T2's. Phonon runs on the "On stop" CrispASR runtime folder
+ * (`speechRuntimePath`) and keeps only its model file and `keepLoaded` here.
  */
 export interface SpeechLiveSettings {
+  engine: SpeechLiveEngine;
+  /** Phonon-2's `.gguf` model file. */
+  phononModelPath: string;
+  /**
+   * Phonon only. Keep the model loaded between recordings so the next one
+   * starts at once, or load it on each click (about 0.8 s, with the audio
+   * from that moment kept and sent once it is ready).
+   */
+  keepLoaded: boolean;
   /** `audiocpp_cli` itself, or the folder holding it. */
   runtimePath: string;
   /** The `.gguf` model file. */
@@ -159,6 +180,9 @@ export interface SpeechLiveSettings {
 }
 
 export const DEFAULT_SPEECH_LIVE: SpeechLiveSettings = {
+  engine: 'phonon',
+  phononModelPath: '',
+  keepLoaded: true,
   runtimePath: '',
   modelPath: '',
   libraryPath: '',
@@ -177,6 +201,9 @@ export function normalizeSpeechLive(value: unknown): SpeechLiveSettings {
       ? Math.min(max, Math.max(min, Math.round(n)))
       : fallback;
   return {
+    engine: raw.engine === 'r2t2' ? 'r2t2' : 'phonon',
+    phononModelPath: typeof raw.phononModelPath === 'string' ? raw.phononModelPath : '',
+    keepLoaded: typeof raw.keepLoaded === 'boolean' ? raw.keepLoaded : true,
     runtimePath: typeof raw.runtimePath === 'string' ? raw.runtimePath : '',
     modelPath: typeof raw.modelPath === 'string' ? raw.modelPath : '',
     libraryPath: typeof raw.libraryPath === 'string' ? raw.libraryPath : '',

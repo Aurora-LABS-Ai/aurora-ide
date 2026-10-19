@@ -6,7 +6,7 @@
  * component import cycle.
  */
 
-import { mcpServerIdForCard } from "./mcp-card";
+import { isUnnamedToolEnvelope, mcpServerIdForCard } from "./mcp-card";
 
 export interface ToolCall {
   id: string;
@@ -83,6 +83,14 @@ export const groupToolRuns = (tools: ToolCall[]): ToolCall[][] => {
         continue;
       }
       if (serverId !== null && serverId === previousServerId) {
+        previous.push(call);
+        continue;
+      }
+      // A wrapped call that has not named its target yet stays in the lane it
+      // follows rather than standing alone for a few chunks (see
+      // `isUnnamedToolEnvelope`). If it turns out to name another server, it
+      // leaves once, when the name lands.
+      if (previousServerId !== null && isUnnamedToolEnvelope(call)) {
         previous.push(call);
         continue;
       }

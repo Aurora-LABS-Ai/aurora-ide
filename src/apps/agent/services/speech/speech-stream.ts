@@ -15,20 +15,30 @@
  *   -> onFinal   the whole text, including the last words it held back
  * ```
  *
- * `onWords` fires throughout with whatever is new. Those pieces join end to
- * end, so the caller appends them. The model keeps the last word or two to
- * itself until the next moment of audio confirms them, which is why `onFinal`
- * can contain more than every `onWords` put together — and why the caller
- * should replace its text with `onFinal` rather than appending it.
+ * The two engines report words differently:
+ *
+ * - **R2T2** (audio.cpp): `onWords` fires throughout with whatever is new.
+ *   Those pieces join end to end, so the caller appends them. The model keeps
+ *   the last word or two to itself until the next moment of audio confirms
+ *   them, which is why `onFinal` can contain more than every `onWords` put
+ *   together — and why the caller should replace its text with `onFinal`
+ *   rather than appending it.
+ * - **Phonon** (CrispASR): `onRevise` gives the whole open sentence again on
+ *   every step, and an earlier word in it may have changed. `onCommit` ends
+ *   that sentence. `onFinal` carries no text; it only says the program is done.
  */
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import type { SpeechLiveSettings } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import type {
+  SpeechLiveEngine,
+  SpeechLiveSettings,
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 /** What the Rust side needs to start the program. */
 export interface SpeechStreamConfig {
+  engine: SpeechLiveEngine;
   runtimePath: string;
   modelPath: string;
   backend: string;
@@ -89,14 +99,30 @@ const LANGUAGE_NAMES: Record<string, string> = {
  * code. An unknown code is dropped rather than passed through, because the
  * model refuses a language it does not recognise and detecting it is a better
  * outcome than failing to start.
+ *
+ * Phonon runs on the "On stop" CrispASR, so it takes that runtime folder
+ * (`crispRuntimePath`) and its own model file. It understands English only,
+ * so no language is passed.
  */
 export function toStreamConfig(
   live: SpeechLiveSettings,
   language: string,
+  crispRuntimePath: string,
 ): SpeechStreamConfig {
+  if (live.engine === "phonon") {
+    return {
+      engine: "phonon",
+      runtimePath: crispRuntimePath,
+      modelPath: live.phononModelPath,
+      backend: live.backend || "auto",
+      chunkMs: live.chunkMs,
+      unfixedTokens: live.holdBack,
+    };
+  }
   const code = (language || "auto").trim().toLowerCase();
   const named = code === "auto" ? undefined : LANGUAGE_NAMES[code];
   return {
+    engine: "r2t2",
     runtimePath: live.runtimePath,
     modelPath: live.modelPath,
     backend: live.backend || "auto",
@@ -126,9 +152,16 @@ interface SessionEvent {
 export interface SpeechStreamHandlers {
   /** The model finished loading and is listening. */
   onReady: () => void;
-  /** New words. These join end to end. */
+  /** R2T2: new words. These join end to end. */
   onWords: (text: string) => void;
-  /** The whole text. Replace what you have with this, do not append it. */
+  /** Phonon: the open sentence now reads this. Replace, do not append. */
+  onRevise?: (text: string) => void;
+  /** Phonon: the open sentence is finished and reads this. */
+  onCommit?: (text: string) => void;
+  /**
+   * The program is done. R2T2: the whole text; replace what you have with it,
+   * do not append it. Phonon: empty, every sentence was already committed.
+   */
   onFinal: (text: string) => void;
   /** Something went wrong, already worded for a person. */
   onError: (message: string) => void;
@@ -182,6 +215,12 @@ export class SpeechStreamSession {
       }),
       listen<SessionEvent>("speech_stream_partial", (e) => {
         if (mine(e)) this.handlers.onWords(e.payload.text);
+      }),
+      listen<SessionEvent>("speech_stream_revise", (e) => {
+        if (mine(e)) this.handlers.onRevise?.(e.payload.text);
+      }),
+      listen<SessionEvent>("speech_stream_commit", (e) => {
+        if (mine(e)) this.handlers.onCommit?.(e.payload.text);
       }),
       listen<SessionEvent>("speech_stream_final", (e) => {
         if (mine(e)) this.handlers.onFinal(e.payload.text);

@@ -24,7 +24,7 @@
  * All colour comes from `--agw-*`.
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useContext, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
@@ -48,6 +48,9 @@ import {
   RUN_LINGER_MS,
   type ArrivalStagger,
 } from "@/apps/agent/components/tools/tool-arrival";
+import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
+import { useInLiveWorkCard } from "@/apps/agent/components/conversation/work-card-context";
+import { GLIDE } from "@/apps/agent/lib/motion/glide";
 
 /**
  * One step of a run, and the one place its arrival is decided.
@@ -63,29 +66,42 @@ import {
  * entrance's LAST part — the content sliding in — ends, so the clip never
  * outlives it and a card that later grows (expanded output, a popover) is
  * never cut off.
+ *
+ * Inside a running work card the entrance is `fade` instead: the step takes
+ * its full height at once and only its paint fades in, together with any
+ * step landing in the same moment. Growing from 0 there moved every row above
+ * it once per call, which a fast model turns into constant motion.
  */
 const ToolStep: React.FC<{
   animate: boolean;
+  entrance: "grow" | "fade";
   stagger: ArrivalStagger;
   children: React.ReactNode;
-}> = ({ animate, stagger, children }) => {
-  const [delayMs] = useState<number | null>(() =>
-    animate ? stagger.next(performance.now()) : null,
-  );
-  const [entering, setEntering] = useState(delayMs !== null);
+}> = ({ animate, entrance, stagger, children }) => {
+  // A step redrawn somewhere new (a work card opening) is not arriving.
+  const hold = useContext(ArrivalHoldContext);
+  const [arrival] = useState<{ kind: "grow"; delayMs: number } | { kind: "fade" } | null>(() => {
+    if (!animate || hold.current) return null;
+    return entrance === "fade" ? { kind: "fade" } : { kind: "grow", delayMs: stagger.next(performance.now()) };
+  });
+  const [entering, setEntering] = useState(arrival !== null);
+  const growing = entering && arrival?.kind === "grow";
+  const fading = entering && arrival?.kind === "fade";
   return (
     <div
       className="agw-tool-step"
-      data-enter={entering || undefined}
+      data-enter={growing || undefined}
+      data-fade={fading || undefined}
       style={
-        entering
-          ? ({ "--agw-enter-delay": `${Math.round(delayMs ?? 0)}ms` } as React.CSSProperties)
+        growing && arrival?.kind === "grow"
+          ? ({ "--agw-enter-delay": `${Math.round(arrival.delayMs)}ms` } as React.CSSProperties)
           : undefined
       }
       onAnimationEnd={(e) => {
         if (
-          e.animationName === "agw-tool-slide-in" &&
-          (e.target as Element).parentElement === e.currentTarget
+          (e.animationName === "agw-tool-slide-in" &&
+            (e.target as Element).parentElement === e.currentTarget) ||
+          (e.animationName === "agw-tool-fade-in" && e.target === e.currentTarget)
         ) {
           setEntering(false);
         }
@@ -262,7 +278,14 @@ const ToolGroupImpl: React.FC<{
   // separate rows split that one line in two the moment the model moved on,
   // and moved the reply. It folds to the same one-line header a longer run
   // does — live, and when the conversation is reopened later.
-  const grouped = runs.length >= TOOL_GROUP_MIN || (liveLineOn && runs.length >= 2);
+  //
+  // Inside a running work card (`LiveWorkCardContext`) none of this applies
+  // unless the reader asked for it: the run is plain rows, no header, no cap,
+  // no fold, no live line. The card already bounds the work.
+  const inLiveCard = useInLiveWorkCard();
+  const groupInCard = useAgentThemeStore((s) => s.transcriptWorkCardGroupRuns);
+  const flat = inLiveCard && !groupInCard;
+  const grouped = !flat && (runs.length >= TOOL_GROUP_MIN || (liveLineOn && runs.length >= 2));
 
   const stats = useMemo(() => {
     let done = 0;
@@ -313,7 +336,7 @@ const ToolGroupImpl: React.FC<{
   // Once it stops being the live edge it is drawn by the ordinary path below:
   // a single row stays that row, two or more fold to their header (`grouped`)
   // in the same place the line was, so the reply does not move.
-  const lineMode = liveLineOn && isActivelyStreaming && liveEdge && mode === null;
+  const lineMode = !flat && liveLineOn && isActivelyStreaming && liveEdge && mode === null;
   // How many steps the line has already shown. Those steps are not new when the
   // run is handed back to ordinary rows (or opened by its count), so they must
   // not play their entrance as if they had just arrived; a call that lands
@@ -374,7 +397,7 @@ const ToolGroupImpl: React.FC<{
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
+            transition={GLIDE}
             style={{ overflow: "hidden" }}
           >
             <AgentIcon
@@ -382,7 +405,7 @@ const ToolGroupImpl: React.FC<{
               size={13}
               style={{
                 transform: isOpen ? "none" : "rotate(-90deg)",
-                transition: "transform 0.15s ease",
+                transition: "transform var(--agw-glide-dur) var(--agw-glide-ease)",
                 color: "var(--agw-text-subtle)",
               }}
             />
@@ -429,7 +452,7 @@ const ToolGroupImpl: React.FC<{
         className="agw-tool-group-anim"
         initial={false}
         animate={{ height: isOpen ? "auto" : 0, opacity: isOpen ? 1 : 0 }}
-        transition={{ duration: 0.18, ease: "easeOut" }}
+        transition={GLIDE}
         style={{ overflow: "hidden" }}
       >
         <div
@@ -461,6 +484,7 @@ const ToolGroupImpl: React.FC<{
             <ToolStep
               key={run[0].id}
               animate={animateArrivals && index >= shownOnLine}
+              entrance={flat ? "fade" : "grow"}
               stagger={stagger}
             >
               {renderRun(run)}

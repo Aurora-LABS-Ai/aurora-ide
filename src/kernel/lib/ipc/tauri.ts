@@ -259,11 +259,12 @@ export const cancelCommandStream = async (
  * runtime is missing — the caller settles a card on the result, and a silent
  * no-op would leave the card claiming a hand-off that never happened.
  */
-export const detachCommandStream = async (requestId: string): Promise<void> => {
+/** Resolves to the log file the run is mirrored into, when it has one. */
+export const detachCommandStream = async (requestId: string): Promise<string | null> => {
   if (!isAuroraRuntimeAvailable()) {
     throw new Error('Aurora runtime unavailable');
   }
-  await invoke<void>('detach_command_stream', { requestId });
+  return (await invoke<string | null>('detach_command_stream', { requestId })) ?? null;
 };
 
 // System Operations

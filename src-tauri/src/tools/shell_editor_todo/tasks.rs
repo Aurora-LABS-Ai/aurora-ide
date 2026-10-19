@@ -371,12 +371,15 @@ This drives the checklist the user is watching live, so a stale mark is visibly 
 
         // A call that names a task and changes nothing is a mistake worth
         // naming: silently succeeding would let the model believe it had
-        // closed something.
+        // closed something. The message quotes what arrived: a model that
+        // believes it sent `status` (Kimi K3, 2026-10-15, nine times) cannot
+        // correct itself from "send `status`" alone.
         if raw_status.is_none() && subject.is_none() && description.is_none() && active_form.is_none()
         {
-            return Err(ToolError::InvalidInput(
-                "nothing to update — send `status`, or one of `subject` / `description` / `activeForm`, alongside `taskId`".into(),
-            ));
+            return Err(ToolError::InvalidInput(format!(
+                "nothing to update: this call arrived as {input} — no `status`, `subject`, `description` or `activeForm`. \
+                 Send the change with the id, e.g. {{\"taskId\":\"{task_id}\",\"status\":\"completed\"}}."
+            )));
         }
 
         // `deleted` is an action, not a stored state: the reference removes the
@@ -767,7 +770,9 @@ mod tests {
         create(&thread, "First").await;
         let err = update(&thread, json!({"taskId": "1"})).await.unwrap_err();
         assert!(
-            matches!(&err, ToolError::InvalidInput(m) if m.contains("nothing to update")),
+            matches!(&err, ToolError::InvalidInput(m) if m.contains("nothing to update")
+                && m.contains(r#"arrived as {"taskId":"1"}"#)
+                && m.contains(r#"{"taskId":"1","status":"completed"}"#)),
             "{err:?}"
         );
     }

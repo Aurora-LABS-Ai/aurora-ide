@@ -96,6 +96,10 @@ export interface AttachedSelectedElement {
   url?: string | null;
   text?: string | null;
   source?: string;
+  /** The owning component's name, when the page's framework exposed one. */
+  component?: string | null;
+  /** Ancestor chain, one class each, for the tooltip. */
+  path?: string | null;
 }
 
 /**

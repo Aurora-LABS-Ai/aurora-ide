@@ -15,6 +15,8 @@
  * section gaps). The RATIOS are preserved, the absolute sizes are not.
  */
 
+@import "./reporting/reporting.css";
+
 /* ── tone: one colour vocabulary ─────────────────────────────────────────────
  * A tone sets --ac-tone once; every component paints from it. Adding a
  * component means choosing a tone, never choosing a colour. */

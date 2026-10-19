@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  applyAntigravityVariant,
   applyCursorVariant,
   applyOpenCodeWire,
   resolveModelRequest,
@@ -261,6 +262,37 @@ const cursorConfig = (
   supportsToolStream: true,
   supportsVision: true,
   customParams,
+});
+
+describe("applyAntigravityVariant", () => {
+  const antigravityConfig = (modelKey: string, customParams?: Record<string, unknown>) =>
+    ({ id: "antigravity", model: modelKey, customParams }) as unknown as ProviderConfig;
+  const folded = (effort: string): LLMModel => ({
+    ...model(),
+    id: "antigravity::gemini-4-argon",
+    providerId: "antigravity",
+    modelKey: "gemini-4-argon",
+    reasoning: { type: "effort", levels: ["low", "medium", "high"], default: effort, toggleable: false },
+  });
+
+  it("sends the tier id the row's effort names, with no effort field", () => {
+    const cfg = antigravityConfig("gemini-4-argon", { reasoning_effort: "high", keep: true });
+    applyAntigravityVariant(cfg, folded("high"));
+    expect(cfg.model).toBe("gemini-4-argon-high");
+    expect(cfg.customParams).toEqual({ keep: true });
+    const low = antigravityConfig("gemini-4-argon");
+    applyAntigravityVariant(low, folded("low"));
+    expect(low.model).toBe("gemini-4-argon-low");
+  });
+
+  it("leaves an unfolded row and other providers alone", () => {
+    const single = antigravityConfig("gpt-oss-120b-medium");
+    applyAntigravityVariant(single, { ...model(), providerId: "antigravity", modelKey: "gpt-oss-120b-medium" });
+    expect(single.model).toBe("gpt-oss-120b-medium");
+    const other = { ...antigravityConfig("gemini-4-argon"), id: "other" } as ProviderConfig;
+    applyAntigravityVariant(other, folded("high"));
+    expect(other.model).toBe("gemini-4-argon");
+  });
 });
 
 describe("applyCursorVariant", () => {

@@ -21,6 +21,7 @@ import {
   SpeechStreamSession,
   toStreamConfig,
 } from "@/apps/agent/services/speech/speech-stream";
+import { mergeOpenSentence } from "@/apps/agent/services/speech/open-sentence";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { runDictationCleanup } from "@/apps/agent/adapters/prompt-refine";
 import {
@@ -171,12 +172,17 @@ export interface AgentSpeech {
 /**
  * @param onTranscript Insert a finished transcript at the caret. Used by the
  *   record-then-transcribe path, and as a fallback when `onWords` is absent.
- * @param onWords Append text exactly as given, no spacing added. Live
+ * @param onWords Append text exactly as given, no spacing added. R2T2 live
  *   dictation arrives in pieces that already carry their own spacing.
+ * @param onReplace Phonon live dictation: swap the open sentence the composer
+ *   shows (`previous`, empty for a new one) for `next`, and return exactly
+ *   what the composer now holds for it, leading space included. Without it,
+ *   only finished sentences are inserted.
  */
 export function useAgentSpeech(
   onTranscript: (text: string) => void,
   onWords?: (text: string) => void,
+  onReplace?: (previous: string, next: string) => string,
 ): AgentSpeech {
   const {
     speechBackend,
@@ -192,6 +198,7 @@ export function useAgentSpeech(
     setSpeechDevicePreference,
   } = useAgentSettingsStore();
   const live = speechMode === "live";
+  const phonon = live && speechLive.engine === "phonon";
 
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -319,7 +326,14 @@ export function useAgentSpeech(
   // The program exits when a recording ends, so "kept warm" means: as soon as
   // one recording finishes, a fresh one is started and left waiting with the
   // model already loaded. Only the first recording after a cold start or an
-  // idle release pays the ~3.5s load.
+  // idle release pays the load (R2T2 ~3.5s, Phonon ~0.8s).
+  //
+  // Phonon differs in three ways. Its model loads fast enough that the
+  // microphone opens at once and the audio waits here until the model is
+  // ready, instead of the click waiting. It rewrites the open sentence, so the
+  // composer is told to replace text rather than append it. And "Keep model
+  // loaded" decides whether a fresh program is armed after each recording; it
+  // has no idle timer.
 
   /** Armed and waiting, or currently recording. */
   const liveRef = useRef<SpeechStreamSession | null>(null);
@@ -331,8 +345,56 @@ export function useAgentSpeech(
   const liveInsertedRef = useRef("");
   const idleTimerRef = useRef<number | null>(null);
   /** Latest settings, read inside callbacks that must not re-create per key. */
-  const liveConfigRef = useRef({ speechLive, speechLanguage });
-  liveConfigRef.current = { speechLive, speechLanguage };
+  const liveConfigRef = useRef({ speechLive, speechLanguage, speechRuntimePath });
+  liveConfigRef.current = { speechLive, speechLanguage, speechRuntimePath };
+  /** Read when a program exits, which can be long after the render that armed it. */
+  const recordingRef = useRef(false);
+  recordingRef.current = isRecording;
+  /** The composer callbacks of the latest render, for handlers armed earlier. */
+  const callbacksRef = useRef({ onTranscript, onReplace });
+  callbacksRef.current = { onTranscript, onReplace };
+
+  /** Phonon: audio captured before the model is ready, sent once it is. */
+  const pendingAudioRef = useRef<Float32Array[]>([]);
+  /** Phonon: every write waits for the one before, so audio arrives in order. */
+  const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** Phonon: the open sentence as the model last gave it, start kept. */
+  const openRawRef = useRef("");
+  /** Phonon: what the composer holds for the open sentence right now. */
+  const openShownRef = useRef("");
+
+  /** Queue audio for the live program, and send everything queued once it can hear. */
+  const sendLiveAudio = useCallback((pcm: Float32Array | null) => {
+    if (pcm && pcm.length > 0) pendingAudioRef.current.push(pcm);
+    const session = liveRef.current;
+    if (!session || !liveReadyRef.current || pendingAudioRef.current.length === 0) return;
+    const audio = mergeChunks(pendingAudioRef.current);
+    pendingAudioRef.current = [];
+    writeChainRef.current = writeChainRef.current
+      .then(() => session.write(audio))
+      .catch((err) => {
+        console.warn("[agent-window] live dictation: dropped audio:", err);
+      });
+  }, []);
+
+  /** Phonon: the composer shows `raw` as the open sentence. */
+  const showOpenSentence = useCallback((raw: string) => {
+    openRawRef.current = raw;
+    const replace = callbacksRef.current.onReplace;
+    if (!replace || (!raw && !openShownRef.current)) return;
+    openShownRef.current = replace(openShownRef.current, raw);
+  }, []);
+
+  /** Phonon: the open sentence is finished as `text`; the next one starts fresh. */
+  const commitOpenSentence = useCallback(
+    (text: string) => {
+      if (callbacksRef.current.onReplace) showOpenSentence(text);
+      else if (text) callbacksRef.current.onTranscript(text);
+      openRawRef.current = "";
+      openShownRef.current = "";
+    },
+    [showOpenSentence],
+  );
 
   const appendWords = useCallback(
     (text: string) => {
@@ -378,17 +440,60 @@ export function useAgentSpeech(
    */
   const armLive = useCallback(async (): Promise<void> => {
     if (liveRef.current) return;
-    const { speechLive: cfg, speechLanguage: lang } = liveConfigRef.current;
+    const {
+      speechLive: cfg,
+      speechLanguage: lang,
+      speechRuntimePath: crispRuntime,
+    } = liveConfigRef.current;
+    const isPhonon = cfg.engine === "phonon";
     liveReadyRef.current = false;
-    const session = await SpeechStreamSession.arm(toStreamConfig(cfg, lang), {
+    // Only a program that got as far as listening is replaced when it exits.
+    // One that dies on start (a wrong model file) would otherwise be restarted
+    // forever.
+    let heard = false;
+    let failed = false;
+    const releaseWaiters = () => {
+      const waiters = liveReadyWaiters.current;
+      liveReadyWaiters.current = [];
+      waiters.forEach((resolve) => resolve());
+    };
+    const session = await SpeechStreamSession.arm(toStreamConfig(cfg, lang, crispRuntime), {
       onReady: () => {
+        heard = true;
         liveReadyRef.current = true;
-        const waiters = liveReadyWaiters.current;
-        liveReadyWaiters.current = [];
-        waiters.forEach((resolve) => resolve());
+        releaseWaiters();
+        if (isPhonon) sendLiveAudio(null);
       },
       onWords: appendWords,
+      onRevise: (text) => showOpenSentence(mergeOpenSentence(openRawRef.current, text)),
+      onCommit: commitOpenSentence,
       onFinal: (text) => {
+        if (isPhonon) {
+          // The program has exited, after a stop or on its own. Every sentence
+          // it finished was committed already; an open one stays as shown.
+          liveRef.current = null;
+          liveReadyRef.current = false;
+          pendingAudioRef.current = [];
+          openRawRef.current = "";
+          openShownRef.current = "";
+          releaseWaiters();
+          setIsTranscribing(false);
+          if (recordingRef.current) {
+            // Still recording, so nobody asked it to stop.
+            cleanupAudio();
+            setIsRecording(false);
+            if (!failed) {
+              showNotice("Live dictation stopped unexpectedly. Check Preferences → Voice input.", "error");
+            }
+          }
+          const next = liveConfigRef.current.speechLive;
+          if (heard && !failed && next.engine === "phonon" && next.keepLoaded) {
+            void armLive().catch((err) => {
+              console.warn("[agent-window] live dictation: could not re-arm:", err);
+            });
+          }
+          return;
+        }
         // The held-back words land here. Add only what is not already in the
         // composer. If the model rewrote earlier text the two will not line up,
         // and adding nothing beats duplicating a sentence.
@@ -404,12 +509,21 @@ export function useAgentSpeech(
         void armLive().then(startIdleTimer);
       },
       onError: (message) => {
+        failed = true;
         showNotice(message, "error");
         setIsTranscribing(false);
       },
     });
     liveRef.current = session;
-  }, [appendWords, showNotice, startIdleTimer]);
+  }, [
+    appendWords,
+    cleanupAudio,
+    commitOpenSentence,
+    sendLiveAudio,
+    showNotice,
+    showOpenSentence,
+    startIdleTimer,
+  ]);
 
   const runtimeRequest = useCallback(
     (devicePreference = speechDevicePreference) => ({
@@ -501,7 +615,36 @@ export function useAgentSpeech(
 
   /** Start a recording whose words appear as they are spoken. */
   const startLiveRecording = useCallback(async () => {
-    const { speechLive: cfg } = liveConfigRef.current;
+    const { speechLive: cfg, speechRuntimePath: crispRuntime } = liveConfigRef.current;
+
+    if (cfg.engine === "phonon") {
+      if (!crispRuntime.trim() || !cfg.phononModelPath.trim()) {
+        showNotice("Set up Phonon-2 in Preferences → Voice input first.", "warning");
+        return;
+      }
+      clearIdleTimer();
+      openRawRef.current = "";
+      openShownRef.current = "";
+      pendingAudioRef.current = [];
+      writeChainRef.current = Promise.resolve();
+      try {
+        if (!liveRef.current) await armLive();
+      } catch (err) {
+        showNotice(
+          err instanceof Error ? err.message : "Could not start live dictation.",
+          "error",
+        );
+        return;
+      }
+      // No waiting for the model: the microphone opens now, and what it hears
+      // before the model is ready is held and sent the moment it is.
+      const opened = await openMicrophone((samples, sampleRate) => {
+        sendLiveAudio(resampleLinear(samples, sampleRate, TARGET_SAMPLE_RATE));
+      });
+      if (!opened && !cfg.keepLoaded) void releaseLive();
+      return;
+    }
+
     if (!cfg.runtimePath.trim() || !cfg.modelPath.trim()) {
       showNotice("Set up live dictation in Preferences → Voice input first.", "warning");
       return;
@@ -544,7 +687,15 @@ export function useAgentSpeech(
       // Leave it warm and start the countdown rather than wasting the load.
       startIdleTimer();
     }
-  }, [armLive, clearIdleTimer, openMicrophone, showNotice, startIdleTimer]);
+  }, [
+    armLive,
+    clearIdleTimer,
+    openMicrophone,
+    releaseLive,
+    sendLiveAudio,
+    showNotice,
+    startIdleTimer,
+  ]);
 
   const actuallyStartRecording = useCallback(async () => {
     clearNotice();
@@ -620,6 +771,17 @@ export function useAgentSpeech(
       // next program. Until then the button shows it is still finishing.
       setIsTranscribing(true);
       try {
+        if (phonon) {
+          // A stop inside the first second can come before the model is
+          // ready. Wait for it (or for it to exit), send what was held, and
+          // only then close the input, so no word said is dropped.
+          if (!liveReadyRef.current) {
+            await new Promise<void>((resolve) => liveReadyWaiters.current.push(resolve));
+          }
+          if (liveRef.current !== session) return; // it exited while we waited
+          sendLiveAudio(null);
+          await writeChainRef.current;
+        }
         await session.stop();
       } catch (err) {
         setIsTranscribing(false);
@@ -671,6 +833,8 @@ export function useAgentSpeech(
     clearNotice,
     live,
     onTranscript,
+    phonon,
+    sendLiveAudio,
     showNotice,
     speechBackend,
     speechDevicePreference,
@@ -694,6 +858,21 @@ export function useAgentSpeech(
   useEffect(() => {
     if (!live || !speechEnabled) void releaseLive();
   }, [live, releaseLive, speechEnabled]);
+
+  // A waiting program was started for the engine, model and folder of that
+  // moment. When any of them changes, or "Keep model loaded" is turned off,
+  // it is the wrong program or one the user no longer wants in memory. A
+  // recording in progress finishes first; the next click starts afresh.
+  useEffect(() => {
+    if (recordingRef.current) return;
+    void releaseLive();
+  }, [
+    releaseLive,
+    speechLive.engine,
+    speechLive.keepLoaded,
+    speechLive.phononModelPath,
+    speechRuntimePath,
+  ]);
 
   useEffect(() => () => void releaseLive(), [releaseLive]);
 

@@ -110,26 +110,14 @@ pub(super) fn generate_turn_id() -> String {
 ///
 /// The returned handle resolves once `api_rx` closes; read `seq` afterwards
 /// for the next number.
-/// Whether a queued "background process ended" note repeats an ending the
-/// model has already read in THIS batch.
-///
-/// `shell_read_output` with `wait_ms` blocks until the process ends and then
-/// quotes how it ended (`running: false`, `ending: "Exited with code 7 …"`).
-/// The frontend watcher hears the same ending on `shell-process-ended` and
-/// queues a note for the running turn, so the model got the fact twice in one
-/// tool message (harness run 2026-09-28, thread `5c20f9a3`). The note is
-/// dropped only when EVERY process it names was read to its end by one of the
-/// batch's own `shell_read_output` results; a note about some other process,
-/// or one whose read stopped short of the ending, still goes through.
-pub(super) fn process_ending_already_read(
-    queued: &crate::agent_runtime::session::QueuedUserMessage,
+/// The processes this batch's own `shell_read_output` calls read to their
+/// end (`running: false`). A `shell_execute` that happened to print the same
+/// JSON does not count.
+pub(super) fn endings_read_in(
     results: &[ContentBlock],
     read_output_call_ids: &[String],
-) -> bool {
-    if queued.origin != crate::agent_runtime::types::InjectedOrigin::Process {
-        return false;
-    }
-    let read_to_the_end: Vec<String> = results
+) -> Vec<String> {
+    results
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolResult {
@@ -148,21 +136,47 @@ pub(super) fn process_ending_already_read(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
-        .collect();
-    if read_to_the_end.is_empty() {
+        .collect()
+}
+
+/// Whether a queued "background process ended / stopped" note repeats an
+/// ending the model has already read.
+///
+/// `shell_read_output` with `wait_ms` blocks until the process ends and then
+/// quotes how it ended (`running: false`, `ending: "Stopped by the user …"`).
+/// The frontend hears the same ending and queues a note, so without this the
+/// model got the fact twice in one tool message (harness run 2026-09-28,
+/// thread `5c20f9a3`), or, when the note was queued just after the read
+/// returned, once more in the NEXT turn, out of context (2026-10-17, thread
+/// `3b6fffb1`). `endings_read` is every ending read in this conversation, not
+/// only this batch, which is what closes the second case.
+///
+/// The note is dropped only when EVERY process it names was read to its end;
+/// a note about some other process, or one whose read stopped short, still
+/// goes through.
+pub(super) fn process_ending_already_read(
+    queued: &crate::agent_runtime::session::QueuedUserMessage,
+    endings_read: &std::collections::HashSet<String>,
+) -> bool {
+    if queued.origin != crate::agent_runtime::types::InjectedOrigin::Process {
         return false;
     }
-    // The note names the process by id in prose: `(id bg-…)`.
-    let mentioned: Vec<&str> = queued
-        .text
-        .split_whitespace()
-        .filter(|word| word.starts_with("bg-"))
-        .map(|word| word.trim_end_matches([')', '.', ',', ';', ':']))
-        .collect();
-    !mentioned.is_empty()
-        && mentioned
-            .iter()
-            .all(|id| read_to_the_end.iter().any(|read| read == id))
+    let mentioned = named_process_ids(&queued.text);
+    !mentioned.is_empty() && mentioned.iter().all(|id| endings_read.contains(*id))
+}
+
+/// The process ids a note names. Both notes write them as `(id <id>)` or
+/// `(id <id>, …)`: `bg-…` for a spawn, `shell_execute:61` for a command the
+/// user moved to the background. Matching only `bg-` missed the second kind.
+fn named_process_ids(text: &str) -> Vec<&str> {
+    text.match_indices("(id ")
+        .filter_map(|(at, marker)| {
+            let rest = &text[at + marker.len()..];
+            let end = rest.find([',', ')', ' ']).unwrap_or(rest.len());
+            let id = rest[..end].trim();
+            (!id.is_empty()).then_some(id)
+        })
+        .collect()
 }
 
 pub(super) fn spawn_event_forwarder(
@@ -215,36 +229,47 @@ mod process_ending_tests {
         }
     }
 
-    const NOTE: &str = "The background process \"Short-lived failing job\" (id bg-1894371b-1790624482646) \
+    const NOTE: &str =
+        "The background process \"Short-lived failing job\" (id bg-1894371b-1790624482646) \
                         has ended with exit code 7. Nothing more will arrive from it.";
 
+    /// What one batch adds to the conversation's `endings_read`.
+    fn read_in(blocks: &[ContentBlock], call: &str) -> std::collections::HashSet<String> {
+        endings_read_in(blocks, &[call.to_string()])
+            .into_iter()
+            .collect()
+    }
+
     #[test]
-    fn a_note_about_a_process_read_to_its_end_this_batch_is_dropped() {
-        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", false)];
+    fn a_note_about_a_process_read_to_its_end_is_dropped() {
+        let read = read_in(
+            &[read_result("call-1", "bg-1894371b-1790624482646", false)],
+            "call-1",
+        );
         assert!(process_ending_already_read(
             &note(InjectedOrigin::Process, NOTE),
-            &blocks,
-            &["call-1".to_string()],
+            &read
         ));
     }
 
     #[test]
     fn a_read_that_stopped_short_of_the_ending_keeps_the_note() {
-        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", true)];
+        let read = read_in(
+            &[read_result("call-1", "bg-1894371b-1790624482646", true)],
+            "call-1",
+        );
         assert!(!process_ending_already_read(
             &note(InjectedOrigin::Process, NOTE),
-            &blocks,
-            &["call-1".to_string()],
+            &read
         ));
     }
 
     #[test]
     fn a_note_about_a_different_process_keeps_going() {
-        let blocks = vec![read_result("call-1", "bg-other-1", false)];
+        let read = read_in(&[read_result("call-1", "bg-other-1", false)], "call-1");
         assert!(!process_ending_already_read(
             &note(InjectedOrigin::Process, NOTE),
-            &blocks,
-            &["call-1".to_string()],
+            &read
         ));
     }
 
@@ -252,21 +277,63 @@ mod process_ending_tests {
     /// `shell_execute` that happened to print the same JSON does not.
     #[test]
     fn only_read_output_results_count() {
-        let blocks = vec![read_result("call-9", "bg-1894371b-1790624482646", false)];
+        let read = read_in(
+            &[read_result("call-9", "bg-1894371b-1790624482646", false)],
+            "call-1",
+        );
         assert!(!process_ending_already_read(
             &note(InjectedOrigin::Process, NOTE),
-            &blocks,
-            &["call-1".to_string()],
+            &read
         ));
     }
 
     #[test]
     fn a_persons_message_is_never_dropped() {
-        let blocks = vec![read_result("call-1", "bg-1894371b-1790624482646", false)];
+        let read = read_in(
+            &[read_result("call-1", "bg-1894371b-1790624482646", false)],
+            "call-1",
+        );
         assert!(!process_ending_already_read(
             &note(InjectedOrigin::User, NOTE),
-            &blocks,
-            &["call-1".to_string()],
+            &read
         ));
+    }
+
+    /// Thread `3b6fffb1`, 2026-10-17: a command the user moved to the
+    /// background and then stopped. Its id is `shell_execute:61`, not `bg-…`,
+    /// and the model read the stop (wait_ms, `running: false`) 236 ms BEFORE
+    /// the note was queued, so the note came out at the first boundary of the
+    /// next turn. The set remembers the read across that gap.
+    #[test]
+    fn a_stop_note_already_read_in_an_earlier_turn_is_dropped() {
+        const STOP: &str =
+            "The user stopped the background process \"cd packages/quantumkick-core \
+                            && printf …\" (id shell_execute:61, `cd packages/quantumkick-core && \
+                            printf '20\\n\\n' | pnpm exec tsx scripts/login-probe.ts`). It is no \
+                            longer running.";
+        // Turn 1: the read, in its own batch. No note queued yet.
+        let read = read_in(
+            &[read_result(
+                "shell_read_output:62",
+                "shell_execute:61",
+                false,
+            )],
+            "shell_read_output:62",
+        );
+        // Turn 2: an unrelated batch drains the late note.
+        assert!(process_ending_already_read(
+            &note(InjectedOrigin::Process, STOP),
+            &read
+        ));
+    }
+
+    #[test]
+    fn named_process_ids_reads_both_note_shapes() {
+        assert_eq!(named_process_ids(NOTE), vec!["bg-1894371b-1790624482646"]);
+        assert_eq!(
+            named_process_ids("process \"x\" (id shell_execute:61, `ls`). Stopped."),
+            vec!["shell_execute:61"]
+        );
+        assert!(named_process_ids("no id here").is_empty());
     }
 }

@@ -211,6 +211,7 @@ interface AgentThemeState extends AppearancePrefs {
   setTranscriptSmoothTools: (v: boolean) => void;
   setTranscriptLiveLine: (v: boolean) => void;
   setTranscriptWorkCards: (v: boolean) => void;
+  setTranscriptWorkCardGroupRuns: (v: boolean) => void;
   setTranscriptReplyLayout: (v: boolean) => void;
   setTranscriptTextPace: (v: TranscriptTextPace) => void;
   setTranscriptTurnSummary: (v: boolean) => void;
@@ -321,6 +322,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setTranscriptSmoothTools: (v) => set({ transcriptSmoothTools: v }),
       setTranscriptLiveLine: (v) => set({ transcriptLiveLine: v }),
       setTranscriptWorkCards: (v) => set({ transcriptWorkCards: v }),
+      setTranscriptWorkCardGroupRuns: (v) => set({ transcriptWorkCardGroupRuns: v }),
       setTranscriptReplyLayout: (v) => set({ transcriptReplyLayout: v }),
       setTranscriptTextPace: (v) => set({ transcriptTextPace: v }),
       setTranscriptTurnSummary: (v) => set({ transcriptTurnSummary: v }),

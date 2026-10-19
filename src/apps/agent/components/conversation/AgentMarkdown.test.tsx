@@ -56,6 +56,22 @@ describe("AgentMarkdown", () => {
     expect(render("I read the <repo_map> block first.")).toContain("<repo_map>");
   });
 
+  it("adds no asterisk to a finished reply that names a glob in code", () => {
+    // 2026-10-16, live: "…the `lib/domain/*` convention … when reading." drew
+    // as "when reading.*". Streamdown's repair for half-written markdown read
+    // the lone `*` inside the code span as an unclosed italic and closed it.
+    const text = render("Most handlers skip the `lib/domain/*` convention. Expect both when reading.");
+    expect(text).toContain("lib/domain/*");
+    expect(text.trim().endsWith("when reading.")).toBe(true);
+  });
+
+  it("marks a web link as leaving the app, and only a web link", () => {
+    render("See [the model page](https://mvsep.com/en) or [the readme](./README.md).");
+    const [web, local] = [...container.querySelectorAll("a")];
+    expect(web.querySelector(".agw-md-ext")?.textContent).toBe("↗");
+    expect(local.querySelector(".agw-md-ext")).toBeNull();
+  });
+
   it("still renders ordinary markdown", () => {
     // The guard that the fix changed only what it meant to. Bold is checked
     // through Streamdown's own marker rather than a `<strong>` tag, because it

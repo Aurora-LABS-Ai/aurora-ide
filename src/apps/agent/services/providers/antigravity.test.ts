@@ -14,6 +14,10 @@ import {
   ANTIGRAVITY_PROVIDER_ID,
   antigravityModelRow,
   antigravityNotices,
+  antigravityNotOffered,
+  antigravitySyncRows,
+  antigravityWireModel,
+  foldAntigravityVariants,
   antigravityBucketLabel,
   antigravityBucketMeta,
   antigravityPlanLabel,
@@ -21,10 +25,12 @@ import {
   antigravityRingBucket,
   isAntigravityProvider,
   type AntigravityAuthStatus,
+  type AntigravityCatalogue,
   type AntigravityModel,
   type AntigravityQuota,
 } from "./antigravity";
 import { antigravityPlanView } from "./plan-view";
+import type { LLMModel } from "@/apps/agent/store/settings/useAgentSettingsStore";
 
 const RESET = "2026-10-19T05:44:37Z";
 const NOW = Date.parse("2026-10-12T05:44:37Z");
@@ -189,5 +195,92 @@ describe("model rows", () => {
 
   it("gives a model that cannot think no reasoning control", () => {
     expect(antigravityModelRow(model({ supportsThinking: false }), undefined).reasoning).toBeUndefined();
+  });
+});
+
+describe("refreshing the model list", () => {
+  const catalogue = (models: AntigravityModel[]): AntigravityCatalogue => ({
+    models,
+    defaultModelId: null,
+    fetchedAtMs: NOW,
+  });
+  const stored = (modelKey: string, sortOrder: number, label?: string): LLMModel => ({
+    id: `antigravity::${modelKey}`,
+    providerId: "antigravity",
+    modelKey,
+    label,
+    supportsVision: false,
+    supportsThinking: false,
+    supportsToolStream: true,
+    enabled: true,
+    sortOrder,
+  });
+
+  it("keeps a model added by hand after the account's own, in its old order", () => {
+    const current = [
+      stored("gemini-4-argon", 3, "Gemini 4 Argon"),
+      stored("gemini-3.8-flash-high", 0),
+      stored("gemini-4-argon-high", 2, "Gemini 4 Argon High"),
+    ];
+    const rows = antigravitySyncRows(catalogue([LIVE[0], LIVE[2]]), current);
+    expect(rows.map((r) => r.modelKey)).toEqual([
+      "gemini-3.8-flash-high",
+      "claude-sonnet-4-6",
+      "gemini-4-argon-high",
+      "gemini-4-argon",
+    ]);
+    expect(rows[2].label).toBe("Gemini 4 Argon High");
+  });
+
+  it("turns a hand-added model into the account's row once it is offered", () => {
+    const argon = model({ id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" });
+    const rows = antigravitySyncRows(catalogue([argon]), [stored("gemini-4-argon-high", 0, "mine")]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].label).toBe("Gemini 4 Argon (High)");
+  });
+
+  it("folds the effort tiers of one model into one row with an effort setting", () => {
+    // The 2026-10-16 Pro list: Argon offered as three ids, GPT-OSS as one.
+    const tiers = [
+      model({ id: "gemini-4-argon-medium", label: "Gemini 4 Argon (Medium)" }),
+      model({ id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)", noticeTitle: "New", notice: "Argon quota is separate." }),
+      model({ id: "gemini-4-argon-low", label: "Gemini 4 Argon (Low)" }),
+      model({ id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", supportsThinking: false }),
+    ];
+    const families = foldAntigravityVariants(tiers);
+    expect(families.map((f) => [f.model.id, f.model.label, f.levels])).toEqual([
+      ["gemini-4-argon", "Gemini 4 Argon", ["low", "medium", "high"]],
+      ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)", []],
+    ]);
+    expect(families[0].model.notice).toBe("Argon quota is separate.");
+
+    const rows = antigravitySyncRows(
+      catalogue(tiers),
+      [stored("gemini-4-argon-high", 0, "Gemini 4 Argon High"), stored("gemini-4-argon", 1, "Gemini 4 Argon")],
+      "antigravity:gemini-4-argon-high",
+    );
+    expect(rows.map((r) => r.modelKey)).toEqual(["gemini-4-argon", "gpt-oss-120b-medium"]);
+    // The tier picked before the fold is where the new row starts.
+    expect(rows[0].reasoning).toMatchObject({ type: "effort", levels: ["low", "medium", "high"], default: "high", toggleable: false });
+    expect(antigravityWireModel({ modelKey: "gemini-4-argon", reasoning: rows[0].reasoning })).toBe("gemini-4-argon-high");
+    expect(antigravityWireModel({ modelKey: "gpt-oss-120b-medium", reasoning: rows[1].reasoning })).toBeNull();
+  });
+
+  it("keeps an effort the person chose across refreshes", () => {
+    const tiers = [model({ id: "claude-opus-5-5-low" }), model({ id: "claude-opus-5-5-high" })];
+    const previous = { ...stored("claude-opus-5-5", 0), reasoning: { type: "effort" as const, levels: ["low", "high"], default: "low" } };
+    const [row] = antigravitySyncRows(catalogue(tiers), [previous]);
+    expect(row.reasoning?.default).toBe("low");
+  });
+
+  it("names only this provider's rows the account does not offer", () => {
+    const current = [
+      stored("gemini-3.8-flash-high", 0),
+      stored("gemini-4-argon", 1),
+      { ...stored("gemini-4-argon", 0), id: "other::gemini-4-argon", providerId: "other" },
+    ];
+    expect(antigravityNotOffered(catalogue([LIVE[0]]), current).map((m) => m.id)).toEqual([
+      "antigravity::gemini-4-argon",
+    ]);
   });
 });

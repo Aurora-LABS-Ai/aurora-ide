@@ -1,9 +1,14 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 /**
- * Animate the space occupied by attachments and text, without scaling either.
+ * Animate the space occupied by attachments, without scaling them.
  * The content keeps its natural height so native editing and the ghost's line
  * reservation can run independently of the shell's current animation frame.
+ *
+ * Only an attachment change eases. A wrapped line of text grows the box at
+ * once, the way every editor does: easing each line made the composer lag
+ * the caret by a frame or two on every Enter, and in a chat the transcript's
+ * own auto-scroll was answering the same keystroke a second time.
  */
 export function ComposerBody({ children }: { children: ReactNode }) {
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -15,18 +20,31 @@ export function ComposerBody({ children }: { children: ReactNode }) {
     if (!body || !content) return;
 
     let previousHeight: number | null = null;
+    let previousEditorHeight: number | null = null;
     const measure = () => {
       const height = content.getBoundingClientRect().height;
-      if (height === previousHeight) return;
+      const editor = content.querySelector<HTMLElement>(".agw-ce-wrap");
+      const editorHeight = editor ? editor.getBoundingClientRect().height : 0;
+      if (height === previousHeight) {
+        previousEditorHeight = editorHeight;
+        return;
+      }
 
       if (previousHeight !== null) {
-        // A wrapped line responds quickly; an attachment gets a little longer
-        // to open. CSS retargets from the current height when input interrupts.
-        const duration = Math.min(220, 130 + Math.abs(height - previousHeight) * 0.7);
+        const delta = Math.abs(height - previousHeight);
+        const editorDelta =
+          previousEditorHeight === null ? 0 : Math.abs(editorHeight - previousEditorHeight);
+        // The editor alone changed: a line wrapped or unwrapped. Instant.
+        // Anything else is an attachment row opening or closing: ease, a
+        // little longer for a bigger opening. CSS retargets from the current
+        // height when input interrupts.
+        const textOnly = Math.abs(delta - editorDelta) < 1;
+        const duration = textOnly ? 0 : Math.min(220, 130 + delta * 0.7);
         body.style.setProperty("--agw-composer-resize-duration", `${duration}ms`);
       }
       body.style.height = `${height}px`;
       previousHeight = height;
+      previousEditorHeight = editorHeight;
     };
 
     // Mount at the real height before paint. Only subsequent changes animate.

@@ -258,12 +258,11 @@ describe("agent appearance token coverage", () => {
    */
   it("routes every focus mark through --agw-focus-ring", () => {
     // Small FILLED controls, where a ring inside the shape lands on its own
-    // fill. Each carries a comment at its own rule saying so. Adding a fourth
+    // fill. Each carries a comment at its own rule saying so. Adding a third
     // means editing this list, which is the point.
     const exempt = [
       ".agw-set-btn[data-variant=\"primary\"]", // accent-filled pill
       ".agw-send", // filled round send disc
-      ".agw-bud-range", // ~12px round slider thumb
     ];
     const offenders: string[] = [];
     for (const name of (readdirSync(partialsDir) as string[])

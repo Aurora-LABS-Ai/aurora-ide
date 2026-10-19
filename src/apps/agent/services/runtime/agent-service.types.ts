@@ -138,7 +138,7 @@ export interface AgentConfig {
   transcriptChapters?: boolean;
   /**
    * Transcript → Reply layout (Settings → Preferences → Transcript): teach the
-   * model the facts / flow / note blocks the transcript draws. Read per turn
+   * model the structured explanation blocks the transcript draws. Read per turn
    * from the window's own switch, like `transcriptChapters`.
    */
   replyLayout?: boolean;

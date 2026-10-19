@@ -1,15 +1,32 @@
 /* ── Reply layout — page parts inside a reply (Transcript → Reply layout) ──
- * `components/reply-layout/ReplyLayout.tsx`. Three parts the model can write
- * between its sentences: a row of facts, a top-to-bottom flow, a note. All
- * three sit on the canvas card's surface and line (`--agw-card-paint`,
+ * `components/reply-layout/`. Page parts the model can write between its
+ * sentences. Framed parts share the canvas card's surface and line (`--agw-card-paint`,
  * `--agw-card-line`), the same frame as an answer box, so the transcript
  * gains no new surface. Nothing glows, nothing is raised: the hierarchy is
  * type size and one hairline. Quiet by default so the few values that matter
  * (the fact values, the flow titles) are the loudest things in the block. */
 
+/* ── Type: the reply's own, not the interface's ─────────────────────────
+ * Every size here derives from Settings → Appearance → Typography → Message
+ * text size / weight, the setting the prose around a block already follows.
+ * The blocks used to set the interface sizes (13–15px fixed, 1.45 leading,
+ * the subtle grey for captions), so beside a 15px/1.75 reply they read as a
+ * smaller, greyer, different font, and a user who changed the message size
+ * saw the prose move and the blocks not (Alvan, 2026-10-16: "doesn't use the
+ * app fonts I chose"). Rows keep a tighter leading than paragraphs on
+ * purpose: a row is a line to scan, not a sentence to read. */
+.agw-root {
+  --agw-rl-fs-body: var(--agw-msg-font-size, var(--agw-fs-md));
+  --agw-rl-fs-small: calc(var(--agw-rl-fs-body) * 0.875);
+  --agw-rl-fs-tiny: calc(var(--agw-rl-fs-body) * 0.8);
+  --agw-rl-lh: 1.5;
+}
+
 .agw-rl-wrap {
   margin: 12px 0 14px;
   min-width: 0;
+  font-weight: var(--agw-msg-font-weight, 400);
+  letter-spacing: -0.009em;
 }
 .agw-rl {
   margin: 0;
@@ -44,6 +61,15 @@
   background: var(--agw-card-paint);
   container-type: inline-size;
 }
+.agw-rl-facts-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+/* A titled facts block, the way bars and pairs are titled. */
+.agw-rl-facts > .agw-rl-block-title {
+  border-bottom: 1px solid var(--agw-border);
+}
 .agw-rl-fact {
   display: grid;
   grid-template-columns: minmax(96px, 150px) minmax(0, 1fr);
@@ -57,8 +83,8 @@
   border-bottom: 0;
 }
 .agw-rl-fact-label {
-  font-size: var(--agw-fs-label);
-  line-height: 1.45;
+  font-size: var(--agw-rl-fs-small);
+  line-height: var(--agw-rl-lh);
   color: var(--agw-text-muted);
   overflow-wrap: anywhere;
 }
@@ -70,16 +96,16 @@
   min-width: 0;
 }
 .agw-rl-fact-value {
-  font-size: var(--agw-fs-md);
+  font-size: var(--agw-rl-fs-body);
   font-weight: var(--agw-fw-medium);
-  line-height: 1.45;
+  line-height: var(--agw-rl-lh);
   color: var(--agw-text);
   overflow-wrap: anywhere;
 }
 .agw-rl-fact-caption {
-  font-size: var(--agw-fs-label);
-  line-height: 1.45;
-  color: var(--agw-text-subtle);
+  font-size: var(--agw-rl-fs-small);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text-muted);
   overflow-wrap: anywhere;
 }
 /* A narrow column (the docked chat): label above value. */
@@ -90,77 +116,130 @@
   }
 }
 
-/* ── Flow: a stepper. A rail with a dot per step, words beside it ──────── */
-/* No frame, no node boxes, no arrows: the rail carries the order. The dot and
-   rail are the timeline spine's own marks (`11-transcript-bubbles.css`), so a
-   flow inside a reply looks like the transcript around it. */
+/* ── Flow: across, one step open (`FlowSteps.tsx`) ────────────────────── */
+/* Probe `aurora-flow-shape-designs.html` card 03. Step names on one line in
+   the card's quiet frame, an arrow between, the open step's caption under
+   them. The selected name takes the quiet selected fill, the way a picked
+   row does elsewhere; no ring, no accent fill. Wraps to a second line rather
+   than scrolling sideways, so the docked chat needs no other layout. */
 .agw-rl-flow {
-  list-style: none;
-  padding: 2px 0 2px 20px;
+  padding: 6px 6px 10px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
 }
-.agw-rl-step {
-  position: relative;
-  min-width: 0;
-  padding: 3px 0;
+.agw-rl-flow[data-plain] {
+  padding: 6px;
 }
-.agw-rl-step + .agw-rl-step {
-  margin-top: 8px;
-}
-/* The dot, level with the title's first line. */
-.agw-rl-step::before {
-  content: "";
-  position: absolute;
-  top: 10px;
-  left: -20px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--agw-text-subtle);
-}
-/* The rail, from this dot down to the next; the last step has none. */
-.agw-rl-step:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  top: 19px;
-  bottom: -9px;
-  left: -17.5px;
-  width: 1px;
-  background: var(--agw-border-strong);
-}
-.agw-rl-node-title {
-  font-size: var(--agw-fs-md);
-  font-weight: var(--agw-fw-medium);
-  line-height: 1.45;
-  color: var(--agw-text);
-  overflow-wrap: anywhere;
-}
-.agw-rl-node-caption {
-  font-size: var(--agw-fs-label);
-  line-height: 1.45;
-  color: var(--agw-text-subtle);
-  overflow-wrap: anywhere;
-}
-/* Branches: the alternatives at one step, on one line, a middle dot between. */
-.agw-rl-branches {
+.agw-rl-steps {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 0;
-  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.agw-rl-branch {
+.agw-rl-step-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.agw-rl-step {
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
   min-width: 0;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  /* Names are labels to pick from, a step below the caption they open, so
+     a five-step flow fits one line of the reading column. */
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-medium);
+  line-height: var(--agw-rl-lh);
+  text-align: left;
+  overflow-wrap: anywhere;
 }
-.agw-rl-branch + .agw-rl-branch::before {
-  content: "·";
-  margin: 0 9px;
-  color: var(--agw-text-subtle);
+button.agw-rl-step {
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
-.agw-rl-branch .agw-rl-node-caption {
-  display: inline;
+button.agw-rl-step:hover {
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+button.agw-rl-step:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+/* Selected by fill and colour only, never weight: a bolder name is a wider
+   name, and the line re-wrapped on every click — "5 HTML" pushed the row to
+   two lines and back (live, 2026-10-16). Every name is medium all the time. */
+button.agw-rl-step[aria-selected="true"] {
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+/* A plain path has nothing to open: every name reads at full strength. */
+.agw-rl-flow[data-plain] .agw-rl-step {
+  color: var(--agw-text);
+}
+.agw-rl-step-n {
+  font-size: var(--agw-rl-fs-tiny);
+  font-weight: 400;
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-rl-step-arrow {
+  color: var(--agw-text-muted);
+  font-size: var(--agw-rl-fs-tiny);
+}
+.agw-rl-flow[data-plain] .agw-rl-step-arrow {
+  margin-right: 2px;
+}
+.agw-rl-step-or {
+  color: var(--agw-text-muted);
+}
+.agw-rl-step-detail {
+  padding: 8px 10px 0;
+  font-size: var(--agw-rl-fs-body);
+  line-height: var(--agw-msg-line-height, 1.75);
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  overflow-wrap: anywhere;
+}
+.agw-rl-step-branches {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.agw-rl-step-branch-name {
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  button.agw-rl-step {
+    transition: none;
+  }
+}
+.agw-rl-node-title {
+  font-size: var(--agw-rl-fs-body);
+  font-weight: var(--agw-fw-medium);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+.agw-rl-node-caption {
+  font-size: var(--agw-rl-fs-small);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text-muted);
+  overflow-wrap: anywhere;
 }
 
 /* ── Note: one boxed caveat, a rule on its left ───────────────────────── */
@@ -172,7 +251,7 @@
   background: var(--agw-card-paint);
 }
 .agw-rl-note-title {
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-rl-fs-body);
   font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
@@ -183,7 +262,7 @@
   gap: 16px;
   padding: 7px 0;
   border-bottom: 1px solid var(--agw-border);
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-rl-fs-body);
 }
 .agw-rl-note-title + .agw-rl-pair {
   margin-top: 6px;
@@ -204,15 +283,35 @@
 }
 .agw-rl-note-text {
   margin: 8px 0 0;
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-rl-fs-body);
   line-height: 1.55;
   color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+}
+
+/* A note's rows are the pairs' grid, values left-aligned. Right-aligned, a
+   value that ran to two lines ("It guards /admin and /api/admin only — user
+   APIs and pages rely entirely on their own checks") wrapped against the
+   right edge and read back to front (live, 2026-10-16). */
+.agw-rl-note .agw-rl-pair {
+  display: grid;
+  grid-template-columns: minmax(80px, 160px) minmax(0, 1fr);
+  gap: 2px 18px;
+  align-items: baseline;
+}
+.agw-rl-note .agw-rl-pair-value {
+  text-align: left;
+}
+@container (max-width: 380px) {
+  .agw-rl-note .agw-rl-pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
 }
 
 /* ── Shared: a block's title line, inside the frame ───────────────────── */
 .agw-rl-block-title {
   padding: 8px 0 6px;
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-rl-fs-body);
   font-weight: var(--agw-fw-medium);
   color: var(--agw-text);
 }
@@ -237,7 +336,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
-  font-size: var(--agw-fs-ui);
+  font-size: var(--agw-rl-fs-body);
 }
 .agw-rl-bar-label {
   min-width: 0;
@@ -264,9 +363,9 @@
 }
 .agw-rl-bar-caption {
   margin-top: 5px;
-  font-size: var(--agw-fs-label);
-  line-height: 1.45;
-  color: var(--agw-text-subtle);
+  font-size: var(--agw-rl-fs-small);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text-muted);
 }
 
 /* ── Pairs: a titled key / value table, the note's rows without its rule ── */
@@ -312,14 +411,196 @@
   border-top: 1px solid var(--agw-border);
 }
 
+/* Structured explanations share one frame; rows carry the hierarchy. */
+.agw-rl-structure {
+  padding: 2px 14px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+  container-type: inline-size;
+  overflow-wrap: anywhere;
+  font-size: var(--agw-rl-fs-body);
+  line-height: 1.5;
+}
+.agw-rl-item-body {
+  min-width: 0;
+}
+.agw-rl-structure .agw-rl-node-title {
+  font-size: var(--agw-rl-fs-body);
+}
+.agw-rl-structure .agw-rl-node-caption {
+  color: var(--agw-text-muted);
+}
+
+/* Comparison: shared aspect rows on wide replies, labeled values when narrow. */
+.agw-rl-compare table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  text-align: left;
+}
+.agw-rl-compare caption {
+  text-align: left;
+}
+.agw-rl-compare th,
+.agw-rl-compare td {
+  padding: 9px 12px 9px 0;
+  border-bottom: 1px solid var(--agw-border);
+  vertical-align: top;
+  font-weight: normal;
+}
+.agw-rl-compare th:last-child,
+.agw-rl-compare td:last-child {
+  padding-right: 0;
+}
+.agw-rl-compare thead th {
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-medium);
+}
+.agw-rl-compare thead th:first-child,
+.agw-rl-compare td {
+  color: var(--agw-text-muted);
+}
+.agw-rl-compare tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.agw-rl-compare-option {
+  display: none;
+}
+@container (max-width: 520px) {
+  .agw-rl-compare table,
+  .agw-rl-compare tbody,
+  .agw-rl-compare tr,
+  .agw-rl-compare tbody th {
+    display: block;
+  }
+  /* Keep column headers available to assistive technology. Each value also
+     prints its option on narrow screens, so no relationship depends on position. */
+  .agw-rl-compare thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .agw-rl-compare caption {
+    display: block;
+  }
+  .agw-rl-compare tbody tr {
+    padding: 9px 0;
+    border-top: 1px solid var(--agw-border);
+  }
+  .agw-rl-compare tbody th {
+    padding: 0 0 5px;
+    border: 0;
+    font-weight: var(--agw-fw-medium);
+  }
+  .agw-rl-compare td {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 12px;
+    padding: 3px 0;
+    border: 0;
+  }
+  .agw-rl-compare-option {
+    display: block;
+    color: var(--agw-text-muted);
+    font-size: var(--agw-rl-fs-small);
+  }
+}
+
+/* Checklist statuses are written labels, never live task controls. */
+.agw-rl-status-list,
+.agw-rl-dated-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.agw-rl-status-row,
+.agw-rl-dated-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+}
+.agw-rl-status-row + .agw-rl-status-row {
+  border-top: 1px solid var(--agw-border);
+}
+.agw-rl-status,
+.agw-rl-date {
+  color: var(--agw-text-muted);
+  font-size: var(--agw-rl-fs-small);
+  padding-top: 1px;
+}
+.agw-rl-status-row[data-status="doing"] .agw-rl-status {
+  color: var(--agw-accent);
+}
+.agw-rl-status-row[data-status="blocked"] .agw-rl-status {
+  color: var(--agw-warning);
+}
+
+/* Dates stay beside their events; a rail connects events in the given order. */
+.agw-rl-dated-row .agw-rl-item-body {
+  position: relative;
+  padding-left: 16px;
+  border-left: 1px solid var(--agw-border-strong);
+}
+.agw-rl-dated-row .agw-rl-item-body::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: -3.5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agw-text-subtle);
+}
+@container (max-width: 380px) {
+  .agw-rl-status-row,
+  .agw-rl-dated-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+}
+
+/* A nested list retains parent/child meaning for screen readers, too. */
+.agw-rl-tree-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.agw-rl-tree-list .agw-rl-tree-list {
+  margin-left: 4px;
+  padding-left: 16px;
+  border-left: 1px solid var(--agw-border-strong);
+}
+.agw-rl-tree-node {
+  position: relative;
+  padding: 7px 0;
+}
+.agw-rl-tree-list .agw-rl-tree-list > li > .agw-rl-tree-node::before {
+  content: "";
+  position: absolute;
+  top: 17px;
+  left: -16px;
+  width: 10px;
+  border-top: 1px solid var(--agw-border-strong);
+}
+
 /* ── Streaming placeholder and skipped lines ──────────────────────────── */
 .agw-rl-pending {
   height: 12px;
 }
+.agw-rl-pending[data-kind="report"] {
+  height: auto;
+  padding: 10px 0;
+  color: var(--agw-text-muted);
+  font-size: var(--agw-rl-fs-body);
+}
 .agw-rl-problems {
   margin: 6px 0 0;
   padding: 0 0 0 16px;
-  font-size: var(--agw-fs-micro);
+  font-size: var(--agw-rl-fs-tiny);
   line-height: 1.5;
   color: var(--agw-warning);
 }
@@ -331,5 +612,365 @@
   }
   .agw-rl-pair-value {
     text-align: left;
+  }
+}
+
+/* ── The reply language: a whole answer in one `aurora-ui` fence ────────
+ * `components/reply-layout/UiReply.tsx`. Parts stack with the gap a block
+ * already keeps from the prose around it, so a laid-out answer reads like a
+ * reply that happens to hold blocks, not like a dashboard. */
+.agw-rl-ui {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  container-type: inline-size;
+}
+.agw-rl-ui-part {
+  min-width: 0;
+}
+.agw-rl-ui-title {
+  margin: 0;
+  font-size: calc(var(--agw-rl-fs-body) * 1.15);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1.35;
+  color: var(--agw-text);
+}
+/* Prose between parts: the reply's own paragraph, code chips included. */
+.agw-rl-ui-text {
+  margin: 0;
+  font-size: var(--agw-rl-fs-body);
+  line-height: 1.6;
+  color: var(--agw-text);
+}
+.agw-rl-ui-text code {
+  font-family: var(--agw-font-code);
+  font-size: var(--agw-fs-code);
+  padding: 1px 5px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: 5px;
+  background: var(--agw-surface);
+}
+/* A flow's title: a flow has no frame to put it in. */
+.agw-rl-ui-heading {
+  margin: 0 0 6px;
+  font-size: var(--agw-rl-fs-body);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+}
+/* The reporting SDK's metrics, unframed: four big numbers are the frame.
+   Narrower tracks than a report's (140px, not 170px) so four stats keep one
+   row in the chat column instead of wrapping three and one; two a row when
+   docked, where the report's own rule would stack them one a row. */
+.agw-rl-ui .agw-rl-stats {
+  margin: 2px 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+}
+@container (max-width: 480px) {
+  .agw-rl-ui .agw-rl-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+}
+/* The report's labels are a fixed 12px; in a reply they follow the reply. */
+.agw-rl-ui .agw-rl-stats .ac-metric-label,
+.agw-rl-ui .agw-rl-stats .ac-metric-note {
+  font-size: var(--agw-rl-fs-small);
+}
+.agw-rl-stats .ac-metric-value code,
+.agw-rl-stats .ac-metric-label code {
+  font-family: var(--agw-font-code);
+  font-size: 0.92em;
+}
+
+/* ── Links: a card for a page worth opening, chips for sources (Links.tsx) */
+.agw-rl-site-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--agw-radius-md);
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-strong);
+  line-height: 1;
+}
+.agw-rl-ext {
+  margin-left: 4px;
+  font-size: 0.8em;
+  color: var(--agw-text-muted);
+}
+.agw-rl-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+}
+.agw-rl-link-body {
+  flex: 1;
+  min-width: 0;
+}
+.agw-rl-link-title {
+  font-size: var(--agw-rl-fs-body);
+  font-weight: var(--agw-fw-medium);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.agw-rl-link-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.agw-rl-link-title:focus-visible {
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.agw-rl-link-caption {
+  font-size: var(--agw-rl-fs-small);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text-muted);
+  overflow-wrap: anywhere;
+}
+.agw-rl-link-host {
+  font-size: var(--agw-rl-fs-tiny);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text-muted);
+}
+/* A fact about the page, not a mood: one quiet pill, no colour code. */
+.agw-rl-link-badge {
+  flex: none;
+  padding: 2px 9px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  font-size: var(--agw-rl-fs-tiny);
+  font-weight: var(--agw-fw-medium);
+  color: var(--agw-text);
+  white-space: nowrap;
+}
+.agw-rl-link-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--agw-border-strong);
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease;
+}
+.agw-rl-link-open:hover {
+  background: var(--agw-state-quiet);
+}
+.agw-rl-link-open:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+}
+@container (max-width: 420px) {
+  .agw-rl-link {
+    flex-wrap: wrap;
+  }
+  .agw-rl-link-body {
+    flex-basis: calc(100% - 44px);
+  }
+  /* Whatever comes first on the second line lines up under the title. */
+  .agw-rl-link-body + .agw-rl-link-badge,
+  .agw-rl-link-body + .agw-rl-link-open {
+    margin-left: 44px;
+  }
+}
+/* Chips sit right under the part they back, closer than the parts' own gap. */
+.agw-rl-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -6px;
+}
+.agw-rl-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 26px;
+  padding: 0 9px 0 4px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-card-paint);
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-rl-fs-tiny);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
+}
+.agw-rl-source .agw-rl-site-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 10px;
+}
+.agw-rl-source-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-rl-source:hover,
+.agw-rl-source:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-rl-source-more {
+  padding: 0 9px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rl-link-open,
+  .agw-rl-source {
+    transition: none;
+  }
+}
+
+/* ── Diagram: columns of words, hairlines between ───────────────────── */
+.agw-rl-diagram {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--agw-card-line);
+  border-radius: var(--agw-radius-lg);
+  background: var(--agw-card-paint);
+}
+.agw-rl-diagram > .agw-rl-block-title {
+  padding: 8px 14px 6px;
+  border-bottom: 1px solid var(--agw-border);
+}
+.agw-rl-dia {
+  position: relative;
+  padding: 4px 14px 14px;
+}
+.agw-rl-dia-cols {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 32px;
+}
+/* Equal columns, never narrower than the longest path in them. */
+.agw-rl-dia-col {
+  flex: 1 1 0;
+  min-width: min-content;
+  display: flex;
+  flex-direction: column;
+}
+.agw-rl-dia-label {
+  padding: 8px 0;
+  font-size: var(--agw-rl-fs-tiny);
+  color: var(--agw-text-muted);
+}
+.agw-rl-dia-nodes {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+.agw-rl-dia-node {
+  display: block;
+  width: calc(100% + 16px);
+  margin: 0 -8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: opacity var(--agw-dur-fast) ease, background-color var(--agw-dur-fast) ease;
+}
+.agw-rl-dia-node:hover {
+  background: var(--agw-state-quiet);
+}
+.agw-rl-dia-node:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+}
+.agw-rl-dia-title {
+  display: block;
+  font-size: var(--agw-rl-fs-body);
+  font-weight: var(--agw-fw-medium);
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+.agw-rl-dia-caption {
+  display: block;
+  font-size: var(--agw-rl-fs-small);
+  line-height: 1.4;
+  color: var(--agw-text-muted);
+  overflow-wrap: break-word;
+}
+.agw-rl-dia-node code {
+  font-family: var(--agw-font-code);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+.agw-rl-diagram[data-tracing] .agw-rl-dia-node:not([data-on]) {
+  opacity: 0.45;
+}
+.agw-rl-dia-node[data-on] .agw-rl-dia-title {
+  color: var(--agw-accent);
+}
+.agw-rl-dia-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.agw-rl-dia-lines path {
+  fill: none;
+  stroke: var(--agw-border-strong);
+  stroke-width: 1;
+}
+.agw-rl-dia-lines path[data-on] {
+  stroke: var(--agw-accent);
+  stroke-width: 1.5;
+}
+/* Narrow (the docked chat): columns become rows, nodes sit side by side. */
+.agw-rl-dia[data-narrow] .agw-rl-dia-cols {
+  flex-direction: column;
+  gap: 22px;
+}
+.agw-rl-dia[data-narrow] .agw-rl-dia-col {
+  min-width: 0;
+}
+.agw-rl-dia[data-narrow] .agw-rl-dia-label {
+  padding: 4px 0;
+}
+.agw-rl-dia[data-narrow] .agw-rl-dia-nodes {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.agw-rl-dia[data-narrow] .agw-rl-dia-node {
+  flex: 1 1 140px;
+  width: auto;
+  margin: 0;
+}
+.agw-rl-dia[data-narrow] .agw-rl-dia-node code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rl-dia-node {
+    transition: none;
   }
 }

@@ -14,9 +14,6 @@ import { stripAnsi } from "@/apps/agent/components/tool-views/ansi";
  */
 export const TAIL_APPEARS_AFTER_MS = 1_500;
 
-/** The tail's open and close, matched to a tool group folding (ToolGroup). */
-export const TAIL_MOTION_S = 0.18;
-
 /**
  * Milliseconds until a command started at `startedAt` is due its tail, 0 once
  * it is. A command with no start time counts from `fallbackStart`, the moment

@@ -228,24 +228,98 @@ export function antigravityNotices(
 
 // ── Models into the picker ───────────────────────────────────────────────────
 
+/** The effort tiers Antigravity spells into its ids, lowest first. */
+const ANTIGRAVITY_LEVELS = ["low", "medium", "high"] as const;
+const LEVEL_SUFFIX = /-(low|medium|high)$/;
+const LEVEL_LABEL_SUFFIX = /\s*\((low|medium|high)\)$/i;
+
+/**
+ * One model as the picker offers it. Antigravity lists each effort tier as its
+ * own id (`gemini-4-argon-low`, `-medium`, `-high`); those are one model with
+ * an effort setting, so they become one row whose `levels` are the tiers. The
+ * id sent on the wire is rebuilt from the row and its effort at send time
+ * (`applyAntigravityVariant`). A model with a single tier stays as listed.
+ */
+export interface AntigravityFamily {
+  /** The account's entry the row takes its facts from, re-keyed to the stem. */
+  model: AntigravityModel;
+  /** Tiers the account offers for it, lowest first. Empty when not folded. */
+  levels: string[];
+}
+
+/** `gemini-4-argon-high` → `gemini-4-argon`; anything else unchanged. */
+export function antigravityStem(id: string): string {
+  return id.replace(LEVEL_SUFFIX, "");
+}
+
+export function foldAntigravityVariants(models: readonly AntigravityModel[]): AntigravityFamily[] {
+  const byStem = new Map<string, AntigravityModel[]>();
+  for (const m of models) {
+    const stem = antigravityStem(m.id);
+    byStem.set(stem, [...(byStem.get(stem) ?? []), m]);
+  }
+  const out: AntigravityFamily[] = [];
+  for (const [stem, variants] of byStem) {
+    if (variants.length < 2) {
+      out.push({ model: variants[0], levels: [] });
+      continue;
+    }
+    const level = (m: AntigravityModel) => m.id.match(LEVEL_SUFFIX)?.[1] ?? "";
+    const levels = ANTIGRAVITY_LEVELS.filter((l) => variants.some((v) => level(v) === l));
+    const base = variants.find((v) => level(v) === "high") ?? variants[0];
+    const withNotice = variants.find((v) => v.notice);
+    out.push({
+      levels: [...levels],
+      model: {
+        ...base,
+        id: stem,
+        label: base.label.replace(LEVEL_LABEL_SUFFIX, ""),
+        noticeTitle: withNotice?.noticeTitle ?? null,
+        notice: withNotice?.notice ?? null,
+      },
+    });
+  }
+  return out;
+}
+
 /**
  * Turn one account model into a row for the shared list. `previous` is the
- * row already there: its reasoning switch and any limits the user edited are
- * settings, not catalogue facts, and a refresh must not reset them.
+ * row already there: its reasoning choice and any limits the user edited are
+ * settings, not catalogue facts, and a refresh must not reset them. A folded
+ * model (`levels` set) gets an effort control over its tiers; `preferred` is
+ * the tier to start on when the row is new (the one the user had picked as a
+ * separate id before the fold).
  */
 export function antigravityModelRow(
   model: AntigravityModel,
   previous: LLMModel | undefined,
+  levels: readonly string[] = [],
+  preferred?: string,
 ): Omit<LLMModel, "id" | "providerId" | "sortOrder"> {
-  const reasoning: ModelReasoning | undefined = model.supportsThinking
-    ? {
-        type: "toggle",
-        default: previous?.reasoning?.type === "toggle" ? previous.reasoning.default : true,
-        enabled: previous?.reasoning?.enabled,
-        toggleable: true,
-        supported: ["toggle"],
-      }
-    : undefined;
+  const kept =
+    previous?.reasoning?.type === "effort" && typeof previous.reasoning.default === "string"
+      ? previous.reasoning.default
+      : undefined;
+  const reasoning: ModelReasoning | undefined =
+    levels.length > 1
+      ? {
+          type: "effort",
+          levels: [...levels],
+          default: [kept, preferred, "medium"].find((l) => l && levels.includes(l)) ?? levels[0],
+          enabled: true,
+          // The tier is the id: there is no "off" id to send.
+          toggleable: false,
+          supported: ["effort"],
+        }
+      : model.supportsThinking
+        ? {
+            type: "toggle",
+            default: previous?.reasoning?.type === "toggle" ? previous.reasoning.default : true,
+            enabled: previous?.reasoning?.enabled,
+            toggleable: true,
+            supported: ["toggle"],
+          }
+        : undefined;
   return {
     modelKey: model.id,
     label: model.label,
@@ -266,20 +340,116 @@ export function antigravityModelRow(
 }
 
 /**
+ * The rows the shared list should hold after a refresh: the account's models
+ * in its own order, then every row already there that the account does not
+ * list. Those are kept, not dropped: a model added by hand (a release Google
+ * has not turned on for this account yet) must survive the refresh, and when
+ * the account starts listing it, it becomes an ordinary row in place.
+ */
+export function antigravitySyncRows(
+  catalogue: AntigravityCatalogue,
+  current: readonly LLMModel[],
+  selectedModel = "",
+): Array<Omit<LLMModel, "id" | "providerId" | "sortOrder">> {
+  const existing = new Map(current.map((m) => [m.modelKey, m]));
+  const families = foldAntigravityVariants(catalogue.models);
+  const offered = new Set(families.map((f) => f.model.id));
+  const pickedKey = selectedModel.startsWith(`${ANTIGRAVITY_PROVIDER_ID}:`)
+    ? selectedModel.slice(ANTIGRAVITY_PROVIDER_ID.length + 1)
+    : "";
+  const rows = families.map(({ model, levels }) =>
+    antigravityModelRow(
+      model,
+      existing.get(model.id),
+      levels,
+      antigravityStem(pickedKey) === model.id ? pickedKey.match(LEVEL_SUFFIX)?.[1] : undefined,
+    ),
+  );
+  // Passed whole: `replaceModelsForProvider` sets id, provider and order. A
+  // tier row from before the fold (`…-high` beside its new `…` row) is the
+  // same model, not a hand-added one, so it goes.
+  const kept = current
+    .filter((m) => !offered.has(m.modelKey) && !offered.has(antigravityStem(m.modelKey)))
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  return [...rows, ...kept];
+}
+
+/**
+ * Rows in the model list that the account does not offer. Chats on them get
+ * "not found" from Google until it turns them on for this account.
+ */
+export function antigravityNotOffered(
+  catalogue: AntigravityCatalogue,
+  current: readonly LLMModel[],
+): LLMModel[] {
+  const offered = new Set(foldAntigravityVariants(catalogue.models).map((f) => f.model.id));
+  return current.filter(
+    (m) =>
+      m.providerId === ANTIGRAVITY_PROVIDER_ID &&
+      !offered.has(m.modelKey) &&
+      !offered.has(antigravityStem(m.modelKey)),
+  );
+}
+
+/**
+ * The id Antigravity expects for a folded row: its stem plus the chosen tier.
+ * `null` for a row that was never folded (its key is already the id).
+ */
+export function antigravityWireModel(model: Pick<LLMModel, "modelKey" | "reasoning">): string | null {
+  const r = model.reasoning;
+  if (r?.type !== "effort" || !r.levels?.length) return null;
+  if (!r.levels.every((l) => (ANTIGRAVITY_LEVELS as readonly string[]).includes(l))) return null;
+  const level = typeof r.default === "string" && r.levels.includes(r.default) ? r.default : r.levels[r.levels.length - 1];
+  return `${model.modelKey}-${level}`;
+}
+
+/**
  * Mirror the account's models into the shared model list. Idempotent: running
- * it again after a refresh converges on the same rows. Returns how many
- * models the picker now offers.
+ * it again after a refresh converges on the same rows. Returns how many of
+ * the account's models the picker now offers.
  */
 export function syncAntigravityModels(catalogue: AntigravityCatalogue): number {
   const store = useAgentSettingsStore.getState();
-  const existing = new Map(
-    store.models
-      .filter((m) => m.providerId === ANTIGRAVITY_PROVIDER_ID)
-      .map((m) => [m.modelKey, m]),
-  );
-  const rows = catalogue.models.map((m) => antigravityModelRow(m, existing.get(m.id)));
-  store.replaceModelsForProvider(ANTIGRAVITY_PROVIDER_ID, rows);
-  return rows.length;
+  const current = store.models.filter((m) => m.providerId === ANTIGRAVITY_PROVIDER_ID);
+  const rows = antigravitySyncRows(catalogue, current, store.selectedModel);
+  // A selection naming a tier id from before the fold follows its model's row
+  // instead of being reconciled away to some other model.
+  const offered = new Set(rows.map((r) => r.modelKey));
+  const renames: Record<string, string> = {};
+  for (const m of current) {
+    const stem = antigravityStem(m.modelKey);
+    if (stem !== m.modelKey && offered.has(stem) && !offered.has(m.modelKey)) renames[m.modelKey] = stem;
+  }
+  store.replaceModelsForProvider(ANTIGRAVITY_PROVIDER_ID, rows, renames);
+  return foldAntigravityVariants(catalogue.models).length;
+}
+
+/**
+ * How often the window re-reads the account's models. Google turns new models
+ * on per account without notice; this is how long one can take to appear in
+ * the picker without opening the Providers page.
+ */
+export const ANTIGRAVITY_MODELS_REFRESH_MS = 30 * 60_000;
+
+/**
+ * Re-read the main account's models into the picker, when an account is
+ * signed in. Signed out is left to the card, which clears the rows.
+ */
+export async function refreshAntigravityModels(): Promise<number | null> {
+  const auth = await antigravityAuthStatus();
+  if (!auth.signedIn) return null;
+  return syncAntigravityModels(await antigravityModelsList());
+}
+
+/**
+ * Refresh without letting a failure reach the caller: it runs on window start
+ * and on a timer, while the person is doing something else. The picker keeps
+ * the models it had.
+ */
+export function refreshAntigravityModelsQuietly(): void {
+  void refreshAntigravityModels().catch((err) => {
+    console.warn("[antigravity] could not refresh the model picker:", err);
+  });
 }
 
 /** Drop the mirrored models, after the last account is removed. */

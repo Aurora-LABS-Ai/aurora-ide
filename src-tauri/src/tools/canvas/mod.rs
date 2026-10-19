@@ -23,6 +23,29 @@ use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, 
 
 pub mod guide;
 
+const REPLY_LAYOUT_GUIDE: &str =
+    include_str!("../../../../src/apps/agent/lib/reply-layout/guide.md");
+const REPORT_GUIDE: &str = include_str!("../../../../src/canvas-sdk/reporting/GUIDE.md");
+const REPORT_EXAMPLE: &str =
+    include_str!("../../../../src/canvas-sdk/reporting/examples/royalties.json");
+
+fn guide_for(input: &Value) -> Result<String, ToolError> {
+    match input.get("topic") {
+        None | Some(Value::Null) => Ok(format!("{}\n\n{}", guide::CANVAS_GUIDE, REPORT_GUIDE)),
+        Some(Value::String(topic)) => match topic.as_str() {
+            "canvas" => Ok(format!("{}\n\n{}", guide::CANVAS_GUIDE, REPORT_GUIDE)),
+            "reply-layout" => Ok(REPLY_LAYOUT_GUIDE.to_string()),
+            "reports" => Ok(format!(
+                "{REPORT_GUIDE}\n\n```aurora-report\n{REPORT_EXAMPLE}\n```"
+            )),
+            _ => Err(ToolError::InvalidInput(
+                "topic must be canvas, reply-layout or reports".into(),
+            )),
+        },
+        Some(_) => Err(ToolError::InvalidInput("topic must be a string".into())),
+    }
+}
+
 pub const TOOL_NAMES: &[&str] = &["canvas_guidelines"];
 
 pub struct CanvasGuidelinesTool;
@@ -36,7 +59,7 @@ impl ToolExecutor for CanvasGuidelinesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "canvas_guidelines".into(),
-            description: "Load the rules for authoring a live canvas — a `react` artifact that \
+            description: "Load on-demand authoring rules for reply layouts, interactive reports or a live canvas — a `react` artifact that \
 Aurora compiles and RUNS beside the conversation, so it can have working controls instead of \
 being a picture of an interface.
 
@@ -45,18 +68,19 @@ before revising one if you no longer have these rules in context. It covers when
 right answer at all, the module and export contract the compiler enforces, how to theme against \
 Aurora's tokens, and what gets rejected.
 
+Choose topic: reply-layout for native reply blocks, reports for the declarative report contract and connected reporting components, canvas for custom React artifacts. Omit topic for the canvas guide.
 You do not need it for `mermaid`, `markdown`, `html`, or `svg` artifacts."
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": { "topic": { "type": "string", "enum": ["canvas", "reply-layout", "reports"], "description": "Authoring guide to load; defaults to canvas." } }
             }),
         }
     }
 
-    async fn execute(&self, _input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
+    async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
-        Ok(guide::CANVAS_GUIDE.to_string())
+        guide_for(&input)
     }
 }
 
@@ -67,6 +91,39 @@ pub fn register(reg: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guides_are_selected_and_invalid_topics_are_explicit() {
+        assert!(guide_for(&json!({})).unwrap().contains("export default"));
+        assert!(guide_for(&json!({"topic":"reply-layout"}))
+            .unwrap()
+            .contains("aurora-report"));
+        assert!(guide_for(&json!({"topic":"reports"}))
+            .unwrap()
+            .contains("Soundrop"));
+        assert!(guide_for(&json!({"topic":"reports"}))
+            .unwrap()
+            .contains("stacked-column"));
+        assert!(guide_for(&json!({"topic":"unknown"})).is_err());
+        assert!(guide_for(&json!({"topic":42})).is_err());
+        for component in [
+            "Report",
+            "Chart",
+            "DataTable",
+            "Metric",
+            "MetricGrid",
+            "SearchField",
+            "SelectField",
+            "MultiSelect",
+            "RangeField",
+            "Toggle",
+        ] {
+            assert!(
+                REPORT_GUIDE.contains(component),
+                "undocumented SDK component: {component}"
+            );
+        }
+    }
 
     #[test]
     fn registers_under_its_advertised_name() {

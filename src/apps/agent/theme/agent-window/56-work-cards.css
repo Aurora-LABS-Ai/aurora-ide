@@ -79,7 +79,7 @@
 .agw-wc-chev {
   flex: none;
   color: var(--agw-text-subtle);
-  transition: transform var(--agw-dur-fast) var(--agw-ease-enter);
+  transition: transform var(--agw-glide-dur) var(--agw-glide-ease);
 }
 .agw-wc[data-open] .agw-wc-chev {
   transform: rotate(90deg);
@@ -138,12 +138,19 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: min(460px, 60vh);
+  /* Grows with its rows up to 55% of the window, then scrolls (Alvan,
+     2026-10-16: 460px was far too short on a tall window, 70vh too big). */
+  max-height: 55vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* The browser's scroll anchoring moves `scrollTop` by itself when rows
+     above the view change (the window drops its oldest row, a step folds).
+     That scroll read as the reader leaving the bottom and stopped the follow
+     for good (Alvan, 2026-10-16: bottom cut off, no auto-scroll). Following
+     the newest row is done in WorkCard; nothing else moves this box. */
+  overflow-anchor: none;
   padding: 10px 12px 12px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--agw-scroll-thumb) transparent;
+  /* The scrollbar is the hairline one (`.agw-scroll-hair`, 01-root.css). */
   outline: none;
   animation-name: agw-wc-scroll-fade;
   animation-duration: auto;
@@ -179,30 +186,38 @@
   );
 }
 
-/* Closed while it runs: as tall as its steps, up to 380px. It grows DOWNWARD
-   from the header as steps arrive — a fixed-height window pinned its rows to
-   the bottom, which left a hole under the header and made every step push the
-   others up (Alvan, 2026-10-12). Once it is full, the oldest steps leave
-   through the top: `column-reverse` keeps the end of the content in view, and
-   the top fades only while something is actually cut off there
-   (`data-clipped`, measured in WorkCard). A click anywhere opens the card;
-   nothing inside is a control here. */
-.agw-wc-window {
-  max-height: 380px;
-  padding: 10px 12px 12px;
-  display: flex;
-  flex-direction: column-reverse;
-  overflow: hidden;
-  cursor: pointer;
-}
-.agw-wc-window[data-clipped] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
-}
-.agw-wc-window-in {
+/* The rows, one wrapper in both shapes so the window and the open panel are the
+   same element tree (WorkCard: opening must not rebuild a row). */
+.agw-wc-rows {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Closed while it runs: the same scroller as the open panel, as tall as its
+   steps up to the SAME 55vh the open panel stops at. It grows DOWNWARD from the
+   header as steps arrive — a fixed-height window pinned its rows to the bottom,
+   which left a hole under the header and made every step push the others up
+   (Alvan, 2026-10-12). It used to stop at 380px, about half the open limit on a
+   tall window, and read as a card stuck halfway; one limit for both shapes
+   (Alvan, 2026-10-17). Once
+   it is full, WorkCard keeps it scrolled to the newest step, so the oldest
+   leave through the top, and the top fades only while something is actually
+   cut off there (`data-clipped`, measured in WorkCard). It does not scroll by
+   hand: a click anywhere opens the card; nothing inside is a control here. */
+.agw-wc-body.agw-wc-window {
+  max-height: 55vh;
+  overflow: hidden;
+  cursor: pointer;
+  animation: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.agw-wc-body.agw-wc-window[data-clipped] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
+}
+.agw-wc-window .agw-wc-rows {
   pointer-events: none;
 }
 

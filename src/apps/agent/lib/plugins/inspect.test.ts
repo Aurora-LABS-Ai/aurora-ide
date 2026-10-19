@@ -30,6 +30,14 @@ const server = (
 });
 
 describe("inspectServers", () => {
+  it("keeps a failed server flagged while it retries, so the page does not flicker", () => {
+    const retrying = server("a", "ssh", { command: "uvx", args: ["x"] }, "connecting", "Could not reach host");
+    const first = server("b", "fresh", { command: "uvx", args: ["y"] }, "connecting");
+    const byId = issueByServer(inspectServers([retrying, first]));
+    expect(byId.get("a")).toMatchObject({ kind: "error", message: "Could not reach host" });
+    expect(byId.has("b")).toBe(false);
+  });
+
   it("flags two rows that start the same command, naming the twin, whichever slashes they use", () => {
     // Alvan's real pair: one row written with forward slashes, one with
     // backslashes, by two different config files. Windows runs the same file.

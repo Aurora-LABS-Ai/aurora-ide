@@ -2,10 +2,10 @@
 //!
 //! Handles loading/saving MCP server configurations to mcp.json
 
-use super::types::{McpServerConfig, McpTransportType};
+use super::types::{McpScope, McpServerConfig, McpTransportType};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// MCP configuration file structure (Claude/Cursor compatible)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -35,7 +35,14 @@ pub struct McpServerEntry {
     /// keep working — when absent it is inferred in [`resolve_transport`].
     /// `"type"` is accepted as an alias because that is the key Claude Code
     /// and Cursor use (`"type": "http"`).
-    #[serde(default, alias = "type", skip_serializing_if = "Option::is_none")]
+    /// Written as `type`, Claude Code's key, so a `.mcp.json` Aurora saves
+    /// still reads correctly in Claude Code; `transport` is still accepted.
+    #[serde(
+        default,
+        rename = "type",
+        alias = "transport",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub transport: Option<McpTransportType>,
     /// URL for the legacy HTTP+SSE transport
     pub url: Option<String>,
@@ -48,18 +55,30 @@ pub struct McpServerEntry {
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// Whether enabled
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub enabled: bool,
     /// Auto-start
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub auto_start: bool,
     /// Auto-approve all tool calls (skip user confirmation)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub auto_approve: bool,
+    /// Per-server tool-call ceiling in seconds (Aurora extension; other
+    /// clients ignore the key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_timeout_secs: Option<u64>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl McpServerEntry {
@@ -94,10 +113,9 @@ impl McpServerEntry {
     /// a round-trip can never downgrade an `http` server to `sse`, and the
     /// endpoint lands under the key each transport conventionally uses.
     fn from_config(config: &McpServerConfig) -> Self {
-        let (url, http_url) = match config.transport {
-            McpTransportType::Http => (None, config.url.clone()),
-            _ => (config.url.clone(), None),
-        };
+        // `type` is always written, so `url` is unambiguous for both HTTP
+        // transports; `httpUrl` (Gemini's spelling) is only read, never written.
+        let (url, http_url) = (config.url.clone(), None);
         Self {
             // The map KEY is the name (Cursor/Claude format), so the
             // redundant `name` field is dropped.
@@ -112,8 +130,227 @@ impl McpServerEntry {
             enabled: config.enabled,
             auto_start: config.auto_start,
             auto_approve: config.auto_approve,
+            tool_timeout_secs: config.tool_timeout_secs,
         }
     }
+
+    fn to_config(&self, key: &str, scope: McpScope, source: &Path) -> McpServerConfig {
+        McpServerConfig {
+            scope,
+            source: Some(source.to_string_lossy().into_owned()),
+            tool_timeout_secs: self.tool_timeout_secs,
+            id: key.to_string(),
+            // Use stored name, or fall back to the key (Claude/Cursor format).
+            name: self.name.clone().unwrap_or_else(|| key.to_string()),
+            transport: self.resolve_transport(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            env: self.env.clone(),
+            url: self.resolve_url(),
+            headers: self.headers.clone(),
+            enabled: self.enabled,
+            // A project file is shared through the repo; it decides what the
+            // server IS, never that Aurora may start it unasked. Turning it on
+            // in settings does, and from then it starts with the project.
+            auto_start: match scope {
+                McpScope::Global => self.auto_start,
+                McpScope::Project => true,
+            },
+            auto_approve: self.auto_approve,
+        }
+    }
+}
+
+/// Expand `${VAR}` and `${VAR:-default}` the way Claude Code does, so a
+/// shared `.mcp.json` can say `"API_KEY": "${API_KEY}"` without committing the
+/// key. Unknown variables are left as written and returned so the caller can
+/// say which one is missing.
+pub fn expand_env_vars(value: &str) -> (String, Vec<String>) {
+    let mut out = String::with_capacity(value.len());
+    let mut missing = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        let inner = &after[..end];
+        let (name, default) = match inner.split_once(":-") {
+            Some((n, d)) => (n, Some(d)),
+            None => (inner, None),
+        };
+        match (std::env::var(name).ok(), default) {
+            (Some(v), _) => out.push_str(&v),
+            (None, Some(d)) => out.push_str(d),
+            (None, None) => {
+                missing.push(name.to_string());
+                out.push_str(&rest[start..start + 2 + end + 1]);
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    (out, missing)
+}
+
+/// The config with every `${VAR}` expanded, for launching only. The stored
+/// config keeps the placeholders so saving never writes a secret to disk.
+pub fn expanded_for_launch(config: &McpServerConfig) -> Result<McpServerConfig, String> {
+    let mut missing = Vec::new();
+    let mut expand = |s: &str| {
+        let (v, m) = expand_env_vars(s);
+        missing.extend(m);
+        v
+    };
+    let mut out = config.clone();
+    out.command = config.command.as_deref().map(&mut expand);
+    out.args = config.args.iter().map(|a| expand(a)).collect();
+    out.url = config.url.as_deref().map(&mut expand);
+    out.env = config
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), expand(v)))
+        .collect();
+    out.headers = config
+        .headers
+        .iter()
+        .map(|(k, v)| (k.clone(), expand(v)))
+        .collect();
+    if missing.is_empty() {
+        Ok(out)
+    } else {
+        missing.sort();
+        missing.dedup();
+        Err(format!(
+            "This server's config uses environment variables that are not set: {}. \
+             Set them, or write the value into the config.",
+            missing.join(", ")
+        ))
+    }
+}
+
+/// `.mcp.json` files that apply to `workspace`, outermost first, so a file
+/// closer to the workspace overrides one further up (Claude Code's order).
+pub fn project_config_files(workspace: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<&Path> = workspace.ancestors().collect();
+    dirs.reverse();
+    dirs.into_iter()
+        .map(|d| d.join(PROJECT_FILE_NAME))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
+pub const PROJECT_FILE_NAME: &str = ".mcp.json";
+
+/// Read one config file. A missing file is empty; a broken one is an error
+/// naming the file, so the settings page can say which file to fix.
+pub fn read_file(path: &Path) -> Result<McpConfig, String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|e| format!("{} is not valid MCP config: {}", path.display(), e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(McpConfig::default()),
+        Err(e) => Err(format!("Could not read {}: {}", path.display(), e)),
+    }
+}
+
+/// Write one config file, keeping every key Aurora does not know about.
+/// Project files are shared with other tools (Claude Code, Cursor), so a save
+/// must not drop their settings.
+pub fn write_file(path: &Path, config: &McpConfig) -> Result<(), String> {
+    let mut doc: serde_json::Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let servers = serde_json::to_value(&config.mcp_servers)
+        .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
+    doc["mcpServers"] = servers;
+    let content = serde_json::to_string_pretty(&doc)
+        .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
+    std::fs::write(path, content).map_err(|e| format!("Could not write {}: {}", path.display(), e))
+}
+
+/// Which project servers the user turned on, per workspace (Claude Code's
+/// `enabledMcpjsonServers` / `disabledMcpjsonServers`). Kept in Aurora's own
+/// data folder — never in the repo — and tied to what the server runs, so a
+/// pulled `.mcp.json` that changes a server's command turns it back off.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ProjectApprovals {
+    #[serde(default)]
+    pub workspaces: HashMap<String, HashMap<String, ApprovalRecord>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalRecord {
+    pub approved: bool,
+    /// Fingerprint of command/args/url/env keys at the time of the answer.
+    pub fingerprint: String,
+}
+
+impl ProjectApprovals {
+    pub fn load() -> Self {
+        std::fs::read_to_string(crate::paths::mcp_project_approvals_file())
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize approvals: {}", e))?;
+        std::fs::write(crate::paths::mcp_project_approvals_file(), content)
+            .map_err(|e| format!("Failed to save MCP approvals: {}", e))
+    }
+
+    /// `Some(true|false)` once answered for this exact launch; `None` asks.
+    pub fn answer(&self, workspace: &str, config: &McpServerConfig) -> Option<bool> {
+        let record = self.workspaces.get(&workspace_key(workspace))?.get(&config.name)?;
+        (record.fingerprint == fingerprint(config)).then_some(record.approved)
+    }
+
+    pub fn set(&mut self, workspace: &str, config: &McpServerConfig, approved: bool) {
+        self.workspaces
+            .entry(workspace_key(workspace))
+            .or_default()
+            .insert(
+                config.name.clone(),
+                ApprovalRecord {
+                    approved,
+                    fingerprint: fingerprint(config),
+                },
+            );
+    }
+}
+
+fn workspace_key(workspace: &str) -> String {
+    let trimmed = workspace.trim_end_matches(['\\', '/']);
+    if cfg!(windows) {
+        trimmed.replace('/', "\\").to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// What a server would run or reach. Env VALUES are left out on purpose so a
+/// rotated key doesn't re-ask; env NAMES are in, since adding one can change
+/// what a program does.
+pub fn fingerprint(config: &McpServerConfig) -> String {
+    use sha2::{Digest, Sha256};
+    let mut env_keys: Vec<&String> = config.env.keys().collect();
+    env_keys.sort();
+    let material = serde_json::json!({
+        "transport": config.transport,
+        "command": config.command,
+        "args": config.args,
+        "url": config.url,
+        "env": env_keys,
+    });
+    let digest = Sha256::digest(material.to_string().as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl McpConfig {
@@ -170,37 +407,22 @@ impl McpConfig {
         Self { mcp_servers }
     }
 
-    /// Save MCP config to file
+    /// Save the global config (`~/.aurora/mcp.json`), keeping unknown keys.
     pub fn save(&self) -> Result<(), String> {
-        // `paths::mcp_config_file()` ensures the `config/` parent exists.
-        let path = crate::paths::mcp_config_file();
-
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize MCP config: {}", e))?;
-
-        std::fs::write(&path, content).map_err(|e| format!("Failed to write MCP config: {}", e))
+        write_file(&crate::paths::mcp_config_file(), self)
     }
 
-    /// Convert to list of McpServerConfig
+    /// The global file's servers.
     pub fn to_server_configs(&self) -> Vec<McpServerConfig> {
+        let source = crate::paths::mcp_config_file();
+        self.to_scoped_configs(McpScope::Global, &source)
+    }
+
+    /// This file's servers, tagged with where they came from.
+    pub fn to_scoped_configs(&self, scope: McpScope, source: &Path) -> Vec<McpServerConfig> {
         self.mcp_servers
             .iter()
-            .map(|(id, entry)| {
-                McpServerConfig {
-                    id: id.clone(),
-                    // Use stored name, or fall back to ID (which is the key in Claude/Cursor format)
-                    name: entry.name.clone().unwrap_or_else(|| id.clone()),
-                    transport: entry.resolve_transport(),
-                    command: entry.command.clone(),
-                    args: entry.args.clone(),
-                    env: entry.env.clone(),
-                    url: entry.resolve_url(),
-                    headers: entry.headers.clone(),
-                    enabled: entry.enabled,
-                    auto_start: entry.auto_start,
-                    auto_approve: entry.auto_approve,
-                }
-            })
+            .map(|(key, entry)| entry.to_config(key, scope, source))
             .collect()
     }
 
@@ -263,6 +485,7 @@ mod tests {
                 enabled: true,
                 auto_start: false,
                 auto_approve: true,
+                tool_timeout_secs: None,
             },
         );
 
@@ -330,13 +553,61 @@ mod tests {
 
         let json = serde_json::to_string(&saved).unwrap();
         assert!(
-            json.contains("httpUrl"),
-            "endpoint should persist as httpUrl"
+            json.contains(r#""type":"http""#) && json.contains(r#""url":"https://x.test/mcp""#),
+            "should persist in Claude Code's shape: {json}"
         );
 
         let reloaded: McpConfig = serde_json::from_str(&json).unwrap();
         let servers = reloaded.to_server_configs();
         assert_eq!(servers[0].transport, McpTransportType::Http);
         assert_eq!(servers[0].url.as_deref(), Some("https://x.test/mcp"));
+    }
+
+    #[test]
+    fn env_vars_expand_with_defaults_and_report_missing() {
+        std::env::set_var("AURORA_MCP_TEST_KEY", "k-123");
+        let (v, missing) = expand_env_vars("Bearer ${AURORA_MCP_TEST_KEY}");
+        assert_eq!(v, "Bearer k-123");
+        assert!(missing.is_empty());
+
+        let (v, missing) = expand_env_vars("${AURORA_MCP_NOPE:-fallback}/x");
+        assert_eq!(v, "fallback/x");
+        assert!(missing.is_empty());
+
+        let (v, missing) = expand_env_vars("a ${AURORA_MCP_NOPE} b");
+        assert_eq!(v, "a ${AURORA_MCP_NOPE} b");
+        assert_eq!(missing, vec!["AURORA_MCP_NOPE".to_string()]);
+
+        let (v, _) = expand_env_vars("no vars, ${unterminated");
+        assert_eq!(v, "no vars, ${unterminated");
+    }
+
+    #[test]
+    fn approval_is_tied_to_what_the_server_runs() {
+        let mut cfg = McpServerConfig::new_stdio("x", "x", "node");
+        cfg.args = vec!["server.js".into()];
+        let mut approvals = ProjectApprovals::default();
+        approvals.set("E:\\Repo\\", &cfg, true);
+        assert_eq!(approvals.answer("e:/repo", &cfg), Some(true));
+
+        cfg.args = vec!["evil.js".into()];
+        assert_eq!(approvals.answer("e:/repo", &cfg), None, "changed command must turn it off");
+    }
+
+    #[test]
+    fn project_server_saves_keep_other_tools_keys() {
+        let dir = std::env::temp_dir().join(format!("aurora-mcp-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PROJECT_FILE_NAME);
+        std::fs::write(&path, r#"{"mcpServers":{},"somethingElse":{"keep":1}}"#).unwrap();
+
+        let mut cfg = read_file(&path).unwrap();
+        cfg.upsert_server(&McpServerConfig::new_stdio("a", "a", "uvx"));
+        write_file(&path, &cfg).unwrap();
+
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(raw["somethingElse"]["keep"], 1);
+        assert_eq!(raw["mcpServers"]["a"]["command"], "uvx");
     }
 }

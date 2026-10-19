@@ -77,6 +77,12 @@ pub(super) const MAX_WEB_RESULT_LENGTH: usize = 512 * 1024;
 /// if it ever grows past it.
 pub(super) const MAX_DOCTRINE_RESULT_LENGTH: usize = 32 * 1024;
 
+/// A `*_guidelines` tool: a fixed text compiled into Aurora that the model is
+/// told to follow. It reaches the model whole or not at all.
+pub(super) fn is_standing_guide(tool: &str) -> bool {
+    tool.ends_with("_guidelines")
+}
+
 pub(super) fn result_cap_for(tool: &str) -> usize {
     match tool {
         "file_read" | "multi_file_read" => MAX_READ_RESULT_LENGTH,
@@ -92,7 +98,7 @@ pub(super) fn result_cap_for(tool: &str) -> usize {
         // `browser_guidelines` arriving 1,080 bytes short of its 9,144 —
         // mandatory browser rules ending mid-sentence at "Check it " — while
         // `design_guidelines`, one arm away, was never touched.
-        t if t.ends_with("_guidelines") => MAX_DOCTRINE_RESULT_LENGTH,
+        t if is_standing_guide(t) => MAX_DOCTRINE_RESULT_LENGTH,
         _ => MAX_TOOL_RESULT_LENGTH,
     }
 }

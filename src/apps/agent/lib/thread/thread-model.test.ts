@@ -79,6 +79,16 @@ describe("normalizeThreadModelSelection", () => {
     { providerId: "other", modelKey: "alpha" },
   ];
 
+  it("moves a pin on an Antigravity effort tier to its model's folded row", () => {
+    const rows = [...models, { providerId: "antigravity", modelKey: "gemini-4-argon" }];
+    expect(normalizeThreadModelSelection("antigravity:gemini-4-argon-high", rows)).toBe("antigravity:gemini-4-argon");
+    // Before the fold has happened, the tier row is still the exact match.
+    const unfolded = [...models, { providerId: "antigravity", modelKey: "gemini-4-argon-high" }];
+    expect(normalizeThreadModelSelection("antigravity:gemini-4-argon-high", unfolded)).toBe(
+      "antigravity:gemini-4-argon-high",
+    );
+  });
+
   it("migrates a decorated Cursor pin when its stable row exists", () => {
     expect(
       normalizeThreadModelSelection("cursor:cursor-grok-4.6-high-fast", models),

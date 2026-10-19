@@ -360,6 +360,26 @@ fn every_guidelines_tool_gets_the_doctrine_cap() {
     assert_ne!(result_cap_for("shell_execute"), doctrine);
 }
 
+/// The clamp was not the only thing cutting guides: the spill ahead of it
+/// fired at 12 KiB, so the ~13 KB canvas guide reached the model as head +
+/// tail + a file path (2026-10-16) while the cap test above stayed green.
+#[test]
+fn a_guide_reaches_the_model_whole_with_a_store_attached() {
+    let store = tempfile::tempdir().unwrap();
+    let runtime = bare_runtime().with_store_dir(store.path());
+    let session = Session::new("t-guide");
+    // The size the canvas guide reached with its SDK reference appended.
+    let guide = format!("{}\n{}", crate::tools::canvas::guide::CANVAS_GUIDE, "x".repeat(4_000));
+    let guide = guide.as_str();
+    assert!(guide.len() > 12 * 1024, "the guide must be above the spill line for this to test anything");
+    let copy = runtime.history_copy(&session, "canvas_guidelines", "call-1", guide);
+    assert_eq!(copy, guide, "the canvas guide must arrive verbatim, not windowed");
+
+    // An ordinary tool of the same size still moves to a file.
+    let shell = runtime.history_copy(&session, "shell_execute", "call-2", guide);
+    assert!(shell.len() < guide.len(), "ordinary output above the line is still moved");
+}
+
 /// The built-in doctrine is a standing instruction, not a search result: it
 /// must arrive whole or the model follows rules it was never shown. Under the
 /// generic 8 KiB cap the default `both` lost its last 2,121 characters —
@@ -1540,6 +1560,70 @@ fn failure_loop_guard_resets_after_a_success() {
         guard.record_failure("shell_execute", &args).is_none(),
         "a success means the situation changed — counting starts fresh"
     );
+}
+
+/// Always refuses its input, the way `TaskUpdate` refused `{"taskId":"5"}`.
+struct RefusingTool;
+
+#[async_trait]
+impl super::super::tool_executor::ToolExecutor for RefusingTool {
+    fn name(&self) -> &str {
+        "refuser"
+    }
+    fn schema(&self) -> super::super::api_client::ToolSchema {
+        super::super::api_client::ToolSchema {
+            name: "refuser".into(),
+            description: "refuses".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+        }
+    }
+    async fn execute(
+        &self,
+        _input: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<String, ToolError> {
+        Err(ToolError::InvalidInput("nothing to update".into()))
+    }
+}
+
+fn result_text(batch: &ToolBatchOutcome) -> String {
+    match &batch.message.blocks[0] {
+        ContentBlock::ToolResult { content, .. } => content.clone(),
+        other => panic!("expected ToolResult, got {other:?}"),
+    }
+}
+
+/// Kimi K3, 2026-10-15: nine identical failing calls, each in its own model
+/// message. The repeat count has to survive between messages of one turn.
+#[tokio::test]
+async fn a_repeat_in_a_later_message_of_the_same_turn_is_still_a_repeat() {
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register(Arc::new(RefusingTool));
+    let runtime = ConversationRuntime::new(Arc::new(MockApi::new(vec![])), tools, RuntimeConfig::default());
+    let session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(64);
+    let cancel = CancellationToken::new();
+    let mut seq = 0u64;
+    let call = |id: &str| {
+        vec![PendingToolCall {
+            id: id.into(),
+            name: "refuser".into(),
+            input: serde_json::json!({"taskId": "5"}),
+        }]
+    };
+
+    let mut texts = Vec::new();
+    for (turn, id) in [("turn-1", "a"), ("turn-1", "b"), ("turn-1", "c"), ("turn-2", "d")] {
+        let batch = runtime
+            .execute_tool_calls(call(id), &session, turn, &cancel, &tx, &mut seq)
+            .await
+            .expect("ok");
+        texts.push(result_text(&batch));
+    }
+    assert!(!texts[0].contains("SECOND"), "{}", texts[0]);
+    assert!(texts[1].contains("SECOND time"), "{}", texts[1]);
+    assert!(texts[2].contains("STOP"), "{}", texts[2]);
+    assert!(!texts[3].contains("SECOND") && !texts[3].contains("STOP"), "a new turn starts fresh: {}", texts[3]);
 }
 
 #[test]

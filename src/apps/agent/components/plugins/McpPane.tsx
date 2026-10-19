@@ -113,7 +113,10 @@ const ServerPage: React.FC<{
           {server.config.name}
         </span>
       </nav>
-      {issue && (
+      {/* Config problems only. A start failure is already in the card, and
+          repeating it here put a second block above the card that came and
+          went with every retry, moving the whole page. */}
+      {issue && issue.kind !== "error" && (
         <div className="agw-set-notice" data-tone="warning" style={{ marginBottom: 12 }}>
           <span>{issue.message}</span>
         </div>

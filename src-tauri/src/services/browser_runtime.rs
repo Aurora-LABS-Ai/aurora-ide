@@ -1922,6 +1922,28 @@ pub struct PickedElementPayload {
     pub url: Option<String>,
     pub bounding_rect: Option<BoundingRect>,
     pub attributes: Option<Vec<AttributePair>>,
+    /// Ancestor chain with one class each (`main.flex-1 > section.hero`),
+    /// for reading and grepping; `selector` is the one for `querySelector`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// A short fixed list of computed styles (display, size, font, colour).
+    #[serde(default)]
+    pub styles: Option<Vec<AttributePair>>,
+    /// The parent as a one-line stub: `<div class="mt-8 flex" />`.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// The picked node's row in its parent, stubs only, the pick marked.
+    #[serde(default)]
+    pub siblings: Option<Vec<String>>,
+    /// `react` / `vue` when a framework handle was found on the node.
+    #[serde(default)]
+    pub framework: Option<String>,
+    /// The owning component's name, possibly minified (`N9`).
+    #[serde(default)]
+    pub component: Option<String>,
+    /// That component's props, values shortened, `children` left out.
+    #[serde(default)]
+    pub props: Option<Vec<AttributePair>>,
     pub source: PickSource,
     pub note: Option<String>,
 }
@@ -2111,6 +2133,117 @@ const BROWSER_INIT_SCRIPT: &str = r#"
     return path.join(' > ');
   };
 
+  // A one-line stand-in for an element: tag, id and the first classes, no
+  // children. What a sibling or parent row in a pick looks like.
+  ns.stub = function (el) {
+    if (!(el instanceof Element)) return '';
+    let s = '<' + el.tagName.toLowerCase();
+    if (el.id) s += ' id="' + el.id + '"';
+    const cls = typeof el.className === 'string' ? el.className.trim() : '';
+    if (cls) s += ' class="' + (cls.length > 80 ? cls.slice(0, 80) + '…' : cls) + '"';
+    return s + ' />';
+  };
+
+  // The ancestor chain the way a person reads it: `main.flex-1 >
+  // section.hero > div.relative`, one class each, html/body left out. The
+  // real selector (`cssPath`) is for querySelector; this one is for grepping
+  // the source.
+  ns.readablePath = function (el) {
+    const parts = [];
+    let cur = el instanceof Element ? el.parentElement : null;
+    while (cur && cur !== document.body && cur !== document.documentElement && parts.length < 6) {
+      let part = cur.tagName.toLowerCase();
+      if (cur.id) part += '#' + cur.id;
+      else {
+        const cls = typeof cur.className === 'string' ? cur.className.trim().split(/\s+/)[0] : '';
+        if (cls) part += '.' + cls;
+      }
+      parts.unshift(part);
+      cur = cur.parentElement;
+    }
+    return parts.join(' > ');
+  };
+
+  // A fixed, short list of computed styles: enough to tell a 72px display
+  // heading from a 14px label and how the box lays out, never a dump.
+  ns.styleFacts = function (el) {
+    const KEYS = ['display', 'position', 'flex-direction', 'justify-content', 'align-items',
+      'gap', 'width', 'height', 'padding', 'margin', 'background-color', 'color',
+      'font-size', 'font-weight', 'line-height', 'border-radius', 'border', 'opacity', 'z-index'];
+    const out = [];
+    try {
+      const cs = getComputedStyle(el);
+      for (const k of KEYS) {
+        const v = cs.getPropertyValue(k);
+        if (v && v !== 'normal' && v !== 'auto' && v !== 'none' && v !== '0px' && v !== 'rgba(0, 0, 0, 0)' && v !== '1') {
+          out.push({ name: k, value: v });
+        }
+      }
+    } catch (e) { /* detached node or a page that forbids it */ }
+    return out;
+  };
+
+  // The component that owns the node, when a framework left a handle on it.
+  // React keeps a fiber on the DOM node; walking `.return` finds the nearest
+  // function or class component and its props. Vue 3 keeps the owning
+  // instance on `__vueParentComponent`, Vue 2 on `__vue__`. Minified names
+  // (`N9`) still say "a component owns this", which a bare div does not.
+  ns.componentFacts = function (el) {
+    const short = (v) => {
+      if (v === null || v === undefined) return String(v);
+      if (typeof v === 'function') return '[function]';
+      if (typeof v === 'string') return v.length > 80 ? v.slice(0, 80) + '…' : v;
+      if (typeof v !== 'object') return String(v);
+      if (v && v.$$typeof) return '[element]';
+      try { const s = JSON.stringify(v); return s.length > 80 ? s.slice(0, 80) + '…' : s; }
+      catch (e) { return '[object]'; }
+    };
+    const propsOf = (obj) => {
+      const out = [];
+      if (!obj || typeof obj !== 'object') return out;
+      for (const k of Object.keys(obj)) {
+        if (k === 'children') continue;
+        out.push({ name: k, value: short(obj[k]) });
+        if (out.length >= 16) break;
+      }
+      return out;
+    };
+    try {
+      const fiberKey = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+      if (fiberKey) {
+        let f = el[fiberKey];
+        let hops = 0;
+        while (f && hops < 40) {
+          const t = f.type;
+          const named = typeof t === 'function' ? t : (t && typeof t === 'object' && (t.render || t.type)) ? (t.render || t.type) : null;
+          if (named) {
+            const name = named.displayName || named.name || (t && t.displayName) || '';
+            if (name) return { framework: 'react', component: name, props: propsOf(f.memoizedProps) };
+          }
+          f = f.return;
+          hops++;
+        }
+        return { framework: 'react', component: null, props: [] };
+      }
+      let cur = el;
+      let hops = 0;
+      while (cur && hops < 12) {
+        const v3 = cur.__vueParentComponent;
+        if (v3 && v3.type) {
+          const name = v3.type.name || v3.type.__name || null;
+          return { framework: 'vue', component: name, props: propsOf(v3.props) };
+        }
+        const v2 = cur.__vue__;
+        if (v2 && v2.$options) {
+          return { framework: 'vue', component: v2.$options.name || v2.$options._componentTag || null, props: propsOf(v2.$props) };
+        }
+        cur = cur.parentElement;
+        hops++;
+      }
+    } catch (e) { /* a page that throws on key access */ }
+    return null;
+  };
+
   ns.describe = function (el, source) {
     if (!(el instanceof Element)) return null;
     const rect = el.getBoundingClientRect();
@@ -2123,9 +2256,24 @@ const BROWSER_INIT_SCRIPT: &str = r#"
     if (outer.length > 4000) outer = outer.slice(0, 4000) + '... [truncated]';
     let text = (el.textContent || '').trim();
     if (text.length > 400) text = text.slice(0, 400) + '...';
+    const parentEl = el.parentElement;
+    const siblings = [];
+    if (parentEl) {
+      const kids = Array.from(parentEl.children);
+      const at = kids.indexOf(el);
+      // Up to five each side, the picked one marked, so the model sees the
+      // row it sits in without another browser call.
+      const from = Math.max(0, at - 5);
+      const to = Math.min(kids.length, at + 6);
+      for (let i = from; i < to; i++) {
+        siblings.push((i === at ? '<!-- SELECTED --> ' : '') + ns.stub(kids[i]));
+      }
+    }
+    const comp = ns.componentFacts(el);
     return {
       label: ns.label,
       selector: ns.cssPath(el),
+      path: ns.readablePath(el),
       tagName: el.tagName.toLowerCase(),
       id: el.id || null,
       className: typeof el.className === 'string' ? el.className : null,
@@ -2134,6 +2282,12 @@ const BROWSER_INIT_SCRIPT: &str = r#"
       url: location.href,
       boundingRect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       attributes: attrs,
+      styles: ns.styleFacts(el),
+      parent: parentEl ? ns.stub(parentEl) : null,
+      siblings: siblings,
+      framework: comp ? comp.framework : null,
+      component: comp ? comp.component : null,
+      props: comp ? comp.props : null,
       source: source || 'inspector',
       note: null,
     };

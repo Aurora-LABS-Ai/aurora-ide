@@ -2,10 +2,10 @@
  * Agent Window — reply layout blocks: what the model writes, parsed [pure].
  *
  * Transcript → Reply layout (opt-in). With it on, the model can lay out an
- * explanation with three kinds of page part inside its reply, each a fenced
+ * explanation with page parts inside its reply, each a fenced
  * block with one item per line and `|` between fields:
  *
- *   ```aurora-facts         a row of tiles: the figures the reader looks for first
+ *   ```aurora-facts         fact rows: the figures the reader looks for first
  *   Framework | Next.js 16.2.3 | App Router · React 19
  *   ```
  *   ```aurora-flow          top-to-bottom steps; `||` puts items side by side
@@ -30,6 +30,13 @@
  * guessed at. Off, every one of these fences is a code block, as it was.
  */
 
+import { MAX_ITEMS, splitFields, titleAndRows, usableLines } from "./fields";
+import { parseStructure, type StructuredLayout } from "./structures";
+import { parseReportSource } from "@/canvas-sdk/reporting/validate";
+import type { ReportSpec } from "@/canvas-sdk/reporting/types";
+
+export { MAX_ITEMS, splitFields } from "./fields";
+
 export const LAYOUT_FENCE_LANGUAGES = {
   "aurora-facts": "facts",
   "aurora-flow": "flow",
@@ -38,6 +45,11 @@ export const LAYOUT_FENCE_LANGUAGES = {
   "aurora-bars": "bars",
   /** A titled key / value table — a route map, a config, an inventory. */
   "aurora-pairs": "pairs",
+  "aurora-compare": "compare",
+  "aurora-checklist": "checklist",
+  "aurora-timeline": "timeline",
+  "aurora-tree": "tree",
+  "aurora-report": "report",
 } as const;
 
 export type LayoutLanguage = keyof typeof LAYOUT_FENCE_LANGUAGES;
@@ -83,59 +95,22 @@ export interface Pair {
 }
 
 export type ReplyLayout =
-  | { kind: "facts"; facts: Fact[]; problems: string[] }
+  | { kind: "facts"; title: string; facts: Fact[]; problems: string[] }
   | { kind: "flow"; steps: FlowStep[]; problems: string[] }
   | { kind: "note"; title: string; lines: NoteLine[]; problems: string[] }
   | { kind: "bars"; title: string; bars: Bar[]; problems: string[] }
-  | { kind: "pairs"; title: string; pairs: Pair[]; problems: string[] };
-
-/** Most items a block draws; the rest are reported, so a runaway list stays a list. */
-export const MAX_ITEMS = 12;
-
-/** Split on `|` that is not written `\|`, trimming each field; empty fields kept. */
-export function splitFields(line: string, separator: "|" | "||" = "|"): string[] {
-  const out: string[] = [];
-  let field = "";
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === "\\" && line[i + 1] === "|") {
-      field += "|";
-      i += 1;
-      continue;
-    }
-    if (ch === "|") {
-      if (separator === "||") {
-        if (line[i + 1] === "|") {
-          out.push(field.trim());
-          field = "";
-          i += 1;
-          continue;
-        }
-        field += ch;
-        continue;
-      }
-      out.push(field.trim());
-      field = "";
-      continue;
-    }
-    field += ch;
-  }
-  out.push(field.trim());
-  return out;
-}
-
-/** Lines the block can read: blank lines dropped; while streaming, a last
- *  line without its newline is still being written and is left out. */
-function usableLines(source: string, closed: boolean): string[] {
-  const lines = source.split("\n");
-  if (!closed && !source.endsWith("\n")) lines.pop();
-  return lines.map((l) => l.trim()).filter((l) => l.length > 0);
-}
+  | { kind: "pairs"; title: string; pairs: Pair[]; problems: string[] }
+  | StructuredLayout
+  | { kind: "report"; spec: ReportSpec | null; problems: string[] };
 
 function parseFacts(lines: string[]): ReplyLayout {
   const facts: Fact[] = [];
   const problems: string[] = [];
-  for (const line of lines) {
+  // A one-field first line cannot be a fact (a fact needs a value), so it is
+  // the block's title — models title facts the way they title bars and pairs
+  // (2026-10-16: "Stack" was reported as a broken row).
+  const { title, rows } = titleAndRows(lines);
+  for (const line of rows) {
     const [label = "", value = "", caption = ""] = splitFields(line);
     if (!label || !value) {
       problems.push(`${line} — a fact is "Label | Value" with an optional "| Caption"`);
@@ -147,7 +122,7 @@ function parseFacts(lines: string[]): ReplyLayout {
     }
     facts.push(caption ? { label, value, caption } : { label, value });
   }
-  return { kind: "facts", facts, problems };
+  return { kind: "facts", title, facts, problems };
 }
 
 function parseFlow(lines: string[]): ReplyLayout {
@@ -195,14 +170,6 @@ function parseNote(lines: string[]): ReplyLayout {
     }
   }
   return { kind: "note", title, lines: out, problems };
-}
-
-/** A title is a first line with no pipe in it; a pipe means the model went
- *  straight to the rows. */
-function titleAndRows(lines: string[]): { title: string; rows: string[] } {
-  const [first = "", ...rest] = lines;
-  if (first && splitFields(first).length === 1) return { title: first, rows: rest };
-  return { title: "", rows: lines };
 }
 
 /** "31", "31 / 97", "64%", "1,204" → the number(s) it holds. */
@@ -278,8 +245,10 @@ function parsePairs(lines: string[]): ReplyLayout {
 }
 
 export function parseLayout(language: LayoutLanguage, source: string, closed: boolean): ReplyLayout {
+  const kind = LAYOUT_FENCE_LANGUAGES[language];
+  if (kind === "report") return { kind, ...(closed ? parseReportSource(source) : { spec: null, problems: [] }) };
   const lines = usableLines(source, closed);
-  switch (LAYOUT_FENCE_LANGUAGES[language]) {
+  switch (kind) {
     case "facts":
       return parseFacts(lines);
     case "flow":
@@ -290,6 +259,11 @@ export function parseLayout(language: LayoutLanguage, source: string, closed: bo
       return parseBars(lines);
     case "pairs":
       return parsePairs(lines);
+    case "compare":
+    case "checklist":
+    case "timeline":
+    case "tree":
+      return parseStructure(kind, lines);
   }
 }
 
@@ -306,6 +280,15 @@ export function layoutIsEmpty(layout: ReplyLayout): boolean {
       return layout.bars.length === 0;
     case "pairs":
       return layout.pairs.length === 0;
+    case "compare":
+      return layout.rows.length === 0;
+    case "checklist":
+    case "timeline":
+      return layout.items.length === 0;
+    case "tree":
+      return layout.nodes.length === 0;
+    case "report":
+      return layout.spec === null;
   }
 }
 

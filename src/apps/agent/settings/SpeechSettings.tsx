@@ -16,12 +16,17 @@
  *
  * - **On stop** records everything and transcribes once at the end, through
  *   CrispASR. The original behaviour.
- * - **As I speak** shows words while you talk, through audio.cpp running
- *   Confucius4-R2T2. The last word or two still arrive when you stop, because
- *   the model will not commit to them until the next moment of audio agrees.
+ * - **As I speak** shows words while you talk, with a choice of model:
+ *   - **Phonon-2** (default) on the same CrispASR, so it shares the runtime
+ *     folder with On stop and has only its own model file. English only, so
+ *     the Language row is not shown for it. It can correct a word it already
+ *     showed while the sentence is still open.
+ *   - **Confucius4-R2T2** on audio.cpp. The last word or two arrive when you
+ *     stop, because the model will not commit to them until the next moment
+ *     of audio agrees.
  *
- * They are different programs with different model files, so each keeps its
- * own paths. Language is shared, since it means the same thing to both.
+ * Different programs keep their own paths. Language is shared, since it means
+ * the same thing to every engine that reads it.
  *
  * Both check themselves against the machine (debounced) on every change, so
  * the panel states what will actually happen rather than what was typed.
@@ -38,7 +43,11 @@ import {
   toStreamConfig,
   type SpeechStreamValidation,
 } from "@/apps/agent/services/speech/speech-stream";
-import { useAgentSettingsStore, type SpeechMode } from "@/apps/agent/store/settings/useAgentSettingsStore";
+import {
+  useAgentSettingsStore,
+  type SpeechLiveEngine,
+  type SpeechMode,
+} from "@/apps/agent/store/settings/useAgentSettingsStore";
 import {
   AgwButton,
   AgwPill,
@@ -79,6 +88,11 @@ const LANGUAGE_OPTIONS: SelectOption[] = [
 const MODE_OPTIONS = [
   { value: "batch" as const, label: "On stop" },
   { value: "live" as const, label: "As I speak" },
+];
+
+const LIVE_ENGINE_OPTIONS: SelectOption[] = [
+  { value: "phonon", label: "Phonon-2", meta: "English · CrispASR" },
+  { value: "r2t2", label: "Confucius4-R2T2", meta: "audio.cpp" },
 ];
 
 /**
@@ -122,6 +136,7 @@ export const SpeechSettings: React.FC = () => {
   } = useAgentSettingsStore();
 
   const live = speechMode === "live";
+  const phonon = live && speechLive.engine === "phonon";
 
   const [validation, setValidation] = useState<SpeechValidationResult | null>(null);
   const [liveValidation, setLiveValidation] = useState<SpeechStreamValidation | null>(null);
@@ -170,7 +185,9 @@ export const SpeechSettings: React.FC = () => {
     setIsValidating(true);
     try {
       setLiveValidation(
-        await speechStreamService.validate(toStreamConfig(speechLive, speechLanguage)),
+        await speechStreamService.validate(
+          toStreamConfig(speechLive, speechLanguage, speechRuntimePath),
+        ),
       );
     } catch (error) {
       setLiveValidation({
@@ -184,18 +201,24 @@ export const SpeechSettings: React.FC = () => {
     } finally {
       setIsValidating(false);
     }
-  }, [speechLanguage, speechLive]);
+  }, [speechLanguage, speechLive, speechRuntimePath]);
 
   const validate = live ? validateLive : validateBatch;
 
+  const activeModelPath = phonon
+    ? speechLive.phononModelPath
+    : live
+      ? speechLive.modelPath
+      : speechModelPath;
+
   useEffect(() => {
     if (!speechEnabled) return;
-    if (live ? !speechLive.modelPath : !speechModelPath) return;
+    if (!activeModelPath) return;
     const timer = window.setTimeout(() => {
       void validate();
     }, 350);
     return () => window.clearTimeout(timer);
-  }, [live, speechEnabled, speechLive.modelPath, speechModelPath, validate]);
+  }, [activeModelPath, speechEnabled, validate]);
 
   // A GPU preference this machine cannot honour is a lie in the UI — fall
   // back to Auto as soon as validation reports no usable GPU runtime.
@@ -244,6 +267,16 @@ export const SpeechSettings: React.FC = () => {
     if (typeof selected === "string") setSpeechLive({ modelPath: selected });
   };
 
+  const choosePhononModel = async () => {
+    const selected = await open({
+      directory: false,
+      filters: [{ extensions: ["gguf"], name: "GGUF speech models" }],
+      multiple: false,
+      title: "Select the Phonon-2 model",
+    });
+    if (typeof selected === "string") setSpeechLive({ phononModelPath: selected });
+  };
+
   const chooseLiveLibrary = async () => {
     const selected = await open({
       directory: true,
@@ -280,7 +313,9 @@ export const SpeechSettings: React.FC = () => {
     [gpuUsable, live],
   );
 
-  const deviceHint = live
+  const deviceHint = phonon
+    ? "GPU keeps up with speech. On CPU it may fall behind."
+    : live
     ? "Live dictation needs a GPU to keep up with speech. On CPU it will fall behind."
     : gpuUsable
       ? "GPU speeds up transcription when the runtime supports it."
@@ -337,7 +372,79 @@ export const SpeechSettings: React.FC = () => {
             />
           </SettingsRow>
 
-          {live ? (
+          {live && (
+            <SettingsRow
+              label="Model"
+              hint={
+                phonon
+                  ? "English only. Can correct a word while the sentence is still open."
+                  : "Many languages. The last word or two appear when you stop."
+              }
+            >
+              <AgwSelect
+                value={speechLive.engine}
+                options={LIVE_ENGINE_OPTIONS}
+                onChange={(engine) => setSpeechLive({ engine: engine as SpeechLiveEngine })}
+                ariaLabel="Live dictation model"
+                width={210}
+              />
+            </SettingsRow>
+          )}
+
+          {phonon ? (
+            <>
+              <SettingsRow
+                alignTop
+                label="Runtime folder"
+                hint="The folder holding crispasr.exe. Shared with On stop."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechRuntimePath}
+                    placeholder="…\\crispasr"
+                    onChange={(e) => setSpeechRuntimePath(e.target.value)}
+                    aria-label="CrispASR runtime folder"
+                  />
+                  <AgwButton icon="folder" onClick={() => void chooseRuntimePath()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
+              <SettingsRow
+                alignTop
+                label="Model file (.gguf)"
+                hint="Phonon-2. q8_0 transcribes the same as f16 at half the size."
+              >
+                <div className="agw-set-field-row">
+                  <AgwTextInput
+                    value={speechLive.phononModelPath}
+                    placeholder="…\\phonon2-q8_0.gguf"
+                    onChange={(e) => setSpeechLive({ phononModelPath: e.target.value })}
+                    aria-label="Phonon-2 model file"
+                  />
+                  <AgwButton icon="folder" onClick={() => void choosePhononModel()}>
+                    Browse
+                  </AgwButton>
+                </div>
+              </SettingsRow>
+
+              <SettingsRow
+                label="Keep model loaded"
+                hint={
+                  speechLive.keepLoaded
+                    ? "The next recording starts at once. The model stays in video memory between recordings."
+                    : "Loaded on each click and released after, which takes about a second. Nothing you say in that second is lost."
+                }
+              >
+                <AgwSwitch
+                  checked={speechLive.keepLoaded}
+                  onChange={(keepLoaded) => setSpeechLive({ keepLoaded })}
+                  ariaLabel="Keep the live dictation model loaded"
+                />
+              </SettingsRow>
+            </>
+          ) : live ? (
             <>
               <SettingsRow
                 alignTop
@@ -525,18 +632,20 @@ export const SpeechSettings: React.FC = () => {
             />
           </SettingsRow>
 
-          <SettingsRow
-            label="Language"
-            hint="A hint for the recognizer. Auto detects the language of each phrase."
-          >
-            <AgwSelect
-              value={speechLanguage}
-              options={LANGUAGE_OPTIONS}
-              onChange={setSpeechLanguage}
-              ariaLabel="Speech language"
-              width={210}
-            />
-          </SettingsRow>
+          {!phonon && (
+            <SettingsRow
+              label="Language"
+              hint="A hint for the recognizer. Auto detects the language of each phrase."
+            >
+              <AgwSelect
+                value={speechLanguage}
+                options={LANGUAGE_OPTIONS}
+                onChange={setSpeechLanguage}
+                ariaLabel="Speech language"
+                width={210}
+              />
+            </SettingsRow>
+          )}
 
           <SettingsRow
             last={!hasChecked}

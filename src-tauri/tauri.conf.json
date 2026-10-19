@@ -59,7 +59,9 @@
         "type": "embedBootstrapper"
       },
       "nsis": {
-        "installerHooks": "installer-hooks.nsh"
+        "template": "installer.nsi",
+        "installerHooks": "installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico"
       }
     }
   }

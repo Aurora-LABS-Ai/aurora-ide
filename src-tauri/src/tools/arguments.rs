@@ -48,6 +48,10 @@ use serde_json::Value;
 /// An empty list is `None` too: it names nothing, so a caller asking "is this
 /// really an array?" gains nothing by hearing "yes, of zero things".
 pub(crate) fn decode_flattened_array(raw: &str) -> Option<Vec<Value>> {
+    // A comma after the closing `]` is the separator the flattening swallowed
+    // along with the array (Kimi K3 on Modal, 2026-10-16). Nothing that starts
+    // with `[` and parses as a list is a real filename, so dropping it is safe.
+    let raw = raw.trim().trim_end_matches(',').trim_end();
     if let Ok(decoded) = serde_json::from_str::<Vec<Value>>(raw) {
         if !decoded.is_empty() {
             return Some(decoded);
@@ -55,7 +59,7 @@ pub(crate) fn decode_flattened_array(raw: &str) -> Option<Vec<Value>> {
         return None;
     }
 
-    let trimmed = raw.trim();
+    let trimmed = raw;
     if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
         return None;
     }
@@ -119,6 +123,21 @@ mod tests {
     fn a_comma_inside_a_path_is_not_a_separator() {
         let decoded = decode_flattened_string_array(r#"["E:\my, files\notes.md"]"#).unwrap();
         assert_eq!(decoded, vec![r"E:\my, files\notes.md".to_string()]);
+    }
+
+    /// Kimi K3 on Modal, thread `3b6fffb1` call 53 (2026-10-16): the list
+    /// arrived as text with a stray comma after the `]`, so it was used whole
+    /// as a filename and Windows refused it (os error 123).
+    #[test]
+    fn a_flattening_with_a_trailing_comma_decodes() {
+        let raw = r#"["E:\\QuantumHUB-Infrustructure\\packages\\quantumkick-core\\scripts\\login-probe.ts"],"#;
+        assert_eq!(
+            decode_flattened_string_array(raw).unwrap(),
+            vec![
+                r"E:\QuantumHUB-Infrustructure\packages\quantumkick-core\scripts\login-probe.ts"
+                    .to_string()
+            ]
+        );
     }
 
     /// A filename is not a list just because it has brackets in it. Next.js

@@ -69,7 +69,8 @@ describe("the exported surface", () => {
         "Columns", "Detail", "Divider", "Event", "Fact", "Facts", "Image",
         "List", "Note", "NumberField", "Picker", "Quote", "Row", "Section", "Sparkline",
         "Stat", "Stats", "Stepper", "Table", "Tabs", "Text", "Timeline",
-        "useHostTheme",
+        "useHostTheme", "Report", "Chart", "DataTable", "Metric", "MetricGrid",
+        "SearchField", "SelectField", "MultiSelect", "RangeField", "Toggle",
       ].sort(),
     );
   });

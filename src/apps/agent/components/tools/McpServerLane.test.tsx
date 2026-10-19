@@ -133,6 +133,53 @@ describe("grouping a run into one lane", () => {
   it("leaves a native tool alone", () => {
     expect(mcpServerIdForCard(call("a", "file_read"))).toBeNull();
   });
+
+  // With tool loading on, every MCP call is a `call_tool` envelope whose target
+  // arrives a few chunks after the call itself. Grouped on "not MCP yet", each
+  // one stood alone and then joined the lane: the live line rolled twice per call.
+  describe("a wrapped call still naming its target", () => {
+    const wrapped = (id: string, args: string, extra: Partial<ToolCall> = {}) =>
+      call(id, "call_tool", { arguments: args, ...extra });
+    const first = wrapped(
+      "a",
+      '{"name":"mcp_pgsrv_pg_execute_sql","arguments":{"sql":"select 1"}}',
+      { result: "{}" },
+    );
+
+    it.each([
+      ["no arguments yet", ""],
+      ["an open object", "{"],
+      ["half the name", '{"name":"mcp_pg'],
+    ])("stays in the lane it follows with %s", (_label, args) => {
+      const runs = groupToolRuns([first, wrapped("b", args)]);
+
+      expect(runs.map((run) => run.map((c) => c.id))).toEqual([["a", "b"]]);
+    });
+
+    it("keeps its place in the same lane once the name lands", () => {
+      const runs = groupToolRuns([first, wrapped("b", '{"name":"mcp_pgsrv_pg_list_tables"')]);
+
+      expect(runs.map((run) => run.map((c) => c.id))).toEqual([["a", "b"]]);
+    });
+
+    it("leaves the lane once it names another server", () => {
+      const runs = groupToolRuns([first, wrapped("b", '{"name":"mcp_aws_aws___run_script"')]);
+
+      expect(runs.map((run) => run.map((c) => c.id))).toEqual([["a"], ["b"]]);
+    });
+
+    it("leaves the lane once it names a tool that is not MCP", () => {
+      const runs = groupToolRuns([first, wrapped("b", '{"name":"browser_click"')]);
+
+      expect(runs.map((run) => run.map((c) => c.id))).toEqual([["a"], ["b"]]);
+    });
+
+    it("does not join a run that is not a lane", () => {
+      const runs = groupToolRuns([call("a", "file_read"), wrapped("b", "")]);
+
+      expect(runs.map((run) => run.map((c) => c.id))).toEqual([["a"], ["b"]]);
+    });
+  });
 });
 
 describe("the operation, as words", () => {
@@ -172,6 +219,26 @@ describe("the lane", () => {
     expect(html).toContain("List tables");
   });
 
+  it("names a wrapped call by its real operation, not by the wrapper", () => {
+    const html = renderToStaticMarkup(
+      <McpServerLane
+        calls={[
+          call("a", "call_tool", {
+            arguments: '{"name":"mcp_pgsrv_pg_execute_sql","arguments":{"sql":"select 1"}}',
+            result: '{"ok":true}',
+          }),
+          // Still streaming, target not named: the line says nothing about it yet.
+          call("b", "call_tool", { arguments: "" }),
+        ]}
+        isActivelyStreaming
+      />,
+    );
+
+    expect(html).toContain("Execute SQL");
+    expect(html).toContain("Preparing…");
+    expect(html).not.toContain("call_tool");
+  });
+
   it("says a remote server left this machine", async () => {
     const html = await mount(
       <McpServerLane calls={[call("a", "mcp_aws_aws___run_script", { result: "{}" })]} />,
@@ -202,6 +269,51 @@ describe("the lane", () => {
 
     expect(html).toContain("ok · GRANT · 522 ms");
     expect(html).not.toContain("Completed");
+  });
+
+  it("skips ids, addresses, timestamps and the request's own values", () => {
+    // The real `alvan_fetch_url` result shape. The line used to read
+    // "ef7e4c8c… · https://quotes.toscrape.com/js/ · …".
+    const html = renderToStaticMarkup(
+      <McpServerLane
+        calls={[
+          call("a", "mcp_aws_aws___run_script", {
+            arguments: '{"url":"https://quotes.toscrape.com/js/","render":"never"}',
+            result: JSON.stringify({
+              fetch_id: "ef7e4c8c7e204d95a298724fcaa5f77d",
+              requested_url: "https://quotes.toscrape.com/js/",
+              final_url: "https://quotes.toscrape.com/js/",
+              fetched_at: "2026-10-17T16:31:10.208698Z",
+              expires_in_seconds: 600,
+              render: "never",
+              status_code: 200,
+              content_type: "text/html",
+              extraction_method: "html_static",
+              metadata: { title: "Quotes" },
+            }),
+          }),
+        ]}
+      />,
+    );
+
+    expect(html).toContain("200 status code · text/html · html_static");
+    expect(html).not.toContain("ef7e4c8c");
+    expect(html).not.toContain("quotes.toscrape.com/js/ ·");
+  });
+
+  it("says nothing rather than quote raw JSON when a result is only handles", () => {
+    const html = renderToStaticMarkup(
+      <McpServerLane
+        calls={[
+          call("a", "mcp_probe_dump_tree", {
+            result: '{"fetch_id":"ef7e4c8c7e204d95a298724fcaa5f77d","url":"https://example.com/"}',
+          }),
+        ]}
+      />,
+    );
+
+    expect(html).not.toContain("fetch_id");
+    expect(html).not.toContain("ef7e4c8c");
   });
 
   it("describes a non-JSON result by shape instead of quoting its first line", () => {

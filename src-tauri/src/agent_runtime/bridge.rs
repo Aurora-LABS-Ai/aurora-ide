@@ -290,8 +290,8 @@ impl ToolExecutor for FrontendBridgeExecutor {
     ///
     /// It sits deliberately clear of the inner limits it can overlap with, so
     /// the specific message wins over this generic one whenever both would
-    /// fire: MCP calls race their own 60s ceiling in `mcp::manager` and again
-    /// in `mcp-tools.ts`.
+    /// fire: MCP calls carry their own ceiling in `mcp::manager` (at most
+    /// `TOOL_TIMEOUT_RANGE_SECS.1`).
     fn timeout_policy(&self) -> Option<crate::tools::timeout::TimeoutPolicy> {
         if UNBOUNDED_BRIDGE_TOOLS.contains(&self.tool.name.as_str()) {
             return None;
@@ -486,11 +486,12 @@ mod tests {
     }
 
     /// The generic bridge message must never fire before a tool's own, more
-    /// specific one. MCP calls carry a 60s ceiling in `mcp::manager` and a
-    /// matching race in `mcp-tools.ts`; both have to be able to answer first.
+    /// specific one. MCP calls carry their own ceiling in `mcp::manager`
+    /// (which also tells the server to cancel); it has to be able to answer first.
     #[test]
     fn the_bridge_bound_sits_outside_the_limits_it_overlaps() {
-        assert!(BRIDGE_TIMEOUT.default_ms > 60_000);
+        let mcp_max_ms = crate::mcp::manager::TOOL_TIMEOUT_RANGE_SECS.1 * 1000;
+        assert!(BRIDGE_TIMEOUT.default_ms > mcp_max_ms);
     }
 
     #[test]

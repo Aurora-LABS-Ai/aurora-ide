@@ -6,8 +6,8 @@
  * where it becomes the `aurora/canvas` module the agent's compiled source
  * requires. And the Agent Window imports it directly to draw an answer box
  * (`components/answer-box/`), so a box in a reply and a canvas in the dock are
- * built from the same parts. Nothing here may import anything but `react`:
- * the sandbox build refuses any other import.
+ * built from the same parts. SDK modules use local imports and `react` only;
+ * the library build bundles the local modules and keeps React external.
  *
  * ## Why these components and not others
  *
@@ -40,7 +40,7 @@
  * Fast Refresh never applies here: this module is not part of the window's
  * component tree. It is transformed at build time and executed inside the
  * canvas sandbox, so `useHostTheme` sitting beside the components costs
- * nothing and keeps the public surface in one file. */
+ * nothing and keeps components and hooks on the same public entry. */
 import {
   isValidElement,
   useId,
@@ -49,6 +49,13 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import "./canvas.css";
+export { Report } from "./reporting/Report";
+export { Chart } from "./reporting/Chart";
+export { DataTable } from "./reporting/DataTable";
+export { Metric, MetricGrid } from "./reporting/Metric";
+export { SearchField, SelectField, MultiSelect, RangeField, Toggle } from "./reporting/Controls";
+export type { ReportSpec, ReportBlock, ReportSection, ChartSpec, ChartKind, DataColumn, DataRecord, ValueFormat, ReportFilter } from "./reporting/types";
 
 /**
  * Semantic emphasis. Deliberately small: one accent hue plus real status.

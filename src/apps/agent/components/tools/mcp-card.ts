@@ -64,6 +64,26 @@ export function mcpServerIdForCard(call: ToolCall): string | null {
   return `unresolved:${resolved.name}`;
 }
 
+/**
+ * A `call_tool` envelope still streaming, whose target has not been named yet.
+ *
+ * Its arguments start empty and only say `"name": "mcp_…"` a few chunks later,
+ * so for those chunks `mcpCallForCard` cannot place it. Grouped on that answer,
+ * every wrapped MCP call was briefly a step of its own and then folded into the
+ * lane above it: the live line rolled twice per call and an open run grew and
+ * dropped a step each time. Only an envelope that has named NOTHING counts — one
+ * naming a native or deferred tool is not MCP, and a finished one is settled.
+ */
+export function isUnnamedToolEnvelope(call: ToolCall): boolean {
+  if (call.name !== "call_tool" || call.result != null) return false;
+  try {
+    JSON.parse(call.arguments);
+    return false;
+  } catch {
+    return streamedInvocationName(call.arguments) === null;
+  }
+}
+
 /** Keep provider/event data intact. Only the card previews an MCP target before
  * its large argument object is complete; execution still uses Rust's gate. */
 export function mcpCallForCard(call: ToolCall): ToolCall | null {

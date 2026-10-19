@@ -68,13 +68,14 @@
    *
    * It stays `--agw-ring`, so Appearance → Focus ring still colours it.
    *
-   * THREE controls are exempt, all for one reason: a small FILLED shape cannot
+   * TWO controls are exempt, both for one reason: a small FILLED shape cannot
    * show a ring inside itself, because the ring lands on its own fill. Each
    * says so at its own rule and each draws OUTSIDE instead.
    *   `.agw-set-btn[data-variant="primary"]`  accent-filled pill
    *   `.agw-send`                             the filled round send disc
-   *   `.agw-bud-range::-webkit-slider-thumb`  a ~12px round thumb
-   * `appearance-token-coverage.test.ts` holds that list, so a fourth exemption
+   * (The model picker's thinking-budget slider thumb was a third, until the
+   * slider went with the selected-model card on 2026-10-16.)
+   * `appearance-token-coverage.test.ts` holds that list, so a third exemption
    * has to be argued for rather than simply written. */
   --agw-focus-ring: inset 0 0 0 2px var(--agw-ring);
 
@@ -249,6 +250,9 @@
   --agw-ease-out: cubic-bezier(0, 0, 0.2, 1);
   --agw-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --agw-ease-spring: cubic-bezier(0.34, 1.4, 0.6, 1);
+  /* Every height that opens or folds in the transcript (lib/motion/glide.ts). */
+  --agw-glide-dur: 0.28s;
+  --agw-glide-ease: var(--agw-ease-standard);
 
   /* ── Layers ──────────────────────────────────────────────────────────────
    * Global stacking roles, lowest to highest. Only things that float over
@@ -639,4 +643,63 @@
 .agw-scroll::-webkit-scrollbar-thumb:hover {
   background: var(--agw-scroll-thumb-hover);
   background-clip: content-box;
+}
+
+/* Text that is REPLACED in place (a tool row's "Running…" becoming "Ran command
+   0.5s", the work card's "now doing" line) fades in over the glide instead of
+   snapping to a new width. The owner keys the element by its text or state,
+   so a change mounts it fresh. */
+.agw-swap-in {
+  animation: agw-swap-in var(--agw-glide-dur) var(--agw-glide-ease) both;
+}
+@keyframes agw-swap-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-swap-in {
+    animation: none;
+  }
+}
+.agw-root[data-reduce-motion] .agw-swap-in {
+  animation: none;
+}
+
+/* A hairline scrollbar for a box that scrolls INSIDE the transcript (the work
+   card, an open thought). The blanket `scrollbar-width: thin` above draws
+   Chromium's standard bar: wide, with arrow buttons, and once either standard
+   property is set Chromium ignores every `::-webkit-scrollbar` rule (Alvan,
+   2026-10-16: "must be thin as hair"). Both are reset to `auto` here so the
+   webkit rules apply: no arrows, a 2px thumb that widens to 4px under the
+   pointer. (0,2,0), so it beats `.agw-root *` and single-class rules. */
+.agw-root .agw-scroll-hair {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+.agw-root .agw-scroll-hair::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.agw-root .agw-scroll-hair::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.agw-root .agw-scroll-hair::-webkit-scrollbar-track {
+  background: transparent;
+}
+.agw-root .agw-scroll-hair::-webkit-scrollbar-thumb {
+  background: var(--agw-scroll-thumb);
+  border: 2px solid transparent;
+  border-radius: var(--agw-radius-pill);
+  background-clip: padding-box;
+}
+.agw-root .agw-scroll-hair::-webkit-scrollbar-thumb:hover {
+  background: var(--agw-scroll-thumb-hover);
+  border-width: 1px;
+  background-clip: padding-box;
 }

@@ -72,7 +72,10 @@ export function inspectServers(servers: readonly McpServerState[]): ServerIssue[
     if (GENERATED_NAME.test(config.name) || config.name.trim() === "") {
       issues.push({ serverId: config.id, kind: "unnamed", message: "Needs a name" });
     }
-    if (server.status === "error") {
+    // A retry keeps the last error until it succeeds, so "connecting with an
+    // error" is still a problem; dropping it for the retry made the tile and
+    // the attention count flicker on every attempt.
+    if (server.status === "error" || (server.status === "connecting" && server.error?.trim())) {
       issues.push({
         serverId: config.id,
         kind: "error",

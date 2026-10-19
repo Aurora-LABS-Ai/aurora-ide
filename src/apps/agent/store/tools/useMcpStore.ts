@@ -1,6 +1,14 @@
 /**
- * MCP Store
- * Manages MCP (Model Context Protocol) server state
+ * MCP Store — a view of the Rust MCP manager.
+ *
+ * Rust owns every server's life: it reads `~/.aurora/mcp.json` and the open
+ * project's `.mcp.json`, starts auto-start servers once per app, notices
+ * crashes, and pushes the full list as `mcp_servers_changed` after every
+ * change. This store only renders that list and forwards user actions.
+ *
+ * It used to run its own auto-start, in every window. Two windows booting
+ * together each connected the same servers, and a connect always killed the
+ * running process first, so they killed and respawned each other's servers.
  */
 import { create } from "zustand";
 
@@ -12,7 +20,11 @@ import { populateMcpToolDisplayNameCache } from "@/apps/agent/services/tools/mcp
 // ============================================
 interface McpStoreState {
   addServer: (config: Omit<McpServerConfig, 'id'>) => Promise<McpServerState | null>;
+  /** Replace the list with Rust's (from the `mcp_servers_changed` event). */
+  applyServers: (servers: McpServerState[]) => void;
   callTool: (request: McpToolCallRequest) => Promise<McpToolCallResult | null>;
+  /** Does this command exist, and which file would run. */
+  checkCommand: (command: string) => Promise<McpCommandCheck | null>;
 
   // Config file path
   configPath: string | null;
@@ -35,9 +47,13 @@ interface McpStoreState {
   loadServers: (force?: boolean) => Promise<void>;
   refreshServers: () => Promise<void>;
   removeServer: (id: string) => Promise<boolean>;
+  /** Stop and start again, even if it is running. */
+  restartServer: (id: string) => Promise<McpServerState | null>;
 
   // Server states
   servers: McpServerState[];
+  /** The agent window's project; Rust loads its `.mcp.json`. */
+  setWorkspace: (root: string | null) => Promise<void>;
   toggleServer: (id: string, enabled: boolean) => Promise<McpServerState | null>;
   updateServer: (config: McpServerConfig) => Promise<McpServerState | null>;
 }
@@ -48,6 +64,13 @@ export interface McpResourceInfo {
   name: string;
   uri: string;
 }
+
+/**
+ * `global` lives in `~/.aurora/mcp.json`; `project` in the workspace's
+ * `.mcp.json` (Claude Code's file). A project server is off until turned on
+ * here; that switch is kept per project outside the repo.
+ */
+export type McpScope = 'global' | 'project';
 
 export interface McpServerConfig {
   args: string[];
@@ -61,6 +84,11 @@ export interface McpServerConfig {
   transport: McpTransportType;
   url?: string;
   headers: Record<string, string>;
+  scope?: McpScope;
+  /** The file this server was read from. */
+  source?: string | null;
+  /** Longest one tool call may run, in seconds (Rust clamps to 5–110). */
+  toolTimeoutSecs?: number | null;
 }
 
 export interface McpServerInfo {
@@ -75,6 +103,16 @@ export interface McpServerState {
   serverInfo?: McpServerInfo;
   status: McpServerStatus;
   tools: McpToolInfo[];
+  /** The server's last lines of output, newest last. */
+  recentOutput?: string[];
+  /** What the server says about using its tools (from `initialize`). */
+  instructions?: string | null;
+}
+
+export interface McpCommandCheck {
+  found: boolean;
+  problem?: string | null;
+  resolved?: string | null;
 }
 
 export interface McpToolCallRequest {
@@ -150,285 +188,179 @@ export function resolveServerUrl(raw: Record<string, unknown>): string | undefin
   return undefined;
 }
 
-// ============================================
-// AUTO-START HELPER
-// ============================================
-//
-// Called after every mutation that could turn a server into an
-// "Auto + Enabled + Disconnected" tuple. We can't put this logic
-// inside `connectServer` itself because connect is also the user's
-// manual play-button path, and we don't want to gate that behind a
-// config check. Centralising it here keeps the rule "saving an
-// `autoStart` server connects it" in one place across addServer,
-// updateServer, and toggleServer.
-//
-// The function:
-//   * is a no-op unless `enabled && autoStart && status === 'disconnected'`;
-//   * catches connection errors and lets `connectServer` write them
-//     into the server's `status === 'error'` so the UI surfaces the
-//     reason instead of pretending the connect never happened;
-//   * returns the latest state from the store so the caller can
-//     surface the up-to-date status without re-fetching.
-async function attemptAutoStart(
-  get: () => McpStoreState,
-  saved: McpServerState
-): Promise<McpServerState> {
-  const { config, status } = saved;
-  if (!config.enabled || !config.autoStart || status !== 'disconnected') {
-    return saved;
-  }
-  try {
-    const connected = await get().connectServer(config.id);
-    return connected ?? saved;
-  } catch (err) {
-    // connectServer already writes the error into the store; we only
-    // log here so the failure shows up in dev tools alongside the
-    // server name (without it, the only visible signal is a red
-    // status pill).
-    console.error(`[MCP] auto-start after save failed for ${config.name}:`, err);
-    return get().getServer(config.id) ?? saved;
+/** The Rust event carrying the full server list after any change. */
+export const MCP_SERVERS_CHANGED_EVENT = 'mcp_servers_changed';
+
+function cacheToolNames(servers: McpServerState[]): void {
+  for (const server of servers) {
+    if (server.tools.length > 0) {
+      populateMcpToolDisplayNameCache(server.config.id, server.config.name, server.tools);
+    }
   }
 }
 
 // ============================================
 // STORE IMPLEMENTATION
 // ============================================
-export const useMcpStore = create<McpStoreState>((set, get) => ({
-  servers: [],
-  isLoading: false,
-  configPath: null,
-  error: null,
-  initialized: false,
+export const useMcpStore = create<McpStoreState>((set, get) => {
+  /** Replace one server in the list with Rust's answer. */
+  const putServer = (state: McpServerState) => {
+    cacheToolNames([state]);
+    set((s) => {
+      const exists = s.servers.some((srv) => srv.config.id === state.config.id);
+      return {
+        servers: exists
+          ? s.servers.map((srv) => (srv.config.id === state.config.id ? state : srv))
+          : [...s.servers, state],
+      };
+    });
+  };
 
-  // Load servers - only loads if not initialized or force=true
-  // Also auto-connects servers that have autoStart enabled
-  loadServers: async (force = false) => {
-    const { initialized, isLoading, connectServer } = get();
-    
-    // Skip if already initialized and not forced, or if currently loading
-    if ((initialized && !force) || isLoading) {
-      return;
-    }
-
-    set({ isLoading: true, error: null });
+  /**
+   * Run a Rust action. Errors land on `error` (and, for the server it was
+   * about, Rust has already put them on that server's state via the event).
+   */
+  const run = async <T,>(label: string, action: () => Promise<T>): Promise<T | null> => {
     try {
-      // Get current server states (preserves connection status)
-      let servers = await invoke<McpServerState[]>('mcp_get_servers');
-      
-      // If no servers loaded yet, load from config
-      if (servers.length === 0 && !initialized) {
-        servers = await invoke<McpServerState[]>('mcp_load_servers');
-      }
-      
-      set({ servers, isLoading: false, initialized: true });
-      
-      // Populate display name cache for all server tools (for saved thread display)
-      for (const server of servers) {
-        if (server.tools.length > 0) {
-          populateMcpToolDisplayNameCache(server.config.id, server.config.name, server.tools);
-        }
-      }
-      
-      // Auto-connect servers that have autoStart enabled and are not already connected
-      const serversToAutoStart = servers.filter(
-        s => s.config.enabled && s.config.autoStart && s.status === 'disconnected'
-      );
-      
-      if (serversToAutoStart.length > 0) {
-        console.log(`[MCP] Auto-starting ${serversToAutoStart.length} server(s)...`);
-        // Connect servers in parallel
-        await Promise.all(
-          serversToAutoStart.map(async (server) => {
-            try {
-              console.log(`[MCP] Auto-connecting: ${server.config.name}`);
-              await connectServer(server.config.id);
-            } catch (err) {
-              console.error(`[MCP] Failed to auto-connect ${server.config.name}:`, err);
-            }
-          })
+      set({ error: null });
+      return await action();
+    } catch (error) {
+      console.error(`[MCP] ${label} failed:`, error);
+      set({ error: String(error) });
+      return null;
+    }
+  };
+
+  return {
+    servers: [],
+    isLoading: false,
+    configPath: null,
+    error: null,
+    initialized: false,
+
+    applyServers: (servers) => {
+      cacheToolNames(servers);
+      set({ servers, initialized: true });
+    },
+
+    // Read the list Rust already holds; `force` re-reads the config files.
+    loadServers: async (force = false) => {
+      const { initialized, isLoading } = get();
+      if ((initialized && !force) || isLoading) return;
+      set({ isLoading: true, error: null });
+      try {
+        const servers = await invoke<McpServerState[]>(
+          force ? 'mcp_load_servers' : 'mcp_get_servers',
         );
+        get().applyServers(servers);
+        set({ isLoading: false });
+      } catch (error) {
+        console.error('[MCP] Failed to load servers:', error);
+        set({ error: String(error), isLoading: false, initialized: true });
       }
-    } catch (error) {
-      console.error('[MCP] Failed to load servers:', error);
-      set({ error: String(error), isLoading: false, initialized: true });
-    }
-  },
+    },
 
-  // Force refresh from backend (preserves connection state)
-  refreshServers: async () => {
-    set({ isLoading: true, error: null });
-    try {
-      const servers = await invoke<McpServerState[]>('mcp_get_servers');
-      set({ servers, isLoading: false });
-    } catch (error) {
-      console.error('[MCP] Failed to refresh servers:', error);
-      set({ error: String(error), isLoading: false });
-    }
-  },
+    // Re-read the config files (picks up hand edits).
+    refreshServers: async () => {
+      set({ isLoading: true, error: null });
+      try {
+        get().applyServers(await invoke<McpServerState[]>('mcp_load_servers'));
+        set({ isLoading: false });
+      } catch (error) {
+        console.error('[MCP] Failed to refresh servers:', error);
+        set({ error: String(error), isLoading: false });
+      }
+    },
 
-  getConfigPath: async () => {
-    try {
-      const path = await invoke<string>('mcp_get_config_path');
-      set({ configPath: path });
+    setWorkspace: async (root) => {
+      const servers = await run('set workspace', () =>
+        invoke<McpServerState[]>('mcp_set_workspace', { root }),
+      );
+      if (servers) get().applyServers(servers);
+    },
+
+    getConfigPath: async () => {
+      const path = await run('config path', () => invoke<string>('mcp_get_config_path'));
+      if (path) set({ configPath: path });
       return path;
-    } catch (error) {
-      console.error('[MCP] Failed to get config path:', error);
-      return null;
-    }
-  },
+    },
 
-  addServer: async (config) => {
-    try {
-      // Generate unique ID
-      const id = `mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      const fullConfig: McpServerConfig = { ...config, id };
+    checkCommand: (command) =>
+      run('check command', () => invoke<McpCommandCheck>('mcp_check_command', { command })),
 
-      const state = await invoke<McpServerState>('mcp_add_server', { config: fullConfig });
-      set((s) => ({ servers: [...s.servers, state] }));
-      // If the new server is flagged `autoStart` (and enabled), honour
-      // that immediately — otherwise the toggle is decorative until the
-      // user restarts the IDE, which is the exact bug we ran into where
-      // freshly-added servers sat in `disconnected` despite "Auto" being
-      // on. `attemptAutoStart` swallows connection failures into the
-      // server's `error` state so a bad command can't reject this
-      // promise.
-      return attemptAutoStart(get, state);
-    } catch (error) {
-      console.error('[MCP] Failed to add server:', error);
-      set({ error: String(error) });
-      return null;
-    }
-  },
+    addServer: async (config) => {
+      // Rust keys servers by name; the id it receives is replaced.
+      const state = await run('add server', () =>
+        invoke<McpServerState>('mcp_add_server', { config: { ...config, id: config.name } }),
+      );
+      if (state) putServer(state);
+      return state;
+    },
 
-  updateServer: async (config) => {
-    try {
-      const state = await invoke<McpServerState>('mcp_update_server', { config });
-      set((s) => ({
-        servers: s.servers.map((srv) => (srv.config.id === config.id ? state : srv)),
-      }));
-      // Same as addServer: if the user just turned on Auto or edited a
-      // server that was already flagged Auto, kick the connect now. The
-      // Rust `update_server` resets status to `disconnected` whenever
-      // transport-affecting fields change, so checking the returned
-      // status is the cheapest way to avoid reconnecting a connection
-      // that survived the edit.
-      return attemptAutoStart(get, state);
-    } catch (error) {
-      console.error('[MCP] Failed to update server:', error);
-      set({ error: String(error) });
-      return null;
-    }
-  },
+    updateServer: async (config) => {
+      const state = await run('update server', () =>
+        invoke<McpServerState>('mcp_update_server', { config }),
+      );
+      // A rename moves the server to a new id; the event carries the list.
+      if (state) {
+        set((s) => ({ servers: s.servers.filter((srv) => srv.config.id !== config.id) }));
+        putServer(state);
+      }
+      return state;
+    },
 
-  removeServer: async (id) => {
-    try {
-      await invoke('mcp_remove_server', { id });
+    removeServer: async (id) => {
+      const done = await run('remove server', () => invoke('mcp_remove_server', { id }));
+      if (done === null) return false;
       set((s) => ({ servers: s.servers.filter((srv) => srv.config.id !== id) }));
       return true;
-    } catch (error) {
-      console.error('[MCP] Failed to remove server:', error);
-      set({ error: String(error) });
-      return false;
-    }
-  },
+    },
 
-  toggleServer: async (id, enabled) => {
-    try {
-      const state = await invoke<McpServerState>('mcp_toggle_server', { id, enabled });
-      set((s) => ({
-        servers: s.servers.map((srv) => (srv.config.id === id ? state : srv)),
-      }));
-      // Re-enabling a server that's flagged Auto should auto-connect it
-      // — the user expects "Enabled + Auto" to behave like "Enabled +
-      // Auto on every cold boot". Disabling is a pure tear-down so the
-      // Rust side already disconnected.
-      if (enabled) {
-        return attemptAutoStart(get, state);
-      }
+    toggleServer: async (id, enabled) => {
+      const state = await run('toggle server', () =>
+        invoke<McpServerState>('mcp_toggle_server', { id, enabled }),
+      );
+      if (state) putServer(state);
       return state;
-    } catch (error) {
-      console.error('[MCP] Failed to toggle server:', error);
-      set({ error: String(error) });
-      return null;
-    }
-  },
+    },
 
-  connectServer: async (id) => {
-    // Update status to connecting
-    set((s) => ({
-      servers: s.servers.map((srv) =>
-        srv.config.id === id ? { ...srv, status: 'connecting' as McpServerStatus } : srv
-      ),
-    }));
-
-    try {
-      const state = await invoke<McpServerState>('mcp_connect_server', { id });
-      
-      // Populate display name cache for tools from this server
-      if (state.tools.length > 0) {
-        populateMcpToolDisplayNameCache(state.config.id, state.config.name, state.tools);
-      }
-      
-      set((s) => ({
-        servers: s.servers.map((srv) => (srv.config.id === id ? state : srv)),
-      }));
+    connectServer: async (id) => {
+      const state = await run('connect server', () =>
+        invoke<McpServerState>('mcp_connect_server', { id }),
+      );
+      if (state) putServer(state);
       return state;
-    } catch (error) {
-      console.error('[MCP] Failed to connect server:', error);
-      set((s) => ({
-        servers: s.servers.map((srv) =>
-          srv.config.id === id
-            ? { ...srv, status: 'error' as McpServerStatus, error: String(error) }
-            : srv
-        ),
-        error: String(error),
-      }));
-      return null;
-    }
-  },
+    },
 
-  disconnectServer: async (id) => {
-    try {
-      await invoke('mcp_disconnect_server', { id });
-      set((s) => ({
-        servers: s.servers.map((srv) =>
-          srv.config.id === id
-            ? { ...srv, status: 'disconnected' as McpServerStatus, tools: [], resources: [] }
-            : srv
-        ),
-      }));
-      return true;
-    } catch (error) {
-      console.error('[MCP] Failed to disconnect server:', error);
-      set({ error: String(error) });
-      return false;
-    }
-  },
+    restartServer: async (id) => {
+      const state = await run('restart server', () =>
+        invoke<McpServerState>('mcp_restart_server', { id }),
+      );
+      if (state) putServer(state);
+      return state;
+    },
 
-  callTool: async (request) => {
-    try {
-      const result = await invoke<McpToolCallResult>('mcp_call_tool', { request });
-      return result;
-    } catch (error) {
-      console.error('[MCP] Failed to call tool:', error);
-      return {
-        success: false,
-        error: String(error),
-      };
-    }
-  },
+    disconnectServer: async (id) => {
+      const done = await run('disconnect server', () => invoke('mcp_disconnect_server', { id }));
+      return done !== null;
+    },
 
-  getAllTools: async () => {
-    try {
-      const tools = await invoke<Array<[string, McpToolInfo]>>('mcp_get_all_tools');
-      return tools.map(([serverId, tool]) => ({ serverId, tool }));
-    } catch (error) {
-      console.error('[MCP] Failed to get all tools:', error);
-      return [];
-    }
-  },
+    callTool: async (request) => {
+      try {
+        return await invoke<McpToolCallResult>('mcp_call_tool', { request });
+      } catch (error) {
+        console.error('[MCP] Failed to call tool:', error);
+        return { success: false, error: String(error) };
+      }
+    },
 
-  getServer: (id) => {
-    return get().servers.find((srv) => srv.config.id === id);
-  },
-}));
+    getAllTools: async () => {
+      const tools = await run('list tools', () =>
+        invoke<Array<[string, McpToolInfo]>>('mcp_get_all_tools'),
+      );
+      return (tools ?? []).map(([serverId, tool]) => ({ serverId, tool }));
+    },
+
+    getServer: (id) => get().servers.find((srv) => srv.config.id === id),
+  };
+});

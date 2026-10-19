@@ -22,6 +22,10 @@ import { ProvidersPage } from "@/apps/agent/components/providers/ProvidersPage";
 import { SettingsPage } from "@/apps/agent/settings/SettingsPage";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { syncCursorModelsQuietly } from "@/apps/agent/services/providers/cursor-sync";
+import {
+  ANTIGRAVITY_MODELS_REFRESH_MS,
+  refreshAntigravityModelsQuietly,
+} from "@/apps/agent/services/providers/antigravity";
 import { registerQuestionHandler } from "@/apps/agent/services/tools/question-bridge";
 import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useLocalProviderDetection } from "@/apps/agent/hooks/providers/useLocalProviderDetection";
@@ -31,6 +35,7 @@ import { useSubagentWatch } from "@/apps/agent/hooks/useSubagentWatch";
 import { useSubagentLiveStream } from "@/apps/agent/hooks/subagents/useSubagentLiveStream";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
 import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
+import { useMcpSync } from "@/apps/agent/hooks/window/useMcpSync";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentQuestionStore } from "@/apps/agent/store/tools/useAgentQuestionStore";
@@ -72,6 +77,10 @@ export const AgentWindow: React.FC = () => {
   // per window owns the pointer listeners for every source and drop zone in it.
   useAgentPathDrag();
 
+  // MCP servers live in Rust; this mirrors their state on every view and
+  // tells Rust which project's `.mcp.json` applies.
+  useMcpSync();
+
   // Background processes end whether or not anyone has the process panel open,
   // and a tool card in the transcript is one of the things that has to know.
   useBackgroundProcessWatch(currentThreadId);
@@ -108,6 +117,17 @@ export const AgentWindow: React.FC = () => {
   useEffect(() => {
     if (!settingsReady) return;
     syncCursorModelsQuietly();
+  }, [settingsReady]);
+
+  // Antigravity's model list is the account's, and Google turns new models on
+  // without notice (Gemini 4 Argon, 2026-10-16). Re-read it on start and on a
+  // timer so a new model reaches the picker without opening Providers. Same
+  // gate as above: the mirror replaces this provider's rows.
+  useEffect(() => {
+    if (!settingsReady) return;
+    refreshAntigravityModelsQuietly();
+    const timer = window.setInterval(refreshAntigravityModelsQuietly, ANTIGRAVITY_MODELS_REFRESH_MS);
+    return () => window.clearInterval(timer);
   }, [settingsReady]);
 
   // Route the agent's `ask_question` tool to this window's question store, so a

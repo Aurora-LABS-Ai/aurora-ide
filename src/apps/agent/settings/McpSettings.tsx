@@ -22,14 +22,17 @@ import {
   resolveServerUrl,
   resolveTransport,
   useMcpStore,
+  type McpCommandCheck,
+  type McpScope,
   type McpServerConfig,
   type McpServerState,
   type McpTransportType,
 } from "@/apps/agent/store/tools/useMcpStore";
+import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { AgentIcon, type AgentIconName } from "../shared/AgentIcon";
-import { statusDotTone, statusLabel, TRANSPORT_SUMMARY } from "./mcp-status";
-import { AgwButton, AgwPill, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
+import { splitError, statusDotTone, statusLabel, TRANSPORT_SUMMARY } from "./mcp-status";
+import { AgwButton, AgwSegmented, AgwSwitch, AgwTextInput } from "./primitives";
 
 // Three transports fit the pill only with short labels, so the segmented
 // control carries the name each server's own docs use and the field below
@@ -97,6 +100,45 @@ function parseArgs(text: string): string[] {
   return text.trim() ? text.trim().split(/\s+/) : [];
 }
 
+// ── Command check (as you type) ──────────────────────────────────────────────
+
+const COMMAND_CHECK_DELAY_MS = 350;
+
+/**
+ * Which file Aurora will actually start for this command, or why none was
+ * found — the same lookup the launch uses, so "not found" here is what a
+ * Connect would hit. Skipped for `${VAR}` commands, which resolve at launch.
+ */
+const CommandCheckHint: React.FC<{ command: string }> = ({ command }) => {
+  const checkCommand = useMcpStore((s) => s.checkCommand);
+  // Keyed by the command it answers, so a stale answer never shows under
+  // newer typing.
+  const [answer, setAnswer] = useState<{ command: string; check: McpCommandCheck } | null>(null);
+  const trimmed = command.trim();
+
+  useEffect(() => {
+    if (!trimmed || trimmed.includes("${")) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void checkCommand(trimmed).then((check) => {
+        if (!cancelled && check) setAnswer({ command: trimmed, check });
+      });
+    }, COMMAND_CHECK_DELAY_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trimmed, checkCommand]);
+
+  const result = answer?.command === trimmed ? answer.check : null;
+  if (!result) return null;
+  return (
+    <span className="agw-set-row-hint" data-tone={result.found ? undefined : "warning"} role="status">
+      {result.found ? `Runs ${result.resolved}` : result.problem}
+    </span>
+  );
+};
+
 // ── Shared form fields (used by both add + edit) ─────────────────────────────
 
 interface ServerForm {
@@ -146,6 +188,7 @@ const ConnectionFields: React.FC<{
             placeholder="npx, uvx, node, python…"
             onChange={(e) => patch({ command: e.target.value })}
           />
+          <CommandCheckHint command={form.command} />
         </label>
         <label className="agw-prov-edit-field">
           <span>Arguments (space-separated)</span>
@@ -234,6 +277,11 @@ export const AddServerCard: React.FC<{
   const patch = (p: Partial<ServerForm>) => setForm((f) => ({ ...f, ...p }));
   const [autoStart, setAutoStart] = useState(seed?.config.autoStart ?? false);
   const [autoApprove, setAutoApprove] = useState(seed?.config.autoApprove ?? true);
+  // Where it is saved: `~/.aurora/mcp.json`, or the open project's `.mcp.json`
+  // (the file Claude Code reads too). No project open → global only.
+  const projectRoot = useAgentChatStore((s) => s.projectRoot);
+  const [scope, setScope] = useState<McpScope>("global");
+  const savedScope: McpScope = projectRoot ? scope : "global";
 
   const [json, setJson] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
@@ -257,6 +305,7 @@ export const AddServerCard: React.FC<{
         enabled: true,
         autoStart,
         autoApprove,
+        scope: savedScope,
       });
       onAdded(form.name.trim());
     } finally {
@@ -297,6 +346,7 @@ export const AddServerCard: React.FC<{
         enabled: raw.enabled !== false,
         autoStart: raw.autoStart === true,
         autoApprove: raw.autoApprove !== false,
+        scope: savedScope,
       };
     };
 
@@ -358,6 +408,25 @@ export const AddServerCard: React.FC<{
           <div className="agw-set-notice" style={{ marginBottom: 12 }}>
             <span>{seed.note}</span>
           </div>
+        )}
+        {projectRoot && (
+          <label className="agw-prov-edit-field" style={{ marginBottom: 14 }}>
+            <span>Save to</span>
+            <AgwSegmented
+              ariaLabel="Save to"
+              value={scope}
+              options={[
+                { value: "global" as const, label: "All projects" },
+                { value: "project" as const, label: "This project" },
+              ]}
+              onChange={setScope}
+            />
+            <span className="agw-set-row-hint">
+              {scope === "global"
+                ? "Saved in ~/.aurora/mcp.json and available in every project."
+                : "Saved in this project's .mcp.json, the file Claude Code reads too. Others who open the project see it turned off until they turn it on."}
+            </span>
+          </label>
         )}
         {mode === "form" ? (
           <div className="agw-mcp-form">
@@ -429,6 +498,7 @@ export const ServerCard: React.FC<{
   const removeServer = useMcpStore((s) => s.removeServer);
   const connectServer = useMcpStore((s) => s.connectServer);
   const disconnectServer = useMcpStore((s) => s.disconnectServer);
+  const restartServer = useMcpStore((s) => s.restartServer);
   const toggleServer = useMcpStore((s) => s.toggleServer);
 
   const [editing, setEditing] = useState(false);
@@ -488,9 +558,15 @@ export const ServerCard: React.FC<{
   const transportIcon: AgentIconName = config.transport === "stdio" ? "terminal" : "browser";
   const connecting = status === "connecting";
   const connected = status === "connected";
+  const fromProject = config.scope === "project";
+  // Auto-approve lives in this line rather than as a tag beside the buttons:
+  // the buttons change with the connection, and the tag slid with them.
   const sub = `${TRANSPORT_SUMMARY[config.transport]} · ${
-    config.enabled ? statusLabel(status) : "Disabled"
-  }${server.tools.length > 0 ? ` · ${server.tools.length} tools` : ""}`;
+    config.enabled ? statusLabel(status) : fromProject ? "Off" : "Disabled"
+  }${server.tools.length > 0 ? ` · ${server.tools.length} tools` : ""}${
+    fromProject ? " · This project" : ""
+  }${config.autoApprove ? " · Auto-approve" : ""}`;
+  const failure = splitError(server.error);
 
   return (
     <div className="agw-mcp-card" data-open={open || undefined} data-status={status}>
@@ -508,19 +584,26 @@ export const ServerCard: React.FC<{
         </button>
 
         <div className="agw-mcp-card-actions">
-          {config.autoApprove && <AgwPill tone="neutral">Auto-approve</AgwPill>}
           {config.enabled &&
             (connected ? (
-              <AgwButton icon="stop" disabled={busy} onClick={() => void disconnectServer(config.id)}>
-                Disconnect
-              </AgwButton>
+              <>
+                <AgwButton icon="retry" disabled={busy} onClick={() => void restartServer(config.id)}>
+                  Restart
+                </AgwButton>
+                <AgwButton icon="stop" disabled={busy} onClick={() => void disconnectServer(config.id)}>
+                  Disconnect
+                </AgwButton>
+              </>
             ) : (
+              // Same label while connecting: the status line already says
+              // "Connecting…", and a longer label pushed its neighbours.
               <AgwButton
                 variant="success"
                 disabled={busy || connecting}
+                aria-busy={connecting || undefined}
                 onClick={() => void connectServer(config.id)}
               >
-                {connecting ? "Connecting…" : "Connect"}
+                Connect
               </AgwButton>
             ))}
           <AgwSwitch
@@ -569,9 +652,17 @@ export const ServerCard: React.FC<{
             style={{ overflow: "hidden" }}
           >
             <div className="agw-mcp-card-body">
-              {server.error && (
-                <div className="agw-set-notice" data-tone="warning">
-                  <span>{server.error}</span>
+              {failure && (
+                <div className="agw-mcp-failure">
+                  <div className="agw-set-notice" data-tone="warning">
+                    <span>{failure.message}</span>
+                  </div>
+                  {failure.output && (
+                    <div className="agw-mcp-field">
+                      <span className="agw-mcp-field-label">Server output</span>
+                      <div className="agw-mcp-code agw-mcp-output">{failure.output}</div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -611,6 +702,20 @@ export const ServerCard: React.FC<{
                         : config.url || "—"}
                     </div>
                   </div>
+
+                  {config.source && (
+                    <div className="agw-mcp-field">
+                      <span className="agw-mcp-field-label">
+                        {fromProject ? "Project config" : "Config"}
+                      </span>
+                      <div className="agw-mcp-code">{config.source}</div>
+                      {fromProject && (
+                        <span className="agw-set-row-hint">
+                          Turning it on or off is saved for you on this project only; the file is not changed.
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   {Object.keys(config.env).length > 0 && (
                     <div className="agw-mcp-field">

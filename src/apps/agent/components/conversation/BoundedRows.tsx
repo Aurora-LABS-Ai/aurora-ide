@@ -2,8 +2,9 @@
  * Agent Window — a run of transcript rows in a bounded area that scrolls
  * inside itself [view].
  *
- * Shared by the open work card and, with work cards off, each chapter's body:
- * a long stretch of thoughts and tool calls must not grow the page by a row
+ * Each chapter's body, with work cards off. It wears the open work card's
+ * edge, but the card draws its own scroller (`WorkCard`: its window and panel
+ * must be one tree so a click never rebuilds the rows). A long stretch of thoughts and tool calls must not grow the page by a row
  * every few seconds. The rows are the transcript's own, each still opening on
  * its own. The edge is a hairline on the right that fades at both ends (the
  * spine is the left edge; without it, a matching hairline on the left), plus
@@ -29,7 +30,7 @@ export const BoundedRows: React.FC<{
   const { ref, onScroll } = useFollowBottom(follow);
   return (
     <div className="agw-wc-panel">
-      <div id={id} ref={ref} onScroll={onScroll} className="agw-wc-body" tabIndex={0} aria-label={label}>
+      <div id={id} ref={ref} onScroll={onScroll} className="agw-wc-body agw-scroll-hair" tabIndex={0} aria-label={label}>
         {children}
       </div>
     </div>

@@ -201,15 +201,28 @@ const components = {
   pre: PreBlock,
   code: CodeEl,
 
+  // A web link says it leaves the app, the way the reply layout's links do.
   a: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
       {children}
+      {/^https?:\/\//i.test(href ?? "") && (
+        <span className="agw-md-ext" aria-hidden="true">
+          ↗
+        </span>
+      )}
     </a>
   ),
 };
 
-/** One run of markdown, rendered by Streamdown with the window's theme. */
-const MarkdownBody: React.FC<{ text: string }> = ({ text }) => {
+/**
+ * One run of markdown, rendered by Streamdown with the window's theme.
+ *
+ * `incomplete`: the text is still arriving, so Streamdown may close a
+ * half-written `**bold` or link for the frame. Only then. The repair also
+ * reads a lone `*` inside a code span (`lib/domain/*`) as an open italic and
+ * appends a `*` — a finished reply drew "…when reading.*" (2026-10-16).
+ */
+const MarkdownBody: React.FC<{ text: string; incomplete?: boolean }> = ({ text, incomplete = false }) => {
   const appearance = useAgentThemeStore((s) => selectActiveAgentTheme(s).appearance);
   const syntaxOn = useAgentThemeStore((s) => s.syntaxHighlighting);
 
@@ -230,6 +243,7 @@ const MarkdownBody: React.FC<{ text: string }> = ({ text }) => {
     <div className={syntaxOn ? "agw-md" : "agw-md agw-syntax-off"}>
       <Streamdown
         isAnimating={false}
+        parseIncompleteMarkdown={incomplete}
         shikiTheme={shikiTheme}
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
@@ -276,13 +290,14 @@ const AgentMarkdownImpl: React.FC<{
   if (!content) return null;
 
   if (!segments || (segments.length === 1 && segments[0].kind === "markdown")) {
-    return <MarkdownBody text={revealed} />;
+    return <MarkdownBody text={revealed} incomplete={streaming} />;
   }
 
   return (
     <>
       {segments.map((segment, index) => {
-        if (segment.kind === "markdown") return <MarkdownBody key={index} text={segment.text} />;
+        // Only the last run can still be growing; the ones before it are done.
+        if (segment.kind === "markdown") return <MarkdownBody key={index} text={segment.text} incomplete={streaming && index === segments.length - 1} />;
         // A fence the model never closed is still finished once the turn is.
         const closed = segment.closed || !streaming;
         if (segment.kind === "layout") {

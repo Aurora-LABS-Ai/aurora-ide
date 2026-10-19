@@ -1,43 +1,65 @@
 /**
  * The instruction can only teach lines the parser reads: every example in it
- * must parse with no problems, and the fences in the prose must be cut out the
- * same way a reply's are.
+ * and in the on-demand guide must parse with no problems, and the fences in
+ * the prose must be cut out the same way a reply's are.
  */
 import { describe, expect, it } from "vitest";
 
 import { splitReply } from "@/apps/agent/lib/answer-box/split";
-import { REPLY_LAYOUT_EXAMPLES, REPLY_LAYOUT_INSTRUCTIONS } from "./instructions";
-import { parseLayout } from "./parse";
+import { REPLY_LAYOUT_EXAMPLES, REPLY_LAYOUT_INSTRUCTIONS, UI_PROMPT_LINES } from "./instructions";
+import { LAYOUT_FENCE_LANGUAGES, layoutIsEmpty, parseLayout } from "./parse";
+import { UI_PARTS, parseUi } from "./ui";
+import GUIDE from "./guide.md?raw";
 
 describe("reply layout instructions", () => {
-  it("every example parses clean", () => {
-    const facts = parseLayout("aurora-facts", REPLY_LAYOUT_EXAMPLES.facts, true);
-    const flow = parseLayout("aurora-flow", REPLY_LAYOUT_EXAMPLES.flow, true);
-    const note = parseLayout("aurora-note", REPLY_LAYOUT_EXAMPLES.note, true);
-    const bars = parseLayout("aurora-bars", REPLY_LAYOUT_EXAMPLES.bars, true);
-    const pairs = parseLayout("aurora-pairs", REPLY_LAYOUT_EXAMPLES.pairs, true);
-    for (const block of [facts, flow, note, bars, pairs]) expect(block.problems).toEqual([]);
-    expect(facts.kind === "facts" && facts.facts).toHaveLength(4);
-    expect(flow.kind === "flow" && flow.steps.map((s) => s.items.length)).toEqual([1, 1, 4, 1, 1]);
-    expect(note.kind === "note" && note.title).toBe("The route-group trap");
-    expect(bars.kind === "bars" && bars.bars.map((b) => [b.value, b.max])).toEqual([[31, 97], [155, 193]]);
-    expect(pairs.kind === "pairs" && pairs.title).toBe("Route structure");
-    expect(pairs.kind === "pairs" && pairs.pairs).toHaveLength(5);
+  it("the prompt's lines parse clean, as one layout", () => {
+    const layout = parseUi(UI_PROMPT_LINES.join("\n"), true);
+    expect(layout.problems).toEqual([]);
+    expect(layout.parts.map((p) => (p.kind === "block" ? p.layout.kind : p.kind))).toEqual(["facts", "flow", "note"]);
+    for (const line of UI_PROMPT_LINES) expect(REPLY_LAYOUT_INSTRUCTIONS).toContain(line);
   });
 
-  it("its five fences are the five the reply splitter cuts out", () => {
-    const layouts = splitReply(REPLY_LAYOUT_INSTRUCTIONS, { layouts: true }).filter((s) => s.kind === "layout");
-    expect(layouts.map((s) => (s.kind === "layout" ? s.language : ""))).toEqual([
-      "aurora-facts",
-      "aurora-flow",
-      "aurora-note",
-      "aurora-bars",
-      "aurora-pairs",
-    ]);
-    expect(layouts.every((s) => s.kind === "layout" && s.closed)).toBe(true);
+  it("the guide's example is one aurora-ui fence that parses clean", () => {
+    const layouts = splitReply(GUIDE, { layouts: true }).filter((s) => s.kind === "layout");
+    expect(layouts.map((s) => (s.kind === "layout" ? s.language : ""))).toEqual(["aurora-ui"]);
+    const [fence] = layouts;
+    if (fence.kind !== "layout") throw new Error("unreachable");
+    expect(fence.closed).toBe(true);
+    const layout = parseUi(fence.source, true);
+    expect(layout.problems).toEqual([]);
+    expect(layout.parts.map((p) => p.kind)).toEqual(["stats", "block", "diagram", "block", "block", "block"]);
+  });
+
+  it("the guide names every part, and the prompt points at it", () => {
+    for (const part of UI_PARTS) expect(GUIDE).toContain(`${part}(`);
+    expect(GUIDE).toContain("aurora-report");
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain('topic: "reply-layout"');
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain('topic: "reports"');
+  });
+
+  it("teaches one fence, never the single-block fences or a header row", () => {
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("aurora-ui");
+    expect(REPLY_LAYOUT_INSTRUCTIONS).not.toMatch(/aurora-(facts|flow|note|bars|pairs|compare|checklist|timeline|tree)\b/);
+    // 2026-10-16: "rows `Label | Value | Detail`" came back as a literal
+    // `Surface | Location | Notes` first row in every block.
+    expect(REPLY_LAYOUT_INSTRUCTIONS).not.toMatch(/Label \| Value|Step \| Detail|Key \| Value/);
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("no header row");
+  });
+
+  it("keeps the standing prompt short and fence-free", () => {
+    expect(REPLY_LAYOUT_INSTRUCTIONS.length).toBeLessThan(1200);
+    expect(REPLY_LAYOUT_INSTRUCTIONS).not.toContain("```");
   });
 
   it("stays plain text with the setting off", () => {
     expect(splitReply(REPLY_LAYOUT_INSTRUCTIONS).every((s) => s.kind === "markdown")).toBe(true);
+  });
+
+  it("the single-block fixtures old chats hold still parse clean", () => {
+    for (const [language, kind] of Object.entries(LAYOUT_FENCE_LANGUAGES)) {
+      const block = parseLayout(language as keyof typeof LAYOUT_FENCE_LANGUAGES, REPLY_LAYOUT_EXAMPLES[kind], true);
+      expect(block.problems).toEqual([]);
+      expect(layoutIsEmpty(block)).toBe(false);
+    }
   });
 });

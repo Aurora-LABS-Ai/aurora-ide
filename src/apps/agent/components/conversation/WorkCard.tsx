@@ -29,8 +29,13 @@ import { inertWhen } from "@/kernel/lib/a11y/inert";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { describeToolActivity } from "@/apps/agent/components/conversation/activity";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
-import { BoundedRows } from "@/apps/agent/components/conversation/BoundedRows";
-import { WorkCardWindowContext } from "@/apps/agent/components/conversation/work-card-context";
+import {
+  LiveWorkCardContext,
+  WorkCardWindowContext,
+} from "@/apps/agent/components/conversation/work-card-context";
+import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
+import { useFollowBottom } from "@/apps/agent/hooks/conversation/useFollowBottom";
+import { GLIDE_EASE_CSS, GLIDE_MS } from "@/apps/agent/lib/motion/glide";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import type { IndexedRow, WorkStretch } from "@/apps/agent/components/conversation/work-stretches";
 import {
@@ -38,9 +43,20 @@ import {
   useAgentWorkCardStore,
 } from "@/apps/agent/store/conversation/useAgentWorkCardStore";
 
-/** Rows the running window keeps mounted. The window shows what fits of them
- *  (up to 380px, `.agw-wc-window`). */
-const WINDOW_ROWS = 10;
+/** Rows the running window keeps mounted. The window shows what fits of them,
+ *  up to the open panel's own 55vh (`.agw-wc-window`), so there must be enough
+ *  to fill that on a tall screen. At 10, a window of one-line steps stopped at
+ *  about 400px however tall its limit was. */
+const WINDOW_ROWS = 30;
+
+/** What the card shows under its header. */
+type BodyShape = "open" | "window" | "none";
+
+/** Every height glide in the card: the transcript's one glide. */
+const GLIDE: KeyframeAnimationOptions = {
+  duration: GLIDE_MS,
+  easing: GLIDE_EASE_CSS,
+};
 
 /** What the stretch is doing right now, from its newest row. */
 function nowDoing(stretch: WorkStretch): string {
@@ -104,67 +120,208 @@ export const WorkCard: React.FC<{
   }, [threadId, hydrate]);
 
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
-  // A finished card closing to its header keeps the panel on screen until the
-  // height has shrunk, or the close would blank first and then move.
-  const [closing, setClosing] = useState(false);
+  // Transcript → Work cards → "Group tool calls while working", off by
+  // default: while the stretch runs, tool runs are plain rows
+  // (`LiveWorkCardContext`), new rows fade in, and the body glides to its
+  // newest row. On, the card behaves as before: grouped runs, instant pin.
+  const groupRuns = useAgentThemeStore((s) => s.transcriptWorkCardGroupRuns);
+  const smoothTools = useAgentThemeStore((s) => s.transcriptSmoothTools);
+  const calm = live && !groupRuns;
 
-  // The height glide. Every shape here — the running window, the open panel,
-  // nothing — is as tall as its content, so no stylesheet value can be the
-  // target. The height before the toggle is read in the click; the height
-  // after is read once React has committed; the box animates between the two.
+  // What the body is: the open panel, the running window, or nothing.
+  //
+  // The window and the panel are ONE element tree that only changes its class
+  // and how many rows it holds, keyed by row id. Opening a running card used to
+  // swap the window for a separate panel, so every row was thrown away and
+  // built again — each rebuilt tool step played its arrival from height 0, all
+  // at once, the panel measured its height while they were still closed, and
+  // it jumped when they finished (Alvan, 2026-10-16: "laggy", "frame drop",
+  // "jump"). Now the newest rows stay mounted through the click, keep their
+  // own open/closed state, and only the older ones are added above them.
+  const shape: BodyShape = isOpen ? "open" : live ? "window" : "none";
+  // A body on its way out stays drawn until it has shrunk to nothing, or the
+  // close would blank first and then move everything below it at once. That
+  // covers a finished card folding to its header AND the running window when
+  // the stretch stops being the live edge (the reply below then glides up
+  // instead of landing a whole window higher in one frame).
+  const [leaving, setLeaving] = useState<Exclude<BodyShape, "none"> | null>(null);
+  const [prevShape, setPrevShape] = useState(shape);
+  if (prevShape !== shape) {
+    // State adjusted during render (React's pattern for derived state), so the
+    // leaving body is still in the DOM in the same commit that ends it.
+    setPrevShape(shape);
+    setLeaving(shape === "none" && prevShape !== "none" && !reduceMotion ? prevShape : null);
+  }
+  const shown: BodyShape = shape === "none" ? (leaving ?? "none") : shape;
+  const windowMode = shown === "window";
+
+  // Steps mounting because the card redraws them (it first forms, or opens)
+  // are not arriving; `ArrivalHoldContext` tells them so. True through the
+  // render that mounts them, false again once it has committed.
+  const arrivalHold = useRef(true);
+  useLayoutEffect(() => {
+    arrivalHold.current = false;
+  });
+
+  // The body scrolls inside itself. While the stretch runs it follows the
+  // newest row, open or not; reopened from history it starts at the first,
+  // where reading starts. Pinned from a ResizeObserver on the rows, never
+  // after each render: the card re-renders on every streamed word, and rows
+  // grow without it rendering at all (text revealing itself, a step opening).
+  // The window can't be scrolled by hand, so it never stops following.
+  // With the calm motion on, content growth is travelled instead of jumped
+  // (the card's own height glides still pin instantly; see the hook).
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const { ref: bodyRef, onScroll, rearm, compensate } = useFollowBottom(live && shown !== "none", rowsRef, {
+    glide: calm && !reduceMotion,
+  });
+
+  const windowItems = windowMode ? stretch.items.slice(-WINDOW_ROWS) : stretch.items;
+
+  // The window keeps only its newest rows mounted, so past `WINDOW_ROWS` each
+  // new row unmounts the oldest one, out of sight above the view. Nothing
+  // moves `scrollTop` for that (`overflow-anchor: none`), so every row on
+  // screen jumped up by the removed row's height in one frame, and a glide
+  // cannot hide it: the content's total height barely changes. The tops of
+  // the first few rows are read each time the first row changes (once per
+  // dropped row, never per streamed word); the next drop moves the box up by
+  // exactly what left, and the follow carries on to the new row from there.
+  const firstWindowId = windowMode ? (windowItems[0]?.row.id ?? null) : null;
+  const windowTops = useRef<{ first: string; tops: Map<string, number> } | null>(null);
+  useLayoutEffect(() => {
+    const rows = rowsRef.current;
+    if (!windowMode || !firstWindowId || !rows) {
+      windowTops.current = null;
+      return;
+    }
+    const prev = windowTops.current;
+    if (prev && prev.first !== firstWindowId) {
+      const was = prev.tops.get(prev.first);
+      const now = prev.tops.get(firstWindowId);
+      if (was !== undefined && now !== undefined) compensate(now - was);
+    }
+    const tops = new Map<string, number>();
+    const children = rows.children;
+    for (let i = 0; i < Math.min(6, children.length, windowItems.length); i += 1) {
+      tops.set(windowItems[i].row.id, (children[i] as HTMLElement).offsetTop);
+    }
+    windowTops.current = { first: firstWindowId, tops };
+  }, [firstWindowId, windowMode]); // eslint-disable-line react-hooks/exhaustive-deps -- read once per dropped row only
+
+  // New rows fade in where they land while the stretch runs (calm motion,
+  // Smooth tool arrival on). Tool rows are left to their steps, which fade
+  // themselves (`ToolStep`); a row mounted because the card redrew it (it
+  // formed, or opened) is not arriving and stays still (`arrivalHold`).
+  const holdingThisRender = arrivalHold.current;
+  const seenRows = useRef(new WeakSet<Element>());
+  useLayoutEffect(() => {
+    const rows = rowsRef.current;
+    if (!rows) return;
+    const fade =
+      calm &&
+      smoothTools &&
+      !reduceMotion &&
+      !holdingThisRender &&
+      !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    for (const child of Array.from(rows.children)) {
+      if (seenRows.current.has(child)) continue;
+      seenRows.current.add(child);
+      if (fade && child.getAttribute("data-row") !== "tools" && typeof child.animate === "function") {
+        // The tool steps' own fade (`--agw-dur-slow`, `--agw-ease-out`).
+        child.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: "cubic-bezier(0, 0, 0.2, 1)" });
+      }
+    }
+  });
+
+  // The height glides. Every shape here is as tall as its content, so no
+  // stylesheet value can be the target: the height before is read in the
+  // click (or known: nothing is 0), the height after once React has committed.
+  //   - window <-> open: the scroller itself changes height, and stays on its
+  //     newest row every frame, so the steps you were watching stay put under
+  //     the header and the panel simply grows or shrinks around them;
+  //   - nothing <-> a body: the box around it opens from / closes to 0.
   const animRef = useRef<HTMLDivElement>(null);
-  const fromHeight = useRef<number | null>(null);
+  const fromBody = useRef<number | null>(null);
 
   const toggle = () => {
-    if (!reduceMotion) fromHeight.current = animRef.current?.offsetHeight ?? null;
-    if (isOpen && !live && !reduceMotion) setClosing(true);
+    if (!reduceMotion && shown !== "none") fromBody.current = bodyRef.current?.offsetHeight ?? null;
+    arrivalHold.current = true;
+    // Opening a running card lands on the newest step, and closing it goes
+    // back to a window that always shows the newest steps, wherever the panel
+    // had been scrolled to.
+    rearm();
     if (threadId) setOpen(threadId, stretch.id, !isOpen);
     else setDraftOpen((v) => !v);
   };
 
+  const glidedFrom = useRef(shape);
   useLayoutEffect(() => {
-    const el = animRef.current;
-    const from = fromHeight.current;
-    fromHeight.current = null;
-    if (!el || from === null || typeof el.animate !== "function") return;
-    for (const running of el.getAnimations()) running.cancel();
-    const to = closing ? 0 : el.offsetHeight;
-    const glide = el.animate([{ height: `${from}px` }, { height: `${to}px` }], {
-      duration: 220,
-      easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    const before = glidedFrom.current;
+    glidedFrom.current = shape;
+    const outer = animRef.current;
+    const body = bodyRef.current;
+    const from = fromBody.current;
+    fromBody.current = null;
+    if (before === shape || reduceMotion || !outer || typeof outer.animate !== "function") return;
+
+    if (before !== "none" && shape !== "none") {
+      if (!body || from === null) return;
+      for (const running of body.getAnimations()) running.cancel();
+      const to = body.offsetHeight;
+      if (Math.abs(to - from) < 2) return;
+      // The scroller resizes every frame of this, and the follow observer
+      // keeps the newest row on its bottom edge each time.
+      body.animate(
+        [
+          { height: `${from}px`, maxHeight: `${from}px` },
+          { height: `${to}px`, maxHeight: `${to}px` },
+        ],
+        GLIDE,
+      );
+      return;
+    }
+
+    // Opening from nothing, or closing to nothing (the leaving body is still
+    // drawn). A close interrupted by a reopen starts from wherever the close
+    // had got to.
+    const closingNow = shape === "none";
+    if (closingNow && !leaving) return;
+    const running = outer.getAnimations();
+    const current = running.length > 0 ? outer.offsetHeight : null;
+    for (const anim of running) anim.cancel();
+    const start = current ?? (closingNow ? outer.offsetHeight : 0);
+    const end = closingNow ? 0 : outer.offsetHeight;
+    const glide = outer.animate([{ height: `${start}px` }, { height: `${end}px` }], {
+      ...GLIDE,
       fill: "forwards",
     });
     glide.onfinish = () => {
-      // A close holds height 0 until React has removed the panel (below);
-      // anything else hands back to the content's own height at once.
-      if (closing) setClosing(false);
+      // A close holds height 0 until React has removed the body (below);
+      // an open hands back to the content's own height at once.
+      if (closingNow) setLeaving(null);
       else glide.cancel();
     };
-  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps -- the glide runs per toggle only
+  }, [shape]); // eslint-disable-line react-hooks/exhaustive-deps -- the glide runs per shape change only
 
-  // The panel is gone; release the held height before the next paint.
+  // The leaving body is gone; release the held height before the next paint.
   useLayoutEffect(() => {
-    if (closing) return;
+    if (leaving) return;
     const el = animRef.current;
     if (!el || typeof el.getAnimations !== "function") return;
     for (const held of el.getAnimations()) if (held.playState === "finished") held.cancel();
-  }, [closing]);
+  }, [leaving]);
 
   // The running window fades its top edge only when older steps are actually
   // cut off there. A short stretch shows all of its rows, unfaded.
-  const windowInRef = useRef<HTMLDivElement>(null);
   const [clipped, setClipped] = useState(false);
-  const windowShown = live && !isOpen && !closing;
   useEffect(() => {
-    const inner = windowInRef.current;
-    if (!windowShown || !inner || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      const box = inner.parentElement;
-      setClipped(!!box && inner.offsetHeight > box.clientHeight + 1);
-    });
-    observer.observe(inner);
+    const rows = rowsRef.current;
+    const body = bodyRef.current;
+    if (!windowMode || !rows || !body || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setClipped(body.scrollHeight > body.clientHeight + 1));
+    observer.observe(rows);
     return () => observer.disconnect();
-  }, [windowShown]);
+  }, [windowMode, bodyRef]);
 
   const since = stretch.startedAt ?? turnStartedAt;
   const workedMs =
@@ -195,7 +352,11 @@ export const WorkCard: React.FC<{
         {live ? (
           <>
             <span className="agw-wc-what agw-shimmer">Working</span>
-            <span className="agw-wc-now">{nowDoing(stretch)}</span>
+            {/* Keyed by its text, so each new "now doing" fades in instead of
+                snapping the line to a new width. */}
+            <span key={nowDoing(stretch)} className="agw-wc-now agw-swap-in">
+              {nowDoing(stretch)}
+            </span>
             <span className="agw-wc-count">
               {tally(stretch)}
               {since !== undefined && (
@@ -217,47 +378,47 @@ export const WorkCard: React.FC<{
         <AgentIcon name="chevron-right" size={13} className="agw-wc-chev" />
       </button>
 
-      {/* One box whose HEIGHT animates between the three shapes — the open
-          panel, the running window, nothing — so opening and closing glide
-          instead of snapping. While it closes, the panel stays mounted until
-          the box has shrunk, or the close would blank first and then move. */}
+      {/* The box whose height glides when a body appears or leaves. */}
       <div ref={animRef} className="agw-wc-anim">
-        {isOpen || closing ? (
-          // A panel of its own that scrolls inside itself, never the page:
-          // opening a 70-step stretch must not put 140 rows back into the
-          // transcript, which is the whole thing the card exists to stop
-          // (Alvan, 2026-10-12). The edge and the fades say "this scrolls";
-          // every row inside still opens on its own. While the stretch runs
-          // the box follows its newest row; reopened from history it starts
-          // at the first, where reading starts (`useFollowBottom`).
-          <div {...inertWhen(!isOpen)}>
-            <BoundedRows id={bodyId} follow={live && isOpen} label={`${stretch.thoughts + stretch.calls} steps`}>
-              {stretch.items.map(renderItem)}
-            </BoundedRows>
-          </div>
-        ) : live ? (
-          // The newest steps, at the bottom of a window that never changes
-          // height. Not a second way in: a click anywhere on it opens the card,
-          // where every row is live and interactive. Inert, so keyboard focus
-          // never lands on a control that is clipped half out of view.
-          // Same edge as the open panel (`agw-wc-panel`), so running and open
-          // read as one thing at two heights.
-          <div
-            id={bodyId}
-            className="agw-wc-panel agw-wc-window"
-            data-clipped={clipped || undefined}
-            onClick={toggle}
-            aria-hidden="true"
-          >
-            <div ref={windowInRef} className="agw-wc-window-in" {...inertWhen(true)}>
-              {/* Rows know they are in the window, so a live thought stays
-                  folded to its line instead of filling it with reasoning. */}
-              <WorkCardWindowContext.Provider value={true}>
-                {stretch.items.slice(-WINDOW_ROWS).map(renderItem)}
-              </WorkCardWindowContext.Provider>
+        {shown !== "none" && (
+          // OPEN: a panel of its own that scrolls inside itself, never the
+          // page — opening a 70-step stretch must not put 140 rows back into
+          // the transcript, which is the whole thing the card exists to stop
+          // (Alvan, 2026-10-12). Every row inside still opens on its own.
+          //
+          // WINDOW (closed, running): the newest steps, growing down from the
+          // header up to the open panel's 55vh, then the oldest leave through a top fade. Not
+          // a second way in: a click anywhere on it opens the card. Inert, so
+          // keyboard focus never lands on a control clipped half out of view.
+          // Same edge as the open panel, so the two read as one thing at two
+          // heights — and they ARE one element (see `shape` above).
+          <div className="agw-wc-panel">
+            <div
+              id={bodyId}
+              ref={bodyRef}
+              className={windowMode ? "agw-wc-body agw-scroll-hair agw-wc-window" : "agw-wc-body agw-scroll-hair"}
+              data-clipped={(windowMode && clipped) || undefined}
+              // Only a reader scrolling the open panel can stop it following.
+              onScroll={windowMode ? undefined : onScroll}
+              onClick={windowMode ? toggle : undefined}
+              tabIndex={windowMode || leaving ? -1 : 0}
+              aria-label={`${stretch.thoughts + stretch.calls} steps`}
+              aria-hidden={windowMode || undefined}
+            >
+              <div ref={rowsRef} className="agw-wc-rows" {...inertWhen(windowMode || leaving !== null)}>
+                {/* Rows know they are in the window, so a live thought stays
+                    folded to its line instead of filling it with reasoning. */}
+                <WorkCardWindowContext.Provider value={windowMode}>
+                  <LiveWorkCardContext.Provider value={live}>
+                    <ArrivalHoldContext.Provider value={arrivalHold}>
+                      {windowItems.map(renderItem)}
+                    </ArrivalHoldContext.Provider>
+                  </LiveWorkCardContext.Provider>
+                </WorkCardWindowContext.Provider>
+              </div>
             </div>
           </div>
-        ) : null}
+        )}
       </div>
     </div>
   );

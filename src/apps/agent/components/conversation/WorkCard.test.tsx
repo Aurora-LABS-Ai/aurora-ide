@@ -14,6 +14,7 @@ import { WorkCard } from "@/apps/agent/components/conversation/WorkCard";
 import type { TimelineRow } from "@/apps/agent/components/conversation/timeline";
 import { groupWorkStretches, type IndexedRow, type WorkStretch } from "@/apps/agent/components/conversation/work-stretches";
 import { useAgentWorkCardStore } from "@/apps/agent/store/conversation/useAgentWorkCardStore";
+import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({
@@ -90,7 +91,47 @@ describe("WorkCard", () => {
       "t3",
       "tools-toolu_3",
     ]);
-    expect(window.querySelector(".agw-wc-window-in")!.hasAttribute("inert")).toBe(true);
+    expect(window.querySelector(".agw-wc-rows")!.hasAttribute("inert")).toBe(true);
+  });
+
+  /**
+   * Alvan, 2026-10-16: clicking a running card was laggy and jumped. The
+   * window and the open panel were two separate trees, so every row was
+   * thrown away and built again on the click, and each rebuilt tool step
+   * played its arrival from height 0. The rows on screen must survive the
+   * click, and the older ones it adds must not count as arriving.
+   */
+  it("opening a running card keeps the rows on screen and redraws the rest without an arrival", () => {
+    const steps: TimelineRow[] = [];
+    for (let i = 1; i <= 17; i += 1) steps.push(think(`t${i}`), tools(`toolu_${i}`));
+    const long = groupWorkStretches(steps)[0] as WorkStretch;
+    const heldAtMount = new Map<string, boolean>();
+    const Probe: React.FC<{ id: string }> = ({ id }) => {
+      const hold = React.useContext(ArrivalHoldContext);
+      React.useState(() => heldAtMount.set(id, hold.current));
+      return <button type="button" data-row-id={id} />;
+    };
+    const renderProbe = ({ row }: IndexedRow) => (
+      <div key={row.id} className="agw-row">
+        <Probe id={row.id} />
+      </div>
+    );
+
+    const el = mount(<WorkCard stretch={long} live isLast threadId={null} renderItem={renderProbe} />);
+    const newest = el.querySelector("[data-row-id='tools-toolu_17']");
+    expect(el.querySelectorAll("[data-row-id]")).toHaveLength(30);
+    act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
+
+    expect(el.querySelectorAll("[data-row-id]")).toHaveLength(34);
+    expect(el.querySelector("[data-row-id='tools-toolu_17']")).toBe(newest);
+    // The four older rows mounted on the click, under the hold.
+    expect(heldAtMount.get("t1")).toBe(true);
+    expect(heldAtMount.get("tools-toolu_2")).toBe(true);
+
+    // A step arriving after the click is a real arrival.
+    const more = groupWorkStretches([...steps, think("t18"), tools("toolu_18")])[0] as WorkStretch;
+    act(() => root!.render(<WorkCard stretch={more} live isLast threadId={null} renderItem={renderProbe} />));
+    expect(heldAtMount.get("tools-toolu_18")).toBe(false);
   });
 
   it("open: every row as the transcript draws it, each one still its own control", () => {

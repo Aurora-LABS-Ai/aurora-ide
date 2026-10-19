@@ -113,8 +113,10 @@
  * raw identifier, so it belongs in the same type as the `Read` title above it.
  * It may not shrink to nothing and it may not eat the outcome: it takes what it
  * needs to a ceiling, then clips, exactly as the file chip does at 220px. */
+/* The operation is what the row is; the outcome beside it is the one that
+ * gives way. Shrinkable, a long outcome cut "Fetch URL" to "Fetc…". */
 .agw-mcp-op {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
   max-width: 27ch;
   overflow: hidden;
@@ -1686,13 +1688,13 @@
  * only as long as `data-enter`, which `ToolStep` drops when the opening ends. */
 .agw-tool-step[data-enter] {
   display: grid;
-  animation: agw-tool-open var(--agw-dur-slow) var(--agw-ease-enter) both;
+  animation: agw-tool-open var(--agw-glide-dur) var(--agw-glide-ease) both;
   animation-delay: var(--agw-enter-delay, 0ms);
 }
 .agw-tool-step[data-enter] > * {
   min-height: 0;
   overflow: clip;
-  animation: agw-tool-slide-in var(--agw-dur-base) var(--agw-ease-enter) both;
+  animation: agw-tool-slide-in var(--agw-glide-dur) var(--agw-glide-ease) both;
   animation-delay: calc(var(--agw-enter-delay, 0ms) + 0.12s);
 }
 @keyframes agw-tool-open {
@@ -1713,6 +1715,22 @@
     transform: none;
   }
 }
+/* Inside a running work card (`data-fade`, set by `ToolStep`): the step takes
+ * its full height at once and only fades in where it lands. The card already
+ * bounds the work and glides to its newest row, so a height opening from 0
+ * there only added motion: with a fast model, one per call, several a second.
+ * Probe: Documents/aurora-work-card-motion-designs.html, 02. */
+.agw-tool-step[data-fade] {
+  animation: agw-tool-fade-in var(--agw-dur-slow) var(--agw-ease-out) both;
+}
+@keyframes agw-tool-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 /* No animation runs, so nothing would ever end it: undo the open state's
  * layout and clip too, or the step would stay clipped for good. */
 @media (prefers-reduced-motion: reduce) {
@@ -1722,6 +1740,9 @@
   }
   .agw-tool-step[data-enter] > * {
     overflow: visible;
+    animation: none;
+  }
+  .agw-tool-step[data-fade] {
     animation: none;
   }
 }

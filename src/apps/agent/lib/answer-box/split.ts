@@ -8,19 +8,27 @@
  */
 
 import { isLayoutLanguage, type LayoutLanguage } from "@/apps/agent/lib/reply-layout/parse";
+import { UI_FENCE_LANGUAGE, type UiFenceLanguage } from "@/apps/agent/lib/reply-layout/ui";
 
 export const BOX_FENCE_LANGUAGE = "aurora-box";
+
+/** A fence the reply layout draws: one block, or a whole `aurora-ui` layout. */
+export type ReplyFenceLanguage = LayoutLanguage | UiFenceLanguage;
+
+function isReplyFence(info: string): info is ReplyFenceLanguage {
+  return info === UI_FENCE_LANGUAGE || isLayoutLanguage(info);
+}
 
 export type ReplySegment =
   | { kind: "markdown"; text: string }
   | { kind: "box"; source: string; closed: boolean; raw: string }
-  | { kind: "layout"; language: LayoutLanguage; source: string; closed: boolean; raw: string };
+  | { kind: "layout"; language: ReplyFenceLanguage; source: string; closed: boolean; raw: string };
 
 /** An opening or closing fence: three or more backticks or tildes. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
 export interface SplitOptions {
-  /** Cut `aurora-facts` / `aurora-flow` / `aurora-note` fences out too. Off,
+  /** Cut registered reply-layout fences out too. Off,
    *  they stay markdown and render as code, which is what the setting being
    *  off means. */
   layouts?: boolean;
@@ -40,7 +48,7 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
   let open: {
     marker: string;
     /** What the fence opened: a box, a layout block, or ordinary code. */
-    cut: "box" | LayoutLanguage | null;
+    cut: "box" | ReplyFenceLanguage | null;
     lines: string[];
     opener: string;
   } | null = null;
@@ -58,8 +66,8 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
     if (!open) {
       if (fence && !(fence[1][0] === "`" && fence[2].includes("`"))) {
         const info = fence[2].trim().split(/\s+/)[0] ?? "";
-        const cut: "box" | LayoutLanguage | null =
-          info === BOX_FENCE_LANGUAGE ? "box" : layouts && isLayoutLanguage(info) ? info : null;
+        const cut: "box" | ReplyFenceLanguage | null =
+          info === BOX_FENCE_LANGUAGE ? "box" : layouts && isReplyFence(info) ? info : null;
         open = { marker: fence[1], cut, lines: [], opener: line };
         if (cut) flushMarkdown();
         else markdown.push(line);

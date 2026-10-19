@@ -8,12 +8,17 @@
 //!
 //! ## What runs
 //!
-//! [audio.cpp](https://github.com/0xShug0/audio.cpp) running NetEase Youdao's
-//! Confucius4-R2T2. Like every other local model in Aurora it is the user's own
-//! build, run as a child process — the same way `prompt_refine` drives
-//! llama.cpp and `speech` drives CrispASR. Aurora ships no weights.
+//! Two engines, picked by [`StreamConfig::engine`]. Like every other local
+//! model in Aurora each is the user's own build, run as a child process — the
+//! same way `prompt_refine` drives llama.cpp and `speech` drives CrispASR.
+//! Aurora ships no weights.
 //!
-//! ## How we talk to it
+//! - **Phonon-2** (the default) on CrispASR's streaming mode. It rewrites the
+//!   open sentence as it hears more, so it has its own events; see [`phonon`].
+//! - **Confucius4-R2T2** on [audio.cpp](https://github.com/0xShug0/audio.cpp),
+//!   described below.
+//!
+//! ## How we talk to audio.cpp
 //!
 //! One child per recording, started with `--mode streaming --audio -`.
 //! Microphone audio goes to its stdin as 16 kHz mono `f32`, which is exactly
@@ -43,6 +48,8 @@
 //! one after each recording. It holds that much video memory while it waits, so
 //! an idle timeout the user sets releases it.
 
+mod phonon;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -62,6 +69,18 @@ pub const EVENT_PARTIAL: &str = "speech_stream_partial";
 pub const EVENT_FINAL: &str = "speech_stream_final";
 /// Something went wrong, in words a person can act on.
 pub const EVENT_ERROR: &str = "speech_stream_error";
+/// Phonon only: the open sentence now reads this. Replace, do not append.
+pub const EVENT_REVISE: &str = "speech_stream_revise";
+/// Phonon only: the open sentence is finished and reads this.
+pub const EVENT_COMMIT: &str = "speech_stream_commit";
+
+/// Which program a session runs. Picks the arguments, the output parser and
+/// the audio format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Engine {
+    Phonon,
+    R2t2,
+}
 
 /// The model family name this module knows the option names for.
 const FAMILY: &str = "confucius4_r2t2";
@@ -82,9 +101,15 @@ fn executable_name() -> &'static str {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamConfig {
-    /// `audiocpp_cli` itself, or the folder holding it.
+    /// `phonon` or `r2t2`. Missing means `r2t2`, the only engine a caller from
+    /// before Phonon could have meant.
+    #[serde(default = "default_engine")]
+    pub engine: String,
+    /// The program itself, or the folder holding it: `crispasr` for Phonon,
+    /// `audiocpp_cli` for R2T2.
     pub runtime_path: String,
-    /// The `.gguf` model file. Q8_0 or better; smaller ones are refused on load.
+    /// The `.gguf` model file. For R2T2, Q8_0 or better; smaller ones are
+    /// refused on load.
     pub model_path: String,
     /// `cuda`, `vulkan`, `cpu`, or `auto`.
     #[serde(default = "default_backend")]
@@ -108,6 +133,9 @@ pub struct StreamConfig {
     pub library_path: Option<String>,
 }
 
+fn default_engine() -> String {
+    "r2t2".to_string()
+}
 fn default_backend() -> String {
     "auto".to_string()
 }
@@ -119,6 +147,14 @@ fn default_unfixed_tokens() -> u32 {
 }
 
 impl StreamConfig {
+    fn engine(&self) -> Engine {
+        if self.engine.trim().eq_ignore_ascii_case("phonon") {
+            Engine::Phonon
+        } else {
+            Engine::R2t2
+        }
+    }
+
     fn chunk_ms_clamped(&self) -> u32 {
         self.chunk_ms.clamp(80, 2000)
     }
@@ -213,6 +249,9 @@ fn missing_cuda_libraries(_config: &StreamConfig, _exe: &Path) -> Vec<String> {
 /// for a working one. A build without the model fails when a recording starts,
 /// with the program's own message, which is late but true.
 pub async fn validate(config: &StreamConfig) -> StreamValidation {
+    if config.engine() == Engine::Phonon {
+        return phonon::validate(config);
+    }
     let exe = resolve_executable(&config.runtime_path);
     let runtime_ok = exe.is_some();
     let model_path = PathBuf::from(config.model_path.trim());
@@ -290,6 +329,7 @@ fn base_command(exe: &Path, library_path: Option<&str>) -> Command {
 
 /// One child, either waiting or recording.
 struct Session {
+    engine: Engine,
     child: Child,
     stdin: Option<ChildStdin>,
 }
@@ -324,8 +364,12 @@ fn emit(app: &AppHandle, event: &str, session_id: &str, text: String) {
 /// Start a child and let it load the model. Returns as soon as the program
 /// starts; [`EVENT_READY`] follows when it is actually listening.
 pub async fn arm(app: AppHandle, config: StreamConfig) -> Result<String, String> {
-    let exe = resolve_executable(&config.runtime_path)
-        .ok_or_else(|| "audiocpp_cli was not found at the configured path.".to_string())?;
+    let engine = config.engine();
+    let (exe, program) = match engine {
+        Engine::Phonon => (phonon::resolve_executable(&config.runtime_path), "crispasr"),
+        Engine::R2t2 => (resolve_executable(&config.runtime_path), "audiocpp_cli"),
+    };
+    let exe = exe.ok_or_else(|| format!("{program} was not found at the configured path."))?;
     let model = config.model_path.trim();
     if !Path::new(model).is_file() {
         return Err("The model file was not found at the configured path.".to_string());
@@ -334,6 +378,83 @@ pub async fn arm(app: AppHandle, config: StreamConfig) -> Result<String, String>
     let session_id = format!("speech-{}", uuid::Uuid::new_v4());
 
     let mut command = base_command(&exe, config.library_path.as_deref());
+    match engine {
+        Engine::Phonon => phonon::configure(&mut command, &config, &exe),
+        Engine::R2t2 => configure_r2t2(&mut command, &config, model),
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {program}: {error}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{program} produced no output."))?;
+    let stderr = child.stderr.take();
+    let stdin = child.stdin.take();
+
+    let session = Arc::new(AsyncMutex::new(Session {
+        engine,
+        child,
+        stdin,
+    }));
+    registry()
+        .lock()
+        .map_err(|_| "The dictation session list is in a bad state.".to_string())?
+        .sessions
+        .insert(session_id.clone(), session);
+
+    match engine {
+        Engine::Phonon => watch_phonon(&app, &session_id, stdout, stderr),
+        Engine::R2t2 => watch_r2t2(&app, &session_id, stdout, stderr),
+    }
+
+    Ok(session_id)
+}
+
+/// Phonon: sentence updates on stdout, the ready line and errors on stderr.
+fn watch_phonon(
+    app: &AppHandle,
+    session_id: &str,
+    stdout: tokio::process::ChildStdout,
+    stderr: Option<tokio::process::ChildStderr>,
+) {
+    {
+        let app = app.clone();
+        let id = session_id.to_string();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                match phonon::parse_line(&line) {
+                    Some(phonon::Update::Revise(text)) => emit(&app, EVENT_REVISE, &id, text),
+                    Some(phonon::Update::Commit(text)) => emit(&app, EVENT_COMMIT, &id, text),
+                    None => {}
+                }
+            }
+            // The program has exited: every sentence it had is already
+            // committed, so the final event only says "done".
+            emit(&app, EVENT_FINAL, &id, String::new());
+        });
+    }
+
+    if let Some(stderr) = stderr {
+        let app = app.clone();
+        let id = session_id.to_string();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if phonon::is_ready_line(&line) {
+                    emit(&app, EVENT_READY, &id, String::new());
+                } else if phonon::is_error_line(&line) {
+                    emit(&app, EVENT_ERROR, &id, line);
+                }
+            }
+        });
+    }
+}
+
+fn configure_r2t2(command: &mut Command, config: &StreamConfig, model: &str) {
     command
         .arg("--task")
         .arg("asr")
@@ -366,29 +487,19 @@ pub async fn arm(app: AppHandle, config: StreamConfig) -> Result<String, String>
     if let Some(language) = config.language_arg() {
         command.arg("--language").arg(language);
     }
+}
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("Could not start audiocpp_cli: {error}"))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "audiocpp_cli produced no output.".to_string())?;
-    let stderr = child.stderr.take();
-    let stdin = child.stdin.take();
-
-    let session = Arc::new(AsyncMutex::new(Session { child, stdin }));
-    registry()
-        .lock()
-        .map_err(|_| "The dictation session list is in a bad state.".to_string())?
-        .sessions
-        .insert(session_id.clone(), session);
-
+/// R2T2: new words, the ready line and the final text all on stdout.
+fn watch_r2t2(
+    app: &AppHandle,
+    session_id: &str,
+    stdout: tokio::process::ChildStdout,
+    stderr: Option<tokio::process::ChildStderr>,
+) {
     // The words, and the final text.
     {
         let app = app.clone();
-        let id = session_id.clone();
+        let id = session_id.to_string();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -406,7 +517,7 @@ pub async fn arm(app: AppHandle, config: StreamConfig) -> Result<String, String>
     // Progress chatter, and the only place a fatal startup problem shows up.
     if let Some(stderr) = stderr {
         let app = app.clone();
-        let id = session_id.clone();
+        let id = session_id.to_string();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -417,8 +528,6 @@ pub async fn arm(app: AppHandle, config: StreamConfig) -> Result<String, String>
             }
         });
     }
-
-    Ok(session_id)
 }
 
 fn take_session(session_id: &str) -> Option<Arc<AsyncMutex<Session>>> {
@@ -430,17 +539,25 @@ fn get_session(session_id: &str) -> Option<Arc<AsyncMutex<Session>>> {
 }
 
 /// Send captured audio. `pcm` is plain little-endian `f32` at 16 kHz, mono —
-/// the exact bytes the browser already holds, so nothing is re-encoded.
+/// the exact bytes the browser already holds. audio.cpp reads them as they
+/// are; CrispASR wants 16-bit integers, so Phonon's are converted here.
 pub async fn write_pcm(session_id: &str, pcm: &[u8]) -> Result<(), String> {
     let session = get_session(session_id)
         .ok_or_else(|| "That dictation session is no longer running.".to_string())?;
     let mut guard = session.lock().await;
+    let converted;
+    let bytes = if guard.engine == Engine::Phonon {
+        converted = phonon::f32le_to_s16le(pcm);
+        converted.as_slice()
+    } else {
+        pcm
+    };
     let stdin = guard
         .stdin
         .as_mut()
         .ok_or_else(|| "That dictation session is no longer taking audio.".to_string())?;
     stdin
-        .write_all(pcm)
+        .write_all(bytes)
         .await
         .map_err(|error| format!("Could not send audio to the transcriber: {error}"))?;
     stdin
@@ -503,6 +620,7 @@ mod tests {
 
     fn config() -> StreamConfig {
         StreamConfig {
+            engine: "r2t2".into(),
             runtime_path: String::new(),
             model_path: String::new(),
             backend: "cuda".into(),
@@ -543,6 +661,18 @@ mod tests {
         assert_eq!(c.language_arg(), None);
         c.language = Some("English".into());
         assert_eq!(c.language_arg(), Some("English"));
+    }
+
+    #[test]
+    fn a_config_without_an_engine_means_r2t2() {
+        // A caller from before Phonon only ever meant audio.cpp.
+        let old: StreamConfig =
+            serde_json::from_str(r#"{"runtimePath":"x","modelPath":"y"}"#).unwrap();
+        assert_eq!(old.engine(), Engine::R2t2);
+        let new: StreamConfig =
+            serde_json::from_str(r#"{"engine":"phonon","runtimePath":"x","modelPath":"y"}"#)
+                .unwrap();
+        assert_eq!(new.engine(), Engine::Phonon);
     }
 
     #[test]

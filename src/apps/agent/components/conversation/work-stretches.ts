@@ -58,12 +58,13 @@ export const MIN_WORK_STEPS = 3;
  *
  * Measured 2026-10-15 on 222 conversations (1,895 narration texts, 465
  * answers): narration p50 119 chars, p90 237, 97% one paragraph; answers p50
- * 2,204 chars, 11% one paragraph. 300 keeps 94% of narration inside. The
- * answers under it are greetings on turns with no work, which get no card.
- * Once the turn ends the question is settled without this: trailing text is
- * the answer, whatever its length.
+ * 2,204 chars, 11% one paragraph. 300 kept 94% of narration inside; Alvan
+ * raised it to 600 on 2026-10-18 after watching GLM narrate past 300 during
+ * its tool loop and drop out of the card. The answers under it are greetings
+ * on turns with no work, which get no card. Once the turn ends the question is
+ * settled without this: trailing text is the answer, whatever its length.
  */
-export const NARRATION_MAX_CHARS = 300;
+export const NARRATION_MAX_CHARS = 600;
 
 const READ_TOOLS = new Set(["file_read"]);
 const COMMAND_TOOLS = new Set(["shell_execute", "shell_spawn"]);

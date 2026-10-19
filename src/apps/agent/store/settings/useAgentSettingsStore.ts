@@ -40,6 +40,7 @@ export {
   resolveGlobalInstructionState,
   selectActiveGlobalInstructions,
   type GlobalInstructionProfile,
+  type SpeechLiveEngine,
   type SpeechLiveSettings,
   type SpeechMode,
   type TitleMakerMode,

@@ -222,6 +222,12 @@ pub fn mcp_config_file() -> PathBuf {
     aurora_home_dir().join("mcp.json")
 }
 
+/// `<root>/mcp-project-approvals.json` — which `.mcp.json` servers the user
+/// allowed to start, per workspace. In Aurora's data folder, never the repo.
+pub fn mcp_project_approvals_file() -> PathBuf {
+    root().join("mcp-project-approvals.json")
+}
+
 /// Legacy MCP config location (`<root>/config/mcp.json`). Kept only so the
 /// loader can perform a one-time migration of an existing install to the new
 /// home-dir, name-keyed file.

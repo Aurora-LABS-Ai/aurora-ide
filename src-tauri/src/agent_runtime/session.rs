@@ -248,6 +248,14 @@ pub struct Session {
     /// compaction (including an explicit manual `/compact`), never by time.
     /// Process-local: a reload is a deliberate clean slate.
     pub auto_compaction_blocked: bool,
+    /// Background processes whose ending the model has already read through
+    /// `shell_read_output` (`running: false`). A "stopped" or "ended" note for
+    /// one of these is a repeat, whenever it comes out of the queue: the note
+    /// can be queued a moment AFTER the read returned, miss that boundary, and
+    /// surface in the next turn. Measured 2026-10-17, thread `3b6fffb1`: read
+    /// at 04:18:45.421, note queued at .657, delivered 5 minutes later in an
+    /// unrelated turn. Process-local, like the queue it filters.
+    pub endings_read: std::collections::HashSet<String>,
     /// Injected by production wiring; tests never open the user's database.
     pub usage_ledger: Option<Arc<crate::usage_ledger::UsageLedger>>,
     /// Streams each appended message to disk. See [`Journal`]. Absent by
@@ -272,6 +280,7 @@ impl Session {
             queued_message: empty_queue_slot(),
             rich_results: empty_rich_results_slot(),
             auto_compaction_blocked: false,
+            endings_read: std::collections::HashSet::new(),
             usage_ledger: None,
             journal: Journal::default(),
         }

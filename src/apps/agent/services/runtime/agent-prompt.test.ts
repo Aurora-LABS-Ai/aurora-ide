@@ -7,6 +7,7 @@ import {
   formatEnvironment,
 } from "@/apps/agent/services/runtime/agent-prompt";
 import { CHAT_MODE_SYSTEM_PROMPT } from "@/apps/agent/services/runtime/agent-execution-mode";
+import { REPLY_LAYOUT_INSTRUCTIONS } from "@/apps/agent/lib/reply-layout/instructions";
 
 vi.mock("@/apps/agent/services/skills/skills", () => ({
   getWorkspaceSkillToggles: () => ({}),
@@ -32,6 +33,19 @@ vi.mock("@/apps/agent/store/settings/useAgentSettingsStore", () => ({
 }));
 
 afterEach(() => { activeInstructions.text = ""; });
+
+describe("reply layout prompt opt-in", () => {
+  it.each(["agent", "plan", "chat"] as const)("teaches every drawable format only when enabled in %s mode", async (executionMode) => {
+    const options = { executionMode, promptContext: { userMessage: "Explain the design" } };
+    const enabled = await composeAgentSystemPrompt({ ...options, replyLayout: true });
+    const disabled = await composeAgentSystemPrompt({ ...options, replyLayout: false });
+    expect(enabled.systemPrompt).toContain(REPLY_LAYOUT_INSTRUCTIONS);
+    expect(disabled.systemPrompt).not.toContain(REPLY_LAYOUT_INSTRUCTIONS);
+  });
+  it("bounds the combined visual-output instructions", () => {
+    expect(CANVAS_INSTRUCTIONS.length + REPLY_LAYOUT_INSTRUCTIONS.length).toBeLessThan(1800);
+  });
+});
 
 describe("stable optional tool discovery instructions", () => {
   it("teaches exact discovery followed by execution of the browser guide", async () => {

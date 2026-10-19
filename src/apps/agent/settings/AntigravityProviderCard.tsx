@@ -19,7 +19,7 @@
  * subscription cards; it adds no styles of its own.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   antigravityAccountImportIde,
@@ -29,7 +29,9 @@ import {
   antigravityAuthStatus,
   antigravityModelsList,
   antigravityNotices,
+  antigravityNotOffered,
   antigravityPlanLabel,
+  foldAntigravityVariants,
   antigravityBucketLabel,
   antigravityBucketMeta,
   antigravityQuotaGet,
@@ -40,6 +42,7 @@ import {
   type AntigravityQuota,
 } from "@/apps/agent/services/providers/antigravity";
 import { fmtRelative } from "@/apps/agent/services/providers/atlascloud";
+import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { AgentIcon } from "../shared/AgentIcon";
 import { AntigravityAccountSwitcher } from "./AntigravityAccountSwitcher";
 import { ProviderAvatar } from "./ProviderAvatar";
@@ -238,6 +241,16 @@ export const AntigravityProviderCard: React.FC<{
   const plan = antigravityPlanLabel(auth);
   const who = auth?.email || auth?.name || null;
   const notices = catalogue ? antigravityNotices(catalogue.models) : [];
+  const allModels = useAgentSettingsStore((s) => s.models);
+  const notOffered = useMemo(
+    () => (catalogue ? antigravityNotOffered(catalogue, allModels) : []),
+    [catalogue, allModels],
+  );
+  // Effort tiers are one row each in the picker, so count models, not ids.
+  const pickerCount = useMemo(
+    () => (catalogue ? foldAntigravityVariants(catalogue.models).length : 0),
+    [catalogue],
+  );
 
   return (
     <section className="agw-atlas" aria-label="Antigravity sign-in and quota">
@@ -380,10 +393,19 @@ export const AntigravityProviderCard: React.FC<{
           {catalogue && (
             <div className="agw-cc-windows">
               <div className="agw-atlas-note">
-                {catalogue.models.length === 1
+                {pickerCount === 1
                   ? "1 model from this account is in the model picker."
-                  : `${catalogue.models.length} models from this account are in the model picker.`}
+                  : `${pickerCount} models from this account are in the model picker.`}
               </div>
+              {notOffered.length > 0 && (
+                <div className="agw-codex-note">
+                  <strong>Not offered by this account:</strong>{" "}
+                  {notOffered.map((m) => m.label || m.modelKey).join(", ")}.{" "}
+                  {notOffered.length === 1
+                    ? "Chats on it fail until Google offers it here. Remove it from the model list if it isn't coming."
+                    : "Chats on them fail until Google offers them here. Remove them from the model list if they aren't coming."}
+                </div>
+              )}
               {notices.map((n) => (
                 <div className="agw-codex-note" key={n.text}>
                   <strong>{n.title}:</strong> {n.text}{" "}

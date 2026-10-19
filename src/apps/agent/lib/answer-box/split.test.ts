@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import { boxKey, splitReply } from "./split";
 
+describe("splitReply with the reply language", () => {
+  it("cuts an aurora-ui fence only when layouts are on", () => {
+    const text = 'Intro.\n\n```aurora-ui\nroot = Page([a])\na = Text("x")\n```\n\nOutro.';
+    expect(splitReply(text, { layouts: true }).map((s) => s.kind)).toEqual(["markdown", "layout", "markdown"]);
+    const [, layout] = splitReply(text, { layouts: true });
+    expect(layout.kind === "layout" && [layout.language, layout.closed]).toEqual(["aurora-ui", true]);
+    expect(splitReply(text).every((s) => s.kind === "markdown")).toBe(true);
+  });
+});
+
 describe("splitting a reply into markdown and boxes", () => {
   it("leaves a reply with no box alone", () => {
     expect(splitReply("Just **text**.")).toEqual([{ kind: "markdown", text: "Just **text**." }]);
@@ -42,6 +52,18 @@ describe("splitting a reply into markdown and boxes", () => {
   it("reports an unclosed layout fence as still streaming", () => {
     const cut = splitReply("```aurora-note\nTitle\nA | B", { layouts: true });
     expect(cut).toEqual([{ kind: "layout", language: "aurora-note", source: "Title\nA | B", closed: false, raw: "```aurora-note\nTitle\nA | B" }]);
+  });
+
+  it.each(["compare", "checklist", "timeline", "tree"])("keeps a documented %s fence inside an outer code block", (kind) => {
+    const reply = `Example:\n\`\`\`\`markdown\n\`\`\`aurora-${kind}\nA | B | C\n\`\`\`\n\`\`\`\``;
+    expect(splitReply(reply, { layouts: true })).toEqual([{ kind: "markdown", text: reply }]);
+  });
+
+  it("recognizes tilde layout fences while leaving unknown formats as code", () => {
+    const reply = "~~~aurora-tree\n0 | Root\n~~~\n```aurora-unknown\nA | B\n```";
+    const parts = splitReply(reply, { layouts: true });
+    expect(parts[0]).toMatchObject({ kind: "layout", language: "aurora-tree", source: "0 | Root", closed: true });
+    expect(parts[1]).toMatchObject({ kind: "markdown", text: "```aurora-unknown\nA | B\n```" });
   });
 
   it("keys a box by its text, so the live and reloaded copies match", () => {

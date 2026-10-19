@@ -54,7 +54,7 @@ import { ShellBadge } from "@/apps/agent/components/tool-views/ShellBadge";
 import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ShellStreamView } from "@/apps/agent/components/tool-views/ShellStreamView";
 import { ShellLiveTail } from "@/apps/agent/components/tool-views/ShellLiveTail";
-import { TAIL_MOTION_S } from "@/apps/agent/components/tool-views/shell-tail";
+import { GLIDE, GLIDE_NONE } from "@/apps/agent/lib/motion/glide";
 import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultView";
 import { MediaRequest } from "@/apps/agent/components/tool-views/MediaRequest";
 import {
@@ -1046,6 +1046,9 @@ const StandardToolCallCard: React.FC<{
   }, [call.arguments]);
 
   const status = toolStatus(call, isActivelyStreaming);
+  // The outcome replacing "Running…" fades in during a live turn; a reopened
+  // conversation draws its finished rows as they are.
+  const swapIn = isActivelyStreaming ? " agw-swap-in" : "";
   const defaultTitle = getProfessionalToolName(call.name, parsedArgs);
   const icon = toolIcon(call.name);
   const delegationLifecycle = DELEGATION_LIFECYCLE_TOOLS.has(call.name.toLowerCase());
@@ -1184,7 +1187,7 @@ const StandardToolCallCard: React.FC<{
   // same string.
   const cardScope = useConversationScope();
   const handOverToBackground = async () => {
-    await detachCommandStream(call.id);
+    const outputFile = await detachCommandStream(call.id);
     // Seed the process list ourselves rather than waiting for the ledger poll
     // to notice. The dock's own reconcile only runs while its popover is open,
     // and that popover only exists once there is at least one process in the
@@ -1197,6 +1200,8 @@ const StandardToolCallCard: React.FC<{
       title: liveShellCommand || "Background command",
       command: liveShellCommand || "",
       cwd: liveShellCwd,
+      // Without the log file the panel can only say the run is not recording.
+      outputFile: outputFile ?? undefined,
       status: "running",
       startedAtMs: call.startedAt ?? Date.now(),
     });
@@ -1586,12 +1591,14 @@ const StandardToolCallCard: React.FC<{
           </span>
         ) : status === "failed" ? (
           summary && (
-            <span className="agw-tool-summary" style={{ color: "var(--agw-text-muted)" }}>
+            // Keyed by state: the outcome replacing "Running…" fades in
+            // (`agw-swap-in`) instead of snapping to a new width.
+            <span key="failed" className={`agw-tool-summary${swapIn}`} style={{ color: "var(--agw-text-muted)" }}>
               {summary}
             </span>
           )
         ) : parsed.stat && (parsed.stat.added > 0 || parsed.stat.removed > 0) ? (
-          <span className="agw-tool-summary" style={{ display: "inline-flex", gap: 8 }}>
+          <span key="stat" className={`agw-tool-summary${swapIn}`} style={{ display: "inline-flex", gap: 8 }}>
             {parsed.stat.removed > 0 && (
               <span style={{ color: "var(--agw-removed)" }}>−{parsed.stat.removed}</span>
             )}
@@ -1602,7 +1609,8 @@ const StandardToolCallCard: React.FC<{
         ) : (
           summary && (
             <span
-              className="agw-tool-summary"
+              key="done"
+              className={`agw-tool-summary${swapIn}`}
               style={{
                 color: detachedStillRunning
                   ? "var(--agw-accent)"
@@ -1622,7 +1630,7 @@ const StandardToolCallCard: React.FC<{
           !parsed.shell?.detached &&
           typeof call.durationMs === "number" &&
           call.durationMs >= 500 && (
-            <span className="agw-tool-time">{formatToolDuration(call.durationMs)}</span>
+            <span className={`agw-tool-time${swapIn}`}>{formatToolDuration(call.durationMs)}</span>
           )}
 
         {/* The same clock while it runs — and, for a shell command that has
@@ -1646,7 +1654,7 @@ const StandardToolCallCard: React.FC<{
               color: "var(--agw-text-subtle)",
               display: "inline-flex",
               transform: open ? "rotate(180deg)" : "none",
-              transition: "transform 0.15s ease",
+              transition: "transform var(--agw-glide-dur) var(--agw-glide-ease)",
             }}
           >
             <AgentIcon name="chevron-down" size={14} />
@@ -1666,8 +1674,11 @@ const StandardToolCallCard: React.FC<{
             key="shell-tail"
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: TAIL_MOTION_S, ease: "easeOut" }}
+            // Opening the card replaces the tail with the full output in the
+            // same place: the tail leaves at once, or its fold and the body's
+            // open run together and the row wobbles.
+            exit={{ height: 0, opacity: 0, transition: open ? GLIDE_NONE : GLIDE }}
+            transition={GLIDE}
             style={{ overflow: "hidden" }}
           >
             <ShellLiveTail output={liveShellOutput} />
@@ -1682,9 +1693,8 @@ const StandardToolCallCard: React.FC<{
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            // Stated, not the library default: the same ease-out and length
-            // the tool group and the agent tail open with.
-            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            // The transcript's one glide (lib/motion/glide.ts).
+            transition={GLIDE}
             style={{ overflow: "hidden" }}
           >
             <div className="agw-tool-body">

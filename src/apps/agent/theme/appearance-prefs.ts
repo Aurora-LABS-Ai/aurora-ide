@@ -291,8 +291,20 @@ export const APPEARANCE_PREFS = {
     parse: bool,
   } satisfies PrefSpec<boolean>,
 
-  /** Transcript → Reply layout: the model may lay out an explanation with a
-   *  row of facts, a flow and a note inside its reply (`lib/reply-layout`).
+  /** Inside a running work card, keep grouping tool runs the transcript way
+   *  (a "N calls" header at the third call, a capped box, a fold once the
+   *  agent moves on). Off, the default: every call is its own row that fades
+   *  in, nothing folds until the stretch ends, and the card glides to its
+   *  newest row. Probe: Documents/aurora-work-card-motion-designs.html, 02. */
+  transcriptWorkCardGroupRuns: {
+    default: false,
+    exported: true,
+    reset: true,
+    parse: bool,
+  } satisfies PrefSpec<boolean>,
+
+  /** Transcript → Reply layout: enable the explanation formats registered in
+   *  `lib/reply-layout` inside replies.
    *  Like Chapters, this adds a section to the agent's instructions, so it
    *  changes what the agent writes; off, those fences are code blocks. Opt-in. */
   transcriptReplyLayout: {

@@ -33,10 +33,34 @@ impl Default for McpTransportType {
     }
 }
 
+/// Where a server is configured.
+///
+/// `Global` servers live in `~/.aurora/mcp.json` and follow the user into
+/// every project. `Project` servers come from a `.mcp.json` in the open
+/// workspace (or a folder above it), the same file Claude Code reads, and
+/// are off until the user turns them on for that project in settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpScope {
+    #[default]
+    Global,
+    Project,
+}
+
 /// MCP Server configuration (matches Claude/Cursor format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerConfig {
+    /// Which file this server belongs to. Saves go back to that file.
+    #[serde(default)]
+    pub scope: McpScope,
+    /// The config file this server was read from (shown in settings).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Longest a single tool call may run before Aurora gives up and tells
+    /// the server to cancel it. `None` uses [`DEFAULT_TOOL_TIMEOUT_SECS`].
+    #[serde(default)]
+    pub tool_timeout_secs: Option<u64>,
     /// Unique identifier for this server
     pub id: String,
     /// Display name
@@ -81,6 +105,9 @@ impl McpServerConfig {
         command: impl Into<String>,
     ) -> Self {
         Self {
+            scope: McpScope::Global,
+            source: None,
+            tool_timeout_secs: None,
             id: id.into(),
             name: name.into(),
             transport: McpTransportType::Stdio,
@@ -99,6 +126,9 @@ impl McpServerConfig {
     #[allow(dead_code)]
     pub fn new_sse(id: impl Into<String>, name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
+            scope: McpScope::Global,
+            source: None,
+            tool_timeout_secs: None,
             id: id.into(),
             name: name.into(),
             transport: McpTransportType::Sse,
@@ -203,7 +233,18 @@ pub struct McpServerState {
     pub resources: Vec<McpResourceInfo>,
     /// Server info (name, version from server)
     pub server_info: Option<McpServerInfo>,
+    /// The server's last lines of stderr (and stray stdout), newest last,
+    /// so a failed start shows what the server itself said.
+    #[serde(default)]
+    pub recent_output: Vec<String>,
+    /// What the server told clients about using its tools at `initialize`.
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
+
+/// Tool-call ceiling when a server sets none. Long enough for a real remote
+/// job; the agent loop's bridge ceiling sits above it (`agent_runtime::bridge`).
+pub const DEFAULT_TOOL_TIMEOUT_SECS: u64 = 100;
 
 /// Server info returned by MCP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +263,8 @@ impl McpServerState {
             tools: Vec::new(),
             resources: Vec::new(),
             server_info: None,
+            recent_output: Vec::new(),
+            instructions: None,
         }
     }
 }

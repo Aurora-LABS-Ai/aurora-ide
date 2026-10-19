@@ -533,201 +533,93 @@ button.agw-model-group-label:focus-visible {
   gap: 8px;
 }
 
-/* ── The selected model card ──────────────────────────────────────────────────
- * Top of the menu: the model you are on and the settings it accepts (effort
- * steps, a thinking budget, Cursor's Fast). The rows below hold no controls.
- * Label column + control, one line per setting, so effort and budget models
- * line up the same way. */
-.agw-model-now {
+/* ── Rows: reasoning word and `›` ─────────────────────────────────────────────
+ * Probe: aurora-model-picker-rows-designs.html, card 04. The reasoning a row
+ * would run at reads as a grey word after the name, the way the trigger shows
+ * it; `›` opens that model's reasoning list beside the menu. */
+.agw-model-effort {
   flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 10px;
-  border-bottom: 1px solid var(--agw-border);
-}
-.agw-model-now-top {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-.agw-model-now-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--agw-fs-md);
-  font-weight: var(--agw-fw-medium);
-  color: var(--agw-text);
-}
-.agw-model-now-prov {
-  flex: 0 1000000 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
+  white-space: nowrap;
 }
-.agw-model-now-caps {
-  margin-left: auto;
+.agw-model-more {
   display: inline-flex;
-  align-self: center;
-  gap: 8px;
-  color: var(--agw-text-subtle);
-}
-.agw-model-now-ctl {
-  display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px -2px 0;
+  border-radius: var(--agw-radius-sm);
+  color: var(--agw-text-subtle);
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
-.agw-model-now-lbl {
-  flex: 0 0 68px;
-  font-size: var(--agw-fs-label);
-  color: var(--agw-text-muted);
-}
-/* The live budget value sits in the label column beside the slider. */
-.agw-model-now-val {
+.agw-model-more:hover,
+.agw-model-item[data-settings-open] .agw-model-more {
   color: var(--agw-text);
-  font-variant-numeric: tabular-nums;
-}
-.agw-model-now-steps {
-  flex: 1;
-  min-width: 0;
-}
-/* The shared segmented control, stretched to the row: each level gets an equal
-   share so the steps read as a scale from faster to smarter. */
-.agw-model-now-steps .agw-seg {
-  display: flex;
-  width: 100%;
-}
-.agw-model-now-steps .agw-seg-btn {
-  flex: 1;
-  min-width: 0;
-  /* The settings pill pads 14px a side for two or three words; here up to six
-     levels share one row, so the room goes to the label instead. */
-  padding: 0 6px;
-}
-/* Many levels (Off … X-High, Max): the label moves above so the steps get the
-   card's full width rather than what is left beside a 68px label column. */
-.agw-model-now-ctl[data-dense] {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-}
-.agw-model-now-ctl[data-dense] .agw-model-now-lbl {
-  flex: none;
-}
-.agw-model-now-ctl[data-dense] .agw-model-now-steps {
-  flex: none;
-}
-.agw-model-now-ctl .agw-bud-presets {
-  flex: 1;
-  margin: 0;
-}
-.agw-model-now-ctl .agw-bud-range {
-  flex: 1;
-}
-.agw-model-now-hint {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--agw-fs-label);
-  color: var(--agw-text-subtle);
-}
-.agw-model-now-hint[data-tone="warn"] {
-  color: var(--agw-warning);
-}
-.agw-model-now-note {
-  margin: 0 0 0 78px;
-  font-size: var(--agw-fs-micro);
-  line-height: 1.45;
-  color: var(--agw-text-subtle);
-}
-.agw-model-now-note[data-tone="warn"] {
-  color: var(--agw-warning);
-}
-/* A picture model has no label column to align with. */
-.agw-model-now-top + .agw-model-now-note {
-  margin-left: 0;
+  background: var(--agw-state-selected);
 }
 
-/* The track paints its own fill from `--agw-bud-pct` (set inline) so the filled
-   portion reads as "spent" without relying on `accent-color`, which can't be
-   split into two colors. */
-.agw-bud-range {
-  -webkit-appearance: none;
-  appearance: none;
-  display: block;
-  width: 100%;
-  height: 18px;
-  margin: 0;
-  background: transparent;
-  cursor: pointer;
+/* "All models" and its way back: rows that move between the short list and
+   every provider's section, so they take a row's shape, not a button's. */
+.agw-model-nav {
+  font-size: var(--agw-fs-ui);
 }
-.agw-bud-range::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: var(--agw-radius-pill);
-  background: linear-gradient(
-    to right,
-    var(--agw-accent) var(--agw-bud-pct, 50%),
-    var(--agw-control-muted) var(--agw-bud-pct, 50%)
-  );
-}
-.agw-bud-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 13px;
-  height: 13px;
-  margin-top: -4.5px;
-  border-radius: 50%;
-  background: var(--agw-text);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--agw-text) 30%, transparent);
-  transition: transform var(--agw-dur-fast) ease;
-}
-.agw-bud-range:hover::-webkit-slider-thumb {
-  transform: scale(1.15);
-}
-.agw-bud-range:focus-visible {
-  outline: none;
-}
-/* Exempt from --agw-focus-ring, on purpose. The thumb is a ~12px filled circle:
-   an inset ring would be drawn on its own fill and vanish, and a slider thumb
-   is the one control every platform already marks with an outer halo. */
-.agw-bud-range:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--agw-ring);
-}
-.agw-bud-presets {
-  display: flex;
-  gap: 4px;
-  margin-top: 11px;
-}
-.agw-bud-preset {
+.agw-model-nav-label {
   flex: 1;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--agw-border-strong);
-  border-radius: var(--agw-radius-sm);
-  background: transparent;
+  min-width: 0;
+}
+.agw-model-back {
   color: var(--agw-text-muted);
+  font-size: var(--agw-fs-label);
+}
+.agw-model-back-caret {
+  transform: rotate(180deg);
+}
+.agw-model-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--agw-border);
+}
+
+/* ── One model's reasoning, beside the menu ──────────────────────────────────
+ * A sibling of the menu, not a child: the menu clips its own overflow. Same
+ * popover recipe (`.agw-menu`) and row shape as the list it belongs to. */
+.agw-model-fly {
+  position: absolute;
+  z-index: calc(var(--agw-z-popover) + 1);
+  width: 200px;
+  padding: 0 4px 4px;
+}
+.agw-model-fly-title {
+  padding: 8px 6px 4px;
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
-  cursor: pointer;
-  outline: none;
-  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
+  color: var(--agw-text-subtle);
 }
-.agw-bud-preset:hover {
-  background: var(--agw-hover-paint);
+.agw-model-fly-row,
+.agw-model-fly-fast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--agw-radius-md);
   color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
+  cursor: pointer;
+  transition: background var(--agw-dur-fast) ease;
 }
-.agw-bud-preset[data-on] {
-  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
-  color: var(--agw-accent);
+.agw-model-fly-row:hover,
+.agw-model-fly-row[data-kbd-active],
+.agw-model-fly-fast[data-kbd-active] {
+  background: var(--agw-hover-paint);
 }
-.agw-bud-preset:focus-visible {
-  box-shadow: var(--agw-focus-ring);
+.agw-model-fly-fast {
+  margin-top: 4px;
+  border-top: 1px solid var(--agw-border);
+  border-radius: 0 0 var(--agw-radius-md) var(--agw-radius-md);
+  cursor: default;
 }
 /* Agent/Plan mode toggle in the picker header — a compact 2-segment control.
    Agent segment tints accent; Plan segment tints warning (read-only posture). */

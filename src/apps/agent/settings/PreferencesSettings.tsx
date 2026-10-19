@@ -138,6 +138,8 @@ export const PreferencesSettings: React.FC = () => {
   const setTranscriptLiveLine = useAgentThemeStore((s) => s.setTranscriptLiveLine);
   const transcriptWorkCards = useAgentThemeStore((s) => s.transcriptWorkCards);
   const setTranscriptWorkCards = useAgentThemeStore((s) => s.setTranscriptWorkCards);
+  const transcriptWorkCardGroupRuns = useAgentThemeStore((s) => s.transcriptWorkCardGroupRuns);
+  const setTranscriptWorkCardGroupRuns = useAgentThemeStore((s) => s.setTranscriptWorkCardGroupRuns);
   const transcriptReplyLayout = useAgentThemeStore((s) => s.transcriptReplyLayout);
   const setTranscriptReplyLayout = useAgentThemeStore((s) => s.setTranscriptReplyLayout);
   const transcriptTextPace = useAgentThemeStore((s) => s.transcriptTextPace);
@@ -994,6 +996,23 @@ export const PreferencesSettings: React.FC = () => {
           />
         </SettingsRow>
 
+        {transcriptWorkCards && (
+          <SettingsRow
+            label="Group tool calls while working"
+            hint={
+              transcriptWorkCardGroupRuns
+                ? "Inside a running work card, tool calls group the way they do in the transcript: a “N calls” line appears at the third call, and the run folds to it once the agent moves on."
+                : "Inside a running work card, every tool call is its own row that fades in where it lands, nothing folds until the work is done, and the card glides to its newest step. Calmer with fast models."
+            }
+          >
+            <AgwSwitch
+              checked={transcriptWorkCardGroupRuns}
+              onChange={setTranscriptWorkCardGroupRuns}
+              ariaLabel="Group tool calls inside a running work card"
+            />
+          </SettingsRow>
+        )}
+
         <SettingsRow
           label="Text streaming"
           hint={
@@ -1065,12 +1084,12 @@ export const PreferencesSettings: React.FC = () => {
           label="Reply layout"
           // Like Chapters below: stated plainly, because this switch changes
           // what the agent writes, not only how the reply is drawn.
-          hint="Let the agent lay out an explanation with a few page parts inside its reply: a row of key facts, a top-to-bottom flow, a note for a trap or caveat. This adds a short section to the agent's instructions, so it changes what the agent writes. Off, replies are plain markdown as today, and any such part in an old reply shows as code."
+          hint="Let the agent structure explanations and build interactive reports inside replies, with charts, sortable tables, metrics, shared filters, and detail views. This changes its instructions from the next turn. Turning it off shows layout blocks in earlier replies as code."
         >
           <AgwSwitch
             checked={transcriptReplyLayout}
             onChange={setTranscriptReplyLayout}
-            ariaLabel="Let the agent lay out explanations with facts, flows and notes"
+            ariaLabel="Let the agent use structured reply layouts"
           />
         </SettingsRow>
 

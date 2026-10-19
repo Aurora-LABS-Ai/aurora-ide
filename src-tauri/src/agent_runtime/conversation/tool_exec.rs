@@ -105,10 +105,6 @@ impl ConversationRuntime {
         // worth keeping, and — decisively — every call in the assistant
         // message still needs an answer or the thread is malformed for good.
         let mut cancelled = false;
-        // Repeat-failure detector, scoped to this batch's turn. See
-        // `FailureLoopGuard` — a model that re-issues an identical failing
-        // call needs to be told so, or it will keep re-issuing it.
-        let mut loop_guard = FailureLoopGuard::default();
 
         let mut cursor = 0usize;
         while cursor < calls.len() {
@@ -289,7 +285,7 @@ impl ConversationRuntime {
 
                 let (raw_content, is_error) = match outcome {
                     Ok(s) => {
-                        loop_guard.clear(&name, &input);
+                        self.with_failure_guard(turn_id, |guard| guard.clear(&name, &input));
                         (s, None)
                     }
                     Err(e) => {
@@ -298,7 +294,9 @@ impl ConversationRuntime {
                         // to interrupt it. Escalate the message itself so the
                         // second attempt reads differently from the first.
                         let mut message = e.to_string();
-                        if let Some(note) = loop_guard.record_failure(&name, &input) {
+                        if let Some(note) = self
+                            .with_failure_guard(turn_id, |guard| guard.record_failure(&name, &input))
+                        {
                             message.push_str(&note);
                         }
                         (message, Some(true))
@@ -383,8 +381,19 @@ impl ConversationRuntime {
         // where the verdict is written into the message that gets persisted —
         // so it is byte-stable for the rest of the conversation and no later
         // pass can rewrite a cached prefix by changing its mind.
+        // A guide arrives whole even in a crowded message: declining to move
+        // it counts it as exempt, the same as an image.
+        let guide_ids: std::collections::HashSet<&str> = prepared
+            .iter()
+            .filter(|call| super::tool_results::is_standing_guide(&call.name))
+            .map(|call| call.id.as_str())
+            .collect();
         if let Some(report) = enforce_message_budget(&mut result_blocks, |id, raw| {
-            self.spill_for_budget(session, id, raw)
+            if guide_ids.contains(id) {
+                raw
+            } else {
+                self.spill_for_budget(session, id, raw)
+            }
         }) {
             eprintln!(
                 "agent_runtime: tool message over budget on turn {turn_id} \
@@ -725,6 +734,22 @@ pub(super) fn has_thinking(message: &ConversationMessage) -> bool {
         .any(|block| matches!(block, ContentBlock::Thinking { .. }))
 }
 
+impl ConversationRuntime {
+    /// Run `f` on the turn's repeat-failure counts, starting fresh when
+    /// `turn_id` is a new turn. A poisoned lock still holds plain counts, so
+    /// it is used as is rather than dropping the warning.
+    fn with_failure_guard<R>(&self, turn_id: &str, f: impl FnOnce(&mut FailureLoopGuard) -> R) -> R {
+        let mut slot = self
+            .failure_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.0 != turn_id {
+            *slot = (turn_id.to_string(), FailureLoopGuard::default());
+        }
+        f(&mut slot.1)
+    }
+}
+
 /// Detects a model re-issuing a tool call that has already failed with the
 /// exact same arguments, and escalates the error text when it does.
 ///
@@ -736,7 +761,8 @@ pub(super) fn has_thinking(message: &ConversationMessage) -> bool {
 /// after an intervening read is legitimate and often correct); it is to make
 /// the second identical failure *read differently* from the first.
 ///
-/// Scoped to a single batch of tool calls, keyed on `(tool, arguments)`.
+/// Scoped to one turn, keyed on `(tool, arguments)`; the runtime holds it
+/// across the turn's model calls (see `ConversationRuntime::failure_guard`).
 /// A success clears the entry, so read → failed-edit → read → same-edit is
 /// still treated as a repeat: only a successful call with those exact
 /// arguments means the situation genuinely changed.

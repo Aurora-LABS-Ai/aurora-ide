@@ -127,6 +127,12 @@ pub(super) fn quota_wait_secs(body: &str) -> Option<u64> {
     (total > 0).then_some(total)
 }
 
+fn model_not_offered(model: &str) -> String {
+    format!(
+        "Antigravity doesn't offer {model} on this account. Pick a model from the Antigravity list in the model picker; Providers → Antigravity shows what the account has."
+    )
+}
+
 fn wait_words(secs: u64) -> String {
     let (h, m) = (secs / 3600, (secs % 3600) / 60);
     match (h, m) {
@@ -205,6 +211,15 @@ impl StreamingApiClient for AntigravityAdapter {
                     None => {}
                 }
             }
+            if status.as_u16() == 404 {
+                // The backend answers "Requested entity was not found" for a
+                // model id this account is not offered, e.g. one added by hand.
+                crate::logging::log_warn(
+                    "api.antigravity",
+                    &format!("model {model} not found for this account: {body}"),
+                );
+                return Err(ApiError::InvalidRequest(model_not_offered(model)));
+            }
             return Err(map_status_error_with_headers(
                 status.as_u16(),
                 body,
@@ -230,6 +245,13 @@ mod tests {
             stream_url(),
             "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse"
         );
+    }
+
+    #[test]
+    fn a_missing_model_is_named_with_where_to_look() {
+        let text = model_not_offered("gemini-4-argon");
+        assert!(text.contains("gemini-4-argon"), "{text}");
+        assert!(text.contains("Providers → Antigravity"), "{text}");
     }
 
     #[test]

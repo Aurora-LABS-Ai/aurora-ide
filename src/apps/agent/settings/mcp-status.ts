@@ -34,6 +34,25 @@ export function statusDotTone(status: McpServerStatus): string {
   }
 }
 
+/** The marker Rust puts between its sentence and the server's own lines (`OutputTail::as_suffix`). */
+const OUTPUT_MARKER = "\n\nThe server's last output:\n";
+
+/**
+ * Aurora's sentence and the server's own output, apart: the sentence is the
+ * notice, the output goes in a bounded code box, so a long npm log scrolls
+ * inside the card instead of pushing everything under it.
+ */
+export function splitError(error?: string | null): { message: string; output?: string } | null {
+  const text = error?.trim();
+  if (!text) return null;
+  const at = text.indexOf(OUTPUT_MARKER);
+  if (at < 0) return { message: text };
+  return {
+    message: text.slice(0, at).trim(),
+    output: text.slice(at + OUTPUT_MARKER.length).trim(),
+  };
+}
+
 export function statusLabel(status: McpServerStatus): string {
   switch (status) {
     case "connected":

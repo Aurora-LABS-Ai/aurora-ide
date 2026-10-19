@@ -234,6 +234,18 @@ async fn the_main_account_quota_lists_its_groups_and_windows() {
     assert!(!q.groups.is_empty());
 }
 
+/// The MAIN account's list as the picker gets it. Gemini 4 Argon is listed
+/// only to the desktop app's user agent (2026-10-16, Google AI Pro); an `ide`
+/// agent drops it and this fails.
+#[tokio::test]
+#[ignore = "live: needs a paid Antigravity account signed in to Aurora"]
+async fn the_main_account_is_offered_gemini_4_argon() {
+    let cat = super::models::fetch_catalogue().await.expect("catalogue");
+    let ids: Vec<&str> = cat.models.iter().map(|m| m.id.as_str()).collect();
+    println!("{ids:?}");
+    assert!(ids.iter().any(|id| id.starts_with("gemini-4-argon")), "{ids:?}");
+}
+
 /// The model list the card and picker read.
 #[tokio::test]
 #[ignore = "live: needs Antigravity IDE signed in"]

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { TimelineRow } from "@/apps/agent/components/conversation/timeline";
 import {
   groupWorkStretches,
+  NARRATION_MAX_CHARS,
   type WorkStretch,
 } from "@/apps/agent/components/conversation/work-stretches";
 
@@ -72,8 +73,14 @@ describe("groupWorkStretches — one card per reply", () => {
     });
 
     it("lifts text out once it has grown past narration size", () => {
-      const long = "The workspace is a Vite app with one main process. ".repeat(8);
+      const sentence = "The workspace is a Vite app with one main process. ";
+      const long = sentence.repeat(Math.ceil((NARRATION_MAX_CHARS + 1) / sentence.length));
       expect(kinds([...work, say("a1", long)], true)).toEqual(["work(4)", "content"]);
+    });
+
+    it("keeps narration up to the limit inside the card", () => {
+      const atLimit = "x".repeat(NARRATION_MAX_CHARS);
+      expect(kinds([...work, say("a1", atLimit)], true)).toEqual(["work(5)"]);
     });
 
     it("lifts text out at a second paragraph, however short", () => {
@@ -84,7 +91,8 @@ describe("groupWorkStretches — one card per reply", () => {
     });
 
     it("reads several content rows as one growing text", () => {
-      const half = "x".repeat(200);
+      // Each half is narration on its own; together they are past the limit.
+      const half = "x".repeat(NARRATION_MAX_CHARS / 2 + 1);
       expect(kinds([...work, say("a1", half), say("a2", half)], true)).toEqual(["work(4)", "content", "content"]);
     });
 

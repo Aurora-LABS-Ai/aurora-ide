@@ -3145,6 +3145,13 @@ pub fn parse_tool_input(raw: &str) -> Value {
             return value;
         }
     }
+    // A dot escaped the way a regex escapes it. See [`unescape_regex_dots`].
+    let undotted = unescape_regex_dots(raw);
+    if let Ok(value) = serde_json::from_str::<Value>(&undotted) {
+        if value.is_object() {
+            return value;
+        }
+    }
     // Second recovery pass: a value written without its quotes.
     //
     // `{"path": README.md}` — measured off GLM-5.2, five times in a row in one
@@ -3576,6 +3583,90 @@ fn normalize_absolute_windows_paths(raw: &str) -> String {
                 index += 1;
             }
         }
+    }
+
+    output.push_str(&raw[cursor..]);
+    output
+}
+
+/// Turn `\.` back into `.` inside strings that show the model meant a dot.
+///
+/// GLM-5.3 on Modal writes `{"path": ["\.knowledge/knowledge\.md"]}` and
+/// `"C:\\Users\\…\\stdout\.txt"`: a dot escaped the way a regex escapes it.
+/// `\.` is not a JSON escape, so the whole call was refused and never ran.
+///
+/// The repair needs evidence, because in a path written with single
+/// backslashes `\.` is a separator before a dot-folder (`E:\proj\.knowledge`),
+/// which [`normalize_absolute_windows_paths`] already handles. A string that
+/// also holds a `/` or a correctly escaped `\\` was written by something that
+/// knows JSON escaping, so a lone `\.` in it can only be a stray regex escape.
+///
+/// Like the other passes it only ever sees text that failed to parse, and its
+/// output is thrown away unless it parses as an object.
+fn unescape_regex_dots(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut output = String::with_capacity(raw.len());
+    let mut cursor = 0usize;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut end = start;
+        let mut has_evidence = false;
+        let mut has_escaped_dot = false;
+        while end < bytes.len() && bytes[end] != b'"' {
+            match bytes[end] {
+                b'\\' if end + 1 < bytes.len() => {
+                    match bytes[end + 1] {
+                        b'\\' => has_evidence = true,
+                        b'.' => has_escaped_dot = true,
+                        _ => {}
+                    }
+                    end += 2;
+                }
+                b'/' => {
+                    has_evidence = true;
+                    end += 1;
+                }
+                _ => end += 1,
+            }
+        }
+        if end >= bytes.len() {
+            break;
+        }
+        if has_evidence && has_escaped_dot {
+            output.push_str(&raw[cursor..start]);
+            let mut at = start;
+            while at < end {
+                if bytes[at] == b'\\' {
+                    match bytes[at + 1] {
+                        b'.' => output.push('.'),
+                        next if next.is_ascii() => output.push_str(&raw[at..at + 2]),
+                        // The scan skipped the first byte of a multi-byte
+                        // character; copy the backslash and let the plain
+                        // branch copy the character whole.
+                        _ => {
+                            output.push('\\');
+                            at += 1;
+                            continue;
+                        }
+                    }
+                    at += 2;
+                } else {
+                    let next = raw[at..end]
+                        .find('\\')
+                        .map_or(end, |offset| at + offset);
+                    output.push_str(&raw[at..next]);
+                    at = next;
+                }
+            }
+            cursor = end;
+        }
+        index = end + 1;
     }
 
     output.push_str(&raw[cursor..]);
@@ -6053,6 +6144,44 @@ mod tests {
         assert!(parsed.is_object(), "expected recovery to succeed: {parsed}");
         assert_eq!(parsed["path"], r"C:\ws\repo\out.md");
         assert_eq!(parsed["content"], "C:\\ws\\repo\n\nsecond line\n");
+    }
+
+    /// GLM-5.3 on Modal, thread `3319d295` (2026-10-16): dots escaped the way a
+    /// regex escapes them. `\.` is not a JSON escape, so the whole call was
+    /// refused before it ran. The `/` and the `\\` elsewhere in the same paths
+    /// show the model knows JSON escaping; the `\.` is a stray regex habit.
+    #[test]
+    fn parse_tool_input_repairs_regex_escaped_dots() {
+        let raw = r#"{"end_line": 215, "path": ["\.knowledge/knowledge\.md"], "start_line": 1}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({"end_line": 215, "path": [".knowledge/knowledge.md"], "start_line": 1})
+        );
+
+        let raw = r#"{"path": ["C:\\Users\\Alvan\\tool-results\\out-ed254fdd-stdout\.txt"]}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({"path": [r"C:\Users\Alvan\tool-results\out-ed254fdd-stdout.txt"]})
+        );
+    }
+
+    /// A backslash before a multi-byte character must not split it.
+    #[test]
+    fn regex_dot_repair_survives_a_backslash_before_non_ascii() {
+        let raw = r#"{"path":"docs/caf\é\.md"}"#;
+        assert_eq!(parse_tool_input(raw), Value::String(raw.to_string()));
+    }
+
+    /// A path written with single backslashes only has no evidence that `\.`
+    /// is a regex escape: there it is a separator before a dot-folder, and the
+    /// drive-path repair keeps it.
+    #[test]
+    fn a_single_backslash_path_keeps_its_separator_before_a_dot_folder() {
+        let raw = r#"{"path":"E:\proj\.knowledge\knowledge.md"}"#;
+        assert_eq!(
+            parse_tool_input(raw),
+            json!({"path": r"E:\proj\.knowledge\knowledge.md"})
+        );
     }
 
     #[test]

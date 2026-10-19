@@ -1922,9 +1922,14 @@ pub fn cancel_command_stream(
 /// Errors are returned rather than swallowed, unlike the cancel above: this one
 /// has a visible consequence (the card settles, the tool call answers the
 /// model), so a click that did nothing must not look like a click that worked.
+///
+/// Answers with the log file the run is mirrored into, so the process panel
+/// can show its output from the first frame. Without it the card's row had no
+/// file, and the ledger sync only adds rows it has never seen, so the panel
+/// said "not recording output to a file" for the whole run.
 #[tauri::command]
-pub fn detach_command_stream(request_id: String) -> Result<(), String> {
-    detach_tracked_command_stream(&request_id).map(|_| ())
+pub fn detach_command_stream(request_id: String) -> Result<Option<String>, String> {
+    detach_tracked_command_stream(&request_id).map(|stream| stream.log_path)
 }
 
 // Shell stream batching constants.

@@ -69,6 +69,7 @@ import {
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import {
+  selectionTooltip,
   useAgentSelectionStore,
   type SelectedEntry,
 } from "@/apps/agent/store/composer/useAgentSelectionStore";
@@ -246,15 +247,7 @@ function buildSelectionPill(entry: SelectedEntry): HTMLSpanElement {
   pill.className = "agw-pill-inline agw-pill-sel";
   pill.contentEditable = "false";
   pill.dataset.sel = entry.id;
-  pill.title = [
-    `selector: ${el.selector}`,
-    `tag: <${el.tagName}>`,
-    el.id ? `id: #${el.id}` : null,
-    el.className ? `class: ${el.className}` : null,
-    el.url ? `url: ${el.url}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  pill.title = selectionTooltip(el);
 
   const ico = document.createElement("span");
   ico.className = "agw-pill-cmd-ico";
@@ -1183,6 +1176,64 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   };
 
   /**
+   * Swap the open dictated sentence for its newer reading, and return what the
+   * composer now holds for it.
+   *
+   * Phonon re-reads the whole open sentence every half second and can change a
+   * word it already gave ("settings for the" → "settings file and"), so this
+   * replaces rather than appends. Only the changed tail is retyped, which keeps
+   * the caret, and the text before it, where they were.
+   *
+   * If the text before the caret is no longer the old reading — the user
+   * clicked elsewhere or typed mid-sentence — nothing is deleted: the new
+   * reading starts fresh at the caret. Deleting text the user may have written
+   * would be worse than a repeated phrase they can see and remove.
+   */
+  const replaceWords = (previous: string, next: string): string => {
+    const el = editorRef.current;
+    if (!el) return previous;
+    typing.clearGhost();
+    el.focus();
+    let seln = window.getSelection();
+    if (!seln || seln.rangeCount === 0 || !el.contains(seln.anchorNode)) {
+      placeCaretAtEnd(el);
+      seln = window.getSelection();
+    }
+    if (!seln || seln.rangeCount === 0) return previous;
+
+    const caret = seln.getRangeAt(0);
+    const beforeRange = document.createRange();
+    beforeRange.selectNodeContents(el);
+    beforeRange.setEnd(caret.startContainer, caret.startOffset);
+    const before = beforeRange.toString();
+
+    let prev = previous;
+    if (prev && !before.endsWith(prev)) {
+      console.warn("[agent-window] dictation: the open sentence moved; starting it again at the caret");
+      prev = "";
+    }
+    const lead = prev
+      ? (/^\s*/.exec(prev)?.[0] ?? "")
+      : before.length > 0 && !/\s$/.test(before)
+        ? " "
+        : "";
+    const target = next ? lead + next : "";
+
+    let common = 0;
+    while (common < prev.length && common < target.length && prev[common] === target[common]) {
+      common += 1;
+    }
+    // `modify` steps by character, not by UTF-16 unit.
+    const remove = Array.from(prev.slice(common)).length;
+    for (let i = 0; i < remove; i += 1) seln.modify("extend", "backward", "character");
+    const insert = target.slice(common);
+    if (insert) document.execCommand("insertText", false, insert);
+    else if (remove > 0) document.execCommand("delete");
+    handleInput();
+    return target;
+  };
+
+  /**
    * Open the `@` or `/` picker from the `+` menu by TYPING its character, not
    * by calling into the picker state.
    *
@@ -1266,7 +1317,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     permissionOpen: micPermissionOpen,
     confirmPermission: micConfirmPermission,
     dismissPermission: micDismissPermission,
-  } = useAgentSpeech(insertTranscript, appendWords);
+  } = useAgentSpeech(insertTranscript, appendWords, replaceWords);
 
   const submit = () => {
     // NB: we intentionally do NOT bail when `sending`. A submit mid-turn is a

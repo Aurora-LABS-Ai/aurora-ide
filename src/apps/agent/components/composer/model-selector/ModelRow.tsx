@@ -1,12 +1,15 @@
 /**
  * Agent Window — one pickable row in the model list [view].
  *
- * A row is for PICKING and nothing else: name, the provider where no section
- * header states it, a glyph only where the model is the exception, and the
- * check on the one you are using. Reasoning and Fast moved to the selected-
- * model card at the top of the menu, so an option holds no controls — which
- * is what lets the list be a real listbox the arrow keys and a screen reader
- * can both walk.
+ * Name, the reasoning it would run at as a grey word, the provider where no
+ * section header states it, a glyph only where the model is the exception, the
+ * check on the one you are using, and `›` when it has reasoning to change.
+ * Clicking the row picks it as it stands; `›`, resting on the row, or → opens
+ * its reasoning list beside the menu (`EffortFlyout`). The row itself holds no
+ * control, so the list stays a real listbox the arrow keys and a screen reader
+ * can walk.
+ *
+ * Probe: Documents/aurora-model-picker-rows-designs.html, card 04 (picked).
  */
 
 import React from "react";
@@ -24,21 +27,44 @@ export const ModelRow: React.FC<{
   active: boolean;
   /** Only where no section header already names the provider. */
   showProvider: boolean;
+  /** The current reasoning choice, e.g. "High" or "Thinking". */
+  effort: string | null;
+  /** It has reasoning (or a Fast lane) to change, so it gets a `›`. */
+  hasSettings: boolean;
+  /** Its reasoning list is the one open. */
+  settingsOpen: boolean;
   /** Cursor's faster lane is on for this model — an exception worth marking. */
   fastOn: boolean;
   onPoint: () => void;
   onPick: () => void;
-}> = ({ opt, id, selected, active, showProvider, fastOn, onPoint, onPick }) => (
+  onOpenSettings: () => void;
+}> = ({
+  opt,
+  id,
+  selected,
+  active,
+  showProvider,
+  effort,
+  hasSettings,
+  settingsOpen,
+  fastOn,
+  onPoint,
+  onPick,
+  onOpenSettings,
+}) => (
   <div
     id={id}
     role="option"
     aria-selected={selected}
+    aria-haspopup={hasSettings ? "listbox" : undefined}
+    aria-expanded={hasSettings ? settingsOpen : undefined}
     // Not a Tab stop: the search box owns focus and the arrow keys move
     // between rows. A Tab stop per row meant forty presses to cross the list.
     tabIndex={-1}
     className="agw-model-item"
     data-active={selected || undefined}
     data-kbd-active={active || undefined}
+    data-settings-open={settingsOpen || undefined}
     onMouseEnter={onPoint}
     onClick={onPick}
   >
@@ -54,6 +80,7 @@ export const ModelRow: React.FC<{
         >
           {opt.label}
         </span>
+        {effort && <span className="agw-model-effort">{effort}</span>}
         {showProvider && <span className="agw-model-sub">{opt.providerName}</span>}
       </span>
     </span>
@@ -84,6 +111,20 @@ export const ModelRow: React.FC<{
         <AgentIcon name="bolt" size={12} title="Fast is on" className="agw-model-cap" />
       )}
       {selected && <AgentIcon name="check" size={15} className="agw-model-check" />}
+      {hasSettings && (
+        <span
+          className="agw-model-more"
+          aria-hidden="true"
+          title="Reasoning"
+          onClick={(e) => {
+            // Opens the list; picking stays the row's own click.
+            e.stopPropagation();
+            onOpenSettings();
+          }}
+        >
+          <AgentIcon name="chevron-right" size={13} />
+        </span>
+      )}
     </span>
   </div>
 );

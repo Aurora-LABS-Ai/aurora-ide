@@ -323,6 +323,12 @@ pub struct AttachedSelectedElement {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The owning component's name, when the page's framework exposed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    /// Ancestor chain, one class each, for the chip's tooltip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Display metadata for an exact composer pill attached to a user message.

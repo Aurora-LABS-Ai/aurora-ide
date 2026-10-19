@@ -38,6 +38,7 @@ import { ToolResultView } from "@/apps/agent/components/tool-views/ToolResultVie
 import { parseToolResult } from "@/apps/agent/components/tool-views/tool-result";
 import { mcpOperationLabel, parseMcpToolName } from "@/apps/agent/services/tools/mcp-tools";
 import { useFollowBottom } from "@/apps/agent/hooks/conversation/useFollowBottom";
+import { GLIDE } from "@/apps/agent/lib/motion/glide";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
 import { mcpCallForCard } from "./mcp-card";
 import { formatToolDuration, toolStatus, type ToolCall, type ToolStatus } from "./tool-call";
@@ -143,7 +144,44 @@ function splitRequest(args: Record<string, unknown> | null): LaneRequest {
  * is, because "text · 612 lines" is a real answer and the first line of a dump
  * is not.
  */
-function outcomeSummary(result: string | null | undefined, status: ToolStatus): string {
+/** Field names that file a result rather than report it: handles, addresses, clocks, paging. */
+const BOOKKEEPING_KEY = /(^|_)(id|ids|uuid|url|uri|href|at|expires|expiry|ttl|offset|limit|cursor|token|etag)($|_)|Id$|Url$|At$/;
+/** Values that are references, not facts: hashes, uuids, addresses, timestamps. */
+const REFERENCE_VALUE =
+  /^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z][a-z0-9+.-]*:\/\/\S+|\d{4}-\d{2}-\d{2}T\S+)$/i;
+/** Longer than this, a string is content to open, not a fact for one line. */
+const OUTCOME_STRING_MAX = 40;
+
+/**
+ * Whether a top-level field says what HAPPENED.
+ *
+ * A server files its result under handles first — `fetch_id`, the URL it was
+ * given, when it fetched — and the line took the first three flat fields, so a
+ * fetch read "ef7e4c8c… · https://quotes.toscrape.com/js/ · …": an id and the
+ * caller's own argument, with the status code it actually returned cut off.
+ * Still vendor-neutral: it judges the field's NAME and SHAPE, never the server.
+ */
+function isOutcomeField(key: string, value: string, echoed: ReadonlySet<string>): boolean {
+  if (BOOKKEEPING_KEY.test(key)) return false;
+  if (value.length > OUTCOME_STRING_MAX) return false;
+  if (REFERENCE_VALUE.test(value.trim())) return false;
+  return !echoed.has(value);
+}
+
+/** Every scalar the call sent, so the line never hands the request back as its answer. */
+function echoedValues(args: Record<string, unknown> | null): Set<string> {
+  const values = new Set<string>();
+  for (const value of Object.values(args ?? {})) {
+    if (typeof value === "string" || typeof value === "number") values.add(String(value));
+  }
+  return values;
+}
+
+function outcomeSummary(
+  result: string | null | undefined,
+  status: ToolStatus,
+  echoed: ReadonlySet<string> = new Set(),
+): string {
   if (status === "running") return "";
   const trimmed = result?.trim();
   if (!trimmed) return status === "failed" ? "Failed" : "";
@@ -155,6 +193,7 @@ function outcomeSummary(result: string | null | undefined, status: ToolStatus): 
       for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
         if (value === null || value === undefined) continue;
         if (typeof value === "object") continue;
+        if (!isOutcomeField(key, String(value), echoed)) continue;
         if (typeof value === "boolean") {
           // A bare `true` says nothing; the FIELD is the fact ("ok").
           if (value) parts.push(key);
@@ -171,7 +210,9 @@ function outcomeSummary(result: string | null | undefined, status: ToolStatus): 
         parts.push(String(value));
         if (parts.length >= 3) break;
       }
-      if (parts.length > 0) return parts.slice(0, 3).join(" · ");
+      // An object made only of handles has nothing to say on one line. Falling
+      // through would print its first 80 characters of raw JSON instead.
+      return parts.slice(0, 3).join(" · ");
     }
     if (Array.isArray(parsed)) {
       return `${parsed.length} ${parsed.length === 1 ? "item" : "items"}`;
@@ -215,10 +256,18 @@ const McpCallLine: React.FC<{
   const status = toolStatus(call, isActivelyStreaming);
   const preparing = status === "running" && call.startedAt == null;
 
+  // The call the line is ABOUT. With tool loading on, every MCP call arrives as
+  // a `call_tool` envelope; read raw, each line said "call_tool" and opened onto
+  // the envelope's `name` / `arguments` instead of the server's own fields.
+  // `null` while the envelope has not named its target yet.
+  const target = useMemo(() => mcpCallForCard(call), [call]);
+  const targetName = target?.name ?? null;
+  const targetArgs = target?.arguments ?? "";
+
   const args = useMemo(() => {
-    if (!call.arguments) return null;
+    if (!targetArgs) return null;
     try {
-      const value: unknown = JSON.parse(call.arguments);
+      const value: unknown = JSON.parse(targetArgs);
       if (value && typeof value === "object" && !Array.isArray(value)) {
         return value as Record<string, unknown>;
       }
@@ -226,15 +275,20 @@ const McpCallLine: React.FC<{
       // Arguments still streaming. The row is drawn either way.
     }
     return null;
-  }, [call.arguments]);
+  }, [targetArgs]);
 
   const { chips, payload } = useMemo(() => splitRequest(args), [args]);
   const parsedResult = useMemo(
-    () => parseToolResult(call.name, args ?? {}, call.result),
-    [call.name, args, call.result],
+    () => parseToolResult(targetName ?? call.name, args ?? {}, call.result),
+    [targetName, call.name, args, call.result],
   );
-  const summary = useMemo(() => outcomeSummary(call.result, status), [call.result, status]);
-  const label = useMemo(() => mcpOperationLabel(call.name), [call.name]);
+  const summary = useMemo(
+    () => outcomeSummary(call.result, status, echoedValues(args)),
+    [call.result, status, args],
+  );
+  // No target yet: the line says "Preparing…" and nothing else, rather than
+  // naming the wrapper for the few chunks before the real name arrives.
+  const label = useMemo(() => (targetName ? mcpOperationLabel(targetName) : ""), [targetName]);
   const hasDetail = chips.length > 0 || payload !== null || Boolean(call.result);
 
   return (
@@ -252,9 +306,14 @@ const McpCallLine: React.FC<{
         <span className="agw-mcp-tile" data-row="" data-remote={remote ? "" : undefined}>
           {initials}
         </span>
-        <span className="agw-mcp-op" title={parseMcpToolName(call.name)?.originalToolName ?? call.name}>
-          {label}
-        </span>
+        {label && (
+          <span
+            className="agw-mcp-op"
+            title={parseMcpToolName(targetName ?? "")?.originalToolName ?? targetName ?? undefined}
+          >
+            {label}
+          </span>
+        )}
         {status === "running" ? (
           <span className="agw-tool-summary agw-shimmer">
             {preparing ? "Preparing…" : "Waiting for the server…"}
@@ -278,7 +337,7 @@ const McpCallLine: React.FC<{
               color: "var(--agw-text-subtle)",
               display: "inline-flex",
               transform: open ? "rotate(180deg)" : "none",
-              transition: "transform 0.15s ease",
+              transition: "transform var(--agw-glide-dur) var(--agw-glide-ease)",
             }}
           >
             <AgentIcon name="chevron-down" size={14} />
@@ -293,6 +352,7 @@ const McpCallLine: React.FC<{
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
+            transition={GLIDE}
             style={{ overflow: "hidden" }}
           >
             <div className="agw-tool-body">

@@ -14,11 +14,24 @@
 ; Failure is ignored on purpose. A PATH entry is a convenience; a Windows
 ; install that rolls back because it could not add one would be a far worse
 ; outcome than a user clicking Install in Settings afterwards.
+;
+; Since 2026-10-16 it is a choice: the Install page of `installer.nsi` has
+; "Add the aurora command to the terminal" ($AurAddCli, declared there). Ticked
+; it is added; unticked it is removed if an earlier install added it. The
+; choice is saved, and the updater (which shows no page) reads it back in
+; `.onInit`, so an update never undoes it.
 
 !macro NSIS_HOOK_POSTINSTALL
-  DetailPrint "Adding the aurora command to PATH..."
-  nsExec::ExecToLog '"$INSTDIR\aurora.exe" --install-cli'
-  Pop $0
+  ${If} $AurAddCli = 1
+    DetailPrint "Adding the aurora command to PATH..."
+    nsExec::ExecToLog '"$INSTDIR\${MAINBINARYNAME}.exe" --install-cli'
+    Pop $0
+  ${Else}
+    DetailPrint "Leaving the aurora command off PATH..."
+    nsExec::ExecToLog '"$INSTDIR\${MAINBINARYNAME}.exe" --uninstall-cli'
+    Pop $0
+  ${EndIf}
+  WriteRegDWORD HKCU "${MANUPRODUCTKEY}" "AddCli" $AurAddCli
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

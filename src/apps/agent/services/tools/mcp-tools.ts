@@ -17,18 +17,12 @@ interface ParsedMcpToolName {
 }
 
 /**
- * Hard wall-clock cap on a single MCP tool invocation.
+ * Execute an MCP tool call.
  *
- * Without a timeout, an MCP server that is alive at the socket level but
- * stuck (deadlocked stdio child, hung remote service behind an SSE
- * transport) parks the Rust agent runtime's bridge oneshot forever —
- * presenting to the user as a frozen agent that only recovers on
- * manual cancel.
- */
-const MCP_TOOL_TIMEOUT_MS = 60_000;
-
-/**
- * Execute an MCP tool call
+ * No timer here: Rust bounds every call (the server's own setting, 5–110s,
+ * default 100s) and tells the server to cancel when it runs out, which a
+ * timer in this window could not do. The agent loop's bridge ceiling (120s)
+ * sits above that.
  */
 export async function executeMcpTool(
   toolName: string,
@@ -52,31 +46,11 @@ export async function executeMcpTool(
     throw new Error(`MCP server ${server.config.name} is not connected`);
   }
 
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(
-        new Error(
-          `MCP tool '${originalToolName}' on server '${server.config.name}' ` +
-            `did not respond within ${MCP_TOOL_TIMEOUT_MS / 1000}s`,
-        ),
-      );
-    }, MCP_TOOL_TIMEOUT_MS);
+  const result = await callTool({
+    serverId,
+    toolName: originalToolName,
+    arguments: args,
   });
-
-  let result;
-  try {
-    result = await Promise.race([
-      callTool({
-        serverId,
-        toolName: originalToolName,
-        arguments: args,
-      }),
-      timeoutPromise,
-    ]);
-  } finally {
-    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-  }
 
   if (!result) {
     throw new Error("Failed to call MCP tool: No result returned");
@@ -360,14 +334,22 @@ export function mcpToolToDefinition(
   // Cache the display name for later use (so we don't need store lookup)
   mcpToolDisplayNameCache.set(toolName, `${serverName}: ${friendlyToolName}`);
 
-  // Convert MCP input schema to FunctionParameters format
-  const inputSchema = tool.inputSchema as FunctionParameters | undefined;
+  // Convert MCP input schema to FunctionParameters format. `$defs` /
+  // `definitions` ride along: pydantic and zod servers point properties at
+  // them with `$ref`, and dropping them sent providers a schema whose refs
+  // pointed nowhere. Wires that can't read refs (Gemini via Antigravity)
+  // rebuild the schema from an allow-list in Rust.
+  const inputSchema = tool.inputSchema as
+    | (FunctionParameters & { $defs?: unknown; definitions?: unknown })
+    | undefined;
   const parameters: FunctionParameters =
     inputSchema && inputSchema.type === "object"
       ? {
           type: "object",
           properties: inputSchema.properties || {},
           required: inputSchema.required || [],
+          ...(inputSchema.$defs ? { $defs: inputSchema.$defs } : {}),
+          ...(inputSchema.definitions ? { definitions: inputSchema.definitions } : {}),
         }
       : {
           type: "object",

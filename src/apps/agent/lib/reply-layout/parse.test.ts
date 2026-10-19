@@ -31,6 +31,7 @@ describe("reply layout — facts", () => {
     const out = parseLayout("aurora-facts", "Framework | Next.js 16.2.3 | App Router · React 19\nDatabase | PostgreSQL\n", true);
     expect(out).toEqual({
       kind: "facts",
+      title: "",
       facts: [
         { label: "Framework", value: "Next.js 16.2.3", caption: "App Router · React 19" },
         { label: "Database", value: "PostgreSQL" },
@@ -39,8 +40,15 @@ describe("reply layout — facts", () => {
     });
   });
 
+  it("reads a one-field first line as the title, as bars and pairs do", () => {
+    const out = parseLayout("aurora-facts", "Stack\nFramework | Next.js 16 | App Router\n", true);
+    expect(out.kind === "facts" && out.title).toBe("Stack");
+    expect(out.kind === "facts" && out.facts).toHaveLength(1);
+    expect(out.problems).toEqual([]);
+  });
+
   it("skips and names a line without a value", () => {
-    const out = parseLayout("aurora-facts", "Just a label\nA | B\n", true);
+    const out = parseLayout("aurora-facts", "A | B\nJust a label\n", true);
     expect(out.kind === "facts" && out.facts).toHaveLength(1);
     expect(out.problems[0]).toContain("Just a label");
   });
@@ -71,6 +79,13 @@ describe("reply layout — flow", () => {
     const out = parseLayout("aurora-flow", "A || \n|\n", true);
     expect(out.kind === "flow" && out.steps).toHaveLength(1);
     expect(out.problems).toHaveLength(1);
+  });
+
+  it("preserves escaped pipes through both branch and field splitting", () => {
+    const out = parseLayout("aurora-flow", "`a \\| b` | Filter || Other | Fallback", true);
+    expect(out.kind === "flow" && out.steps[0].items).toEqual([
+      { title: "`a | b`", caption: "Filter" }, { title: "Other", caption: "Fallback" },
+    ]);
   });
 });
 

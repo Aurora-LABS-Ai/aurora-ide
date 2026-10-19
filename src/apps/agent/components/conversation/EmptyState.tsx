@@ -20,9 +20,10 @@
  * reused (controlled here so a suggestion can prefill the draft).
  */
 
-import React, { useMemo } from "react";
+import React, { useMemo, useRef } from "react";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { HOME_TOP_PAD, useRestingCentre } from "@/apps/agent/hooks/conversation/useRestingCentre";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { newChatDraftKey, useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { AgentComposer } from "@/apps/agent/components/composer/AgentComposer";
@@ -104,8 +105,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     [rootPath, summary],
   );
 
+  // The group is centred once, while the composer is empty, and then holds
+  // its top edge while you type — see `useRestingCentre`. The scroller's top
+  // padding is that offset; `justify-content` is deliberately NOT `center`.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const columnRef = useRef<HTMLDivElement>(null);
+  useRestingCentre(scrollerRef, columnRef, draft === "");
+
   return (
     <div
+      ref={scrollerRef}
       className="agw-scroll"
       style={{
         flex: 1,
@@ -114,14 +123,15 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        justifyContent: "center",
+        justifyContent: "flex-start",
         // Extra bottom padding biases the centred group above true centre —
         // the wordmark + composer sit in the upper half like the reference
-        // landing instead of floating at dead centre.
-        padding: "32px 20px clamp(128px, 18vh, 200px)",
+        // landing instead of floating at dead centre. The top padding is
+        // overwritten by `useRestingCentre` once the column is measured.
+        padding: `${HOME_TOP_PAD}px 20px clamp(128px, 18vh, 200px)`,
       }}
     >
-      <div className="w-full max-w-3xl mx-auto agw-home-column">
+      <div ref={columnRef} className="w-full max-w-3xl mx-auto agw-home-column">
         {/* Brand wordmark — a rim-lit ghost watermark (decorative, hence
          *  aria-hidden). Sized in cqi so it tracks the PANE width (never clips
          *  when the rails squeeze the conversation). Each span owns its own

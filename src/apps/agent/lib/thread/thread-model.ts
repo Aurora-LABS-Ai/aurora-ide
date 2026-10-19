@@ -23,6 +23,8 @@
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import { ANTIGRAVITY_PROVIDER_ID } from "@/apps/agent/services/providers/presets/antigravity";
+import { antigravityStem } from "@/apps/agent/services/providers/antigravity";
 import { splitCursorVariant } from "@/apps/agent/services/providers/cursor-variants";
 import { isImageModelSelection } from "@/apps/agent/services/providers/image-providers";
 import { endpointIdentity, isEndpointModelKey } from "@/apps/agent/services/providers/modal";
@@ -75,6 +77,16 @@ export function normalizeThreadModelSelection(
     );
     if (moved) return `${providerId}:${moved.modelKey}`;
     return selection;
+  }
+
+  // Antigravity listed every effort tier as its own id until the tiers were
+  // folded into one row (`gemini-4-argon-high` → `gemini-4-argon`). A
+  // conversation pinned to a tier follows its model's row.
+  if (providerId === ANTIGRAVITY_PROVIDER_ID) {
+    const stem = antigravityStem(modelKey);
+    return stem !== modelKey && models.some((m) => m.providerId === providerId && m.modelKey === stem)
+      ? `${providerId}:${stem}`
+      : selection;
   }
 
   if (providerId !== CURSOR_PROVIDER_ID) return selection;

@@ -21,6 +21,8 @@ import type {
 } from "@/kernel/services/providers/types";
 import type { ReasoningReplayMode } from "@/kernel/types/database";
 import { CURSOR_PROVIDER_ID } from "@/apps/agent/services/providers/cursor";
+import { ANTIGRAVITY_PROVIDER_ID } from "@/apps/agent/services/providers/presets/antigravity";
+import { antigravityWireModel } from "@/apps/agent/services/providers/antigravity";
 import { resolveCursorModelRun } from "@/apps/agent/services/providers/cursor-run";
 import { cursorVariantFailureMessage } from "@/apps/agent/services/providers/cursor-variants";
 import {
@@ -202,6 +204,7 @@ export function resolveModelRequest(
   const knobs = resolveModelRequestKnobs(config, model, thinkingPreference);
 
   applyCursorVariant(config, model);
+  applyAntigravityVariant(config, model);
   applyOpenCodeWire(config, model);
 
   return { providerConfig: config, model, ...knobs };
@@ -236,6 +239,31 @@ export function applyOpenCodeWire(
     modelKey: model?.modelKey || config.model,
     providerType: model?.providerType,
   });
+}
+
+/**
+ * Antigravity: the effort tier is part of the model **id**.
+ *
+ * The account lists `gemini-4-argon-low`, `-medium` and `-high` as separate
+ * ids; the picker shows them as one row with an effort setting
+ * (`foldAntigravityVariants`). Here the row and its chosen tier become the id
+ * the backend knows. A row that was never folded is sent as it is.
+ *
+ * A no-op for every other provider.
+ */
+export function applyAntigravityVariant(
+  config: ProviderConfig,
+  model: LLMModel | null | undefined,
+): void {
+  if (config.id !== ANTIGRAVITY_PROVIDER_ID || !model) return;
+  const wire = antigravityWireModel(model);
+  if (!wire) return;
+  config.model = wire;
+  if (config.customParams && "reasoning_effort" in config.customParams) {
+    const rest = { ...config.customParams };
+    delete rest.reasoning_effort;
+    config.customParams = Object.keys(rest).length > 0 ? rest : undefined;
+  }
 }
 
 /**

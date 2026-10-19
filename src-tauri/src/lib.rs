@@ -932,6 +932,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             mcp::commands::mcp_call_tool,
             mcp::commands::mcp_get_all_tools,
             mcp::commands::mcp_get_config_path,
+            mcp::commands::mcp_set_workspace,
+            mcp::commands::mcp_restart_server,
+            mcp::commands::mcp_check_command,
             // CLI commands (install/uninstall aurora command)
             commands::install_aurora_cli,
             commands::is_aurora_cli_installed,
@@ -1147,6 +1150,14 @@ pub fn run_with_args(cli_args: CliArgs) {
             // machine so the agent has a verified, correctly configured shell
             // before the user ever opens settings. Runs off the startup path.
             commands::shell_profiles::bootstrap(app.handle().clone());
+
+            // MCP servers start here, once per app — not once per window.
+            // Global config only; the agent window adds its project's
+            // `.mcp.json` through `mcp_set_workspace`.
+            let mcp_handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                mcp::manager::MCP_MANAGER.init(mcp_handle);
+            });
 
             // Store shared chat state for multi-window sync
             app.manage(commands::chat::SharedChatState::default());

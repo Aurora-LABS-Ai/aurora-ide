@@ -2404,8 +2404,9 @@ export const ProviderDetail: React.FC<{
         </div>
       ) : antigravity ? (
         <div className="agw-prov-detail-note">
-          Comes with Aurora. The signed-in account decides which models exist;
-          the card above refreshes them.
+          Comes with Aurora. The signed-in account decides which models exist.
+          Aurora re-reads them on start and every 30 minutes; models you add by
+          hand stay in the list.
         </div>
       ) : builtIn ? (
         <div className="agw-prov-detail-note">

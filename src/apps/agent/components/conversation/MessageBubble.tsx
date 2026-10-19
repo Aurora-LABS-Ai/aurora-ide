@@ -134,11 +134,19 @@ const elementToken = (index: string | number) => `@element:${index}`;
  *  Same face as the composer's selection pill and the hoisted-row chip. */
 function selectedElementPill(el: AttachedSelectedElement, key: React.Key): React.ReactNode {
   const elText = (el.text ?? "").trim();
+  const title = [
+    `<${el.tagName}>`,
+    el.component ? `component: ${el.component}` : null,
+    el.path ? `in: ${el.path}` : null,
+    `selector: ${el.selector}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
     <span
       key={key}
       className="agw-pill-inline agw-pill-sel"
-      title={`selector: ${el.selector}`}
+      title={title}
     >
       <span className="agw-pill-cmd-ico">
         <AgentIcon name="inspect" size={11} />

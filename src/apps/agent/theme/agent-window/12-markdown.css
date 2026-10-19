@@ -73,6 +73,14 @@
 .agw-md a:hover {
   text-decoration: underline;
 }
+/* "Opens outside the app", after a web link. Not underlined with it. */
+.agw-md-ext {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.8em;
+  opacity: 0.75;
+  text-decoration: none;
+}
 .agw-md strong {
   font-weight: var(--agw-fw-strong);
   color: var(--agw-text);

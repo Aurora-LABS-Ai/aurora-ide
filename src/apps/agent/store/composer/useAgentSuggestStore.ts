@@ -30,9 +30,29 @@ export interface SuggestionOffer {
 export interface SuggestionOutcome {
   runId: string;
   shown: string[];
-  action: "tapped" | "tapped_edited" | "typed" | "sent_before_ready";
+  /**
+   * `pasted` is a send nobody could have predicted — a log, a command, a
+   * block from somewhere else. It is recorded, but the brief never shows it
+   * as "what they typed instead": the first week's log had five of them in
+   * the examples, teaching the model that the developer types terminal
+   * output.
+   */
+  action: "tapped" | "tapped_edited" | "typed" | "pasted" | "sent_before_ready";
   tappedIndex?: number;
   sentText: string;
+}
+
+/**
+ * A message that was pasted rather than written: several lines, or one long
+ * line that reads as a command or a path. Nobody types a 300-char log.
+ */
+export function looksPasted(sent: string): boolean {
+  const text = sent.trim();
+  const lines = text.split("\n").length;
+  if (lines >= 3) return true;
+  if (lines === 2 && text.length > 200) return true;
+  // One line, but a shell command or a Windows path at its head.
+  return /^(?:[A-Z]:\\|\$ |PS [A-Z]:|[A-Z_]+=["']?[A-Za-z0-9:\\/]|node -e|pnpm |npm |npx |git |cargo |curl )/.test(text) && text.length > 60;
 }
 
 interface AgentSuggestState {
@@ -94,7 +114,12 @@ export function classifyOutcome(offer: SuggestionOffer, sentText: string): Sugge
   if (matched >= 0) {
     return { runId: offer.runId, shown: offer.shown, action: "tapped", tappedIndex: matched, sentText: sent };
   }
-  return { runId: offer.runId, shown: offer.shown, action: "typed", sentText: sent };
+  return {
+    runId: offer.runId,
+    shown: offer.shown,
+    action: looksPasted(sent) ? "pasted" : "typed",
+    sentText: sent,
+  };
 }
 
 export const useAgentSuggestStore = create<AgentSuggestState>((set, get) => ({

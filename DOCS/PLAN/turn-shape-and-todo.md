@@ -1,5 +1,11 @@
 # The request shape, and the `todo` round trip
 
+> **2026-10-21.** The checklist tools are `TaskCreate`, `TaskUpdate`, and `TaskList`.
+> There is no `todo` tool. A conversation's JSONL is
+> `%LOCALAPPDATA%\AuroraIDE\projects\<slug>\<thread_id>\conversation.jsonl`
+> (Aurora Chat: `Chats\<thread_id>\`). The flat `sessions\<id>.jsonl` path below is
+> pre-2026-09-20. This file is the 2026-09-04 evening record.
+
 **Hand this file to the next session and start here.**
 
 This is the core-correctness work: what Aurora sends the model on every
@@ -146,9 +152,10 @@ Run `scripts/aurora_dual_api_stream_simulator.py` and read
   on 2026-09-04 morning, with fewer tokens in the window because nothing is
   copied.
 
-Then read a session's reasoning in
-`%LOCALAPPDATA%\AuroraIDE\sessions\<id>.jsonl`: the model should open on the
-task, never on what a message is.
+Then read that turn in the conversation folder
+(`projects\<slug>\<thread_id>\conversation.jsonl`, or `Chats\<thread_id>\` for Aurora Chat):
+the model should open on the task, never on what a message is.
+The flat `%LOCALAPPDATA%\AuroraIDE\sessions\<id>.jsonl` path is pre-2026-09-20 only.
 
 ---
 

@@ -269,6 +269,14 @@ pub struct LLMProvider {
     pub sort_order: i32,
     pub created_at: String,
     pub updated_at: String,
+    /// Where a vision model's tool-result images go on the Chat and Responses
+    /// wires (v27). `false`, the default, sends them in a user message right
+    /// after the tool output, which every endpoint tested reads. `true` puts
+    /// them inside the tool output itself, which some gateways drop without an
+    /// error, so it is the user's call per provider. The Messages wire ignores
+    /// it: Anthropic's `tool_result` carries images natively.
+    #[serde(default)]
+    pub tool_images_in_result: bool,
     // ── Legacy v14 fields ──────────────────────────────────────────
     // Accepted on input so an out-of-date frontend payload doesn't
     // make `save_provider` fail; never written or returned. The data
@@ -548,6 +556,10 @@ pub struct AppSettings {
     /// nonsense or crashes llama-completion outright.
     #[serde(default)]
     pub title_maker_local_chat_format: String,
+    /// Cloud titles from one of the configured models, as
+    /// `providerId:modelKey`. Empty means the hand-typed endpoint fields.
+    #[serde(default)]
+    pub title_maker_cloud_model: String,
     /// How far outside the open project the agent's file tools may reach:
     /// `"workspace"`, `"read"`, or `"full"`. Empty means "not chosen yet", in
     /// which case [`Self::allow_outside_workspace`] below still decides.
@@ -692,6 +704,7 @@ impl Default for AppSettings {
             title_maker_model: String::new(),
             title_maker_local_model: String::new(),
             title_maker_local_chat_format: String::new(),
+            title_maker_cloud_model: String::new(),
             workspace_access: String::new(),
             allow_outside_workspace: false,
             transcript_chapters: false,

@@ -129,6 +129,11 @@ export interface ProviderConfigSnapshot {
    * provider settings UI.
    */
   supportsVision?: boolean;
+  /**
+   * Chat and Responses wires: keep tool-result images inside the tool output
+   * instead of a user message after it. The provider row's switch.
+   */
+  toolImagesInResult?: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
 }
@@ -624,6 +629,7 @@ export class AgentRuntimeClient {
       supportsThinking: config.supportsThinking ?? false,
       reasoning: config.reasoning,
       supportsVision: config.supportsVision ?? false,
+      toolImagesInResult: config.toolImagesInResult ?? false,
       contextWindow: config.contextWindow,
       maxOutputTokens: config.maxOutputTokens,
     };

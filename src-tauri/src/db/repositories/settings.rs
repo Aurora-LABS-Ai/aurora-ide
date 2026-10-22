@@ -18,6 +18,7 @@ pub const APP_SETTING_KEYS: &[&str] = &[
     "titleMakerBaseUrl",
     "titleMakerApiKey",
     "titleMakerModel",
+    "titleMakerCloudModel",
     "titleMakerLocalModel",
     "titleMakerLocalChatFormat",
     "workspaceAccess",
@@ -207,6 +208,10 @@ impl<'a> SettingsRepository<'a> {
                 "titleMakerModel" => {
                     settings.title_maker_model = serde_json::from_str(&setting.value)
                         .unwrap_or(settings.title_maker_model.clone())
+                }
+                "titleMakerCloudModel" => {
+                    settings.title_maker_cloud_model = serde_json::from_str(&setting.value)
+                        .unwrap_or(settings.title_maker_cloud_model.clone())
                 }
                 "titleMakerLocalModel" => {
                     settings.title_maker_local_model = serde_json::from_str(&setting.value)
@@ -481,6 +486,10 @@ impl<'a> SettingsRepository<'a> {
             &serde_json::to_string(&settings.title_maker_model).unwrap_or_default(),
         )?;
         self.set_setting(
+            "titleMakerCloudModel",
+            &serde_json::to_string(&settings.title_maker_cloud_model).unwrap_or_default(),
+        )?;
+        self.set_setting(
             "titleMakerLocalModel",
             &serde_json::to_string(&settings.title_maker_local_model).unwrap_or_default(),
         )?;
@@ -733,7 +742,7 @@ impl<'a> SettingsRepository<'a> {
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
                     default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys,
-                    description
+                    description, tool_images_in_result
              FROM llm_providers
              ORDER BY sort_order ASC",
         )?;
@@ -766,6 +775,7 @@ impl<'a> SettingsRepository<'a> {
                 sort_order: row.get(17)?,
                 created_at: row.get(18)?,
                 updated_at: row.get(19)?,
+                tool_images_in_result: row.get::<_, i32>(22)? != 0,
                 _legacy_supports_thinking: None,
                 _legacy_supports_vision: None,
                 _legacy_custom_models: None,
@@ -787,7 +797,7 @@ impl<'a> SettingsRepository<'a> {
                     supports_tool_stream, enabled, is_custom,
                     custom_headers, custom_params, provider_type, default_temperature,
                     default_max_tokens, requires_api_key, sort_order, created_at, updated_at, api_keys,
-                    description
+                    description, tool_images_in_result
              FROM llm_providers
              WHERE id = ?1",
         )?;
@@ -820,6 +830,7 @@ impl<'a> SettingsRepository<'a> {
                 sort_order: row.get(17)?,
                 created_at: row.get(18)?,
                 updated_at: row.get(19)?,
+                tool_images_in_result: row.get::<_, i32>(22)? != 0,
                 _legacy_supports_thinking: None,
                 _legacy_supports_vision: None,
                 _legacy_custom_models: None,
@@ -859,14 +870,15 @@ impl<'a> SettingsRepository<'a> {
                 id, name, nickname, base_url, api_key, model, context_window, max_output_tokens,
                 supports_tool_stream, enabled, is_custom, custom_headers, custom_params,
                 provider_type, default_temperature, default_max_tokens, requires_api_key,
-                sort_order, created_at, updated_at, api_keys, description
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                sort_order, created_at, updated_at, api_keys, description, tool_images_in_result
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             ON CONFLICT(id) DO UPDATE SET
                 name = ?2, nickname = ?3, base_url = ?4, api_key = ?5, model = ?6, context_window = ?7,
                 max_output_tokens = ?8, supports_tool_stream = ?9, enabled = ?10, is_custom = ?11,
                 custom_headers = ?12, custom_params = ?13, provider_type = ?14,
                 default_temperature = ?15, default_max_tokens = ?16, requires_api_key = ?17,
-                sort_order = ?18, updated_at = ?20, api_keys = ?21, description = ?22",
+                sort_order = ?18, updated_at = ?20, api_keys = ?21, description = ?22,
+                tool_images_in_result = ?23",
             params![
                 provider.id,
                 provider.name,
@@ -890,6 +902,7 @@ impl<'a> SettingsRepository<'a> {
                 now,
                 api_keys,
                 provider.description,
+                provider.tool_images_in_result as i32,
             ],
         )?;
 
@@ -1010,6 +1023,32 @@ mod tests {
         let mut listed: Vec<String> = APP_SETTING_KEYS.iter().map(|k| k.to_string()).collect();
         listed.sort();
         assert_eq!(written, listed);
+    }
+
+    /// The tool-image switch survives a save, through both read paths, and a
+    /// payload without the field (an older window) reads as off.
+    #[test]
+    fn provider_tool_image_placement_round_trips() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        let mut provider: LLMProvider = serde_json::from_value(serde_json::json!({
+            "id": "modal", "name": "Modal", "baseUrl": "https://example.invalid/v1",
+            "apiKey": "k", "model": "m", "contextWindow": 128000,
+            "maxOutputTokens": 16000, "supportsToolStream": false, "enabled": true,
+            "isCustom": false, "providerType": "modal", "requiresApiKey": true,
+            "sortOrder": 0, "createdAt": "", "updatedAt": ""
+        }))
+        .unwrap();
+        assert!(!provider.tool_images_in_result, "absent field reads as off");
+
+        provider.tool_images_in_result = true;
+        repo.save_provider(&provider).unwrap();
+        assert!(repo.get_provider("modal").unwrap().unwrap().tool_images_in_result);
+        assert!(repo.get_all_providers().unwrap()[0].tool_images_in_result);
+
+        provider.tool_images_in_result = false;
+        repo.save_provider(&provider).unwrap();
+        assert!(!repo.get_provider("modal").unwrap().unwrap().tool_images_in_result);
     }
 
     /// A partial write changes only its own keys and reads back through the

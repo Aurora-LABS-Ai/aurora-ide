@@ -26,21 +26,26 @@ export function useRestingCentre(
   resting: boolean,
 ): void {
   const restingRef = useRef(resting);
-  restingRef.current = resting;
   const restHeightRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    restingRef.current = resting;
+  }, [resting]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
     const column = columnRef.current;
     if (!scroller || !column) return;
 
+    let frame: number | null = null;
     const apply = () => {
       const restHeight = restHeightRef.current;
       if (restHeight === null) return;
       const padBottom = parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
       const room = scroller.clientHeight - padBottom - HOME_TOP_PAD;
       const top = HOME_TOP_PAD + Math.max(0, (room - restHeight) / 2);
-      scroller.style.paddingTop = `${Math.round(top)}px`;
+      const paddingTop = `${Math.round(top)}px`;
+      if (scroller.style.paddingTop !== paddingTop) scroller.style.paddingTop = paddingTop;
     };
     const measure = () => {
       if (restingRef.current) restHeightRef.current = column.getBoundingClientRect().height;
@@ -49,13 +54,21 @@ export function useRestingCentre(
 
     // Before first paint, so the group never flashes at the top.
     measure();
-    const columnWatch = new ResizeObserver(measure);
-    columnWatch.observe(column);
-    const paneWatch = new ResizeObserver(apply);
-    paneWatch.observe(scroller);
+    // Padding changes the scroller's content box. Observing that box and
+    // writing padding during delivery feeds our own resize back into the
+    // observer loop. Watch the outer size and apply once in the next frame.
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        measure();
+      });
+    });
+    observer.observe(column, { box: "border-box" });
+    observer.observe(scroller, { box: "border-box" });
     return () => {
-      columnWatch.disconnect();
-      paneWatch.disconnect();
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [scrollerRef, columnRef]);
 
@@ -69,6 +82,7 @@ export function useRestingCentre(
     const padBottom = parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
     const room = scroller.clientHeight - padBottom - HOME_TOP_PAD;
     const top = HOME_TOP_PAD + Math.max(0, (room - restHeightRef.current) / 2);
-    scroller.style.paddingTop = `${Math.round(top)}px`;
+    const paddingTop = `${Math.round(top)}px`;
+    if (scroller.style.paddingTop !== paddingTop) scroller.style.paddingTop = paddingTop;
   }, [resting, scrollerRef, columnRef]);
 }

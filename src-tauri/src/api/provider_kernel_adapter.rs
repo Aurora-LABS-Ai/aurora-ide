@@ -1713,9 +1713,16 @@ pub(crate) const OPENAI_IMAGE_HANDOFF_NOTE: &str =
 /// placement works EVERYWHERE, and the providers that reject it do so without
 /// saying so. That silence is why `browser_screenshot` looked like it worked
 /// while the agent kept reasoning from the page outline instead of the
-/// picture. Images therefore ride in a following user message on every
-/// OpenAI-compatible provider, and the tool message keeps the text plus
-/// [`OPENAI_IMAGE_HANDOFF_NOTE`] so the model knows to look ahead.
+/// picture. Images therefore ride in a following user message by default,
+/// and the tool message keeps the text plus [`OPENAI_IMAGE_HANDOFF_NOTE`] so
+/// the model knows to look ahead.
+///
+/// Re-measured 2026-10-19 with a random code word in the picture: Modal and
+/// DeepSeek read an image inside the tool message on Chat; a relay turned it
+/// into an `[image_url]` placeholder and billed ~12k tokens for it. The same
+/// endpoint can differ by wire and even by key, so keeping the image in the
+/// tool message is a per-provider switch (`tool_images_in_result`), off unless
+/// the user turns it on.
 ///
 /// (The Anthropic and Responses adapters are unaffected: Anthropic supports
 /// images inside `tool_result` natively, and `responses.rs` already appended
@@ -1809,6 +1816,7 @@ pub fn build_openai_body(request: &ApiRequest<'_>, config: &ProviderConfigSnapsh
         Value::Array(openai_messages(
             request,
             config.supports_vision,
+            config.tool_images_in_result,
             config.effective_provider_type(),
             &config.base_url,
             reasoning_replay_override_for_config(config),
@@ -2464,6 +2472,10 @@ pub(crate) fn reasoning_field_for(provider_type: &str, _model: &str) -> Option<&
 fn openai_messages(
     request: &ApiRequest<'_>,
     supports_vision: bool,
+    // The provider row's switch: tool-result images stay inside the
+    // `role: "tool"` message instead of moving to a user message after it.
+    // See `openai_tool_result_split` for why that is not the default.
+    images_in_tool_result: bool,
     provider_type: &str,
     // The endpoint this body is bound for. Only consulted for reasoning
     // replay, and only when the provider type has no opinion — see
@@ -2572,7 +2584,12 @@ fn openai_messages(
                             content,
                             ..
                         } => {
-                            let content_value = if supports_vision {
+                            let content_value = if supports_vision && images_in_tool_result {
+                                // Same parts a user message gets, on the tool
+                                // message itself. Still a plain string when the
+                                // result holds no image.
+                                openai_user_content(content)
+                            } else if supports_vision {
                                 let (mut text, images) = openai_tool_result_split(content);
                                 if !images.is_empty() {
                                     if !text.is_empty() && !text.ends_with('\n') {
@@ -4232,6 +4249,7 @@ mod tests {
             supports_thinking: false,
             reasoning: None,
             supports_vision: false,
+            tool_images_in_result: false,
         };
 
         let body = build_openai_body(&request, &config);
@@ -4623,7 +4641,7 @@ mod tests {
             tool_bridge: None,
             session_key: None,        };
 
-        let out = openai_messages(&request, true, "openai", "", None);
+        let out = openai_messages(&request, true, false, "openai", "", None);
 
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[0]["role"], "tool");
@@ -4646,6 +4664,59 @@ mod tests {
             .expect("user content is an array");
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    /// The provider switch on: the image stays on the tool entry as a content
+    /// part, with no hand-off note and no user message after it.
+    #[test]
+    fn openai_messages_switch_on_keeps_the_image_on_the_tool_entry() {
+        let messages = vec![ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "Screenshot captured.\n\
+                    <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                    .into(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }];
+        let request = ApiRequest {
+            messages: &messages,
+            system_prompt: None,
+            tools: &[],
+            tool_choice: Default::default(),
+            model: "kimi-k3",
+            temperature: None,
+            max_output_tokens: 1024,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+        };
+
+        let out = openai_messages(&request, true, true, "modal", "", None);
+
+        assert_eq!(out.len(), 1, "only the tool message: {out:?}");
+        assert_eq!(out[0]["role"], "tool");
+        let parts = out[0]["content"].as_array().expect("tool content is parts");
+        assert!(parts.iter().any(|p| p["type"] == "image_url"), "{parts:?}");
+        assert!(
+            parts.iter().any(|p| p["type"] == "text"
+                && p["text"].as_str().unwrap_or("").contains("Screenshot captured.")),
+            "{parts:?}"
+        );
+        assert!(!out[0]["content"].to_string().contains(OPENAI_IMAGE_HANDOFF_NOTE));
+
+        // A model without vision still gets the placeholder, never pixels.
+        let out = openai_messages(&request, false, true, "modal", "", None);
+        let text = out[0]["content"].as_str().expect("plain text");
+        assert!(!text.contains("QUJD") && text.contains("Image omitted"), "{text}");
     }
 
     /// A mid-turn injected message carrying an `<aurora_image>` marker (a
@@ -4688,7 +4759,7 @@ mod tests {
             tool_bridge: None,
             session_key: None,        };
 
-        let out = openai_messages(&request, true, "openai", "", None);
+        let out = openai_messages(&request, true, false, "openai", "", None);
         assert_eq!(out.len(), 2, "one tool message + one user message");
         assert_eq!(out[1]["role"], "user");
         let parts = out[1]["content"].as_array().expect("multimodal array");
@@ -4703,7 +4774,7 @@ mod tests {
         );
 
         // Non-vision: the marker is stripped to a placeholder, never base64.
-        let out = openai_messages(&request, false, "openai", "", None);
+        let out = openai_messages(&request, false, false, "openai", "", None);
         let content = out[1]["content"].as_str().expect("plain string content");
         assert!(content.contains("use this design"));
         assert!(!content.contains("QUJD"), "no raw base64 for non-vision");
@@ -5028,6 +5099,7 @@ mod tests {
             supports_thinking: true,
             reasoning: None,
             supports_vision: false,
+            tool_images_in_result: false,
         }
     }
 
@@ -5560,7 +5632,7 @@ mod tests {
         let mut request = caching_request(&messages, &tools);
         request.system_prompt = Some(&prompt);
 
-        let out = openai_messages(&request, false, "openai", "", None);
+        let out = openai_messages(&request, false, false, "openai", "", None);
 
         assert_eq!(out[0]["content"], "STATIC RULES\n\n# Mode: plan");
     }

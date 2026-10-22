@@ -283,6 +283,17 @@ fn run_migration(conn: &Connection, target_version: i32) -> DbResult<()> {
             tx.commit()?;
             Ok(())
         }
+        27 => {
+            // Migration from v26 to v27: add `tool_images_in_result` to
+            // `llm_providers` — whether a vision model's tool-result images
+            // ride inside the tool output on the Chat and Responses wires.
+            // Defaults to 0, the separate-message placement every existing
+            // row already uses, so nothing changes until the user opts in.
+            migration_v27(conn)?;
+            conn.execute("DELETE FROM schema_version", [])?;
+            conn.execute("INSERT INTO schema_version (version) VALUES (?1)", [27])?;
+            Ok(())
+        }
         _ => Err(DbError::Migration(format!(
             "Unknown migration version: {}",
             target_version
@@ -362,11 +373,44 @@ mod usage_ledger_migration_tests {
         conn.prepare("SELECT event_id FROM usage_events").unwrap();
         assert_eq!(
             conn.query_row("SELECT version FROM schema_version", [], |r| r.get::<_, i64>(0)).unwrap(),
-            26,
+            i64::from(SCHEMA_VERSION),
         );
         assert_eq!(
             conn.query_row("SELECT value FROM app_settings WHERE key='sentinel'", [], |r| r.get::<_, String>(0)).unwrap(),
             "keep",
+        );
+    }
+
+    /// A v26 database gains the column with every existing provider on the
+    /// separate-message placement, and a second run leaves it alone.
+    #[test]
+    fn v27_adds_tool_image_placement_off_for_existing_providers() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute("ALTER TABLE llm_providers DROP COLUMN tool_images_in_result", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO llm_providers (id, name, base_url, model, created_at, updated_at)
+             VALUES ('modal', 'Modal', 'https://example.invalid/v1', 'm', '', '')",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version=26", []).unwrap();
+
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let placement: i64 = conn
+            .query_row(
+                "SELECT tool_images_in_result FROM llm_providers WHERE id='modal'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(placement, 0);
+        assert_eq!(
+            conn.query_row("SELECT version FROM schema_version", [], |r| r.get::<_, i64>(0)).unwrap(),
+            27,
         );
     }
 }
@@ -381,6 +425,23 @@ fn migration_v25(conn: &Connection) -> DbResult<()> {
     };
     if !existing.iter().any(|c| c == "description") {
         conn.execute("ALTER TABLE llm_providers ADD COLUMN description TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// v27: where tool-result images go on the Chat and Responses wires. Same
+/// PRAGMA sniff as v25, so a database that already has the column is left alone.
+fn migration_v27(conn: &Connection) -> DbResult<()> {
+    let existing: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(llm_providers)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.flatten().collect()
+    };
+    if !existing.iter().any(|c| c == "tool_images_in_result") {
+        conn.execute(
+            "ALTER TABLE llm_providers ADD COLUMN tool_images_in_result INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
     Ok(())
 }

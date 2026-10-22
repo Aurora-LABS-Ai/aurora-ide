@@ -3017,8 +3017,8 @@ async fn run_turn_default_config_yields_none_temperature_and_no_thinking() {
     assert!(!captured.thinking_enabled);
     // Reasoning bills against this cap on most providers, so the default
     // has to leave room for a long think AND a full reply (was 8192, which
-    // a high reasoning effort could consume entirely).
-    assert_eq!(captured.max_output_tokens, 16_384);
+    // a high reasoning effort could consume entirely, then 16,384).
+    assert_eq!(captured.max_output_tokens, 64_000);
     // No prompt was configured, so the only thing that can be there is the
     // machine's own tool inventory — present on a machine with tools on its
     // PATH, absent on a bare one.

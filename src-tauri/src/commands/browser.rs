@@ -268,8 +268,10 @@ pub async fn browser_set_visible(
 pub async fn browser_activate_inspector(
     state: State<'_, BrowserManager>,
     label: String,
+    accent: Option<String>,
+    accent_fg: Option<String>,
 ) -> Result<(), String> {
-    state.activate_inspector(&label)
+    state.activate_inspector(&label, accent.as_deref(), accent_fg.as_deref())
 }
 
 #[tauri::command]

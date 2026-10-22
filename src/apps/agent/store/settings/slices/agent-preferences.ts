@@ -32,6 +32,7 @@ export const createAgentPreferencesSlice = (set: SettingsSet, get: SettingsGet) 
     if (value.baseUrl !== undefined) patch.titleMakerBaseUrl = value.baseUrl;
     if (value.apiKey !== undefined) patch.titleMakerApiKey = value.apiKey;
     if (value.model !== undefined) patch.titleMakerModel = value.model;
+    if (value.cloudModel !== undefined) patch.titleMakerCloudModel = value.cloudModel;
     if (value.localModel !== undefined) patch.titleMakerLocalModel = value.localModel;
     if (value.localChatFormat !== undefined)
       patch.titleMakerLocalChatFormat = value.localChatFormat;

@@ -47,6 +47,9 @@ import {
 import { isBuiltInProvider } from "@/apps/agent/services/providers/built-in";
 import { hasAnyKey, providerReady } from "./provider-ready";
 import { ProviderAdvancedEditor } from "./ProviderAdvanced";
+import { LimitChips } from "./LimitChips";
+import { CONTEXT_WINDOW_CHIPS, MAX_OUTPUT_CHIPS } from "./limit-chips";
+import { offersToolImagePlacement } from "@/apps/agent/services/providers/tool-image-placement";
 
 /** The three sections of a provider's page. */
 type ProviderTab = "models" | "connection" | "advanced";
@@ -1225,28 +1228,44 @@ const ModelRow: React.FC<{
         <section className="agw-model-sec">
           <h4 className="agw-model-sec-title">Limits</h4>
           <div className="agw-prov-edit agw-model-sec-grid" data-cols="3">
-          <label className="agw-prov-edit-field">
+          {/* <div>, not <label>: a click inside a label lands on its first
+              control, and the chips under the input are buttons. */}
+          <div className="agw-prov-edit-field">
             <span>Context window</span>
             <AgwTextInput
               type="number"
+              aria-label="Context window"
               value={model.contextWindow ?? ""}
               placeholder="inherit"
               onChange={(e) =>
                 updateModel(model.id, { contextWindow: e.target.value ? Number(e.target.value) : undefined })
               }
             />
-          </label>
-          <label className="agw-prov-edit-field">
+            <LimitChips
+              label="context window"
+              values={CONTEXT_WINDOW_CHIPS}
+              current={model.contextWindow}
+              onPick={(contextWindow) => updateModel(model.id, { contextWindow })}
+            />
+          </div>
+          <div className="agw-prov-edit-field">
             <span>Max output</span>
             <AgwTextInput
               type="number"
+              aria-label="Max output"
               value={model.maxOutputTokens ?? ""}
               placeholder="inherit"
               onChange={(e) =>
                 updateModel(model.id, { maxOutputTokens: e.target.value ? Number(e.target.value) : undefined })
               }
             />
-          </label>
+            <LimitChips
+              label="max output"
+              values={MAX_OUTPUT_CHIPS}
+              current={model.maxOutputTokens}
+              onPick={(maxOutputTokens) => updateModel(model.id, { maxOutputTokens })}
+            />
+          </div>
           {/* An output cap at or above the context window is impossible: the
               prompt and the reply are drawn from the same window. Providers
               reject it outright, before a token is generated, so every turn on
@@ -2383,7 +2402,11 @@ export const ProviderDetail: React.FC<{
       /* The same card the Connection tab draws its fields in, so the three
          tabs read as one panel changing contents, not three different pages. */
       <div className="agw-prov-detail-top agw-prov-advanced">
-        <ProviderAdvancedEditor provider={provider} updateProvider={updateProvider} />
+        <ProviderAdvancedEditor
+          provider={provider}
+          updateProvider={updateProvider}
+          offersToolImagePlacement={offersToolImagePlacement(provider, models)}
+        />
         {/* Headers ride on the request Aurora builds; for the providers whose
             adapter owns the request outright there is nothing to add them to,
             and the panel says so instead of offering a field that does nothing. */}

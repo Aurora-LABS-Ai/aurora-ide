@@ -8,6 +8,10 @@
  * pill becomes its `@<relative-path>` token in place, so the agent sees the file
  * reference at the right spot in the sentence.
  *
+ * The pills themselves and the trigger regexes live in `composer-pills.ts`;
+ * the `@` and `/` lists in `ComposerPickers.tsx`. This file owns the state:
+ * what is typed, what is staged, what a pick does, and the send.
+ *
  * Themed purely with `--agw-*`. No focus halos — deliberate.
  */
 
@@ -17,18 +21,32 @@ import { AnimatePresence } from "framer-motion";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { StreamingDotMatrix } from "@/apps/agent/components/theme/StreamingDotMatrix";
 import { openFileDialog } from "@/kernel/lib/ipc/tauri";
-import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
-import { resolveExplorerIcon } from "@/kernel/lib/icons/icon-registry";
 import {
   listTerminalSessions,
   type TerminalSessionSummary,
 } from "@/apps/agent/services/terminal/terminal-sessions";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
-import { useSettingsStore } from "@/kernel/store/useSettingsStore";
 import { ModelSelector } from "@/apps/agent/components/composer/model-selector/ModelSelector";
 import { ComposerAurora } from "./ComposerAurora";
 import { ComposerBody } from "./ComposerBody";
-import { ComposerMenu } from "@/apps/agent/components/composer/ComposerMenu";
+import { CommandPicker, MentionPicker } from "./ComposerPickers";
+import {
+  COMMAND_GROUP_LABEL,
+  COMMAND_GROUP_ORDER,
+  COMMAND_RESULT_LIMIT,
+  MENTION_RE,
+  SENDABLE_PILLS,
+  SLASH_RE,
+  VISIBLE_PILLS,
+  buildCommandPill,
+  buildPathPill,
+  buildSelectionPill,
+  buildTerminalPill,
+  deleteTriggerBeforeCaret,
+  insertPillAtCaret,
+  placeCaretAtEnd,
+  replaceTriggerWithPill,
+} from "./composer-pills";
 import {
   ComposerPlusMenu,
   type PlusMenuItem,
@@ -57,7 +75,6 @@ import {
   isChatPromptCommand,
   rankCommands,
   type PromptCommand,
-  type PromptCommandKind,
 } from "@/apps/agent/adapters/prompt-commands";
 import { composerCommands, useAgentCommandStore } from "@/apps/agent/store/composer/useAgentCommandStore";
 import {
@@ -68,11 +85,7 @@ import {
 } from "@/apps/agent/services/providers/image-providers";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { pinnedThreadModel } from "@/apps/agent/lib/thread/thread-model";
-import {
-  selectionTooltip,
-  useAgentSelectionStore,
-  type SelectedEntry,
-} from "@/apps/agent/store/composer/useAgentSelectionStore";
+import { useAgentSelectionStore } from "@/apps/agent/store/composer/useAgentSelectionStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentSpeech } from "@/apps/agent/hooks/composer/useAgentSpeech";
 import { useAgentExternalDrop } from "@/apps/agent/hooks/drag/useAgentExternalDrop";
@@ -133,164 +146,6 @@ interface AgentComposerProps {
    * the heading with less room than there is below.
    */
   menuPlacement?: "up" | "down";
-}
-
-const MENTION_RE = /(^|[\s(])@([^\s@]{0,48})$/;
-
-/** Commands the `/` menu lists; it scrolls past what fits. */
-const COMMAND_RESULT_LIMIT = 80;
-
-/** How a bare `/` groups its commands, in this order. */
-const COMMAND_GROUP_ORDER: PromptCommandKind[] = ["action", "skill", "rule", "mcp", "image"];
-const COMMAND_GROUP_LABEL: Record<PromptCommandKind, string> = {
-  action: "Actions",
-  skill: "Skills",
-  rule: "Rules",
-  mcp: "MCP servers",
-  image: "Images",
-};
-
-/** Positions in `title` that match `query` (as a prefix or anywhere), for highlighting. */
-function titleMatches(title: string, query: string): number[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  const at = title.toLowerCase().indexOf(q);
-  return at < 0 ? [] : Array.from({ length: q.length }, (_, k) => at + k);
-}
-
-/** A name with its matched letters picked out, so the reader sees why it is listed. */
-const MatchedName: React.FC<{ text: string; matches: number[] }> = ({ text, matches }) => {
-  if (matches.length === 0) return <>{text}</>;
-  const hit = new Set(matches);
-  const parts: React.ReactNode[] = [];
-  let run = "";
-  let runHit = hit.has(0);
-  const flush = (i: number) => {
-    if (!run) return;
-    parts.push(runHit ? <mark key={i} className="agw-mention-hit">{run}</mark> : run);
-    run = "";
-  };
-  [...text].forEach((ch, i) => {
-    if (hit.has(i) !== runHit) {
-      flush(i);
-      runHit = hit.has(i);
-    }
-    run += ch;
-  });
-  flush(text.length);
-  return <>{parts}</>;
-};
-
-/** The picker's foot: the keys it answers to, and how many rows it holds. */
-const MenuKeys: React.FC<{ count: number }> = ({ count }) => (
-  <div className="agw-mention-foot" aria-hidden>
-    <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
-    <span><kbd>↵</kbd> add</span>
-    <span><kbd>esc</kbd> close</span>
-    <span className="agw-mention-foot-count">
-      {count} {count === 1 ? "match" : "matches"}
-    </span>
-  </div>
-);
-/** `/` directive trigger: at line start or after whitespace, word/dash query. */
-const SLASH_RE = /(^|\s)\/([\w-]{0,48})$/;
-
-/** Lucide-ish glyph per command kind (skills / rules / MCP / image). */
-const COMMAND_ICON: Record<PromptCommandKind, "book" | "shield" | "plug" | "image" | "refine"> = {
-  skill: "book",
-  rule: "shield",
-  mcp: "plug",
-  image: "image",
-  action: "refine",
-};
-
-/** Raw SVG paths for each command kind — for the INLINE pill, which is built
- *  imperatively (not React), so it can't mount an <AgentIcon>. Mirrors the
- *  `book` / `shield` / `plug` glyphs. */
-const COMMAND_ICON_PATHS: Record<PromptCommandKind, string> = {
-  skill:
-    '<path d="M5 4.5h9.5a2 2 0 0 1 2 2V19a1.5 1.5 0 0 0-1.5-1.5H5z"/><path d="M5 4.5A1.5 1.5 0 0 0 3.5 6v13A1.5 1.5 0 0 1 5 17.5"/><path d="M8 8.5h5.5"/><path d="M8 11.5h5.5"/>',
-  rule:
-    '<path d="M12 3 19 5.7v5.5c0 4.55-3 7.6-7 8.9-4-1.3-7-4.35-7-8.9V5.7z"/><path d="M9.1 11.9l2.1 2.1 3.7-3.9"/>',
-  mcp:
-    '<path d="M9 2.75v3.75M15 2.75v3.75"/><path d="M6.75 6.5h10.5v3.25a5.25 5.25 0 0 1-10.5 0z"/><path d="M12 15v6.25"/>',
-  image:
-    '<rect x="3.5" y="4.5" width="17" height="15" rx="2.2"/><path d="M3.5 16.2l4.6-4.4 3.6 3.4 3.1-2.6 5.7 4.6"/><circle cx="15.6" cy="9.1" r="1.7"/>',
-  action:
-    '<path d="m12 3 1.55 4.7L18.5 9.25l-4.95 1.55L12 15.5l-1.55-4.7L5.5 9.25l4.95-1.55z"/><path d="m19 14 .7 2.1 2.1.7-2.1.7L19 19.6l-.7-2.1-2.1-.7 2.1-.7z"/><path d="m5 15 .55 1.65 1.65.55-1.65.55L5 19.4l-.55-1.65-1.65-.55 1.65-.55z"/>',
-};
-function commandIconSvg(kind: PromptCommandKind): string {
-  return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${COMMAND_ICON_PATHS[kind]}</svg>`;
-}
-
-/** The `inspect` glyph, for the imperatively-built inline selection pill. */
-/** The `@terminal` pill's mark: a prompt caret and a cursor bar in a frame. */
-const TERMINAL_PILL_ICON_SVG =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M7.5 10l2.5 2-2.5 2"/><path d="M13 14h3.5"/></svg>';
-
-const INSPECT_ICON_SVG =
-  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.4 6.1l3.5 3.5"/><path d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z"/></svg>';
-
-/**
- * Build the inline pill for one inspector pick.
- *
- * Browser selections used to sit in their own row ABOVE the input while `@`
- * files and `/` directives lived inline — so the one attachment kind the user
- * did NOT type appeared furthest from where they were typing, detached from the
- * sentence it belonged to. This makes it the same object as the other two:
- * inline at the caret, deleted by Backspace, reconciled against the store.
- */
-function buildSelectionPill(entry: SelectedEntry): HTMLSpanElement {
-  const el = entry.element;
-  const text = (el.text ?? "").trim();
-  const pill = document.createElement("span");
-  pill.className = "agw-pill-inline agw-pill-sel";
-  pill.contentEditable = "false";
-  pill.dataset.sel = entry.id;
-  pill.title = selectionTooltip(el);
-
-  const ico = document.createElement("span");
-  ico.className = "agw-pill-cmd-ico";
-  ico.innerHTML = INSPECT_ICON_SVG;
-  pill.appendChild(ico);
-
-  const tag = document.createElement("span");
-  tag.className = "agw-sel-tag";
-  tag.textContent = `<${el.tagName}>`;
-  pill.appendChild(tag);
-
-  if (text) {
-    const label = document.createElement("span");
-    label.className = "agw-sel-text";
-    label.textContent = text.slice(0, 24);
-    pill.appendChild(label);
-  }
-  return pill;
-}
-
-/**
- * Pills that make the editor worth SENDING — each one carries a reference the
- * model receives even with no prose around it.
- */
-const SENDABLE_PILLS = "[data-rel],[data-term]";
-/**
- * Pills that are VISIBLE in the editor. A `/` directive shows but sends nothing
- * of its own, so it hides the placeholder without making the input sendable.
- *
- * Both selectors exist because these two questions were previously asked with
- * inline `querySelector` calls listing pill kinds by hand — and adding the
- * `@terminal` pill missed them, so picking a terminal left the placeholder
- * painted straight over the chip.
- */
-const VISIBLE_PILLS = "[data-rel],[data-term],[data-cmd]";
-
-function placeCaretAtEnd(el: HTMLElement): void {
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  range.collapse(false);
-  const sel = window.getSelection();
-  sel?.removeAllRanges();
-  sel?.addRange(range);
 }
 
 export const AgentComposer: React.FC<AgentComposerProps> = ({
@@ -752,118 +607,29 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     if (!typing.isProgrammaticEdit()) refine.onUserEdit();
   };
 
-  /**
-   * Insert an `@terminal` pill for one open session.
-   *
-   * Same anatomy as the file pill — replace the typed `@query`, drop in a
-   * non-editable span, leave the caret after a trailing space — because it is
-   * the same gesture and the caret rules (backspace deletes the widget whole)
-   * are shared by `isPill`.
-   */
+  /** Replace the typed `@query` with an `@terminal` pill for one open session. */
   const insertTerminalPill = (session: TerminalSessionSummary) => {
     const el = editorRef.current;
-    const s = window.getSelection();
-    if (!el || !s || s.rangeCount === 0) return;
-    const node = s.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !el.contains(node)) return;
-    const offset = s.anchorOffset;
-    const before = (node.textContent ?? "").slice(0, offset);
-    const m = before.match(MENTION_RE);
-    if (!m) return;
-    const at = offset - (m[2].length + 1);
-
-    const range = document.createRange();
-    range.setStart(node, at);
-    range.setEnd(node, offset);
-    range.deleteContents();
-
-    const pill = document.createElement("span");
-    pill.className = "agw-pill-inline agw-pill-term";
-    pill.contentEditable = "false";
-    pill.dataset.term = session.id;
-    pill.dataset.termTitle = session.title;
-    pill.title = session.cwd ? `${session.title} — ${session.cwd}` : session.title;
-    const ico = document.createElement("span");
-    ico.className = "agw-pill-cmd-ico";
-    ico.innerHTML = TERMINAL_PILL_ICON_SVG;
-    pill.appendChild(ico);
-    const label = document.createElement("span");
-    label.textContent = session.title;
-    pill.appendChild(label);
-
-    const space = document.createTextNode(" ");
-    range.insertNode(space);
-    range.insertNode(pill);
-
-    const after = document.createRange();
-    after.setStartAfter(space);
-    after.collapse(true);
-    s.removeAllRanges();
-    s.addRange(after);
-
+    if (!el) return;
+    if (!replaceTriggerWithPill(el, MENTION_RE, buildTerminalPill(session))) return;
     setMention(null);
     handleInput();
     el.focus();
   };
 
+  /** Replace the typed `@query` with a file or folder pill. */
   const insertPill = (f: MentionFile) => {
     const el = editorRef.current;
-    const s = window.getSelection();
-    if (!el || !s || s.rangeCount === 0) return;
-    const node = s.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !el.contains(node)) return;
-    const offset = s.anchorOffset;
-    const before = (node.textContent ?? "").slice(0, offset);
-    const m = before.match(MENTION_RE);
-    if (!m) return;
-    const at = offset - (m[2].length + 1); // index of '@'
-
-    const range = document.createRange();
-    range.setStart(node, at);
-    range.setEnd(node, offset);
-    range.deleteContents();
-
-    const pill = document.createElement("span");
-    pill.className = "agw-pill-inline";
-    pill.contentEditable = "false";
-    pill.dataset.rel = f.rel;
-    pill.dataset.path = f.path;
+    if (!el) return;
     // A folder picked from the menu is the same pill a dropped folder makes, so
     // the model is told it was handed a folder to look inside.
-    const isFolder = f.kind === "folder";
-    if (isFolder) pill.dataset.kind = "dir";
-    try {
-      const resolved = resolveExplorerIcon(
-        { name: f.name, path: f.path, isFolder },
-        useSettingsStore.getState().explorerIconPack,
-      );
-      if (resolved.src) {
-        const img = document.createElement("img");
-        img.src = resolved.src;
-        img.alt = "";
-        img.className = "agw-pill-ico";
-        img.draggable = false;
-        pill.appendChild(img);
-      }
-    } catch {
-      /* icon optional */
-    }
-    {
-      const label = document.createElement("span");
-      label.textContent = f.name;
-      pill.appendChild(label);
-    }
-    const space = document.createTextNode(" ");
-
-    range.insertNode(space);
-    range.insertNode(pill);
-
-    const after = document.createRange();
-    after.setStartAfter(space);
-    after.collapse(true);
-    s.removeAllRanges();
-    s.addRange(after);
-
+    const pill = buildPathPill({
+      name: f.name,
+      rel: f.rel,
+      path: f.path,
+      isDir: f.kind === "folder",
+    });
+    if (!replaceTriggerWithPill(el, MENTION_RE, pill)) return;
     setMention(null);
     handleInput();
     el.focus();
@@ -884,21 +650,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     if (c.kind === "action") {
       if (c.actionId) onActionCommand?.(c.actionId);
       const el = editorRef.current;
-      const s = window.getSelection();
-      if (el && s && s.rangeCount > 0) {
-        const node = s.anchorNode;
-        if (node && node.nodeType === Node.TEXT_NODE && el.contains(node)) {
-          const offset = s.anchorOffset;
-          const before = (node.textContent ?? "").slice(0, offset);
-          const m = before.match(SLASH_RE);
-          if (m) {
-            const range = document.createRange();
-            range.setStart(node, offset - (m[2].length + 1));
-            range.setEnd(node, offset);
-            range.deleteContents();
-          }
-        }
-      }
+      if (el) deleteTriggerBeforeCaret(el, SLASH_RE);
       setSlash(null);
       handleInput();
       editorRef.current?.focus();
@@ -906,48 +658,8 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
     }
 
     const el = editorRef.current;
-    const s = window.getSelection();
-    if (!el || !s || s.rangeCount === 0) return;
-    const node = s.anchorNode;
-    if (!node || node.nodeType !== Node.TEXT_NODE || !el.contains(node)) return;
-    const offset = s.anchorOffset;
-    const before = (node.textContent ?? "").slice(0, offset);
-    const m = before.match(SLASH_RE);
-    if (!m) return;
-    const at = offset - (m[2].length + 1); // index of '/'
-
-    const range = document.createRange();
-    range.setStart(node, at);
-    range.setEnd(node, offset);
-    range.deleteContents();
-
-    const pill = document.createElement("span");
-    pill.className = "agw-pill-inline agw-pill-cmd";
-    pill.contentEditable = "false";
-    pill.dataset.cmd = c.key;
-    pill.dataset.cmdKind = c.kind;
-    // What the pill serializes as on send (`/title`) — must match the chip
-    // title recorded on the message, or the bubble can't re-pill it in place.
-    pill.dataset.cmdTitle = c.title;
-    pill.title = `${c.sourceLabel} · ${c.subtitle}`;
-    const ico = document.createElement("span");
-    ico.className = "agw-pill-cmd-ico";
-    ico.innerHTML = commandIconSvg(c.kind);
-    pill.appendChild(ico);
-    const label = document.createElement("span");
-    label.textContent = c.title;
-    pill.appendChild(label);
-    const space = document.createTextNode(" ");
-
-    range.insertNode(space);
-    range.insertNode(pill);
-
-    const after = document.createRange();
-    after.setStartAfter(space);
-    after.collapse(true);
-    s.removeAllRanges();
-    s.addRange(after);
-
+    if (!el) return;
+    if (!replaceTriggerWithPill(el, SLASH_RE, buildCommandPill(c))) return;
     addCommand(c);
     setSlash(null);
     handleInput();
@@ -963,53 +675,11 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   const insertPathPill = (absPath: string, isDir = false) => {
     const el = editorRef.current;
     if (!el) return;
-    el.focus();
-    const sel0 = window.getSelection();
-    if (!sel0 || sel0.rangeCount === 0 || !el.contains(sel0.anchorNode)) {
-      placeCaretAtEnd(el);
-    }
-    const range = window.getSelection()?.getRangeAt(0);
-    if (!range) return;
     const name = basenameOf(absPath);
     const rel = composerProjectRoot
       ? relativize(composerProjectRoot, absPath)
       : absPath;
-    const pill = document.createElement("span");
-    pill.className = "agw-pill-inline";
-    pill.contentEditable = "false";
-    pill.dataset.rel = rel;
-    pill.dataset.path = absPath;
-    // Marks the pill as a DIRECTORY. Read at submit so the model is told it was
-    // handed a folder to look inside, not a file to read.
-    if (isDir) pill.dataset.kind = "dir";
-    try {
-      const resolved = resolveExplorerIcon(
-        { name, path: absPath, isFolder: isDir },
-        useSettingsStore.getState().explorerIconPack,
-      );
-      if (resolved.src) {
-        const img = document.createElement("img");
-        img.src = resolved.src;
-        img.alt = "";
-        img.className = "agw-pill-ico";
-        img.draggable = false;
-        pill.appendChild(img);
-      }
-    } catch {
-      /* icon optional */
-    }
-    const label = document.createElement("span");
-    label.textContent = name;
-    pill.appendChild(label);
-    const space = document.createTextNode(" ");
-    range.insertNode(space);
-    range.insertNode(pill);
-    const after = document.createRange();
-    after.setStartAfter(space);
-    after.collapse(true);
-    const sel2 = window.getSelection();
-    sel2?.removeAllRanges();
-    sel2?.addRange(after);
+    insertPillAtCaret(el, buildPathPill({ name, rel, path: absPath, isDir }));
     handleInput();
     el.focus();
   };
@@ -1497,9 +1167,6 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
 
   const annotateImg = images.find((i) => i.id === annotateId) ?? null;
 
-  // Rows are numbered across groups, because ↑ ↓ move through all of them.
-  let mentionIndex = 0;
-  let commandIndexAt = 0;
   // A query that matches nothing says so instead of the menu vanishing, which
   // read as the picker breaking — but only once the list has loaded.
   const mentionEmpty =
@@ -1520,78 +1187,18 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           aurora-mention-picker-designs.html, 02). Opens toward the room. */}
       <AnimatePresence>
         {mention && (mentionRows.length > 0 || mentionEmpty) && (
-          <ComposerMenu
-            resetKey={mention.query}
+          <MentionPicker
+            query={mention.query}
+            groups={mentionGroups}
+            rowCount={mentionRows.length}
+            empty={mentionEmpty}
+            selected={sel}
+            onHighlight={setSel}
+            onPick={pickMentionRow}
+            activeRef={activeMentionRef}
             placement={menuPlacement}
             anchorRef={surfaceRef}
-            footer={<MenuKeys count={mentionRows.length} />}
-          >
-            {mentionEmpty && (
-              <div className="agw-mention-empty">
-                No file, folder or terminal matches “{mention.query.trim()}”.
-              </div>
-            )}
-            {mentionGroups.map((group) => (
-              <React.Fragment key={group.label}>
-                <div className="agw-mention-group" role="presentation">
-                  {group.label}
-                </div>
-                {group.rows.map((row) => {
-                  const i = mentionIndex++;
-                  const active = i === sel;
-                  const common = {
-                    ref: active ? activeMentionRef : undefined,
-                    type: "button" as const,
-                    className: "agw-mention-item",
-                    "data-active": active || undefined,
-                    // `onMouseMove`, not `onMouseEnter`: scrolling the list
-                    // under a stationary cursor fires enter and would drag the
-                    // highlight back to whatever row slid beneath the pointer.
-                    onMouseMove: () => setSel(i),
-                    onMouseDown: (e: React.MouseEvent) => {
-                      e.preventDefault();
-                      pickMentionRow(row);
-                    },
-                  };
-                  if (row.kind === "terminal") {
-                    const { session } = row;
-                    return (
-                      <button key={`term-${session.id}`} {...common}>
-                        <AgentIcon name="terminal" size={13} className="agw-file-ico" />
-                        <span className="agw-mention-name">{session.title}</span>
-                        <span className="agw-mention-where">
-                          {session.running ? session.cwd ?? session.shell : "exited"}
-                        </span>
-                      </button>
-                    );
-                  }
-                  const { file, matches } = row;
-                  const folder = file.rel.includes("/")
-                    ? file.rel.slice(0, file.rel.lastIndexOf("/"))
-                    : "";
-                  return (
-                    <button key={`${row.kind}-${file.rel}`} {...common}>
-                      {row.kind === "folder" ? (
-                        <FolderIcon name={file.name} path={file.path} className="agw-file-ico" />
-                      ) : (
-                        <FileIcon name={file.name} path={file.path} className="agw-file-ico" />
-                      )}
-                      <span className="agw-mention-name">
-                        <MatchedName text={file.name} matches={matches} />
-                      </span>
-                      {folder && (
-                        // Read from its END: the last folders are what tell two
-                        // `index.ts` apart, so the start is what gets cut.
-                        <span className="agw-mention-where" dir="rtl">
-                          <bdi>{folder}</bdi>
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </React.Fragment>
-            ))}
-          </ComposerMenu>
+          />
         )}
       </AnimatePresence>
 
@@ -1599,47 +1206,17 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
           rows as `@`; grouped by kind when nothing is typed. */}
       <AnimatePresence>
         {slash && commandRows.length > 0 && (
-          <ComposerMenu
-            resetKey={slash.query}
+          <CommandPicker
+            query={slash.query}
+            groups={commandGroups}
+            rowCount={commandRows.length}
+            selected={cmdSel}
+            onHighlight={setCmdSel}
+            onPick={pickCommand}
+            activeRef={activeCommandRef}
             placement={menuPlacement}
             anchorRef={surfaceRef}
-            footer={<MenuKeys count={commandRows.length} />}
-          >
-            {commandGroups.map((group) => (
-              <React.Fragment key={group.label}>
-                <div className="agw-mention-group" role="presentation">
-                  {group.label}
-                </div>
-                {group.rows.map((c) => {
-                  const i = commandIndexAt++;
-                  return (
-                    <button
-                      key={c.key}
-                      ref={i === cmdSel ? activeCommandRef : undefined}
-                      type="button"
-                      className="agw-mention-item"
-                      data-active={i === cmdSel || undefined}
-                      // See the mention list: movement, not mere entry, changes
-                      // the highlight, so keyboard navigation is never undone by
-                      // a cursor that simply happens to be resting over the menu.
-                      onMouseMove={() => setCmdSel(i)}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        pickCommand(c);
-                      }}
-                    >
-                      <AgentIcon name={COMMAND_ICON[c.kind]} size={14} className="agw-file-ico" />
-                      <span className="agw-mention-name">
-                        <MatchedName text={c.title} matches={titleMatches(c.title, slash.query)} />
-                      </span>
-                      <span className="agw-cmd-source">{c.sourceLabel}</span>
-                      <span className="agw-mention-path">{c.subtitle}</span>
-                    </button>
-                  );
-                })}
-              </React.Fragment>
-            ))}
-          </ComposerMenu>
+          />
         )}
       </AnimatePresence>
 

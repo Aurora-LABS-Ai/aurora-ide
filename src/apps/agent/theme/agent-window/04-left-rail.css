@@ -143,6 +143,51 @@
 .agw-rail-menu-item[data-danger] svg {
   color: var(--agw-removed);
 }
+.agw-rail-menu-item:disabled {
+  color: var(--agw-text-subtle);
+  cursor: default;
+}
+.agw-rail-menu-item:disabled:hover {
+  background: transparent;
+}
+/* A row that opens a flyout stays lit while its list is open, so the eye can
+   tell which parent the second list belongs to. */
+.agw-rail-menu-item[data-open] {
+  background: var(--agw-hover-paint);
+}
+/* The provider word, the check (choice in force) and the chevron (opens a
+   list) sit at the far right, after the label has taken its room. The meta
+   is the same grey the composer's picker uses for a model's provider. */
+.agw-rail-menu-item > .agw-rail-menu-meta {
+  flex: 0 1 auto;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-rail-menu-check,
+.agw-rail-menu-more {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--agw-text-subtle);
+}
+.agw-rail-menu-item > .agw-rail-menu-meta + .agw-rail-menu-check,
+.agw-rail-menu-item > .agw-rail-menu-meta + .agw-rail-menu-more {
+  margin-left: 8px;
+}
+.agw-rail-menu-check {
+  color: var(--agw-accent);
+}
+/* Every list of the menu is its own fixed layer in the window root, on the
+   raised popover layer: the top level at the click, a flyout beside its
+   parent row (RailMenu measures and places both). A flyout is NEVER laid out
+   inside the top level, because this box scrolls when taller than the window
+   and would clip and scroll its own child — the "menu grows scrollbars when
+   Move to opens" bug. A later sibling paints above an earlier one, so a
+   flyout needs no second z value. */
+.agw-rail-menu {
+  z-index: var(--agw-z-popover-raised);
+}
 .agw-rail-action-notice {
   position: absolute;
   z-index: var(--agw-z-notice);

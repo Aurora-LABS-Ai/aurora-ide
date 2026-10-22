@@ -391,6 +391,7 @@ export const createPersistenceSlice = (set: SettingsSet, get: SettingsGet) =>
           titleMakerBaseUrl: appSettings.titleMakerBaseUrl ?? '',
           titleMakerApiKey: appSettings.titleMakerApiKey ?? '',
           titleMakerModel: appSettings.titleMakerModel ?? '',
+          titleMakerCloudModel: appSettings.titleMakerCloudModel ?? '',
           titleMakerLocalModel: appSettings.titleMakerLocalModel ?? '',
           // Empty on every row written before the setting existed; "auto" is
           // what those installs were already doing.
@@ -499,6 +500,7 @@ export const createPersistenceSlice = (set: SettingsSet, get: SettingsGet) =>
         titleMakerBaseUrl: state.titleMakerBaseUrl,
         titleMakerApiKey: state.titleMakerApiKey,
         titleMakerModel: state.titleMakerModel,
+        titleMakerCloudModel: state.titleMakerCloudModel,
         titleMakerLocalModel: state.titleMakerLocalModel,
         titleMakerLocalChatFormat: state.titleMakerLocalChatFormat,
         workspaceAccess: state.workspaceAccess,

@@ -257,6 +257,8 @@ interface AgentChatState {
   noteTurnComplete: (threadId: string) => void;
   /** Clear a chat's rail "done" dot (called when it's opened / viewed). */
   clearUnseenDone: (threadId: string) => void;
+  /** Light the rail's "done" dot by hand ("Mark as unread" in the row menu). */
+  markUnseenDone: (threadId: string) => void;
   /** Dismiss the header completion flash. */
   dismissJustFinished: () => void;
 
@@ -1060,6 +1062,9 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       delete next[threadId];
       return { unseenDone: next };
     }),
+
+  markUnseenDone: (threadId) =>
+    set((s) => ({ unseenDone: { ...s.unseenDone, [threadId]: Date.now() } })),
 
   dismissJustFinished: () =>
     set((s) => (s.justFinished ? { justFinished: null } : s)),

@@ -688,8 +688,26 @@ impl BrowserManager {
             .map_err(|e| format!("set_position failed: {e}"))
     }
 
-    pub fn activate_inspector(&self, label: &str) -> Result<(), String> {
-        self.eval(label, INSPECTOR_ACTIVATE_SCRIPT)?;
+    /// `accent` / `accent_fg` are the window's live accent and the ink that
+    /// sits on it, so the highlight in the page matches the chip it becomes.
+    /// Missing or unsafe values fall back to the stagewise primary.
+    pub fn activate_inspector(
+        &self,
+        label: &str,
+        accent: Option<&str>,
+        accent_fg: Option<&str>,
+    ) -> Result<(), String> {
+        let fallback = BrowserThemeTokens::fallback();
+        let script = INSPECTOR_ACTIVATE_SCRIPT
+            .replace(
+                "__ACCENT__",
+                &sanitize_color_token(accent.unwrap_or(&fallback.primary)),
+            )
+            .replace(
+                "__ACCENT_FG__",
+                &sanitize_color_token(accent_fg.unwrap_or(&fallback.primary_foreground)),
+            );
+        self.eval(label, &script)?;
         if let Some(mut entry) = self.windows.get_mut(label) {
             entry.inspector_active = true;
         }
@@ -2445,12 +2463,16 @@ const INSPECTOR_ACTIVATE_SCRIPT: &str = r#"
 
   const overlay = document.createElement('div');
   overlay.setAttribute('data-aurora-inspector', 'overlay');
+  // The window's accent, handed in by Rust at activation. `color-mix` makes
+  // the fill from it, so one colour drives the fill, the edge and the tag.
+  const ACCENT = '__ACCENT__';
+  const ACCENT_FG = '__ACCENT_FG__';
   Object.assign(overlay.style, {
     position: 'fixed',
     pointerEvents: 'none',
     zIndex: '2147483646',
-    background: 'rgba(99, 102, 241, 0.18)',
-    border: '2px solid rgba(99, 102, 241, 0.85)',
+    background: 'color-mix(in srgb, ' + ACCENT + ' 18%, transparent)',
+    border: '2px solid ' + ACCENT,
     boxShadow: '0 0 0 1px rgba(255,255,255,0.4)',
     borderRadius: '2px',
     transition: 'all 60ms linear',
@@ -2466,8 +2488,8 @@ const INSPECTOR_ACTIVATE_SCRIPT: &str = r#"
     pointerEvents: 'none',
     zIndex: '2147483647',
     padding: '2px 6px',
-    background: '#4f46e5',
-    color: '#fff',
+    background: ACCENT,
+    color: ACCENT_FG,
     font: '600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace',
     borderRadius: '3px',
     display: 'none',

@@ -81,6 +81,7 @@ export interface AppSettings {
   titleMakerLocalModel?: string;
   /** Chat format for `titleMakerLocalModel`. Empty means "auto". */
   titleMakerLocalChatFormat?: string;
+  titleMakerCloudModel?: string;
   /** How far outside the open project the file tools may reach:
    *  `workspace` | `read` | `full`. Empty means the row predates the mode. */
   workspaceAccess?: string;
@@ -211,6 +212,11 @@ export interface DbLLMProvider {
   requiresApiKey: boolean;
   sortOrder: number;
   supportsToolStream: boolean;
+  /**
+   * Chat and Responses wires: a vision model's tool-result images go inside
+   * the tool output instead of a user message after it (v27). Off by default.
+   */
+  toolImagesInResult: boolean;
   updatedAt: string;
 }
 

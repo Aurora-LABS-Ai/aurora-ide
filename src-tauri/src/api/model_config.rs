@@ -196,6 +196,7 @@ pub(crate) fn resolve(
         supports_thinking: model.supports_thinking,
         reasoning: Some(reasoning_for(model, thinking_preference)?),
         supports_vision: model.supports_vision,
+        tool_images_in_result: provider.tool_images_in_result,
     })
 }
 

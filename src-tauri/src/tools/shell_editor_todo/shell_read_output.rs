@@ -323,6 +323,28 @@ fn slice_lines(lines: &[String], start_line: usize, max_lines: usize) -> Window 
     }
 }
 
+/// What a user stop means, said where the model reads the ending.
+///
+/// The dock's own note says this when the user presses Stop, but a
+/// `shell_read_output` that was waiting on the process returns first with the
+/// bare footer, and the note is then dropped as a repeat of it
+/// (`process_ending_already_read`). On 2026-10-19 (thread `a92034b4`) the
+/// model read "Stopped by the user … No further output." twice, took it for
+/// an interruption to work around, finished the batch in the foreground, then
+/// started four more runs while the user kept stopping them. The fact alone
+/// is not the message; the decision is.
+const USER_STOP_GUIDANCE: &str = "The user stopped it themselves. That is their \
+    decision: do not run it again, finish its work another way, or start a \
+    replacement. Say what it produced before the stop and ask what they want next.";
+
+fn ending_with_guidance(ending: &str) -> String {
+    if ending.contains("Stopped by the user") {
+        format!("{ending} {USER_STOP_GUIDANCE}")
+    } else {
+        ending.to_string()
+    }
+}
+
 fn build_message(
     snapshot: &LogSnapshot,
     window: &Window,
@@ -335,7 +357,8 @@ fn build_message(
         if let Some(ending) = &snapshot.ending {
             return format!(
                 "The run has ended and there is no output after line {start}. {ending}",
-                start = start_line.saturating_sub(1)
+                start = start_line.saturating_sub(1),
+                ending = ending_with_guidance(ending)
             );
         }
         if !tracked {
@@ -375,7 +398,10 @@ fn build_message(
             window.next_start_line
         ));
     } else if let Some(ending) = &snapshot.ending {
-        message.push_str(&format!(" The run has ended: {ending}"));
+        message.push_str(&format!(
+            " The run has ended: {}",
+            ending_with_guidance(ending)
+        ));
     } else if !tracked {
         message.push_str(
             " This process is no longer tracked and its log has no closing line, so it ended \
@@ -403,6 +429,54 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tokio_util::sync::CancellationToken;
+
+    fn snapshot_ending(ending: &str) -> LogSnapshot {
+        LogSnapshot {
+            lines: vec![ending.to_string()],
+            total_lines: 1,
+            ended: true,
+            ending: Some(ending.to_string()),
+        }
+    }
+
+    fn window(output: &str) -> Window {
+        Window {
+            output: output.to_string(),
+            end_line: 1,
+            next_start_line: 2,
+            capped_lines: false,
+            capped_bytes: false,
+        }
+    }
+
+    /// The morning of 2026-10-19: the read returned the bare footer and the
+    /// model treated the stop as something to work around.
+    #[test]
+    fn a_user_stop_tells_the_model_not_to_run_it_again() {
+        let ending = "[aurora] Stopped by the user — 2026-10-19 07:31:34, ran 35s. No further output.";
+        let with_output = build_message(&snapshot_ending(ending), &window(ending), 1, false, true, 0);
+        assert!(with_output.contains("The run has ended: [aurora] Stopped by the user"));
+        assert!(with_output.contains("do not run it again"));
+        assert!(with_output.contains("ask what they want next"));
+
+        let no_output = build_message(&snapshot_ending(ending), &window(""), 2, false, true, 0);
+        assert!(no_output.contains("no output after line 1"));
+        assert!(no_output.contains("do not run it again"));
+    }
+
+    /// Only a USER stop carries the instruction; an exit or a `shell_kill`
+    /// says what happened and nothing more.
+    #[test]
+    fn other_endings_carry_no_stop_guidance() {
+        for ending in [
+            "[aurora] Exited with code 0 — ran 3s.",
+            "[aurora] Stopped by the agent (shell_kill) — ran 3s.",
+            "[aurora] Timed out after 1000ms",
+        ] {
+            let message = build_message(&snapshot_ending(ending), &window(ending), 1, false, true, 0);
+            assert!(!message.contains("do not run it again"), "{ending}");
+        }
+    }
 
     /// Sink that points every lookup at one real file on disk.
     struct FileSink(Option<String>);

@@ -42,6 +42,7 @@ export const createLlmConfigSlice = (get: SettingsGet) =>
         supportsToolStream:
           resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
         supportsVision: resolved?.supportsVision ?? false,
+        toolImagesInResult: provider.toolImagesInResult ?? false,
         providerType:
           (resolved?.providerType as LLMProvider["providerType"] | undefined) ??
           provider.providerType ??
@@ -79,6 +80,7 @@ export const createLlmConfigSlice = (get: SettingsGet) =>
         supportsToolStream:
           resolved?.supportsToolStream ?? fallback.supportsToolStream ?? false,
         supportsVision: resolved?.supportsVision ?? false,
+        toolImagesInResult: fallback.toolImagesInResult ?? false,
         providerType:
           (resolved?.providerType as LLMProvider["providerType"] | undefined) ??
           fallback.providerType ??

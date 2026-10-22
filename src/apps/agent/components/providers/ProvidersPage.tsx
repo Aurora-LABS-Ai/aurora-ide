@@ -34,6 +34,10 @@ import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useModelMetadataBackfill } from "@/apps/agent/hooks/providers/useModelMetadataBackfill";
 import type { LLMModel, LLMProvider } from "@/apps/agent/store/settings/provider-model";
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+} from "@/apps/agent/services/runtime/model-request-config";
 
 type Selection = { kind: "llm"; id: string } | { kind: "image"; id: string } | null;
 
@@ -150,8 +154,8 @@ export const ProvidersPage: React.FC = () => {
               baseUrl: "",
               apiKey: "",
               model: "",
-              contextWindow: 128000,
-              maxOutputTokens: 8192,
+              contextWindow: DEFAULT_CONTEXT_WINDOW,
+              maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
               supportsThinking: false,
               supportsToolStream: true,
               providerType: "openai",

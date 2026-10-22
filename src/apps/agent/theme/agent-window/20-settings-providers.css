@@ -610,13 +610,15 @@
 
 /* A switch belongs on the same line as the thing it answers, not stacked under
    it like a text field's value. */
-.agw-prov-reason-toggle {
+.agw-prov-reason-toggle,
+.agw-prov-switch-row {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
   gap: 4px 10px;
 }
-.agw-prov-reason-toggle > .agw-set-row-hint {
+.agw-prov-reason-toggle > .agw-set-row-hint,
+.agw-prov-switch-row > .agw-set-row-hint {
   grid-column: 1 / -1;
   margin-top: 0;
 }
@@ -973,6 +975,51 @@
   background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
+/* ── Token-limit chips (LimitChips) ───────────────────────────────────────────
+   One-click sizes under the Context window / Max output fields. Same quiet
+   dashed look as the image size presets: suggestions, not settings. The one
+   matching the field turns solid and takes the control accent. */
+.agw-limit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.agw-limit-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--agw-border-strong);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-fs-micro);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  outline: none;
+  transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease,
+    border-color var(--agw-dur-fast) ease;
+}
+.agw-limit-chip:hover,
+.agw-limit-chip:focus-visible {
+  border-style: solid;
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-limit-chip:active {
+  background: var(--agw-press-paint);
+}
+.agw-limit-chip[aria-pressed="true"] {
+  border-style: solid;
+  border-color: color-mix(
+    in srgb,
+    var(--agw-control-accent, var(--agw-accent)) 45%,
+    var(--agw-border)
+  );
+  color: var(--agw-control-accent, var(--agw-accent));
+}
+
 .agw-img-sizes-custom {
   display: flex;
   gap: 8px;

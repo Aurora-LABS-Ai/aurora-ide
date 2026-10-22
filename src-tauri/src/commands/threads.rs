@@ -1285,6 +1285,82 @@ pub async fn thread_duplicate(
     Ok(summary)
 }
 
+/// Where a conversation's files live on disk, for "Show in folder".
+#[tauri::command]
+pub async fn thread_folder(
+    thread_id: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<String, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        Ok(store.thread_dir(&thread_id).to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Move a Build conversation to another project.
+///
+/// Its folder moves under that project's directory (one rename, same
+/// volume) and its sidecar names the new workspace. The rail's "Move to"
+/// is the only caller. Refused for an Aurora Chat conversation, which has
+/// no project, and while a turn runs on it: the runtime holds paths into the
+/// old folder for as long as the turn lives.
+#[tauri::command]
+pub async fn thread_move_to_project(
+    thread_id: String,
+    workspace_root: String,
+    registry: State<'_, Arc<AgentRegistry>>,
+) -> Result<ThreadSummary, String> {
+    let registry = registry.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if registry.is_turn_active(&thread_id) {
+            return Err("This chat is still working. Stop it, then move it.".to_string());
+        }
+        let source = store_for_thread(&registry, &thread_id)?;
+        if Arc::ptr_eq(&source, registry.chat_store()) {
+            return Err("An Aurora Chat conversation has no project to move between.".to_string());
+        }
+        let target = registry
+            .store_for_workspace(Some(&workspace_root))
+            .map_err(|e| e.to_string())?;
+        if source.dir() == target.dir() {
+            return Err("This chat is already in that project.".to_string());
+        }
+        use crate::agent_runtime::session_store::StoreLayout;
+        if source.layout() != StoreLayout::Folder || target.layout() != StoreLayout::Folder {
+            return Err("Only folder conversations can be moved.".to_string());
+        }
+        let from = source.thread_dir(&thread_id);
+        let to = target.thread_dir(&thread_id);
+        if to.exists() {
+            return Err("That project already holds a chat with this id.".to_string());
+        }
+        std::fs::create_dir_all(target.dir())
+            .map_err(|e| format!("Could not prepare the project folder: {e}"))?;
+        std::fs::rename(&from, &to).map_err(|e| format!("Could not move the chat's folder: {e}"))?;
+        // Every cache that remembers where the conversation was.
+        crate::agent_runtime::project_dir::forget(&thread_id);
+        if let Some(index) = crate::agent_runtime::session_index::SessionIndex::open(source.dir()) {
+            index.forget(&thread_id);
+        }
+        registry.forget_thread_runtime(&thread_id);
+        target
+            .set_workspace_root(&thread_id, &workspace_root)
+            .map_err(|e| format!("Moved the folder, but could not record the new project: {e}"))?;
+        target
+            .list_summaries()
+            .map_err(|e| format!("Failed to read the moved chat: {e}"))?
+            .into_iter()
+            .find(|entry| entry.id == thread_id)
+            .map(build_thread_summary)
+            .ok_or_else(|| "The moved chat could not be found after moving".to_string())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
 /// Render the visible conversation as Markdown and write it to the native
 /// clipboard. Clipboard ownership stays in Rust; the React layer only invokes
 /// the command and presents feedback.

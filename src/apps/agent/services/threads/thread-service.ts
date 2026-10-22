@@ -312,6 +312,19 @@ class ThreadServiceClass {
     await invoke('thread_copy_markdown', { threadId });
   }
 
+  /** The folder holding this conversation's files on disk. */
+  async threadFolder(threadId: string): Promise<string> {
+    return await invoke<string>('thread_folder', { threadId });
+  }
+
+  /**
+   * File a Build conversation under another project: its folder moves and
+   * its sidecar names the new workspace. Rejected while a turn runs on it.
+   */
+  async moveThread(threadId: string, workspaceRoot: string): Promise<ThreadSummary> {
+    return await invoke<ThreadSummary>('thread_move_to_project', { threadId, workspaceRoot });
+  }
+
   /**
    * List threads. Pass `workspaceRoot` to get only that project's
    * chats (the agent window's project-scoped list); omit it for the

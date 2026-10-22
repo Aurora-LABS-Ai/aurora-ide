@@ -37,16 +37,16 @@ the two UIs.
 **Modes:** Agent (full tools) · Plan (inspect and write a plan, no workspace
 edits).
 
-**Providers:** Fireworks AI, GLM (Z.AI), Anthropic, Meta Model API, MiniMax,
-DeepSeek, OpenAI, OpenAI (Responses), Kenari, Volcano Ark, Modal, LM Studio and
-Ollama, plus Claude Code, Codex (ChatGPT login), Cursor and CommandCode
-accounts, or a custom OpenAI-compatible row.
+**Providers:** Fireworks AI, GLM (Z.AI), Anthropic, Meta, MiniMax, DeepSeek,
+OpenAI, OpenAI (Responses), Kenari, Volcano Ark, Modal, LM Studio and Ollama,
+plus Claude Code, Antigravity, Codex (ChatGPT login), Cursor, OpenCode Go,
+CommandCode, Atlas Cloud, and AgentRouter, or a custom OpenAI-compatible row.
 
 Also in the box: MCP (stdio, SSE, streamable HTTP), git checkpoints per user
 message, a local code index that never leaves the machine, and a native browser
 the agent can drive. Dictation runs out of process against a runtime you point
-it at: CrispASR when you stop, audio.cpp with a Confucius4-R2T2 model as you
-speak.
+it at: CrispASR when you stop, Phonon-2 on that same runtime as you speak.
+Confucius4-R2T2 on audio.cpp is the other live engine.
 
 <div align="center">
 

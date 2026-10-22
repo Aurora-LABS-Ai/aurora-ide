@@ -1,5 +1,10 @@
 # Chat mode — design record
 
+> **2026-10-21.** This file is the September 2026 decisions. Current facts that disagree
+> with the body: native tools are 49, not 41. `browser_*` and `mcp_*` are always behind
+> `tool_search`. The `defer_tools` flag is accepted and ignored. Build mode does not have
+> a tool-loading preference that defaults to off.
+
 Aurora gains a second mode beside the one that writes software.
 
 **Aurora Build** works on a project. **Aurora Chat** is a conversation: no files,
@@ -208,8 +213,9 @@ reading a list written at the start. Nothing goes stale, and no
 connected-servers block sits in the payload invalidating the cache whenever the
 set changes.
 
-Unlike Build mode, where deferral is a preference (`defer_tools`, default off),
-**in chat mode it is forced on for MCP**.
+Unlike the September note that Build mode treated deferral as a preference
+(`defer_tools`, default off), **deferral of `mcp_*` and `browser_*` is now forced
+in every mode**. The flag is ignored.
 
 ### Skills
 
@@ -621,7 +627,7 @@ Chat mode registers no file tools so it is not exposed. It is still wrong.
 | Thing | Where | Note |
 |---|---|---|
 | Per-turn tool gate | `commands/agent_v2/tool_policy.rs:246` | authoritative; the TS copy governs only what the frontend advertises, and they have drifted |
-| Tool registration | `tools/mod.rs:143` | 41 native tools, fixed order because it rides the cached prompt prefix |
+| Tool registration | `tools/mod.rs` | 49 native tools (`BUILTIN_TOOL_COUNT`). The "41" in the 2026-09 table was that day's roster |
 | Tool deferral | `tool_policy.rs:29` | `is_deferrable` already covers `mcp_*`; `revealed_for_thread` replays loads |
 | First-message injection | `conversation/context_injection.rs:68` | `<repo_map>` memoized per thread, anchored to the head |
 | Web search + fetch | `websearch/engines.rs`, `tools/file_workspace_search/auroro_websearch.rs` | DuckDuckGo lite with an html fallback; fetch returns Markdown, paged |

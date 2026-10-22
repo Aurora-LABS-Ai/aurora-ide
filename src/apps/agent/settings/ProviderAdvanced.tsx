@@ -16,7 +16,7 @@
 import React, { useState } from "react";
 
 import type { LLMProvider } from "@/apps/agent/store/settings/provider-model";
-import { AgwTextInput } from "./primitives";
+import { AgwSwitch, AgwTextInput } from "./primitives";
 import {
   numberOrUndefined,
   parseAliases,
@@ -29,7 +29,9 @@ type Update = (id: string, updates: Partial<LLMProvider>) => void;
 export const ProviderAdvancedEditor: React.FC<{
   provider: LLMProvider;
   updateProvider: Update;
-}> = ({ provider, updateProvider }) => {
+  /** A vision model here speaks Chat or Responses (`offersToolImagePlacement`). */
+  offersToolImagePlacement?: boolean;
+}> = ({ provider, updateProvider, offersToolImagePlacement = false }) => {
   const [params, setParams] = useState(() =>
     Object.keys(provider.customParams ?? {}).length
       ? JSON.stringify(provider.customParams, null, 2)
@@ -115,6 +117,23 @@ export const ProviderAdvancedEditor: React.FC<{
           One per line, <code>alias=model id</code>. The alias is what you pick; the id is what is sent.
         </span>
       </label>
+      {/* Only where it changes something: Messages always keeps the image in
+          the tool result, and Codex / Cursor / Claude Code own their request. */}
+      {offersToolImagePlacement && (
+        <div className="agw-prov-edit-field agw-prov-switch-row" style={{ gridColumn: "1 / -1" }}>
+          <span>Images inside tool results</span>
+          <AgwSwitch
+            ariaLabel="Send screenshots and opened images inside the tool result"
+            checked={provider.toolImagesInResult ?? false}
+            onChange={(on) => updateProvider(provider.id, { toolImagesInResult: on })}
+          />
+          <span className="agw-set-row-hint">
+            Off sends screenshots and opened images in a message right after the tool result,
+            which every endpoint reads. Some gateways drop images inside the result without an
+            error, so turn this on only after checking the model can read a screenshot.
+          </span>
+        </div>
+      )}
     </div>
   );
 };

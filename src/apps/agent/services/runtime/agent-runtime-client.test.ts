@@ -207,6 +207,7 @@ describe("AgentRuntimeClient.buildRequest", () => {
       defaultMaxTokens: 4096,
       supportsThinking: true,
       supportsVision: false,
+      toolImagesInResult: false,
       contextWindow: 128000,
       maxOutputTokens: 8192,
     });

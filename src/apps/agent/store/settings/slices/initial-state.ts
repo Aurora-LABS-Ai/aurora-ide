@@ -59,6 +59,7 @@ export const initialSettingsState = {
   titleMakerBaseUrl: '',
   titleMakerApiKey: '',
   titleMakerModel: '',
+  titleMakerCloudModel: '',
   titleMakerLocalModel: '',
   titleMakerLocalChatFormat: 'auto',
 

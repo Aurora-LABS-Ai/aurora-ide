@@ -95,7 +95,8 @@ pub struct OutcomeInput {
     #[serde(default)]
     pub shown: Vec<String>,
     /// `"tapped"` (sent a chip unchanged), `"tapped_edited"`, `"typed"`
-    /// (ignored the chips) or `"sent_before_ready"`.
+    /// (ignored the chips), `"pasted"` (a log, command or block nobody
+    /// could have predicted; never an example) or `"sent_before_ready"`.
     pub action: String,
     #[serde(default)]
     pub tapped_index: Option<usize>,
@@ -176,6 +177,11 @@ pub fn recent_outcomes(project_dir: &Path) -> (String, usize) {
             continue;
         };
         if record.shown.is_empty() {
+            continue;
+        }
+        // A pasted log or command says nothing about what the developer
+        // would have typed; as an example it taught the model otherwise.
+        if record.action == "pasted" {
             continue;
         }
         kept.push_back(record);
@@ -276,6 +282,28 @@ mod tests {
         assert!(text.contains("Suggested: Run the tests | Show the diff"));
         assert!(text.contains("ignored them and typed their own: fix it professionally, don't ask me"));
         assert!(text.contains("tapped suggestion 1, then changed it: yes do it now"));
+    }
+
+    /// A pasted terminal log is recorded, but the brief must not show it as
+    /// what the developer typed instead.
+    #[test]
+    fn a_pasted_send_is_kept_out_of_the_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let thread = dir.path().join("t");
+        write_outcome(
+            &thread,
+            dir.path(),
+            "t",
+            outcome("r1", &["Run the tests"], "pasted", None, "T /portal/billing 200 in 59ms\n[browser] Detected"),
+        )
+        .unwrap();
+        write_outcome(&thread, dir.path(), "t", outcome("r2", &["Show the diff"], "typed", None, "check new package"))
+            .unwrap();
+        let (text, count) = recent_outcomes(dir.path());
+        assert_eq!(count, 1);
+        assert!(!text.contains("portal/billing"));
+        assert!(text.contains("check new package"));
+        assert!(fs::read_to_string(dir.path().join(OUTCOME_LOG)).unwrap().contains("\"pasted\""));
     }
 
     #[test]

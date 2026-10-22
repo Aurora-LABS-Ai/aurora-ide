@@ -270,6 +270,31 @@
   font-size: var(--agw-fs-ui);
   color: var(--agw-text-subtle);
 }
+/* "Show 9 more" under a project's first rows, and "Show 6 more projects" at
+   the end of the list: a quiet row in the list's own register, never a chip.
+   Shorter than a chat row so it reads as a hinge between rows, not as one. */
+.agw-rail-more {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+  cursor: pointer;
+  text-align: left;
+}
+.agw-rail-more:hover {
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
+}
+.agw-rail-more:focus-visible {
+  background: var(--agw-state-selected);
+  box-shadow: var(--agw-focus-ring);
+}
 
 /* Scope toggle in the sticky section header — "8 of 21" while previewing,
  * "Show less" while expanded. Same chip register as the order button beside

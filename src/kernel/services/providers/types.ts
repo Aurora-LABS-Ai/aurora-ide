@@ -160,6 +160,12 @@ export interface ProviderConfig {
   supportsThinking: boolean;
   supportsToolStream: boolean;
   supportsVision: boolean;
+  /**
+   * Chat and Responses wires: keep tool-result images inside the tool output
+   * instead of a user message after it. The provider row's switch; off by
+   * default because some gateways drop images there without an error.
+   */
+  toolImagesInResult?: boolean;
 }
 
 export type ReasoningControl = 'none' | 'toggle' | 'effort' | 'budget';

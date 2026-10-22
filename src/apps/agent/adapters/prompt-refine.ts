@@ -1,10 +1,9 @@
 /**
  * Agent Window — prompt-refine bridge (adapter / outbound channel).
  *
- * Thin IPC wrappers over the Rust `prompt_refine_*` commands, which shell out to
- * the user's own `llama-completion.exe` (a ~1s one-shot child process — no
- * server, no port, no crate). Everything degrades to a no-op off the desktop
- * runtime so the composer never breaks.
+ * IPC wrappers for local llama.cpp calls and cancellation. Configured-provider
+ * refinement lives in services/providers/prompt-refine-cloud.ts and shares
+ * the same cancellation command.
  */
 
 import { auroraInvoke, isDesktopRuntime } from "@/kernel/lib/ipc/runtime";
@@ -135,7 +134,7 @@ export async function runReplySuggestions(
   });
 }
 
-/** Cancel an in-flight refine (kills the child process). */
+/** Cancel an in-flight refine (stops the provider request or local child). */
 export async function cancelRefine(requestId: string): Promise<boolean> {
   if (!isDesktopRuntime()) return false;
   try {

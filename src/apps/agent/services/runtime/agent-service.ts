@@ -54,6 +54,7 @@ import {
   type RuntimeToolDefinitionLike,
 } from "@/apps/agent/services/runtime/agent-runtime-client";
 import { getMcpToolDefinitions } from "@/apps/agent/services/tools/mcp-tools";
+import { DEFAULT_CONTEXT_WINDOW } from "@/apps/agent/services/runtime/model-request-config";
 import type { ProviderConfig } from "@/apps/agent/services/providers";
 import type {
   AssistantMessage,
@@ -398,7 +399,7 @@ export class AgentService {
       usage.completionTokens +
       (usage.cacheReadTokens ?? 0) +
       (usage.cacheWriteTokens ?? 0);
-    const contextWindow = this.config.providerConfig?.contextWindow || 128_000;
+    const contextWindow = this.config.providerConfig?.contextWindow || DEFAULT_CONTEXT_WINDOW;
     const percentage =
       contextWindow > 0
         ? Math.min(100, Math.round((usedTokens / contextWindow) * 100))

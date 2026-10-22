@@ -117,6 +117,7 @@ import {
   useThrottled,
 } from "@/apps/agent/components/composer/context-card-stability";
 import type { TokenUsage } from "@/apps/agent/services";
+import { DEFAULT_CONTEXT_WINDOW } from "@/apps/agent/services/runtime/model-request-config";
 
 function formatTokens(n: number): string {
   if (!n) return "0";
@@ -698,7 +699,7 @@ export const ContextRing: React.FC = () => {
   );
 
   const contextWindow = useAgentSettingsStore(
-    (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? 128_000,
+    (s) => s.getLLMConfigFor(selectedModel)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
   );
   const isCodex = selectedModel.startsWith(`${CODEX_PROVIDER_ID}:`);
   // The Claude subscription meters the same way Codex does — rolling windows,
@@ -1128,7 +1129,7 @@ export const ContextRing: React.FC = () => {
 
   if (!currentThreadId || usedTokens === 0) return null;
 
-  const total = contextWindow > 0 ? contextWindow : 128_000;
+  const total = contextWindow > 0 ? contextWindow : DEFAULT_CONTEXT_WINDOW;
   const pct = Math.min(100, Math.round((usedTokens / total) * 100));
   const color = bandColor(pct);
 

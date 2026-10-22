@@ -174,6 +174,10 @@ export interface SettingsState {
   titleMakerLocalModel: string;
   /** Chat format for `titleMakerLocalModel` (a `ChatFormat` wire name). */
   titleMakerLocalChatFormat: string;
+  /** Cloud mode: one of the configured models as `providerId:modelKey`, the
+   *  same shape the quick-reply picker stores. Empty means the hand-typed
+   *  endpoint below (`titleMakerBaseUrl` / `titleMakerModel` / key). */
+  titleMakerCloudModel: string;
   setTitleMaker: (
     value: Partial<{
       enabled: boolean;
@@ -181,6 +185,7 @@ export interface SettingsState {
       baseUrl: string;
       apiKey: string;
       model: string;
+      cloudModel: string;
       localModel: string;
       localChatFormat: string;
     }>,

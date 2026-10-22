@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   classifyOutcome,
+  looksPasted,
   useAgentSuggestStore,
 } from "@/apps/agent/store/composer/useAgentSuggestStore";
 
@@ -103,5 +104,27 @@ describe("classifyOutcome", () => {
 
   it("calls anything else typed", () => {
     expect(classifyOutcome(offer, "fix it, don't ask me").action).toBe("typed");
+  });
+
+  // Real sends from the first week's log that were recorded as "typed their
+  // own" and went back into the brief as examples of the developer's voice.
+  it("calls a pasted log, command or path pasted, not typed", () => {
+    const log =
+      "T /portal/billing 200 in 59ms (next.js: 38ms, application-code: 21ms)\n" +
+      "[browser] Detected `scroll-behavior: smooth` on the `<html>` element.\n" +
+      "[browser] To disable it add data-scroll-behavior to your <html>.";
+    const command =
+      'KICK_PROBE_DB="C:/Users/Alvan/AppData/Roaming/quantumgram-app/quantum-kick.db" ' +
+      '"E:/QuantumHUB-Infrustructure/node_modules/electron/dist/electron.exe" scripts/probe-kick-mobile-signin';
+    const prompt = "PS E:\\QuantumHUB-Infrustructure> pnpm --filter quantumkick-core run login-probe -- --user laylagomez8672";
+    for (const sent of [log, command, prompt]) {
+      expect(classifyOutcome(offer, sent).action).toBe("pasted");
+    }
+  });
+
+  it("keeps a short typed message typed even with a line break", () => {
+    expect(classifyOutcome(offer, "check new package").action).toBe("typed");
+    expect(classifyOutcome(offer, "worked?\nthis plan").action).toBe("typed");
+    expect(looksPasted("git status")).toBe(false);
   });
 });

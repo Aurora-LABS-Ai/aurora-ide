@@ -1,11 +1,10 @@
 /**
  * Agent Window — prompt-refine preferences (feature state).
  *
- * Optional, fully-local prompt refinement: the user points Aurora at a prebuilt
- * llama.cpp folder (`llama-completion.exe` + DLLs) and a small GGUF model. The
- * ✦ button in the composer then rewrites the typed prompt clearer without
- * changing intent. Nothing runs (and the button is hidden) until enabled +
- * configured. Persisted under its own key.
+ * Optional prompt refinement using a configured provider model or a local
+ * llama.cpp GGUF model. The ✦ button stays hidden until enabled and configured.
+ * The local setup is also shared by other composer assists and chat titles.
+ * Persisted under its own key.
  */
 
 import { create } from "zustand";
@@ -19,6 +18,8 @@ export type RefineDevice = "gpu" | "cpu";
 
 interface AgentRefineState {
   enabled: boolean;
+  /** Empty uses local llama.cpp; otherwise `providerId:modelKey`. */
+  refineModel: string;
   /** Folder containing llama-completion.exe + its DLLs (or a direct exe path). */
   llamaDir: string;
   /** Path to the .gguf model. */
@@ -41,6 +42,7 @@ interface AgentRefineState {
   replySuggestModel: string;
 
   setEnabled: (v: boolean) => void;
+  setRefineModel: (v: string) => void;
   setLlamaDir: (v: string) => void;
   setModelPath: (v: string) => void;
   setChatFormat: (v: ChatFormat) => void;
@@ -54,6 +56,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
   persist(
     (set) => ({
       enabled: false,
+      refineModel: "",
       llamaDir: "",
       modelPath: "",
       chatFormat: "auto",
@@ -63,6 +66,7 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       replySuggestModel: "",
 
       setEnabled: (v) => set({ enabled: v }),
+      setRefineModel: (v) => set({ refineModel: v }),
       setLlamaDir: (v) => set({ llamaDir: v }),
       setModelPath: (v) => set({ modelPath: v }),
       setChatFormat: (v) => set({ chatFormat: v }),
@@ -89,9 +93,9 @@ export function refineConfig(s: AgentRefineState): RefineConfig {
   };
 }
 
-/** True when refine is enabled AND both paths are set (button can show). */
+/** True when refine is enabled and a provider model or local setup is selected. */
 export function refineConfigured(s: AgentRefineState): boolean {
-  return s.enabled && s.llamaDir.trim() !== "" && s.modelPath.trim() !== "";
+  return s.enabled && (s.refineModel.trim() !== "" || refinePathsConfigured(s));
 }
 
 /** True when the llama.cpp folder + model are set, regardless of whether the

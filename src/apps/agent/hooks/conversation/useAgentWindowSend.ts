@@ -18,6 +18,11 @@
  *
  * NB: because this is a separate JS context, `getAgentService()` here is a
  * DISTINCT singleton from the IDE's — the two windows never share runtime state.
+ *
+ * The pieces that do not need the hook's closure live in `send/`: the caller
+ * types, the per-message context blocks, the title maker, the turn registry,
+ * the reply chips, the mid-turn steer, the manual compaction, the streaming
+ * text buffer and the tool timer. This file is the turn itself.
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -25,12 +30,12 @@ import { useCallback, useRef, useState } from "react";
 import {
   AgentService,
   threadService,
-  type PromptOverhead,
   type ToolCallRequest,
 } from "@/apps/agent/services";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import {
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_OUTPUT_TOKENS,
   resolveModelRequest,
   resolveTemperature,
@@ -40,38 +45,15 @@ import type { SendOutcome } from "./send-outcome";
 import type {
   AttachedPromptChip,
   DbMessage,
-  TokenUsage,
 } from "@/apps/agent/services/threads/thread-service";
-import {
-  BASE_AGENT_SYSTEM_PROMPT,
-  formatSkillReferences,
-} from "@/apps/agent/services/runtime/agent-prompt";
 import {
   effectiveExecutionMode,
   effectiveProjectRoot,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
-import { getWorkspaceSkillToggles, resolveSkillsForPrompt } from "@/apps/agent/services/skills/skills";
-import {
-  tokenService,
-  stripImagePayloads,
-  IMAGE_TOKEN_COST,
-  type ChatMessageForCount,
-} from "@/apps/agent/services/runtime/token-service";
-import { asChatFormat, runLocalTitle, runReplySuggestions } from "@/apps/agent/adapters/prompt-refine";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
 import { imageModelFromSelection } from "@/apps/agent/services/providers/image-providers";
-import {
-  recordSuggestionOutcome,
-  runCloudReplySuggestions,
-} from "@/apps/agent/services/providers/reply-suggest-cloud";
+import { recordSuggestionOutcome } from "@/apps/agent/services/providers/reply-suggest-cloud";
 import { runDirectImageTurn } from "./direct-image-turn";
-import {
-  refineConfig,
-  refinePathsConfigured,
-  replySuggestModelReady,
-  replySuggestionsReady,
-  useAgentRefineStore,
-} from "@/apps/agent/store/composer/useAgentRefineStore";
 import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
@@ -91,8 +73,7 @@ import {
   composerCommands,
   useAgentCommandStore,
 } from "@/apps/agent/store/composer/useAgentCommandStore";
-import { isChatPromptCommand } from "@/apps/agent/adapters/prompt-commands";
-import { loadProjectRules } from "@/apps/agent/services/runtime/context-builder";
+import { isChatPromptCommand, isDirectiveCommand } from "@/apps/agent/adapters/prompt-commands";
 import { appendImageMarkers } from "@/apps/agent/lib/render/image-markers";
 import {
   buildSelectionContext,
@@ -100,14 +81,12 @@ import {
   useAgentSelectionStore,
 } from "@/apps/agent/store/composer/useAgentSelectionStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import type { AgentReportMeta } from "@/apps/agent/services/subagents/events";
 import {
   appendAgentReport,
   appendCompaction,
   appendContent,
   appendNotice,
   appendProcessBeat,
-  appendThinking,
   appendUserInjection,
   beginReconnect,
   clearReconnect,
@@ -115,654 +94,43 @@ import {
   nextEventId,
   textOf,
   upsertToolEvent,
-  type TimelineEvent,
 } from "@/apps/agent/components/conversation/timeline";
 import { describeToolActivity, type AgentActivity } from "@/apps/agent/components/conversation/activity";
-import { isDirectiveCommand } from "@/apps/agent/adapters/prompt-commands";
-
-/** Read the in-progress ordered timeline off a message (defaults to empty). */
-function timelineOf(m: DbMessage): TimelineEvent[] {
-  const raw = (m as { timeline?: unknown }).timeline;
-  return Array.isArray(raw) ? (raw as TimelineEvent[]) : [];
-}
-
-// The Rust runtime hard-clamps EVERY tool result to 8 KiB before it enters the
-// model's conversation history (`MAX_TOOL_RESULT_LENGTH` in conversation.rs).
-// The UI store keeps a much larger copy (up to 512 KiB) for the rich renderers,
-// so we MUST clamp to the model-history size here or the estimate overcounts a
-// grep / multi_file_read / shell result by up to ~64x and the context ring
-// balloons far past what the model actually receives.
-const MODEL_TOOL_RESULT_CLAMP = 8_192;
+import type {
+  AgentWindowSend,
+  BackgroundSendTarget,
+  BoundConversation,
+  PendingApproval,
+  SendOptions,
+} from "./send/types";
+import { estimateTurnUsage } from "./send/turn-usage";
+import {
+  buildAutoRulesContext,
+  buildImageRequest,
+  buildMcpDirective,
+  buildOpenFilesContext,
+  buildRuleContext,
+} from "./send/context-blocks";
+import { maybeGenerateTitle } from "./send/title";
+import {
+  MODEL_SWITCH_END_TIMEOUT_MS,
+  genId,
+  nowIso,
+  runningAgents,
+  threadIsDeepResearch,
+  turnModels,
+  waitForTurnEnd,
+} from "./send/turn-registry";
+import { maybeSuggestReplies } from "./send/reply-suggestions";
+import { createStreamText, timelineOf } from "./send/stream-text";
+import { createToolTimer } from "./send/tool-timing";
+import { steerRunningTurn } from "./send/steer";
+import { runManualCompaction } from "./send/compact";
 
 // What the model is told about the path boundary now lives in the system
 // prompt (`agent-prompt.ts`, `WORKSPACE_ACCESS_RULES`). It is a setting, so it
 // is identical on every request of a conversation and belongs in the cached
 // half rather than beside the things that actually change.
-
-// Output cap used when neither the model nor the provider declares one.
-// On every provider except Anthropic, reasoning tokens bill against this same
-// cap, so a high reasoning effort can burn the whole allowance before the model
-// writes a visible word — the turn then ends at the cap with only thinking to
-// show for it. Keep this comfortably above a long reasoning pass; users can
-// still set an exact `Max output` per model in provider settings.
-
-/**
- * Estimate token usage for a turn the provider never reported. Many OpenAI-
- * compatible backends (Fireworks, Ollama, OpenRouter, custom) don't emit
- * `stream_options.include_usage`, so the context ring would otherwise read zero.
- * We approximate with tiktoken over the live transcript + the base system
- * prompt, and flag the result `estimated` so the UI shows it with a `~`.
- *
- * Mirrors what the runtime ACTUALLY sends the model, not what the UI stores:
- *  - every tool result is clamped to {@link MODEL_TOOL_RESULT_CLAMP} (8 KiB),
- *  - image payloads are stripped and billed flat (never raw base64),
- *  - the FULL prompt overhead is counted — the composed system prompt, the IDE
- *    context block, AND the tool schemas — not just the base system prompt.
- *    The tool schemas alone are the bulk of the ~16% gap a usage-reporting
- *    provider (DeepSeek) revealed; counting only `BASE_AGENT_SYSTEM_PROMPT`
- *    made the 80% compaction trigger fire late.
- *  - the prompt is capped at the runtime's trim budget (it drops the oldest
- *    messages once the request would exceed `window − maxOutput·1.1`), so the
- *    estimate plateaus like the real context instead of growing forever.
- *
- * `overhead` is the exact system + tool text the {@link AgentService} composed
- * for this turn ({@link AgentService.getLastPromptOverhead}); when it's null
- * (the turn died before composing) we fall back to the base system prompt.
- */
-async function estimateTurnUsage(
-  messages: DbMessage[],
-  modelForCount: string,
-  contextWindow: number,
-  maxOutputTokens: number,
-  overhead: PromptOverhead | null,
-): Promise<TokenUsage | null> {
-  if (messages.length === 0) return null;
-
-  // The last assistant message is this turn's completion; everything before it
-  // is the prompt context the model saw.
-  let lastAssistantIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") {
-      lastAssistantIdx = i;
-      break;
-    }
-  }
-  const completionRaw =
-    lastAssistantIdx >= 0 ? messages[lastAssistantIdx].content ?? "" : "";
-
-  let imageCount = 0;
-
-  // CRITICAL: the live store folds an ENTIRE turn (every tool call + result)
-  // onto ONE assistant message. So the final assistant message carries all of
-  // this turn's tool results — which are INPUT context (the model re-ingested
-  // them across iterations), not output. Count them as prompt; only the final
-  // assistant's TEXT is the completion. (Earlier this whole message was treated
-  // as completion, dropping ~190k tokens of tool results → the "1%" bug.)
-  const toCount = (m: DbMessage, idx: number): ChatMessageForCount => {
-    // Each tool RESULT enters history clamped to 8 KiB (after image stripping),
-    // exactly like the runtime. Fold the clamped results into `content`; pass
-    // name+args via `toolCalls` so neither is double-counted.
-    const toolResults = (m.tool_calls ?? [])
-      .map((tc) => {
-        const clean = stripImagePayloads(tc.result ?? "");
-        imageCount += clean.images;
-        return clean.text.slice(0, MODEL_TOOL_RESULT_CLAMP);
-      })
-      .join("");
-    // The final assistant's text is the completion, not prompt — skip it here.
-    const body =
-      idx === lastAssistantIdx
-        ? { text: "", images: 0 }
-        : stripImagePayloads(m.content ?? "");
-    imageCount += body.images;
-    return {
-      role: m.role,
-      content: `${body.text}${toolResults}`,
-      toolCalls: (m.tool_calls ?? []).map((tc) => ({
-        name: tc.name,
-        arguments: stripImagePayloads(tc.arguments ?? "").text,
-      })),
-    };
-  };
-
-  // Count ALL messages (tool results included) as prompt context; the final
-  // assistant's text alone is the completion.
-  const countedPrompt = messages.map(toCount);
-  const completionClean = stripImagePayloads(completionRaw);
-  imageCount += completionClean.images;
-
-  // The system + IDE-context text and the tool schemas the runtime sent this
-  // turn. Falls back to the base prompt alone if the turn never composed them.
-  const systemText = overhead?.systemText ?? BASE_AGENT_SYSTEM_PROMPT;
-  const toolSchemaJson = overhead?.toolSchemaJson ?? "";
-
-  try {
-    const [history, sys, toolSchemas, completion] = await Promise.all([
-      tokenService.countMessagesTokens(countedPrompt, modelForCount),
-      tokenService.countTokens(systemText, modelForCount),
-      toolSchemaJson
-        ? tokenService.countTokens(toolSchemaJson, modelForCount)
-        : Promise.resolve({ tokens: 0 }),
-      tokenService.countTokens(completionClean.text, modelForCount),
-    ]);
-    let promptTokens =
-      history.tokens +
-      sys.tokens +
-      toolSchemas.tokens +
-      imageCount * IMAGE_TOKEN_COST;
-
-    // Mirror the runtime's history trim: once the request would exceed
-    // `window − maxOutput·1.1`, it drops the oldest messages. The real prompt
-    // can't exceed that budget, so neither should the estimate.
-    const reserve = Math.ceil(maxOutputTokens * 1.1);
-    const budget = Math.max(0, contextWindow - reserve);
-    if (budget > 0 && promptTokens > budget) promptTokens = budget;
-
-    return {
-      promptTokens,
-      completionTokens: completion.tokens,
-      totalTokens: promptTokens + completion.tokens,
-      estimated: true,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** A tool waiting on the user because its approval mode is `always_ask`. */
-export interface PendingApproval {
-  id: string;
-  toolName: string;
-  /** Raw JSON arguments (provider format), for the prompt preview. */
-  args: string;
-}
-
-/** Per-send options that are not part of the message itself. */
-export interface SendOptions {
-  /**
-   * Execution mode for THIS turn only, overriding the window's setting.
-   *
-   * `aurora agent --plan` is the caller. Per-turn rather than through
-   * `setAgentExecutionMode` because that setter is global: it would leave the
-   * window in plan mode after a dispatched task finished, and two concurrent
-   * dispatches in different modes would each clobber the other's.
-   */
-  executionMode?: "agent" | "plan";
-  /**
-   * The `aurora agent` task this send fulfils, when a terminal dispatched it.
-   *
-   * Forwarded to Rust, which tees the turn's events into that task's
-   * transcript so `aurora agent --follow` watches the same work this window
-   * renders. Absent for every send a person makes.
-   */
-  cliTaskId?: string | null;
-  /**
-   * The model for THIS turn only, as `providerId:modelKey`.
-   *
-   * `aurora agent --model` and the `aurora_agent_dispatch` tool are the
-   * callers. Per-turn for the same reason {@link SendOptions.executionMode} is,
-   * plus one specific to the model: a dispatch that starts a NEW conversation
-   * cannot express its choice through the thread at all.
-   *
-   * `setThreadModel` records a pin by mapping over `threads`/`allThreads`, and
-   * a freshly created thread is deliberately in neither — `refreshThreads`
-   * keeps 0-message threads out of the rail, so no row exists until the first
-   * message lands. The pin therefore no-opped in memory, `resolveThreadModel`
-   * found nothing, and the turn fell back to the user's default: a task
-   * dispatched with `--model luna` ran on whatever the window had selected,
-   * and only the transcript's echo of the *requested* model made it look
-   * right.
-   */
-  model?: string | null;
-  /**
-   * Who is starting this turn. Defaults to the user, which is every send a
-   * person makes.
-   *
-   * `"process"` is the background report: a process ended while this
-   * conversation was idle, so nothing was going to tell the model unless
-   * something started a turn. The message is real and gets answered, but it is
-   * persisted as a process event rather than as words anybody typed — no user
-   * bubble, no pill, no title derived from it.
-   */
-  origin?: "user" | "process" | "subagent";
-  /** The transcript's one line when {@link SendOptions.origin} is `"process"` or `"subagent"`. */
-  summary?: string | null;
-  /** The agent a `"subagent"` report is about. */
-  agent?: AgentReportMeta | null;
-}
-
-export interface AgentWindowSend {
-  /** True while a turn is streaming. */
-  sending: boolean;
-  /**
-   * Send (or resend) a turn. Resolves to what happened: a turn `started`,
-   * the text was `queued` into a turn already running, or it was `skipped`
-   * (empty text, no thread, or a turn opened on the thread first). A caller
-   * handing over something it cannot regenerate — a sub-agent's report, a
-   * process ending — keeps it on `skipped`.
-   */
-  send: (
-    text: string,
-    fileChips?: AttachedPromptChip[],
-    options?: SendOptions,
-  ) => Promise<SendOutcome>;
-  /** Compact the open thread immediately. No-op when no idle thread is open. */
-  compact: () => Promise<void>;
-  /** Cancel the in-flight turn. */
-  stop: () => void;
-  /** The tool currently awaiting approval, or `null`. */
-  pendingApproval: PendingApproval | null;
-  /** Approve the pending tool once. */
-  approve: () => void;
-  /** Approve + remember (flip the tool to auto for future turns). */
-  approveAlways: () => void;
-  /** Reject the pending tool. */
-  reject: () => void;
-}
-
-const genId = () => Math.random().toString(36).slice(2, 11);
-
-/**
- * Was this conversation started in deep research?
- *
- * Read from the thread, not from `deepResearchNext`. The setting seeds a NEW
- * chat and nothing else; a conversation's own answer is fixed at creation, and
- * that is exactly what lets the instruction live in the cacheable prefix.
- *
- * A thread the store has not loaded yet reads as `false`, which is the safe
- * direction: a missing instruction produces a normal answer, while a wrongly
- * added one changes the prompt of a conversation that was framed differently.
- */
-function threadIsDeepResearch(threadId: string | null): boolean {
-  if (!threadId) return false;
-  const { threads, allThreads } = useAgentChatStore.getState();
-  const found =
-    allThreads.find((t) => t.id === threadId) ?? threads.find((t) => t.id === threadId);
-  return found?.deepResearch === true;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-// `withProviderDefaults` now lives in services/model-request-config so the
-// provider connection test normalizes configs exactly as a turn does.
-
-/**
- * Load the user's `/`-selected project rules and format them as an authoritative
- * context block (mirrors how the IDE context builder injects rules). Returns
- * `null` when nothing is selected, the project is unknown, or none resolve.
- */
-async function buildRuleContext(
-  projectRoot: string | null,
-  ruleFilenames: string[],
-): Promise<string | null> {
-  if (!projectRoot || ruleFilenames.length === 0) return null;
-  let rules: Array<{ filename: string; content: string }>;
-  try {
-    rules = await loadProjectRules(projectRoot);
-  } catch {
-    return null;
-  }
-  const wanted = new Set(ruleFilenames);
-  const selected = rules.filter((r) => wanted.has(r.filename));
-  if (selected.length === 0) return null;
-
-  const body = selected
-    .map((r) => `<rule file="${r.filename}">\n${r.content}\n</rule>`)
-    .join("\n\n");
-  return `<project_rules>\nThe user explicitly attached these project rules to this turn. Treat them as authoritative standing rules for this task.\n\n${body}\n</project_rules>`;
-}
-
-/**
- * Total character budget for auto-attached project rules (~2.5K tokens).
- * Oversized rules are truncated with a pointer to the file so the agent can
- * `file_read` the rest when it actually matters.
- */
-const AUTO_RULES_CHAR_BUDGET = 10_000;
-
-/**
- * Auto-attach the project's `.aurora/*.md` rules — parity with the IDE's
- * context builder, which injects `<project_rules>` on a chat's first message.
- * Without this, rules only reached the agent window when the user explicitly
- * `/`-attached them. Rules already selected via `/` are excluded here (they
- * ride verbatim in `buildRuleContext`), and the total is capped by
- * [`AUTO_RULES_CHAR_BUDGET`] so a huge rules folder can't flood the context.
- */
-async function buildAutoRulesContext(
-  projectRoot: string | null,
-  excludeFilenames: string[],
-): Promise<string | null> {
-  if (!projectRoot) return null;
-  let rules: Array<{ filename: string; content: string }>;
-  try {
-    rules = await loadProjectRules(projectRoot);
-  } catch {
-    return null;
-  }
-  const exclude = new Set(excludeFilenames);
-  const auto = rules.filter((r) => !exclude.has(r.filename) && r.content.length > 0);
-  if (auto.length === 0) return null;
-
-  let remaining = AUTO_RULES_CHAR_BUDGET;
-  const parts: string[] = [];
-  for (const rule of auto) {
-    if (remaining <= 0) {
-      parts.push(
-        `<rule file="${rule.filename}" omitted="true">Omitted for context budget — read .aurora/${rule.filename} with file_read if relevant.</rule>`,
-      );
-      continue;
-    }
-    let body = rule.content;
-    if (body.length > remaining) {
-      body = `${body.slice(0, remaining)}\n…[truncated — read .aurora/${rule.filename} for the rest]`;
-    }
-    remaining -= body.length;
-    parts.push(`<rule file="${rule.filename}">\n${body}\n</rule>`);
-  }
-  return `<project_rules description="Project-specific rules from .aurora/*.md files that must be followed">\n${parts.join("\n\n")}\n</project_rules>`;
-}
-
-/**
- * What the user currently has open in the right-hand Files panel.
- *
- * NAMES ONLY, never content. A path costs a few tokens and tells the agent
- * where the user's attention is; the file body costs thousands and it already
- * has `file_read` for the moment it actually needs one. Injecting content here
- * would re-send it on every request of the conversation for as long as the file
- * stayed open.
- *
- * This replaces the IDE-derived open-tab list, which is gone: the agent window
- * is the product and the separate editor window is no longer where the user's
- * files are. The rail viewer shows one file at a time today, so the block is
- * built from a LIST rather than a single path — if the panel grows tabs, every
- * tab's filename lands here with no redesign and no change to the contract.
- */
-export function buildOpenFilesContext(
-  paths: string[],
-  activePath: string | null,
-): string | null {
-  const open = paths.map((path) => path.trim()).filter(Boolean);
-  if (open.length === 0) return null;
-  // Marked, not positional: the dock's active tab may be the file tree, the
-  // browser or a terminal, in which case none of these files is the one being
-  // looked at and claiming the first one is would be a small lie every turn.
-  const rows = open.map(
-    (path) => `- ${path}${path === activePath ? "  (showing)" : ""}`,
-  );
-  return `<open_files count="${open.length}">
-Open in the user's Files panel right now. Filenames only — read one with file_read if you need what is in it.
-
-${rows.join("\n")}
-</open_files>`;
-}
-
-/**
- * `/image` — the user has prioritised a picture. This goes to the SELECTED
- * model, never around it: the model reads the request and runs
- * `generate_image`, which lets it catch a prompt that would waste forty
- * seconds and a paid call before the call is made. The design notes record
- * that a direct-to-API `/image` was proposed and overruled for this reason.
- */
-function buildImageRequest(requested: boolean): string | null {
-  if (!requested) return null;
-  return `<image_request>
-The user attached /image: they want a picture made of this message, and that comes before any other reply. Reply in a sentence at most, then call generate_image with a prompt written out from what they said. If what they wrote is too thin to draw from (a bare noun, no subject or setting), offer one fuller prompt in one or two lines and ask before spending the call. Otherwise do not ask; make it.
-</image_request>`;
-}
-
-/** Soft nudge toward the `/`-selected MCP servers (their tools are already available). */
-function buildMcpDirective(serverNames: string[]): string | null {
-  if (serverNames.length === 0) return null;
-  const list = serverNames.join(", ");
-  return `<preferred_mcp_servers>\nThe user explicitly referenced these connected MCP server(s) for this task: ${list}. Prefer their tools where relevant.\n</preferred_mcp_servers>`;
-}
-
-/**
- * AI title maker — for the FIRST message of a NEW chat only. Depending on the
- * configured mode, asks either the user's OpenAI-compatible endpoint (cloud)
- * or the local prompt-refine llama.cpp model (local) for a short title,
- * persists it, and reflects it in the live store + rail. Fully non-blocking
- * and non-fatal: any failure (off, unconfigured, network, bad key) silently
- * keeps the locally-derived title. The runtime's own auto-title is gated on
- * the sidecar still reading "New Chat", so whichever write lands first, this
- * title wins (and on failure the derived title stands).
- */
-async function maybeGenerateTitle(threadId: string, firstMessage: string): Promise<void> {
-  const s = useAgentSettingsStore.getState();
-  if (s.titleMakerMode === "off" || !firstMessage.trim()) return;
-
-  try {
-    let title: string;
-    if (s.titleMakerMode === "local") {
-      const refine = useAgentRefineStore.getState();
-      // The llama.cpp FOLDER is always the shared one from prompt refine —
-      // there is one runtime on the machine. Only the model can differ.
-      if (!refine.llamaDir.trim()) return;
-      const ownModel = s.titleMakerLocalModel.trim();
-      if (!ownModel && !refinePathsConfigured(refine)) return;
-      title = await runLocalTitle(`title_${threadId}`, firstMessage, {
-        ...refineConfig(refine),
-        ...(ownModel
-          ? {
-              modelPath: ownModel,
-              chatFormat: asChatFormat(s.titleMakerLocalChatFormat),
-            }
-          : {}),
-      });
-    } else {
-      const baseUrl = s.titleMakerBaseUrl.trim();
-      const model = s.titleMakerModel.trim();
-      if (!baseUrl || !model) return;
-      title = await threadService.generateTitle({
-        baseUrl,
-        apiKey: s.titleMakerApiKey.trim() || null,
-        model,
-        userMessage: firstMessage,
-      });
-    }
-    const clean = (title ?? "").trim();
-    if (!clean) return;
-
-    await threadService.updateTitle(threadId, clean);
-    // Reflect immediately: the live turn (rail + header) and, if this thread is
-    // the open one, the current thread.
-    useAgentChatStore.setState((state) => {
-      const live = state.liveTurns[threadId];
-      return {
-        liveTurns: live
-          ? { ...state.liveTurns, [threadId]: { ...live, title: clean } }
-          : state.liveTurns,
-        currentThread:
-          state.currentThreadId === threadId && state.currentThread
-            ? { ...state.currentThread, title: clean }
-            : state.currentThread,
-      };
-    });
-    void useAgentChatStore.getState().refreshThreads();
-  } catch (err) {
-    console.warn("[agent-window] title maker failed; keeping derived title:", err);
-  }
-}
-
-/**
- * One `AgentService` PER in-flight thread. Each instance owns its own runtime
- * client + provider/workspace config, so turns on different threads run fully
- * in parallel (the Rust runtime already locks per-thread and isolates events by
- * turnId). Keyed by thread id; entries are removed when the turn settles.
- */
-const runningAgents = new Map<string, AgentService>();
-
-/**
- * The model each running turn was started on, keyed by thread id, for exactly
- * as long as `runningAgents` holds the turn.
- *
- * A message sent while a turn runs normally steers it — it rides in at the
- * next tool boundary. But a turn cannot change model mid-flight, so when the
- * conversation's model has moved since the turn started, steering would hand
- * the new message to the OLD model. Comparing against this is how a send knows
- * to end the turn and start a fresh one on the model now chosen.
- */
-const turnModels = new Map<string, string>();
-
-/** How long a model switch waits for the cancelled turn to wind down. */
-const MODEL_SWITCH_END_TIMEOUT_MS = 15_000;
-
-/**
- * Resolve once `threadId` has no live turn, or `false` after `timeoutMs`.
- *
- * Reads the store rather than the agent map: the live turn is what the rest of
- * the pipeline checks before it will open another one on the same thread.
- */
-function waitForTurnEnd(threadId: string, timeoutMs: number): Promise<boolean> {
-  if (!useAgentChatStore.getState().liveTurns[threadId]) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const unsubscribe = useAgentChatStore.subscribe((state) => {
-      if (state.liveTurns[threadId]) return;
-      window.clearTimeout(timer);
-      unsubscribe();
-      resolve(true);
-    });
-    const timer = window.setTimeout(() => {
-      unsubscribe();
-      resolve(false);
-    }, timeoutMs);
-  });
-}
-
-/**
- * Reply suggestions — after a turn settles, ask the picked model (the local
- * prompt-refine model unless a configured one is chosen in Preferences) for
- * up to 4 short replies the user could tap instead of typing. Fire-and-
- * forget (the ~4s of model calls must never delay turn teardown); the
- * assistant text is captured synchronously because the live turn closes right
- * after this is invoked. Results are dropped if a new turn started meanwhile,
- * and any failure simply means no chips. Gated on the shared composer-assists
- * preference.
- *
- * Every run gets an id, written with it to the conversation's
- * `suggestions.jsonl` and held in the suggest store while it runs, so the
- * user's next send can be recorded against the run it answered.
- */
-function generateSuggestionsFrom(
-  threadId: string,
-  messages: Array<{ role: string; content?: string | null }>,
-): void {
-  const refine = useAgentRefineStore.getState();
-  const lastAssistant = [...messages]
-    .reverse()
-    .find((m) => m.role === "assistant" && (m.content ?? "").trim());
-  const text = (lastAssistant?.content ?? "").trim();
-  if (!text) return;
-
-  const runId = crypto.randomUUID();
-  const suggest = useAgentSuggestStore.getState();
-  suggest.startRun(threadId, runId);
-
-  // A picked model writes them in the cloud from the whole conversation, which
-  // Rust reads from disk. None picked means the local llama.cpp model, which
-  // stays light: it reads the last exchange only — the user's message (it
-  // role-plays as the user, so it needs what they asked for) and the reply.
-  const cloudModel = refine.replySuggestModel.trim();
-  let request: Promise<string[]>;
-  if (cloudModel) {
-    request = runCloudReplySuggestions(cloudModel, threadId, runId);
-  } else {
-    const lastUser = [...messages]
-      .reverse()
-      .find((m) => m.role === "user" && (m.content ?? "").trim());
-    const userText = (lastUser?.content ?? "").trim();
-    request = runReplySuggestions(
-      `suggest_${threadId}_${Date.now()}`,
-      userText,
-      text,
-      refineConfig(refine),
-      { threadId, runId },
-    );
-  }
-
-  void request
-    .then((suggestions) => {
-      // A newer turn owns the conversation now — these chips describe a
-      // message that's no longer the latest.
-      if (runningAgents.has(threadId)) {
-        useAgentSuggestStore.getState().failRun(threadId, runId);
-        return;
-      }
-      useAgentSuggestStore.getState().finishRun(threadId, runId, suggestions);
-    })
-    .catch((err) => {
-      useAgentSuggestStore.getState().failRun(threadId, runId);
-      console.warn("[agent-window] reply suggestions skipped:", err);
-    });
-}
-
-function maybeSuggestReplies(threadId: string): void {
-  if (!replySuggestionsReady(useAgentRefineStore.getState())) return;
-  const messages = useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
-  generateSuggestionsFrom(threadId, messages);
-}
-
-/**
- * Manual `/suggest` trigger from the composer. Explicit intent — gated only
- * on a suggestion model being ready, NOT on the auto-suggestions toggle,
- * and reads the SETTLED thread (live turns have already closed by the time
- * the user can type a slash command).
- */
-export function requestReplySuggestions(threadId: string): void {
-  if (!replySuggestModelReady(useAgentRefineStore.getState())) return;
-  if (runningAgents.has(threadId)) return; // mid-turn — chips would be stale
-  const messages = useAgentChatStore.getState().currentThread?.messages ?? [];
-  generateSuggestionsFrom(threadId, messages);
-}
-
-interface BackgroundSendTarget {
-  threadId: string;
-  projectRoot: string | null;
-  seed: import("@/apps/agent/services/threads/thread-service").DbThread;
-  /**
-   * True when a PERSON pressed send on this thread's own composer, as opposed
-   * to the pipeline resubmitting on their behalf (the post-turn queue flush).
-   *
-   * It decides whether the turn consumes what a composer staged — images, `/`
-   * directives, inspector picks — and whether sending mid-turn queues instead
-   * of being dropped. A resubmit must do neither: the staged items belong to
-   * the next thing the user types, not to a message they already sent.
-   */
-  interactive?: boolean;
-  /**
-   * The `aurora agent` task this send is fulfilling, when a terminal
-   * dispatched it.
-   *
-   * Forwarded to Rust, which tees the turn's events into that task's
-   * transcript so the terminal can follow the same work. Absent for every
-   * send a person makes, which is the overwhelming majority.
-   */
-  cliTaskId?: string | null;
-}
-
-/**
- * Which conversation a send pipeline drives.
- *
- * Omitted, the pipeline follows the OPEN chat — the main pane's behaviour. A
- * chat docked in the side panel passes its own binding, so its composer, stop
- * button and approval prompt act on ITS thread while the main pane keeps
- * driving another one. Both can stream at the same time; the runtime already
- * locks per thread and the store already keys live turns by thread id.
- */
-export interface BoundConversation {
-  threadId: string;
-  projectRoot: string | null;
-  /**
-   * This panel's loaded transcript, used to seed a live turn.
-   *
-   * A function, not a value: the seed is read at send time, so a transcript
-   * that finished loading (or grew) after mount is still the one used. Without
-   * it a docked send would open its live turn on an empty stub and the history
-   * above the new message would vanish until the turn ended.
-   */
-  getSeed: () => import("@/apps/agent/services/threads/thread-service").DbThread | null;
-}
 
 export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
   // The conversation this pipeline drives: an explicit binding, else the open
@@ -853,172 +221,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const threadId = targetThreadId;
     const seed = bound ? bound.getSeed() : store.currentThread;
     if (!threadId || !seed || store.liveTurns[threadId]) return;
-
-    const settings = useAgentSettingsStore.getState();
-    // Compaction is a real model call on this conversation's history, so it
-    // rides the conversation's own model — not whichever one is selected now.
-    const modelSelection = resolveThreadModel(threadId);
-    let compactRequest: ReturnType<typeof resolveModelRequest>;
-    try {
-      compactRequest = resolveModelRequest(modelSelection, settings.thinkingEnabled);
-    } catch {
-      return;
-    }
-    if (!compactRequest) return;
-    const llmConfig = compactRequest.providerConfig;
-    let compactionProvider;
-    try {
-      compactionProvider = settings.compactionModel
-        ? resolveModelRequest(settings.compactionModel, settings.thinkingEnabled)
-            ?.providerConfig
-        : undefined;
-    } catch {
-      // A stale auxiliary Cursor variant must not prevent the conversation's
-      // own model from compacting. Undefined deliberately falls back to it.
-      compactionProvider = undefined;
-    }
-
-    // Chat wins outright over the Build mode the window was left in.
-    const executionMode = effectiveExecutionMode(
-      settings.auroraSurface,
-      settings.agentExecutionMode,
-    );
-    // A docked chat compacts against ITS project, not the window's current
-    // scope — the window may have been re-scoped since the tab was opened. A
-    // chat has no project at all, so the summarizer is not handed one either.
-    const projectRoot = effectiveProjectRoot(
-      executionMode,
-      bound ? bound.projectRoot : store.projectRoot,
-    );
-    const markerId = genId();
-    let markerStarted = false;
-    let markerSettled = false;
-    // When the summary call began, for the card's live clock and for the
-    // duration it settles to. Compaction is one model call over the whole
-    // conversation and routinely runs for minutes, so a shimmer with no number
-    // beside it cannot be told apart from a hang — the same reason the
-    // mid-turn marker stamps one (`appendCompaction`).
-    let markerStartedAt = 0;
-
-    store.beginTurn(threadId, seed, projectRoot);
-    store.setThreadActivity(threadId, { label: "Compacting context…" });
-
-    const agent = new AgentService();
-    runningAgents.set(threadId, agent);
-    agent.setProvider(llmConfig);
-    agent.setThreadId(threadId);
-    agent.updateConfig({
-      executionMode,
-      reasoning: compactRequest.reasoning,
-      workspacePath: projectRoot,
-      maxTokens:
-        llmConfig.defaultMaxTokens ?? llmConfig.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-      compactionThresholdPct: settings.compactionThresholdPct,
-      compactionSummaryBudget: settings.compactionSummaryBudget,
-      // A manual `/compact` honours the pinned summarizer exactly as an
-      // automatic one does — same call, same model.
-      compactionProvider,
-      workspaceAccess: settings.workspaceAccess,
+    await runManualCompaction({
+      threadId,
+      seed,
+      projectRootHint: bound ? bound.projectRoot : store.projectRoot,
     });
-
-    /** How long the run took, or `undefined` when it never started a clock. */
-    const settledDuration = () =>
-      markerStartedAt > 0 ? Date.now() - markerStartedAt : undefined;
-
-    const completeMarker = (beforeTokens: number, afterTokens: number) => {
-      markerSettled = true;
-      const content = JSON.stringify({
-        beforeTokens,
-        afterTokens,
-        status: "completed",
-        startedAt: markerStartedAt || undefined,
-        durationMs: settledDuration(),
-      });
-      if (!markerStarted) {
-        markerStarted = true;
-        store.appendTurnMessage(threadId, {
-          id: markerId,
-          role: "compaction",
-          content,
-          timestamp: nowIso(),
-        });
-      } else {
-        store.patchTurnMessage(threadId, markerId, (message) => ({
-          ...message,
-          content,
-        }));
-      }
-      // Drop the ring to the post-compaction size immediately; the next real
-      // request replaces it with a measurement. Recorded as a PROJECTION, not
-      // as usage — overwriting the provider's own numbers with ours made the
-      // card claim the provider had reported nothing and erased the cache-hit
-      // row along with it.
-      useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
-    };
-
-    const failMarker = (info: { beforeTokens: number; reason: string; cancelled: boolean }) => {
-      markerSettled = true;
-      const content = JSON.stringify({
-        beforeTokens: info.beforeTokens,
-        afterTokens: 0,
-        status: info.cancelled ? "cancelled" : "failed",
-        reason: info.reason,
-        startedAt: markerStartedAt || undefined,
-        durationMs: settledDuration(),
-      });
-      if (!markerStarted) {
-        markerStarted = true;
-        store.appendTurnMessage(threadId, {
-          id: markerId,
-          role: "compaction",
-          content,
-          timestamp: nowIso(),
-        });
-      } else {
-        store.patchTurnMessage(threadId, markerId, (message) => ({ ...message, content }));
-      }
-    };
-
-    try {
-      const result = await agent.compactThread({
-        onCompactionStarted: () => {
-          markerStarted = true;
-          markerStartedAt = Date.now();
-          store.appendTurnMessage(threadId, {
-            id: markerId,
-            role: "compaction",
-            content: JSON.stringify({
-              beforeTokens: 0,
-              afterTokens: 0,
-              status: "running",
-              startedAt: markerStartedAt,
-            }),
-            timestamp: nowIso(),
-          });
-        },
-        onCompactionCompleted: completeMarker,
-        onCompactionFailed: failMarker,
-      });
-      if (result && !markerStarted) {
-        completeMarker(result.beforeTokens, result.afterTokens);
-      }
-    } catch (error) {
-      console.error("[agent-window] manual compaction failed:", error);
-      if (markerStarted && !markerSettled) {
-        failMarker({ beforeTokens: 0, reason: "runtime_error", cancelled: false });
-      }
-    } finally {
-      runningAgents.delete(threadId);
-      // The summarization request carried the whole head of the conversation
-      // — routinely the single largest charge in a long chat. `sendTurn` marks
-      // the cost basis stale in its own `finally`; this path never did, so the
-      // card kept serving its pre-compaction copy and the charge appeared
-      // nowhere in Aurora. In `finally` for the same reason as there: a failed
-      // compaction still spent the tokens it spent.
-      useAgentContextStore.getState().invalidateBreakdown(threadId);
-      await store.refreshThreads();
-      store.endTurn(threadId);
-    }
   }, [bound, targetThreadId]);
 
   const sendTurn = useCallback(async (
@@ -1042,8 +249,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // What the person did with the reply suggestions on offer — tapped one,
     // changed it, typed their own, or sent before they arrived — recorded once
     // against the run that wrote them. Only a person's send says anything
-    // about the suggestions; a resubmission does not.
-    if (fromComposer) {
+    // about the suggestions; a resubmission does not, and neither does a
+    // process or sub-agent report, which arrives through this same function
+    // with no target and was being logged as "typed their own" — a
+    // `<subagent_report>` envelope as the developer's voice.
+    const personSend = fromComposer && (options?.origin ?? "user") === "user";
+    if (personSend) {
       const outcomeThread = target ? target.threadId : useAgentChatStore.getState().currentThreadId;
       if (outcomeThread) {
         const outcome = useAgentSuggestStore.getState().takeOutcome(outcomeThread, content);
@@ -1059,26 +270,11 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       target ? target.threadId : useAgentChatStore.getState().currentThreadId,
     );
 
-    // Mid-turn injection: if this conversation already has a streaming turn,
-    // queue the text instead of starting a second one. The Rust runtime drains
-    // the slot at the next tool-result boundary and staples it onto the tool
-    // message, so the model sees it inline (parity with the IDE).
-    //
-    // A steering message must be as accurate as a fresh turn: `@` file
-    // mentions already ride in the text (`@rel`), staged `/` directives are
-    // consumed HERE and resolved into a `<steering_context>` block on the
-    // model copy — a mid-turn send used to silently drop them (they stayed
-    // staged and leaked onto the NEXT turn) — and inspector picks ride the
-    // same block. Picks used to wait for a fresh turn, which read as a silent
-    // drop: the pills left the composer, the injected bubble showed bare
-    // text, and nothing said whether the model ever saw the elements. It had
-    // not. An element block is plain text and rides a tool-result boundary as
-    // well as any rule does.
-    //
-    // Unless the conversation's model changed after the turn started. A turn
-    // cannot switch model, so steering would give this message to the model
-    // the user just moved away from. The running turn is ended instead, and
-    // this message starts a fresh turn on the model now chosen (Alvan's call,
+    // A message while a turn runs steers it (see `send/steer.ts`) — unless the
+    // conversation's model changed after the turn started. A turn cannot
+    // switch model, so steering would give this message to the model the user
+    // just moved away from. The running turn is ended instead, and this
+    // message starts a fresh turn on the model now chosen (Alvan's call,
     // 2026-10-12: end the turn, never steer across a model change).
     if (fromComposer) {
       const switchFrom = target?.threadId ?? useAgentChatStore.getState().currentThreadId;
@@ -1109,117 +305,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       const chat = useAgentChatStore.getState();
       const liveThreadId = target?.threadId ?? chat.currentThreadId;
       if (liveThreadId && chat.liveTurns[liveThreadId]) {
-        const liveMode = chat.liveModes[liveThreadId];
-        const chatSteering =
-          liveMode === "chat" ||
-          (!liveMode && useAgentSettingsStore.getState().auroraSurface === "chat");
-        const queuedCommands = composerCommands(
-          useAgentCommandStore.getState(),
+        await steerRunningTurn({
+          content,
+          liveThreadId,
           stageKey,
-        ).filter(isDirectiveCommand);
-        const steeringCommands = queuedCommands.filter(
-          (command) => !chatSteering || isChatPromptCommand(command),
-        );
-        const steeringSelection = buildCommandSelection(steeringCommands);
-        const steeringCommandChips = steeringCommands.map((c) => ({
-          kind: c.kind,
-          title: c.title,
-        } satisfies AttachedPromptChip));
-        if (queuedCommands.length > 0) {
-          useAgentCommandStore.getState().clear(stageKey);
-        }
-
-        // Inspector picks: full context to the model (below), a compact pill
-        // per element on the queued card and the injected row. Consumed now —
-        // leaving them staged is what made them leak onto the next turn.
-        const steeringPicks = chatSteering ? [] : useAgentSelectionStore.getState().selected;
-        const steeringPickChips = steeringPicks.map((entry) => ({
-          kind: "element" as const,
-          title: `<${entry.element.tagName}> ${(entry.element.text ?? "").trim().slice(0, 24)}`.trim(),
-          value: entry.element.selector,
-          // The pick's index, so the injected row can anchor this pill at its
-          // `@element:N` token in the text. Carried in `path` because that is
-          // a field the Rust chip struct round-trips — a TS-only field would
-          // be dropped between enqueue and the injection event.
-          path: String(entry.index),
-        } satisfies AttachedPromptChip));
-        if (steeringPicks.length > 0) useAgentSelectionStore.getState().clear();
-
-        const chips = [...scopedFileChips, ...steeringCommandChips, ...steeringPickChips];
-
-        // Staged image attachments ride the injection as `<aurora_image>`
-        // markers — the same wire path `browser_screenshot` uses, so a
-        // mid-turn image reaches a vision model as a real image part
-        // (staging is already vision-gated at the composer). The display
-        // copy carries the markers too, so the inline injected row renders
-        // the same thumbnails a user bubble would.
-        const steeringImages = composerImages(
-          useAgentAttachmentStore.getState(),
-          stageKey,
-        );
-        const displayWithImages = appendImageMarkers(content, steeringImages);
-        if (steeringImages.length > 0) {
-          useAgentAttachmentStore.getState().clear(stageKey);
-        }
-
-        // Resolve directive content the same way a fresh turn does. The
-        // system prompt of an in-flight turn can't change, so the resolved
-        // blocks ride inside the injected message instead of ideContext.
-        const steeringSettings = useAgentSettingsStore.getState();
-        const steeringRoot = effectiveProjectRoot(
-          liveMode ??
-            effectiveExecutionMode(
-              steeringSettings.auroraSurface,
-              steeringSettings.agentExecutionMode,
-            ),
-          chat.liveProjects[liveThreadId] ?? target?.projectRoot ?? chat.projectRoot,
-        );
-        const blocks: string[] = [];
-        // Same block a fresh turn sends via ideContext — selector, tag, text
-        // and clipped HTML per element, so the model can locate the source.
-        const steeringSelectionBlock = buildSelectionContext(steeringPicks);
-        if (steeringSelectionBlock) blocks.push(steeringSelectionBlock);
-        const steeringRules = await buildRuleContext(
-          steeringRoot,
-          steeringSelection.ruleFilenames,
-        );
-        if (steeringRules) blocks.push(steeringRules);
-        const steeringMcp = buildMcpDirective(steeringSelection.mcpServerNames);
-        if (steeringMcp) blocks.push(steeringMcp);
-        const steeringImage = buildImageRequest(steeringSelection.imageRequested);
-        if (steeringImage) blocks.push(steeringImage);
-        if (steeringSelection.explicitSkillKeys.length > 0) {
-          try {
-            const s = useAgentSettingsStore.getState();
-            const resolved = await resolveSkillsForPrompt({
-              enabledSkillToggles: getWorkspaceSkillToggles(s.skillToggles, steeringRoot),
-              explicitSkillKeys: steeringSelection.explicitSkillKeys,
-              skillsEnabled: s.skillsEnabled,
-              userMessage: content,
-              workspacePath: steeringRoot ?? undefined,
-            });
-            if (resolved.explicitSkills.length > 0) {
-              blocks.push(formatSkillReferences(resolved.explicitSkills, "required_skills"));
-            }
-          } catch (err) {
-            console.warn("[agent-window] mid-turn skill resolution failed:", err);
-          }
-        }
-        // Tag pair is a contract with the Rust reload path
-        // (`strip_steering_context` in commands/threads.rs) — it cuts this
-        // block back out of the injected row's display text. (The runtime
-        // adds its own mid-turn framing preamble at injection time.)
-        const modelText =
-          blocks.length > 0
-            ? `${displayWithImages}\n\n<steering_context>\n${blocks.join("\n\n")}\n</steering_context>`
-            : steeringImages.length > 0
-              ? displayWithImages
-              : undefined;
-        void chat.enqueueMessage(liveThreadId, content, {
-          modelText,
-          displayText: steeringImages.length > 0 ? displayWithImages : undefined,
-          chips: chips.length > 0 ? chips : undefined,
-          imageCount: steeringImages.length > 0 ? steeringImages.length : undefined,
+          fileChips: scopedFileChips,
+          projectRootHint: target?.projectRoot,
         });
         return "queued";
       }
@@ -1546,104 +637,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     const setActivity = (activity: AgentActivity) =>
       useAgentChatStore.getState().setThreadActivity(threadId, activity);
 
-    // ── Streaming-text coalescing ─────────────────────────────────────
-    // Tokens arrive far faster than the display refreshes (bursty, often
-    // several per millisecond). Text deltas collect in an OPEN buffer that is
-    // already queued as one patch; the patch reads the buffer when the frame
-    // applies it, so every token up to that moment lands in one write.
-    // Anything that appends a NON-text timeline event seals the buffer first
-    // (`flushStreamText`), so text that arrives after it starts a new buffer
-    // queued AFTER that event, and the ordered timeline stays exact.
-    type TextDelta = { kind: "content" | "thinking"; text: string };
-    let openText: TextDelta[] | null = null;
-    // Buffers queued since the current stream attempt began, which a
-    // discarded attempt empties before they are applied.
-    let attemptText: TextDelta[][] = [];
-    const flushStreamText = () => {
-      openText = null;
-    };
-    const queueTextPatch = (deltas: TextDelta[]) =>
-      patchMessage(assistantId, (m) => {
-        // Applied now: the next token opens a new buffer. Without this it
-        // would land in this one, after it had already been read.
-        if (openText === deltas) openText = null;
-        if (deltas.length === 0) return m;
-        // The retry is streaming, so the "reconnecting" marker has done its
-        // job. Removed in the SAME patch that appends the recovered text, so
-        // the marker never blinks out a frame before the reply resumes.
-        let timeline = clearReconnect(timelineOf(m));
-        let content = m.content || "";
-        let thinking = m.thinking || "";
-        let isThinking = !!m.isThinking;
-        for (const d of deltas) {
-          if (d.kind === "content") {
-            // First content token ends the reasoning phase → thinking block
-            // auto-collapses (same trigger the IDE uses via `isThinking`).
-            content += d.text;
-            timeline = appendContent(timeline, d.text);
-            isThinking = false;
-          } else {
-            thinking += d.text;
-            timeline = appendThinking(timeline, d.text);
-            isThinking = true;
-          }
-        }
-        return { ...m, content, thinking, isThinking, timeline };
-      });
-    /**
-     * Throw the not-yet-applied text of the current attempt away.
-     *
-     * Only for a reply the runtime has abandoned: those tokens are about to be
-     * re-sent from the start, so applying them would render text that is then
-     * immediately truncated — one wasted frame of the duplicate we are here to
-     * prevent. Text queued before the attempt began is kept; it is real.
-     */
-    const dropPendingStreamText = () => {
-      for (const buffer of attemptText) buffer.length = 0;
-      attemptText = [];
-      openText = null;
-    };
-    const queueStreamText = (kind: "content" | "thinking", text: string) => {
-      if (!openText) {
-        const buffer: TextDelta[] = [];
-        openText = buffer;
-        attemptText.push(buffer);
-        queueTextPatch(buffer);
-      }
-      const last = openText[openText.length - 1];
-      if (last && last.kind === kind) last.text += text;
-      else openText.push({ kind, text });
-    };
-
-    // Wall-clock timing per tool call, anchored on the runtime's
-    // execution-start / result events. Native Rust tools emit execution_start
-    // BEFORE their permission gate, so approval windows are recorded
-    // separately and only the part overlapping [start, end] is subtracted —
-    // a 40-second approval must never read as a 40-second tool. Bridge tools
-    // (MCP) start AFTER approval, so their overlap is naturally zero.
-    const toolTimings = new Map<
-      string,
-      { start: number; approval: Array<{ from: number; to: number }> }
-    >();
-    const markToolStart = (id: string) => {
-      if (!toolTimings.has(id)) {
-        toolTimings.set(id, { start: performance.now(), approval: [] });
-      }
-    };
-    const settleToolDuration = (id: string): number | undefined => {
-      const timing = toolTimings.get(id);
-      if (!timing) return undefined;
-      toolTimings.delete(id);
-      const end = performance.now();
-      let approvalWait = 0;
-      for (const w of timing.approval) {
-        approvalWait += Math.max(
-          0,
-          Math.min(w.to, end) - Math.max(w.from, timing.start),
-        );
-      }
-      return Math.max(0, end - timing.start - approvalWait);
-    };
+    // Streaming text lands in frame-sized buffers (`send/stream-text.ts`);
+    // anything that appends a non-text timeline event flushes first so the
+    // ordered timeline stays exact.
+    const stream = createStreamText((patch) => patchMessage(assistantId, patch));
+    // Wall-clock per tool call, approval waits taken out (`send/tool-timing.ts`).
+    const timer = createToolTimer();
 
     const upsertToolCall = (
       tc: ToolCallRequest,
@@ -1651,7 +650,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       startedAt?: number,
     ) => {
       // Keep timeline order exact: buffered text lands BEFORE this tool event.
-      flushStreamText();
+      stream.flush();
       patchMessage(assistantId, (m) => {
         const calls = m.tool_calls ? [...m.tool_calls] : [];
         const idx = calls.findIndex((c) => c.id === tc.id);
@@ -1720,7 +719,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // is why the panel froze at 0/N while the agent worked the list.
 
     const setToolResult = (tc: ToolCallRequest, result: string, durationMs?: number) => {
-      flushStreamText();
+      stream.flush();
       patchMessage(assistantId, (m) => {
         const calls = (m.tool_calls ?? []).map((c) =>
           c.id === tc.id
@@ -1912,7 +911,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           onToken: (token) => {
             // Final-answer text is streaming — the narrator reads "Responding…".
             setActivity({ label: "Responding…" });
-            queueStreamText("content", token);
+            stream.queue("content", token);
           },
           onThinking: (text) => {
             setActivity({ label: "Thinking…" });
@@ -1924,7 +923,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // and after a tool row it can't merge into a prior segment so it
             // becomes its own stray row.
             if (!text) return;
-            queueStreamText("thinking", text);
+            stream.queue("thinking", text);
           },
           onUsage: (usage) => {
             usageFired = true;
@@ -1974,7 +973,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // ending or being stopped. Those are nobody's words, so they get
             // the checklist beat's one-line row instead of the user's, and they
             // never touch the composer pill (they never lit it).
-            flushStreamText();
+            stream.flush();
             if (origin === "process") {
               patchMessage(assistantId, (m) => ({
                 ...m,
@@ -2011,7 +1010,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           // summary text is never sent to the UI — only the before→after drop.
           onCompactionStarted: () => {
             setActivity({ label: "Compacting context…" });
-            flushStreamText();
+            stream.flush();
             const id = nextEventId();
             compactionEventId = id;
             // Drop the marker INTO the streaming assistant timeline at the
@@ -2060,9 +1059,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             upsertToolCall(tc);
           },
           onToolExecutionStart: (tc) => {
-            markToolStart(tc.id);
+            timer.start(tc.id);
             setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
-            // The card's clock starts here, on the same event `markToolStart`
+            // The card's clock starts here, on the same event `timer.start`
             // anchors the measured duration to, so the running number and the
             // settled one describe the same span.
             upsertToolCall(tc, undefined, Date.now());
@@ -2070,12 +1069,12 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           onToolExecutionComplete: (tc, result) => {
             captureBackgroundProcess(tc, result);
             captureCanvasWrite(tc, result);
-            setToolResult(tc, result, settleToolDuration(tc.id));
+            setToolResult(tc, result, timer.settle(tc.id));
           },
           onToolExecutionError: (tc, error) =>
-            setToolResult(tc, `[error] ${error}`, settleToolDuration(tc.id)),
+            setToolResult(tc, `[error] ${error}`, timer.settle(tc.id)),
           onToolRejected: (tc, reason) => {
-            toolTimings.delete(tc.id);
+            timer.forget(tc.id);
             setToolResult(tc, `[rejected] ${reason}`);
           },
           onToolApprovalRequired: async (tc) => {
@@ -2101,9 +1100,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               // Native tools are already timing (execution_start precedes their
               // gate) — log the wait so it's excluded from the tool's duration.
               const approvalEnded = performance.now();
-              toolTimings
-                .get(tc.id)
-                ?.approval.push({ from: approvalBegan, to: approvalEnded });
+              timer.noteApproval(tc.id, approvalBegan, approvalEnded);
               // Push the card's clock forward by the same wait. Without this a
               // command approved after thinking about it for a minute would
               // read "1m 4s" while running and then settle to "4s" — the same
@@ -2135,7 +1132,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           // Its own marker, never folded into the assistant's text.
           onRuntimeNotice: ({ message }) => {
             noticedMessages.add(message);
-            flushStreamText();
+            stream.flush();
             patchMessage(assistantId, (m) => ({
               ...m,
               // Retrying is over — either it worked and this notice is about
@@ -2146,10 +1143,9 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             }));
           },
           onStreamAttemptStarted: () => {
-            flushStreamText();
             // Text queued before this point belongs to an earlier attempt and
             // survives a discard of this one.
-            attemptText = [];
+            stream.beginAttempt();
             // Store patches and timeline appenders replace their values; this
             // immutable snapshot also preserves text merged into an older row.
             patchMessage(assistantId, (m) => {
@@ -2160,7 +1156,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           // Restore only this attempt's output. The next flush replaces the
           // reconnect marker with the new response from its first token.
           onPartialReplyDiscarded: ({ attempt, maxAttempts }) => {
-            dropPendingStreamText();
+            stream.dropPending();
             patchMessage(assistantId, (m) => {
               const timeline = beginReconnect(
                 timelineOf(m),
@@ -2200,7 +1196,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               error instanceof Error ? error : new Error(message),
             );
             const note = `\n\n**${classified.title}**\n\n${classified.message}\n\n${classified.suggestion}`;
-            flushStreamText();
+            stream.flush();
             patchMessage(assistantId, (m) => ({
               ...m,
               content: `${m.content || ""}${note}`,
@@ -2249,7 +1245,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         useAgentChatStore.getState().flushTurnPatches();
         const liveMsgs =
           useAgentChatStore.getState().liveTurns[threadId]?.messages ?? [];
-        const contextWindow = providerConfig.contextWindow || 128_000;
+        const contextWindow = providerConfig.contextWindow || DEFAULT_CONTEXT_WINDOW;
         const estMaxOutput =
           providerConfig.defaultMaxTokens ??
           providerConfig.maxOutputTokens ??
@@ -2301,7 +1297,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         return next;
       });
       // Land any tail of buffered stream text, then close the reasoning phase.
-      flushStreamText();
+      stream.flush();
       // The transcript on disk just gained this turn's requests, so the stored
       // conversation total is out of date. Marked rather than re-read: a
       // background turn on a chat nobody is looking at should not pay for a

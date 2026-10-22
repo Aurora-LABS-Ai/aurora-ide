@@ -88,6 +88,12 @@ export interface LLMProvider {
    * Synthesized from the `models` slice.
    */
   supportsVision?: boolean;
+  /**
+   * Chat and Responses wires: put tool-result images inside the tool output
+   * rather than a user message after it. Per provider because the same
+   * gateway can differ by key; off by default. See `tool-image-placement.ts`.
+   */
+  toolImagesInResult?: boolean;
 }
 
 // ============================================
@@ -387,6 +393,7 @@ export function dbToProvider(db: DbLLMProvider): LLMProvider {
     defaultTemperature: db.defaultTemperature || undefined,
     defaultMaxTokens: db.defaultMaxTokens || undefined,
     requiresApiKey: db.requiresApiKey,
+    toolImagesInResult: db.toolImagesInResult ?? false,
   };
 }
 
@@ -418,6 +425,7 @@ export function providerToDb(provider: LLMProvider, sortOrder: number): DbLLMPro
     defaultTemperature: provider.defaultTemperature || null,
     defaultMaxTokens: provider.defaultMaxTokens || null,
     requiresApiKey: provider.requiresApiKey ?? true,
+    toolImagesInResult: provider.toolImagesInResult ?? false,
     sortOrder,
     createdAt: now,
     updatedAt: now,
@@ -651,6 +659,7 @@ export function buildProviderConfigForSelection(
     supportsToolStream:
       resolved?.supportsToolStream ?? provider.supportsToolStream ?? false,
     supportsVision: resolved?.supportsVision ?? false,
+    toolImagesInResult: provider.toolImagesInResult ?? false,
     // The wire can belong to the model. Schema v24 already persists this, but
     // the generic resolver used to ignore it and only OpenCode's one-off
     // post-processor read the field. That made the settings test and a live

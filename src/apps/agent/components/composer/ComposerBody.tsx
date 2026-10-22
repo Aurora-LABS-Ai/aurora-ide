@@ -13,6 +13,7 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
 export function ComposerBody({ children }: { children: ReactNode }) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
     const body = bodyRef.current;
@@ -21,6 +22,7 @@ export function ComposerBody({ children }: { children: ReactNode }) {
 
     let previousHeight: number | null = null;
     let previousEditorHeight: number | null = null;
+    let frame: number | null = null;
     const measure = () => {
       const height = content.getBoundingClientRect().height;
       const editor = content.querySelector<HTMLElement>(".agw-ce-wrap");
@@ -47,12 +49,29 @@ export function ComposerBody({ children }: { children: ReactNode }) {
       previousEditorHeight = editorHeight;
     };
 
-    // Mount at the real height before paint. Only subsequent changes animate.
-    measure();
-    const observer = new ResizeObserver(measure);
+    measureRef.current = measure;
+    // A child resize can change the observed home column through this body's
+    // height. Do not resize that ancestor during ResizeObserver delivery.
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        measure();
+      });
+    });
     observer.observe(content);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+      measureRef.current = null;
+    };
   }, []);
+
+  // Mount and normal editor renders still size before paint, without making
+  // typing wait for the observer's deferred pass. Only attachments animate.
+  useLayoutEffect(() => {
+    measureRef.current?.();
+  });
 
   return (
     <div ref={bodyRef} className="agw-composer-body">

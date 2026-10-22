@@ -30,8 +30,15 @@ import {
   OPENCODE_PROVIDER_ID,
 } from "@/apps/agent/services/providers/opencode";
 
-/** Fallback output cap when neither the model nor the provider sets one. */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+/**
+ * Fallback output cap when neither the model nor the provider sets one. Sized
+ * for agent turns: reasoning bills against this cap on most wires, and 16k let
+ * a high-effort turn spend it all before writing a file.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
+
+/** Fallback context window when neither the model nor the provider sets one. */
+export const DEFAULT_CONTEXT_WINDOW = 262_000;
 
 /**
  * The temperature a turn should send: the model's own value, else the
@@ -67,7 +74,7 @@ export function withProviderDefaults(config: ProviderConfig): ProviderConfig {
   return {
     ...config,
     providerType: config.providerType || "custom",
-    contextWindow: config.contextWindow || 128_000,
+    contextWindow: config.contextWindow || DEFAULT_CONTEXT_WINDOW,
     maxOutputTokens: config.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS,
     supportsThinking: config.supportsThinking ?? false,
     supportsToolStream: config.supportsToolStream ?? false,

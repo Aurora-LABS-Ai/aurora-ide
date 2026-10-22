@@ -209,6 +209,7 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
     let (instructions, input) = responses_instructions_and_input(
         request,
         config.supports_vision,
+        config.tool_images_in_result,
         crate::api::deepseek::is_responses_wire(config.effective_provider_type()),
     );
 
@@ -366,6 +367,10 @@ pub fn build_responses_body(request: &ApiRequest<'_>, config: &ProviderConfigSna
 fn responses_instructions_and_input(
     request: &ApiRequest<'_>,
     supports_vision: bool,
+    // The provider row's switch: images go inside `function_call_output` as
+    // content parts instead of a trailing user item. Off by default: Modal's
+    // Responses wire drops them there with a 200 (measured 2026-10-19).
+    images_in_tool_result: bool,
     plain_reasoning: bool,
 ) -> (Option<String>, Vec<Value>) {
     let mut system_chunks: Vec<String> = Vec::new();
@@ -461,11 +466,12 @@ fn responses_instructions_and_input(
                 }
             }
             MessageRole::Tool => {
-                // One function_call_output per tool_result. Screenshots
-                // can't ride inside `output` (string-only for maximum
-                // compatibility), so vision images are collected and
-                // appended as a trailing user item — same position the
-                // mid-turn queued user text lands in.
+                // One function_call_output per tool_result. By default
+                // `output` stays a string and vision images are collected
+                // and appended as a trailing user item — same position the
+                // mid-turn queued user text lands in. With the provider's
+                // switch on, an output holding images becomes a list of
+                // content parts instead.
                 let mut trailing_parts: Vec<Value> = Vec::new();
                 let mut injected_text = String::new();
                 for block in &message.blocks {
@@ -475,13 +481,22 @@ fn responses_instructions_and_input(
                             content,
                             ..
                         } => {
-                            let (output, images) = responses_tool_output(content, supports_vision);
+                            let output = if supports_vision
+                                && images_in_tool_result
+                                && crate::api::aurora_image::has_marker(content)
+                            {
+                                responses_user_content(content, true)
+                            } else {
+                                let (output, images) =
+                                    responses_tool_output(content, supports_vision);
+                                trailing_parts.extend(images);
+                                Value::String(output)
+                            };
                             items.push(json!({
                                 "type": "function_call_output",
                                 "call_id": tool_use_id,
                                 "output": output,
                             }));
-                            trailing_parts.extend(images);
                         }
                         ContentBlock::Text { text } => {
                             if !injected_text.is_empty() {
@@ -1365,6 +1380,7 @@ mod tests {
             supports_thinking: true,
             reasoning: None,
             supports_vision: false,
+            tool_images_in_result: false,
         }
     }
 
@@ -1965,7 +1981,7 @@ mod rejection_tests {
             reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
             tool_bridge: None,
             session_key: None,        };
-        let (_, items) = responses_instructions_and_input(&request, false, false);
+        let (_, items) = responses_instructions_and_input(&request, false, false, false);
         assert!(!items.is_empty());
         for item in &items {
             let kind = item.get("type").and_then(Value::as_str);
@@ -2021,7 +2037,7 @@ mod rejection_tests {
             session_key: None,
         };
 
-        let (_, items) = responses_instructions_and_input(&request, false, false);
+        let (_, items) = responses_instructions_and_input(&request, false, false, false);
         let trailing = items.last().expect("trailing user item");
         assert_eq!(trailing["role"], "user");
         let sent = trailing["content"].to_string();
@@ -2068,7 +2084,7 @@ mod rejection_tests {
             tool_bridge: None,
             session_key: None,        };
 
-        let (_, items) = responses_instructions_and_input(&request, true, false);
+        let (_, items) = responses_instructions_and_input(&request, true, false, false);
         let trailing = items.last().expect("trailing user item");
         assert_eq!(trailing["role"], "user");
         let parts = trailing["content"].as_array().expect("content parts");
@@ -2086,13 +2102,88 @@ mod rejection_tests {
         );
 
         // Non-vision: placeholder, never raw base64.
-        let (_, items) = responses_instructions_and_input(&request, false, false);
+        let (_, items) = responses_instructions_and_input(&request, false, false, false);
         let trailing = items.last().expect("trailing user item");
         let text = trailing["content"].as_array().expect("parts")[0]["text"]
             .as_str()
             .unwrap_or_default()
             .to_string();
         assert!(!text.contains("QUJD"), "no raw base64 for non-vision");
+    }
+
+    fn screenshot_tool_message() -> Vec<ConversationMessage> {
+        vec![ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "<aurora_image media_type=\"image/jpeg\">QUJD</aurora_image>\n\
+                          Screenshot of http://localhost/ (640×220 px)"
+                    .into(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }]
+    }
+
+    fn screenshot_request(messages: &[ConversationMessage]) -> ApiRequest<'_> {
+        ApiRequest {
+            model: "m",
+            messages,
+            system_prompt: None,
+            tools: &[],
+            tool_choice: Default::default(),
+            temperature: None,
+            max_output_tokens: 1024,
+            reasoning: crate::agent_runtime::api_client::ReasoningRequest::disabled(),
+            tool_bridge: None,
+            session_key: None,
+        }
+    }
+
+    /// The provider switch on: the picture rides inside `function_call_output`
+    /// as content parts, and no trailing user item is added for it.
+    #[test]
+    fn switch_on_keeps_the_image_inside_function_call_output() {
+        let messages = screenshot_tool_message();
+        let (_, items) =
+            responses_instructions_and_input(&screenshot_request(&messages), true, true, false);
+        assert_eq!(items.len(), 1, "no trailing user item: {items:?}");
+        let parts = items[0]["output"].as_array().expect("output is content parts");
+        assert!(parts.iter().any(|p| p["type"] == "input_image"), "{parts:?}");
+        assert!(
+            parts.iter().any(|p| p["type"] == "input_text"
+                && p["text"].as_str().unwrap_or("").contains("Screenshot of")),
+            "the caption stays with the picture: {parts:?}"
+        );
+    }
+
+    /// The default: `output` is text, and the picture follows as a user item.
+    #[test]
+    fn switch_off_moves_the_image_to_a_trailing_user_item() {
+        let messages = screenshot_tool_message();
+        let (_, items) =
+            responses_instructions_and_input(&screenshot_request(&messages), true, false, false);
+        assert!(items[0]["output"].is_string(), "{:?}", items[0]);
+        let trailing = items.last().expect("trailing user item");
+        assert_eq!(trailing["role"], "user");
+        assert!(trailing["content"].to_string().contains("input_image"));
+    }
+
+    /// A model without vision never gets pixels, whatever the switch says.
+    #[test]
+    fn switch_on_still_strips_images_for_a_model_without_vision() {
+        let messages = screenshot_tool_message();
+        let (_, items) =
+            responses_instructions_and_input(&screenshot_request(&messages), false, true, false);
+        assert_eq!(items.len(), 1, "{items:?}");
+        let output = items[0]["output"].as_str().expect("text output");
+        assert!(!output.contains("QUJD") && output.contains("Image omitted"), "{output}");
     }
 }
 

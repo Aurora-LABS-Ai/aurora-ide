@@ -1,8 +1,8 @@
 /**
  * Agent Window — composer prompt-refine (controller hook).
  *
- * Drives the ✦ button: serialize the composer, send it to the local
- * llama-completion child process, and fade the complete rewrite into the
+ * Drives the ✦ button: serialize the composer, send it to the selected
+ * provider or local model, and fade the complete rewrite into the
  * editor — keeping the original for one-click
  * undo. Refine is for an INSTRUCTION, so it refuses over-long inputs (a pasted
  * console log / whole file) up front instead of overflowing the model context.
@@ -20,12 +20,13 @@ import {
   runRefine,
   type RefineConfig,
 } from "@/apps/agent/adapters/prompt-refine";
+import { runCloudRefine } from "@/apps/agent/services/providers/prompt-refine-cloud";
 import { refineConfigured, useAgentRefineStore } from "@/apps/agent/store/composer/useAgentRefineStore";
 
 export type RefinePhase = "idle" | "refining" | "refined";
 
 export interface ComposerRefine {
-  /** Feature enabled + both paths configured (button may show). */
+  /** Feature enabled + provider model or local setup selected (button may show). */
   ready: boolean;
   phase: RefinePhase;
   /** Transient user-facing notice (error / too-long), auto-clears. */
@@ -66,6 +67,7 @@ export function useComposerRefine(
   afterChange: () => void,
 ): ComposerRefine {
   const enabled = useAgentRefineStore((s) => s.enabled);
+  const refineModel = useAgentRefineStore((s) => s.refineModel);
   const llamaDir = useAgentRefineStore((s) => s.llamaDir);
   const modelPath = useAgentRefineStore((s) => s.modelPath);
   const device = useAgentRefineStore((s) => s.device);
@@ -110,7 +112,10 @@ export function useComposerRefine(
     setNotice(null);
     setPhase("refining");
 
-    void runRefine(reqId, text, config)
+    const request = refineModel.trim()
+      ? runCloudRefine(reqId, text, refineModel.trim())
+      : runRefine(reqId, text, config);
+    void request
       .then(async (refined) => {
         if (cancelledRef.current || reqIdRef.current !== reqId) return;
         // Sending, switching drafts, or editing during the request must win.
@@ -149,6 +154,7 @@ export function useComposerRefine(
     ready,
     phase,
     serialize,
+    refineModel,
     llamaDir,
     modelPath,
     device,

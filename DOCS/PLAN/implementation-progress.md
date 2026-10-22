@@ -1,5 +1,9 @@
 # Aurora Chat — implementation progress
 
+> **Point-in-time checklist. Last updated 2026-09-04.** Tool counts in the tables
+> (including `BUILTIN_TOOL_COUNT` 41 → 43) are what that session changed. The roster
+> is now 49. Sessions are one folder per conversation, not flat files under `sessions\`.
+
 Working checklist for the build described in [`chat-mode-design.md`](./chat-mode-design.md).
 **That file is the decisions. This file is the state.**
 

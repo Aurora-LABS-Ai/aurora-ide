@@ -28,7 +28,6 @@ import {
 } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentTypingStore } from "@/apps/agent/store/composer/useAgentTypingStore";
 import {
-  refineConfigured,
   refinePathsConfigured,
   replySuggestModelReady,
   useAgentRefineStore,
@@ -41,6 +40,19 @@ const LOCAL_SUGGEST_MODEL = {
   value: "",
   label: "Local model",
   meta: "Prompt refine",
+};
+
+const LOCAL_REFINE_MODEL = {
+  value: "",
+  label: "Local model",
+  meta: "llama.cpp",
+};
+
+/** The default row of the cloud title picker: the hand-typed endpoint fields. */
+const CUSTOM_TITLE_ENDPOINT = {
+  value: "",
+  label: "Custom endpoint",
+  meta: "URL, model and key below",
 };
 import {
   asChatFormat,
@@ -200,9 +212,12 @@ export const PreferencesSettings: React.FC = () => {
   const learn = useAgentTypingStore((s) => s.learn);
   const setLearn = useAgentTypingStore((s) => s.setLearn);
 
-  // Prompt refine (agent-window scoped — drives a local llama.cpp GGUF).
+  // Prompt refine (agent-window scoped — configured provider or local GGUF).
   const refineEnabled = useAgentRefineStore((s) => s.enabled);
   const setRefineEnabled = useAgentRefineStore((s) => s.setEnabled);
+  const refineModel = useAgentRefineStore((s) => s.refineModel);
+  const setRefineModel = useAgentRefineStore((s) => s.setRefineModel);
+  const refineModelOptions = useModelOptions(LOCAL_REFINE_MODEL);
   const llamaDir = useAgentRefineStore((s) => s.llamaDir);
   const setLlamaDir = useAgentRefineStore((s) => s.setLlamaDir);
   const modelPath = useAgentRefineStore((s) => s.modelPath);
@@ -211,7 +226,6 @@ export const PreferencesSettings: React.FC = () => {
   const setRefineChatFormat = useAgentRefineStore((s) => s.setChatFormat);
   const refineDevice = useAgentRefineStore((s) => s.device);
   const setRefineDevice = useAgentRefineStore((s) => s.setDevice);
-  const refineReady = useAgentRefineStore(refineConfigured);
 
   const refinePathsReady = useAgentRefineStore(refinePathsConfigured);
   const dictationCleanupEnabled = useAgentRefineStore((s) => s.dictationCleanupEnabled);
@@ -230,6 +244,8 @@ export const PreferencesSettings: React.FC = () => {
   const titleModel = useAgentSettingsStore((s) => s.titleMakerModel);
   const titleLocalModel = useAgentSettingsStore((s) => s.titleMakerLocalModel);
   const titleLocalChatFormat = useAgentSettingsStore((s) => s.titleMakerLocalChatFormat);
+  const titleCloudModel = useAgentSettingsStore((s) => s.titleMakerCloudModel);
+  const titleCloudOptions = useModelOptions(CUSTOM_TITLE_ENDPOINT);
   const setTitleMaker = useAgentSettingsStore((s) => s.setTitleMaker);
   const [showTitleKey, setShowTitleKey] = React.useState(false);
 
@@ -556,11 +572,12 @@ export const PreferencesSettings: React.FC = () => {
       <SettingsSection
         icon="refine"
         title="Prompt refine"
-        description="A ✦ button in the composer rewrites your prompt to be clearer without changing its intent — runs fully locally on a small GGUF model through your own llama.cpp build (no server, nothing leaves your machine)."
+        description="A ✦ button in the composer rewrites your prompt to be clearer without changing its intent. Use one of your configured models or a local GGUF model through llama.cpp."
       >
         <SettingsRow
           label="Enable prompt refine"
-          hint="Show the ✦ refine button in the message box. It stays hidden until the llama.cpp folder and a model are set below."
+          hint="Show the ✦ refine button in the message box once a model is selected or the local model is set up below."
+          last={!refineEnabled}
         >
           <AgwSwitch
             checked={refineEnabled}
@@ -570,6 +587,25 @@ export const PreferencesSettings: React.FC = () => {
         </SettingsRow>
 
         {refineEnabled && (
+          <SettingsRow
+            label="Refine model"
+            last={refineModel !== ""}
+            hint={
+              refineModel
+                ? "Sends your draft to this model when you click Refine. Provider usage charges may apply."
+                : "Runs on the local model set below. Nothing leaves this computer."
+            }
+          >
+            <AgwSelect
+              value={refineModel}
+              options={refineModelOptions}
+              onChange={setRefineModel}
+              ariaLabel="Model that refines prompts"
+            />
+          </SettingsRow>
+        )}
+
+        {refineEnabled && refineModel === "" && (
           <>
             <SettingsRow
               label="llama.cpp folder"
@@ -644,7 +680,7 @@ export const PreferencesSettings: React.FC = () => {
                 <AgwButton
                   variant="primary"
                   icon="check"
-                  disabled={!refineReady || refineChecking}
+                  disabled={!refinePathsReady || refineChecking}
                   onClick={() => void runRefineCheck()}
                 >
                   {refineChecking ? "Checking…" : "Validate"}
@@ -677,7 +713,7 @@ export const PreferencesSettings: React.FC = () => {
         title="Composer assists"
         description={
           refinePathsReady
-            ? "Writing help that runs on the model configured under Prompt refine, on this computer. Quick replies can use one of your configured models instead."
+            ? "Voice dictation uses the local model set up under Prompt refine. Quick replies can use that local model or one of your configured models."
             : "Writing help that runs on a local model. Set the llama.cpp folder and model under Prompt refine to turn these on. Quick replies can use one of your configured models instead."
         }
       >
@@ -734,7 +770,7 @@ export const PreferencesSettings: React.FC = () => {
       >
         <SettingsRow
           label="Title source"
-          hint="Off names the chat from your first message. Local uses the same on-device model as Prompt refine — nothing leaves your machine. Cloud asks the endpoint you set below."
+          hint="Off names the chat from your first message. Local uses the same on-device model as Prompt refine — nothing leaves your machine. Cloud asks one of your configured models, or an endpoint you set below."
           last={titleMode === "off"}
         >
           <AgwSegmented<TitleMakerMode>
@@ -827,6 +863,25 @@ export const PreferencesSettings: React.FC = () => {
         {titleMode === "cloud" && (
           <>
             <SettingsRow
+              last={titleCloudModel !== ""}
+              label="Model"
+              hint={
+                titleCloudModel
+                  ? "One small paid request to this provider per new chat: only your first message is sent."
+                  : "Pick one of your configured models, or keep Custom endpoint and set the URL, model and key below."
+              }
+            >
+              <AgwSelect
+                value={titleCloudModel}
+                options={titleCloudOptions}
+                onChange={(v) => setTitleMaker({ cloudModel: v })}
+                ariaLabel="Model that writes chat titles"
+              />
+            </SettingsRow>
+
+            {titleCloudModel === "" && (
+            <>
+            <SettingsRow
               label="Base URL"
               hint="OpenAI-compatible endpoint root, e.g. https://api.openai.com/v1 or your local server."
             >
@@ -871,6 +926,8 @@ export const PreferencesSettings: React.FC = () => {
                 </AgwButton>
               </div>
             </SettingsRow>
+            </>
+            )}
           </>
         )}
       </SettingsSection>

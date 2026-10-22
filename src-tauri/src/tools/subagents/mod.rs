@@ -264,6 +264,7 @@ pub(crate) mod test_support {
                 supports_thinking: false,
                 reasoning: None,
                 supports_vision: false,
+                tool_images_in_result: false,
             },
             system_prompt: None,
             ide_context: None,

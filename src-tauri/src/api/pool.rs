@@ -176,6 +176,7 @@ mod tests {
             supports_thinking: false,
             reasoning: None,
             supports_vision: false,
+            tool_images_in_result: false,
         }
     }
 

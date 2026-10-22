@@ -249,9 +249,10 @@ impl Default for RuntimeConfig {
             // except Anthropic (whose budget is added on top — see
             // `anthropic_max_tokens_with_thinking`). At 8k a high reasoning
             // effort could consume the entire allowance before the model wrote
-            // a word, ending the turn at the cap with nothing to show. The
-            // extra headroom costs ~9k of trim reserve on a 200k window.
-            default_max_output_tokens: 16_384,
+            // a word, ending the turn at the cap with nothing to show. 64k
+            // matches the window's `DEFAULT_MAX_OUTPUT_TOKENS`; it only applies
+            // when neither the model nor the provider sets a cap.
+            default_max_output_tokens: 64_000,
             reasoning: ReasoningConfig::default(),
             default_temperature: None,
             context_window: None,

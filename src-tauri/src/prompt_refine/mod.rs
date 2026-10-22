@@ -1,10 +1,12 @@
 //! Prompt refinement for the Agent Window composer.
 //!
-//! An OPTIONAL, fully-local feature: the user points Aurora at a prebuilt
+//! Optional refinement through a configured provider ([`refine_cloud`]) or a
+//! local model. For local refinement, the user points Aurora at a prebuilt
 //! llama.cpp folder (the `llama-completion.exe` + its DLLs) and a small GGUF
 //! model (e.g. Qwen2.5-0.5B-Instruct). Clicking the ✦ refine button in the
 //! composer runs the model once over the typed prompt and rewrites it clearer
-//! WITHOUT changing intent.
+//! WITHOUT changing intent. Both paths share input validation; the cloud path
+//! returns its rewrite through one structured output tool.
 //!
 //! We deliberately shell out to the user's own `llama-completion.exe` rather
 //! than linking a crate: it reuses their existing CUDA build, needs no C++
@@ -43,6 +45,10 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+mod cloud;
+pub use cloud::refine_cloud;
 
 /// The one-shot completion binary we drive (modern llama.cpp split `llama-cli`
 /// into an interactive tool and this non-interactive one).
@@ -187,10 +193,11 @@ pub struct RefineValidation {
     pub message: String,
 }
 
-/// Tracks in-flight child processes so a refine can be cancelled by id.
+/// Tracks in-flight local processes and provider requests for cancellation by id.
 #[derive(Default)]
 pub struct RefineState {
     running: Mutex<HashMap<String, Arc<Mutex<Child>>>>,
+    cloud_running: Mutex<HashMap<String, CancellationToken>>,
 }
 
 impl RefineState {
@@ -200,14 +207,18 @@ impl RefineState {
     fn unregister(&self, id: &str) {
         self.running.lock().remove(id);
     }
-    /// Kill an in-flight refine. Returns true if one was found.
+    /// Stop an in-flight local or provider refine. Returns true if one was found.
     pub fn cancel(&self, id: &str) -> bool {
+        let mut cancelled = false;
         if let Some(child) = self.running.lock().remove(id) {
             let _ = child.lock().kill();
-            true
-        } else {
-            false
+            cancelled = true;
         }
+        if let Some(token) = self.cloud_running.lock().remove(id) {
+            token.cancel();
+            cancelled = true;
+        }
+        cancelled
     }
 }
 
@@ -253,6 +264,28 @@ pub fn refine(
     text: &str,
     config: &RefineConfig,
 ) -> Result<String, String> {
+    let request = refine_request(text)?;
+    run_completion(
+        state,
+        request_id,
+        REFINE_SYSTEM,
+        &request,
+        config,
+        config.n_predict.clamp(16, 4096),
+        Some("0"),
+    )
+}
+
+/// Local editing instruction, using the same input limits as cloud refinement.
+fn refine_request(text: &str) -> Result<String, String> {
+    let text = validate_refine_text(text)?;
+    Ok(format!(
+        "{REFINE_USER_INSTRUCTIONS}\n\nText to refine:\n{text}"
+    ))
+}
+
+/// Validate without truncating the draft or mixing it with output instructions.
+fn validate_refine_text(text: &str) -> Result<&str, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("nothing to refine".to_string());
@@ -263,16 +296,7 @@ pub fn refine(
             "Prompt is too long to refine (over {MAX_INPUT_CHARS} characters). Refine is for instructions, not large pastes."
         ));
     }
-    let request = format!("{REFINE_USER_INSTRUCTIONS}\n\nText to refine:\n{text}");
-    run_completion(
-        state,
-        request_id,
-        REFINE_SYSTEM,
-        &request,
-        config,
-        config.n_predict.clamp(16, 4096),
-        Some("0"),
-    )
+    Ok(text)
 }
 
 /// Generate a chat title from the first user message with the SAME local

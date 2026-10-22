@@ -1,8 +1,8 @@
 //! Tauri IPC for the composer's prompt-refine feature.
 //!
 //! Thin wrappers over [`crate::prompt_refine`]. `run` does the ~1s model call on
-//! a blocking thread and returns the refined text; `cancel` kills an in-flight
-//! child by request id; `validate` powers the Preferences "Validate" button.
+//! a blocking thread; `cloud` uses a configured provider; `cancel` stops either
+//! by request id; `validate` powers the Preferences "Validate" button.
 
 use std::sync::Arc;
 
@@ -36,7 +36,19 @@ pub async fn prompt_refine_run(
     .map_err(|e| format!("refine task failed: {e}"))?
 }
 
-/// Cancel an in-flight refine (kills the llama-completion child).
+/// Refine a draft with the configured provider selected in Preferences.
+#[tauri::command]
+pub async fn prompt_refine_cloud(
+    state: State<'_, Arc<RefineState>>,
+    request_id: String,
+    text: String,
+    config: crate::api::client::ProviderConfigSnapshot,
+    model: String,
+) -> Result<String, String> {
+    prompt_refine::refine_cloud(state.inner(), &request_id, &text, &config, &model).await
+}
+
+/// Cancel an in-flight refine (provider request or llama-completion child).
 #[tauri::command]
 pub fn prompt_refine_cancel(state: State<'_, Arc<RefineState>>, request_id: String) -> bool {
     state.cancel(&request_id)

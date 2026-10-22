@@ -1079,6 +1079,31 @@ impl SessionStore {
         })
     }
 
+    /// Point a Build conversation at another project, overwriting the sticky
+    /// scope [`Self::set_workspace_and_model`] protects. Only for a move the
+    /// user asked for ("Move to" in the rail), after its folder has been
+    /// moved under that project's directory. Does not bump `updated_at`:
+    /// filing a conversation elsewhere is not activity in it.
+    pub fn set_workspace_root(
+        &self,
+        thread_id: &str,
+        workspace_root: &str,
+    ) -> Result<SessionMetadata, RuntimeError> {
+        let root = workspace_root.trim();
+        if root.is_empty() {
+            return Err(RuntimeError::InvalidState(
+                "a conversation cannot be moved to an empty project path".into(),
+            ));
+        }
+        self.update_metadata(thread_id, |meta| {
+            if meta.workspace_root.as_deref() == Some(root) {
+                return false;
+            }
+            meta.workspace_root = Some(root.to_string());
+            true
+        })
+    }
+
     /// Repair a Chat sidecar that acquired a Build workspace before surface
     /// ownership was enforced. A Chat conversation never has a workspace.
     pub fn clear_chat_workspace_root(&self, thread_id: &str) -> Result<(), RuntimeError> {

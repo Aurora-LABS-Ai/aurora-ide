@@ -37,7 +37,7 @@ use crate::api::client::ProviderConfigSnapshot;
 
 /// Bumped whenever [`CLOUD_SYSTEM`] or the tool changes, so the log shows
 /// which instruction produced each run.
-pub const CLOUD_PROMPT_VERSION: &str = "cloud-v1";
+pub const CLOUD_PROMPT_VERSION: &str = "cloud-v2";
 
 /// The tool the model answers with.
 pub const TOOL_NAME: &str = "suggest_replies";
@@ -63,10 +63,13 @@ You are given a brief of the conversation: every message the developer sent, in 
 
 Write the 4 messages this developer is most likely to send next.
 - In THEIR voice: match how they actually write — length, tone, wording, even their habits (terse \"go\", a typo-tolerant style, a standing instruction they repeat). Not a polite assistant's voice.
+- Short. Most real messages are under 12 words; aim for 6 to 12, never past 20. One thing per message, not a stacked list of instructions.
+- Plain words. No flags, option names, identifiers, file names or numbers unless they appear in the brief word for word. Nothing invented.
 - Anchored to the latest turn: answer the assistant's question if it asked one, take up what it offered, react to what failed, or move to the next open task.
-- Four different intents, for example: carry on with the next step, check or verify the work, correct or redirect the assistant, ask about something specific in the reply.
+- The four cover different moves. Always include one plain QUESTION about something in the reply (what does X mean, which one, did you use Y), and one REACTION or redirect in their words (what they dislike, what to do instead). The other two carry on or go deeper.
+- Do not offer re-running tests, typecheck, lint or builds unless they asked for a check earlier in this conversation.
 - Learn from the past suggestions: if they keep ignoring a kind of suggestion, stop offering it; if they keep rewriting suggestions a certain way, write them that way. Take their style and direction from those examples; never repeat an old message word for word — it answered a different moment.
-- Each at most 20 words. No numbering, no quotes.
+- No numbering, no quotes.
 
 Answer by calling the suggest_replies tool exactly once. Do not write anything else.";
 
@@ -81,15 +84,17 @@ You are given a brief of the conversation: every message they sent, in their own
 
 Write the 4 messages this person is most likely to send next.
 - In THEIR voice: match how they actually write — length, tone, wording, habits. Not a polite assistant's voice.
+- Short. Aim for 6 to 12 words, never past 20. One thing per message.
+- Plain words. No names, numbers or terms unless they appear in the brief word for word. Nothing invented.
 - Anchored to the latest turn: answer Aurora's question if it asked one, take up what it offered, push back on what looks wrong, or go deeper on the part that matters most.
-- Four different intents, for example: go deeper or continue, check a claim or ask for the source, change the angle or correct Aurora, ask about something specific in the reply.
+- The four cover different moves. Always include one plain QUESTION about something in the reply, and one REACTION or change of angle in their words. The other two go deeper or move on.
 - Learn from the past suggestions: if they keep ignoring a kind of suggestion, stop offering it; if they keep rewriting suggestions a certain way, write them that way. Take their style and direction from those examples; never repeat an old message word for word — it answered a different moment.
-- Each at most 20 words. No numbering, no quotes.
+- No numbering, no quotes.
 
 Answer by calling the suggest_replies tool exactly once. Do not write anything else.";
 
 /// Which instruction a chat-mode run used, for the log.
-pub const CHAT_PROMPT_VERSION: &str = "cloud-chat-v1";
+pub const CHAT_PROMPT_VERSION: &str = "cloud-chat-v2";
 
 fn tool_schema() -> ToolSchema {
     ToolSchema {
@@ -291,20 +296,8 @@ pub async fn run_cloud(config: &ProviderConfigSnapshot, model: &str, ctx: RunCon
 /// local path, so a reply is held to one standard whoever wrote it.
 fn read_answer(tool_input: Option<&Value>, text: &str) -> (Vec<String>, &'static str) {
     if let Some(input) = tool_input {
-        let lines: Vec<String> = input
-            .get("replies")
-            .and_then(Value::as_array)
-            .map(|replies| {
-                replies
-                    .iter()
-                    .filter_map(|r| match r {
-                        Value::String(s) => Some(s.clone()),
-                        Value::Object(_) => r.get("text").and_then(Value::as_str).map(str::to_string),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let mut lines: Vec<String> = Vec::new();
+        collect_reply_texts(input, &mut lines);
         let parsed = crate::prompt_refine::parse_suggestions_up_to(&lines.join("\n"), MAX_WORDS);
         if !parsed.is_empty() {
             return (parsed, "tool");
@@ -318,9 +311,84 @@ fn read_answer(tool_input: Option<&Value>, text: &str) -> (Vec<String>, &'static
     }
 }
 
+/// Every reply text in a tool answer, in document order, whatever shape the
+/// model gave it.
+///
+/// The schema asks for `replies[{text, intent}]`. The log from one week of
+/// real use (122 runs, 2026-10-19) shows MiniMax M3 answering under `reply`,
+/// `Replies`, `runs`, `item`, `rows.item`, and Cursor's composer once under
+/// `suggestions` — six runs out of seven lost, each holding four good replies.
+/// So the reader walks the whole value: an object with a `text` or `reply`
+/// string IS a reply; a bare string in an array is one; everything else is
+/// descended into. `intent` values are never replies.
+fn collect_reply_texts(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            let own = map.iter().find_map(|(k, v)| {
+                let key = k.to_ascii_lowercase();
+                if key == "text" || key == "reply" {
+                    v.as_str().map(str::to_string)
+                } else {
+                    None
+                }
+            });
+            if let Some(text) = own {
+                out.push(text);
+            }
+            // The object's own reply is read above; what is left to look at
+            // is anything nested under it (`{reply, item: {reply}}`).
+            for (k, v) in map {
+                if k.eq_ignore_ascii_case("intent") || !(v.is_object() || v.is_array()) {
+                    continue;
+                }
+                collect_reply_texts(v, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(s) => out.push(s.clone()),
+                    other => collect_reply_texts(other, out),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shapes MiniMax M3 and Cursor's composer actually answered with in
+    /// the first week's log. Each used to be "no usable suggestion".
+    #[test]
+    fn a_tool_answer_under_another_key_is_still_read() {
+        let shapes = [
+            json!({ "reply": "Walk me through the matcher", "intent": "continue",
+                    "item": { "reply": "Skip the route-group note", "intent": "correct" } }),
+            json!({ "runs": [ { "text": "now hit the tablet fix", "intent": "continue" },
+                              { "text": "layout shift still pops in", "intent": "verify" } ] }),
+            json!({ "Replies": [ { "text": "fix the line endings now", "intent": "continue" } ] }),
+            json!({ "item": { "text": "show me the full code", "intent": "verify" } }),
+            json!({ "rows": { "item": [ { "text": "map the runtime knobs", "intent": "continue" } ] } }),
+            json!({ "suggestions": [ "ok so do i tell him go ahead", "give me the exact curl" ] }),
+        ];
+        let expected = [2, 2, 1, 1, 1, 2];
+        for (shape, want) in shapes.iter().zip(expected) {
+            let (suggestions, via) = read_answer(Some(shape), "");
+            assert_eq!(via, "tool", "{shape}");
+            assert_eq!(suggestions.len(), want, "{shape}");
+        }
+    }
+
+    /// An `intent` value is a label, never a reply.
+    #[test]
+    fn an_intent_is_never_read_as_a_reply() {
+        let input = json!({ "replies": [ { "intent": "continue", "text": "go" } ] });
+        let (suggestions, _) = read_answer(Some(&input), "");
+        assert_eq!(suggestions, vec!["go"]);
+    }
 
     #[test]
     fn a_tool_answer_is_read_from_its_replies() {

@@ -93,7 +93,8 @@ in the plan below unless Alvan asks for a probe.
 
 ## What is actually hardcoded
 
-Measured across the 51 partials on branch `feat/icon-rail`, 2026-10-01:
+Measured across the 51 partials on branch `feat/icon-rail`, 2026-10-01.
+The directory now has 58 partials (`01-root.css` through `58-inline-canvas.css`).
 
 | Category | Literal | Via token | Verdict |
 |---|---|---|---|

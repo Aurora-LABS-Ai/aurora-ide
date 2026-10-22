@@ -66,9 +66,11 @@ Then open Settings → Providers and let Aurora detect it.
 
 ## 5. Where Things Live
 
-- Data root (Windows): `%LOCALAPPDATA%\AuroraIDE\` — `sessions\` (JSONL chat history),
-  `data\aurora.db` (SQLite settings/providers/themes), `logs\` (`aurora.log`,
-  `aurora-crash.log`), `code-index\`, `checkpoints\`.
+- Data root (Windows): `%LOCALAPPDATA%\AuroraIDE\`. Build chats are
+  `projects\<slug>\<thread_id>\`. Aurora Chat is `Chats\<thread_id>\`. The flat `sessions\`
+  folder is pre-2026-09-20 history only. Also here: `data\aurora.db` (SQLite settings,
+  providers, themes, usage), `logs\` (`aurora.log`, `aurora-crash.log`), each project's
+  `code-index\` inside its project folder, and `checkpoints\`.
 - MCP config: `~/.aurora/mcp.json`.
 - Frontend: `src/apps/{agent,ide}`, `src/kernel`, `src/bridge`. Backend: `src-tauri/src/`
   (`agent_runtime/`, `api/`, `commands/`, `tools/`, `code_index/`, …).

@@ -1,15 +1,24 @@
 /**
  * Agent Window — Left rail (projects + chats) [view].
  *
- * Codex-style sidebar tree, multi-project:
- *   - "Projects" is a collapsible section (click the header to hide/show every
- *     project at once).
- *   - Each project row is itself collapsible. Clicking a project title ONLY
+ * Projects as groups, chats under each (probe
+ * `Documents/aurora-rail-projects-designs.html`, card 02, Alvan's pick
+ * 2026-10-19), multi-project:
+ *   - A global "Pinned" section floats pinned CONVERSATIONS (from any project)
+ *     on top. Pinning is a thing you do to a chat, so it keeps its own place.
+ *   - Below it, every project is a row, newest activity first; no section
+ *     header, no Recent list (search covers that, and a chat in two places
+ *     was the thing this layout removes).
+ *   - Each project row is collapsible. Clicking a project title ONLY
  *     expands/collapses its chats — it never re-scopes the window. Hovering a
- *     project reveals a pencil that starts a NEW chat in that project.
+ *     project reveals a pencil that starts a NEW chat in that project. A
+ *     folded row shows how many chats it hides; the count is exactly the rows
+ *     under it.
+ *   - Under an open project: its newest chats, then "Show N more". Grown
+ *     groups are remembered.
  *   - Clicking a chat opens it (and binds the window to that chat's project).
- *   - A global "Pinned" section floats pinned chats (from any project) on top.
- *   - The top `+` opens a folder picker to ADD a project.
+ *   - The top `+` opens a folder picker to ADD a project; the sort and the
+ *     fold-all controls sit beside it.
  *   - Projects can be re-ordered (recent activity / name / oldest).
  *
  * Chats for every project come from the store's `allThreads` (one unscoped
@@ -24,7 +33,8 @@ import { writeClipboardText } from "@/kernel/lib/clipboard";
 import { openFileDialog, openInTerminal, revealInExplorer } from "@/kernel/lib/ipc/tauri";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
 import { describeThreadTime } from "@/apps/agent/lib/time/thread-time";
-import { recentChats } from "@/apps/agent/lib/thread/recent-chats";
+import { maybeGenerateTitle } from "@/apps/agent/hooks/conversation/send/title";
+import { rankByUsage, readModelUsage } from "@/apps/agent/lib/model/model-usage";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ScrollingLabel } from "@/apps/agent/shared/ScrollingLabel";
 import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
@@ -63,9 +73,28 @@ const SHOW_ALL_PROJECTS_KEY = "agw-rail-projects-show-all";
  *  "Show more" affordance to reveal the rest. */
 const PROJECTS_PREVIEW_LIMIT = 8;
 
-/** Whether the Recent / Pinned shortcuts are folded away. Remembered like the
+/** How many chats an open project shows before "Show N more". */
+const PROJECT_CHATS_PREVIEW = 5;
+/** How many most-used models the row menu's Model › offers beside the current one —
+ *  the composer picker's own short list (`RECENT_MAX` there). A menu is not a
+ *  catalogue: forty rows in a flyout ran past the window (2026-10-19). */
+const MENU_MODELS_MAX = 5;
+/** How many projects Move to › lists before "Another folder…". */
+const MENU_PROJECTS_MAX = 8;
+/** Projects whose chat list the user grew past the preview, remembered. */
+const GROWN_PROJECTS_KEY = "agw-rail-projects-grown";
+
+function loadGrownProjects(): ReadonlySet<string> {
+  try {
+    const raw = localStorage.getItem(GROWN_PROJECTS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** Whether the Pinned shortcut is folded away. Remembered like the
  *  other rail preferences — a section you shut should stay shut. */
-const RECENT_COLLAPSED_KEY = "agw-rail-recent-collapsed";
 const PINNED_COLLAPSED_KEY = "agw-rail-pinned-collapsed";
 /** Aurora Chat's folded day groups, by bucket id. */
 const DAYS_COLLAPSED_KEY = "agw-rail-days-collapsed";
@@ -299,12 +328,7 @@ export const LeftRail: React.FC = () => {
   const [menu, setMenu] = useState<RailMenuState | null>(null);
   const [actionNotice, setActionNotice] = useState<RailActionNotice | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [projectsCollapsed, setProjectsCollapsed] = useState(false);
-  const [recentCollapsed, setRecentCollapsed] = useState<boolean>(
-    () =>
-      typeof localStorage !== "undefined" &&
-      localStorage.getItem(RECENT_COLLAPSED_KEY) === "1",
-  );
+  const [grownProjects, setGrownProjects] = useState<ReadonlySet<string>>(loadGrownProjects);
   const [pinnedCollapsed, setPinnedCollapsed] = useState<boolean>(
     () =>
       typeof localStorage !== "undefined" &&
@@ -356,16 +380,6 @@ export const LeftRail: React.FC = () => {
   const chatDayGroups = useMemo(
     () => (chatSurface ? groupChatsByDay(filtered.filter((t) => !t.pinned)) : []),
     [chatSurface, filtered],
-  );
-
-  // The chats you touched last, from every project (see `lib/thread/recent-chats`).
-  // Absent during a search: the rail is then showing matches, and a shortcut
-  // back to what you already had is not what you asked it for.
-  // Build only — Aurora Chat's day groups already lead with the newest chats,
-  // so the section would list the same rows twice. Not computed there at all.
-  const recent = useMemo(
-    () => (q || chatSurface ? [] : recentChats(filtered)),
-    [chatSurface, filtered, q],
   );
 
   // Archived chats (every project), newest-archived first — powers the Archived
@@ -439,8 +453,20 @@ export const LeftRail: React.FC = () => {
   );
 
   const isOpen = (root: string) => (q ? true : (expanded[root] ?? root === projectRoot));
-  const projectsOpen = q ? true : !projectsCollapsed;
   const pinnedOpen = q ? true : !pinnedCollapsed;
+
+  // "Show N more" under a project: grown groups stay grown across restarts.
+  const toggleGrown = (root: string) =>
+    setGrownProjects((current) => {
+      const next = new Set(current);
+      if (!next.delete(root)) next.add(root);
+      try {
+        localStorage.setItem(GROWN_PROJECTS_KEY, JSON.stringify([...next]));
+      } catch {
+        /* ignore quota / privacy-mode failures */
+      }
+      return next;
+    });
 
   const cycleSort = () => {
     const next = SORT_ORDER[(SORT_ORDER.indexOf(sortMode) + 1) % SORT_ORDER.length];
@@ -487,7 +513,6 @@ export const LeftRail: React.FC = () => {
     });
   };
 
-  const toggleRecent = () => flipCollapsed(setRecentCollapsed, RECENT_COLLAPSED_KEY);
   const togglePinned = () => flipCollapsed(setPinnedCollapsed, PINNED_COLLAPSED_KEY);
   const toggleDay = (id: string) =>
     setCollapsedDays((current) => {
@@ -604,6 +629,78 @@ export const LeftRail: React.FC = () => {
     );
   };
 
+  const copyChatId = async (threadId: string) => {
+    const copied = await writeClipboardText(threadId);
+    setActionNotice(
+      copied
+        ? { message: "Chat id copied", tone: "success" }
+        : { message: "Couldn’t copy the chat id.", tone: "error" },
+    );
+  };
+
+  const revealChatFolder = async (threadId: string) => {
+    try {
+      await revealInExplorer(await threadService.threadFolder(threadId));
+      setActionNotice({ message: "Opened the chat's folder", tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] reveal chat folder failed:", error);
+      setActionNotice({ message: "Couldn’t open this chat's folder.", tone: "error" });
+    }
+  };
+
+  // Files the chat under another project: its folder moves on disk, the rail
+  // re-reads, and if it is the open chat it stays open under its new project.
+  const moveChat = async (thread: ThreadSummary, root: string) => {
+    if (runningIds.has(thread.id)) {
+      setActionNotice({ message: "Stop this chat before moving it.", tone: "error" });
+      return;
+    }
+    try {
+      await threadService.moveThread(thread.id, root);
+      await refreshThreads();
+      setExpanded((prev) => ({ ...prev, [root]: true }));
+      if (thread.id === currentThreadId) openChat(thread.id, root);
+      setActionNotice({ message: `Moved to ${folderName(root)}`, tone: "success" });
+    } catch (error) {
+      console.error("[left-rail] move chat failed:", error);
+      const detail = error instanceof Error ? error.message : String(error);
+      setActionNotice({ message: detail || "Couldn’t move this chat.", tone: "error" });
+    }
+  };
+
+  // Asks the title maker for a fresh name from the chat's first message, the
+  // same path a new chat takes. Says so when the maker is off rather than
+  // doing nothing.
+  const regenerateTitle = async (thread: ThreadSummary) => {
+    if (useAgentSettingsStore.getState().titleMakerMode === "off") {
+      setActionNotice({
+        message: "Turn on Chat titles in Preferences to generate titles.",
+        tone: "error",
+      });
+      return;
+    }
+    try {
+      const loaded = await threadService.loadThread(thread.id);
+      const first = loaded?.messages.find((m) => m.role === "user")?.content?.trim();
+      if (!first) {
+        setActionNotice({ message: "This chat has no message to name it from.", tone: "error" });
+        return;
+      }
+      const before = thread.title;
+      await maybeGenerateTitle(thread.id, first);
+      const after =
+        useAgentChatStore.getState().allThreads.find((t) => t.id === thread.id)?.title ?? before;
+      setActionNotice(
+        after !== before
+          ? { message: "Title regenerated", tone: "success" }
+          : { message: "The title maker gave nothing new.", tone: "error" },
+      );
+    } catch (error) {
+      console.error("[left-rail] regenerate title failed:", error);
+      setActionNotice({ message: "Couldn’t regenerate the title.", tone: "error" });
+    }
+  };
+
   const openChatMenu = (event: React.MouseEvent, thread: ThreadSummary) => {
     event.preventDefault();
     event.stopPropagation();
@@ -640,68 +737,176 @@ export const LeftRail: React.FC = () => {
             onSelect: () => setPendingDelete(thread),
           },
         ]
-      : [
-          {
-            // First, and the only entry that OPENS something: it is the reason
-            // most people reach for this menu on a chat they can already click.
-            icon: "panel-right",
-            label: "Open in side panel",
-            onSelect: () =>
-              openChatTab(
-                thread.id,
-                thread.title,
-                thread.workspaceRoot ?? null,
-                chatSurface ? "chat" : "build",
-              ),
-          },
-          {
-            // Directly under "Open in side panel", and the second entry that
-            // opens something: it answers the same question a project row's
-            // "Project details" does, one level down, and lands in the same
-            // dock so the pair reads as one idea.
-            icon: "sliders",
-            label: "Conversation details",
-            onSelect: () =>
-              useAgentWorkspaceStore
-                .getState()
-                .openSessionTab(thread.id, thread.title || "New Chat"),
-          },
-          {
-            icon: "file-edit",
-            label: "Rename chat",
-            separatorBefore: true,
-            onSelect: () => setRenamingId(thread.id),
-          },
-          {
-            icon: "files",
-            label: "Duplicate chat",
-            onSelect: () => void duplicateChat(thread),
-          },
-          {
-            icon: "copy",
-            label: "Copy chat as Markdown",
-            onSelect: () => void copyChatAsMarkdown(thread.id),
-          },
-          {
-            icon: "pin",
-            label: thread.pinned ? "Unpin chat" : "Pin chat",
-            separatorBefore: true,
-            onSelect: () => void togglePin(thread.id),
-          },
-          {
-            icon: "archive",
-            label: "Archive chat",
-            onSelect: () => void toggleArchive(thread.id),
-          },
-          {
-            icon: "trash",
-            label: "Delete chat…",
-            danger: true,
-            separatorBefore: true,
-            onSelect: () => setPendingDelete(thread),
-          },
-        ];
+      : buildChatMenu(thread);
     setMenu({ x: event.clientX, y: event.clientY, items, anchor });
+  };
+
+  // Move a chat to a folder that is not in the rail yet (or is, further down
+  // the list than Move to › shows). The same picker the `+` uses.
+  const moveChatToPickedFolder = async (thread: ThreadSummary) => {
+    try {
+      const picked = await openFileDialog({ directory: true });
+      const root = Array.isArray(picked) ? picked[0] : picked;
+      if (typeof root === "string" && root.length > 0) await moveChat(thread, root);
+    } catch (err) {
+      console.error("[left-rail] pick folder to move failed:", err);
+    }
+  };
+
+  /**
+   * The active chat's menu, in four groups (probe card B2): what opens it,
+   * what you do to the row, what reads it, and the two that end it.
+   *
+   * `Move to ›` and `Model ›` are flyouts, and a flyout is a short list, not
+   * a catalogue: the first version listed every configured model (forty rows,
+   * taller than the window) and every project. Model › now shows the chat's
+   * model and the five most-used ones, the composer picker's own short list;
+   * anything else is picked in the open chat's composer. Move to › shows the
+   * first projects in rail order and "Another folder…" for the rest.
+   * Aurora Chat has no projects and no per-chat model pin, so those two rows
+   * are left out there rather than greyed.
+   */
+  const buildChatMenu = (thread: ThreadSummary): RailMenuItem[] => {
+    const unread = !!unseenDone[thread.id];
+    const chat = useAgentChatStore.getState();
+    const otherProjects = chatSurface
+      ? []
+      : projects.filter((root) => root !== thread.workspaceRoot);
+    const currentModel = chat.threadModels[thread.id] ?? thread.model ?? null;
+    const allModels = chatSurface ? [] : useAgentSettingsStore.getState().getAvailableModels();
+    const modelKey = (m: { providerId: string; model: string }) => `${m.providerId}:${m.model}`;
+    const byKey = new Map(allModels.map((m) => [modelKey(m), m]));
+    const mostUsed = rankByUsage(
+      [...byKey.keys()].filter((key) => key !== currentModel),
+      readModelUsage(),
+      Date.now(),
+      MENU_MODELS_MAX,
+    );
+    // The chat's own model first, then the most used; a fresh install with no
+    // history gets the first few configured ones rather than an empty list.
+    const modelRows = [
+      ...(currentModel && byKey.has(currentModel) ? [currentModel] : []),
+      ...(mostUsed.length > 0
+        ? mostUsed
+        : [...byKey.keys()].filter((key) => key !== currentModel).slice(0, MENU_MODELS_MAX)),
+    ].map((key) => byKey.get(key)!);
+    const items: RailMenuItem[] = [
+      {
+        // First, and the entry that OPENS something: it is the reason most
+        // people reach for this menu on a chat they can already click.
+        icon: "panel-right",
+        label: "Open in side panel",
+        onSelect: () =>
+          openChatTab(
+            thread.id,
+            thread.title,
+            thread.workspaceRoot ?? null,
+            chatSurface ? "chat" : "build",
+          ),
+      },
+      {
+        icon: "pin",
+        label: thread.pinned ? "Unpin" : "Pin",
+        separatorBefore: true,
+        onSelect: () => void togglePin(thread.id),
+      },
+      {
+        icon: unread ? "eye" : "eye-off",
+        label: unread ? "Mark as read" : "Mark as unread",
+        onSelect: () =>
+          unread ? chat.clearUnseenDone(thread.id) : chat.markUnseenDone(thread.id),
+      },
+      {
+        icon: "file-edit",
+        label: "Rename",
+        onSelect: () => setRenamingId(thread.id),
+      },
+      {
+        icon: "refine",
+        label: "Regenerate title",
+        onSelect: () => void regenerateTitle(thread),
+      },
+      {
+        icon: "files",
+        label: "Duplicate",
+        onSelect: () => void duplicateChat(thread),
+      },
+    ];
+    if (!chatSurface) {
+      items.push({
+        icon: "folder",
+        label: "Move to",
+        children: [
+          ...otherProjects.slice(0, MENU_PROJECTS_MAX).map((root) => ({
+            icon: "folder" as const,
+            label: folderName(root),
+            onSelect: () => void moveChat(thread, root),
+          })),
+          {
+            icon: "external",
+            label: "Another folder…",
+            separatorBefore: otherProjects.length > 0,
+            onSelect: () => void moveChatToPickedFolder(thread),
+          },
+        ],
+      });
+      items.push({
+        icon: "providers",
+        label: "Model",
+        disabled: modelRows.length === 0,
+        children: modelRows.map((m) => {
+          const selection = modelKey(m);
+          return {
+            icon: "cpu",
+            label: m.label,
+            meta: m.providerName || undefined,
+            checked: selection === currentModel,
+            onSelect: () => void chat.setThreadModel(thread.id, selection),
+          };
+        }),
+      });
+    }
+    items.push(
+      {
+        // Answers the same question a project row's "Project details" does,
+        // one level down, and lands in the same dock.
+        icon: "sliders",
+        label: "Conversation details",
+        separatorBefore: true,
+        onSelect: () =>
+          useAgentWorkspaceStore
+            .getState()
+            .openSessionTab(thread.id, thread.title || "New Chat"),
+      },
+      {
+        icon: "copy",
+        label: "Copy as Markdown",
+        onSelect: () => void copyChatAsMarkdown(thread.id),
+      },
+      {
+        icon: "copy",
+        label: "Copy chat id",
+        onSelect: () => void copyChatId(thread.id),
+      },
+      {
+        icon: "external",
+        label: "Show in folder",
+        onSelect: () => void revealChatFolder(thread.id),
+      },
+      {
+        icon: "archive",
+        label: "Archive",
+        separatorBefore: true,
+        onSelect: () => void toggleArchive(thread.id),
+      },
+      {
+        icon: "trash",
+        label: "Delete…",
+        danger: true,
+        onSelect: () => setPendingDelete(thread),
+      },
+    );
+    return items;
   };
 
   const openProjectMenu = (event: React.MouseEvent, root: string) => {
@@ -1013,6 +1218,34 @@ export const LeftRail: React.FC = () => {
           <AgentIcon name="plus" size={17} />
         </button>
         <div style={{ flex: 1 }} />
+        {/* The project list has no header of its own any more, so its two
+            controls live up here: the order, and fold / unfold every project. */}
+        {!chatSurface && projects.length > 0 && (
+          <>
+            <button
+              type="button"
+              className="agw-rail-sort"
+              onClick={cycleSort}
+              title={`Sort projects: ${SORT_LABEL[sortMode]} (click to change)`}
+            >
+              <AgentIcon name="sliders" size={12} />
+              <span>{SORT_LABEL[sortMode]}</span>
+            </button>
+            <button
+              type="button"
+              className="agw-rail-collapse-all"
+              onClick={toggleAllProjects}
+              title={anyProjectOpen ? "Collapse all projects" : "Expand all projects"}
+              aria-label={anyProjectOpen ? "Collapse all projects" : "Expand all projects"}
+            >
+              <AgentIcon
+                name="chevrons-left"
+                size={13}
+                style={{ transform: anyProjectOpen ? "rotate(-90deg)" : "rotate(90deg)" }}
+              />
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="agw-icon-btn"
@@ -1103,44 +1336,6 @@ export const LeftRail: React.FC = () => {
           </>
         )}
 
-        {/* Recent — the flat way back to the last few chats, across every
-            project. Same header, caret and collapse as Projects; `data-flat`
-            because two sticky headers in one scroller would pin to the same
-            edge and overlap, and a five-row section never needs to pin.
-
-            Build only. Build's rail is a project tree, so the last few chats
-            are genuinely hard to reach and a flat shortcut earns its rows.
-            Aurora Chat is already a list ordered by when — "Today" IS recent,
-            and the section repeated those same chats a few pixels above
-            themselves. Two rows for one conversation is not a shortcut. */}
-        {!chatSurface && recent.length > 0 && (
-          <>
-            <div className="agw-rail-section" data-flat="">
-              <button
-                type="button"
-                className="agw-rail-section-toggle"
-                aria-expanded={!recentCollapsed}
-                onClick={toggleRecent}
-                title={recentCollapsed ? "Expand recent chats" : "Collapse recent chats"}
-              >
-                <AgentIcon
-                  name="chevron-down"
-                  size={12}
-                  className="agw-rail-project-caret"
-                  style={{ transform: recentCollapsed ? "rotate(-90deg)" : "none" }}
-                />
-                <span>Recent</span>
-              </button>
-            </div>
-            <Collapse open={!recentCollapsed}>
-              {recent.map((t) =>
-                renderChat(t, t.workspaceRoot ? folderName(t.workspaceRoot) : undefined),
-              )}
-            </Collapse>
-            <div style={{ height: 6 }} />
-          </>
-        )}
-
         {/* Aurora Chat: the same chats, grouped by WHEN instead of by project.
             There is nothing to group by otherwise, and a flat newest-first list
             stops being navigable somewhere around forty entries. Rows are the
@@ -1192,71 +1387,10 @@ export const LeftRail: React.FC = () => {
           </>
         )}
 
-        {/* Projects (collapsible whole section) — Build only. */}
+        {/* Projects as groups, chats under each — Build only. No section
+            header: the project rows ARE the list. */}
         {!chatSurface && (
         <>
-        <div className="agw-rail-section">
-          <button
-            type="button"
-            className="agw-rail-section-toggle"
-            aria-expanded={projectsOpen}
-            onClick={() => setProjectsCollapsed((c) => !c)}
-            title={projectsOpen ? "Collapse projects" : "Expand projects"}
-          >
-            <AgentIcon
-              name="chevron-down"
-              size={12}
-              className="agw-rail-project-caret"
-              style={{ transform: projectsOpen ? "none" : "rotate(-90deg)" }}
-            />
-            <span>Projects</span>
-          </button>
-          {/* Scope toggle, beside the order button so view controls share one
-              corner. "8 of 21" names what you're looking at (a preview), and
-              the header row itself is sticky in the scroller — so this stays
-              one click away from anywhere inside the expanded list. */}
-          {projectsOpen && !q && projects.length > PROJECTS_PREVIEW_LIMIT && (
-            <button
-              type="button"
-              className="agw-rail-scope"
-              onClick={toggleShowAllProjects}
-              aria-expanded={projectsShowAll}
-              title={
-                projectsShowAll
-                  ? `Show only the first ${PROJECTS_PREVIEW_LIMIT} projects`
-                  : `Show all ${projects.length} projects`
-              }
-            >
-              {projectsShowAll
-                ? "Show less"
-                : `${PROJECTS_PREVIEW_LIMIT} of ${projects.length}`}
-            </button>
-          )}
-          <button
-            type="button"
-            className="agw-rail-sort"
-            onClick={cycleSort}
-            title={`Sort projects: ${SORT_LABEL[sortMode]} (click to change)`}
-          >
-            <AgentIcon name="sliders" size={12} />
-            <span>{SORT_LABEL[sortMode]}</span>
-          </button>
-          <button
-            type="button"
-            className="agw-rail-collapse-all"
-            onClick={toggleAllProjects}
-            title={anyProjectOpen ? "Collapse all projects" : "Expand all projects"}
-            aria-label={anyProjectOpen ? "Collapse all projects" : "Expand all projects"}
-          >
-            <AgentIcon
-              name="chevrons-left"
-              size={13}
-              style={{ transform: anyProjectOpen ? "rotate(-90deg)" : "rotate(90deg)" }}
-            />
-          </button>
-        </div>
-
-        <Collapse open={projectsOpen}>
           {projects.length === 0 ? (
             <div className="agw-rail-empty">No projects yet. Press + to add one.</div>
           ) : (
@@ -1303,9 +1437,18 @@ export const LeftRail: React.FC = () => {
                         className="agw-rail-project-name"
                         text={folderName(root)}
                       />
-                      {meta && (
+                      {/* The count is exactly the rows under this project —
+                          a pinned chat has moved to Pinned and is not counted
+                          twice — and it shows only while the project is
+                          folded, where it says what the fold hides. */}
+                      {(meta || chats.length > 0) && (
                         <span className="agw-rail-project-meta" aria-hidden>
-                          <span className="agw-rail-project-count">{meta.count}</span>
+                          <span
+                            className="agw-rail-project-count"
+                            style={open ? { visibility: "hidden" } : undefined}
+                          >
+                            {chats.length}
+                          </span>
                           {age.label && (
                             <span className="agw-rail-project-age">{age.label}</span>
                           )}
@@ -1357,60 +1500,30 @@ export const LeftRail: React.FC = () => {
                           {q ? "No chats match." : "No chats yet."}
                         </div>
                       ) : (
-                        /* Grouped by WHEN, with the same folding header Aurora
-                           Chat's list has used all along — one pattern, both
-                           surfaces.
-
-                           A project accumulates conversations whose titles are
-                           all generated from a first message, so twenty rows
-                           read "Architecture of account-managemen…" and there
-                           is nothing to pick between them. A date on each row
-                           does not fix that: a hundred chats from one afternoon
-                           put the same string on a hundred rows, which is a
-                           column of noise. The date belongs on the BOUNDARY,
-                           once, where it also earns a chevron — the older
-                           buckets are exactly the ones worth folding away.
-
-                           Fold state is keyed by project AND bucket, so
-                           collapsing "Aug 29" in one project does not collapse
-                           it in another. */
-                        groupChatsByDay(chats).map((group) => {
-                          const dayKey = `${root}::${group.id}`;
-                          // Forced open while searching — the same rule Pinned,
-                          // Recent and Projects follow: a chat that matches must
-                          // not stay hidden behind a fold you shut yesterday.
-                          const dayOpen = q ? true : !collapsedDays.has(dayKey);
+                        /* The newest rows, then "Show N more". Flat on
+                           purpose: inside a group of five, a date header per
+                           day was more chrome than chats. A search shows every
+                           match — you cannot find what is folded away. */
+                        (() => {
+                          const grown = q !== "" || grownProjects.has(root);
+                          const shown = grown ? chats : chats.slice(0, PROJECT_CHATS_PREVIEW);
+                          const hidden = chats.length - shown.length;
                           return (
-                            <React.Fragment key={dayKey}>
-                              <div className="agw-rail-section" data-flat="">
+                            <>
+                              {shown.map((t) => renderChat(t))}
+                              {(hidden > 0 || (grown && !q && chats.length > PROJECT_CHATS_PREVIEW)) && (
                                 <button
                                   type="button"
-                                  className="agw-rail-section-toggle"
-                                  aria-expanded={dayOpen}
-                                  onClick={() => toggleDay(dayKey)}
-                                  title={
-                                    dayOpen
-                                      ? `Collapse ${group.label}`
-                                      : `Expand ${group.label}`
-                                  }
+                                  className="agw-rail-more"
+                                  onClick={() => toggleGrown(root)}
+                                  aria-expanded={grown}
                                 >
-                                  <AgentIcon
-                                    name="chevron-down"
-                                    size={12}
-                                    className="agw-rail-project-caret"
-                                    style={{
-                                      transform: dayOpen ? "none" : "rotate(-90deg)",
-                                    }}
-                                  />
-                                  <span>{group.label}</span>
+                                  {hidden > 0 ? `Show ${hidden} more` : "Show less"}
                                 </button>
-                              </div>
-                              <Collapse open={dayOpen}>
-                                {group.threads.map((t) => renderChat(t))}
-                              </Collapse>
-                            </React.Fragment>
+                              )}
+                            </>
                           );
-                        })
+                        })()
                       )}
                     </div>
                   </Collapse>
@@ -1418,8 +1531,19 @@ export const LeftRail: React.FC = () => {
               );
             })
           )}
-
-        </Collapse>
+          {/* The rest of a long project list, as a row where the list ends. */}
+          {!q && projects.length > PROJECTS_PREVIEW_LIMIT && (
+            <button
+              type="button"
+              className="agw-rail-more"
+              onClick={toggleShowAllProjects}
+              aria-expanded={projectsShowAll}
+            >
+              {projectsShowAll
+                ? "Show fewer projects"
+                : `Show ${projects.length - PROJECTS_PREVIEW_LIMIT} more projects`}
+            </button>
+          )}
         </>
         )}
 

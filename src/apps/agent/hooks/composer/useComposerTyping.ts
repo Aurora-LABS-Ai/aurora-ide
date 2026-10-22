@@ -628,16 +628,26 @@ export function useComposerTyping(
     if (!el) return;
     let width = el.clientWidth;
     let lineHeight = getComputedStyle(el).lineHeight;
+    let frame: number | null = null;
     const observer = new ResizeObserver(() => {
-      const nextLineHeight = getComputedStyle(el).lineHeight;
-      if (width === el.clientWidth && lineHeight === nextLineHeight) return;
-      width = el.clientWidth;
-      lineHeight = nextLineHeight;
-      ghostState.current.releaseHeight(el);
-      if (ghostElRef.current) ghostState.current.reserve(el);
+      // Releasing/reserving height changes this observed editor's own size.
+      // Keep that write outside observer delivery and coalesce resize bursts.
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const nextLineHeight = getComputedStyle(el).lineHeight;
+        if (width === el.clientWidth && lineHeight === nextLineHeight) return;
+        width = el.clientWidth;
+        lineHeight = nextLineHeight;
+        ghostState.current.releaseHeight(el);
+        if (ghostElRef.current) ghostState.current.reserve(el);
+      });
     });
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [editorRef]);
 
   // IME composition: the text is not committed until compositionend — running

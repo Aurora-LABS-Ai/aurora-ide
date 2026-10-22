@@ -699,6 +699,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_save,
             commands::threads::thread_create,
             commands::threads::thread_duplicate,
+            commands::threads::thread_folder,
+            commands::threads::thread_move_to_project,
             commands::threads::thread_copy_markdown,
             commands::threads::thread_load,
             commands::threads::thread_usage_breakdown,
@@ -709,6 +711,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::threads::thread_get_api_history,
             commands::threads::thread_update_title,
             commands::title_maker::generate_thread_title,
+            commands::title_maker::generate_thread_title_cloud,
             commands::threads::thread_set_pinned,
             // Aurora Chat's memory page.
             commands::chat_memory::chat_memory_list_facts,
@@ -1023,9 +1026,10 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::typing_assist::typing_assist_learn,
             commands::typing_assist::typing_assist_undo_correct,
             commands::typing_assist::typing_assist_flush,
-            // Composer prompt refinement (local llama.cpp GGUF)
+            // Composer prompt refinement (local llama.cpp GGUF or configured provider)
             commands::prompt_refine::prompt_refine_validate,
             commands::prompt_refine::prompt_refine_run,
+            commands::prompt_refine::prompt_refine_cloud,
             commands::prompt_refine::prompt_refine_title,
             commands::settings::get_launch_surface,
             commands::settings::set_launch_surface,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildOpenFilesContext } from "@/apps/agent/hooks/conversation/useAgentWindowSend";
+import { buildOpenFilesContext } from "@/apps/agent/hooks/conversation/send/context-blocks";
 
 /**
  * `<open_files>` tells the agent which files the user has open in the right

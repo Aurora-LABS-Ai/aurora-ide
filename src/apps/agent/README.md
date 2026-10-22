@@ -1,74 +1,45 @@
 # Agent Window — module guide
 
-> The standalone, **conversation-first** agent workspace (Codex-style), built as
-> an **isolated feature module** per the repo-root `global-AGENTS.md` rules. It has
-> its **own theme system** and never touches the IDE's global `--aurora-*` theme.
+The conversation window. It lives at `src/apps/agent/`. It has its own `--agw-*` theme
+and does not write those tokens onto the IDE's `--aurora-*` theme.
 
-## Module shape (matches `global-AGENTS.md` §1 + §3)
+The early `agent-window/` sketch (a flat `components/`, `LeftRail.tsx` at the root,
+phases F3–F7 still open) is gone. Those phases shipped. Current behavior is in
+`CLAUDE.md` and `DOCS/01-ARCHITECTURE.md`.
+
+## Layout
 
 ```
-agent-window/
-├── index.ts                 # PUBLIC ENTRY (barrel) — the only thing outsiders import
-├── README.md                # this file (what it is + invariants)
-├── types.ts                 # leaf layer: shared types (imports nothing in-module)
-├── components/              # view only — render, never orchestrate
-│   ├── AgentWindow.tsx      # root: <AgentThemeProvider><AgentShell/></AgentThemeProvider>
-│   ├── AgentThemeProvider.tsx
-│   ├── AgentShell.tsx       # PanelGroup: rail | conversation | dock
-│   ├── LeftRail.tsx         # projects + chats
-│   ├── ConversationPane.tsx # header + messages + composer
-│   └── RightDock.tsx        # tabbed dock: Review/Files/Browser/Terminal/Side chat
-├── store/                   # feature state (Zustand, persisted)
-│   ├── useAgentThemeStore.ts
-│   └── useAgentWorkspaceStore.ts
-└── theme/                   # theming concern: data + style + pure helpers
-    ├── tokens.ts            # tokensToCssVars() — token → --agw-* mapping
-    ├── themes.ts            # built-in agent themes (data)
-    └── agent-window.css     # base styles, scoped under .agw-root
+src/apps/agent/
+├── index.ts          public entry
+├── types.ts
+├── README.md
+├── adapters/         window launcher and other IDE-facing wrappers
+├── components/       views, grouped by concern (shell, conversation, composer, …)
+├── hooks/
+├── lib/
+├── services/
+├── settings/
+├── shared/
+├── store/            Zustand, grouped by concern
+├── theme/            tokens, themes, and agent-window/*.css (58 partials)
+└── tools/            display and approval metadata. Rust owns the implementations
 ```
 
-## Dependency direction (inward only)
+## Theme isolation
 
-`components → store → theme → types`. The view layer depends on state; state on
-theme data; everything on the leaf `types`. `types` imports nothing. No file
-imports the barrel (`index.ts`) — that would create a cycle.
+- Agent-window styles read `--agw-*` custom properties only, never `--aurora-*`.
+- Do not write agent tokens onto `document.documentElement`. `AgentThemeProvider`
+  applies them inline on the `.agw-root` wrapper, so they cascade only here.
+- A new color or size is a field on `AgentThemeTokens`, set in every theme in
+  `theme/themes.ts`, then consumed as `var(--agw-the-new-token)`.
+- Styles are the numbered partials under `theme/agent-window/`. The number is the
+  cascade order. There is no Tailwind in this window.
 
-## The one hard rule: theme isolation
+## Separate window
 
-- Agent-window styles read **`--agw-*` custom properties ONLY** — never `--aurora-*`.
-- **Never** write agent tokens onto `document.documentElement`. `AgentThemeProvider`
-  applies them inline on the `.agw-root` wrapper, so they cascade only here. The
-  IDE theme can't leak in; the agent theme can't leak out.
-- New color/size? Add a field to `AgentThemeTokens` (in `types.ts`), set it in
-  every theme in `theme/themes.ts`, then consume it as `var(--agw-the-new-token)`.
+The agent window is its own native OS window, not a panel inside the IDE shell.
 
-## Conventions (from global-AGENTS.md §2)
-
-- Imports at the top of the file; no inline imports.
-- One concern per file, ≤ ~400 lines. No business logic inside view files.
-- Switches over `DockTab` (and any union) use an exhaustive `never` default.
-- Stable public names: split files behind the same `index.ts` surface.
-- Tests live next to sources (`foo.ts` + `foo.test.ts`). **Known debt:** specs are
-  deferred while the repo's `vitest` runner is broken (see `.cursor/progression/lesson.md`).
-
-## Separate window (not embedded)
-
-The agent window is its **own native OS window**, NOT a panel inside the IDE shell:
-
-- `adapters/window.ts` → `openAgentWindow()` creates the `agent-window` WebView at
-  route `/agent-window` (opened from the title-bar Bot button).
-- `App.tsx` renders `<AgentWindow/>` when `location.pathname === "/agent-window"`.
-- `src-tauri/capabilities/default.json` lists `"agent-window"` so Tauri APIs work
-  in it (per-window-label permissions — a new window with no capability is inert).
-
-## Phase roadmap
-
-- **F1 (done):** isolated theme system + 3-zone shell skeleton.
-- **F2 (done):** standalone OS window + route + title-bar launcher; default theme
-  from `alvan-aurora-dark.json`; reuse real `AgentInputArea`; placeholder convo.
-- **F3:** wire the composer/messages to the real send pipeline (cross-window sync).
-- **F4:** Review dock backed by Monaco diff (open files *inside* Aurora).
-- **F5:** left rail real threads + projects.
-- **F6:** inline diff cards (stats-first) in the conversation.
-- **F7:** Files / Browser / Terminal dock tabs mount real surfaces.
-```
+- `adapters/window.ts` opens the `agent-window` WebView at `/agent-window`.
+- `App.tsx` renders it when `location.pathname === "/agent-window"`.
+- `src-tauri/capabilities/default.json` lists `"agent-window"` so Tauri APIs work in it.

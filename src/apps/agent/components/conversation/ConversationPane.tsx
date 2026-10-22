@@ -44,10 +44,8 @@ import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSugges
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { useAgentAutoScroll } from "@/apps/agent/hooks/conversation/useAgentAutoScroll";
-import {
-  requestReplySuggestions,
-  useAgentWindowSend,
-} from "@/apps/agent/hooks/conversation/useAgentWindowSend";
+import { useAgentWindowSend } from "@/apps/agent/hooks/conversation/useAgentWindowSend";
+import { requestReplySuggestions } from "@/apps/agent/hooks/conversation/send/reply-suggestions";
 import { useCliTask } from "@/apps/agent/hooks/conversation/useCliTask";
 
 /** Stable empty array so the suggestion selector never re-renders on misses. */

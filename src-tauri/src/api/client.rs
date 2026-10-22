@@ -113,6 +113,13 @@ pub struct ProviderConfigSnapshot {
     /// model isn't poisoned with unusable base64.
     #[serde(default)]
     pub supports_vision: bool,
+    /// Chat and Responses wires only: put a vision model's tool-result images
+    /// inside the tool output rather than in a user message right after it.
+    /// Off by default because some gateways drop an image there with a 200
+    /// and no error; the provider row's switch turns it on. See
+    /// `provider_kernel_adapter::openai_tool_result_split`.
+    #[serde(default)]
+    pub tool_images_in_result: bool,
 }
 
 impl ProviderConfigSnapshot {
@@ -433,6 +440,7 @@ mod tests {
             supports_thinking: false,
             reasoning: None,
             supports_vision: false,
+            tool_images_in_result: false,
         }
     }
 

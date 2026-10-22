@@ -1,5 +1,9 @@
 # Aurora Chat — session handoff (2026-09-04)
 
+> **2026-10-21.** Pickup note only. Do not write the constants in item 6 into
+> `CLAUDE.md`. Current values are schema 27, 49 native tools, 398 commands in
+> `generate_handler!`. The rest of this file is the state on 2026-09-04.
+
 **Read this first next session.** It is the exact state of the chat-mode
 image work at the moment the session ended, what is verified, what is not,
 and where to pick up. Companion docs: `DOCS/PLAN/chat-mode-design.md`
@@ -111,7 +115,9 @@ Registry `store_for_thread` fix; `tools/image/` (wire/client/assets/config/mod �
    - **Update `implementation-progress.md`** Phase 5 rows for: Path A (done, pending live verify), `/image` (done), provider description (new, not in the plan — add a line).
    - Append to `.knowledge/knowledge.md`: what shipped (this doc's §1–§5), and to `.knowledge/lesson.md` if anything breaks during the live check.
    - Full `pnpm test` + `cargo test` green.
-6. Constants to keep in sync in `CLAUDE.md`/`AGENTS.md` when you get there: `SCHEMA_VERSION = 25`, `BUILTIN_TOOL_COUNT = 44`, `generate_handler!` count +3 (`image_provider_test`, `image_provider_discover_models`, `image_direct_generate`).
+6. On 2026-09-04 the constants to sync were `SCHEMA_VERSION = 25` and
+   `BUILTIN_TOOL_COUNT = 44`, plus three image commands. Those numbers are historical.
+   Current constants live in `CLAUDE.md`.
 
 ---
 

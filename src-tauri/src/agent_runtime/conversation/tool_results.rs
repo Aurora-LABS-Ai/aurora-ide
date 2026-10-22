@@ -344,7 +344,10 @@ pub(super) fn clamp_or_move(
     spill_dir: Option<&std::path::Path>,
 ) -> String {
     let clamped = truncate_tool_content(tool, spilled);
-    if !dropped_fields(&clamped) {
+    let shortened = serde_json::from_str::<serde_json::Value>(&clamped)
+        .ok()
+        .is_some_and(|value| value.get("historyTruncated").and_then(|v| v.as_bool()) == Some(true));
+    if !shortened && !dropped_fields(&clamped) {
         return clamped;
     }
     let Some(dir) = spill_dir else {

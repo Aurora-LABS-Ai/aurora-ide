@@ -24,7 +24,7 @@ import { useEffect, useRef } from "react";
 import { auroraInvoke, auroraListen } from "@/kernel/lib/ipc/runtime";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { resolveThreadModel } from "@/apps/agent/lib/thread/thread-model";
-import type { AgentWindowSend } from "./useAgentWindowSend";
+import type { AgentWindowSend } from "./send/types";
 
 /** Wire shape of a dispatched task. Mirrors Rust's `TaskRequest`. */
 interface CliTaskRequest {

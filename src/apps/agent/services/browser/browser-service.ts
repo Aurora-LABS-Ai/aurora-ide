@@ -139,8 +139,21 @@ export async function getBrowserUrl(label: string): Promise<string> {
   return auroraInvoke<string>('browser_get_url', { label });
 }
 
+/**
+ * Turn the page's pick overlay on. It is painted in the window's live
+ * accent (and the ink that sits on it), read from `.agw-root` here because
+ * the page has no access to Aurora's CSS; Rust validates the strings before
+ * they land in the script.
+ */
 export async function activateInspector(label: string): Promise<void> {
-  await auroraInvoke('browser_activate_inspector', { label });
+  const root = typeof document === 'undefined' ? null : document.querySelector('.agw-root');
+  const style = root ? getComputedStyle(root) : null;
+  const read = (name: string) => style?.getPropertyValue(name).trim() || undefined;
+  await auroraInvoke('browser_activate_inspector', {
+    label,
+    accent: read('--agw-accent'),
+    accentFg: read('--agw-on-accent'),
+  });
 }
 
 export async function deactivateInspector(label: string): Promise<void> {

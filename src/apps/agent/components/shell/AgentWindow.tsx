@@ -31,6 +31,7 @@ import { useAgentEditorOpen } from "@/apps/agent/hooks/useAgentEditorOpen";
 import { useLocalProviderDetection } from "@/apps/agent/hooks/providers/useLocalProviderDetection";
 import { useAgentPathDrag } from "@/apps/agent/hooks/drag/useAgentPathDrag";
 import { useBackgroundProcessWatch } from "@/apps/agent/hooks/useBackgroundProcessWatch";
+import { useAgentTerminalWatch } from "@/apps/agent/hooks/useAgentTerminalWatch";
 import { useSubagentWatch } from "@/apps/agent/hooks/useSubagentWatch";
 import { useSubagentLiveStream } from "@/apps/agent/hooks/subagents/useSubagentLiveStream";
 import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBounds";
@@ -84,6 +85,7 @@ export const AgentWindow: React.FC = () => {
   // Background processes end whether or not anyone has the process panel open,
   // and a tool card in the transcript is one of the things that has to know.
   useBackgroundProcessWatch(currentThreadId);
+  useAgentTerminalWatch();
 
   // Sub-agents start and finish whether or not the Agents panel is open; the
   // list, the tab glyphs and the report cards all read one copy of that.

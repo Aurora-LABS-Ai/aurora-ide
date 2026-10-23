@@ -216,21 +216,27 @@ fn read_image_into(
         .map(|img| (img.width(), img.height()));
 
     let (encoded, width, height) = aurora_image::encode_for_vision(bytes);
-    // `encode_for_vision` reports (0, 0) when it could not decode — it returns
-    // the untouched bytes so a caller with a provider-acceptable format still
-    // has an image. Here that format is known to be one of four the APIs take,
-    // so the bytes are worth sending; the caption just cannot claim a size.
+    // `encode_for_vision` reports (0, 0) when it could not decode. Those bytes
+    // used to be sent anyway, on the theory that the format was one the APIs
+    // take. It was not an image at all: a 21-byte file that only began with the
+    // PNG signature drew HTTP 400 "Could not process image" from Anthropic,
+    // and the thread failed on every turn after (dogfood, 2026-10-22). Aurora
+    // decodes exactly the formats the providers accept, so if it cannot open
+    // the file, neither can they.
     let decoded = width != 0 && height != 0;
-    let media_type = if decoded {
-        aurora_image::ENCODED_MEDIA_TYPE
-    } else {
-        match kind {
-            ImageKind::Png => "image/png",
-            ImageKind::Jpeg => "image/jpeg",
-            ImageKind::Gif => "image/gif",
-            ImageKind::WebP => "image/webp",
-        }
-    };
+    if !decoded {
+        let reason = format!(
+            "starts with the {label} signature but is not a readable {label} image ({}). \
+             Nothing was shown; read it as bytes with a shell command if you need them.",
+            human_size(size),
+            label = kind.label(),
+        );
+        return ImageRead {
+            block: format!("{display_path} — {reason}"),
+            row: failed_row(display_path, &reason),
+        };
+    }
+    let media_type = aurora_image::ENCODED_MEDIA_TYPE;
 
     let src = cache_encoded(cache_dir, &encoded, decoded);
     let marker = build_marker(
@@ -329,10 +335,8 @@ fn caption(
             out.push_str(&format!(" Shown to you downscaled to {w}×{h}."));
         }
         (_, Some(_)) => out.push_str(" Shown to you at full size."),
-        // Undecodable: the bytes still go, since the format is one every vision
-        // API accepts, but promising a size Aurora never measured would be a
-        // guess dressed as a fact.
-        (_, None) => out.push_str(" Aurora could not decode it to measure or resize it; the file was sent as it is on disk."),
+        // Undecodable files never reach a caption: `read_image_into` refuses them.
+        (_, None) => {}
     }
     out
 }
@@ -640,6 +644,21 @@ mod tests {
         assert_eq!(result.row["success"], false);
         assert!(result.row["error"].is_string());
         assert!(aurora_image::find_marker(&result.block, 0).is_none());
+    }
+
+    /// Dogfood 2026-10-22: a 21-byte file with only the PNG signature was sent
+    /// as an image, Anthropic answered 400 "Could not process image", and the
+    /// thread failed on every turn after.
+    #[test]
+    fn a_file_with_only_an_image_signature_is_not_sent_as_an_image() {
+        let path = scratch("signature-only.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n\x00\x00binary\x00junk").expect("write");
+        assert_eq!(sniff_path(&path), Some(ImageKind::Png));
+
+        let result = read_into("sandbox/bin.png", &path, ImageKind::Png);
+        assert!(aurora_image::find_marker(&result.block, 0).is_none(), "{}", result.block);
+        assert!(result.block.contains("not a readable PNG image"), "{}", result.block);
+        assert_eq!(result.row["success"], false);
     }
 
     #[test]

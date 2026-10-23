@@ -263,10 +263,21 @@ pub(crate) fn describe_diagnosis(diagnosis: &MatchDiagnosis) -> String {
     ));
 
     for difference in &diagnosis.differences {
-        out.push_str(&format!(
-            "\n  line {}, column {} — you sent `{}`, the file has `{}`",
-            difference.line, difference.column, difference.sent, difference.found
-        ));
+        let (line, column) = (difference.line, difference.column);
+        out.push_str(&match (difference.sent.is_empty(), difference.found.is_empty()) {
+            (true, false) => format!(
+                "\n  line {line}, column {column} — the file has `{}` here, which your text is missing",
+                difference.found
+            ),
+            (false, true) => format!(
+                "\n  line {line}, column {column} — you sent `{}`, which the file does not have here",
+                difference.sent
+            ),
+            _ => format!(
+                "\n  line {line}, column {column} — you sent `{}`, the file has `{}`",
+                difference.sent, difference.found
+            ),
+        });
         // Codepoints earn their space only where the characters cannot be told
         // apart by looking at them, which is exactly the case that keeps
         // costing round trips.
@@ -300,12 +311,12 @@ pub(crate) fn window_note(window: Option<(usize, usize, usize)>) -> Option<Strin
     let (first, last, total) = window?;
     Some(if first == 0 || last == 0 {
         format!(
-            "None of this file has been read yet — it has {total} lines and the last read was \
+            "The last read returned no content — this version has {total} lines and was \
              refused as too large. Read the range you mean to edit first."
         )
     } else {
         format!(
-            "Only lines {first}-{last} of this file's {total} have been read. If the text you are \
+            "The last read returned lines {first}-{last} of this file's {total}. If the text you are \
              matching lies outside that window, read the range holding it before editing."
         )
     })
@@ -316,6 +327,10 @@ pub(crate) fn window_note(window: Option<(usize, usize, usize)>) -> Option<Strin
 /// batch-failure phrasings. `impact` is the code index's edit-impact note
 /// ("other files use what this file defines…"), attached to successful
 /// writes only — a failed edit changed nothing, so it has no impact.
+pub(crate) fn crlf_match_note(matched: bool) -> Option<&'static str> {
+    matched.then_some(" (matched across CRLF; untouched line endings were preserved on write)")
+}
+
 pub(crate) fn render_response(
     raw_path: &str,
     full_path: &str,
@@ -382,10 +397,7 @@ pub(crate) fn render_response(
             // to LF, filed a bug, and wrote the finding up. The file was
             // CRLF the whole time. A field that reads as damage will keep
             // producing reports of damage that did not happen.
-            let crlf_note = line_ending_normalized.then_some(
-                " (this file uses CRLF: the text was matched with line endings \
-                 folded to LF, and the file's own CRLF endings were preserved on write)",
-            );
+            let crlf_note = crlf_match_note(line_ending_normalized);
             let mut payload = json!({
                 "success": true,
                 "pending": false,
@@ -404,6 +416,8 @@ pub(crate) fn render_response(
                 // Named for what it describes — the match — so it cannot be
                 // read as a claim about the file on disk.
                 "matchedAcrossCrlf": line_ending_normalized,
+                "lineEndingsPreserved": true,
+                "lineEndingNote": crlf_note,
                 // Full before/after for the Review panel's diff. Capped per side;
                 // `null` past the cap (Review falls back to the stats summary).
                 "oldContent": diff_side(&original_content),
@@ -504,7 +518,7 @@ pub(crate) fn render_response(
                          same call produces, split it into a second call instead."
                     }
                     None => {
-                        "Nothing in the file resembles this text. Copy old_string verbatim from a \
+                        "No reliable near-match was found. Copy old_string verbatim from a \
                          file_read of this path — whitespace and indentation included — rather \
                          than adding more context around a guess."
                     }
@@ -877,7 +891,7 @@ mod tests {
         assert_eq!(parsed["success"], false);
         let hint = parsed["hint"].as_str().unwrap();
         assert!(
-            hint.contains("Only lines 235-250 of this file's 1588"),
+            hint.contains("The last read returned lines 235-250 of this file's 1588"),
             "the window is named with real numbers: {hint}"
         );
         assert_eq!(parsed["readWindow"]["firstLine"], 235);

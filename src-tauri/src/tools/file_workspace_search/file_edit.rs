@@ -1,5 +1,6 @@
 //! `file_edit` — the one surgical editor. Exact-text find-and-replace,
-//! single or batch, atomic.
+//! single or batch. In a batch a failed edit is skipped and reported; the
+//! rest apply.
 //!
 //! This is the unified replacement for the old `search_replace` /
 //! `multi_search_replace` / `file_patch` trio: one tool, two shapes.
@@ -9,7 +10,7 @@
 //! `crate::commands::editor_ops::apply_search_replace` /
 //! `apply_multi_search_replace` and renders results via the shared
 //! [`super::search_replace`] helpers, so matching, uniqueness,
-//! `replace_all`, atomic rollback, and the Review-panel diff payload
+//! `replace_all`, rollback of a failed disk write, and the Review-panel diff payload
 //! all behave exactly as before.
 //!
 //! ## Read-before-edit guard
@@ -96,8 +97,9 @@ impl ToolExecutor for FileEditTool {
                           Many edits to ONE file: pass `edits` (an array) plus the top-level `path`. \
                           Edits across MULTIPLE files in ONE call: give each item in `edits` its own \
                           `path` (the top-level `path` becomes the default for items that omit it). \
-                          The whole batch is atomic — every edit applies against its file's original \
-                          snapshot, and if any edit fails NO file is changed. old_string must match \
+                          Every edit matches against its file's original snapshot. An edit that \
+                          fails is not applied and the others are: the result lists each failed \
+                          edit by number with the reason, so send only those again. old_string must match \
                           exactly and be unique unless replace_all=true. Copy old_string from text \
                           you have actually seen (file_read, or a search result that returned the \
                           line). replace_all=true additionally REQUIRES that the file was read this \
@@ -140,7 +142,7 @@ impl ToolExecutor for FileEditTool {
                         // model reading the array description and skipping the
                         // nested `path` one was being told, in Aurora's own
                         // words, to take its files from the streaming field.
-                        "description": "Batch form: array of edits, applied atomically against each file's original snapshot. Each item's own `path` chooses the file that edit belongs to, falling back to the top-level `path`; the file is never taken from `affected_paths`. Matched regions in the same file must not overlap."
+                        "description": "Batch form: array of edits, each matched against its file's original snapshot; a failed edit is skipped and reported, the rest apply. Each item's own `path` chooses the file that edit belongs to, falling back to the top-level `path`; the file is never taken from `affected_paths`. Matched regions in the same file must not overlap."
                     }
                 },
                 "required": [],
@@ -216,6 +218,13 @@ impl ToolExecutor for FileEditTool {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        if new_string == old_string {
+            return Err(ToolError::InvalidInput(
+                "`new_string` is identical to `old_string`, so this edit changes nothing. \
+                 Nothing was written."
+                    .into(),
+            ));
+        }
         let replace_all = input
             .get("replace_all")
             .and_then(Value::as_bool)
@@ -229,30 +238,72 @@ impl ToolExecutor for FileEditTool {
             return Ok(blind_replace_all_json(&raw_path, &resolved_str));
         }
 
-        let response = apply_search_replace(ApplySearchReplaceRequest {
+        let mut response = apply_search_replace(ApplySearchReplaceRequest {
             path: resolved_str.clone(),
             replacement: SearchReplaceItem {
                 old_string: old_string.to_string(),
                 new_string,
                 replace_all,
             },
-            write: true,
+            write: false,
         })
         .await
         .map_err(ToolError::Execution)?;
 
+        if let SearchReplaceResponse::Ok {
+            original_content, ..
+        } = &response
+        {
+            if replace_all
+                && !super::read_tracker::matches_content(
+                    &ctx.thread_id,
+                    &resolved_str,
+                    original_content,
+                )
+            {
+                return Ok(fresh_read_required(&raw_path, &resolved_str, false, &ctx.thread_id));
+            }
+            let prepared = vec![(raw_path.clone(), resolved_str.clone(), response)];
+            response = tokio::task::spawn_blocking(move || commit_prepared_files(prepared))
+                .await
+                .map_err(|error| {
+                    ToolError::Execution(format!("file_edit commit task panicked: {error}"))
+                })?
+                .map_err(ToolError::Execution)?
+                .remove(0)
+                .2;
+        }
+
         let mut impact = None;
         if matches!(response, SearchReplaceResponse::Ok { .. }) {
             emit_post_write(&*self.sink, &resolved_str, "file_edit", &ctx.tool_call_id).await;
-            super::read_tracker::record(&ctx.thread_id, &resolved_str);
+            if let SearchReplaceResponse::Ok {
+                original_content,
+                new_content,
+                ..
+            } = &response
+            {
+                super::read_tracker::record_edit(
+                    &ctx.thread_id,
+                    &resolved_str,
+                    original_content,
+                    new_content,
+                );
+            }
             impact = super::index_note_after_write(ctx, &resolved_str);
         }
 
         // The text was not there AND the agent never read this file — now the
         // unread file is the actionable cause, so say that instead of "could
         // not find the specified text", which invites another blind guess.
-        if matches!(response, SearchReplaceResponse::NotFound { .. })
-            && !super::read_tracker::was_seen(&ctx.thread_id, &resolved_str)
+        // A near match beats that advice: it names the fix outright (F32).
+        if matches!(
+            response,
+            SearchReplaceResponse::NotFound {
+                diagnosis: None,
+                ..
+            }
+        ) && !super::read_tracker::was_seen(&ctx.thread_id, &resolved_str)
         {
             return Ok(needs_read_json(&raw_path, &resolved_str));
         }
@@ -274,11 +325,11 @@ impl ToolExecutor for FileEditTool {
 
 impl FileEditTool {
     /// Run the batch (`edits[]`) form. Edits are grouped by their resolved
-    /// file — one file, or many — and applied **atomically across every
-    /// file**: all edits are validated against their original snapshots
-    /// first (no disk writes), and only if every file plans cleanly do we
-    /// commit. A single failure leaves the whole workspace untouched, so the
-    /// contract is identical whether the agent edits one file or ten.
+    /// file — one file, or many — and planned against their original
+    /// snapshots first (no disk writes). An edit that fails is set aside with
+    /// its reason and the rest are committed together; the result names every
+    /// edit that was not applied. The commit itself stays all-or-nothing: if
+    /// one file cannot be written, the files already written are rolled back.
     ///
     /// `input` is the whole call, carried in only so a missing per-item `path`
     /// can be explained against what the model actually sent — see
@@ -325,6 +376,7 @@ impl FileEditTool {
         let candidates = super::path_argument::candidate_paths(input);
         let mut candidate_contents: std::collections::HashMap<String, Option<String>> =
             std::collections::HashMap::new();
+        let mut skipped: Vec<FailedEdit> = Vec::new();
 
         for (idx, rep) in arr.iter().enumerate() {
             let n = idx + 1;
@@ -380,6 +432,23 @@ impl FileEditTool {
                 .ok_or_else(|| {
                     ToolError::InvalidInput(format!("Edit {n}: `new_string` is required"))
                 })?;
+            // A no-op is the most harmless failure there is, so it costs this
+            // edit only, like every other per-edit problem (dogfood F31).
+            if new_string == old_string {
+                skipped.push(FailedEdit {
+                    number: n,
+                    rendered: json!({
+                        "success": false,
+                        "failedPath": raw_path,
+                        "error": format!(
+                            "Edit {n}: `new_string` is identical to `old_string`, so it changes \
+                             nothing. It was not applied."
+                        ),
+                    })
+                    .to_string(),
+                });
+                continue;
+            }
             let replace_all = rep
                 .get("replace_all")
                 .and_then(Value::as_bool)
@@ -398,13 +467,17 @@ impl FileEditTool {
             };
 
             match index_by_resolved.get(&resolved_str) {
-                Some(&i) => groups[i].items.push(item),
+                Some(&i) => {
+                    groups[i].items.push(item);
+                    groups[i].numbers.push(n);
+                }
                 None => {
                     index_by_resolved.insert(resolved_str.clone(), groups.len());
                     groups.push(FileGroup {
                         raw: raw_path.to_string(),
                         resolved: resolved_str,
                         items: vec![item],
+                        numbers: vec![n],
                     });
                 }
             }
@@ -425,63 +498,132 @@ impl FileEditTool {
         // some correct edits.
         //
         // What actually keeps a blind edit safe is the engine, not the tracker:
-        // `old_string` must match exactly and be unique, and the batch is
-        // atomic. A guessed edit therefore fails to match and writes nothing.
+        // `old_string` must match exactly and be unique, so a guessed edit fails
+        // to match and is not applied.
         // The one exception is `replace_all`, which waives uniqueness and so can
         // rewrite occurrences nobody has seen — that stays gated.
         //
         // For everything else the check moves to phase 1, where an unread file
         // becomes the DIAGNOSIS for a match that failed rather than a barrier in
         // front of one that would have succeeded.
+        //
+        // Phase 1 — plan every file against its original snapshot. An edit that
+        // fails is set aside with its own diagnosis and the file is planned
+        // again without it, so one bad `old_string` costs that edit only. It
+        // used to abort the whole call: three files, two correct edits, one
+        // typo, and nothing written. The model then resent all three.
+        let mut prepared: Vec<(String, String, SearchReplaceResponse)> =
+            Vec::with_capacity(groups.len());
+        let mut failed: Vec<FailedEdit> = skipped;
+        let mut unchanged: Vec<String> = Vec::new();
         for g in &groups {
-            if g.items.iter().any(|item| item.replace_all)
+            let mut items = g.items.clone();
+            let mut numbers = g.numbers.clone();
+            if items.iter().any(|item| item.replace_all)
                 && !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved)
             {
-                return Ok(if multi {
+                let rendered = if multi {
                     render_multi_blind_replace_all(&g.raw, &g.resolved)
                 } else {
                     blind_replace_all_json(&g.raw, &g.resolved)
-                });
+                };
+                take_where(&mut items, &mut numbers, |item| item.replace_all)
+                    .into_iter()
+                    .for_each(|number| {
+                        failed.push(FailedEdit {
+                            number,
+                            rendered: rendered.clone(),
+                        })
+                    });
             }
-        }
-
-        // Phase 1 — validate every file and retain its original/new snapshots.
-        // One failure aborts before any disk write.
-        let mut prepared: Vec<(String, String, SearchReplaceResponse)> =
-            Vec::with_capacity(groups.len());
-        for g in &groups {
-            let resp = apply_multi_search_replace(ApplyMultiSearchReplaceRequest {
-                path: g.resolved.clone(),
-                replacements: g.items.clone(),
-                write: false,
-            })
-            .await
-            .map_err(ToolError::Execution)?;
-            if !matches!(resp, SearchReplaceResponse::Ok { .. }) {
+            while !items.is_empty() {
+                let resp = apply_multi_search_replace(ApplyMultiSearchReplaceRequest {
+                    path: g.resolved.clone(),
+                    replacements: items.clone(),
+                    write: false,
+                })
+                .await
+                .map_err(ToolError::Execution)?;
+                if let SearchReplaceResponse::Ok {
+                    original_content, ..
+                } = &resp
+                {
+                    if items.iter().any(|item| item.replace_all)
+                        && !super::read_tracker::matches_content(
+                            &ctx.thread_id,
+                            &g.resolved,
+                            original_content,
+                        )
+                    {
+                        let rendered =
+                            fresh_read_required(&g.raw, &g.resolved, multi, &ctx.thread_id);
+                        take_where(&mut items, &mut numbers, |item| item.replace_all)
+                            .into_iter()
+                            .for_each(|number| {
+                                failed.push(FailedEdit {
+                                    number,
+                                    rendered: rendered.clone(),
+                                })
+                            });
+                        continue;
+                    }
+                    prepared.push((g.raw.clone(), g.resolved.clone(), resp));
+                    break;
+                }
+                let at = failed_position(&resp).clamp(1, items.len()) - 1;
+                // The planner counts within this file's remaining list; the
+                // model counts its `edits` array. Speak the model's numbers
+                // everywhere in the message (dogfood F32).
+                let resp = renumbered(resp, &numbers);
                 // Text missing from a file the agent never read — that is the
                 // cause worth reporting, and the recovery is one `file_read`
-                // rather than another guess at the surrounding context.
-                if matches!(resp, SearchReplaceResponse::NotFound { .. })
-                    && !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved)
+                // rather than another guess at the surrounding context. When the
+                // engine found a near match anyway, that is the better answer.
+                let rendered = if matches!(
+                    resp,
+                    SearchReplaceResponse::NotFound {
+                        diagnosis: None,
+                        ..
+                    }
+                ) && !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved)
                 {
-                    return Ok(if multi {
+                    if multi {
                         render_multi_needs_read(&g.raw, &g.resolved)
                     } else {
                         needs_read_json(&g.raw, &g.resolved)
-                    });
-                }
-                let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
-                let sent: Vec<&str> = g.items.iter().map(|item| item.old_string.as_str()).collect();
-                return Ok(with_line_number_hint(
-                    if multi {
-                        render_multi_failure(&g.raw, &g.resolved, resp, window)
-                    } else {
-                        render_response(&g.raw, &g.resolved, resp, true, None, window)
-                    },
-                    &sent,
-                ));
+                    }
+                } else {
+                    let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
+                    let sent: Vec<&str> = items.iter().map(|item| item.old_string.as_str()).collect();
+                    with_line_number_hint(
+                        if multi {
+                            render_multi_failure(&g.raw, &g.resolved, resp, window)
+                        } else {
+                            render_response(&g.raw, &g.resolved, resp, true, None, window)
+                        },
+                        &sent,
+                    )
+                };
+                failed.push(FailedEdit {
+                    number: numbers[at],
+                    rendered,
+                });
+                items.remove(at);
+                numbers.remove(at);
             }
-            prepared.push((g.raw.clone(), g.resolved.clone(), resp));
+            if items.is_empty() {
+                unchanged.push(g.raw.clone());
+            }
+        }
+        failed.sort_by_key(|failure| failure.number);
+
+        // Nothing applied and one cause: answer exactly as a single failure
+        // always has.
+        if prepared.is_empty() && failed.len() == 1 {
+            return Ok(failed.remove(0).rendered);
+        }
+        if prepared.is_empty() {
+            return Ok(render_batch_failures(arr.len(), &failed));
         }
 
         // Phase 2 — commit from the validated snapshots. The commit checks that
@@ -495,10 +637,39 @@ impl FileEditTool {
             .map_err(ToolError::Execution)?;
 
         let mut notes: Vec<Option<String>> = Vec::with_capacity(committed.len());
-        for (_, resolved, _) in &committed {
+        for (_, resolved, response) in &committed {
             emit_post_write(&*self.sink, resolved, "file_edit", &ctx.tool_call_id).await;
-            super::read_tracker::record(&ctx.thread_id, resolved);
+            if let SearchReplaceResponse::Ok {
+                original_content,
+                new_content,
+                ..
+            } = response
+            {
+                super::read_tracker::record_edit(
+                    &ctx.thread_id,
+                    resolved,
+                    original_content,
+                    new_content,
+                );
+            }
             notes.push(super::index_note_after_write(ctx, resolved));
+        }
+
+        if !failed.is_empty() {
+            let joined = committed
+                .iter()
+                .zip(&notes)
+                .filter_map(|((raw, _, _), note)| note.as_ref().map(|n| format!("{raw} — {n}")))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let impact = (!joined.is_empty()).then_some(joined.as_str());
+            return Ok(render_partial_success(
+                &committed,
+                impact,
+                arr.len(),
+                &failed,
+                &unchanged,
+            ));
         }
 
         if committed.len() == 1 {
@@ -525,6 +696,21 @@ impl FileEditTool {
         let impact = (!joined.is_empty()).then_some(joined.as_str());
         Ok(render_multi_success(&committed, impact))
     }
+}
+
+fn fresh_read_required(path: &str, full_path: &str, multi: bool, thread_id: &str) -> String {
+    // A file Aurora edited but nothing ever read whole has no snapshot at all.
+    // "The file changed or was only partly read" was wrong there (F32).
+    let error = if super::read_tracker::has_complete_read(thread_id, full_path) {
+        "replace_all requires a complete read of the current file. The file changed or was only partly read. That edit was not applied; read the file again before retrying it."
+    } else {
+        "replace_all requires a complete file_read of this file's current version, and this conversation has none: the file was only edited or partly read. That edit was not applied; read the file, then retry it."
+    };
+    json!({
+        "success": false, "needsRead": true, "multiFile": multi,
+        "path": path, "fullPath": full_path,
+        "error": error,
+    }).to_string()
 }
 
 type PreparedEdit = (String, String, SearchReplaceResponse);
@@ -752,6 +938,16 @@ struct FileGroup {
     /// The canonical on-disk path (grouping key + write target).
     resolved: String,
     items: Vec<SearchReplaceItem>,
+    /// Each item's 1-based position in the call's `edits` array, parallel to
+    /// `items`, so a failure names the edit the model wrote.
+    numbers: Vec<usize>,
+}
+
+/// One edit of a batch that was not applied, already rendered the way a
+/// single failure renders, plus the batch position it held.
+struct FailedEdit {
+    number: usize,
+    rendered: String,
 }
 
 /// Say what a repaired argument was read as, inside the result the tool
@@ -893,7 +1089,7 @@ fn needs_read_json(raw_path: &str, resolved_str: &str) -> String {
         "success": false,
         "error": format!(
             "Could not find that text in {raw_path}, which has not been read this session — \
-             so the text being matched was never seen. Nothing was changed."
+             so the text being matched was never seen. That edit was not applied."
         ),
         "path": raw_path,
         "fullPath": resolved_str,
@@ -904,18 +1100,18 @@ fn needs_read_json(raw_path: &str, resolved_str: &str) -> String {
 }
 
 /// Multi-file variant of the same diagnosis — names the offending file and
-/// makes clear the whole batch was rolled back.
+/// says that this one edit was not applied.
 fn render_multi_needs_read(raw_path: &str, resolved_str: &str) -> String {
     serde_json::to_string(&json!({
         "success": false,
         "multiFile": true,
         "error": format!(
             "Could not find that text in {raw_path}, which has not been read this session — \
-             so the text being matched was never seen. The batch is atomic: no files were changed."
+             so the text being matched was never seen. That edit was not applied."
         ),
         "path": raw_path,
         "fullPath": resolved_str,
-        "hint": "Call file_read on this path, then retry the batch with text copied from it.",
+        "hint": "Call file_read on this path, then send the edit again with text copied from it.",
         "needsRead": true,
     }))
     .unwrap()
@@ -932,7 +1128,7 @@ fn blind_replace_all_json(raw_path: &str, resolved_str: &str) -> String {
         "success": false,
         "error": format!(
             "replace_all on {raw_path} needs the file read first: it rewrites EVERY occurrence, \
-             including ones outside the part you have seen. Nothing was changed."
+             including ones outside the part you have seen. That edit was not applied."
         ),
         "path": raw_path,
         "fullPath": resolved_str,
@@ -950,8 +1146,7 @@ fn render_multi_blind_replace_all(raw_path: &str, resolved_str: &str) -> String 
         "multiFile": true,
         "error": format!(
             "replace_all on {raw_path} needs the file read first: it rewrites EVERY occurrence, \
-             including ones outside the part you have seen. The batch is atomic: no files were \
-             changed."
+             including ones outside the part you have seen. That edit was not applied."
         ),
         "path": raw_path,
         "fullPath": resolved_str,
@@ -962,7 +1157,7 @@ fn render_multi_blind_replace_all(raw_path: &str, resolved_str: &str) -> String 
     .unwrap()
 }
 
-/// Render a validation failure for a multi-file batch. Nothing was written;
+/// Render one failed edit of a multi-file batch. That edit was not applied;
 /// the message names the file and the 1-based edit that failed within it.
 fn render_multi_failure(
     raw_path: &str,
@@ -972,12 +1167,12 @@ fn render_multi_failure(
 ) -> String {
     let mut diagnosis_payload = None;
     let (error, failed_at, occurrences) = match response {
-        // `failed_at` counts within THIS FILE's edits, not across the batch —
-        // it is `index + 1` over the replacements planned for one path. Read as
-        // a batch position it points at the wrong edit entirely, and a bare
-        // "(edit 1)" beside a multi-file failure invites exactly that. Naming
-        // the scope in the string is cheaper than being misread on a failure
-        // path, which is the one place the reader is already off balance.
+        // `failed_at` is the edit's position in the call's `edits` array:
+        // `run_batch_inner` renumbers the planner's per-file positions before
+        // rendering. It used to be the per-file position, printed as "this
+        // file's edit 1" beside `failedEdits[].edit: 2`, two numbers for one
+        // edit (dogfood F32). The scope stays in the string so it cannot be
+        // read as zero-based.
         SearchReplaceResponse::NotFound {
             failed_at,
             diagnosis,
@@ -990,11 +1185,11 @@ fn render_multi_failure(
             (
                 match detail {
                     Some(detail) => format!(
-                        "{raw_path} (this file's edit {failed_at}): no match for old_string.\n\
+                        "{raw_path} (edit {failed_at} of this call): no match for old_string.\n\
                          {detail}"
                     ),
                     None => format!(
-                        "{raw_path} (this file's edit {failed_at}): no match for old_string, and \
+                        "{raw_path} (edit {failed_at} of this call): no match for old_string, and \
                          nothing in the file resembles it."
                     ),
                 },
@@ -1007,7 +1202,7 @@ fn render_multi_failure(
             occurrences,
         } => (
             format!(
-                "{raw_path} (this file's edit {failed_at}): found {occurrences} occurrences. Add \
+                "{raw_path} (edit {failed_at} of this call): found {occurrences} occurrences. Add \
                  more context or set replace_all=true."
             ),
             failed_at,
@@ -1018,8 +1213,8 @@ fn render_multi_failure(
             conflicting_replacement,
         } => (
             format!(
-                "{raw_path} (this file's edit {failed_at}): overlaps its edit \
-                 {conflicting_replacement} in the same file. Combine the nearby edits."
+                "{raw_path} (edit {failed_at} of this call): overlaps edit \
+                 {conflicting_replacement}, which matches in the same file. Combine the nearby edits."
             ),
             failed_at,
             None,
@@ -1035,7 +1230,7 @@ fn render_multi_failure(
         "fullPath": full_path,
         "failedAt": failed_at,
         "occurrences": occurrences,
-        "hint": "No files were changed — a batch applies to every file or none. Fix this edit and retry.",
+        "hint": "This edit was not applied. Fix it and send it again.",
     });
     if let Some(note) = window_note(window) {
         let hint = payload["hint"].as_str().unwrap_or_default();
@@ -1066,6 +1261,7 @@ fn render_multi_success(
             lines_added,
             lines_removed,
             total_replacements: reps,
+            line_ending_normalized,
             ..
         } = resp
         {
@@ -1079,6 +1275,9 @@ fn render_multi_success(
                 "totalReplacements": reps,
                 "linesAdded": lines_added,
                 "linesRemoved": lines_removed,
+                "matchedAcrossCrlf": line_ending_normalized,
+                "lineEndingsPreserved": true,
+                "lineEndingNote": super::search_replace::crlf_match_note(*line_ending_normalized),
                 "oldContent": diff_side(original_content),
                 "newContent": diff_side(new_content),
             }));
@@ -1105,6 +1304,127 @@ fn render_multi_success(
     if let Some(note) = impact {
         payload["impact"] = json!(note);
     }
+    serde_json::to_string(&payload).unwrap()
+}
+
+/// Remove the items `pick` selects, returning their batch numbers.
+fn take_where(
+    items: &mut Vec<SearchReplaceItem>,
+    numbers: &mut Vec<usize>,
+    pick: impl Fn(&SearchReplaceItem) -> bool,
+) -> Vec<usize> {
+    let mut taken = Vec::new();
+    let mut index = 0;
+    while index < items.len() {
+        if pick(&items[index]) {
+            items.remove(index);
+            taken.push(numbers.remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    taken
+}
+
+/// The failure with its edit numbers mapped from positions in the planned
+/// list to positions in the call's `edits` array.
+fn renumbered(mut response: SearchReplaceResponse, numbers: &[usize]) -> SearchReplaceResponse {
+    let map = |position: usize| numbers.get(position.wrapping_sub(1)).copied().unwrap_or(position);
+    match &mut response {
+        SearchReplaceResponse::NotFound { failed_at, .. }
+        | SearchReplaceResponse::NotUnique { failed_at, .. } => *failed_at = map(*failed_at),
+        SearchReplaceResponse::Overlap {
+            failed_at,
+            conflicting_replacement,
+        } => {
+            *failed_at = map(*failed_at);
+            *conflicting_replacement = map(*conflicting_replacement);
+        }
+        SearchReplaceResponse::Ok { .. } => {}
+    }
+    response
+}
+
+/// The 1-based position, within the planned list, of the edit that failed.
+fn failed_position(response: &SearchReplaceResponse) -> usize {
+    match response {
+        SearchReplaceResponse::NotFound { failed_at, .. }
+        | SearchReplaceResponse::NotUnique { failed_at, .. }
+        | SearchReplaceResponse::Overlap { failed_at, .. } => *failed_at,
+        SearchReplaceResponse::Ok { .. } => 1,
+    }
+}
+
+/// A failed edit as one entry of `failedEdits`: its batch number plus what its
+/// own failure said (error, closest text, hint).
+fn failed_edit_entry(failure: &FailedEdit) -> Value {
+    let mut entry = serde_json::from_str::<Value>(&failure.rendered)
+        .ok()
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({ "error": failure.rendered }));
+    entry["edit"] = json!(failure.number);
+    if let Some(object) = entry.as_object_mut() {
+        for noise in ["success", "multiFile", "pending", "oldContent", "newContent"] {
+            object.remove(noise);
+        }
+    }
+    entry
+}
+
+fn edit_list(failed: &[FailedEdit]) -> String {
+    let numbers: Vec<String> = failed.iter().map(|f| f.number.to_string()).collect();
+    match numbers.as_slice() {
+        [one] => format!("edit {one}"),
+        [rest @ .., last] => format!("edits {} and {last}", rest.join(", ")),
+        [] => "no edit".into(),
+    }
+}
+
+/// Several edits failed and none applied.
+fn render_batch_failures(total: usize, failed: &[FailedEdit]) -> String {
+    json!({
+        "success": false,
+        "multiFile": true,
+        "error": format!(
+            "None of the {total} edits were applied: {} failed. No file was changed.",
+            edit_list(failed)
+        ),
+        "failedEdits": failed.iter().map(failed_edit_entry).collect::<Vec<_>>(),
+        "hint": "Each entry says why its edit failed. Fix those edits and send them again.",
+    })
+    .to_string()
+}
+
+/// Some edits applied, some did not. The applied ones are on disk; the result
+/// says which were not, why, and which files kept no change at all.
+fn render_partial_success(
+    committed: &[(String, String, SearchReplaceResponse)],
+    impact: Option<&str>,
+    total: usize,
+    failed: &[FailedEdit],
+    unchanged: &[String],
+) -> String {
+    let mut payload: Value =
+        serde_json::from_str(&render_multi_success(committed, impact)).unwrap_or_default();
+    let applied = total - failed.len();
+    payload["partial"] = json!(true);
+    payload["editsApplied"] = json!(applied);
+    payload["editsFailed"] = json!(failed.len());
+    payload["message"] = json!(format!(
+        "Applied {applied} of {total} edits. {} NOT applied — see failedEdits.{}",
+        edit_list(failed),
+        if unchanged.is_empty() {
+            String::new()
+        } else {
+            format!(" Not changed at all: {}.", unchanged.join(", "))
+        }
+    ));
+    payload["failedEdits"] = json!(failed.iter().map(failed_edit_entry).collect::<Vec<_>>());
+    payload["unchangedFiles"] = json!(unchanged);
+    payload["hint"] = json!(
+        "Send only the failed edits again, fixed. The applied edits are already on disk, so \
+         copy old_string from the file as it is now if a failed edit sits near one of them."
+    );
     serde_json::to_string(&payload).unwrap()
 }
 
@@ -1150,14 +1470,17 @@ mod tests {
     /// guard lets the edit through. Mirrors what file_read does in prod.
     fn mark_read(ctx: &ToolContext, abs: &std::path::Path) {
         let canonical = dunce::canonicalize(abs).unwrap();
-        super::super::read_tracker::record(&ctx.thread_id, &canonical.to_string_lossy());
+        super::super::read_tracker::record_whole_content(
+            &ctx.thread_id,
+            &canonical.to_string_lossy(),
+            &std::fs::read_to_string(&canonical).unwrap(),
+        );
     }
 
-    /// A batch failure numbers the edit WITHIN its file (`index + 1` over that
-    /// one path's replacements), never across the whole batch. Aurora's own
-    /// harness run read a bare "(edit 1)" as a batch position and concluded the
-    /// index was zero-based; it was not, but the string gave it no way to tell.
-    /// The number was always right, so this pins the scope, not the arithmetic.
+    /// A batch failure names what its number counts. Aurora's own harness run
+    /// read a bare "(edit 1)" and concluded the index was zero-based; the
+    /// string gave it no way to tell. Since dogfood F32 the number is the
+    /// position in the call's `edits` array, and the string says so.
     #[test]
     fn a_batch_failure_says_which_edit_list_it_is_counting() {
         for (response, expected) in [
@@ -1187,7 +1510,7 @@ mod tests {
             let parsed: Value = serde_json::from_str(&rendered).unwrap();
             let error = parsed["error"].as_str().unwrap();
             assert!(
-                error.contains("this file's edit 1"),
+                error.contains("edit 1 of this call"),
                 "every batch failure names what the ordinal counts, got: {error}"
             );
             assert!(error.contains(expected), "got: {error}");
@@ -1694,7 +2017,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batch_edits_multiple_files_atomically() {
+    async fn batch_edits_multiple_files_in_one_call() {
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a.txt");
         let b = tmp.path().join("b.txt");
@@ -1729,10 +2052,59 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "BETA\n");
     }
 
+    /// A failed edit costs that edit only. It used to abort the whole call, so
+    /// two correct edits were thrown away with one typo and resent.
     #[tokio::test]
-    async fn batch_multi_file_is_atomic_on_failure() {
-        // File a's edit is valid; file b's old_string is absent. The whole
-        // batch must roll back — a stays untouched.
+    async fn a_failed_edit_is_skipped_and_the_rest_apply() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, body) in [
+            ("aurora-test.tsx", "export function AuroraTest() {}\nconst count = 0;\n"),
+            ("AuroraButton.tsx", "onPress: () => void;\n"),
+            ("aurora-theme.css", "--aurora-accent: #6e56cf;\n"),
+        ] {
+            std::fs::write(tmp.path().join(name), body).unwrap();
+        }
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        for name in ["aurora-test.tsx", "AuroraButton.tsx", "aurora-theme.css"] {
+            mark_read(&ctx, &tmp.path().join(name));
+        }
+        let out = edit_tool()
+            .execute(
+                serde_json::json!({
+                    "edits": [
+                        { "path": "aurora-test.tsx", "old_string": "AuroraTest()", "new_string": "AuroraTest(props)" },
+                        { "path": "aurora-test.tsx", "old_string": "const cuont = 0;", "new_string": "const count = 1;" },
+                        { "path": "AuroraButton.tsx", "old_string": "onPress: () => void;", "new_string": "onPress(): void;" },
+                        { "path": "aurora-theme.css", "old_string": "--missing: red;", "new_string": "--x: 1;" }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        assert_eq!(parsed["partial"], true);
+        assert_eq!(parsed["editsApplied"], 2);
+        let failed: Vec<_> = parsed["failedEdits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["edit"].as_u64().unwrap())
+            .collect();
+        assert_eq!(failed, [2, 4], "{out}");
+        assert!(parsed["failedEdits"][0]["diagnosis"].is_object(), "the typo keeps its hint: {out}");
+        assert_eq!(parsed["unchangedFiles"], serde_json::json!(["aurora-theme.css"]));
+        let read = |name: &str| std::fs::read_to_string(tmp.path().join(name)).unwrap();
+        assert_eq!(read("aurora-test.tsx"), "export function AuroraTest(props) {}\nconst count = 0;\n");
+        assert_eq!(read("AuroraButton.tsx"), "onPress(): void;\n");
+        assert_eq!(read("aurora-theme.css"), "--aurora-accent: #6e56cf;\n");
+    }
+
+    #[tokio::test]
+    async fn a_failed_file_does_not_hold_back_another_file() {
+        // File a's edit is valid; file b's old_string is absent. a is edited,
+        // b is reported and left as it was.
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a.txt");
         let b = tmp.path().join("b.txt");
@@ -1757,11 +2129,11 @@ mod tests {
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["success"], false);
-        assert_eq!(parsed["multiFile"], true);
-        assert_eq!(parsed["failedPath"], "b.txt");
-        // Neither file changed.
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha\n");
+        assert_eq!(parsed["success"], true, "{out}");
+        assert_eq!(parsed["partial"], true);
+        assert_eq!(parsed["failedEdits"][0]["edit"], 2);
+        assert_eq!(parsed["failedEdits"][0]["failedPath"], "b.txt");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "ALPHA\n");
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "beta\n");
     }
 
@@ -2106,5 +2478,94 @@ mod tests {
         assert!(error.contains("changed after it was validated"));
         assert_eq!(disk.borrow().get("a").unwrap(), "old-a");
         assert_eq!(disk.borrow().get("b").unwrap(), "changed-elsewhere");
+    }
+
+    #[tokio::test]
+    async fn replace_all_refuses_an_external_change_and_accepts_a_fresh_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("stale.txt");
+        std::fs::write(&path, "zeta zeta").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        mark_read(&ctx, &path);
+        std::fs::write(&path, "zeta zeta zeta").unwrap();
+        let args = serde_json::json!({"path":"stale.txt", "old_string":"zeta", "new_string":"eta", "replace_all":true});
+        let out = edit_tool().execute(args.clone(), &ctx).await.unwrap();
+        let result: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(result["needsRead"], true, "{out}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "zeta zeta zeta");
+        use crate::tools::file_workspace_search::file_read::FileReadTool;
+        FileReadTool
+            .execute(serde_json::json!({"path":["stale.txt"]}), &ctx)
+            .await
+            .unwrap();
+        let out = edit_tool().execute(args, &ctx).await.unwrap();
+        let result: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(result["success"], true, "{out}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "eta eta eta");
+    }
+
+    /// Dogfood F20: old == new answered "Replaced 1 occurrence" and rewrote
+    /// the file, touching its mtime.
+    #[tokio::test]
+    async fn an_edit_that_changes_nothing_is_refused_without_writing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("same.txt");
+        std::fs::write(&path, "alpha beta").unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let err = edit_tool()
+            .execute(
+                serde_json::json!({"path":"same.txt", "old_string":"beta", "new_string":"beta"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidInput(ref m) if m.contains("identical")),
+            "{err:?}"
+        );
+        // In a batch it is one failed edit, reported like any other (F31).
+        let out = edit_tool()
+            .execute(
+                serde_json::json!({"edits":[{"path":"same.txt", "old_string":"beta", "new_string":"beta"}]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.contains("identical") && out.contains("\"success\":false"), "{out}");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before
+        );
+    }
+
+    /// Dogfood F31: one no-op edit used to reject the whole batch; F32: the
+    /// failure's numbers are the call's numbers.
+    #[tokio::test]
+    async fn a_no_op_in_a_batch_costs_that_edit_and_numbers_match_the_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "padding: 4px\n").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        mark_read(&ctx, &tmp.path().join("a.txt"));
+        mark_read(&ctx, &tmp.path().join("b.txt"));
+        let out = edit_tool()
+            .execute(
+                serde_json::json!({"edits":[
+                    {"path":"a.txt", "old_string":"one", "new_string":"one"},
+                    {"path":"b.txt", "old_string":"padding: 4px", "new_string":"padding: 8px"},
+                    {"path":"a.txt", "old_string":"tow", "new_string":"TWO"}
+                ]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["partial"], true, "{out}");
+        assert_eq!(std::fs::read_to_string(tmp.path().join("b.txt")).unwrap(), "padding: 8px\n");
+        let typo = &parsed["failedEdits"][1];
+        assert_eq!(typo["edit"], 3, "{out}");
+        assert_eq!(typo["failedAt"], 3, "one number per edit: {out}");
+        assert!(typo["error"].as_str().unwrap().contains("edit 3 of this call"), "{out}");
     }
 }

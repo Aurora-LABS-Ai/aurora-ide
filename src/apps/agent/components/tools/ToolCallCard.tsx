@@ -583,7 +583,7 @@ function toolIcon(name: string): AgentIconName {
   // The user's terminals get their own mark: `terminal` is the agent RUNNING a
   // command, these two are it LOOKING at a shell the user is driving. Same
   // family, different act — the window glyph reads as a pane being observed.
-  if (lower === "terminal_list" || lower === "terminal_read") return "terminal-watch";
+  if (lower === "terminal") return "terminal-watch";
   if (lower === "shell_kill") return "process-stop";
   if (lower === "shell_list_processes") return "process-list";
   if (lower === "shell_read_output") return "shell-output";

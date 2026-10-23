@@ -1,30 +1,25 @@
 /**
  * Agent Window — Terminal tab [view].
  *
- * A robust, native multi-session PTY terminal built standalone for the agent
- * window. It drives `tauri-plugin-pty` (granted to `agent-window`) through the
- * `tauri-pty` JS API and renders with xterm.js. Sessions keep running in a
- * module map across tab switches — switching away detaches the xterm element
- * (the shell stays alive); switching back re-attaches it with full scrollback.
- *
- * Reuses the IDE's shell prompt/spawn logic (copied into `shell-config.ts`) but
- * none of the IDE's terminal UI. Themed with `--agw-*` (+ a tuned ANSI palette).
+ * A native multi-session terminal for the agent window. Rust owns the shells
+ * (`commands::terminal_pty`: which shell, its prompt, the job holding what it
+ * runs, closing it); this view draws with xterm.js and carries keystrokes.
+ * Sessions keep running in a module map across tab switches — switching away
+ * detaches the xterm element (the shell stays alive); switching back
+ * re-attaches it with full scrollback. Themed with `--agw-*` (+ a tuned ANSI
+ * palette).
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { spawn, type IPty } from "tauri-pty";
 import "@xterm/xterm/css/xterm.css";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { AgentConfirm } from "@/apps/agent/components/modals/AgentConfirm";
-import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
-// No `platform()` import: which executable to run is the registry's answer, and
-// it already accounts for the platform. Branching on it here is what led to a
-// hardcoded Windows Git path in the first place.
-import { getShellSpawnConfig, type ShellProfile } from "@/apps/agent/adapters/shell-config";
+import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
+import type { ShellProfile } from "@/apps/agent/adapters/shell-config";
 import {
   getShellProfiles,
   type ShellProfile as ShellProfileEntry,
@@ -32,8 +27,17 @@ import {
 import {
   disposeTerminalSession,
   terminalRuntime as runtime,
+  type PtyRuntime,
   type RunningChild,
 } from "@/apps/agent/services/terminal/terminal-sessions";
+import {
+  attachPty,
+  killPty,
+  openPty,
+  resizePty,
+  runningInPty,
+  writePty,
+} from "@/apps/agent/services/terminal/terminal-pty";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTerminalStore, type TermSession } from "@/apps/agent/store/ui/useAgentTerminalStore";
 import { selectActiveAgentTheme, useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
@@ -183,95 +187,107 @@ async function attachSession(session: TermSession, container: HTMLDivElement, on
   // `-6` inside one `.agw-term-surface` — with two cursors (one at the top,
   // one at the bottom of the pane) and the keyboard wired to whichever
   // instance held the live PTY, so typing landed in the invisible one and the
-  // terminal read as frozen. `pty` is filled in below; the entry existing at
+  // terminal read as frozen. `ptyId` is filled in below; the entry existing at
   // all is what makes a concurrent call take the re-attach path instead.
-  const slot = { pty: undefined as unknown as IPty, term, fit };
+  const slot: PtyRuntime = { term, fit };
   runtime.set(session.id, slot);
-  // The session was closed while we were waiting (the shell registry read is
-  // async). `disposeTerminalSession` removes the slot, so "is our slot still
-  // there" is the test. Without it the shell was spawned anyway: a live process
-  // with no tab, nothing to stop it, writing into a disposed terminal.
+  // The session was closed while we were waiting (the shell starts async).
+  // `disposeTerminalSession` removes the slot, so "is our slot still there" is
+  // the test.
   const closedMeanwhile = () => runtime.get(session.id) !== slot;
 
-  const cols = term.cols || 80;
-  const rows = term.rows || 24;
   // A session opened AT a folder (Files panel / project menu) starts there;
   // one opened from the tab bar starts at the chat's project root.
   const cwd = session.cwd ?? useAgentChatStore.getState().projectRoot ?? undefined;
 
-  // Resolved by Rust from the verified shell registry — not a path guessed
-  // here. A machine with no registered shell says so and points at the place
-  // that fixes it, instead of failing on a hardcoded path the user never chose.
-  const cfg = await getShellSpawnConfig(session.profile);
-  if (closedMeanwhile()) return;
-  if (!cfg) {
-    term.writeln(
-      `\r\n\x1b[31mNo ${session.profile} shell is set up.\x1b[0m\r\n` +
-        `Open Settings → Tools → Shells to scan for one, or add it by path.`,
-    );
-    runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
-    onExit();
-    return;
-  }
-
-  let pty: IPty;
-  try {
-    pty = spawn(cfg.exe, cfg.args, { cols, rows, cwd, env: cfg.env });
-  } catch (err) {
-    // No second guess: the registry verified this executable by running it, so
-    // a failure here is worth reporting rather than papering over with another
-    // hardcoded candidate.
-    term.writeln(`\r\n\x1b[31mCouldn't start ${cfg.exe}: ${String(err)}\x1b[0m`);
-    runtime.set(session.id, { pty: undefined as unknown as IPty, term, fit });
-    onExit();
-    return;
-  }
-
-  // Exit is wired FIRST, before the data pumps. A shell that dies on its own
-  // command line dies in milliseconds — if this is registered after them, the
-  // event can land before anyone is listening and the session just sits there
-  // eating keystrokes with nothing on screen and no reason given. That is
-  // exactly how a `cmd.exe` launched with PowerShell's `-Command` flag
-  // presented: a black pane that swallowed everything typed into it.
-  const startedAt = Date.now();
-  pty.onExit(({ exitCode }) => {
-    const instant = Date.now() - startedAt < 1500;
-    try {
-      if (instant) {
-        // Dying this fast is a failure to LAUNCH, not a session that ended, so
-        // it names what was run — the command line is the whole diagnosis.
-        term.writeln(
-          `\r\n\x1b[31m${session.profile} exited immediately (code ${exitCode}).\x1b[0m\r\n` +
-            `\x1b[90m${cfg.exe} ${cfg.args.join(" ")}\x1b[0m\r\n` +
-            `\x1b[90mThe shell could not start with these arguments. Check Settings → Tools → Shells.\x1b[0m`,
-        );
-      } else {
-        term.writeln(`\r\n\x1b[33m[process exited: ${exitCode}]\x1b[0m`);
-      }
-    } catch { /* disposed */ }
-    onExit();
-  });
-
-  pty.onData((d) => term.write(d));
+  // Keystrokes are wired BEFORE the shell starts, and queued until it has an
+  // id. ConPTY asks the terminal where the cursor is (`ESC[6n`) while the shell
+  // is starting and holds the shell until xterm answers through this handler;
+  // an answer sent before anyone listens is lost and the tab hangs blank.
+  const queued: string[] = [];
+  const send = (id: number, data: string) => {
+    void writePty(id, data).catch((error) => console.error("[agent-terminal] write failed:", error));
+  };
   term.onData((d) => {
-    pty.write(d);
-    // Enter — remember where this command's output begins, so
-    // `readTerminalSession(id, { scope: "last_command" })` can answer without
-    // parsing prompts or injecting markers into the user's shell. Aurora owns
-    // the PTY, so the keystroke IS the boundary.
-    if (d.includes("\r")) {
-      const entry = runtime.get(session.id);
-      if (entry) {
-        const buffer = term.buffer.active;
-        entry.lastCommandLine = buffer.baseY + buffer.cursorY;
-      }
-    }
+    if (slot.ptyId === undefined) queued.push(d);
+    else send(slot.ptyId, d);
   });
-  term.onResize(({ cols: c, rows: r }) => {
-    try { pty.resize(c, r); } catch { /* exited */ }
-  });
+  const onData = (data: string) => {
+    try { term.write(data); } catch { /* disposed */ }
+  };
+  const resizeTo = (id: number) =>
+    term.onResize(({ cols: c, rows: r }) => {
+      void resizePty(id, c, r).catch(() => { /* exited */ });
+    });
 
-  runtime.set(session.id, { pty, term, fit });
+  // An agent's terminal already runs in Rust: show what it printed so far,
+  // then live output. Its own exit line ("[process exited: n]") is part of
+  // that, so nothing is added here.
+  if (session.ptyId !== undefined) {
+    const ptyId = session.ptyId;
+    slot.ptyId = ptyId;
+    try {
+      await attachPty(ptyId, onData, () => onExit());
+    } catch (error) {
+      if (closedMeanwhile()) return;
+      term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`);
+      onExit();
+      return;
+    }
+    for (const data of queued.splice(0)) send(ptyId, data);
+    void resizePty(ptyId, term.cols || 80, term.rows || 24).catch(() => { /* exited */ });
+    resizeTo(ptyId);
+    return;
+  }
+
+  // Rust resolves the shell from the verified registry, starts it and holds
+  // everything it runs in a job; this view only draws and types. A machine with
+  // no usable shell gets Rust's sentence naming the place that fixes it.
+  const startedAt = Date.now();
+  let exe = session.profile as string;
+  let opened;
+  try {
+    opened = await openPty({
+      profile: session.profile,
+      cwd,
+      title: session.title,
+      cols: term.cols || 80,
+      rows: term.rows || 24,
+      onData,
+      onExit: (exitCode) => {
+        try {
+          if (Date.now() - startedAt < 1500) {
+            // Dying this fast is a failure to LAUNCH, not a session that
+            // ended, so it names what was run.
+            term.writeln(
+              `\r\n\x1b[31m${session.profile} exited immediately (code ${exitCode}).\x1b[0m\r\n` +
+                `\x1b[90m${exe}\x1b[0m\r\n` +
+                `\x1b[90mThe shell could not start. Check Settings → Tools → Shells.\x1b[0m`,
+            );
+          } else {
+            term.writeln(`\r\n\x1b[33m[process exited: ${exitCode}]\x1b[0m`);
+          }
+        } catch { /* disposed */ }
+        onExit();
+      },
+    });
+  } catch (error) {
+    if (closedMeanwhile()) return;
+    term.writeln(`\r\n\x1b[31m${String(error)}\x1b[0m`);
+    onExit();
+    return;
+  }
+  exe = opened.exe;
+  if (closedMeanwhile()) {
+    // Closed while it started: end it now rather than leave a shell with no tab.
+    void killPty(opened.id).catch((error) => {
+      console.error(`[agent-terminal] could not stop terminal ${opened.id}:`, error);
+    });
+    return;
+  }
+  slot.ptyId = opened.id;
+  for (const data of queued.splice(0)) send(opened.id, data);
+  resizeTo(opened.id);
 }
 
 const TerminalView: React.FC<{ session: TermSession }> = ({ session }) => {
@@ -463,7 +479,8 @@ export const TerminalPanel: React.FC = () => {
 
   const closeNow = useCallback(
     (id: string) => {
-      disposeTerminalSession(id);
+      const session = useAgentTerminalStore.getState().sessions.find((s) => s.id === id);
+      disposeTerminalSession(id, session?.ptyId);
       removeSession(id);
     },
     [removeSession],
@@ -472,12 +489,15 @@ export const TerminalPanel: React.FC = () => {
   const closeOne = useCallback(
     (id: string) => {
       const session = useAgentTerminalStore.getState().sessions.find((s) => s.id === id);
-      const pid = runtime.get(id)?.pty?.pid;
-      if (!session || typeof pid !== "number" || pid <= 0) {
+      const ptyId = runtime.get(id)?.ptyId ?? session?.ptyId;
+      if (!session || ptyId === undefined) {
         closeNow(id);
         return;
       }
-      void auroraInvoke<RunningChild[]>("terminal_running_children", { pid })
+      // Asked by job membership in Rust: everything the shell started, however
+      // it was started. The old check walked from a "pid" that was a session
+      // counter, found nothing, and closed without warning.
+      void runningInPty(ptyId)
         .then((children) => {
           if (!children || children.length === 0) {
             closeNow(id);

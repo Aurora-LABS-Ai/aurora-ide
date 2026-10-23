@@ -1,18 +1,11 @@
-//! Terminal-tab process lifecycle.
+//! What a shell has left running, by parent-pid walk.
 //!
-//! A terminal tab owns a shell, and a shell owns whatever it started. Closing
-//! the tab used to end only the shell: on Windows its children are re-parented
-//! rather than killed, so an Electron app or a dev server launched from that
-//! tab kept running with no window left to stop it from — invisible, holding
-//! its port, until the machine was rebooted.
-//!
-//! Two commands close that gap, and they are deliberately separate:
-//!
-//! - [`terminal_running_children`] answers "is anything still going?" so the UI
-//!   can warn BEFORE destroying work. Asking after the fact is not a warning.
-//! - [`terminal_kill_process_tree`] ends the shell and its descendants.
-//!
-//! Both take the shell's pid, which the frontend has from `IPty.pid`.
+//! The Terminal panel no longer depends on this: its shells live in job
+//! objects (`commands::terminal_pty`), which answer by membership. The walk
+//! here stays for the places without a job — the shell lifecycle's exit check
+//! and a terminal whose shell could not be adopted. Its tab-close commands
+//! were removed: they took `IPty.pid`, which `tauri-plugin-pty` filled with a
+//! session counter, so they aimed at system processes and never at the tab's.
 
 use serde::Serialize;
 
@@ -24,55 +17,6 @@ pub struct RunningChild {
     /// that can carry tokens and paths a warning dialog has no business
     /// showing, and the name alone is what makes it recognisable.
     pub name: String,
-}
-
-/// Everything still running under `pid`, excluding the shell itself.
-///
-/// Returns descendants at every depth, not just direct children: `pnpm` starts
-/// `node`, which starts `electron`, and the process the user actually cares
-/// about is the one furthest from the shell.
-#[tauri::command]
-pub async fn terminal_running_children(pid: u32) -> Result<Vec<RunningChild>, String> {
-    if pid == 0 {
-        return Ok(Vec::new());
-    }
-    tauri::async_runtime::spawn_blocking(move || descendants_of(pid))
-        .await
-        .map_err(|error| format!("process scan failed for pid {pid}: {error}"))?
-}
-
-/// Kill a terminal shell and everything it started.
-///
-/// Must run BEFORE the pty is killed. `taskkill /T` walks down from the pid it
-/// is given, so once the shell is gone its children can no longer be reached
-/// through it.
-///
-/// A pid that has already exited is not an error — the shell may have ended on
-/// its own, and a close button that reports failure for the ordinary case
-/// teaches people to ignore it.
-#[tauri::command]
-pub async fn terminal_kill_process_tree(pid: u32) -> Result<(), String> {
-    // Refusing our own pid guards against a plugin reporting 0 or a recycled
-    // id for a shell that never started, not against the caller — this command
-    // is reachable only from Aurora's own window.
-    if pid == 0 || pid == std::process::id() {
-        return Err(format!("refusing to kill pid {pid}"));
-    }
-    tauri::async_runtime::spawn_blocking(move || match super::try_kill_pid(pid) {
-        Ok(()) => Ok(()),
-        Err(error) if is_already_gone(&error) => Ok(()),
-        Err(error) => Err(error),
-    })
-    .await
-    .map_err(|error| format!("kill task failed for pid {pid}: {error}"))?
-}
-
-/// Windows and POSIX each say "no such process" in their own words.
-fn is_already_gone(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-    lower.contains("not found")
-        || lower.contains("no such process")
-        || lower.contains("there is no running instance")
 }
 
 /// Walk a (pid, parent pid, name) table into every descendant of `root`.

@@ -58,6 +58,59 @@ pub const JPEG_QUALITY: u8 = 85;
 /// Media type [`encode_for_vision`] always produces.
 pub const ENCODED_MEDIA_TYPE: &str = "image/jpeg";
 
+/// Longest edge an image may keep at request time without re-encoding.
+/// Anthropic allows 8000 px, but once a request carries more than 20 images
+/// every image must be at most 2000 px, and a long Aurora thread passes 20
+/// screenshots easily. Bedrock and Google Cloud share the rule.
+pub const PROVIDER_MAX_EDGE: u32 = 2000;
+
+/// Largest image a request may carry as it is, in raw bytes. The documented
+/// cap is 10 MB of base64 on the Claude API and 5 MB on Bedrock and Google
+/// Cloud; 3.5 MB raw stays under 5 MB once base64 adds its third.
+pub const PROVIDER_MAX_RAW_BYTES: usize = 3_500_000;
+
+/// Format and size from the header alone, or `None` when the bytes do not open
+/// as an image with a real size. Cheap enough to run on every image in history
+/// at request time.
+///
+/// Bytes that fail here fail at the provider too, and worse: Anthropic answers
+/// HTTP 400 "Could not process image", and because the image stays in history
+/// every later request in that thread fails the same way. A 21-byte file that
+/// only began with the PNG signature did exactly that (dogfood, 2026-10-22).
+fn header(bytes: &[u8]) -> Option<(image::ImageFormat, u32, u32)> {
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    let (w, h) = reader.into_dimensions().ok()?;
+    (w > 0 && h > 0).then_some((format, w, h))
+}
+
+/// The one gate every image passes on its way into a request, whichever tool,
+/// MCP server or attachment made it.
+///
+/// Returns the bytes to send and the media type they really are, or `None`
+/// when they are not an image a provider will take. The media type comes from
+/// the bytes, never from the marker: a block labelled `image/png` that holds a
+/// JPEG is rejected. An image past [`PROVIDER_MAX_EDGE`] or
+/// [`PROVIDER_MAX_RAW_BYTES`] is re-encoded by [`encode_for_vision`] rather
+/// than sent to fail.
+pub fn prepare_for_provider(bytes: Vec<u8>) -> Option<(&'static str, Vec<u8>)> {
+    let (format, w, h) = header(&bytes)?;
+    let media_type = match format {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::WebP => "image/webp",
+        _ => return None,
+    };
+    if w <= PROVIDER_MAX_EDGE && h <= PROVIDER_MAX_EDGE && bytes.len() <= PROVIDER_MAX_RAW_BYTES {
+        return Some((media_type, bytes));
+    }
+    let (encoded, ew, eh) = encode_for_vision(bytes);
+    (ew != 0 && eh != 0).then_some((ENCODED_MEDIA_TYPE, encoded))
+}
+
 /// Decode an image, fit it inside [`MAX_EDGE`] square (aspect preserved, never
 /// upscaled), and re-encode as JPEG. Returns `(jpeg_bytes, width, height)` where
 /// the dimensions are those of the RETURNED image.

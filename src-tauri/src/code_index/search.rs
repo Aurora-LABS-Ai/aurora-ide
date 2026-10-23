@@ -62,6 +62,10 @@ pub fn query(index: &CodeIndex, query: &str, in_file: Option<&str>, settings: &I
     }
     candidates.sort_by(|a,b| b.score.total_cmp(&a.score).then(index.files[a.file].path.cmp(&index.files[b.file].path)));
     let matches = candidates.len(); let mut results = Vec::new(); let mut remaining = settings.search_bytes;
+    // Ranked files past the passage cap, by path, so a capped answer still names
+    // what it left out (dogfood F23: "matches":19 with 8 passages and no way on).
+    let not_shown: Vec<&str> = candidates.iter().skip(settings.search_results).take(50).map(|c| index.files[c.file].path.as_str()).collect();
+    let not_shown: Vec<String> = not_shown.into_iter().map(str::to_string).collect();
     let langs = LangSet::new()?; let mut parser = tree_sitter::Parser::new();
     for candidate in candidates.into_iter().take(settings.search_results) {
         let file = &index.files[candidate.file];
@@ -129,8 +133,15 @@ pub fn query(index: &CodeIndex, query: &str, in_file: Option<&str>, settings: &I
         if remaining == 0 { limited = true; break; }
     }
     let skipped_count = skipped.len(); skipped.truncate(20);
-    Ok(json!({"success":true,"op":"search","query":query,"matches":matches,
-        "truncated":limited || results.len()<matches,"results":results,"scannedFiles":scanned,
+    let returned = results.len();
+    let truncation_note = (returned < matches).then(|| format!(
+        "{matches} files match; {returned} passages are shown, capped by this project's Code index \
+         settings (maximum results {}, source bytes {}). notShownFiles lists up to 50 of the rest in \
+         rank order; read them with file_read, or narrow the query or use in_file.",
+        settings.search_results, settings.search_bytes));
+    Ok(json!({"success":true,"op":"search","query":query,"matches":matches,"returned":returned,
+        "truncated":limited || returned<matches,"truncationNote":truncation_note,
+        "notShownFiles":not_shown,"results":results,"scannedFiles":scanned,
         "skippedFiles":skipped,"skippedFileCount":skipped_count,"coverageGap":index.coverage_gap(),
         "coverageLimited":limited || skipped_count>0 || index.coverage_gap().is_some(),
         "notice":"Ranked word matches in source code and file names. matchedTerms are the query words in the returned text; matchedElsewhereInFile are words the file has outside it, and the score ranks the whole file. Scores indicate relevance, not confirmed relationships. Unsupported languages and ignored/generated files are excluded. Missing matches do not prove code is absent."}))
@@ -204,5 +215,21 @@ mod tests {
         let text = result["results"][0]["text"].as_str().unwrap();
         assert!(text.len()<=2_000 && text.contains("needle"));
         assert_eq!(result["results"][0]["kind"],"excerpt");
+    }
+
+    /// Dogfood F23: "matches":19 with 8 results and nothing naming the other 11.
+    #[test]
+    fn a_capped_search_names_the_files_it_did_not_show() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..5 { std::fs::write(dir.path().join(format!("m{n}.ts")), "export function revoke() { return 1; }\n").unwrap(); }
+        let index = CodeIndex::build(dir.path()).unwrap();
+        let settings = IndexSettings { search_results: 2, ..Default::default() };
+        let result = query(&index,"revoke",None,&settings).unwrap();
+        assert_eq!(result["matches"], 5);
+        assert_eq!(result["returned"], 2);
+        assert_eq!(result["notShownFiles"].as_array().unwrap().len(), 3);
+        assert!(result["truncationNote"].as_str().unwrap().contains("maximum results 2"));
+        let shown: Vec<&str> = result["results"].as_array().unwrap().iter().map(|r| r["path"].as_str().unwrap()).collect();
+        for path in result["notShownFiles"].as_array().unwrap() { assert!(!shown.contains(&path.as_str().unwrap())); }
     }
 }

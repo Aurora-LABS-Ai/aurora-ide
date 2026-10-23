@@ -21,7 +21,9 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::agent_safety::bash_validation::{classify_intent, BashValidationError, ExecutionMode};
+use crate::agent_safety::bash_validation::{
+    classify_intent_for, BashValidationError, ExecutionMode,
+};
 use crate::agent_safety::shell_validation::validate_for_shell_at;
 use crate::tools::timeout::TimeoutPolicy;
 
@@ -161,7 +163,7 @@ impl ToolExecutor for ShellExecuteTool {
         // Tag the result with the semantic intent so the audit log /
         // chat UI can render risk-aware affordances ("destructive",
         // "network", …) without re-parsing the command string in JS.
-        let intent = classify_intent(command).as_str();
+        let intent = classify_intent_for(command, kind).as_str();
 
         let cwd = Some(resolve_working_directory(&input, ctx)?);
 
@@ -399,6 +401,10 @@ pub(crate) fn resolve_working_directory(
                  run in the workspace root."
             )));
         }
+        // `root.join("sandbox/r6")` kept the forward slash, so the result said
+        // `E:\ws\sandbox/r6` (dogfood F34). Rebuilt from its components it
+        // uses the platform separator; junctions are not followed.
+        let resolved: std::path::PathBuf = resolved.components().collect();
         return Ok(resolved.to_string_lossy().to_string());
     }
 
@@ -717,7 +723,9 @@ mod tests {
         context.workspace_root = Some(tmp.path().to_path_buf());
         let resolved =
             resolve_working_directory(&json!({ "cwd": "packages/api" }), &context).expect("ok");
-        assert_eq!(resolved, tmp.path().join("packages/api").to_string_lossy());
+        // One separator style, not `…\packages/api` (dogfood F34).
+        let expected: std::path::PathBuf = tmp.path().join("packages").join("api");
+        assert_eq!(resolved, expected.to_string_lossy());
     }
 
     /// Sink that reports a run killed by the timeout, with partial output —

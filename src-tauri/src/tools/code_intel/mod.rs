@@ -490,16 +490,42 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
     let (imports, uses): (Vec<&crate::code_index::store::Reference>, Vec<_>) =
         resolved.into_iter().partition(|r| r.kind == "import");
 
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut declarations: std::collections::HashMap<(u32, String), Vec<(u32, u32)>> =
+        std::collections::HashMap::new();
+    for symbol in &idx.symbols {
+        if matches!(symbol.kind.as_str(), "function" | "method") {
+            declarations
+                .entry((symbol.file, symbol.qualified()))
+                .or_default()
+                .push((symbol.line, symbol.col));
+        }
+    }
+    for positions in declarations.values_mut() {
+        positions.sort_unstable();
+    }
+    type CallerKey = (u32, String, Option<(u32, u32)>);
+    let mut counts: std::collections::HashMap<
+        CallerKey,
+        Vec<&crate::code_index::store::Reference>,
+    > = std::collections::HashMap::new();
     for r in &uses {
         let who = r
             .from
             .clone()
             .unwrap_or_else(|| format!("<top level of {}>", idx.file_path(r.file)));
-        *counts.entry(who).or_default() += 1;
+        let declaration = declarations
+            .get(&(r.file, who.clone()))
+            .and_then(|positions| {
+                let end = positions.partition_point(|&(line, _)| line <= r.line);
+                end.checked_sub(1).map(|index| positions[index])
+            });
+        counts
+            .entry((r.file, who, declaration))
+            .or_default()
+            .push(*r);
     }
     let mut callers: Vec<_> = counts.into_iter().collect();
-    callers.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    callers.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
 
     let files: std::collections::BTreeSet<&str> = uses
         .iter()
@@ -533,9 +559,19 @@ fn op_usages(idx: &CodeIndex, name: &str, in_file: Option<&str>) -> Value {
             "kind": coupling_label(kind),
             "count": n,
         })).collect::<Vec<_>>(),
-        "usedBy": callers.iter().take(MAX_ROWS).map(|(who, n)| json!({
+        "countMeaning": "totalUsages excludes imports; coupling includes imports and uses",
+        "usedBy": callers.iter().take(MAX_ROWS).map(|((file, who, declaration), references)| json!({
             "caller": who,
-            "count": n,
+            "file": idx.file_path(*file),
+            "definedAt": declaration.map(|(line, col)| format!("{}:{line}:{col}", idx.file_path(*file))),
+            "count": references.len(),
+            "locations": references.iter().take(MAX_ROWS).map(|reference| json!({
+                "file": idx.file_path(reference.file),
+                "line": reference.line,
+                "column": reference.col,
+                "kind": reference.kind,
+            })).collect::<Vec<_>>(),
+            "locationsTruncated": references.len() > MAX_ROWS,
         })).collect::<Vec<_>>(),
     });
 
@@ -2061,6 +2097,33 @@ mod tests {
         ] {
             let msg = v["message"].as_str().unwrap().to_string();
             assert!(!msg.contains("   "), "collapsed continuation in: {msg}");
+        }
+    }
+
+    #[test]
+    fn usage_callers_with_the_same_name_keep_their_files_and_locations() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("shared.ts"),
+            "export function shared() {}\n",
+        )
+        .unwrap();
+        for name in ["a.ts", "b.ts"] {
+            std::fs::write(
+                tmp.path().join(name),
+                "import { shared } from './shared';\nexport function run() { shared(); }\n",
+            )
+            .unwrap();
+        }
+        let idx = CodeIndex::build(tmp.path()).unwrap();
+        let result = op_usages(&idx, "shared", Some("shared.ts"));
+        let callers = result["usedBy"].as_array().unwrap();
+        assert_eq!(callers.len(), 2, "{result}");
+        assert_ne!(callers[0]["file"], callers[1]["file"]);
+        for caller in callers {
+            assert_eq!(caller["caller"], "run");
+            assert_eq!(caller["locations"][0]["line"], 2);
+            assert!(caller["definedAt"].is_string());
         }
     }
 }

@@ -25,6 +25,7 @@
 //! path. The map grows with distinct files per session; [`clear_session`]
 //! is provided for lifecycle cleanup but is not required for safety.
 
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -34,6 +35,80 @@ type SeenMap = HashMap<String, HashSet<String>>;
 /// total_lines)`, 1-based inclusive. Absent from the map means the whole file
 /// was seen.
 type WindowMap = HashMap<String, HashMap<String, (usize, usize, usize)>>;
+
+type SnapshotMap = HashMap<String, HashMap<String, [u8; 32]>>;
+
+fn snapshots() -> &'static Mutex<SnapshotMap> {
+    static SNAPSHOTS: OnceLock<Mutex<SnapshotMap>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Only a complete, delivered read (or a complete write) grants replace_all.
+pub(crate) fn record_whole_content(session: &str, path: &str, content: &str) {
+    record_whole(session, path);
+    if session.is_empty() || path.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = snapshots().lock() {
+        map.entry(session.into())
+            .or_default()
+            .insert(path.into(), Sha256::digest(content.as_bytes()).into());
+    }
+}
+
+pub(crate) fn matches_content(session: &str, path: &str, content: &str) -> bool {
+    let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+    snapshots()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(session)?.get(path).copied())
+        == Some(digest)
+}
+
+/// Does this conversation hold a complete read of some version of `path`?
+/// Tells "the file changed since you read it" apart from "you never read it
+/// whole" when replace_all is refused.
+pub(crate) fn has_complete_read(session: &str, path: &str) -> bool {
+    snapshots()
+        .lock()
+        .ok()
+        .is_some_and(|map| map.get(session).is_some_and(|paths| paths.contains_key(path)))
+}
+
+pub(crate) fn record_edit(session: &str, path: &str, before: &str, after: &str) {
+    if matches_content(session, path, before) {
+        record_whole_content(session, path, after);
+    } else {
+        record_whole(session, path);
+        if let Ok(mut map) = snapshots().lock() {
+            if let Some(paths) = map.get_mut(session) {
+                paths.remove(path);
+            }
+        }
+    }
+}
+
+pub(crate) fn record_window_content(
+    session: &str,
+    path: &str,
+    content: &str,
+    first: usize,
+    last: usize,
+    total: usize,
+) {
+    record(session, path);
+    if matches_content(session, path, content) {
+        // A narrower read of the same version cannot erase a complete read.
+        record_whole(session, path);
+    } else {
+        if let Ok(mut map) = snapshots().lock() {
+            if let Some(paths) = map.get_mut(session) {
+                paths.remove(path);
+            }
+        }
+        record_window(session, path, first, last, total);
+    }
+}
 
 fn store() -> &'static Mutex<SeenMap> {
     static STORE: OnceLock<Mutex<SeenMap>> = OnceLock::new();
@@ -120,6 +195,9 @@ pub(crate) fn last_window(session_id: &str, resolved_path: &str) -> Option<(usiz
 /// Drop a session's seen-set (call when a session is closed). Optional —
 /// the guard is correct without it; this only reclaims memory.
 pub(crate) fn clear_session(session_id: &str) {
+    if let Ok(mut map) = snapshots().lock() {
+        map.remove(session_id);
+    }
     if let Ok(mut map) = store().lock() {
         map.remove(session_id);
     }
@@ -195,5 +273,29 @@ mod tests {
         record_window(s, "/f.rs", 1, 10, 99);
         clear_session(s);
         assert_eq!(last_window(s, "/f.rs"), None);
+    }
+    #[test]
+    fn replace_all_snapshot_tracks_content_and_edits() {
+        let session = "snapshot-content";
+        record_whole_content(session, "/file", "a a");
+        assert!(matches_content(session, "/file", "a a"));
+        assert!(!matches_content(session, "/file", "a a a"));
+        record_edit(session, "/file", "a a", "b b");
+        assert!(matches_content(session, "/file", "b b"));
+        record_edit(session, "/file", "external edit", "replacement");
+        assert!(!matches_content(session, "/file", "replacement"));
+    }
+
+    #[test]
+    fn same_version_narrow_reads_keep_complete_coverage_and_edits_clear_stale_windows() {
+        let session = "coverage-content";
+        record_whole_content(session, "/file", "a\nb\nc");
+        record_window_content(session, "/file", "a\nb\nc", 3, 3, 3);
+        assert_eq!(last_window(session, "/file"), None);
+        record_window_content(session, "/file", "external\nb\nc", 3, 3, 3);
+        assert_eq!(last_window(session, "/file"), Some((3, 3, 3)));
+        assert!(!matches_content(session, "/file", "external\nb\nc"));
+        record_edit(session, "/file", "external\nb\nc", "external\nb\nc\nd");
+        assert_eq!(last_window(session, "/file"), None);
     }
 }

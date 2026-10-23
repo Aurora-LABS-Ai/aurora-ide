@@ -2061,7 +2061,7 @@ mod rejection_tests {
                 },
                 ContentBlock::Text {
                     text: "match this mockup\n\
-                        <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                        <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>"
                         .into(),
                 },
             ],
@@ -2108,7 +2108,7 @@ mod rejection_tests {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        assert!(!text.contains("QUJD"), "no raw base64 for non-vision");
+        assert!(!text.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="), "no raw base64 for non-vision");
     }
 
     fn screenshot_tool_message() -> Vec<ConversationMessage> {
@@ -2117,7 +2117,7 @@ mod rejection_tests {
             role: MessageRole::Tool,
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
-                content: "<aurora_image media_type=\"image/jpeg\">QUJD</aurora_image>\n\
+                content: "<aurora_image media_type=\"image/jpeg\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>\n\
                           Screenshot of http://localhost/ (640×220 px)"
                     .into(),
                 is_error: None,
@@ -2183,7 +2183,7 @@ mod rejection_tests {
             responses_instructions_and_input(&screenshot_request(&messages), false, true, false);
         assert_eq!(items.len(), 1, "{items:?}");
         let output = items[0]["output"].as_str().expect("text output");
-        assert!(!output.contains("QUJD") && output.contains("Image omitted"), "{output}");
+        assert!(!output.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=") && output.contains("Image omitted"), "{output}");
     }
 }
 

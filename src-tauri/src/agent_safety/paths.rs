@@ -46,6 +46,22 @@ const WINDOWS_DEVICE_NAMES: &[&str] = &[
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
+/// Is this file name (`NUL`, `con.txt`) a Windows device name? Always false
+/// elsewhere.
+#[must_use]
+pub fn is_device_name(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+        WINDOWS_DEVICE_NAMES.contains(&stem.as_str())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = name;
+        false
+    }
+}
+
 /// Why this path cannot exist on this platform, in a sentence naming the
 /// offending part, or `None` if it is storable.
 ///

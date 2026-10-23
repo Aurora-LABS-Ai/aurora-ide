@@ -71,6 +71,7 @@ pub mod shell_list_processes;
 pub mod shell_read_output;
 pub mod shell_spawn;
 pub mod tasks;
+pub mod terminal;
 pub mod todo_store;
 
 pub use ide_event_sink::{
@@ -95,6 +96,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "shell_kill",
     "shell_list_processes",
     "shell_read_output",
+    "terminal",
     "TaskCreate",
     "TaskUpdate",
     "TaskList",
@@ -103,7 +105,7 @@ pub const TOOL_NAMES: &[&str] = &[
 /// Tools that opt into the Phase 4 permission gate
 /// (`requires_permission() == true`). Used by the verify crate to
 /// pin the contract.
-pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &["shell_execute", "shell_spawn"];
+pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &["shell_execute", "shell_spawn", "terminal"];
 
 /// Register every tool in this bucket against `reg`. Idempotent: a
 /// re-registration overwrites the existing entry (same DashMap
@@ -119,6 +121,9 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     reg.register(Arc::new(shell_read_output::ShellReadOutputTool::new(
         sink.clone(),
     )));
+    // Terminals in the Terminal panel; replaces the window's read-only
+    // `terminal_list` / `terminal_read`.
+    reg.register(Arc::new(terminal::TerminalTool));
     // `editor_open_file` is intentionally NOT registered — see TOOL_NAMES.
     // The executor and its `agent_editor_open` event remain compiled because
     // the Agent Window still listens on that channel to open files in its

@@ -1,5 +1,5 @@
 //! `multi_file_read` — parallel file reads with size budgets. Wraps
-//! `crate::commands::read_files_batch` and applies the same
+//! fresh disk snapshots and applies the same
 //! per-file and total-size guard rails as the TS executor.
 
 use std::path::Path;
@@ -10,7 +10,6 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::read_files_batch;
 
 /// Mirrors `MAX_FILES` in `src/tools/executors/file-executors-enhanced.ts`.
 const MAX_FILES: usize = 20;
@@ -148,10 +147,25 @@ impl ToolExecutor for MultiFileReadTool {
         }
 
         let window = Window::from_input(&input);
+        if let Some(window) = window {
+            super::file_read::validate_range(window.start_line, window.end_line, window.max_lines)?;
+        }
 
         let started = Instant::now();
         let read_paths: Vec<String> = resolved.iter().map(|r| r.full_path.clone()).collect();
-        let map = read_files_batch(read_paths.clone()).await;
+        let map = tokio::task::spawn_blocking(move || {
+            use rayon::prelude::*;
+            read_paths
+                .into_par_iter()
+                .map(|path| {
+                    let result = super::file_read::read_text_file(Path::new(&path))
+                        .map_err(|error| format!("Failed to read {path}: {error}"));
+                    (path, result)
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        })
+        .await
+        .map_err(|error| ToolError::Execution(format!("batch file read task panicked: {error}")))?;
 
         let mut total_content_size = 0usize;
         let mut content_limit_reached = false;
@@ -160,7 +174,8 @@ impl ToolExecutor for MultiFileReadTool {
         for entry in resolved {
             let result = map.get(&entry.full_path);
             match result {
-                Some(Ok(content)) => {
+                Some(Ok((content, encoding))) => {
+                    let original_content = content;
                     let lines = count_lines(content);
                     let size = content.len();
 
@@ -259,6 +274,31 @@ impl ToolExecutor for MultiFileReadTool {
                         }
                     };
 
+                    // Same per-line cap as a single read (dogfood F29).
+                    let first_line = extras
+                        .get("range")
+                        .and_then(|range| range["startLine"].as_u64())
+                        .map_or(1, |n| n as usize);
+                    let (body, cut) = super::file_read::cut_long_lines(&body, first_line);
+                    let mut extras = extras;
+                    if let Some(note) = super::file_read::long_line_note(&cut) {
+                        extras.insert(
+                            "longLinesCut".into(),
+                            json!(cut
+                                .iter()
+                                .map(|(line, chars)| json!({ "line": line, "characters": chars }))
+                                .collect::<Vec<_>>()),
+                        );
+                        extras.insert("longLineNote".into(), json!(note));
+                    }
+                    if let Some(encoding) = encoding {
+                        extras.insert("encoding".into(), json!(encoding));
+                        extras.insert(
+                            "encodingNote".into(),
+                            json!(super::file_read::encoding_note(encoding)),
+                        );
+                    }
+
                     // The budget is spent on what is actually returned, so a
                     // window that trims a 5000-line file to 300 lines leaves the
                     // rest of the batch its room.
@@ -302,6 +342,18 @@ impl ToolExecutor for MultiFileReadTool {
                     } else {
                         total_content_size += content_size;
                         success_count += 1;
+                        let window = extras.get("range").and_then(|range| {
+                            let first = range["startLine"].as_u64().unwrap_or(1) as usize;
+                            let last = range["endLine"].as_u64().unwrap_or(lines as u64) as usize;
+                            (first > 1 || last < lines).then_some((first, last, lines))
+                        });
+                        super::file_read::record_read(
+                            &ctx.thread_id,
+                            &entry.full_path,
+                            original_content,
+                            &cut,
+                            window,
+                        );
                         files.push(with_extras(
                             json!({
                                 "path": entry.input_path,
@@ -327,6 +379,7 @@ impl ToolExecutor for MultiFileReadTool {
                     files.push(json!({
                         "path": entry.input_path,
                         "success": false,
+                        "exists": std::path::Path::new(&entry.full_path).try_exists().ok(),
                         "error": error,
                     }));
                 }
@@ -335,6 +388,7 @@ impl ToolExecutor for MultiFileReadTool {
                     files.push(json!({
                         "path": entry.input_path,
                         "success": false,
+                        "exists": std::path::Path::new(&entry.full_path).try_exists().ok(),
                         "error": format!("Failed to read {}", entry.full_path),
                     }));
                 }
@@ -396,39 +450,7 @@ fn with_extras(mut payload: Value, extras: &serde_json::Map<String, Value>) -> V
     payload
 }
 
-fn count_lines(content: &str) -> usize {
-    if content.is_empty() {
-        return 0;
-    }
-    let bytes = content.as_bytes();
-    let mut separators = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' => {
-                separators += 1;
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            b'\n' => {
-                separators += 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    // A trailing separator TERMINATES the last line; it does not begin another.
-    // Counting it reported one line too many for every file that ends in a
-    // newline — which is most of them — and made the file's last "line" the
-    // empty string after it. A window clamped to that line returned nothing.
-    if content.ends_with('\n') || content.ends_with('\r') {
-        return separators;
-    }
-    separators + 1
-}
+use super::file_read::count_lines;
 
 /// Truncate to the largest UTF-8 prefix at most `max_bytes` long.
 fn safe_truncate(s: &str, max_bytes: usize) -> String {
@@ -708,5 +730,27 @@ mod tests {
         let files = parsed["files"].as_array().unwrap();
         let missing = files.iter().find(|f| f["path"] == "missing.txt").unwrap();
         assert_eq!(missing["success"], false);
+    }
+
+    #[tokio::test]
+    async fn batch_missing_file_reports_exists_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("present.txt"), "present").unwrap();
+        let out = MultiFileReadTool
+            .execute(
+                json!({"paths":["present.txt", "missing.txt"]}),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .unwrap();
+        let result: Value = serde_json::from_str(&out).unwrap();
+        let missing = result["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == "missing.txt")
+            .unwrap();
+        assert_eq!(missing["exists"], false, "{out}");
+        assert_eq!(result["filesRead"], 1);
     }
 }

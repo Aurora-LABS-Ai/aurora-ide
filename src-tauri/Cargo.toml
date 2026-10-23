@@ -115,7 +115,15 @@ dashmap = "6"           # Concurrent hashmap for caching
 rayon = "1.10"          # Data-parallel I/O & CPU work (file batch reads, search/replace fan-out)
 memchr = "2.7"          # SIMD-accelerated byte search powering native search/replace
 
-# PTY support for native terminal
+# PTY support for native terminal. The agent window's Terminal panel runs on
+# `portable-pty` directly (`commands::terminal_pty`): `tauri-plugin-pty` hands
+# the window a session counter as `pid`, so closing a tab could never reach the
+# processes it ran. The plugin stays only for the IDE's own terminal.
+portable-pty = "0.9"
+# Turns a terminal's raw output (colours, cursor moves, progress redraws) into
+# the screen and scrollback a person sees, so the agent's `terminal` tool reads
+# clean text from Rust rather than from the window's xterm.
+vt100 = "0.18"
 tauri-plugin-pty = "0.1"
 
 # MCP (Model Context Protocol) client support

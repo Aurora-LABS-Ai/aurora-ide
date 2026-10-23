@@ -444,6 +444,7 @@ impl ToolExecutor for FileReadTool {
             .get("max_lines")
             .and_then(Value::as_u64)
             .map(|n| n as usize);
+        validate_range(start_line, end_line, max_lines)?;
         // Accept the boolean, and also the string spelling some providers emit
         // for boolean-valued function args — refusing "true" would make the
         // opt-out silently do nothing.
@@ -567,6 +568,48 @@ pub(super) fn non_text_error(rel_path: &str) -> String {
     )
 }
 
+/// Read a text file: UTF-8, or UTF-16 with a byte-order mark, which is what
+/// Windows PowerShell 5 `>` and `Out-File` write. Those were refused as "not
+/// a text file" (dogfood F38); the BOM makes the encoding unambiguous. The
+/// second value names a non-UTF-8 encoding so the result can say that
+/// `file_edit` cannot write it back.
+pub(super) fn read_text_file(path: &Path) -> std::io::Result<(String, Option<&'static str>)> {
+    let bytes = std::fs::read(path)?;
+    let utf16 = |little: bool, body: &[u8]| {
+        let units: Vec<u16> = body
+            .chunks_exact(2)
+            .map(|pair| {
+                if little {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
+            .collect();
+        String::from_utf16(&units)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    };
+    match bytes.as_slice() {
+        [0xFF, 0xFE, body @ ..] if body.len() % 2 == 0 => Ok((utf16(true, body)?, Some("utf-16le"))),
+        [0xFE, 0xFF, body @ ..] if body.len() % 2 == 0 => Ok((utf16(false, body)?, Some("utf-16be"))),
+        // `read_to_string`'s own wording: `is_non_text_error` keys on it.
+        _ => String::from_utf8(bytes).map(|text| (text, None)).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )
+        }),
+    }
+}
+
+/// What a read of a non-UTF-8 text file says about editing it.
+pub(super) fn encoding_note(encoding: &str) -> String {
+    format!(
+        "This file is {encoding}, decoded for reading. file_edit and file_write work in UTF-8 \
+         and cannot write it back as {encoding}; convert it first if it must change."
+    )
+}
+
 /// True when a batch reader's error string is `read_to_string` refusing a
 /// non-UTF-8 file. Matched on the message because that is all the batch path is
 /// handed — the `io::Error` is consumed several layers below it.
@@ -601,8 +644,8 @@ fn read_with_policy(
         return Ok(super::image_read::read_image(rel_path, Path::new(full_path), kind).block);
     }
 
-    let content = match std::fs::read_to_string(Path::new(full_path)) {
-        Ok(c) => c,
+    let (content, encoding) = match read_text_file(Path::new(full_path)) {
+        Ok(read) => read,
         Err(err) => {
             // A file that opened but does not hold text: an archive, a binary,
             // a font, an image format Aurora cannot decode. `read_to_string`
@@ -623,7 +666,8 @@ fn read_with_policy(
             // looking for a path it already has.
             return Ok(serde_json::to_string(&json!({
                 "success": false,
-                "exists": err.kind() == std::io::ErrorKind::InvalidData,
+                "exists": if err.kind() == std::io::ErrorKind::NotFound { Some(false) }
+                    else { Path::new(full_path).try_exists().ok() },
                 "path": rel_path,
                 "fullPath": full_path,
                 "error": error,
@@ -638,7 +682,7 @@ fn read_with_policy(
     // gets the whole file — `exactRead` then keeps the spill and history clamp
     // from quietly undoing that downstream.
     if force_full_content {
-        let payload = json!({
+        let mut payload = json!({
             "success": true,
             "exactRead": true,
             "path": rel_path,
@@ -651,7 +695,8 @@ fn read_with_policy(
             "truncated": false,
             "forcedFullContent": true,
         });
-        super::read_tracker::record_whole(thread_id, full_path);
+        with_read_notes(&mut payload, &[], encoding);
+        super::read_tracker::record_whole_content(thread_id, full_path, &content);
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -660,17 +705,19 @@ fn read_with_policy(
     // A file that fits the per-call line cap comes back whole, with no window
     // bookkeeping to reason about.
     if !explicit && total_lines <= MAX_SINGLE_READ_LINES && content.len() <= MAX_FILE_SIZE {
-        let payload = json!({
+        let (shown, cut) = cut_long_lines(&content, 1);
+        let mut payload = json!({
             "success": true,
             "exactRead": true,
             "path": rel_path,
             "fullPath": full_path,
-            "content": content,
+            "content": shown,
             "totalLines": total_lines,
             "size": content.len(),
             "largeFile": false,
         });
-        super::read_tracker::record_whole(thread_id, full_path);
+        record_read(thread_id, full_path, &content, &cut, None);
+        with_read_notes(&mut payload, &cut, encoding);
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -699,7 +746,14 @@ fn read_with_policy(
         });
         // Refused, so no line of it was seen. Recorded as an empty window: an
         // edit after this one is matching against text the caller never got.
-        super::read_tracker::record_window(thread_id, full_path, 0, 0, total_lines);
+        super::read_tracker::record_window_content(
+            thread_id,
+            full_path,
+            &content,
+            0,
+            0,
+            total_lines,
+        );
         return Ok(serde_json::to_string(&payload).unwrap());
     }
 
@@ -744,16 +798,23 @@ fn read_with_policy(
              force_full_content: true.",
             range_end.saturating_add(1)
         ))
+    } else if let Some(asked) = end_line.filter(|&asked| asked > total_lines) {
+        // Dogfood F15: a clamped end used to be described as "exactly as requested".
+        Some(format!(
+            "end_line {asked} is past the end of this file, which has {total_lines} lines; \
+             returned {range_start}-{range_end}, through the last line."
+        ))
     } else if truncated {
         Some(format!(
-            "Returned lines {range_start}-{range_end} of {total_lines} exactly as requested. \
+            "Returned lines {range_start}-{range_end} of {total_lines}. \
              Continue with start_line/end_line, or set force_full_content: true for the whole file."
         ))
     } else {
         None
     };
 
-    let payload = json!({
+    let (sliced, cut) = cut_long_lines(&sliced, range_start);
+    let mut payload = json!({
         "success": true,
         "exactRead": true,
         "path": rel_path,
@@ -769,56 +830,130 @@ fn read_with_policy(
         "omittedLinesAfter": omit_after,
         "warning": warning,
     });
-    if range_start <= 1 && range_end >= total_lines {
-        super::read_tracker::record_whole(thread_id, full_path);
-    } else {
-        super::read_tracker::record_window(
-            thread_id,
-            full_path,
-            range_start,
-            range_end,
-            total_lines,
-        );
-    }
+    let window = (range_start > 1 || range_end < total_lines).then_some((
+        range_start,
+        range_end,
+        total_lines,
+    ));
+    record_read(thread_id, full_path, &content, &cut, window);
+    with_read_notes(&mut payload, &cut, encoding);
     Ok(serde_json::to_string(&payload).unwrap())
 }
 
-/// Match TypeScript's `splitLines` semantics: split on `\r\n`, `\n`,
-/// or bare `\r`, then return the resulting segment count. Returns 0
-/// for the empty string (matching TS `splitLines("")` → `[]`).
-fn count_lines(content: &str) -> usize {
+/// Record what the caller now holds. Cut lines mean part of the file was not
+/// shown, so the read is not complete: it marks the path seen and grants no
+/// `replace_all`. `window` is `(first, last, total)` for a partial range.
+pub(super) fn record_read(
+    thread_id: &str,
+    full_path: &str,
+    content: &str,
+    cut: &[(usize, usize)],
+    window: Option<(usize, usize, usize)>,
+) {
+    if !cut.is_empty() {
+        super::read_tracker::record(thread_id, full_path);
+        return;
+    }
+    match window {
+        None => super::read_tracker::record_whole_content(thread_id, full_path, content),
+        Some((first, last, total)) => super::read_tracker::record_window_content(
+            thread_id, full_path, content, first, last, total,
+        ),
+    }
+}
+
+/// Name the cut lines and a non-UTF-8 encoding on a read's payload.
+pub(super) fn with_read_notes(payload: &mut Value, cut: &[(usize, usize)], encoding: Option<&str>) {
+    if let Some(encoding) = encoding {
+        payload["encoding"] = json!(encoding);
+        payload["encodingNote"] = json!(encoding_note(encoding));
+    }
+    let Some(note) = long_line_note(cut) else {
+        return;
+    };
+    payload["longLinesCut"] = json!(cut
+        .iter()
+        .map(|(line, chars)| json!({ "line": line, "characters": chars }))
+        .collect::<Vec<_>>());
+    payload["longLineNote"] = json!(note);
+}
+
+/// Lines as [`slice_window`] and the runtime's numbering split them: a line
+/// ends at `\n` (a CRLF pair is one break). A lone `\r` is NOT a break. It
+/// used to count as one, so a CR-only file reported `lines: 3` while it was
+/// shown and numbered as one line, and a `start_line: 2` read missed
+/// (dogfood F30). Shared by the batch reader. Returns 0 for the empty string.
+pub(super) fn count_lines(content: &str) -> usize {
     if content.is_empty() {
         return 0;
     }
-    // 1 + number of line separators. Walk bytes to coalesce CRLF.
-    let bytes = content.as_bytes();
-    let mut separators = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' => {
-                separators += 1;
-                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            b'\n' => {
-                separators += 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
+    let separators = memchr::memchr_iter(b'\n', content.as_bytes()).count();
     // A trailing separator TERMINATES the last line; it does not begin another.
     // Counting it reported one line too many for every file that ends in a
     // newline — which is most of them — and made the file's last "line" the
     // empty string after it. A window clamped to that line returned nothing.
-    if content.ends_with('\n') || content.ends_with('\r') {
+    if content.ends_with('\n') {
         return separators;
     }
     separators + 1
+}
+
+/// Longest line `file_read` returns as is. Past it the line is cut and the cut
+/// is named. One minified bundle, a `.har` or a one-line JSON file is a single
+/// "line" of 100 KB or more; the line cap never touched it, the size cap let
+/// it through below 500 KB, and the whole thing landed in the context
+/// (dogfood F29). Same limit Claude Code's own Read uses.
+pub(super) const MAX_LINE_CHARS: usize = 2_000;
+
+/// Text with every line over [`MAX_LINE_CHARS`] cut, plus `(line, chars)` for
+/// each cut line. `first_line` is the number of the text's first line.
+pub(super) fn cut_long_lines(text: &str, first_line: usize) -> (String, Vec<(usize, usize)>) {
+    let mut cut = Vec::new();
+    if text.len() <= MAX_LINE_CHARS {
+        return (text.to_string(), cut);
+    }
+    let mut out = String::with_capacity(text.len().min(1 << 20));
+    for (offset, piece) in text.split_inclusive('\n').enumerate() {
+        let (body, ending) = match piece.strip_suffix("\r\n") {
+            Some(body) => (body, "\r\n"),
+            None => match piece.strip_suffix('\n') {
+                Some(body) => (body, "\n"),
+                None => (piece, ""),
+            },
+        };
+        let chars = body.chars().count();
+        if chars <= MAX_LINE_CHARS {
+            out.push_str(piece);
+            continue;
+        }
+        let keep = body
+            .char_indices()
+            .nth(MAX_LINE_CHARS)
+            .map_or(body.len(), |(at, _)| at);
+        out.push_str(&body[..keep]);
+        out.push_str(&format!(
+            " …[line cut: {} more characters]",
+            chars - MAX_LINE_CHARS
+        ));
+        out.push_str(ending);
+        cut.push((first_line + offset, chars));
+    }
+    (out, cut)
+}
+
+/// What a read with cut lines says about them, or `None` when nothing was cut.
+pub(super) fn long_line_note(cut: &[(usize, usize)]) -> Option<String> {
+    let (line, chars) = *cut.first()?;
+    let which = if cut.len() == 1 {
+        format!("Line {line} ({chars} characters) was cut")
+    } else {
+        format!("{} lines were cut (the first is line {line}, {chars} characters)", cut.len())
+    };
+    Some(format!(
+        "{which} at {MAX_LINE_CHARS} characters, marked `…[line cut]`. Find text inside it with \
+         grep, or read more of it with a shell command (for example `cut -c2001-6000 <file>`). \
+         file_edit can still match text in the part you were shown."
+    ))
 }
 
 /// Slice the requested window.
@@ -848,6 +983,27 @@ pub(super) struct Slice {
     /// string under `success: true`, which the caller cannot tell apart from an
     /// empty file, and which taught it nothing about the range it got wrong.
     pub past_end: bool,
+}
+
+pub(super) fn validate_range(
+    start: Option<usize>,
+    end: Option<usize>,
+    max_lines: Option<usize>,
+) -> Result<(), ToolError> {
+    if max_lines == Some(0) {
+        return Err(ToolError::InvalidInput(
+            "Invalid max_lines 0: it must be at least 1. Leave it out to read the default window."
+                .into(),
+        ));
+    }
+    if let (Some(start), Some(end)) = (start, end) {
+        if end < start.max(1) {
+            return Err(ToolError::InvalidInput(format!(
+                "Invalid line range {start}-{end}: end_line must be at least start_line."
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn slice_window(
@@ -1881,5 +2037,109 @@ mod tests {
         assert_eq!(parsed["range"]["startLine"], 5);
         assert_eq!(parsed["range"]["endLine"], 7);
         assert_eq!(parsed["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn inverted_ranges_are_rejected_in_single_and_batch_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a\nb\nc").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "a\nb\nc").unwrap();
+        for paths in [
+            serde_json::json!(["a.txt"]),
+            serde_json::json!(["a.txt", "b.txt"]),
+        ] {
+            let result = FileReadTool
+                .execute(
+                    serde_json::json!({"path": paths, "start_line":3, "end_line":1}),
+                    &ctx_for(Some(tmp.path().to_path_buf())),
+                )
+                .await;
+            assert!(matches!(result, Err(ToolError::InvalidInput(_))));
+        }
+    }
+
+    /// Dogfood F29: a 100 KB one-line file came back whole, single read and batch.
+    #[tokio::test]
+    async fn a_very_long_line_is_cut_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("long.txt"), format!("{}\nshort\n", "x".repeat(100_000)))
+            .unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "b\n").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        for paths in [serde_json::json!("long.txt"), serde_json::json!(["long.txt", "b.txt"])] {
+            let out = FileReadTool
+                .execute(serde_json::json!({"path": paths}), &ctx)
+                .await
+                .unwrap();
+            assert!(out.len() < 10_000, "the line must not ride along whole: {} bytes", out.len());
+            assert!(out.contains("…[line cut: 98000 more characters]"), "{}", &out[..300]);
+            assert!(out.contains("\"longLinesCut\""));
+            assert!(out.contains("short"));
+        }
+        // A cut read is not a complete read: replace_all stays refused.
+        let canonical = dunce::canonicalize(tmp.path().join("long.txt")).unwrap();
+        assert!(!super::super::read_tracker::has_complete_read(
+            &ctx.thread_id,
+            &canonical.to_string_lossy()
+        ));
+    }
+
+    /// Dogfood F30: a CR-only file said `lines: 3` and was numbered as one line.
+    #[test]
+    fn a_lone_carriage_return_is_not_a_line_break() {
+        assert_eq!(count_lines("r1\rr2\rr3\r"), 1);
+        assert_eq!(count_lines("a\r\nb\r\n"), 2);
+        assert_eq!(count_lines("a\nb"), 2);
+    }
+
+    /// Dogfood F38: UTF-16 with a BOM was refused as "not a text file".
+    #[tokio::test]
+    async fn utf16_with_a_bom_is_decoded_and_says_it_cannot_be_edited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in "héllo\r\nwörld\r\n".encode_utf16() {
+            bytes.extend(unit.to_le_bytes());
+        }
+        std::fs::write(tmp.path().join("u16.txt"), bytes).unwrap();
+        let out = FileReadTool
+            .execute(
+                serde_json::json!({"path": "u16.txt"}),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        assert!(parsed["content"].as_str().unwrap().contains("wörld"));
+        assert_eq!(parsed["encoding"], "utf-16le");
+        assert!(parsed["encodingNote"].as_str().unwrap().contains("cannot write it back"));
+    }
+
+    /// Dogfood F22 and the F15 clamp case.
+    #[tokio::test]
+    async fn zero_max_lines_is_refused_and_a_clamped_end_is_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a\nb\nc").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        for paths in [
+            serde_json::json!(["a.txt"]),
+            serde_json::json!(["a.txt", "a.txt"]),
+        ] {
+            let result = FileReadTool
+                .execute(serde_json::json!({"path": paths, "max_lines": 0}), &ctx)
+                .await;
+            assert!(matches!(result, Err(ToolError::InvalidInput(_))));
+        }
+        let out = FileReadTool
+            .execute(
+                serde_json::json!({"path": ["a.txt"], "start_line": 2, "end_line": 99}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        let warning = parsed["warning"].as_str().unwrap_or_default();
+        assert!(warning.contains("end_line 99 is past the end"), "{out}");
+        assert!(!warning.contains("exactly as requested"), "{out}");
     }
 }

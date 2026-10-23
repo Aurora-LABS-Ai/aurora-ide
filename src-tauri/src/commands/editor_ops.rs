@@ -230,7 +230,8 @@ async fn apply_multi_search_replace_inner(
 fn run_multi_search_replace(
     request: ApplyMultiSearchReplaceRequest,
 ) -> Result<SearchReplaceResponse, String> {
-    let original_content = file_cache::read_file_cached(&request.path)?;
+    let original_content = std::fs::read_to_string(&request.path)
+        .map_err(|error| format!("failed to read {} before editing: {error}", request.path))?;
     let plan = plan_multi_search_replace(&original_content, &request.replacements);
 
     match plan {
@@ -331,9 +332,13 @@ fn plan_multi_search_replace(
     original_content: &str,
     replacements: &[SearchReplaceItem],
 ) -> PlanResult {
-    let original_line_ending = detect_line_ending(original_content);
     let normalized_original = normalize_line_endings(original_content);
-    let mut line_ending_normalized = normalized_original.len() != original_content.len();
+    // Each removed CRLF byte shifts subsequent normalized offsets by one.
+    let crlf_ends: Vec<usize> = memmem::find_iter(original_content.as_bytes(), b"\r\n")
+        .enumerate()
+        .map(|(removed, offset)| offset - removed + 1)
+        .collect();
+    let mut line_ending_normalized = false;
 
     let mut planned_ranges: Vec<PlannedRange> = Vec::new();
     let mut replacement_details: Vec<ReplacementDetail> = Vec::with_capacity(replacements.len());
@@ -347,12 +352,6 @@ fn plan_multi_search_replace(
         // only matched after an escape level came off, the replacement carries
         // the same extra level and comes off with it.
         let mut normalized_new = normalize_line_endings(&replacement.new_string);
-
-        if normalized_old.len() != replacement.old_string.len()
-            || normalized_new.len() != replacement.new_string.len()
-        {
-            line_ending_normalized = true;
-        }
 
         if normalized_old.is_empty() {
             return PlanResult::NotFound {
@@ -461,6 +460,9 @@ fn plan_multi_search_replace(
         }
 
         for &(start, end) in &ranges {
+            let raw_start = start + crlf_ends.partition_point(|&boundary| boundary <= start);
+            let raw_end = end + crlf_ends.partition_point(|&boundary| boundary <= end);
+            line_ending_normalized |= original_content[raw_start..raw_end].contains("\r\n");
             let candidate = PlannedRange {
                 start,
                 end,
@@ -495,6 +497,7 @@ fn plan_multi_search_replace(
     // file before and after, not from the replacement strings.
     let before = normalized_original.clone();
     let mut buffer = normalized_original;
+    let mut new_content = original_content.to_string();
     for range in &planned_ranges {
         // Defensive: `String::replace_range` panics if `start` or `end` are
         // not on UTF-8 char boundaries. For valid UTF-8 patterns matched
@@ -512,6 +515,11 @@ fn plan_multi_search_replace(
             };
         }
         buffer.replace_range(range.start..range.end, &range.new_text);
+        let raw_start = range.start + crlf_ends.partition_point(|&end| end <= range.start);
+        let raw_end = range.end + crlf_ends.partition_point(|&end| end <= range.end);
+        let ending = replacement_line_ending(original_content, raw_start, raw_end);
+        let replacement = restore_line_endings(&range.new_text, ending);
+        new_content.replace_range(raw_start..raw_end, &replacement);
     }
 
     // Counted the way the Review panel counts, so both ends state the same
@@ -521,7 +529,6 @@ fn plan_multi_search_replace(
     // empty `new_string` still "has" one line and the trailing newline of the
     // matched text counted as a second one.
     let (lines_added, lines_removed) = line_change_counts(&before, &buffer);
-    let new_content = restore_line_endings(&buffer, original_line_ending);
 
     PlanResult::Ok {
         new_content,
@@ -544,12 +551,31 @@ fn first_overlap<'a>(
         .find(|range| candidate.start < range.end && candidate.end > range.start)
 }
 
-fn detect_line_ending(content: &str) -> &'static str {
-    if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
+fn replacement_line_ending(content: &str, start: usize, end: usize) -> &'static str {
+    let first_ending = |text: &str| {
+        text.as_bytes()
+            .iter()
+            .position(|byte| matches!(byte, b'\r' | b'\n'))
+            .map(|at| match text.as_bytes()[at] {
+                b'\r' if text.as_bytes().get(at + 1) == Some(&b'\n') => "\r\n",
+                b'\r' => "\r",
+                _ => "\n",
+            })
+    };
+    first_ending(&content[start..end])
+        .or_else(|| first_ending(&content[end..]))
+        .or_else(|| {
+            content[..start].rfind(['\r', '\n']).map(|at| {
+                if content.as_bytes()[at] == b'\r' {
+                    "\r"
+                } else if at > 0 && content.as_bytes()[at - 1] == b'\r' {
+                    "\r\n"
+                } else {
+                    "\n"
+                }
+            })
+        })
+        .unwrap_or("\n")
 }
 
 pub(crate) fn normalize_line_endings(value: &str) -> String {
@@ -993,8 +1019,11 @@ fn diff_one_line(found_line: &str, sent_line: &str, line_number: usize) -> LineD
 /// Render a run for a human to read. Whitespace is counted rather than printed,
 /// because two spaces beside one space on a screen says nothing at all.
 fn render_run(run: &str) -> String {
+    // Empty, not "nothing": written in backticks, "nothing" read as the literal
+    // word, and a run of the text `nothing` rendered the same (dogfood F32).
+    // `describe_diagnosis` words the missing side instead.
     if run.is_empty() {
-        return "nothing".to_string();
+        return String::new();
     }
     if run.chars().all(|c| c == ' ' || c == '\t') {
         let spaces = run.chars().filter(|&c| c == ' ').count();
@@ -1122,6 +1151,12 @@ fn diagnose_no_match(
         }
     }
 
+    if !old.contains('\n') {
+        if let Some(diagnosis) = diagnose_single_line(file, old) {
+            return Some(diagnosis);
+        }
+    }
+
     let file_lines: Vec<&str> = file.split('\n').collect();
     if file_lines.len() > MAX_DIAGNOSABLE_LINES {
         return None;
@@ -1184,6 +1219,82 @@ fn diagnose_no_match(
         differences,
         more_differences,
         typographic_matches,
+    })
+}
+
+/// One-character hints may start inside a line. They never authorize a write.
+fn diagnose_single_line(file: &str, old: &str) -> Option<MatchDiagnosis> {
+    let sent: Vec<char> = old.chars().collect();
+    if sent.len() < 4 || sent.len() > 512 || !sent.iter().any(|ch| ch.is_alphanumeric()) {
+        return None;
+    }
+    let mut scanned = 0usize;
+    let mut best: Option<((usize, usize), usize, usize, String)> = None;
+    let mut ambiguous = false;
+    for (line_index, line) in file.lines().enumerate() {
+        let found: Vec<char> = line.chars().collect();
+        scanned += found.len();
+        if scanned > 1_000_000 {
+            return None;
+        }
+        for width in [sent.len(), sent.len() - 1, sent.len() + 1] {
+            if width > found.len() {
+                continue;
+            }
+            for start in 0..=found.len() - width {
+                let candidate = &found[start..start + width];
+                let prefix = sent
+                    .iter()
+                    .zip(candidate)
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                let suffix = sent
+                    .iter()
+                    .rev()
+                    .zip(candidate.iter().rev())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+                    .min(sent.len().min(width) - prefix);
+                if prefix + suffix < sent.len().max(width) - 1 {
+                    continue;
+                }
+                let cuts = usize::from(
+                    start > 0
+                        && found[start - 1].is_alphanumeric()
+                        && candidate[0].is_alphanumeric(),
+                ) + usize::from(
+                    start + width < found.len()
+                        && found[start + width].is_alphanumeric()
+                        && candidate[width - 1].is_alphanumeric(),
+                );
+                let rank = (cuts, width.abs_diff(sent.len()));
+                match &best {
+                    Some((best_rank, best_line, best_start, _)) if rank == *best_rank => {
+                        if *best_line != line_index || *best_start != start {
+                            ambiguous = true;
+                        }
+                    }
+                    Some((best_rank, ..)) if rank > *best_rank => {}
+                    _ => {
+                        best = Some((rank, line_index, start, candidate.iter().collect()));
+                        ambiguous = false;
+                    }
+                }
+            }
+        }
+    }
+    if ambiguous {
+        return None;
+    }
+    let (_, line, start, found) = best?;
+    let mut difference = diff_one_line(&found, old, line + 1);
+    difference.column += start;
+    Some(MatchDiagnosis {
+        start_line: line + 1,
+        end_line: line + 1,
+        differences: vec![difference],
+        more_differences: false,
+        typographic_matches: 0,
     })
 }
 
@@ -1950,7 +2061,8 @@ mod tests {
                 line_ending_normalized,
                 ..
             } => {
-                assert!(line_ending_normalized);
+                // A single-line match crosses no CRLF (dogfood F15).
+                assert!(!line_ending_normalized);
                 assert!(new_content.contains("\"Maria\""));
                 assert!(!new_content.contains("\"José\""));
                 // Output preserves CRLF endings of the source.
@@ -2265,8 +2377,30 @@ mod tests {
                 line_ending_normalized,
                 ..
             } => {
-                assert!(line_ending_normalized);
+                // `b` alone crosses no line break, so it is not reported as a
+                // match across CRLF (dogfood F15).
+                assert!(!line_ending_normalized);
                 assert_eq!(new_content, "a\r\nBBB\r\nc\r\n");
+            }
+            _ => panic!("expected Ok plan"),
+        }
+
+        let across = plan_multi_search_replace(
+            "a\r\nb\r\nc\r\n",
+            &[SearchReplaceItem {
+                old_string: "a\nb".to_string(),
+                new_string: "A\nB".to_string(),
+                replace_all: false,
+            }],
+        );
+        match across {
+            PlanResult::Ok {
+                new_content,
+                line_ending_normalized,
+                ..
+            } => {
+                assert!(line_ending_normalized, "the match spans a CRLF");
+                assert_eq!(new_content, "A\r\nB\r\nc\r\n");
             }
             _ => panic!("expected Ok plan"),
         }
@@ -2462,7 +2596,7 @@ mod tests {
         };
         let difference = &diagnosis.expect("diagnosed").differences[0];
         assert_eq!(difference.found, "3 spaces");
-        assert_eq!(difference.sent, "nothing");
+        assert_eq!(difference.sent, "", "the missing side is empty, worded by the renderer");
         assert_eq!(difference.line, 1);
         assert_eq!(difference.column, 13, "column points past `const a = 1;`");
     }
@@ -2627,5 +2761,41 @@ mod tests {
             PlanResult::NotUnique { .. } => {}
             _ => panic!("must not silently pick one of the braces"),
         }
+    }
+    #[test]
+    fn edits_preserve_unmodified_mixed_line_endings() {
+        for (before, old, new, expected) in [
+            ("a\nb\nc\r\n", "b", "B", "a\nB\nc\r\n"),
+            ("a\r\nb\nc\r\n", "b\nc", "B\nC", "a\r\nB\nC\r\n"),
+            ("a\r\nb\r\nc\n", "b\nc", "B\nC", "a\r\nB\r\nC\n"),
+        ] {
+            let PlanResult::Ok { new_content, .. } = plan_one(before, old, new) else {
+                panic!("edit must match");
+            };
+            assert_eq!(new_content, expected);
+        }
+    }
+
+    #[test]
+    fn hints_cover_short_and_mid_line_one_character_errors() {
+        for (file, old) in [
+            ("line two", "Line two"),
+            ("line two", "line  two"),
+            (
+                "prefix before Entries are marked confirmed after",
+                "entries are marked confirmed",
+            ),
+        ] {
+            let PlanResult::NotFound {
+                diagnosis: Some(diagnosis),
+                ..
+            } = plan_one(file, old, "x")
+            else {
+                panic!("expected a hint for {old}");
+            };
+            assert_eq!(diagnosis.start_line, 1);
+            assert!(!diagnosis.differences.is_empty());
+        }
+        assert!(diagnose_single_line("line two\nline two", "Line two").is_none());
     }
 }

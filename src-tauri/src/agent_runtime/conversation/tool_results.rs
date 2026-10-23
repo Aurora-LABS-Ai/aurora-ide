@@ -272,6 +272,17 @@ pub(super) fn number_read_content(tool: &str, raw: &str) -> Option<String> {
     if !matches!(tool, "file_read" | "multi_file_read") {
         return None;
     }
+    // A read that mixed pictures with text files is "markers + captions, a
+    // blank line, then the batch JSON". Parsing it whole failed, so the text
+    // files in it came back unnumbered (dogfood F28). Number the JSON part and
+    // keep the pictures in front of it unchanged.
+    if !raw.trim_start().starts_with('{') {
+        let close = crate::api::aurora_image::CLOSE;
+        let after = raw.rfind(close)? + close.len();
+        let start = after + raw[after..].find("\n{")? + 1;
+        let numbered = number_read_content(tool, &raw[start..])?;
+        return Some(format!("{}{numbered}", &raw[..start]));
+    }
     let mut value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
     fn number_entry(entry: &mut serde_json::Value) -> bool {
         let Some(map) = entry.as_object_mut() else {
@@ -328,9 +339,8 @@ pub(super) fn dropped_fields(clamped: &str) -> bool {
         .is_some_and(|v| v.get(DROPPED_FIELDS_NOTE).is_some())
 }
 
-/// The model-history copy of one tool result: clamped to its cap, or, when
-/// clamping could only fit it by deleting fields, MOVED whole to a file in
-/// `spill_dir` with a small envelope pointing at it.
+/// The model-history copy of one tool result. Any lossy JSON compaction moves
+/// the original to a file, including shortened strings and omitted array rows.
 ///
 /// `spilled` is the result after the ordinary payload-field spill; `raw` is
 /// the untouched original, which is what gets written when the whole result
@@ -466,12 +476,28 @@ pub(super) fn compact_json_arrays(
     if let serde_json::Value::Object(map) = &mut candidate {
         map.insert("historyTruncated".into(), serde_json::Value::Bool(true));
         map.insert(
+            DROPPED_FIELDS_NOTE.into(),
+            serde_json::Value::String(
+                "Array entries were omitted to fit this result. Counts describe the original \
+                 result unless a returned match count is provided. Request a smaller slice if \
+                 no fullResult file is available."
+                    .into(),
+            ),
+        );
+        map.insert(
             "originalBytes".into(),
             serde_json::Value::from(original_len as u64),
         );
     }
 
     loop {
+        if let Some(map) = candidate.as_object_mut() {
+            if let Some(count) = map.get("matches").and_then(|v| v.as_array()).map(Vec::len) {
+                if map.contains_key("returned") {
+                    map.insert("returned".into(), serde_json::Value::from(count));
+                }
+            }
+        }
         let serialized = serde_json::to_string(&candidate).ok()?;
         if serialized.len() <= cap {
             return Some(serialized);

@@ -12,11 +12,36 @@ import { UI_PARTS, parseUi } from "./ui";
 import GUIDE from "./guide.md?raw";
 
 describe("reply layout instructions", () => {
-  it("the prompt's lines parse clean, as one layout", () => {
+  it("the fixture layout parses clean", () => {
     const layout = parseUi(UI_PROMPT_LINES.join("\n"), true);
     expect(layout.problems).toEqual([]);
     expect(layout.parts.map((p) => (p.kind === "block" ? p.layout.kind : p.kind))).toEqual(["facts", "flow", "note"]);
-    for (const line of UI_PROMPT_LINES) expect(REPLY_LAYOUT_INSTRUCTIONS).toContain(line);
+  });
+
+  // Alvan, 2026-10-23: the prompt says load the guide first, and nothing more.
+  // The language lives in the guide alone.
+  it("the prompt requires the guide before a layout and teaches no part", () => {
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("aurora-ui");
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain('`canvas_guidelines` with `topic: "reply-layout"` first');
+    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("Never write one from memory");
+    for (const part of UI_PARTS) expect(REPLY_LAYOUT_INSTRUCTIONS).not.toContain(`${part}(`);
+  });
+
+  it("the guide carries the rules the prompt used to", () => {
+    expect(GUIDE).toContain("an unnamed fence is drawn as code");
+    expect(GUIDE).toContain("a Tree 32");
+    expect(GUIDE).toContain("`C:\\Users\\name`");
+    expect(GUIDE).toContain("No header row");
+  });
+
+  it("a Windows path keeps its backslashes", () => {
+    const layout = parseUi(
+      'root = Page([w])\nw = Pairs("Where", ["Location | C:\\Users\\Alvan\\Documents\\tv-remote", "Modules | E:\\repo\\node_modules"])\n',
+      true,
+    );
+    expect(layout.problems).toEqual([]);
+    expect(JSON.stringify(layout)).toContain("C:\\\\Users\\\\Alvan\\\\Documents\\\\tv-remote");
+    expect(JSON.stringify(layout)).toContain("E:\\\\repo\\\\node_modules");
   });
 
   it("the guide's example is one aurora-ui fence that parses clean", () => {
@@ -30,24 +55,17 @@ describe("reply layout instructions", () => {
     expect(layout.parts.map((p) => p.kind)).toEqual(["stats", "block", "diagram", "block", "block", "block"]);
   });
 
-  it("the guide names every part, and the prompt points at it", () => {
+  it("the guide names every part and the report contract", () => {
     for (const part of UI_PARTS) expect(GUIDE).toContain(`${part}(`);
     expect(GUIDE).toContain("aurora-report");
-    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain('topic: "reply-layout"');
-    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain('topic: "reports"');
   });
 
-  it("teaches one fence, never the single-block fences or a header row", () => {
-    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("aurora-ui");
+  it("teaches one fence, never the single-block fences", () => {
     expect(REPLY_LAYOUT_INSTRUCTIONS).not.toMatch(/aurora-(facts|flow|note|bars|pairs|compare|checklist|timeline|tree)\b/);
-    // 2026-10-16: "rows `Label | Value | Detail`" came back as a literal
-    // `Surface | Location | Notes` first row in every block.
-    expect(REPLY_LAYOUT_INSTRUCTIONS).not.toMatch(/Label \| Value|Step \| Detail|Key \| Value/);
-    expect(REPLY_LAYOUT_INSTRUCTIONS).toContain("no header row");
   });
 
   it("keeps the standing prompt short and fence-free", () => {
-    expect(REPLY_LAYOUT_INSTRUCTIONS.length).toBeLessThan(1200);
+    expect(REPLY_LAYOUT_INSTRUCTIONS.length).toBeLessThan(500);
     expect(REPLY_LAYOUT_INSTRUCTIONS).not.toContain("```");
   });
 

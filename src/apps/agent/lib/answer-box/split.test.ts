@@ -10,6 +10,29 @@ describe("splitReply with the reply language", () => {
     expect(layout.kind === "layout" && [layout.language, layout.closed]).toEqual(["aurora-ui", true]);
     expect(splitReply(text).every((s) => s.kind === "markdown")).toBe(true);
   });
+
+  // MiniMax M3.1, 2026-10-23: the layout written right, the fence left unnamed,
+  // and the whole architecture drawn as a code block.
+  it("draws an unnamed fence that opens with a layout statement", () => {
+    const text = 'Intro.\n\n```\nstack = Facts("Shape", ["Root | `package.json`"])\n\nmodules = Tree([\n  "0 | apps"\n])\n```\n\nOutro.';
+    const cut = splitReply(text, { layouts: true });
+    expect(cut.map((s) => s.kind)).toEqual(["markdown", "layout", "markdown"]);
+    expect(cut[1]).toMatchObject({ language: "aurora-ui", closed: true });
+    expect((cut[1] as { source: string }).source.startsWith('stack = Facts("Shape"')).toBe(true);
+    // Still streaming: the open fence is already a layout.
+    const live = splitReply('```\nstack = Facts("Shape", ["Root | x"])\n', { layouts: true });
+    expect(live).toMatchObject([{ kind: "layout", language: "aurora-ui", closed: false }]);
+  });
+
+  it("keeps an unnamed fence of ordinary code as code", () => {
+    for (const code of ["```\nnpm install\n```", "```\nText(\"hi\")\n```", "```text\nconst root = Page()\n```", "```\n```"]) {
+      expect(splitReply(`A.\n${code}\nB.`, { layouts: true })).toEqual([{ kind: "markdown", text: `A.\n${code}\nB.` }]);
+    }
+    // An unnamed fence with nothing in it yet stays text while it streams.
+    expect(splitReply("A.\n```\n", { layouts: true })).toEqual([{ kind: "markdown", text: "A.\n```\n" }]);
+    // Switch off: never a layout.
+    expect(splitReply('```\nstack = Facts("S", ["A | B"])\n```').every((s) => s.kind === "markdown")).toBe(true);
+  });
 });
 
 describe("splitting a reply into markdown and boxes", () => {

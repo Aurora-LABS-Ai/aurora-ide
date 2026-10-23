@@ -42,6 +42,9 @@ export type StructuredLayout =
 type StructureKind = StructuredLayout["kind"];
 const MAX_OPTIONS = 4;
 const MAX_TREE_DEPTH = 4;
+/** A tree is the one part that is long by nature: a repo's modules, indented.
+ *  At the shared 12, an architecture answer lost half its tree (2026-10-23). */
+export const MAX_TREE_ITEMS = 32;
 
 function parseComparison(lines: string[]): StructuredLayout {
   const { title, rows: sourceRows } = titleAndRows(lines);
@@ -107,17 +110,20 @@ function parseTree(lines: string[]): StructuredLayout {
   const problems: string[] = [];
   let count = 0;
   for (const line of rows) {
-    const [level = "", label = "", caption = "", ...extra] = splitFields(line);
+    const [level = "", label = "", ...details] = splitFields(line);
+    // Detail split over two fields ("Electron 41 | the main product") is still
+    // the item's detail; dropping the row lost the item (2026-10-23).
+    const caption = details.filter((d) => d.trim()).join(" · ");
     const depth = Number(level);
     const validDepth = /^\d$/.test(level) && depth <= MAX_TREE_DEPTH;
-    if (!validDepth || depth > parents.length || !label || extra.length > 0) {
+    if (!validDepth || depth > parents.length || !label) {
       problems.push(`${line}: use "Depth | Item | Optional detail", starting at 0, increasing by at most one, up to ${MAX_TREE_DEPTH}`);
       // A rejected parent must not attach its children to an earlier sibling.
       parents.length = validDepth ? Math.min(parents.length, depth) : 0;
       continue;
     }
-    if (count >= MAX_ITEMS) {
-      problems.push(`${line}: more than ${MAX_ITEMS} tree items`);
+    if (count >= MAX_TREE_ITEMS) {
+      problems.push(`${line}: more than ${MAX_TREE_ITEMS} tree items`);
       continue;
     }
     const node: TreeNode = { title: label, ...(caption ? { caption } : {}), children: [] };

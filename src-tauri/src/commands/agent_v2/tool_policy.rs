@@ -290,6 +290,9 @@ pub(super) const PLAN_MUTATING_TOOLS: &[&str] = &[
     "folder_create",
     "shell_spawn",
     "shell_kill",
+    // Starts commands in a live tab and types into them: execution, like
+    // `shell_spawn`.
+    "terminal",
     // The checklist is an execution artifact: Plan mode authors the plan, it
     // does not work a checklist. All three go, `TaskList` included — a read
     // that can only ever return the empty list is a tool the model is told

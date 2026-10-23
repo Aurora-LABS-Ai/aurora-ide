@@ -599,6 +599,28 @@ fn a_result_the_clamp_would_gut_moves_whole_to_a_file() {
     assert!(on_disk.contains(&report), "nothing cut");
 }
 
+/// Dogfood F28: a read mixing a picture with text files is "image, blank
+/// line, batch JSON". The text files in it came back unnumbered.
+#[test]
+fn a_mixed_image_and_text_read_still_numbers_the_text() {
+    use super::tool_results::number_read_content;
+    let batch = serde_json::json!({
+        "success": true,
+        "files": [{"path": "three.txt", "success": true, "content": "alpha\nbeta\n"}],
+    })
+    .to_string();
+    let raw = format!(
+        "<aurora_image media_type=\"image/png\" name=\"small.png\"></aurora_image>\n\
+         small.png — PNG image, 32×24 px.\n\n{batch}"
+    );
+    let numbered = number_read_content("file_read", &raw).expect("the text part is numbered");
+    assert!(numbered.starts_with("<aurora_image"), "the picture stays first");
+    let json_start = numbered.find("\n{").unwrap() + 1;
+    let parsed: serde_json::Value = serde_json::from_str(&numbered[json_start..]).unwrap();
+    assert_eq!(parsed["files"][0]["content"], "1\talpha\n2\tbeta\n");
+    assert!(parsed["lineNumbers"].is_string());
+}
+
 /// The 2026-10-08 harness run: agents reported `slugify:5` and `truncate:13`
 /// for lines 6 and 14, counting newlines in an unnumbered read and losing one
 /// at a blank line. The model's copy of a read now numbers every line.
@@ -658,10 +680,11 @@ fn a_read_reaches_the_model_with_every_line_numbered_from_its_real_start() {
     assert!(number_read_content("file_read", &empty).is_none());
 }
 
-/// Results the clamp CAN shrink keep doing so: the move is only for the case
-/// that would otherwise lose data.
+/// Shortening a string is lossy too, so it moves the whole result like a
+/// dropped field does ("moved, never cut"). Only without a spill folder does
+/// the shortened copy stand.
 #[test]
-fn a_result_the_clamp_can_shrink_is_not_moved() {
+fn a_result_the_clamp_would_shorten_is_moved_whole() {
     let raw = serde_json::json!({
         "success": true,
         "stdout": "line\n".repeat(4_000),
@@ -670,8 +693,13 @@ fn a_result_the_clamp_can_shrink_is_not_moved() {
     let dir = tempfile::tempdir().unwrap();
     let out = super::tool_results::clamp_or_move("shell_execute", "call-2", raw.clone(), &raw, Some(dir.path()));
     let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert!(parsed.get("fullResult").is_none(), "{out}");
-    assert!(std::fs::read_dir(dir.path()).map(|d| d.count() == 0).unwrap_or(true));
+    let saved = std::fs::read_to_string(parsed["fullResult"].as_str().expect("moved")).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved, serde_json::from_str::<serde_json::Value>(&raw).unwrap());
+
+    let kept = super::tool_results::clamp_or_move("shell_execute", "call-2", raw.clone(), &raw, None);
+    let kept: serde_json::Value = serde_json::from_str(&kept).unwrap();
+    assert_eq!(kept["historyTruncated"], true);
 }
 
 /// The reported bug, reproduced end to end against the real page and the real
@@ -5534,5 +5562,40 @@ async fn compaction_rewrites_the_journal_so_the_rest_of_the_turn_is_recoverable(
             .expect("journal")
             .contains("post-compaction work"),
         "appends must resume immediately, not wait for the end-of-turn save"
+    );
+}
+
+#[test]
+fn oversized_grep_results_move_without_losing_matches() {
+    let rows: Vec<_> = (0..50)
+        .map(|n| {
+            serde_json::json!({
+                "file": format!("src/{}/route_{n}.rs", "nested/".repeat(22)),
+                "line": n + 1, "content": "match",
+            })
+        })
+        .collect();
+    let raw = serde_json::json!({"success": true, "returned": 50, "matches": rows}).to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let result = super::tool_results::clamp_or_move(
+        "grep",
+        "grep-rows",
+        raw.clone(),
+        &raw,
+        Some(dir.path()),
+    );
+    assert!(result.len() <= super::tool_results::result_cap_for("grep"));
+    let envelope: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let saved = std::fs::read_to_string(envelope["fullResult"].as_str().unwrap()).unwrap();
+    let complete: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(complete["matches"].as_array().unwrap().len(), 50);
+    assert_eq!(complete["returned"], 50);
+
+    let fallback = super::tool_results::clamp_or_move("grep", "grep-rows", raw.clone(), &raw, None);
+    let fallback: serde_json::Value = serde_json::from_str(&fallback).unwrap();
+    assert!(fallback["truncationNote"].is_string());
+    assert_eq!(
+        fallback["returned"].as_u64().unwrap() as usize,
+        fallback["matches"].as_array().unwrap().len()
     );
 }

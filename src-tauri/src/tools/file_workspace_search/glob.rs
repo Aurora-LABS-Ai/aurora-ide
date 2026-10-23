@@ -191,6 +191,10 @@ impl ToolExecutor for GlobTool {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        let workspace = ctx
+            .workspace_root
+            .as_deref()
+            .map(|root| dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
         let mut matches: Vec<(std::time::SystemTime, String)> = stdout
             .split('\0')
             .filter(|line| !line.trim().is_empty())
@@ -200,7 +204,12 @@ impl ToolExecutor for GlobTool {
                 let modified = std::fs::metadata(search_root.join(line))
                     .and_then(|meta| meta.modified())
                     .unwrap_or(std::time::UNIX_EPOCH);
-                (modified, normalize_relative(line))
+                let absolute = search_root.join(line);
+                let displayed = workspace
+                    .as_deref()
+                    .and_then(|root| absolute.strip_prefix(root).ok())
+                    .unwrap_or(&absolute);
+                (modified, normalize_relative(&displayed.to_string_lossy()))
             })
             .collect();
 
@@ -410,15 +419,14 @@ mod tests {
         assert!(matches!(err, ToolError::Cancelled));
     }
 
-    /// The `path` argument must actually scope the search, and results stay
-    /// relative to that scope.
+    /// Scoping a search does not change the workspace-relative result contract.
     #[tokio::test]
     async fn path_scopes_the_search() {
         let tmp = fixture();
         let parsed = run(json!({ "pattern": "*.rs", "path": "src" }), tmp.path()).await;
         let mut found = files(&parsed);
         found.sort();
-        assert_eq!(found, vec!["lib.rs", "main.rs"]);
+        assert_eq!(found, vec!["src/lib.rs", "src/main.rs"]);
     }
 
     /// With no workspace the access setting decides — the same contract the

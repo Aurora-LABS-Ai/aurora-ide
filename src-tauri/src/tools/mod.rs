@@ -147,7 +147,10 @@ pub mod transcript;
 /// Raised 49 -> 50 by Chat-only native MiniMax video generation and task queries.
 /// Lowered 50 -> 49 on 2026-09-29: `read_lints` removed (see
 /// `shell_editor_todo`); the model runs the project's own checks in the shell.
-pub const BUILTIN_TOOL_COUNT: usize = 49;
+/// Raised 49 -> 50 on 2026-10-23 by `terminal`, which moved the window's two
+/// read-only `terminal_list` / `terminal_read` into one Rust tool that can also
+/// start, type into and stop the agent's own Terminal-panel tabs.
+pub const BUILTIN_TOOL_COUNT: usize = 50;
 
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
@@ -284,7 +287,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 49);
+        assert_eq!(BUILTIN_TOOL_COUNT, 50);
         assert_eq!(
             file_workspace_search::TOOL_NAMES.len()
                 + shell_editor_todo::TOOL_NAMES.len()

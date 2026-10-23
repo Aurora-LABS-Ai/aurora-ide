@@ -10,7 +10,8 @@ no artifact tool or generated JavaScript is needed. Data, dates, statuses and co
 come from evidence. The reader's filters are local view state; they do not change the source
 data or run tools.
 
-Everything else that should be laid out goes in one `aurora-ui` fence.
+Everything else that should be laid out goes in one `aurora-ui` fence. Write the name on the
+opening fence; an unnamed fence is drawn as code.
 
 ## The language
 
@@ -22,9 +23,12 @@ Everything else that should be laid out goes in one `aurora-ui` fence.
   `[lists]`, names of other lines, or a part written inline.
 - Rows are text in quotes with `|` between fields, the same as `Runtime | Rust | Tauri backend`.
   Escape a literal pipe as `\|`. Fields hold plain text and `code` spans.
+- Only `\"` and `\|` are escapes; every other backslash is kept. Write a Windows path as it
+  is: `C:\Users\name`.
 - No header row naming the columns, except the first row of `Compare`, which names the options.
 - No expressions, no handlers, no styling. Values come from evidence; nothing computes them.
-- At most 12 rows per part, 8 stats, 6 diagram columns of 8 nodes, 24 parts per page.
+- At most 12 rows per part (a Tree 32), 8 stats, 6 diagram columns of 8 nodes, 24 parts per
+  page.
 
 ## Parts
 

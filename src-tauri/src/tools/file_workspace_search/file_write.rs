@@ -128,7 +128,7 @@ impl ToolExecutor for FileWriteTool {
         // Returns the pre-write content (for the Review panel's diff). Empty when
         // the file is new. Read inside the same blocking task so there's no extra
         // hop and no TOCTOU window before the overwrite.
-        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let result = tokio::task::spawn_blocking(move || -> Result<(String, String), String> {
             let file_path = Path::new(&resolved_str);
             let old_content = if existed_before {
                 std::fs::read_to_string(file_path).unwrap_or_default()
@@ -161,17 +161,20 @@ impl ToolExecutor for FileWriteTool {
             // entire line-ending convention and shows up as a
             // file-wide diff in git.
             let (line_ending, bom) = detect_write_conventions(file_path);
-            let bytes_to_write = apply_write_conventions(&content, line_ending, bom);
+            let bytes_to_write =
+                String::from_utf8(apply_write_conventions(&content, line_ending, bom)).map_err(
+                    |error| format!("Invalid UTF-8 while preparing {resolved_str}: {error}"),
+                )?;
             super::write_retry::write_retrying_lock(file_path, &bytes_to_write)
                 .map_err(|e| format!("Failed to write file: {e}"))?;
             crate::file_cache::get_file_cache().invalidate(&resolved_str);
-            Ok(old_content)
+            Ok((old_content, bytes_to_write))
         })
         .await
         .map_err(|err| ToolError::Execution(format!("file_write task panicked: {err}")))?;
 
         match result {
-            Ok(old_content) => {
+            Ok((old_content, written_content)) => {
                 let old_normalized = old_content.replace("\r\n", "\n");
                 let new_normalized = content_for_result.replace("\r\n", "\n");
                 // The same counter `file_edit` reports through, so both tools
@@ -214,7 +217,11 @@ impl ToolExecutor for FileWriteTool {
                 // read-before-edit guard without a redundant read. It also
                 // clears any window an earlier partial read left recorded —
                 // the file it wrote is the file it knows.
-                super::read_tracker::record_whole(&ctx.thread_id, &resolved.to_string_lossy());
+                super::read_tracker::record_whole_content(
+                    &ctx.thread_id,
+                    &resolved.to_string_lossy(),
+                    &written_content,
+                );
 
                 // An overwrite is the highest-impact write there is — every
                 // symbol the file defined may have changed shape. A brand-new

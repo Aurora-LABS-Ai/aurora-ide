@@ -36,6 +36,11 @@ export default defineConfig({
         // Vite 8 — Rolldown replaces Rollup, but the option key is renamed.
         // Plugin/output shape is Rollup-compatible, so the body is unchanged.
         rolldownOptions: {
+            // `aurora-canvas-runtime` (vite-canvas-plugin.ts) runs a nested
+            // build of the canvas SDK, once per build, and Rolldown bills that
+            // whole build to the plugin. The time is the SDK bundle, not waste;
+            // a prebuilt copy instead would drift from `src/canvas-sdk/`.
+            checks: { pluginTimings: false },
             // Suppress mixed static/dynamic import warnings (intentional for Tauri)
             onwarn(warning, warn) {
                 // Skip warnings about mixed imports - these are intentional

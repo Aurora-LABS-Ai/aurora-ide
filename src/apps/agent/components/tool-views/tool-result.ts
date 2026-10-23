@@ -1037,8 +1037,12 @@ export function parseToolResult(
     if (added || removed) out.stat = { added, removed };
     const n = asNum(parsed.filesEdited) ?? files.length;
     const success = parsed.success !== false;
+    // A partial batch: these files changed, some edits did not apply.
+    const notApplied = parsed.partial === true ? asNum(parsed.editsFailed) : undefined;
     out.summary = success
-      ? `Edited ${n} ${n === 1 ? "file" : "files"}`
+      ? `Edited ${n} ${n === 1 ? "file" : "files"}${
+          notApplied ? ` · ${notApplied} ${notApplied === 1 ? "edit" : "edits"} not applied` : ""
+        }`
       : asStr(parsed.error) ?? "Edit failed";
     return out;
   }
@@ -1246,42 +1250,45 @@ export function parseToolResult(
     }
   }
 
-  // The user's terminals. Both render like every other tool: a plain summary on
-  // the row, the real content in the dropdown — never a raw JSON dump.
-  if (name === "terminal_list") {
-    const terminals = Array.isArray(parsed.terminals) ? parsed.terminals : [];
-    out.summary =
-      terminals.length === 0
-        ? "No terminal open"
-        : `${terminals.length} open`;
-    if (terminals.length > 0) {
-      out.code = terminals
-        .map(rec)
-        .filter((t): t is Record<string, unknown> => Boolean(t))
-        .map((t) => {
-          const title = asStr(t.title) ?? asStr(t.id) ?? "terminal";
-          const where = asStr(t.cwd) ?? "";
-          const state = t.running === false ? " (exited)" : "";
-          return where ? `${title}${state}  ${where}` : `${title}${state}`;
-        })
-        .join("\n");
-    }
-    return out;
-  }
-
-  if (name === "terminal_read") {
+  // `terminal` — one tool, five acts. The row says which act it was, from the
+  // arguments that chose it; the dropdown shows the screen text or the list.
+  // Never a raw JSON dump.
+  if (name === "terminal") {
     if (parsed.success === false) {
-      out.summary = asStr(parsed.error) ?? "Terminal not found";
+      out.summary = asStr(parsed.error) ?? "Terminal call failed";
+      return out;
+    }
+    const terminals = Array.isArray(parsed.terminals) ? parsed.terminals : null;
+    if (terminals) {
+      out.summary = terminals.length === 0 ? "No terminal open" : `${terminals.length} open`;
+      if (terminals.length > 0) {
+        out.code = terminals
+          .map(rec)
+          .filter((t): t is Record<string, unknown> => Boolean(t))
+          .map((t) => {
+            const title = asStr(t.title) ?? asStr(t.id) ?? "terminal";
+            const by = t.startedBy === "agent" ? " · agent" : "";
+            const state = t.running === false ? " (exited)" : "";
+            return `${title}${by}${state}`;
+          })
+          .join("\n");
+      }
       return out;
     }
     const title = asStr(parsed.title) ?? asStr(args.id) ?? "terminal";
-    const lines = asNum(parsed.totalLines);
-    // Says WHICH terminal and how much came back — the two things a reader
-    // wants without expanding. The scope is named in words, not as the enum.
-    const scope = parsed.scope === "all" ? "full scrollback" : "last command";
-    out.summary =
-      lines === undefined ? `${title} — ${scope}` : `${title} — ${scope}, ${lines} lines`;
-    const text = asStr(parsed.text);
+    const act = asStr(args.command)
+      ? "Started"
+      : args.stop === true
+        ? "Stopped"
+        : asStr(args.input) || Array.isArray(args.keys)
+          ? "Typed into"
+          : "Read";
+    const state =
+      parsed.running === false
+        ? ` · exited${asNum(parsed.exitCode) === undefined ? "" : ` ${asNum(parsed.exitCode)}`}`
+        : "";
+    out.summary = `${act} ${title}${state}`;
+    const text = asStr(parsed.output);
     if (text) out.code = text;
     return out;
   }

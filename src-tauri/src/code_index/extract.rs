@@ -951,7 +951,23 @@ pub fn extract(spec: &LangSpec, parser: &mut Parser, source: &str) -> Option<Fil
         // their declarations are syntactically variable declarators. Promote
         // only wrappers proven to come from the `react` import; a project-local
         // helper that happens to be named `memo` must remain an ordinary value.
-        let kind = if *captured_kind == "variable"
+        let python_method = lang == Lang::Python
+            && *captured_kind == "function"
+            && node
+                .parent()
+                .and_then(|definition| {
+                    let parent = definition.parent()?;
+                    let body = if parent.kind() == "decorated_definition" {
+                        parent.parent()?
+                    } else {
+                        parent
+                    };
+                    Some(body.kind() == "block" && body.parent()?.kind() == "class_definition")
+                })
+                .unwrap_or(false);
+        let kind = if python_method {
+            "method"
+        } else if *captured_kind == "variable"
             && matches!(lang, Lang::TypeScript | Lang::Tsx)
             && is_react_component_wrapper_binding(*node, src, &facts.imports)
         {
@@ -2263,5 +2279,13 @@ const random = other(() => cn('other'));
         assert!(sym(&f, "save").exported, "Swift defaults to internal");
         assert!(!sym(&f, "flush").exported);
         assert_call_from(&f, "flush", "Store::save");
+    }
+    #[test]
+    fn python_class_methods_are_distinct_from_nested_functions() {
+        let facts = facts(Lang::Python, "class Store:\n    def save(self):\n        def nested():\n            pass\n        nested()\n    @staticmethod\n    def load():\n        pass\ndef top():\n    pass\n");
+        assert_eq!(sym(&facts, "save").kind, "method");
+        assert_eq!(sym(&facts, "load").kind, "method");
+        assert_eq!(sym(&facts, "nested").kind, "function");
+        assert_eq!(sym(&facts, "top").kind, "function");
     }
 }

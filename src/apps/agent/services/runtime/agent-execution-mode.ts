@@ -205,6 +205,8 @@ const WRITE_TOOL_NAMES = new Set([
   "folder_create",
   "shell_spawn",
   "shell_kill",
+  // Starts commands in a live Terminal-panel tab: execution, like shell_spawn.
+  "terminal",
   // The checklist is an execution artifact: Plan mode authors the plan, it
   // does not work a checklist. `TaskList` is withheld with the other two even
   // though it only reads — in Plan mode it can only ever return the empty

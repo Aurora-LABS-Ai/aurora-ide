@@ -92,6 +92,17 @@ describe("WorkCard", () => {
       "tools-toolu_3",
     ]);
     expect(window.querySelector(".agw-wc-rows")!.hasAttribute("inert")).toBe(true);
+    // Not a control (Alvan, 2026-10-23): a click on the window opened the card,
+    // with a hand cursor over all of it. Only the header opens it now, and a
+    // click inside lights the header to point there.
+    expect(head.hasAttribute("data-nudged")).toBe(false);
+    act(() => (window as HTMLElement).click());
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(el.querySelector(".agw-wc-window")).not.toBeNull();
+    expect(head.hasAttribute("data-nudged")).toBe(true);
+    // Opening the card puts the light out.
+    act(() => (head as HTMLButtonElement).click());
+    expect(head.hasAttribute("data-nudged")).toBe(false);
   });
 
   /**

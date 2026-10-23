@@ -27,6 +27,20 @@ export type ReplySegment =
 /** An opening or closing fence: three or more backticks or tildes. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 
+/** Fence names that mean "no language": the model forgot to name it. */
+const UNNAMED = new Set(["", "text", "plain", "plaintext"]);
+
+/**
+ * The first line of a reply-language layout: `name = Part(`. Models write the
+ * language right and forget the fence name (MiniMax M3.1, 2026-10-23: a whole
+ * architecture layout drawn as a code block). Only the assignment form counts,
+ * so `Text("hi")` in a Compose or Flutter snippet stays code.
+ */
+const UI_FIRST_LINE =
+  /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:Page|Facts|Flow|Note|Bars|Pairs|Compare|Checklist|Timeline|Tree|Stats|Diagram|Text|Link|Sources)\s*\(/;
+/** The same, on any line: the cheap check before the reply is cut at all. */
+const UI_FIRST_LINE_ANYWHERE = new RegExp(UI_FIRST_LINE.source, "m");
+
 export interface SplitOptions {
   /** Cut registered reply-layout fences out too. Off,
    *  they stay markdown and render as code, which is what the setting being
@@ -39,7 +53,8 @@ export interface SplitOptions {
  * model explaining the format) stays text.
  */
 export function splitReply(text: string, { layouts = false }: SplitOptions = {}): ReplySegment[] {
-  const mightHold = text.includes(BOX_FENCE_LANGUAGE) || (layouts && text.includes("aurora-"));
+  const mightHold =
+    text.includes(BOX_FENCE_LANGUAGE) || (layouts && (text.includes("aurora-") || UI_FIRST_LINE_ANYWHERE.test(text)));
   if (!mightHold) return [{ kind: "markdown", text }];
 
   const lines = text.split("\n");
@@ -49,6 +64,8 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
     marker: string;
     /** What the fence opened: a box, a layout block, or ordinary code. */
     cut: "box" | ReplyFenceLanguage | null;
+    /** An unnamed fence before its first line: layout or code is not known yet. */
+    pending?: boolean;
     lines: string[];
     opener: string;
   } | null = null;
@@ -68,9 +85,10 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
         const info = fence[2].trim().split(/\s+/)[0] ?? "";
         const cut: "box" | ReplyFenceLanguage | null =
           info === BOX_FENCE_LANGUAGE ? "box" : layouts && isReplyFence(info) ? info : null;
-        open = { marker: fence[1], cut, lines: [], opener: line };
+        const pending = !cut && layouts && UNNAMED.has(info);
+        open = { marker: fence[1], cut, pending, lines: [], opener: line };
         if (cut) flushMarkdown();
-        else markdown.push(line);
+        else if (!pending) markdown.push(line);
         continue;
       }
       markdown.push(line);
@@ -81,6 +99,21 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
       fence[1][0] === open.marker[0] &&
       fence[1].length >= open.marker.length &&
       fence[2].trim() === "";
+    if (open.pending) {
+      if (!closes && !line.trim()) {
+        open.lines.push(line);
+        continue;
+      }
+      // The first line decides: a layout statement, or ordinary code.
+      open.pending = false;
+      if (!closes && UI_FIRST_LINE.test(line)) {
+        open.cut = UI_FENCE_LANGUAGE;
+        flushMarkdown();
+      } else {
+        markdown.push(open.opener, ...open.lines);
+        open.lines = [];
+      }
+    }
     if (open.cut) {
       if (closes) {
         const source = open.lines.join("\n");
@@ -111,6 +144,8 @@ export function splitReply(text: string, { layouts = false }: SplitOptions = {})
         : { kind: "layout", language: open.cut, source, closed: false, raw },
     );
   } else {
+    // An unnamed fence with nothing in it yet is code until it says otherwise.
+    if (open?.pending) markdown.push(open.opener, ...open.lines);
     flushMarkdown();
   }
   return segments;

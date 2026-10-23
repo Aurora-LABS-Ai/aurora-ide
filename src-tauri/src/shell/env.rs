@@ -207,6 +207,13 @@ fn compose_with_inherited(
     inherited_pythonunbuffered: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut overlay = streaming_env(inherited_pythonunbuffered);
+    overlay.push(("NO_COLOR".into(), "1".into()));
+    // Python on Windows prints through cp1252 and crashed on the first emoji
+    // or non-Latin path a script printed (dogfood F35). UTF-8 on stdio only,
+    // so how scripts open files is unchanged, and a user's own setting wins.
+    if std::env::var_os("PYTHONIOENCODING").is_none() && std::env::var_os("PYTHONUTF8").is_none() {
+        overlay.push(("PYTHONIOENCODING".into(), "utf-8".into()));
+    }
 
     let inherited = std::env::var("PATH").unwrap_or_default();
     let merged = effective_path();

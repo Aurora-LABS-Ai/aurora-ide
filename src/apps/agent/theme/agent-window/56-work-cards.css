@@ -38,8 +38,15 @@
   transition: background-color var(--agw-dur-fast) ease;
 }
 .agw-wc-head:hover,
-.agw-wc-head:focus-visible {
+.agw-wc-head:focus-visible,
+/* A click inside the closed running window lights the header once, the one
+   place that opens the card (WorkCard `nudge`). Steady, then fades back by the
+   transition above; never a pulse. */
+.agw-wc-head[data-nudged] {
   background: var(--agw-hover);
+}
+.agw-wc-head[data-nudged] .agw-wc-chev {
+  color: var(--agw-text);
 }
 .agw-wc-lead {
   display: inline-flex;
@@ -204,11 +211,17 @@
    it is full, WorkCard keeps it scrolled to the newest step, so the oldest
    leave through the top, and the top fades only while something is actually
    cut off there (`data-clipped`, measured in WorkCard). It does not scroll by
-   hand: a click anywhere opens the card; nothing inside is a control here. */
+   hand, and nothing inside is a control here; the header opens the card.
+   It used to open on a click anywhere, with a hand cursor over all 55vh of it
+   (Alvan, 2026-10-23: "anywhere I move my cursor it becomes a pointer").
+   `overscroll-behavior` goes back to auto: `overflow: hidden` is still a
+   scroll container to the browser, so the wheel landed here, had nothing to
+   scroll, and the open panel's `contain` stopped it reaching the chat — the
+   chat would not scroll with the pointer over a running card (same day). */
 .agw-wc-body.agw-wc-window {
   max-height: 55vh;
   overflow: hidden;
-  cursor: pointer;
+  overscroll-behavior: auto;
   animation: none;
   -webkit-mask-image: none;
   mask-image: none;

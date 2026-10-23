@@ -90,18 +90,32 @@ impl ToolExecutor for MovePathTool {
             resolve_path_for_read(old_path, ctx.workspace_root.as_deref(), write_access)?;
         let resolved_new =
             resolve_path_for_create(new_path, ctx.workspace_root.as_deref(), write_access)?;
+        let same_destination = resolved_old == resolved_new;
+        // Canonicalization validates containment but erases the requested leaf
+        // casing on Windows. Keep the validated parent and restore that leaf.
+        #[cfg(windows)]
+        let resolved_new = match Path::new(new_path).file_name() {
+            Some(leaf) => resolved_new.with_file_name(leaf),
+            None => resolved_new,
+        };
+        // Same file and the same spelling: nothing to rename. A case-only
+        // rename differs here, because the leaf above keeps the requested case.
+        let unchanged = resolved_old == resolved_new;
         let old_str = resolved_old.to_string_lossy().to_string();
         let new_str = resolved_new.to_string_lossy().to_string();
         let raw_old = old_path.to_string();
         let raw_new = new_path.to_string();
 
-        let outcome = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let outcome = tokio::task::spawn_blocking(move || -> Result<Option<bool>, String> {
             let src = Path::new(&old_str);
             let dst = Path::new(&new_str);
             if !src.exists() {
                 return Err(format!("Source path does not exist: {old_str}"));
             }
-            if dst.exists() {
+            if unchanged {
+                return Ok(None);
+            }
+            if dst.exists() && !same_destination {
                 return Err(format!("Destination already exists: {new_str}"));
             }
             let is_dir = src.is_dir();
@@ -132,13 +146,22 @@ impl ToolExecutor for MovePathTool {
             }
             std::fs::rename(src, dst)
                 .map_err(|e| format!("Failed to move {old_str} to {new_str}: {e}"))?;
-            Ok(is_dir)
+            Ok(Some(is_dir))
         })
         .await
         .map_err(|err| ToolError::Execution(format!("move_path task panicked: {err}")))?;
 
         match outcome {
-            Ok(is_dir) => {
+            Ok(None) => Ok(serde_json::to_string(&json!({
+                "success": true,
+                "moved": false,
+                "message": format!("Source and destination are the same path; nothing was moved: {raw_old}"),
+                "oldPath": raw_old,
+                "newPath": raw_new,
+                "fullPath": resolved_new.to_string_lossy(),
+            }))
+            .unwrap()),
+            Ok(Some(is_dir)) => {
                 // A move is a delete of the old location plus a create of
                 // the new one. Emitting both keeps open buffers, the
                 // explorer tree, and the pending-changes UI in sync.
@@ -182,6 +205,7 @@ impl ToolExecutor for MovePathTool {
 
                 Ok(serde_json::to_string(&json!({
                     "success": true,
+                    "moved": true,
                     "message": format!("Moved: {raw_old} -> {raw_new}"),
                     "oldPath": raw_old,
                     "newPath": raw_new,
@@ -340,5 +364,50 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], false);
         assert!(parsed["error"].as_str().unwrap().contains("already exists"));
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn renames_only_the_case_of_an_existing_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("empty.txt"), "kept").unwrap();
+        let out = tool()
+            .execute(
+                serde_json::json!({"old_path":"empty.txt", "new_path":"EMPTY.txt"}),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(names.contains(&std::ffi::OsString::from("EMPTY.txt")));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("EMPTY.txt")).unwrap(),
+            "kept"
+        );
+    }
+
+    /// Dogfood F21: a move onto itself answered "Moved: a -> a".
+    #[tokio::test]
+    async fn a_move_onto_itself_reports_nothing_moved() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("same.txt"), "kept").unwrap();
+        let out = tool()
+            .execute(
+                serde_json::json!({"old_path":"same.txt", "new_path":"same.txt"}),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        assert_eq!(parsed["moved"], false, "{out}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("same.txt")).unwrap(),
+            "kept"
+        );
     }
 }

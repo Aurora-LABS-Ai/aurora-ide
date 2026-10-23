@@ -3,7 +3,7 @@
  *
  * Refined 8→6: one reader (`file_read`, single or batch), one writer
  * (`file_write`, content required), one editor (`file_edit`, single or
- * atomic batch), plus `move_path` / `delete_path` (file-or-folder) and
+ * batch; a failed edit is skipped and reported), plus `move_path` / `delete_path` (file-or-folder) and
  * `grep`. The old `file_create` / `file_delete` / `search_replace` /
  * `multi_search_replace` / `multi_file_read` tools are gone — folded into
  * these. Schemas mirror the native Rust executors in
@@ -106,7 +106,7 @@ Use file_edit for targeted changes to an existing file. Set must_not_exist=true 
 };
 
 // ============================================
-// FILE EDIT TOOL (single or atomic batch find-and-replace)
+// FILE EDIT TOOL (single or batch find-and-replace)
 // ============================================
 export const fileEditTool: ToolDefinition = {
   type: 'function',
@@ -119,7 +119,7 @@ Single edit: pass path + old_string + new_string.
 Many edits to ONE file: pass an "edits" array plus the top-level "path".
 Edits across MULTIPLE files in ONE call: give each item in "edits" its own "path" (the top-level "path" is the default for items that omit it).
 
-The whole batch is ATOMIC: every edit matches against its file's ORIGINAL snapshot, and if any edit fails NO file is changed.
+Every edit matches against its file's ORIGINAL snapshot. A failed edit is not applied and the others are; the result lists each failed edit by number with its reason.
 
 RULES:
 - old_string must match the file exactly (whitespace + newlines). LF/CRLF is handled automatically.
@@ -161,7 +161,7 @@ Examples:
             properties: {
               path: {
                 type: 'string',
-                description: 'Optional file for THIS edit. Defaults to the top-level "path". Set it to edit several files in one atomic call.',
+                description: 'Optional file for THIS edit. Defaults to the top-level "path". Set it to edit several files in one call.',
               },
               old_string: {
                 type: 'string',
@@ -179,7 +179,7 @@ Examples:
             },
             required: ['old_string', 'new_string'],
           },
-          description: 'Batch form: array of edits applied atomically against each file\'s original snapshot. Give items their own "path" to edit multiple files in one call. Matched regions in the same file must not overlap.',
+          description: 'Batch form: array of edits, each matched against its file\'s original snapshot; a failed edit is skipped and reported, the rest apply. Give items their own "path" to edit multiple files in one call. Matched regions in the same file must not overlap.',
         },
       },
       required: [],

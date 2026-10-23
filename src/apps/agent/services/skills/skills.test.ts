@@ -488,6 +488,21 @@ Use 2-space indentation.`;
     expect(results.map((r) => r.id)).toEqual(["vitest-testing", "typescript"]);
   });
 
+  // Dogfood F24: two installs of one skill showed the same name with no flag.
+  it("searchSkillCandidates flags skills that share a name", async () => {
+    stubWorkspaceSkills([
+      { id: "react-best-practices", name: "vercel-react-best-practices", description: "React performance.", triggers: [] },
+      { id: "vercel-react-best-practices", name: "vercel-react-best-practices", description: "React performance.", triggers: [] },
+      TS_SKILL,
+    ]);
+    const results = await searchSkillCandidates("react", 30, { workspacePath: "E:/repo" });
+    const byId = new Map(results.map((r) => [r.id, r]));
+    expect(byId.get("react-best-practices")?.sameNameAs).toEqual(["vercel-react-best-practices"]);
+    expect(byId.get("vercel-react-best-practices")?.sameNameAs).toEqual(["react-best-practices"]);
+    const all = await searchSkillCandidates(null, 30, { workspacePath: "E:/repo" });
+    expect(all.find((r) => r.id === "typescript")?.sameNameAs).toBeUndefined();
+  });
+
   it("searchSkillCandidates returns an empty list when nothing matches", async () => {
     const results = await searchSkillCandidates("zzz-nothing-matches-this");
     expect(results).toHaveLength(0);

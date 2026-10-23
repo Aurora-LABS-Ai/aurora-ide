@@ -134,13 +134,12 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   aurora_skill_load: 'low',        // Read-only SKILL.md fetch
 
   // ============================================
-  // USER'S TERMINALS (right rail) - AUTO-APPROVED
+  // TERMINAL PANEL
   // ============================================
-  // Read-only: they observe output that already exists on screen. Neither can
-  // run a command or type into a live shell — that is `shell_execute`, which
-  // keeps its own risk level.
-  terminal_list: 'low',            // Which terminals the user has open
-  terminal_read: 'low',            // One terminal's existing output
+  // Starts commands and types into the agent's own tabs, so it carries the
+  // shell tools' level; the approval gate in Rust decides per the user's
+  // Settings → Tools mode.
+  terminal: 'high',
 
   // ============================================
   // INTERACTIVE PROMPT - AUTO-APPROVED (UI is the consent)
@@ -171,6 +170,7 @@ export const RISK_LEVEL_CHANGES = {
     'shell_execute',    // high (system access)
     'shell_spawn',      // high (system access)
     'shell_kill',       // high (process management)
+    'terminal',         // high (starts commands in the Terminal panel)
   ],
   philosophy: 'Cursor-style speed: auto-approve file ops, require approval only for destructive/system operations',
 };

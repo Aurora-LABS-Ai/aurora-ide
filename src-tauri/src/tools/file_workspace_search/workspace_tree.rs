@@ -718,7 +718,11 @@ async fn attach_stats(arena: &mut Arena) -> Result<(usize, usize), ToolError> {
     for (idx, stat) in stats {
         let node = &mut arena.nodes[idx];
         match stat {
-            Ok(FileStat { size, lines }) => {
+            Ok(FileStat {
+                size,
+                lines,
+                binary,
+            }) => {
                 node.size = Some(size);
                 match lines {
                     Some(count) => {
@@ -729,7 +733,7 @@ async fn attach_stats(arena: &mut Arena) -> Result<(usize, usize), ToolError> {
                     None => {
                         // Too large to count, which is itself the signal the
                         // model needs before trying to read it whole.
-                        node.large_file = Some(true);
+                        node.large_file = Some(!binary);
                         skipped += 1;
                     }
                 }
@@ -742,29 +746,58 @@ async fn attach_stats(arena: &mut Arena) -> Result<(usize, usize), ToolError> {
 
 struct FileStat {
     size: u64,
-    /// `None` when the file was past [`LINE_COUNT_MAX_BYTES`].
+    /// `None` for binary data or a file past [`LINE_COUNT_MAX_BYTES`].
     lines: Option<usize>,
+    binary: bool,
 }
 
 fn stat_file(path: &Path) -> Result<FileStat, String> {
     let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let size = metadata.len();
     if size > LINE_COUNT_MAX_BYTES {
-        return Ok(FileStat { size, lines: None });
+        return Ok(FileStat {
+            size,
+            lines: None,
+            binary: false,
+        });
+    }
+    if is_binary_file(path).map_err(|error| error.to_string())? {
+        return Ok(FileStat {
+            size,
+            lines: None,
+            binary: true,
+        });
     }
     let lines = count_lines_in_file(path).map_err(|e| e.to_string())?;
     Ok(FileStat {
         size,
         lines: Some(lines),
+        binary: false,
     })
+}
+
+fn is_binary_file(path: &Path) -> std::io::Result<bool> {
+    use std::io::Read;
+    let mut sample = [0u8; 8192];
+    let length = std::fs::File::open(path)?.read(&mut sample)?;
+    let bytes = &sample[..length];
+    let invalid_utf8 = std::str::from_utf8(bytes)
+        .err()
+        .is_some_and(|error| error.error_len().is_some());
+    let controls = bytes
+        .iter()
+        .filter(|&&byte| byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r' | 0x0c))
+        .count();
+    Ok(invalid_utf8 || bytes.contains(&0) || controls > length / 100)
 }
 
 /// Count lines by streaming bytes.
 ///
 /// Never materialises the file as a `String`, and never touches the shared
 /// content cache — a one-off line count would otherwise evict the file bodies
-/// that `file_read` actually needs. CRLF counts once; a lone CR counts (classic
-/// Mac); an empty file is zero lines.
+/// that `file_read` actually needs. A line ends at `\n` (CRLF counts once); a
+/// lone CR does not end one, matching `file_read` (dogfood F30); an empty file
+/// is zero lines.
 ///
 /// **The convention is `file_read`'s, deliberately**: a trailing separator ends
 /// the last line, it does not start another — `"a\nb\n"` is 2 lines. This
@@ -779,7 +812,6 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
     let mut file = std::fs::File::open(path)?;
     let mut buffer = [0u8; 64 * 1024];
     let mut separators = 0usize;
-    let mut previous_was_cr = false;
     let mut last_byte: u8 = 0;
     let mut saw_any_byte = false;
 
@@ -793,20 +825,8 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
 
         // Scan with `memchr` rather than a byte-at-a-time match: it is the
         // vectorised search ripgrep and tokei use, and line counting is the
-        // only per-file work this tool does. Same arithmetic as before, done in
-        // three passes over the chunk instead of one branch per byte —
-        // CR and LF each end a line, and a CRLF pair ends only one.
-        let lf = memchr::memchr_iter(b'\n', chunk).count();
-        let cr = memchr::memchr_iter(b'\r', chunk).count();
-        let crlf = memchr::memmem::find_iter(chunk, b"\r\n").count();
-        separators += lf + cr - crlf;
-
-        // A CRLF split across two reads: the CR closed the previous chunk and
-        // the LF opens this one. Both were counted, and the pair is one line.
-        if previous_was_cr && chunk.first() == Some(&b'\n') {
-            separators -= 1;
-        }
-        previous_was_cr = chunk.last() == Some(&b'\r');
+        // only per-file work this tool does.
+        separators += memchr::memchr_iter(b'\n', chunk).count();
         last_byte = *chunk.last().expect("chunk is non-empty");
     }
 
@@ -815,7 +835,7 @@ fn count_lines_in_file(path: &Path) -> std::io::Result<usize> {
     }
     // A final line without its separator still counts; a trailing separator
     // adds nothing.
-    let ends_terminated = last_byte == b'\n' || last_byte == b'\r';
+    let ends_terminated = last_byte == b'\n';
     Ok(if ends_terminated {
         separators
     } else {
@@ -1513,7 +1533,8 @@ mod tests {
             ("one line", 1),
             ("a\nb\n", 2),
             ("a\r\nb\r\n", 2),
-            ("a\rb\r", 2),
+            // A lone CR is not a break, as in `file_read` (dogfood F30).
+            ("a\rb\r", 1),
             ("a\nb", 2),
             ("\n", 1),
         ] {
@@ -1589,5 +1610,18 @@ mod tests {
             names(&parsed["tree"]).contains(&"readme.md"),
             "the tree must actually have been walked: {parsed}"
         );
+    }
+    #[test]
+    fn binary_files_have_no_line_count_and_are_not_large_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("image.bin");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n\0data").unwrap();
+        let stat = stat_file(&path).unwrap();
+        assert!(stat.binary);
+        assert_eq!(stat.lines, None);
+        std::fs::write(&path, "source text\nnext line").unwrap();
+        let stat = stat_file(&path).unwrap();
+        assert!(!stat.binary);
+        assert_eq!(stat.lines, Some(2));
     }
 }

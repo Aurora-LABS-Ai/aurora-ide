@@ -160,6 +160,39 @@ mod windows_impl {
             }
         }
 
+        /// Make closing the job's last handle end every member.
+        ///
+        /// Not used for the agent's shells, whose job is a ledger (see the
+        /// module docs). A Terminal tab wants the opposite: its processes
+        /// live exactly as long as the tab, including when Aurora exits
+        /// without running the window's close handlers.
+        pub fn kill_on_close(&self) -> Result<(), String> {
+            use windows_sys::Win32::System::JobObjects::{
+                JobObjectExtendedLimitInformation, SetInformationJobObject,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+            // SAFETY: the struct is zeroed, one flag set, and passed with its
+            // real size; the handle is owned by this value.
+            let ok = unsafe {
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                SetInformationJobObject(
+                    self.handle,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const limits).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return Err(format!(
+                    "could not set kill-on-close for the job of pid {}: {}",
+                    self.shell_pid,
+                    std::io::Error::last_os_error()
+                ));
+            }
+            Ok(())
+        }
+
         /// End every process in the job — the shell and everything it
         /// started, through any chain of intermediates, alive or dead.
         ///

@@ -92,6 +92,19 @@ describe("reply language", () => {
     );
   });
 
+  // 2026-10-23: a 23-row Tree, one row per line, ran past the old 24-line
+  // limit and was dropped as "never closed"; rows with the detail split in two
+  // fields were dropped too.
+  it("reads a long part written one row per line", () => {
+    const rows = Array.from({ length: 23 }, (_, i) => `  "${i === 0 ? 0 : 1} | Module ${i}",`).join("\n");
+    const layout = parseUi(`modules = Tree([\n${rows}\n  "1 | client | Electron 41 | the main product",\n  "0 | services |"\n])\n`, true);
+    expect(layout.problems).toEqual([]);
+    const [tree] = layout.parts;
+    const nodes = tree.kind === "block" && tree.layout.kind === "tree" ? tree.layout.nodes : [];
+    expect(nodes).toHaveLength(2);
+    expect(nodes[0].children.at(-1)).toEqual({ title: "client", caption: "Electron 41 · the main product", children: [] });
+  });
+
   it("reports a part written but never placed", () => {
     expect(parseUi('root = Page([a])\na = Text("x")\nlost = Text("y")\n', true).problems).toEqual(["lost — written but not placed in root"]);
   });

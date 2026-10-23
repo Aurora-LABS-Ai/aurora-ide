@@ -698,6 +698,11 @@ export interface SkillSearchResult {
   description: string;
   id: string;
   name: string;
+  /**
+   * Ids of other installed skills declaring the same name (a duplicate
+   * install). Load by `id`; the name alone does not pick one.
+   */
+  sameNameAs?: string[];
   source: SkillSource;
   sourcePath?: string;
   triggers: string[];
@@ -719,6 +724,20 @@ export async function searchSkillCandidates(
   const candidates = await loadAllSkillCandidates(options);
   const cap = Math.max(1, Math.min(limit, 100));
   const trimmedQuery = query?.trim() ?? "";
+  const idsByName = new Map<string, string[]>();
+  for (const skill of candidates) {
+    const key = skill.name.trim().toLowerCase();
+    idsByName.set(key, [...(idsByName.get(key) ?? []), skill.id]);
+  }
+  const toSearchResult = (skill: SkillDefinition): SkillSearchResult => {
+    const others = (idsByName.get(skill.name.trim().toLowerCase()) ?? []).filter(
+      (id) => id !== skill.id
+    );
+    return {
+      ...toSearchResultBase(skill),
+      ...(others.length > 0 ? { sameNameAs: others } : {}),
+    };
+  };
 
   if (!trimmedQuery) {
     return candidates.slice(0, cap).map(toSearchResult);
@@ -747,7 +766,7 @@ export async function searchSkillCandidates(
   return scored;
 }
 
-function toSearchResult(skill: SkillDefinition): SkillSearchResult {
+function toSearchResultBase(skill: SkillDefinition): SkillSearchResult {
   return {
     id: skill.id,
     name: skill.name,

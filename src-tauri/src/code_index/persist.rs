@@ -60,7 +60,8 @@ use std::path::{Path, PathBuf};
 /// declarations did not exist. Because an unchanged file reuses its stored
 /// extraction facts, editing the file is not enough to recover them; the
 /// format bump is what forces the re-parse that makes the fix visible.
-pub const FORMAT_VERSION: u32 = 18;
+/// v19: Python functions directly declared in class bodies are methods.
+pub const FORMAT_VERSION: u32 = 19;
 
 /// Sentinel for "no container" / "not inside a function". `u32::MAX` is safe:
 /// a workspace with 4 billion distinct identifiers is not a real input.

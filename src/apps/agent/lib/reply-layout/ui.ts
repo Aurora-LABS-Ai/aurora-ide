@@ -62,8 +62,10 @@ const MAX_PARTS = 24;
 const MAX_STATS = 8;
 const MAX_COLUMNS = 6;
 const MAX_NODES = 8;
-/** A statement still open after this many lines is a broken one, not a long one. */
-const MAX_STATEMENT_LINES = 24;
+/** A statement still open after this many lines is a broken one, not a long one.
+ *  Was 24: a 23-row `Tree`, one row per line, ran 25 lines and was dropped as
+ *  "never closed" (MiniMax M3.1, 2026-10-23). A part fits in this many rows. */
+const MAX_STATEMENT_LINES = 80;
 const MAX_REF_DEPTH = 8;
 /** A one-field line the fence parsers take as the title; replaced by the real one. */
 const TITLE_SLOT = "title";
@@ -164,9 +166,22 @@ function readExpression(src: string, start: number): [UiValue, number] {
     i += 1;
     while (i < src.length && src[i] !== '"') {
       if (src[i] === "\\" && i + 1 < src.length) {
+        // Only the escapes the guide teaches are escapes: `\"` and `\\`, and
+        // `\|`, which stays escaped for the row splitter. Any other backslash
+        // is text. Dropping it turned `C:\Users\Alvan\Documents\tv-remote`
+        // into `C:UsersAlvanDocumentstv-remote` (Alvan, 2026-10-23), and a
+        // `\n` read as a line break would break `\node_modules`.
         const next = src[i + 1];
-        text += next === "n" ? " " : next;
-        i += 2;
+        if (next === '"' || next === "\\") {
+          text += next;
+          i += 2;
+        } else if (next === "|") {
+          text += "\\|";
+          i += 2;
+        } else {
+          text += "\\";
+          i += 1;
+        }
         continue;
       }
       // A statement wrapped over lines keeps one space where the break was.

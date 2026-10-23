@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::agent_safety::bash_validation::classify_intent;
+use crate::agent_safety::bash_validation::classify_intent_for;
 
 use super::ide_event_sink::{IdeEventSink, ShellStreamRequest, SpawnOutcome};
 use super::shell_execute::{
@@ -165,7 +165,7 @@ impl ToolExecutor for ShellSpawnTool {
             .map_or_else(|| crate::shell::resolve_kind(requested_shell), |r| r.kind);
         validate_shell_command(command, &input, ctx, kind)?;
 
-        let intent = classify_intent(command).as_str();
+        let intent = classify_intent_for(command, kind).as_str();
 
         // Same rule as `shell_execute`: a background process must never inherit
         // Aurora's own working directory. A long-lived dev server started in the

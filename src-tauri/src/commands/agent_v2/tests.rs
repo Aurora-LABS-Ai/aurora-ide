@@ -119,6 +119,7 @@ fn chat_mode_refuses_files_and_shell_by_name() {
         "shell_execute",
         "shell_spawn",
         "shell_kill",
+        "terminal",
         "code",
         "todo",
     ] {

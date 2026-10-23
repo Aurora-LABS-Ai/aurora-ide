@@ -13,7 +13,7 @@
 
 import royalties from "@/canvas-sdk/reporting/examples/royalties.json";
 
-/** The three parts the standing prompt shows, one line each. */
+/** A small `aurora-ui` layout that parses clean: a test fixture. */
 export const UI_PROMPT_LINES = [
   `root = Page([stack, steps, risk])`,
   `stack = Facts("Stack", ["Runtime | Rust | Tauri backend", "Interface | React | Two windows"])`,
@@ -72,20 +72,15 @@ todo | Publish | After checks and signing`,
 } as const;
 
 /**
- * Measured 2026-10-15/16: about 31 long replies went out without a block and
- * 9 used one, several only after Alvan asked. The old text made a guide call a
- * precondition ("before the first layout block, load …") and named no moment
- * to use a block, so models paid nothing by skipping it. The three common
- * formats are now taught in one line each, the final summary is the named
- * trigger, and the guide is for the rest.
+ * The standing prompt says when to lay a reply out and that the guide comes
+ * first; the language itself lives only in `guide.md` (`canvas_guidelines`,
+ * topic `reply-layout`). Alvan's call, 2026-10-23: teaching the parts in the
+ * prompt grew it to ~3,000 characters and models still wrote from memory
+ * (an unnamed fence, a 4-field Tree). One rule, one place for the language.
  *
- * Same day, first live run (DeepSeek V4.1 Flash, rules off): blocks came
- * unprompted, but each opened with a header row (`Surface | Location | Notes`,
- * `Step | Detail`) copied from placeholder words. The rows are real examples,
- * and in `aurora-ui` the title is its own argument, so a title can no longer
- * be mistaken for a row.
+ * Kept from earlier measurements (2026-10-15/16): a named moment (the final
+ * summary of multi-step work), since without one models skipped blocks.
  */
 export const REPLY_LAYOUT_INSTRUCTIONS = `## Reply layout
-Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, lays out its scannable parts in a fence named \`aurora-ui\` instead of bullet lists: one part per line, root first, each part drawn as its line ends. Text in quotes; rows are \`a | b | c\` strings with no header row:
-${UI_PROMPT_LINES.join("\n")}
-Facts for results, changes and checks; Flow for steps in order; Note for one caveat or what is unverified. Prose explains around the fence and never repeats a part. \`canvas_guidelines\` with \`topic: "reply-layout"\` has the other parts (Stats, Diagram, Link, Sources, Pairs, Compare, Checklist, Timeline, Tree, Text); \`topic: "reports"\` has the \`aurora-report\` JSON for data with filters and charts. Load one only when you use those.`;
+Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, lays out its scannable parts in an \`aurora-ui\` fence.
+Never write one from memory: call \`canvas_guidelines\` with \`topic: "reply-layout"\` first unless its text is already in this conversation, then follow it exactly.`;

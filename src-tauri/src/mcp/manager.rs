@@ -124,7 +124,7 @@ impl McpManager {
                     let on = workspace.as_deref().and_then(|w| approvals.answer(w, &cfg));
                     cfg.enabled = on == Some(true);
                 }
-                let mut state = match servers.remove(&cfg.id) {
+                let state = match servers.remove(&cfg.id) {
                     Some(mut prev) if !launch_changed(&prev.config, &cfg) => {
                         prev.config = cfg;
                         prev

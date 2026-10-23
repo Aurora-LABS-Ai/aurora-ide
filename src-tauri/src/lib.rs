@@ -54,6 +54,7 @@ mod logging;
 mod mcp;
 mod paths;
 mod plans;
+mod pty_sessions;
 mod services;
 mod shell;
 /// Helper executables Aurora ships next to its own binary (currently ripgrep,
@@ -639,8 +640,12 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::read_files_batch,
             commands::invalidate_file_cache,
             commands::get_cache_stats,
-            commands::terminal::terminal_kill_process_tree,
-            commands::terminal::terminal_running_children,
+            commands::terminal_pty::terminal_pty_open,
+            commands::terminal_pty::terminal_pty_attach,
+            commands::terminal_pty::terminal_pty_write,
+            commands::terminal_pty::terminal_pty_resize,
+            commands::terminal_pty::terminal_pty_kill,
+            commands::terminal_pty::terminal_pty_running,
             // Native editor operations (no JS string ops on hot paths)
             commands::editor_ops::apply_search_replace,
             commands::editor_ops::apply_multi_search_replace,
@@ -1065,6 +1070,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             let _ = window.set_focus();
         })
         .setup(move |app| {
+            // Terminal sessions announce agent-opened tabs and their endings.
+            pty_sessions::install(app.handle().clone());
+
             // Devtools stay available in every build (the `devtools`
             // Cargo feature is on for the `tauri` crate), but we no
             // longer auto-open them. The WebView's native shortcut

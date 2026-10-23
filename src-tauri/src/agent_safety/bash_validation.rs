@@ -151,14 +151,146 @@ pub(super) fn validate_command_with_cwd(
 /// Classify a bash command into a [`CommandIntent`] (read-only,
 /// write, destructive, network, …).
 ///
-/// Public façade over the private [`classify_command`] helper.
-/// Used by `shell_execute` / `shell_spawn` to tag tool-call results
-/// with their semantic risk class so the chat UI can render
-/// risk-aware affordances without re-parsing the command string in
-/// JS.
+/// The bash-only form, kept for the tests that pin the POSIX rules. The
+/// tools call [`classify_intent_for`], which picks the rules for the shell
+/// the command runs in.
+#[cfg(test)]
 #[must_use]
 pub fn classify_intent(command: &str) -> CommandIntent {
     classify_command(command)
+}
+
+/// [`classify_intent`] for the shell the command will run in.
+///
+/// The bash rules misread the other two (dogfood F26, F33): `NUL` is the
+/// null device only to cmd and PowerShell (Git Bash writes a real file named
+/// `NUL`), and `Remove-Item` / `del` / `Set-Content` came back `unknown`.
+#[must_use]
+pub fn classify_intent_for(command: &str, kind: crate::shell::ShellKind) -> CommandIntent {
+    use crate::shell::ShellKind;
+    match kind {
+        ShellKind::Pwsh | ShellKind::PowerShell | ShellKind::Cmd => {
+            classify_windows_command(command)
+        }
+        ShellKind::Bash | ShellKind::Sh | ShellKind::Zsh => classify_command(command),
+    }
+}
+
+fn intent_rank(intent: CommandIntent) -> u8 {
+    match intent {
+        CommandIntent::ReadOnly => 0,
+        CommandIntent::Unknown => 1,
+        CommandIntent::ProcessManagement => 2,
+        CommandIntent::Network => 3,
+        CommandIntent::Write => 4,
+        CommandIntent::PackageManagement => 5,
+        CommandIntent::SystemAdmin => 6,
+        CommandIntent::Destructive => 7,
+    }
+}
+
+/// Where output goes to be thrown away, per shell family.
+const POSIX_DISCARDS: &[&str] = &["/dev/null", "/dev/stdout", "/dev/stderr"];
+const WINDOWS_DISCARDS: &[&str] = &["nul", "$null"];
+
+/// PowerShell cmdlets and aliases, and cmd built-ins, by what they do.
+/// Lowercase; anything not listed falls back to the POSIX command lists, which
+/// already know `git`, `npm`, `curl` and friends.
+const WINDOWS_DESTRUCTIVE: &[&str] = &[
+    "remove-item", "ri", "del", "erase", "rd", "rmdir", "clear-content", "clc",
+    "remove-itemproperty", "format-volume", "clear-recyclebin",
+];
+const WINDOWS_WRITE: &[&str] = &[
+    "set-content", "sc", "add-content", "ac", "out-file", "new-item", "ni", "copy-item", "cpi",
+    "copy", "xcopy", "robocopy", "move-item", "mi", "move", "rename-item", "rni", "ren",
+    "rename", "set-item", "si", "export-csv", "export-clixml", "tee-object", "mkdir", "md",
+    "new-itemproperty", "set-itemproperty", "expand-archive", "compress-archive",
+];
+const WINDOWS_NETWORK: &[&str] = &[
+    "invoke-webrequest", "iwr", "invoke-restmethod", "irm", "start-bitstransfer",
+    "test-netconnection",
+];
+const WINDOWS_PROCESS: &[&str] = &[
+    "stop-process", "spps", "start-process", "saps", "taskkill", "start",
+];
+const WINDOWS_READ_ONLY: &[&str] = &[
+    "get-childitem", "gci", "dir", "ls", "get-content", "gc", "type", "cat", "get-item", "gi",
+    "get-location", "gl", "pwd", "cd", "set-location", "sl", "push-location", "pop-location",
+    "select-string", "sls", "findstr", "find", "where", "where-object", "select-object",
+    "sort-object", "measure-object", "group-object", "foreach-object", "format-table",
+    "format-list", "out-string", "write-output", "write-host", "echo", "write-error",
+    "write-warning", "test-path", "resolve-path", "get-command", "gcm", "get-process", "gps",
+    "tasklist", "get-date", "get-filehash", "get-help", "convertto-json", "convertfrom-json",
+    "join-path", "split-path", "set", "ver", "vol", "tree", "more", "exit",
+];
+
+/// PowerShell or cmd. Segments split at `;`, `|`, `&`, and the strongest
+/// segment wins, the same fold the POSIX classifier uses.
+fn classify_windows_command(command: &str) -> CommandIntent {
+    let initial = if has_output_redirection_to(command, WINDOWS_DISCARDS) {
+        CommandIntent::Write
+    } else {
+        CommandIntent::ReadOnly
+    };
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for ch in without_descriptor_ampersands(command).chars() {
+        match quote {
+            Some(active) => {
+                if ch == active {
+                    quote = None;
+                }
+                current.push(ch);
+            }
+            None => match ch {
+                '\'' | '"' => {
+                    quote = Some(ch);
+                    current.push(ch);
+                }
+                ';' | '|' | '&' | '\n' | '\r' | '(' | ')' | '{' | '}' => {
+                    segments.push(std::mem::take(&mut current));
+                }
+                _ => current.push(ch),
+            },
+        }
+    }
+    segments.push(current);
+    segments
+        .iter()
+        .filter_map(|segment| {
+            let first = segment
+                .split_whitespace()
+                .next()?
+                .trim_start_matches(['.', '\\', '/'])
+                .to_ascii_lowercase();
+            let first = first.strip_suffix(".exe").unwrap_or(&first).to_string();
+            // A redirection or an empty stretch between separators is not a command.
+            if first.is_empty() || first.starts_with(['>', '<', '$', '-', '@']) {
+                return None;
+            }
+            let has = |list: &[&str]| list.contains(&first.as_str());
+            Some(if has(WINDOWS_DESTRUCTIVE) {
+                CommandIntent::Destructive
+            } else if has(WINDOWS_WRITE) {
+                CommandIntent::Write
+            } else if has(WINDOWS_NETWORK) {
+                CommandIntent::Network
+            } else if has(WINDOWS_PROCESS) {
+                CommandIntent::ProcessManagement
+            } else if has(WINDOWS_READ_ONLY) {
+                CommandIntent::ReadOnly
+            } else {
+                classify_by_first_command(&first, segment)
+            })
+        })
+        .fold(initial, |current, intent| {
+            if intent_rank(intent) > intent_rank(current) {
+                intent
+            } else {
+                current
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -959,8 +1091,150 @@ const SYSTEM_ADMIN_COMMANDS: &[&str] = &[
 /// Corresponds to upstream `tools/BashTool/commandSemantics.ts`.
 #[must_use]
 fn classify_command(command: &str) -> CommandIntent {
-    let first = extract_first_command(command);
-    classify_by_first_command(&first, command)
+    let initial = if has_output_redirection_to(command, POSIX_DISCARDS) {
+        CommandIntent::Write
+    } else {
+        CommandIntent::ReadOnly
+    };
+    shell_word_segments(&without_descriptor_ampersands(command))
+        .iter()
+        .fold(initial, |current, words| {
+            let segment = words.join(" ");
+            let first = extract_first_command(&segment);
+            let intent = classify_by_first_command(&first, &segment);
+            if intent_rank(intent) > intent_rank(current) {
+                intent
+            } else {
+                current
+            }
+        })
+}
+
+/// The command with redirection ampersands blanked (`2>&1`, `>&2`, `>&-`,
+/// `&>file`), so segmenting for intent does not read them as `&` separators
+/// and classify a stray `2` or `>/dev/null` as an unknown command. Intent
+/// only: the `rm` checks segment the original text.
+fn without_descriptor_ampersands(command: &str) -> String {
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = String::with_capacity(command.len());
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, &ch) in chars.iter().enumerate() {
+        if escaped {
+            escaped = false;
+            out.push(ch);
+            continue;
+        }
+        match quote {
+            Some(active) => {
+                if ch == active {
+                    quote = None;
+                } else if ch == '\\' && active == '"' {
+                    escaped = true;
+                }
+                out.push(ch);
+            }
+            None => {
+                let redirection_amp = ch == '&'
+                    && (index
+                        .checked_sub(1)
+                        .is_some_and(|before| matches!(chars[before], '>' | '<'))
+                        || (chars.get(index + 1) == Some(&'>')
+                            && index
+                                .checked_sub(1)
+                                .is_none_or(|before| chars[before] != '&')));
+                match ch {
+                    '\'' | '"' => {
+                        quote = Some(ch);
+                        out.push(ch);
+                    }
+                    '\\' => {
+                        escaped = true;
+                        out.push(ch);
+                    }
+                    _ if redirection_amp => out.push(' '),
+                    _ => out.push(ch),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// An unquoted `>` that sends output to a file. Descriptor duplication
+/// (`2>&1`, `>&2`) and the shell's own discard targets write no file, so they
+/// do not count (dogfood F19). The discards differ per shell (F26): in Git
+/// Bash `> NUL` creates a real file named `NUL`. Backslash escapes only in
+/// POSIX shells; in cmd and PowerShell it is a path separator.
+fn has_output_redirection_to(command: &str, discards: &[&str]) -> bool {
+    let backslash_escapes = discards == POSIX_DISCARDS;
+    let chars: Vec<char> = command.chars().collect();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        index += 1;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some(active) => {
+                if ch == active {
+                    quote = None;
+                } else if ch == '\\' && active == '"' && backslash_escapes {
+                    escaped = true;
+                }
+            }
+            None => match ch {
+                '\'' | '"' => quote = Some(ch),
+                '\\' if backslash_escapes => escaped = true,
+                '>' => {
+                    if redirection_writes_file(&chars, &mut index, discards) {
+                        return true;
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+    false
+}
+
+/// Reads the target after a `>` (with `index` just past it) and leaves
+/// `index` after the target.
+fn redirection_writes_file(chars: &[char], index: &mut usize, discards: &[&str]) -> bool {
+    // `>>` appends, `>|` clobbers: both still name a target.
+    if matches!(chars.get(*index), Some('>') | Some('|')) {
+        *index += 1;
+    }
+    if chars.get(*index) == Some(&'&') {
+        *index += 1;
+        if chars
+            .get(*index)
+            .is_some_and(|next| next.is_ascii_digit() || *next == '-')
+        {
+            while chars
+                .get(*index)
+                .is_some_and(|next| next.is_ascii_digit() || *next == '-')
+            {
+                *index += 1;
+            }
+            return false;
+        }
+    }
+    while chars.get(*index).is_some_and(|next| next.is_whitespace()) {
+        *index += 1;
+    }
+    let start = *index;
+    while chars.get(*index).is_some_and(|next| {
+        !next.is_whitespace() && !matches!(next, ';' | '|' | '&' | ')' | '<' | '>')
+    }) {
+        *index += 1;
+    }
+    let target: String = chars[start..*index].iter().collect();
+    !discards.contains(&target.to_ascii_lowercase().as_str())
 }
 
 fn classify_by_first_command(first: &str, command: &str) -> CommandIntent {
@@ -2219,5 +2493,71 @@ mod tests {
         );
         assert_eq!(CommandIntent::SystemAdmin.as_str(), "system_admin");
         assert_eq!(CommandIntent::Unknown.as_str(), "unknown");
+    }
+    #[test]
+    fn semantic_intent_covers_redirections_and_later_commands() {
+        assert_eq!(
+            classify_intent("printf 'x' > file && echo ok"),
+            CommandIntent::Write
+        );
+        assert_eq!(
+            classify_intent("echo ok; rm file"),
+            CommandIntent::Destructive
+        );
+        assert_eq!(classify_intent("printf 'x > y'"), CommandIntent::ReadOnly);
+        assert_eq!(classify_intent(r"echo x \> y"), CommandIntent::ReadOnly);
+        assert_eq!(classify_intent("cat file | tee copy"), CommandIntent::Write);
+    }
+
+    /// Dogfood F19: descriptor duplication and discarded output are not writes.
+    #[test]
+    fn fd_redirections_and_discards_are_not_writes() {
+        for command in [
+            "echo hi >&2",
+            "ls 2>/dev/null",
+            "cat README 2>&1 | head -1",
+            "echo hi >&2; ls 2>/dev/null; cat README 2>&1 | head -1; echo done",
+            "ls &>/dev/null",
+            "echo x >&-",
+        ] {
+            assert_eq!(
+                classify_intent(command),
+                CommandIntent::ReadOnly,
+                "{command}"
+            );
+        }
+        for command in [
+            "echo hi > out.txt",
+            "echo hi >> log.txt",
+            "ls 2>&1 > all.txt",
+            "ls 2>errors.txt",
+            "echo x >| forced.txt",
+            // Git Bash writes a real file called NUL (dogfood F26).
+            "echo hi > NUL",
+        ] {
+            assert_eq!(classify_intent(command), CommandIntent::Write, "{command}");
+        }
+    }
+
+    /// Dogfood F26 / F33: cmd and PowerShell are classified by their own rules.
+    #[test]
+    fn windows_shells_are_classified_by_their_own_verbs() {
+        use crate::shell::ShellKind::{Cmd, Pwsh};
+        for (kind, command, expected) in [
+            (Pwsh, "Remove-Item out5.txt", CommandIntent::Destructive),
+            (Pwsh, "Set-Content -Path out6.txt -Value \"hello\"", CommandIntent::Write),
+            (Pwsh, "Write-Output \"y\" | Out-File out5.txt", CommandIntent::Write),
+            (Pwsh, "Get-ChildItem C:\\repo | Select-Object Name", CommandIntent::ReadOnly),
+            (Pwsh, "Write-Output hi > $null", CommandIntent::ReadOnly),
+            (Pwsh, "Write-Output hi > C:\\out.txt", CommandIntent::Write),
+            (Pwsh, "git status", CommandIntent::ReadOnly),
+            (Cmd, "del out1.txt", CommandIntent::Destructive),
+            (Cmd, "echo hi > NUL", CommandIntent::ReadOnly),
+            (Cmd, "echo hi 2>&1", CommandIntent::ReadOnly),
+            (Cmd, "dir /b & copy a.txt b.txt", CommandIntent::Write),
+            (Cmd, "type README.md", CommandIntent::ReadOnly),
+        ] {
+            assert_eq!(classify_intent_for(command, kind), expected, "{kind:?}: {command}");
+        }
     }
 }

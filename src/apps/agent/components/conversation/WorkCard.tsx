@@ -49,6 +49,9 @@ import {
  *  about 400px however tall its limit was. */
 const WINDOW_ROWS = 30;
 
+/** How long the header stays lit after a click inside the closed window. */
+const NUDGE_MS = 1200;
+
 /** What the card shows under its header. */
 type BodyShape = "open" | "window" | "none";
 
@@ -323,6 +326,28 @@ export const WorkCard: React.FC<{
     return () => observer.disconnect();
   }, [windowMode, bodyRef]);
 
+  // A click inside the closed window does nothing (its rows are inert), and
+  // nothing there said so: it read as broken (Alvan, 2026-10-23). The header
+  // lights for a moment instead, pointing at the one place that opens the card.
+  const [nudged, setNudged] = useState(false);
+  const nudgeTimer = useRef<number | null>(null);
+  const nudge = () => {
+    setNudged(true);
+    if (nudgeTimer.current !== null) window.clearTimeout(nudgeTimer.current);
+    nudgeTimer.current = window.setTimeout(() => {
+      nudgeTimer.current = null;
+      setNudged(false);
+    }, NUDGE_MS);
+  };
+  useEffect(
+    () => () => {
+      if (nudgeTimer.current !== null) window.clearTimeout(nudgeTimer.current);
+    },
+    [],
+  );
+  // Only the closed window lights it; once open there is nothing to point at.
+  const lit = nudged && windowMode;
+
   const since = stretch.startedAt ?? turnStartedAt;
   const workedMs =
     stretch.startedAt !== undefined && stretch.endedAt !== undefined
@@ -342,6 +367,7 @@ export const WorkCard: React.FC<{
       <button
         type="button"
         className="agw-wc-head"
+        data-nudged={lit || undefined}
         aria-expanded={isOpen}
         aria-controls={bodyId}
         onClick={toggle}
@@ -388,8 +414,9 @@ export const WorkCard: React.FC<{
           //
           // WINDOW (closed, running): the newest steps, growing down from the
           // header up to the open panel's 55vh, then the oldest leave through a top fade. Not
-          // a second way in: a click anywhere on it opens the card. Inert, so
-          // keyboard focus never lands on a control clipped half out of view.
+          // a control: only the header opens the card (a click here lights
+          // the header to say so), and the wheel over it scrolls the chat. Inert, so keyboard focus never lands on a control
+          // clipped half out of view.
           // Same edge as the open panel, so the two read as one thing at two
           // heights — and they ARE one element (see `shape` above).
           <div className="agw-wc-panel">
@@ -400,7 +427,7 @@ export const WorkCard: React.FC<{
               data-clipped={(windowMode && clipped) || undefined}
               // Only a reader scrolling the open panel can stop it following.
               onScroll={windowMode ? undefined : onScroll}
-              onClick={windowMode ? toggle : undefined}
+              onClick={windowMode ? nudge : undefined}
               tabIndex={windowMode || leaving ? -1 : 0}
               aria-label={`${stretch.thoughts + stretch.calls} steps`}
               aria-hidden={windowMode || undefined}

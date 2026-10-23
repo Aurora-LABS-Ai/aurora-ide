@@ -41,11 +41,9 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // agent's working checklist, "Plan" is the Plan-mode document in the Canvas.
   // Without these entries the fallback title-cased them into "Todo" and
   // "Plan Step Update", which read as internal names.
-  // The user's own terminals in the right rail — named for what the reader
-  // sees happening, never for the tool. "Terminal Read" would be the internal
-  // name wearing title case.
-  terminal_list: "Open Terminals",
-  terminal_read: "Read Terminal",
+  // Terminals in the Terminal panel. One tool; the card's detail line says
+  // which action a call took.
+  terminal: "Terminal",
   // The deferred-roster fetch (Settings → Tool loading). Named for what the
   // reader sees happening — the agent pulling in tools it needs — not the
   // internal id, which the fallback would title-case into "Tool Search".

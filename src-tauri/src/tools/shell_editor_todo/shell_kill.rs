@@ -94,15 +94,23 @@ impl ToolExecutor for ShellKillTool {
         })?;
 
         match cancel_stream(identifier.clone()) {
-            Ok(()) => Ok(json!({
-                "success": true,
-                "processId": identifier,
-                "message": format!("Stopped background process {identifier}."),
-            })
-            .to_string()),
+            // `processId` is the ledger's bg-… id even when the caller named
+            // the process by name or pid; the identifier sent is echoed apart.
+            Ok(stopped) => {
+                let (process_id, request_id) =
+                    stopped.unwrap_or_else(|| (identifier.clone(), identifier.clone()));
+                Ok(json!({
+                    "success": true,
+                    "processId": process_id,
+                    "requestId": request_id,
+                    "matched": identifier,
+                    "message": format!("Stopped background process {identifier}."),
+                })
+                .to_string())
+            }
             Err(err) => Ok(json!({
                 "success": false,
-                "processId": identifier,
+                "matched": identifier,
                 "error": err,
             })
             .to_string()),
@@ -110,12 +118,13 @@ impl ToolExecutor for ShellKillTool {
     }
 }
 
+/// `(process_id, request_id)` of the stopped process.
 #[cfg(not(feature = "verify_only"))]
-fn cancel_stream(request_id: String) -> Result<(), String> {
+fn cancel_stream(request_id: String) -> Result<Option<(String, String)>, String> {
     // Recorded as an agent stop, which is what the process's log file will say.
     // A later reader must be able to tell this apart from the user hitting stop.
     crate::commands::cancel_tracked_command_stream(&request_id, crate::commands::StopReason::Agent)
-        .map(|_| ())
+        .map(|stream| Some((stream.process_id, stream.request_id)))
 }
 
 // In the verify crate the global ACTIVE_COMMAND_STREAMS map is
@@ -123,8 +132,8 @@ fn cancel_stream(request_id: String) -> Result<(), String> {
 // is a no-op equivalent: declare success the same way the production
 // path would when given a missing request_id (it just returns Ok).
 #[cfg(feature = "verify_only")]
-fn cancel_stream(_request_id: String) -> Result<(), String> {
-    Ok(())
+fn cancel_stream(_request_id: String) -> Result<Option<(String, String)>, String> {
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -224,8 +233,31 @@ mod tests {
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["processId"], json!("4242"));
+        assert_eq!(parsed["matched"], json!("4242"));
         #[cfg(not(feature = "verify_only"))]
         assert_eq!(parsed["success"], json!(false));
+    }
+
+    /// Dogfood F25: stopping by name answered `processId: "<the name>"`.
+    #[cfg(not(feature = "verify_only"))]
+    #[tokio::test]
+    async fn stopping_by_name_reports_the_real_process_id() {
+        crate::commands::register_command_stream(
+            "req-named".into(),
+            "bg-named".into(),
+            Some("Named ticker".into()),
+            "watch".into(),
+            None,
+            None,
+        );
+        let out = ShellKillTool
+            .execute(json!({"name": "Named ticker"}), &ctx())
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], json!(true), "{out}");
+        assert_eq!(parsed["processId"], json!("bg-named"));
+        assert_eq!(parsed["requestId"], json!("req-named"));
+        assert_eq!(parsed["matched"], json!("Named ticker"));
     }
 }

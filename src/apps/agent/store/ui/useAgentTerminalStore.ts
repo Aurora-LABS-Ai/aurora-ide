@@ -3,9 +3,8 @@
  *
  * Multi-session PTY terminal for the dock's Terminal tab. Built standalone for
  * the agent window: it owns its own session list and does NOT touch the IDE's
- * `useTerminalStore`. The PTY backend (`tauri-plugin-pty`, granted to
- * `agent-window`) is shared infrastructure — we drive it via the `tauri-pty` JS
- * API directly.
+ * `useTerminalStore`. The shells themselves run in Rust
+ * (`commands::terminal_pty`), reached through `services/terminal/terminal-pty`.
  *
  * Only lightweight session METADATA lives here; the live `IPty` + xterm
  * instances are held in a module map in TerminalView (non-serializable, must
@@ -37,6 +36,14 @@ export interface TermSession {
   cwd?: string;
   /** False once the shell process exits. */
   running: boolean;
+  /**
+   * Rust's session id when the shell already runs before the tab draws it —
+   * a terminal the agent started. The view attaches to it instead of starting
+   * a new shell.
+   */
+  ptyId?: number;
+  /** The agent's `terminal` tool started it. */
+  startedByAgent?: boolean;
 }
 
 let seq = 0;
@@ -57,10 +64,22 @@ interface AgentTerminalState {
 
   /** Create a session and make it active; returns its id. */
   createSession: (profile?: ShellProfile, cwd?: string) => string;
+  /**
+   * Add a tab for a terminal the agent started in Rust, make it active, and
+   * return the tab id. Idempotent per `ptyId`.
+   */
+  adoptAgentSession: (input: {
+    ptyId: number;
+    title: string;
+    profile: ShellProfile;
+    cwd?: string;
+  }) => string;
   /** Remove a session's metadata (TerminalView disposes the live PTY/term). */
   removeSession: (id: string) => void;
   setActive: (id: string) => void;
   setRunning: (id: string, running: boolean) => void;
+  /** Mark the tab showing Rust session `ptyId` as exited. */
+  setPtyExited: (ptyId: number) => void;
 }
 
 export const useAgentTerminalStore = create<AgentTerminalState>((set, get) => ({
@@ -90,6 +109,23 @@ export const useAgentTerminalStore = create<AgentTerminalState>((set, get) => ({
     return id;
   },
 
+  adoptAgentSession: ({ ptyId, title, profile, cwd }) => {
+    const existing = get().sessions.find((s) => s.ptyId === ptyId);
+    if (existing) {
+      set({ activeId: existing.id });
+      return existing.id;
+    }
+    const id = nextId();
+    set((s) => ({
+      sessions: [
+        ...s.sessions,
+        { id, title, profile, cwd, running: true, ptyId, startedByAgent: true },
+      ],
+      activeId: id,
+    }));
+    return id;
+  },
+
   removeSession: (id) =>
     set((s) => {
       const idx = s.sessions.findIndex((x) => x.id === id);
@@ -104,5 +140,9 @@ export const useAgentTerminalStore = create<AgentTerminalState>((set, get) => ({
   setRunning: (id, running) =>
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, running } : x)),
+    })),
+  setPtyExited: (ptyId) =>
+    set((s) => ({
+      sessions: s.sessions.map((x) => (x.ptyId === ptyId ? { ...x, running: false } : x)),
     })),
 }));

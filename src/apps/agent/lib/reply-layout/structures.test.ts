@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_ITEMS, layoutIsEmpty, parseLayout, type LayoutLanguage } from "./parse";
+import { MAX_TREE_ITEMS } from "./structures";
 
 describe("reply layout comparisons", () => {
   it("keeps option headers and matching values, including literal pipes and code", () => {
@@ -107,10 +108,11 @@ describe.each(CASES)("$language streaming and bounds", ({ language, source, coun
     expect(count(parseLayout(language, source, true))).toBe(1);
   });
 
-  it("reports overflow beyond the shared item limit", () => {
+  it("reports overflow beyond the item limit", () => {
+    const limit = language === "aurora-tree" ? MAX_TREE_ITEMS : MAX_ITEMS;
     const [header, row] = source.split("\n");
-    const parsed = parseLayout(language, [header, ...Array<string>(MAX_ITEMS + 2).fill(row)].join("\n"), true);
-    expect(count(parsed)).toBe(MAX_ITEMS);
+    const parsed = parseLayout(language, [header, ...Array<string>(limit + 2).fill(row)].join("\n"), true);
+    expect(count(parsed)).toBe(limit);
     expect(parsed.problems).toHaveLength(2);
   });
 });

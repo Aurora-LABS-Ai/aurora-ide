@@ -70,6 +70,7 @@ pub mod speech;
 pub mod speech_stream;
 pub mod state;
 pub mod terminal;
+pub mod terminal_pty;
 pub mod themes;
 pub mod threads;
 pub mod title_maker;
@@ -1128,7 +1129,13 @@ pub async fn ripgrep_search(
     cmd.arg("--json")
         .arg("--line-number")
         .arg("--with-filename")
-        .arg("--hidden");
+        .arg("--hidden")
+        // A capped result must be the same "first N" on every run. Unsorted,
+        // ripgrep's worker threads decide which files arrive first, and two
+        // identical calls returned different file sets (dogfood F17). Sorting
+        // runs single-threaded; that is the price of a stable answer.
+        .arg("--sort")
+        .arg("path");
     // NB: deliberately NO `--max-count`. That is ripgrep's PER-FILE limit, and
     // passing `max_results` to it meant a "200 result" search could collect 200
     // matches *from every file* — thousands of rows — while `files_with_matches`
@@ -1220,6 +1227,10 @@ pub async fn ripgrep_search(
     // match count is final, since it streams every match before the `end` event.
     let mut files_completed: usize = 0;
     let mut truncated = false;
+    // Every mode reads to the end so a capped answer still knows its totals
+    // (dogfood F18, F37). Past the cap nothing more is stored: matches are only
+    // counted per file. A timeout after the cap filled still returns the list.
+    let content_mode = resolved_output_mode != "files_with_matches" && resolved_output_mode != "count";
 
     // Have we now collected MORE than the caller asked for? Measured on the unit
     // the active output mode actually returns, so `max_results` means the same
@@ -1270,6 +1281,20 @@ pub async fn ripgrep_search(
                 };
                 let file_path = absolutize_rg_path(search_dir.as_ref(), file_path);
 
+                if !content_mode || truncated {
+                    match counts_by_file.get_mut(&file_path) {
+                        Some(count) => *count += 1,
+                        None => {
+                            counts_by_file.insert(file_path.clone(), 1);
+                            files_with_matches.push(file_path);
+                        }
+                    }
+                    if over_cap(&matches, &files_with_matches, files_completed) {
+                        truncated = true;
+                    }
+                    continue;
+                }
+
                 let line_number =
                     data.get("line_number").and_then(Value::as_u64).unwrap_or(0) as usize;
 
@@ -1314,7 +1339,7 @@ pub async fn ripgrep_search(
                 last_match_index_by_file.insert(file_path, match_index);
             }
 
-            if event_type == "context" {
+            if event_type == "context" && content_mode && !truncated {
                 let Some(data) = event.get("data") else {
                     continue;
                 };
@@ -1338,7 +1363,6 @@ pub async fn ripgrep_search(
 
             if over_cap(&matches, &files_with_matches, files_completed) {
                 truncated = true;
-                break;
             }
         }
         Ok::<(), String>(())
@@ -1354,7 +1378,7 @@ pub async fn ripgrep_search(
 
     // Preserve the real exit status on EOF. Killing here used to race a normal
     // exit and turn useful search failures into an unexplained killed process.
-    if timed_out || truncated {
+    if timed_out {
         let _ = child.start_kill();
         if let Some(pid) = pid {
             let _ = try_kill_pid(pid);
@@ -1363,7 +1387,10 @@ pub async fn ripgrep_search(
     let status = child.wait().await.ok();
     let stderr = stderr_task.await.unwrap_or_default();
 
-    if timed_out {
+    // A list that already filled its cap before the clock ran out is still a
+    // valid capped answer; only its grand totals are unknown.
+    let capped_before_timeout = timed_out && truncated;
+    if timed_out && !capped_before_timeout {
         return Ok(RipgrepSearchResponse {
             counts: None,
             error: Some(format!(
@@ -1382,6 +1409,10 @@ pub async fn ripgrep_search(
             truncated: None,
         });
     }
+
+    // Before the trim: in count and file modes these cover the whole search.
+    let scanned_total_matches = counts_by_file.values().sum::<usize>();
+    let scanned_total_files = counts_by_file.len();
 
     // Trim the one extra unit that proved there was more to find.
     if truncated {
@@ -1412,7 +1443,7 @@ pub async fn ripgrep_search(
 
     // A killed process has no meaningful exit code, so only trust the status
     // when we let ripgrep run to completion.
-    let exit_code = if truncated {
+    let exit_code = if capped_before_timeout {
         Some(0)
     } else {
         status.and_then(|status| status.code())
@@ -1509,18 +1540,26 @@ pub async fn ripgrep_search(
         _ => content_matches.as_ref().map(Vec::len).unwrap_or(0),
     };
 
+    // Every mode reads past the cap, so the totals cover the whole search
+    // unless the clock stopped it.
+    let scanned_whole = !timed_out;
+
     // Truncation has to name itself AND the way out, or the next call is a
-    // guess. Note the totals below are honest about being floors: the search was
-    // stopped early, so nothing here claims to know what the full count was.
+    // guess. A content search was stopped early, so it claims no total.
     let message = truncated.then(|| {
         let unit = match resolved_output_mode.as_str() {
             "files_with_matches" => "files",
             "count" => "files",
             _ => "matches",
         };
+        let of_total = if scanned_whole {
+            format!(" of {scanned_total_files} ({scanned_total_matches} matches in all)")
+        } else {
+            "; more exist".to_string()
+        };
         format!(
-            "Showing the first {returned} {unit}; more exist. Raise `max_results`, narrow \
-             `pattern`, or scope the search with `path` / `glob`."
+            "Showing the first {returned} {unit}{of_total}. Raise `max_results`, narrow \
+             `pattern`, or scope the search with `path` / `glob`. Files are in path order."
         )
     });
 
@@ -1552,9 +1591,18 @@ pub async fn ripgrep_search(
         // as a total is the same failure as the old `min(total, cap)` clamp:
         // a number that looks measured and isn't. `returned` says exactly how
         // much is in hand and `truncated` says there is more; anything wanting a
-        // true count must raise `max_results` or narrow the search.
-        total_files: complete.then_some(total_files),
-        total_matches: complete.then_some(total_matches),
+        // true count must raise `max_results` or narrow the search. Count and
+        // file modes are the exception: they read the whole search.
+        total_files: if complete {
+            Some(total_files)
+        } else {
+            (scanned_whole && partial_error.is_none()).then_some(scanned_total_files)
+        },
+        total_matches: if complete {
+            Some(total_matches)
+        } else {
+            (scanned_whole && partial_error.is_none()).then_some(scanned_total_matches)
+        },
         truncated: Some(truncated),
     })
 }
@@ -3825,22 +3873,19 @@ mod tests {
     }
 
     /// The old code reported `total_matches.min(max_results)` — the cap itself,
-    /// dressed as a measurement. A truncated search stops one unit past the cap,
-    /// so it genuinely does not know the total; reporting the handful it happened
-    /// to see would repeat the same lie in a new shape. It reports nothing, and
-    /// `returned` + `truncated` carry the truth instead.
+    /// dressed as a measurement. Then a capped search stopped reading and
+    /// reported no total at all (dogfood F37). It now reads to the end, keeps
+    /// only the capped rows, and reports the real totals.
     #[test]
-    fn a_truncated_search_reports_no_total_rather_than_a_fabricated_one() {
+    fn a_capped_content_search_still_reports_its_real_totals() {
         let dir = cap_fixture("totals", 4, 10);
         let response = search(&dir, "content", 6);
 
         assert_eq!(response.truncated, Some(true));
         assert_eq!(response.returned, Some(6));
-        assert_eq!(
-            response.total_matches, None,
-            "a stopped search must not publish a total it never counted",
-        );
-        assert_eq!(response.total_files, None);
+        assert_eq!(response.matches.as_ref().map(Vec::len), Some(6));
+        assert_eq!(response.total_matches, Some(40), "every match counted, not the cap");
+        assert_eq!(response.total_files, Some(4));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3879,6 +3924,36 @@ mod tests {
         // never reports a half-counted file.
         for entry in &counts {
             assert_eq!(entry.count, 4, "{} was counted mid-file", entry.file);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dogfood F18: a capped count list erased the grand total.
+    #[test]
+    fn capped_count_and_file_lists_keep_whole_search_totals() {
+        let dir = cap_fixture("capped-totals", 6, 4);
+        for mode in ["count", "files_with_matches"] {
+            let response = search(&dir, mode, 3);
+            assert_eq!(response.truncated, Some(true), "{mode}");
+            assert_eq!(response.returned, Some(3), "{mode}");
+            assert_eq!(response.total_files, Some(6), "{mode}");
+            assert_eq!(response.total_matches, Some(24), "{mode}");
+            let message = response.message.expect("truncation explains itself");
+            assert!(message.contains("of 6"), "{mode}: {message}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dogfood F17: two identical capped searches returned different files.
+    #[test]
+    fn capped_results_are_the_same_files_in_path_order_every_run() {
+        let dir = cap_fixture("stable-order", 12, 2);
+        let first = search(&dir, "files_with_matches", 4).files.unwrap();
+        let mut sorted = first.clone();
+        sorted.sort();
+        assert_eq!(first, sorted, "files arrive in path order");
+        for _ in 0..5 {
+            assert_eq!(search(&dir, "files_with_matches", 4).files.unwrap(), first);
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

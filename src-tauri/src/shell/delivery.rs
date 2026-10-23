@@ -89,7 +89,13 @@ impl CommandDelivery {
         }
         match self {
             Self::Argument => {
-                cmd.arg(command);
+                if matches!(kind, ShellKind::Pwsh | ShellKind::PowerShell) {
+                    cmd.arg(format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
+                        $OutputEncoding = [Console]::OutputEncoding; \
+                        if (Test-Path variable:PSStyle) {{ $PSStyle.OutputRendering = 'PlainText' }}; {command}"));
+                } else {
+                    cmd.arg(command);
+                }
             }
             Self::CmdRaw => {
                 #[cfg(windows)]
@@ -254,7 +260,9 @@ mod tests {
         let args: Vec<PathBuf> = cmd.as_std().get_args().map(PathBuf::from).collect();
         assert_eq!(
             args.last().map(|a| a.to_string_lossy().to_string()),
-            Some("Get-Date".to_string())
+            args.last()
+                .map(|a| a.to_string_lossy().to_string())
+                .filter(|text| text.ends_with("Get-Date"))
         );
         assert!(args.iter().any(|a| a == Path::new("-NonInteractive")));
     }

@@ -19,7 +19,7 @@
 //! |--------------------|------------------------------------------------------------------------------|
 //! | `file_read`        | read one file or many — `path` is always an array; missing → exists:false     |
 //! | `file_write`       | create or overwrite a whole file; `content` required; `must_not_exist` guard  |
-//! | `file_edit`        | exact-text edit, single or `edits[]` batch (atomic); read-before-edit guard    |
+//! | `file_edit`        | exact-text edit, single or `edits[]` batch (failed edits skipped + reported); replace_all guard |
 //! | `move_path`        | move/rename a file OR folder (`std::fs::rename`)                              |
 //! | `delete_path`      | delete a file, or a folder with `recursive:true`                             |
 //! | `folder_create`    | `commands::create_folder`                                                    |
@@ -235,6 +235,9 @@ pub(crate) fn resolve_path_with_access(
 ) -> Result<PathBuf, ToolError> {
     let path = crate::agent_safety::paths::normalize_platform_path(path);
     let path = path.as_ref();
+    if let Some(Ok(existing)) = device_named_file(path, workspace_root) {
+        return Ok(existing);
+    }
     if let Some(reason) = crate::agent_safety::paths::unstorable_path_reason(path) {
         return Err(ToolError::InvalidInput(reason));
     }
@@ -267,6 +270,44 @@ pub(crate) fn resolve_path_for_read(
     access: WorkspaceAccess,
 ) -> Result<PathBuf, ToolError> {
     resolve_path_for_read_with_spill(path, workspace_root, access, None)
+}
+
+/// A workspace path whose last part is a Windows device name (`NUL`, `con.txt`).
+///
+/// Git Bash writes real files with those names (`echo hi > NUL`), and plain
+/// Win32 paths cannot reach them: `delete_path` refused the name as impossible
+/// and `file_read` opened the NUL device and answered an empty success while
+/// the file held 3 bytes (dogfood F27). The `\\?\` form skips device-name
+/// parsing, so a file that really exists resolves to it. When none exists the
+/// answer says so instead of reading the device. `None` for every other path.
+fn device_named_file(
+    path: &str,
+    workspace_root: Option<&Path>,
+) -> Option<Result<PathBuf, ToolError>> {
+    let raw = Path::new(path);
+    let leaf = raw.file_name()?.to_str()?;
+    if !crate::agent_safety::paths::is_device_name(leaf) {
+        return None;
+    }
+    let root = workspace_root?;
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let absolute: PathBuf = joined.components().collect();
+    if !is_inside(&absolute, root) {
+        return None;
+    }
+    let verbatim = PathBuf::from(format!(r"\\?\{}", absolute.display()));
+    Some(if verbatim.is_file() {
+        Ok(verbatim)
+    } else {
+        Err(ToolError::InvalidInput(format!(
+            "`{leaf}` is a reserved Windows device name, and there is no file of that name at \
+             {path}. Reading it would read the device, not a file."
+        )))
+    })
 }
 
 /// True when `path` lands inside `dir`, comparing them normalized.
@@ -312,6 +353,9 @@ pub(crate) fn resolve_path_for_read_with_spill(
     // the caller nothing. Only the acting resolvers refuse outright.
     let path = crate::agent_safety::paths::normalize_platform_path(path);
     let path = path.as_ref();
+    if let Some(found) = device_named_file(path, workspace_root) {
+        return found;
+    }
     let raw = Path::new(path);
     if let Some(dir) = spill_dir {
         if is_inside(raw, dir) {
@@ -1287,5 +1331,27 @@ mod tests {
         // Anything unrecognised falls back — it never widens.
         assert_eq!(W::from_wire(Some("everything"), None), W::Workspace);
         assert_eq!(W::from_wire(Some(""), Some(true)), W::Read);
+    }
+
+    /// Dogfood F27: Git Bash wrote a real file named `NUL`; `file_read` read
+    /// the device instead and `delete_path` called the name impossible.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_file_named_nul_is_read_and_deleted_through_its_verbatim_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let verbatim = PathBuf::from(format!(r"\\?\{}\NUL", root.display()));
+        std::fs::write(&verbatim, "hi\n").unwrap();
+
+        let read = resolve_path_for_read("NUL", Some(&root), WorkspaceAccess::Workspace).unwrap();
+        assert_eq!(std::fs::read_to_string(&read).unwrap(), "hi\n");
+        let act = resolve_path_with_access("NUL", Some(&root), WorkspaceAccess::Workspace).unwrap();
+        std::fs::remove_file(&act).unwrap();
+        assert!(!verbatim.exists());
+
+        let gone = resolve_path_for_read("NUL", Some(&root), WorkspaceAccess::Workspace);
+        assert!(matches!(gone, Err(ToolError::InvalidInput(ref m)) if m.contains("device")));
+        let refused = resolve_path_with_access("NUL", Some(&root), WorkspaceAccess::Workspace);
+        assert!(matches!(refused, Err(ToolError::InvalidInput(ref m)) if m.contains("reserved")));
     }
 }

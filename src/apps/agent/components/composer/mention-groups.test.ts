@@ -28,8 +28,6 @@ const terminal: TerminalSessionSummary = {
   shell: "pwsh",
   cwd: ROOT,
   running: true,
-  lines: 10,
-  attached: true,
 };
 
 const call = (args: Record<string, unknown>) => ({ arguments: JSON.stringify(args) });

@@ -1401,12 +1401,65 @@ fn anthropic_split_system_and_messages(
         }
     }
 
+    keep_newest_images(&mut output, MAX_REQUEST_IMAGES);
+
     let system = if system_chunks.is_empty() {
         None
     } else {
         Some(system_chunks.join("\n\n"))
     };
     (system, output)
+}
+
+/// Images one Messages request may carry. Anthropic allows 100 on 200k-context
+/// models and 600 on the rest; 100 fits both, and 100 images of the size
+/// [`crate::api::aurora_image::prepare_for_provider`] sends stay well inside
+/// the 32 MB request limit.
+const MAX_REQUEST_IMAGES: usize = 100;
+
+/// Past `limit`, the OLDEST image blocks (top level or inside a tool_result)
+/// become one line of text. Over the limit the provider rejects the whole
+/// request, and the same history would be rejected again on every later turn.
+/// The newest pictures are the ones the work is about.
+fn keep_newest_images(messages: &mut [Value], limit: usize) {
+    /// Visits image blocks in request order; `replace` turns the first
+    /// `*remaining` of them into text and counts down.
+    fn walk(value: &mut Value, seen: &mut usize, remaining: &mut usize, replace: bool) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, seen, remaining, replace);
+                }
+            }
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("image") {
+                    *seen += 1;
+                    if replace && *remaining > 0 {
+                        *remaining -= 1;
+                        *value = json!({
+                            "type": "text",
+                            "text": "[An earlier image was left out: this request reached the 100-image limit.]",
+                        });
+                    }
+                } else if let Some(content) = map.get_mut("content") {
+                    walk(content, seen, remaining, replace);
+                }
+            }
+            _ => {}
+        }
+    }
+    let (mut total, mut unused) = (0usize, 0usize);
+    for message in messages.iter_mut() {
+        walk(message, &mut total, &mut unused, false);
+    }
+    let mut excess = total.saturating_sub(limit);
+    if excess == 0 {
+        return;
+    }
+    let mut seen = 0usize;
+    for message in messages.iter_mut() {
+        walk(message, &mut seen, &mut excess, true);
+    }
 }
 
 /// Expand a (possibly image-bearing) text body into Anthropic content
@@ -1587,6 +1640,7 @@ pub(crate) enum AuroraImagePiece {
 /// Capped at 8 images per result.
 pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
     use crate::api::aurora_image::find_marker;
+    use base64::Engine;
 
     const MAX_IMAGES: usize = 8;
     let mut pieces: Vec<AuroraImagePiece> = Vec::new();
@@ -1603,21 +1657,28 @@ pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
                 pieces.push(AuroraImagePiece::Text(leading.to_string()));
             }
         }
-        let media_type = marker.media_type().to_string();
-        if let Some(payload) = marker.payload() {
-            // Inline base64 (composer attachments, legacy threads, or a capture
-            // whose on-disk save failed so the body carries the bytes directly).
-            // Validated as base64 by the parser.
-            pieces.push(AuroraImagePiece::Image {
-                media_type,
-                base64: payload.to_string(),
-            });
-            images_emitted += 1;
-        } else if let Some(base64) = rehydrate_image_from_src(marker.src()) {
-            // Lean marker: the base64 was stripped from history to keep the JSONL
-            // small; the PNG lives on disk (referenced by `src`). Re-read it now.
-            pieces.push(AuroraImagePiece::Image { media_type, base64 });
-            images_emitted += 1;
+        // Inline base64 (composer attachments, legacy threads, or a capture
+        // whose on-disk save failed so the body carries the bytes directly), or
+        // a lean marker whose bytes are re-read from `src` now.
+        let bytes = match marker.payload() {
+            Some(payload) => base64::engine::general_purpose::STANDARD.decode(payload).ok(),
+            None => rehydrate_image_bytes(marker.src()),
+        };
+        match bytes.map(crate::api::aurora_image::prepare_for_provider) {
+            Some(Some((media_type, bytes))) => {
+                pieces.push(AuroraImagePiece::Image {
+                    media_type: media_type.to_string(),
+                    base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                });
+                images_emitted += 1;
+            }
+            // Bytes no image decoder opens are rejected by the provider with a
+            // 400, on this request and every later one in the thread. Say so
+            // in text instead of sending them.
+            Some(None) => pieces.push(AuroraImagePiece::Text(
+                "[An image was left out here: its bytes are not a readable image.]".to_string(),
+            )),
+            None => {}
         }
         // else: empty body + unreadable/absent `src` (e.g. pruned screenshot) →
         // drop the image; the caption text is still emitted so context stays
@@ -1643,12 +1704,10 @@ pub(crate) fn split_aurora_images(content: &str) -> Vec<AuroraImagePiece> {
 /// back at request-build time. Returns `None` when there's no `src` or the file
 /// can't be read (e.g. it was pruned) — the caller then keeps only the caption
 /// text.
-fn rehydrate_image_from_src(src: Option<&str>) -> Option<String> {
-    use base64::Engine;
+fn rehydrate_image_bytes(src: Option<&str>) -> Option<Vec<u8>> {
     // The value was minimally XML-escaped when written into the attribute.
     let path = crate::api::aurora_image::unescape_attr(src?);
-    let bytes = std::fs::read(&path).ok()?;
-    Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    std::fs::read(&path).ok()
 }
 
 /// OpenAI-compat counterpart to `anthropic_tool_result_content`.
@@ -4541,14 +4600,14 @@ mod tests {
     #[test]
     fn openai_tool_result_moves_images_into_a_following_user_message() {
         let content = "Screenshot captured.\n\
-             <aurora_image media_type=\"image/png\">QUJD</aurora_image>";
+             <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>";
         let (text, images) = openai_tool_result_split(content);
 
         assert_eq!(text, "Screenshot captured.");
         assert_eq!(images.len(), 1, "the image must be split out");
         assert_eq!(
             images[0]["image_url"]["url"].as_str().unwrap(),
-            "data:image/png;base64,QUJD"
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         );
     }
 
@@ -4589,13 +4648,103 @@ mod tests {
     #[test]
     fn a_real_image_after_quoted_prose_is_still_delivered() {
         let content = "docs mention `<aurora_image ...>` loosely.\n\
-             <aurora_image media_type=\"image/png\">QUJD</aurora_image>";
+             <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>";
         let (_text, images) = openai_tool_result_split(content);
         assert_eq!(images.len(), 1);
         assert_eq!(
             images[0]["image_url"]["url"].as_str().unwrap(),
-            "data:image/png;base64,QUJD"
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
         );
+    }
+
+    /// Dogfood 2026-10-22: a lean marker in history pointed at 21 bytes that
+    /// only began with the PNG signature. Sent as an image, Anthropic answered
+    /// 400 "Could not process image" on every later turn of the thread.
+    #[test]
+    fn an_unreadable_image_in_history_is_left_out_as_text() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("img-bad.bin");
+        std::fs::write(&bad, b"\x89PNG\r\n\x1a\n\x00\x00binary\x00junk").unwrap();
+        let inline = base64::engine::general_purpose::STANDARD
+            .encode(b"\x89PNG\r\n\x1a\n\x00\x00binary\x00junk");
+        for content in [
+            format!(
+                "<aurora_image media_type=\"image/png\" src=\"{}\"></aurora_image>\ncaption",
+                crate::api::aurora_image::escape_attr(&bad.to_string_lossy())
+            ),
+            format!("<aurora_image media_type=\"image/png\">{inline}</aurora_image>\ncaption"),
+        ] {
+            let pieces = split_aurora_images(&content);
+            assert!(
+                pieces.iter().all(|p| matches!(p, AuroraImagePiece::Text(_))),
+                "{pieces:?}"
+            );
+            assert!(pieces.iter().any(
+                |p| matches!(p, AuroraImagePiece::Text(t) if t.contains("not a readable image"))
+            ));
+        }
+    }
+
+    fn encoded(format: image::ImageFormat, width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([40, 90, 160]));
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), format)
+            .unwrap();
+        out
+    }
+
+    /// The media type sent is what the bytes are, not what the marker says;
+    /// Anthropic rejects a JPEG labelled `image/png`.
+    #[test]
+    fn a_mislabelled_image_goes_out_under_its_real_media_type() {
+        use base64::Engine;
+        let jpeg = base64::engine::general_purpose::STANDARD
+            .encode(encoded(image::ImageFormat::Jpeg, 8, 8));
+        let content = format!("<aurora_image media_type=\"image/png\">{jpeg}</aurora_image>");
+        let images: Vec<_> = split_aurora_images(&content)
+            .into_iter()
+            .filter_map(|p| match p {
+                AuroraImagePiece::Image { media_type, .. } => Some(media_type),
+                AuroraImagePiece::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(images, ["image/jpeg"]);
+    }
+
+    /// Past 2000 px an image breaks the many-image rule, so it is re-encoded
+    /// small instead of sent to fail.
+    #[test]
+    fn an_oversized_image_is_reencoded_within_provider_limits() {
+        let (media_type, bytes) =
+            crate::api::aurora_image::prepare_for_provider(encoded(image::ImageFormat::Png, 2400, 300))
+                .expect("still an image");
+        assert_eq!(media_type, "image/jpeg");
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert!(img.width() <= crate::api::aurora_image::PROVIDER_MAX_EDGE);
+        let small = encoded(image::ImageFormat::Png, 40, 30);
+        assert_eq!(
+            crate::api::aurora_image::prepare_for_provider(small.clone()),
+            Some(("image/png", small)),
+            "an image inside the limits goes out untouched"
+        );
+    }
+
+    /// Over the per-request image limit the oldest images become text, and
+    /// images nested in tool results count too.
+    #[test]
+    fn a_request_past_the_image_limit_keeps_the_newest_images() {
+        let image = || json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"x"}});
+        let mut messages = vec![
+            json!({"role":"user","content":[image(), {"type":"text","text":"a"}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[image()]}]}),
+            json!({"role":"user","content":[image()]}),
+        ];
+        keep_newest_images(&mut messages, 2);
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[1]["content"][0]["content"][0]["type"], "image");
+        assert_eq!(messages[2]["content"][0]["type"], "image");
     }
 
     /// The overwhelming majority of tool results are plain text and must keep
@@ -4618,7 +4767,7 @@ mod tests {
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
                 content: "Screenshot captured.\n\
-                    <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                    <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>"
                     .into(),
                 is_error: None,
             }],
@@ -4676,7 +4825,7 @@ mod tests {
             blocks: vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
                 content: "Screenshot captured.\n\
-                    <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                    <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>"
                     .into(),
                 is_error: None,
             }],
@@ -4716,7 +4865,7 @@ mod tests {
         // A model without vision still gets the placeholder, never pixels.
         let out = openai_messages(&request, false, true, "modal", "", None);
         let text = out[0]["content"].as_str().expect("plain text");
-        assert!(!text.contains("QUJD") && text.contains("Image omitted"), "{text}");
+        assert!(!text.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=") && text.contains("Image omitted"), "{text}");
     }
 
     /// A mid-turn injected message carrying an `<aurora_image>` marker (a
@@ -4736,7 +4885,7 @@ mod tests {
                 },
                 ContentBlock::Text {
                     text: "use this design\n\
-                        <aurora_image media_type=\"image/png\">QUJD</aurora_image>"
+                        <aurora_image media_type=\"image/png\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=</aurora_image>"
                         .into(),
                 },
             ],
@@ -4777,7 +4926,7 @@ mod tests {
         let out = openai_messages(&request, false, false, "openai", "", None);
         let content = out[1]["content"].as_str().expect("plain string content");
         assert!(content.contains("use this design"));
-        assert!(!content.contains("QUJD"), "no raw base64 for non-vision");
+        assert!(!content.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="), "no raw base64 for non-vision");
     }
 
     #[test]

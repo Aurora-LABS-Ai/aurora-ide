@@ -38,14 +38,13 @@ const BlockFence: React.FC<FenceProps & { language: LayoutLanguage }> = ({ langu
     // Streaming and nothing complete yet: hold the space quietly rather than
     // flashing the raw fence for a frame.
     if (!closed) return layout.kind === "report" ? <div className="agw-rl agw-rl-pending" data-kind="report" role="status" aria-busy="true">Preparing report…</div> : <div className="agw-rl agw-rl-pending" aria-hidden="true" />;
-    return <>{fallback}{layout.kind === "report" && layout.problems.length > 0 && <ul className="agw-rl-problems" aria-label="Report errors">{layout.problems.slice(0, 8).map((problem, i) => <li key={i}>{problem}</li>)}</ul>}</>;
+    return <>{fallback}{layout.kind === "report" && <LayoutProblems problems={layout.problems} label="Report errors" />}</>;
   }
 
   return (
     <div className="agw-rl-wrap" data-kind={layout.kind}>
-      <LayoutBody layout={layout} />
       {/* Problems only once the block is finished: a half-written line is not a fault. */}
-      {closed && <LayoutProblems problems={layout.problems} />}
+      <LayoutBody layout={layout} problems={closed ? layout.problems : undefined} />
     </div>
   );
 };

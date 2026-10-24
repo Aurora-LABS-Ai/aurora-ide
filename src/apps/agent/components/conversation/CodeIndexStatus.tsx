@@ -43,6 +43,9 @@ interface IndexProbe {
   ready: boolean;
   indexableFiles: number;
   overAutoCap: boolean;
+  /** The user turned the index off for this project. The light stays out of
+   *  the header: an off switch is a choice, not a condition to fix. */
+  disabled: boolean;
 }
 
 /** Mirrors Rust `code_index::IndexStatus` (serde camelCase). */
@@ -144,6 +147,8 @@ const ProjectCodeIndexStatus: React.FC<{ projectRoot: string }> = ({ projectRoot
         // `done` retires itself after a beat.
         setBuilt(snapshot.index);
         setPhase("done");
+      } else if (probed.disabled) {
+        setPhase("hidden");
       } else if (probed.indexableFiles > 0 && !watchingJob.current) {
         setPhase("offer");
       }
@@ -217,7 +222,7 @@ const ProjectCodeIndexStatus: React.FC<{ projectRoot: string }> = ({ projectRoot
         // `ready` means a valid cache was adopted and the agent can already
         // answer. No readable source means an index would be empty, so there
         // is nothing here worth offering.
-        if (!next.ready && next.indexableFiles > 0 && !watchingJob.current) setPhase("offer");
+        if (!next.disabled && !next.ready && next.indexableFiles > 0 && !watchingJob.current) setPhase("offer");
       } catch {
         // A failed probe is not worth a light in the header. The index is a
         // convenience, the agent still has grep, and the first turn retries.

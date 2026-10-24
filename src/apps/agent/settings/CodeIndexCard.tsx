@@ -15,6 +15,9 @@ const ProjectCodeIndex: React.FC<{ workspace: string }> = ({ workspace }) => {
   const { snapshot, error, busy, building, save, build, cancel } = useCodeIndex(workspace);
   const [dirty, setDirty] = useState(false);
   const index = snapshot?.index; const job = snapshot?.job;
+  // Off is saved in this project's code-index/settings.json; the agent drops
+  // the `code` tool and index landmarks for it. The saved index is kept.
+  const enabled = snapshot?.settings.enabled ?? true;
   const percent = job?.totalFiles ? Math.min(100, Math.floor(job.completedFiles / job.totalFiles * 100)) : null;
   return <>
     <SettingsSection title="Code index" icon="workspace-tree" description="Find definitions, callers, and matching code. Built locally for this project; no model or API calls.">
@@ -25,8 +28,14 @@ const ProjectCodeIndex: React.FC<{ workspace: string }> = ({ workspace }) => {
             <Stat value={index.refs} label="references" /><Stat value={indexSize(index.cacheBytes)} label="index size" />
           </div> : <p className="agw-cidx-empty">Build an index to find definitions, callers, and matching code.</p>}
         </SettingsBlock>
+        <SettingsRow label="Use the code index in this project" hint={enabled
+          ? "The agent can look up definitions and callers, and sees this project's main code at the start of each chat."
+          : "Off for this project. The agent works with text search and the folder tree, and no index is read or built. The saved index is kept."}>
+          <AgwSwitch ariaLabel="Use the code index in this project" checked={enabled} disabled={!snapshot || busy}
+            onChange={(next) => snapshot && void save({ ...snapshot.settings, enabled: next })} />
+        </SettingsRow>
         <SettingsRow label="Build automatically when needed" hint="The agent builds or updates this project's index before a lookup. Turn off to build only from these controls.">
-          <AgwSwitch ariaLabel="Build automatically when needed" checked={snapshot?.settings.autoBuild ?? true} disabled={!snapshot || busy}
+          <AgwSwitch ariaLabel="Build automatically when needed" checked={snapshot?.settings.autoBuild ?? true} disabled={!snapshot || busy || !enabled}
             onChange={(autoBuild) => snapshot && void save({ ...snapshot.settings, autoBuild })} />
         </SettingsRow>
         {index?.built && <SettingsBlock><p className="agw-cidx-note">
@@ -48,12 +57,12 @@ const ProjectCodeIndex: React.FC<{ workspace: string }> = ({ workspace }) => {
         <SettingsRow label={building ? "Build in progress" : index?.built ? "Rebuild index" : "Build index"}
           hint="Reuses unchanged files and updates added, edited, or deleted files. Each project keeps its own saved index." last>
           {building ? <AgwButton disabled={busy} onClick={() => void cancel()}>Stop build</AgwButton>
-            : <AgwButton disabled={!snapshot || busy || dirty} icon="retry" onClick={() => void build()}>{busy ? "Saving…" : index?.built ? "Rebuild" : "Build"}</AgwButton>}
+            : <AgwButton disabled={!snapshot || busy || dirty || !enabled} icon="retry" onClick={() => void build()}>{busy ? "Saving…" : index?.built ? "Rebuild" : "Build"}</AgwButton>}
         </SettingsRow>
       </div>
     </SettingsSection>
     {snapshot && <IndexSearchSettings key={`${snapshot.settings.searchResults}:${snapshot.settings.searchBytes}`}
-      settings={snapshot.settings} disabled={busy} onDirty={setDirty} onSave={save} />}
+      settings={snapshot.settings} disabled={busy || !enabled} onDirty={setDirty} onSave={save} />}
   </>;
 };
 

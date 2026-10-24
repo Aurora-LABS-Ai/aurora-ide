@@ -40,6 +40,13 @@ export type StructuredLayout =
   | { kind: "tree"; title: string; nodes: TreeNode[]; problems: string[] };
 
 type StructureKind = StructuredLayout["kind"];
+
+/** Names the one thing wrong with a three-field row. A single catch-all message
+ *  blamed the status words when the real fault was a stray `|` splitting the
+ *  row (2026-10-24), so each failure gets its own reason. */
+function extraFieldsProblem(line: string, count: number, shape: string): string {
+  return `${line} — this row has ${count} fields; use "${shape}", and write a pipe inside text as \\|`;
+}
 const MAX_OPTIONS = 4;
 const MAX_TREE_DEPTH = 4;
 /** A tree is the one part that is long by nature: a repo's modules, indented.
@@ -53,15 +60,15 @@ function parseComparison(lines: string[]): StructuredLayout {
   const rows: ComparisonRow[] = [];
   const problems: string[] = [];
   if (!heading || options.length < 2 || options.length > MAX_OPTIONS || options.some((option) => !option)) {
-    if (header) problems.push(`${header}: start with "Aspect | Option A | Option B", with two to ${MAX_OPTIONS} named options`);
+    if (header) problems.push(`${header} — start with "Aspect | Option A | Option B", with two to ${MAX_OPTIONS} named options`);
     return { kind: "compare", title, heading, options: [], rows, problems };
   }
   for (const line of body) {
     const [label, ...values] = splitFields(line);
     if (!label || values.length !== options.length || values.some((value) => !value)) {
-      problems.push(`${line}: name the aspect and supply one value for each of the ${options.length} options`);
+      problems.push(`${line} — name the aspect and supply one value for each of the ${options.length} options`);
     } else if (rows.length >= MAX_ITEMS) {
-      problems.push(`${line}: more than ${MAX_ITEMS} comparison rows`);
+      problems.push(`${line} — more than ${MAX_ITEMS} comparison rows`);
     } else {
       rows.push({ label, values });
     }
@@ -74,11 +81,16 @@ function parseChecklist(lines: string[]): StructuredLayout {
   const items: ChecklistItem[] = [];
   const problems: string[] = [];
   for (const line of rows) {
-    const [status = "", label = "", caption = "", ...extra] = splitFields(line);
-    if (!Object.prototype.hasOwnProperty.call(CHECKLIST_STATUSES, status) || !label || extra.length > 0) {
-      problems.push(`${line}: use "Status | Item | Optional detail"; status must be todo, doing, done or blocked`);
+    const fields = splitFields(line);
+    const [status = "", label = "", caption = ""] = fields;
+    if (fields.length > 3) {
+      problems.push(extraFieldsProblem(line, fields.length, "Status | Item | Optional detail"));
+    } else if (!Object.prototype.hasOwnProperty.call(CHECKLIST_STATUSES, status)) {
+      problems.push(`${line} — "${status}" is not a status; use todo, doing, done or blocked`);
+    } else if (!label) {
+      problems.push(`${line} — name the item after its status`);
     } else if (items.length >= MAX_ITEMS) {
-      problems.push(`${line}: more than ${MAX_ITEMS} checklist items`);
+      problems.push(`${line} — more than ${MAX_ITEMS} checklist items`);
     } else {
       items.push({ status: status as ChecklistStatus, title: label, ...(caption ? { caption } : {}) });
     }
@@ -91,11 +103,14 @@ function parseTimeline(lines: string[]): StructuredLayout {
   const items: TimelineItem[] = [];
   const problems: string[] = [];
   for (const line of rows) {
-    const [when = "", label = "", caption = "", ...extra] = splitFields(line);
-    if (!when || !label || extra.length > 0) {
-      problems.push(`${line}: an event is "Date or period | Event | Optional detail"`);
+    const fields = splitFields(line);
+    const [when = "", label = "", caption = ""] = fields;
+    if (fields.length > 3) {
+      problems.push(extraFieldsProblem(line, fields.length, "Date or period | Event | Optional detail"));
+    } else if (!when || !label) {
+      problems.push(`${line} — an event is "Date or period | Event | Optional detail"`);
     } else if (items.length >= MAX_ITEMS) {
-      problems.push(`${line}: more than ${MAX_ITEMS} timeline events`);
+      problems.push(`${line} — more than ${MAX_ITEMS} timeline events`);
     } else {
       items.push({ when, title: label, ...(caption ? { caption } : {}) });
     }
@@ -117,13 +132,13 @@ function parseTree(lines: string[]): StructuredLayout {
     const depth = Number(level);
     const validDepth = /^\d$/.test(level) && depth <= MAX_TREE_DEPTH;
     if (!validDepth || depth > parents.length || !label) {
-      problems.push(`${line}: use "Depth | Item | Optional detail", starting at 0, increasing by at most one, up to ${MAX_TREE_DEPTH}`);
+      problems.push(`${line} — use "Depth | Item | Optional detail", starting at 0, increasing by at most one, up to ${MAX_TREE_DEPTH}`);
       // A rejected parent must not attach its children to an earlier sibling.
       parents.length = validDepth ? Math.min(parents.length, depth) : 0;
       continue;
     }
     if (count >= MAX_TREE_ITEMS) {
-      problems.push(`${line}: more than ${MAX_TREE_ITEMS} tree items`);
+      problems.push(`${line} — more than ${MAX_TREE_ITEMS} tree items`);
       continue;
     }
     const node: TreeNode = { title: label, ...(caption ? { caption } : {}), children: [] };

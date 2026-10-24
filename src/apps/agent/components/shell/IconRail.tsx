@@ -53,7 +53,7 @@ const RailCell: React.FC<{
     title={title ?? label}
     onClick={onClick}
   >
-    <AgentIcon name={icon} size={18} />
+    <AgentIcon name={icon} size={18} solid={active || pressed} />
     {dot && <span className="agw-iconrail-dot" title={dot} aria-label={dot} />}
   </button>
 );

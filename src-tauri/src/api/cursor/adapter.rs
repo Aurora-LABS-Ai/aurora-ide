@@ -56,8 +56,16 @@ struct TurnAccumulator {
     text: String,
     thinking: String,
     tool_uses: Vec<ContentBlock>,
+    /// Cursor's own thinking time for this segment, summed across stretches.
+    thinking_ms: u64,
     tokens: u32,
     context_used_tokens: Option<u32>,
+    /// Kinds of the calls Cursor answered itself this turn, in order. Belongs
+    /// to the turn, like `tokens`.
+    server_calls: Vec<String>,
+    /// Cursor's own count of what the turn produced, when the server sends it
+    /// at the end. Exact, so it wins over the sum of `TokenDeltaUpdate`s.
+    exact_output_tokens: Option<u32>,
 }
 
 impl TurnAccumulator {
@@ -77,8 +85,11 @@ impl TurnAccumulator {
             text: std::mem::take(&mut self.text),
             thinking: std::mem::take(&mut self.thinking),
             tool_uses: std::mem::take(&mut self.tool_uses),
+            thinking_ms: std::mem::take(&mut self.thinking_ms),
             tokens: 0,
             context_used_tokens: None,
+            server_calls: Vec::new(),
+            exact_output_tokens: None,
         }
         .into_blocks()
     }
@@ -92,7 +103,7 @@ impl TurnAccumulator {
                 // one provider is meaningless to another — so there is
                 // nothing to persist and nothing to replay.
                 signature: None,
-                duration_ms: None,
+                duration_ms: (self.thinking_ms > 0).then_some(self.thinking_ms),
             });
         }
         if !self.text.is_empty() {
@@ -234,6 +245,17 @@ impl StreamingApiClient for CursorAdapter {
                             // latest one is the state Cursor finished with.
                             acc.context_used_tokens = Some(used_tokens);
                         }
+                        TurnEvent::ServerToolCall { label } => acc.server_calls.push(label),
+                        TurnEvent::ThinkingDuration { ms } => {
+                            acc.thinking_ms = acc.thinking_ms.saturating_add(ms);
+                        }
+                        // Input here is summed over every step Cursor ran, so
+                        // it is what the turn cost, never how full the context
+                        // is; the session logs it. Output is exact.
+                        TurnEvent::TurnTotals(totals) => {
+                            acc.exact_output_tokens =
+                                Some(u32::try_from(totals.output).unwrap_or(u32::MAX));
+                        }
                         TurnEvent::Done(reason) => done = reason,
                     }
                 }
@@ -281,9 +303,10 @@ impl StreamingApiClient for CursorAdapter {
 
                     let usage = resolve_usage(
                         estimate_prompt_tokens(&input, &tools, &model),
-                        acc.tokens,
+                        acc.exact_output_tokens.unwrap_or(acc.tokens),
                         acc.context_used_tokens,
                     );
+                    let notices = server_call_notice(&acc.server_calls).into_iter().collect();
                     // Cursor's adapter used to return usage only in
                     // `TurnUsage`. The frontend listens to streamed Usage
                     // events, so it never saw that value and ran its local
@@ -301,7 +324,7 @@ impl StreamingApiClient for CursorAdapter {
                         usage,
                         stop_reason,
                         assistant_message,
-                        notices: Vec::new(),
+                        notices,
                     })
                 }
             };
@@ -309,14 +332,76 @@ impl StreamingApiClient for CursorAdapter {
     }
 }
 
+/// How far above the local count a Cursor checkpoint may read and still be
+/// taken as the conversation's size.
+const CHECKPOINT_SANITY_FACTOR: u32 = 3;
+
+/// The note saved under a reply when Cursor answered tool calls itself.
+///
+/// Without it the only account of those calls is the model's, and in the turn
+/// that prompted this the model reported "every file, search, and shell call
+/// came back unavailable" while Aurora's log showed no call at all.
+fn server_call_notice(labels: &[String]) -> Option<String> {
+    if labels.is_empty() {
+        return None;
+    }
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for label in labels {
+        match counts.iter_mut().find(|(seen, _)| *seen == label.as_str()) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((label.as_str(), 1)),
+        }
+    }
+    let kinds = counts
+        .iter()
+        .map(|(label, count)| {
+            if *count > 1 {
+                format!("{label} ×{count}")
+            } else {
+                (*label).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let calls = if labels.len() == 1 { "call" } else { "calls" };
+    Some(format!(
+        "Cursor handled {} tool {calls} itself instead of passing them to Aurora ({kinds}). \
+         Aurora never ran them, so what the reply says about their results did not come from \
+         Aurora's tools.",
+        labels.len()
+    ))
+}
+
 /// Prefer Cursor's checkpoint total, retaining the local count only as a
 /// fallback for runs where the server omits or contradicts the checkpoint.
+///
+/// A checkpoint far above what this turn sends is not an occupancy reading.
+/// One turn reported 1,712,135 tokens for a conversation Aurora sized at a
+/// fraction of that, and the meter drew "1.7M of 500K". Cursor's own
+/// server-side context (its system prompt, tool listing) is small next to the
+/// history, so a reading more than [`CHECKPOINT_SANITY_FACTOR`] times the
+/// local count is dropped in favour of the local count.
 fn resolve_usage(
     estimated_input_tokens: u32,
     output_tokens: u32,
     context_used_tokens: Option<u32>,
 ) -> TokenUsage {
-    let provider_total = context_used_tokens.filter(|used| *used >= output_tokens && *used > 0);
+    let ceiling = estimated_input_tokens
+        .saturating_add(output_tokens)
+        .saturating_mul(CHECKPOINT_SANITY_FACTOR);
+    let provider_total = context_used_tokens.filter(|used| {
+        let plausible = estimated_input_tokens == 0 || *used <= ceiling;
+        if !plausible {
+            crate::logging::log_warn(
+                "cursor.usage",
+                &format!(
+                    "ignored Cursor's context reading of {used} tokens; this turn sends about \
+                     {estimated_input_tokens}, so the local count is used instead"
+                ),
+            );
+        }
+        *used >= output_tokens && *used > 0 && plausible
+    });
     let (input_tokens, estimated) = match provider_total {
         Some(total) => (total - output_tokens, None),
         None => (estimated_input_tokens, Some(true)),
@@ -495,6 +580,46 @@ mod tests {
             assert_eq!(usage.output_tokens, 120);
             assert_eq!(usage.estimated, Some(true));
         }
+    }
+
+    /// The reading behind "1.7M of 500.0K": far above anything the turn sent.
+    #[test]
+    fn a_checkpoint_far_above_what_the_turn_sends_is_not_the_context_size() {
+        let usage = resolve_usage(280_000, 318, Some(1_712_135));
+
+        assert_eq!(usage.input_tokens, 280_000);
+        assert_eq!(usage.estimated, Some(true));
+    }
+
+    #[test]
+    fn calls_cursor_answered_itself_become_one_note_under_the_reply() {
+        assert_eq!(server_call_notice(&[]), None);
+
+        let labels = ["Read", "Grep", "Read", "Shell"].map(String::from);
+        let note = server_call_notice(&labels).expect("calls happened, so a note is owed");
+        assert!(note.contains("4 tool calls"), "{note}");
+        assert!(note.contains("Read ×2, Grep, Shell"), "{note}");
+        assert!(note.contains("Aurora never ran them"), "{note}");
+
+        let one = server_call_notice(&["Read".to_string()]).unwrap();
+        assert!(one.contains("1 tool call itself"), "{one}");
+    }
+
+    #[test]
+    fn cursors_thinking_time_is_kept_on_the_thinking_block() {
+        let mut acc = TurnAccumulator::default();
+        acc.thinking.push_str("hmm");
+        acc.thinking_ms = 3_400;
+        let blocks = acc.take_segment();
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [ContentBlock::Thinking {
+                duration_ms: Some(3_400),
+                ..
+            }]
+        ));
+        assert_eq!(acc.thinking_ms, 0, "the next segment starts its own clock");
     }
 
     fn tool(name: &str, schema: &str) -> cursor_proto::agent::McpToolDefinition {

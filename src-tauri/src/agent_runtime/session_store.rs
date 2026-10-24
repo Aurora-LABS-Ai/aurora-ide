@@ -1420,11 +1420,17 @@ impl SessionStore {
                 Err(e) => return Err(RuntimeError::from(e)),
             }
         }
-        // Spilled tool output is a directory, and it goes with the thread.
-        match fs::remove_dir_all(self.tool_results_dir(thread_id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(RuntimeError::from(e)),
+        // Spilled tool output and screenshots are directories, and they go
+        // with the thread.
+        for dir in [
+            self.tool_results_dir(thread_id),
+            screenshots_dir_in(&self.dir, thread_id, self.layout),
+        ] {
+            match fs::remove_dir_all(dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(RuntimeError::from(e)),
+            }
         }
         Ok(())
     }
@@ -1459,6 +1465,30 @@ pub fn tool_results_dir_in(root: &Path, thread_id: &str, layout: StoreLayout) ->
         StoreLayout::Flat => root.join(format!("{thread_id}.tool-results")),
         StoreLayout::Folder => root.join(thread_id).join("tool-results"),
     }
+}
+
+/// Where the agent's browser screenshots for `thread_id` live under a store
+/// root: `<root>/<id>/screenshots` for a folder conversation, beside its other
+/// files, so they are deleted with it. They were written to one app-wide
+/// cache folder (`com.aurora.agent\aurora-screenshots`), outside the
+/// conversation, where nothing tied a picture to the chat that took it.
+pub fn screenshots_dir_in(root: &Path, thread_id: &str, layout: StoreLayout) -> PathBuf {
+    match layout {
+        StoreLayout::Flat => root.join(format!("{thread_id}.screenshots")),
+        StoreLayout::Folder => root.join(thread_id).join("screenshots"),
+    }
+}
+
+/// The screenshots directory of the conversation whose tool-results directory
+/// is `spill_dir` — the one conversation path a tool holds. `None` for a path
+/// [`tool_results_dir_in`] did not produce.
+pub fn screenshots_dir_beside_spill(spill_dir: &Path) -> Option<PathBuf> {
+    let name = spill_dir.file_name()?.to_str()?;
+    if name == "tool-results" {
+        return Some(spill_dir.parent()?.join("screenshots"));
+    }
+    let thread_id = name.strip_suffix(".tool-results")?;
+    Some(spill_dir.parent()?.join(format!("{thread_id}.screenshots")))
 }
 
 /// Bundle returned by [`SessionStore::load`].
@@ -2144,6 +2174,32 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = SessionStore::new_folder(dir.path().to_path_buf());
         (dir, store)
+    }
+
+    #[test]
+    fn screenshots_sit_beside_the_tool_results_of_the_same_conversation() {
+        let root = Path::new("/store");
+        for layout in [StoreLayout::Folder, StoreLayout::Flat] {
+            let spill = tool_results_dir_in(root, "c1", layout);
+            assert_eq!(
+                screenshots_dir_beside_spill(&spill),
+                Some(screenshots_dir_in(root, "c1", layout)),
+                "{layout:?}"
+            );
+        }
+        assert_eq!(screenshots_dir_in(root, "c1", StoreLayout::Folder), root.join("c1").join("screenshots"));
+        assert_eq!(screenshots_dir_beside_spill(Path::new("/elsewhere/out")), None);
+    }
+
+    #[test]
+    fn flat_delete_removes_the_threads_screenshots() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path().to_path_buf());
+        let shots = screenshots_dir_in(dir.path(), "t1", StoreLayout::Flat);
+        fs::create_dir_all(&shots).unwrap();
+        fs::write(shots.join("shot.jpg"), b"x").unwrap();
+        store.delete("t1").unwrap();
+        assert!(!shots.exists());
     }
 
     #[test]

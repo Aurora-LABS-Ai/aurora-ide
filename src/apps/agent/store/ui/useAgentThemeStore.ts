@@ -24,6 +24,7 @@ import {
   type AppearancePrefs,
   type ModelSelectorPosition,
   type RailEdge,
+  type ToolIconSetId,
   type TranscriptReasoning,
   type TranscriptTextPace,
   APPEARANCE_PREFS,
@@ -63,6 +64,7 @@ export type {
   AgentUiVersion,
   ModelSelectorPosition,
   RailEdge,
+  ToolIconSetId,
   TranscriptReasoning,
   TranscriptTextPace,
 } from "@/apps/agent/theme/appearance-prefs";
@@ -198,6 +200,7 @@ interface AgentThemeState extends AppearancePrefs {
   setContrast: (v: number) => void;
   setReduceMotion: (v: boolean) => void;
   setSyntaxHighlighting: (v: boolean) => void;
+  setToolIconSet: (v: ToolIconSetId) => void;
   setRailGlide: (v: boolean) => void;
   setRailGlideMs: (v: number) => void;
   setModelSelectorPosition: (v: ModelSelectorPosition) => void;
@@ -308,6 +311,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setContrast: (v) => set({ contrast: Math.max(0, Math.min(100, Math.round(v))) }),
       setReduceMotion: (v) => set({ reduceMotion: v }),
       setSyntaxHighlighting: (v) => set({ syntaxHighlighting: v }),
+      setToolIconSet: (v) => set({ toolIconSet: v }),
       setRailGlide: (v) => set({ railGlide: v }),
       setRailGlideMs: (v) =>
         set({ railGlideMs: Math.max(120, Math.min(1200, Math.round(v))) }),

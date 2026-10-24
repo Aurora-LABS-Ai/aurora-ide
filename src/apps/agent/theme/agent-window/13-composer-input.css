@@ -126,15 +126,13 @@
  * state — the states inverted. Reading the foreground ramp instead means the
  * enabled icon is the highest-contrast colour available on this surface by
  * definition, in any theme and under any customization. */
-.agw-send:not(.agw-send-stream) svg {
-  transition: filter var(--agw-dur-slow) ease;
-}
+/* Since 2026-10-23 (icon direction 04, bold outline + solid when selected)
+ * the DISC fills too: text present → a solid disc in the foreground with the
+ * arrow cut out of it in the composer fill, the same "state by shape" the rail
+ * uses. The glow it replaces was the window's only soft-light effect. */
 .agw-send:not(.agw-send-stream):not(:disabled) {
-  color: var(--agw-text);
-}
-.agw-send:not(.agw-send-stream):not(:disabled) svg {
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--agw-text) 55%, transparent))
-    drop-shadow(0 0 9px color-mix(in srgb, var(--agw-text) 30%, transparent));
+  background: var(--agw-text);
+  color: var(--agw-composer-surface);
 }
 
 /* ── @ and / picker ────────────────────────────────────────────────────

@@ -38,15 +38,8 @@
   transition: background-color var(--agw-dur-fast) ease;
 }
 .agw-wc-head:hover,
-.agw-wc-head:focus-visible,
-/* A click inside the closed running window lights the header once, the one
-   place that opens the card (WorkCard `nudge`). Steady, then fades back by the
-   transition above; never a pulse. */
-.agw-wc-head[data-nudged] {
+.agw-wc-head:focus-visible {
   background: var(--agw-hover);
-}
-.agw-wc-head[data-nudged] .agw-wc-chev {
-  color: var(--agw-text);
 }
 .agw-wc-lead {
   display: inline-flex;
@@ -180,6 +173,23 @@
     mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 22px), #000 100%);
   }
 }
+/* Open while its stretch runs: no scroll-linked fade. The panel follows its
+   newest row, and every row that lands takes it off the bottom for a moment
+   (the whole 0.28s glide with smooth arrival on). Gradients do not blend
+   between keyframes, they switch halfway, so the bottom fade snapped on and
+   off with every new row: the newest text vanished and came back each time the
+   card grew (Alvan, 2026-10-24). A fixed top fade instead, and only while rows
+   are actually cut off above (`data-clipped`, measured in WorkCard), the same
+   way the running window does it. */
+.agw-wc-body[data-live-panel] {
+  animation: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.agw-wc-body[data-live-panel][data-clipped] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+}
 /* Keyboard users scroll the panel with the arrow keys once it has focus; the
    two hairlines step up to show it, never a ring around it. */
 .agw-wc-panel:has(.agw-wc-body:focus-visible)::before,
@@ -211,9 +221,11 @@
    it is full, WorkCard keeps it scrolled to the newest step, so the oldest
    leave through the top, and the top fades only while something is actually
    cut off there (`data-clipped`, measured in WorkCard). It does not scroll by
-   hand, and nothing inside is a control here; the header opens the card.
-   It used to open on a click anywhere, with a hand cursor over all 55vh of it
-   (Alvan, 2026-10-23: "anywhere I move my cursor it becomes a pointer").
+   hand, and the rows inside are not controls here. A click anywhere in it
+   opens the card, like the header (probe aurora-work-card-click-designs.html,
+   02), with the ordinary arrow cursor: it once had a hand cursor over all 55vh
+   of it (Alvan, 2026-10-23: "anywhere I move my cursor it becomes a pointer"),
+   and in between a click there only lit the header, which read as broken.
    `overscroll-behavior` goes back to auto: `overflow: hidden` is still a
    scroll container to the browser, so the wheel landed here, had nothing to
    scroll, and the open panel's `contain` stopped it reaching the chat — the

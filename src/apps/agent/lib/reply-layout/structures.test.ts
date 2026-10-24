@@ -39,7 +39,19 @@ describe("reply layout checklists", () => {
   it("reports unknown states, missing labels and extra fields", () => {
     const parsed = parseLayout("aurora-checklist", "complete | Build\ntodo |\ndone | Build | detail | hidden\nconstructor | unsafe\ntodo | Publish", true);
     expect(parsed.kind === "checklist" && parsed.items).toEqual([{ status: "todo", title: "Publish" }]);
-    expect(parsed.problems).toHaveLength(4);
+    expect(parsed.problems).toEqual([
+      'complete | Build — "complete" is not a status; use todo, doing, done or blocked',
+      "todo | — name the item after its status",
+      'done | Build | detail | hidden — this row has 4 fields; use "Status | Item | Optional detail", and write a pipe inside text as \\|',
+      'constructor | unsafe — "constructor" is not a status; use todo, doing, done or blocked',
+    ]);
+  });
+
+  it("blames the split, not the status, when a stray pipe adds a field", () => {
+    const parsed = parseLayout("aurora-checklist", "todo | Trailing pipe row | ends in `|`", true);
+    expect(parsed.problems).toEqual([
+      'todo | Trailing pipe row | ends in `|` — this row has 4 fields; use "Status | Item | Optional detail", and write a pipe inside text as \\|',
+    ]);
   });
 });
 
@@ -58,6 +70,9 @@ describe("reply layout timelines", () => {
     const parsed = parseLayout("aurora-timeline", "09:10 |\n| Restart\n09:20 | Restored | Detail | Lost\n09:30 | Verified", true);
     expect(parsed.kind === "timeline" && parsed.items).toHaveLength(1);
     expect(parsed.problems).toHaveLength(3);
+    expect(parsed.problems[2]).toBe(
+      '09:20 | Restored | Detail | Lost — this row has 4 fields; use "Date or period | Event | Optional detail", and write a pipe inside text as \\|',
+    );
   });
 });
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTaskStore, type Task } from "@/apps/agent/store/tools/useAgentTaskStore";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { TaskIndicator } from "@/apps/agent/components/panels/TaskIndicator";
 
 const THREAD = "thread-1";
@@ -45,6 +46,7 @@ describe("TaskIndicator", () => {
     document.body.appendChild(container);
     useAgentChatStore.setState({ currentThreadId: THREAD });
     useAgentTaskStore.setState({ byThread: {}, dismissed: {} });
+    useAgentThemeStore.setState({ toolIconSet: "classic" });
     setStreaming(false);
   });
 
@@ -94,6 +96,35 @@ describe("TaskIndicator", () => {
     act(() => setStreaming(true));
     expect(trigger()?.getAttribute("data-state")).toBe("running");
     expect(container.querySelector(".agw-taskind-spin")).not.toBeNull();
+  });
+
+  it("works its own checklist mark instead of spinning when the Isometric set is on", () => {
+    useAgentThemeStore.setState({ toolIconSet: "isometric" });
+    useAgentTaskStore.setState({
+      byThread: { [THREAD]: [task("1", "in_progress", "Add the route")] },
+    });
+    render();
+    const mark = () => container.querySelector(".agw-taskind-mark");
+
+    // Paused: the mark, held still — no live flag, no scan copy.
+    expect(mark()).not.toBeNull();
+    expect(mark()?.hasAttribute("data-live")).toBe(false);
+    expect(container.querySelector(".agw-tool-glyph-scan")).toBeNull();
+
+    // Running: the same mark goes live; the spinner never appears.
+    act(() => setStreaming(true));
+    expect(mark()?.hasAttribute("data-live")).toBe(true);
+    expect(mark()?.querySelector('[data-part="flow"]')).not.toBeNull();
+    expect(container.querySelector(".agw-tool-glyph-scan")).not.toBeNull();
+    expect(container.querySelector(".agw-taskind-spin")).toBeNull();
+  });
+
+  it("keeps the check for a finished list in every set", () => {
+    useAgentThemeStore.setState({ toolIconSet: "isometric" });
+    useAgentTaskStore.setState({ byThread: { [THREAD]: [task("1", "completed")] } });
+    render();
+    expect(container.querySelector(".agw-taskind-mark")).toBeNull();
+    expect(trigger()?.getAttribute("data-state")).toBe("done");
   });
 
   it("reports the ending state once every task is closed", () => {

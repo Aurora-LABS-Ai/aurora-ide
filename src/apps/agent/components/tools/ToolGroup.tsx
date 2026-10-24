@@ -28,6 +28,7 @@ import React, { useContext, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { ToolGlyph } from "@/apps/agent/components/tools/tool-icons/ToolGlyph";
 import { ErrorBoundary } from "@/kernel/ui/ErrorBoundary";
 import { ChecklistBeatCard, ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
 import { McpServerLane } from "@/apps/agent/components/tools/McpServerLane";
@@ -409,7 +410,7 @@ const ToolGroupImpl: React.FC<{
                 color: "var(--agw-text-subtle)",
               }}
             />
-            <AgentIcon
+            <ToolGlyph
               name="layers"
               size={13}
               style={{ color: "var(--agw-text-subtle)" }}

@@ -35,6 +35,15 @@
  * PAUSED — it renders held, not spinning, the same rule `AgentTaskPanel` and
  * the Plan Canvas already apply. Motion here is a claim that work is happening;
  * it has to be true.
+ *
+ * ## A tool icon set that draws its own checklist mark
+ *
+ * With Appearance → Tool icons set to one that draws `checklist` (Isometric,
+ * 2026-10-24), the running state is that mark working — its steps light in
+ * sequence through the same live-mark wrapper and motion CSS as a tool row —
+ * instead of the spinner. Same rule: it moves only while running, holds still
+ * when paused, and Reduce motion freezes it. Classic draws no mark of its own
+ * and keeps the spinner, unchanged (Alvan's call).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -42,6 +51,9 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createPortal } from "react-dom";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { ToolGlyph } from "@/apps/agent/components/tools/tool-icons/ToolGlyph";
+import { toolMarkGlyph } from "@/apps/agent/components/tools/tool-icons/tool-icon-sets";
+import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentTaskStore } from "@/apps/agent/store/tools/useAgentTaskStore";
 import { AgentTaskPanel } from "@/apps/agent/components/panels/AgentTaskPanel";
@@ -56,6 +68,8 @@ export const TaskIndicator: React.FC = () => {
   const isStreaming = useAgentChatStore((s) =>
     currentThreadId ? !!s.liveTurns[currentThreadId] : false,
   );
+  // Does the chosen tool icon set draw its own checklist mark? See the module note.
+  const liveMark = useAgentThemeStore((s) => toolMarkGlyph(s.toolIconSet, "checklist") !== null);
 
   // `pinned` survives mouse-leave; `peeking` does not; `flashing` is the card
   // showing itself when the agent touches the list. Open is any of the three.
@@ -266,7 +280,12 @@ export const TaskIndicator: React.FC = () => {
           setPinned((v) => !v);
         }}
       >
-        {running ? (
+        {liveMark && !allDone ? (
+          <span className="agw-tool-glyph agw-taskind-mark" data-live={running ? "" : undefined}>
+            <ToolGlyph name="checklist" size={13} />
+            {running && <ToolGlyph name="checklist" size={13} className="agw-tool-glyph-scan" />}
+          </span>
+        ) : running ? (
           <span className="agw-rail-spin agw-taskind-spin" aria-hidden />
         ) : (
           <AgentIcon name={allDone ? "check" : "checklist"} size={13} />

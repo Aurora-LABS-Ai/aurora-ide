@@ -1103,7 +1103,7 @@ export const LeftRail: React.FC = () => {
               void togglePin(thread.id);
             }}
           >
-            <AgentIcon name="pin" size={13} />
+            <AgentIcon name="pin" size={13} solid={thread.pinned} />
           </button>
         </div>
       </div>
@@ -1432,7 +1432,6 @@ export const LeftRail: React.FC = () => {
                         className="agw-rail-project-caret"
                         style={{ transform: open ? "none" : "rotate(-90deg)" }}
                       />
-                      <AgentIcon name="folder" size={14} style={{ flexShrink: 0 }} />
                       <ScrollingLabel
                         className="agw-rail-project-name"
                         text={folderName(root)}

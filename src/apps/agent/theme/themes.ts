@@ -38,13 +38,15 @@ const SHARED_TYPE = {
   // default (16/24), which styles nothing it actually renders. Weight is a
   // string because tokens are CSS variable values.
   msgFontSize: "15px",
-  msgLineHeight: "1.75",
+  // 1.75 came from the reference; side by side with Claude desktop (1.33,
+  // measured 2026-10-23) it spread every paragraph apart and read light.
+  msgLineHeight: "1.5",
   msgFontWeight: "400",
   // Fenced blocks only. Inline code stays relative (0.8em) so chips sit inside
   // their sentence; a block is its own surface and holds an absolute size.
   msgCodeFontSize: "13px",
   msgUserFontSize: "14px",
-  msgUserLineHeight: "1.6",
+  msgUserLineHeight: "1.5",
   // ── Radius: ONE scale for the whole window ────────────────────────────────
   // Roles, not sizes: `lg` is a container, `md` is a control, `sm` is anything
   // nested inside a container. Settings used to run a second scale

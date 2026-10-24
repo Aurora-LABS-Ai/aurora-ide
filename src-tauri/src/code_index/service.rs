@@ -60,7 +60,15 @@ pub struct IndexProbe {
     /// Past [`AUTO_INDEX_MAX_FILES`], so no turn will ever build this on its
     /// own and an explicit build is the only way it gets one.
     pub over_auto_cap: bool,
+    /// The user turned the code index off for this project. Nothing was
+    /// walked to answer, so `ready` and `indexable_files` mean nothing.
+    pub disabled: bool,
 }
+
+/// What every refusal says when the user turned the index off, so the tool,
+/// the builder and the log all name the same fallback.
+pub const INDEX_OFF_MESSAGE: &str = "The code index is off for this project. Use `grep` to find \
+     definitions and callers, `glob` to find files by name, and `workspace_tree` for the folder layout.";
 
 #[derive(Default)]
 pub struct CodeIndexService {
@@ -190,9 +198,40 @@ impl CodeIndexService {
         Ok(index)
     }
 
+    /// Whether the user left the code index on for this project.
+    ///
+    /// Read from the project's small `settings.json` before anything walks the
+    /// tree, which is the whole point of the switch. An unreadable settings
+    /// file is logged and read as on: the switch has always defaulted on, and
+    /// a corrupt file must not silently remove a tool.
+    pub fn enabled(&self, workspace: &Path) -> bool {
+        let settings = self
+            .project_index_dir(workspace)
+            .and_then(|dir| super::jobs::settings(&dir));
+        match settings {
+            Ok(settings) => settings.enabled,
+            Err(error) => {
+                crate::logging::log_warn(
+                    "code_index",
+                    &format!(
+                        "reading index settings for {}: {error:#}; treating the index as on",
+                        workspace.display()
+                    ),
+                );
+                true
+            }
+        }
+    }
+
+    fn ensure_enabled(&self, workspace: &Path) -> Result<()> {
+        anyhow::ensure!(self.enabled(workspace), INDEX_OFF_MESSAGE);
+        Ok(())
+    }
+
     /// Reuse a current index or build one. Concurrent callers for one project
     /// wait for the first builder and then reuse its published result.
     pub fn get_or_build(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
+        self.ensure_enabled(workspace)?;
         let state = self.workspace_state(workspace);
         let _build = state
             .build
@@ -241,6 +280,14 @@ impl CodeIndexService {
     /// Probe content freshness without parsing or starting a build. A pending
     /// explicit invalidation always takes precedence over a matching cache.
     pub fn probe(&self, workspace: &Path) -> IndexProbe {
+        if !self.enabled(workspace) {
+            return IndexProbe {
+                ready: false,
+                indexable_files: 0,
+                over_auto_cap: false,
+                disabled: true,
+            };
+        }
         let signature = match super::walk::signature_checked(workspace) {
             Ok(signature) => signature,
             Err(error) => {
@@ -252,6 +299,7 @@ impl CodeIndexService {
                     ready: false,
                     indexable_files: 0,
                     over_auto_cap: false,
+                    disabled: false,
                 };
             }
         };
@@ -273,6 +321,7 @@ impl CodeIndexService {
             ready,
             indexable_files: signature.0,
             over_auto_cap: signature.0 > AUTO_INDEX_MAX_FILES,
+            disabled: false,
         }
     }
 
@@ -329,6 +378,7 @@ impl CodeIndexService {
 
     /// Build only this workspace. No active-project UI state is consulted.
     pub fn rebuild(&self, workspace: &Path) -> Result<Arc<CodeIndex>> {
+        self.ensure_enabled(workspace)?;
         let state = self.workspace_state(workspace);
         let _build = state
             .build
@@ -344,6 +394,7 @@ impl CodeIndexService {
         &self, workspace: &Path, cancel: &tokio_util::sync::CancellationToken,
         progress: &(dyn Fn(usize, usize, &str) + Sync),
     ) -> Result<Arc<CodeIndex>> {
+        self.ensure_enabled(workspace)?;
         let state = self.workspace_state(workspace);
         let _build = state
             .build
@@ -472,6 +523,13 @@ impl CodeIndexService {
         revision.current = revision.current.wrapping_add(1);
     }
 
+    /// Drop the in-memory copy without touching the saved index. Used when the
+    /// user turns the index off, so the edit-impact notes and the repo map
+    /// (both of which only `peek`) stop reading it at once.
+    pub fn evict(&self, workspace: &Path) {
+        self.indexes.remove(&map_key(workspace));
+    }
+
     /// The index already in memory for `workspace`, if any. Never loads a
     /// cache, never walks, never builds — for callers (the edit-impact note)
     /// that must cost nothing when the index is not warm.
@@ -569,6 +627,45 @@ mod tests {
         assert!(service.get_or_build(&workspace).is_ok());
         std::fs::write(&source, "function other() {}\n").unwrap();
         assert!(service.get_or_build(&workspace).is_err());
+    }
+
+    /// Off means nothing about the index runs: no build of any kind, no probe
+    /// walk, and an index already in memory is dropped by `evict`. The saved
+    /// cache survives, so switching back on serves it without a rebuild.
+    #[test]
+    fn off_refuses_every_build_and_probe_and_keeps_the_saved_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("source"); std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(workspace.join("a.ts"), "function first() {}\n").unwrap();
+        let service = CodeIndexService::with_cache_root(temp.path().join("projects"));
+        service.rebuild(&workspace).unwrap();
+        let directory = service.project_index_dir(&workspace).unwrap();
+
+        let off = super::super::jobs::IndexSettings { enabled: false, ..Default::default() };
+        super::super::jobs::save_settings(&directory, &off).unwrap();
+        service.evict(&workspace);
+
+        assert!(!service.enabled(&workspace));
+        let refused = service.get_or_build(&workspace).unwrap_err().to_string();
+        assert_eq!(refused, INDEX_OFF_MESSAGE);
+        assert!(service.rebuild(&workspace).is_err(), "a manual build is refused too");
+        assert!(service.peek(&workspace).is_none(), "evicted from memory");
+        let probe = service.probe(&workspace);
+        assert!(probe.disabled && !probe.ready && probe.indexable_files == 0);
+        assert!(service.cache_path(&workspace).unwrap().is_file(), "the saved index is kept");
+
+        super::super::jobs::save_settings(&directory, &super::super::jobs::IndexSettings::default()).unwrap();
+        assert!(service.probe(&workspace).ready, "back on, the saved index is current again");
+    }
+
+    /// Settings written before the switch existed have no `enabled` field.
+    /// They must read as on, or every existing project loses its index.
+    #[test]
+    fn settings_saved_before_the_switch_read_as_on() {
+        let settings: super::super::jobs::IndexSettings =
+            serde_json::from_str(r#"{"autoBuild":true,"searchResults":12,"searchBytes":30000}"#).unwrap();
+        assert!(settings.enabled);
+        assert_eq!(settings.search_results, 12);
     }
 
     #[test]

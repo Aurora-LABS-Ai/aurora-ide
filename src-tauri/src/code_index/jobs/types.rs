@@ -3,13 +3,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct IndexSettings {
+    /// The user's per-project off switch. Off means no index is read, checked
+    /// or built for this project, the `code` tool leaves the roster, and the
+    /// repo map carries only the folder tree. The saved index is kept, so
+    /// turning it back on is instant while the files still match.
+    pub enabled: bool,
     pub auto_build: bool,
     pub search_results: usize,
     pub search_bytes: usize,
 }
 
 impl Default for IndexSettings {
-    fn default() -> Self { Self { auto_build: true, search_results: 8, search_bytes: 24_000 } }
+    fn default() -> Self { Self { enabled: true, auto_build: true, search_results: 8, search_bytes: 24_000 } }
 }
 
 impl IndexSettings {

@@ -23,6 +23,7 @@ import {
 import {
   APPEARANCE_PREFS,
   type AppearancePrefKey,
+  TOOL_ICON_SET_IDS,
   defaultAppearancePrefs,
 } from "./appearance-prefs";
 import { agentLight } from "./themes";
@@ -42,6 +43,9 @@ function nonDefault(key: AppearancePrefKey): unknown {
   if (key === "transcriptReasoning") return "folded";
   if (key === "transcriptTextPace") return "steady";
   if (key === "railEdge") return "shade";
+  // Only `classic` exists until a drawn set ships; then the second id is the
+  // non-default and these tests start exercising it with no edit here.
+  if (key === "toolIconSet") return TOOL_ICON_SET_IDS.find((id) => id !== spec.default) ?? spec.default;
   return "changed";
 }
 

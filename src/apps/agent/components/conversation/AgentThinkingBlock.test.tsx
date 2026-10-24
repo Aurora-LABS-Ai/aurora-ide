@@ -12,7 +12,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AgentThinkingBlock } from "./AgentThinkingBlock";
-import { WorkCardWindowContext } from "./work-card-context";
+import { LiveWorkCardContext, WorkCardWindowContext } from "./work-card-context";
 
 describe("AgentThinkingBlock", () => {
   let container: HTMLDivElement;
@@ -92,6 +92,24 @@ describe("AgentThinkingBlock", () => {
         <WorkCardWindowContext.Provider value={true}>
           <AgentThinkingBlock content="reasoning…" isGenerating startedAt={Date.now()} />
         </WorkCardWindowContext.Provider>,
+      );
+    });
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().textContent).toContain("Thinking…");
+
+    act(() => toggle().click());
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("stays on its line in an OPEN work card while the turn runs, and still opens on a click", () => {
+    // Opening while written and snapping shut when done moved every row above
+    // it twice under a panel pinned to its newest step (2026-10-24).
+    act(() => {
+      root ??= createRoot(container);
+      root.render(
+        <LiveWorkCardContext.Provider value={true}>
+          <AgentThinkingBlock content="reasoning…" isGenerating startedAt={Date.now()} />
+        </LiveWorkCardContext.Provider>,
       );
     });
     expect(toggle().getAttribute("aria-expanded")).toBe("false");

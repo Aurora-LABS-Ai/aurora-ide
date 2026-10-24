@@ -95,7 +95,14 @@ pub async fn code_index_save_settings(
     settings: IndexSettings,
 ) -> Result<(), String> {
     let root = workspace(workspace_path)?;
-    blocking(move || jobs::save_settings(&service().project_index_dir(&root)?, &settings)).await
+    blocking(move || {
+        jobs::save_settings(&service().project_index_dir(&root)?, &settings)?;
+        if !settings.enabled {
+            service().evict(&root);
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]

@@ -8,6 +8,22 @@ describe("reply layout — fields", () => {
     expect(splitFields("a \\| b | c")).toEqual(["a | b", "c"]);
   });
 
+  it("drops one empty field after a closing pipe, keeps empty fields inside", () => {
+    expect(splitFields("Answers | Am I near a limit? | What do I get? |")).toEqual(["Answers", "Am I near a limit?", "What do I get?"]);
+    expect(splitFields("a | | c")).toEqual(["a", "", "c"]);
+    expect(splitFields("a \\|")).toEqual(["a |"]);
+  });
+
+  it("reads a Compare whose rows end in a pipe (live, 2026-10-23)", () => {
+    const layout = parseLayout(
+      "aurora-compare",
+      "Where it lives\nAspect | Card | Page |\nAnswers | Am I near a limit? | What do I get, and how does it work? |",
+      true,
+    );
+    expect(layout.problems).toEqual([]);
+    expect(layout.kind === "compare" && layout.rows[0].values).toEqual(["Am I near a limit?", "What do I get, and how does it work?"]);
+  });
+
   it("splits side-by-side items on a double pipe only", () => {
     expect(splitFields("Storefront / || Admin /admin || Auth | sign-in", "||")).toEqual([
       "Storefront /",

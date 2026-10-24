@@ -52,7 +52,7 @@ describe("reply layout instructions", () => {
     expect(fence.closed).toBe(true);
     const layout = parseUi(fence.source, true);
     expect(layout.problems).toEqual([]);
-    expect(layout.parts.map((p) => p.kind)).toEqual(["stats", "block", "diagram", "block", "block", "block"]);
+    expect(layout.parts.map((p) => p.kind)).toEqual(["stats", "block", "diagram", "block", "block", "block", "block"]);
   });
 
   it("the guide names every part and the report contract", () => {

@@ -516,11 +516,18 @@ button.agw-rl-step[aria-selected="true"] {
   padding: 0;
   margin: 0;
 }
-.agw-rl-status-row,
 .agw-rl-dated-row {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
   gap: 16px;
+  padding: 10px 0;
+}
+/* Wider than the date column: the status is a mark plus its word, and
+   "In progress" with its mark did not fit 96px at the reply's text size. */
+.agw-rl-status-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 14px;
   padding: 10px 0;
 }
 .agw-rl-status-row + .agw-rl-status-row {
@@ -531,6 +538,32 @@ button.agw-rl-step[aria-selected="true"] {
   color: var(--agw-text-muted);
   font-size: var(--agw-rl-fs-small);
   padding-top: 1px;
+}
+.agw-rl-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: start;
+  line-height: var(--agw-rl-lh);
+}
+/* Mark and word together carry the status; the colour only reinforces it. */
+.agw-rl-mark {
+  flex: none;
+}
+.agw-rl-mark-ring {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin: 0 1.5px;
+  border: 1.5px dashed currentColor;
+  border-radius: 50%;
+}
+.agw-rl-status-row[data-status="doing"] .agw-rl-mark-ring {
+  border-style: solid;
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+.agw-rl-status-row[data-status="done"] .agw-rl-status {
+  color: var(--agw-added, var(--agw-text));
 }
 .agw-rl-status-row[data-status="doing"] .agw-rl-status {
   color: var(--agw-accent);
@@ -578,6 +611,249 @@ button.agw-rl-step[aria-selected="true"] {
   position: relative;
   padding: 7px 0;
 }
+/* A branch is a disclosure: chevron, title, and a count while folded. The
+   chevron turns rather than swapping glyphs, so open and folded read as one
+   control changing state. */
+.agw-rl-tree-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease;
+}
+.agw-rl-tree-toggle:hover {
+  background: var(--agw-state-quiet);
+}
+.agw-rl-tree-toggle:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+}
+.agw-rl-tree-chev {
+  flex: none;
+  align-self: center;
+  color: var(--agw-text-muted);
+  transition: transform var(--agw-dur-fast) ease;
+}
+.agw-rl-tree-toggle[aria-expanded="true"] .agw-rl-tree-chev {
+  transform: rotate(90deg);
+}
+.agw-rl-tree-inside {
+  flex: none;
+  margin-left: 6px;
+  font-size: var(--agw-rl-fs-tiny);
+  color: var(--agw-text-muted);
+  white-space: nowrap;
+}
+/* Titles line up with the ones beside chevrons (chevron + gap) — but only in
+   a list that holds a branch. A list of leaves only keeps its text against
+   the connector line instead of opening an empty chevron-wide gap. */
+.agw-rl-tree-list:has(> li > .agw-rl-tree-node > .agw-rl-tree-toggle) > li > .agw-rl-tree-node > .agw-rl-tree-leaf,
+.agw-rl-tree-list:has(> li > .agw-rl-tree-node > .agw-rl-tree-toggle) > li > .agw-rl-tree-node > .agw-rl-tree-caption {
+  padding-left: 18px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rl-tree-toggle,
+  .agw-rl-tree-chev {
+    transition: none;
+  }
+}
+
+/* ── One open at a time: pills, a pane, a pager ───────────────────────────
+ * Timeline dates, compare aspects and checklist filters share one control:
+ * a quiet pill row that wraps, never scrolls sideways. Selected or pressed
+ * is the flow step's own treatment (selected fill, full-strength text) —
+ * no ring, no accent fill, never a weight change that re-wraps the row. */
+.agw-rl-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 10px;
+}
+.agw-rl-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 11px;
+  border: 1px solid var(--agw-border);
+  border-radius: var(--agw-radius-pill);
+  background: transparent;
+  color: var(--agw-text-muted);
+  font: inherit;
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-medium);
+  line-height: var(--agw-rl-lh);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
+}
+.agw-rl-pill:hover {
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+.agw-rl-pill:focus-visible {
+  outline: none;
+  border-color: var(--agw-border-strong);
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+.agw-rl-pill[aria-selected="true"],
+.agw-rl-pill[aria-pressed="true"] {
+  border-color: var(--agw-border-strong);
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-rl-pill-count {
+  font-size: var(--agw-rl-fs-tiny);
+  font-weight: 400;
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-rl-pill code {
+  white-space: normal;
+}
+
+/* The open item: under the pills, divided by a hairline, not boxed again. */
+.agw-rl-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 0 8px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-rl-pane-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agw-rl-pane-head .agw-rl-date {
+  padding-top: 0;
+}
+.agw-rl-count {
+  flex: none;
+  font-size: var(--agw-rl-fs-tiny);
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-rl-pane-text {
+  font-size: var(--agw-rl-fs-body);
+  line-height: var(--agw-msg-line-height, 1.6);
+  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  overflow-wrap: anywhere;
+}
+.agw-rl-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+.agw-rl-pager-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: var(--agw-text);
+  font: inherit;
+  font-size: var(--agw-rl-fs-small);
+  font-weight: var(--agw-fw-medium);
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
+}
+.agw-rl-pager-btn:first-child {
+  margin-left: -10px;
+}
+.agw-rl-pager-btn:last-child {
+  margin-right: -10px;
+}
+.agw-rl-pager-btn:hover {
+  background: var(--agw-state-quiet);
+}
+.agw-rl-pager-btn:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+}
+/* At either end the button stays focusable (aria-disabled) but reads as
+   unavailable and does nothing. */
+.agw-rl-pager-btn[aria-disabled="true"] {
+  color: var(--agw-text-muted);
+  opacity: 0.5;
+  cursor: default;
+}
+.agw-rl-pager-btn[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+/* Compare, one aspect at a time: each option's value in its own column,
+   hairlines between, the option name above its value. Columns stack when
+   the reply column is too narrow to hold them side by side. */
+.agw-rl-compare-pane {
+  padding: 0 0 6px;
+  border-top: 1px solid var(--agw-border);
+}
+.agw-rl-compare-cols {
+  display: grid;
+  grid-template-columns: repeat(var(--agw-rl-cols, 2), minmax(0, 1fr));
+  margin: 0;
+}
+.agw-rl-compare-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 14px 6px;
+}
+.agw-rl-compare-col:first-child {
+  padding-left: 0;
+}
+.agw-rl-compare-col + .agw-rl-compare-col {
+  border-left: 1px solid var(--agw-border);
+}
+.agw-rl-compare-name {
+  font-size: var(--agw-rl-fs-small);
+  color: var(--agw-text-muted);
+}
+.agw-rl-compare-value {
+  margin: 0;
+  font-size: var(--agw-rl-fs-body);
+  font-weight: var(--agw-fw-medium);
+  line-height: var(--agw-rl-lh);
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+@container (max-width: 420px) {
+  .agw-rl-compare-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agw-rl-compare-col {
+    padding-left: 0;
+  }
+  .agw-rl-compare-col + .agw-rl-compare-col {
+    border-left: 0;
+    border-top: 1px solid var(--agw-border);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rl-pill,
+  .agw-rl-pager-btn {
+    transition: none;
+  }
+}
 .agw-rl-tree-list .agw-rl-tree-list > li > .agw-rl-tree-node::before {
   content: "";
   position: absolute;
@@ -597,12 +873,88 @@ button.agw-rl-step[aria-selected="true"] {
   color: var(--agw-text-muted);
   font-size: var(--agw-rl-fs-body);
 }
+/* Skipped lines: one quiet folded line under the block, not a warning-coloured
+   list. The reasons are written for the model; open, the row reads as code and
+   the reason as plain muted text beneath it. */
 .agw-rl-problems {
   margin: 6px 0 0;
-  padding: 0 0 0 16px;
   font-size: var(--agw-rl-fs-tiny);
   line-height: 1.5;
-  color: var(--agw-warning);
+  color: var(--agw-text-muted);
+}
+/* Inside a block's own card, under a hairline, so a skipped row is read with
+   the block it belongs to and never under the next one. */
+.agw-rl-card-foot {
+  margin-top: 2px;
+  padding: 8px 0 10px;
+  border-top: 1px solid var(--agw-card-line);
+}
+.agw-rl-flow > .agw-rl-card-foot {
+  margin-top: 8px;
+  padding: 8px 10px 0;
+}
+.agw-rl-note > .agw-rl-card-foot {
+  margin-top: 8px;
+  padding-bottom: 0;
+}
+.agw-rl-card-foot > .agw-rl-problems {
+  margin: 0;
+}
+.agw-rl-problems-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: -2px -6px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--agw-radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
+}
+.agw-rl-problems-toggle:hover {
+  background: var(--agw-state-quiet);
+  color: var(--agw-text);
+}
+.agw-rl-problems-toggle:focus-visible {
+  outline: none;
+  background: var(--agw-state-selected);
+  color: var(--agw-text);
+}
+.agw-rl-problems-chev {
+  flex: none;
+  transition: transform var(--agw-dur-fast) ease;
+}
+.agw-rl-problems-toggle[aria-expanded="true"] .agw-rl-problems-chev {
+  transform: rotate(90deg);
+}
+.agw-rl-problems-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0;
+  padding: 0 0 0 16px;
+  list-style: none;
+}
+.agw-rl-problems-list[hidden] {
+  display: none;
+}
+.agw-rl-problems-list > li {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.agw-rl-problems .agw-rl-problems-row {
+  color: var(--agw-text);
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agw-rl-problems-toggle,
+  .agw-rl-problems-chev {
+    transition: none;
+  }
 }
 
 @media (max-width: 520px) {

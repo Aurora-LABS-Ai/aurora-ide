@@ -29,7 +29,7 @@ import { GLIDE } from "@/apps/agent/lib/motion/glide";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
-import { useInWorkCardWindow } from "@/apps/agent/components/conversation/work-card-context";
+import { useInLiveWorkCard, useInWorkCardWindow } from "@/apps/agent/components/conversation/work-card-context";
 
 const AgentThinkingBlockImpl: React.FC<{
   content: string;
@@ -51,7 +51,13 @@ const AgentThinkingBlockImpl: React.FC<{
   // Inside a work card's running window the row is one line of a step list;
   // opening the reasoning there filled the window with it (`work-card-context`).
   const inWindow = useInWorkCardWindow();
-  const expanded = override ?? (autoOpen && isGenerating && !inWindow);
+  // Inside an OPEN work card while the turn runs, the same: a thought that
+  // opened while written and snapped shut when done moved every row above it
+  // twice, under a panel pinned to its newest step (Alvan, 2026-10-24; probe
+  // `aurora-work-card-click-designs.html`, 06). It stays on its line; a click
+  // still opens it. Outside a work card nothing here changes.
+  const inLiveCard = useInLiveWorkCard();
+  const expanded = override ?? (autoOpen && isGenerating && !inWindow && !inLiveCard);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // A clock, not derived state: the interval only advances `now` and the

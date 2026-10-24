@@ -49,9 +49,6 @@ import {
  *  about 400px however tall its limit was. */
 const WINDOW_ROWS = 30;
 
-/** How long the header stays lit after a click inside the closed window. */
-const NUDGE_MS = 1200;
-
 /** What the card shows under its header. */
 type BodyShape = "open" | "window" | "none";
 
@@ -101,6 +98,9 @@ export const WorkCard: React.FC<{
   stretch: WorkStretch;
   /** The stretch is the live edge of a streaming turn. */
   live: boolean;
+  /** The turn is still streaming, whether or not this card is its live edge.
+   *  Rows inside hold their shape until it ends (`LiveWorkCardContext`). */
+  turnStreaming: boolean;
   /** Nothing in the turn follows this card (no rail below it). */
   isLast: boolean;
   /** The conversation the card belongs to; `null` for an unsaved draft. */
@@ -109,7 +109,7 @@ export const WorkCard: React.FC<{
   turnStartedAt?: number;
   /** Draws one row exactly as the transcript does, in its turn-wide wrapper. */
   renderItem: (item: IndexedRow) => React.ReactNode;
-}> = ({ stretch, live, isLast, threadId, turnStartedAt, renderItem }) => {
+}> = ({ stretch, live, turnStreaming, isLast, threadId, turnStartedAt, renderItem }) => {
   const bodyId = useId();
   const open = useAgentWorkCardStore(selectWorkCardOpen(threadId, stretch.id));
   const setOpen = useAgentWorkCardStore((s) => s.setOpen);
@@ -314,39 +314,25 @@ export const WorkCard: React.FC<{
     for (const held of el.getAnimations()) if (held.playState === "finished") held.cancel();
   }, [leaving]);
 
-  // The running window fades its top edge only when older steps are actually
-  // cut off there. A short stretch shows all of its rows, unfaded.
+  // The open panel while the stretch runs follows its newest row, and the
+  // scroll-linked edge fade flipped on and off under that follow every time a
+  // row landed (56-work-cards.css, `data-live-panel`). It gets the window's
+  // fixed top fade instead.
+  const livePanel = live && shown === "open";
+
+  // The running window, and the open panel while it runs, fade their top edge
+  // only when older steps are actually cut off there. A short stretch shows
+  // all of its rows, unfaded.
   const [clipped, setClipped] = useState(false);
+  const measuresClip = windowMode || livePanel;
   useEffect(() => {
     const rows = rowsRef.current;
     const body = bodyRef.current;
-    if (!windowMode || !rows || !body || typeof ResizeObserver === "undefined") return;
+    if (!measuresClip || !rows || !body || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => setClipped(body.scrollHeight > body.clientHeight + 1));
     observer.observe(rows);
     return () => observer.disconnect();
-  }, [windowMode, bodyRef]);
-
-  // A click inside the closed window does nothing (its rows are inert), and
-  // nothing there said so: it read as broken (Alvan, 2026-10-23). The header
-  // lights for a moment instead, pointing at the one place that opens the card.
-  const [nudged, setNudged] = useState(false);
-  const nudgeTimer = useRef<number | null>(null);
-  const nudge = () => {
-    setNudged(true);
-    if (nudgeTimer.current !== null) window.clearTimeout(nudgeTimer.current);
-    nudgeTimer.current = window.setTimeout(() => {
-      nudgeTimer.current = null;
-      setNudged(false);
-    }, NUDGE_MS);
-  };
-  useEffect(
-    () => () => {
-      if (nudgeTimer.current !== null) window.clearTimeout(nudgeTimer.current);
-    },
-    [],
-  );
-  // Only the closed window lights it; once open there is nothing to point at.
-  const lit = nudged && windowMode;
+  }, [measuresClip, bodyRef]);
 
   const since = stretch.startedAt ?? turnStartedAt;
   const workedMs =
@@ -367,7 +353,6 @@ export const WorkCard: React.FC<{
       <button
         type="button"
         className="agw-wc-head"
-        data-nudged={lit || undefined}
         aria-expanded={isOpen}
         aria-controls={bodyId}
         onClick={toggle}
@@ -413,10 +398,13 @@ export const WorkCard: React.FC<{
           // (Alvan, 2026-10-12). Every row inside still opens on its own.
           //
           // WINDOW (closed, running): the newest steps, growing down from the
-          // header up to the open panel's 55vh, then the oldest leave through a top fade. Not
-          // a control: only the header opens the card (a click here lights
-          // the header to say so), and the wheel over it scrolls the chat. Inert, so keyboard focus never lands on a control
-          // clipped half out of view.
+          // header up to the open panel's 55vh, then the oldest leave through a
+          // top fade. A click anywhere in it opens the card, exactly as the
+          // header does (probe aurora-work-card-click-designs.html, 02); its
+          // rows are not separate controls until the card is open, and the
+          // wheel over it scrolls the chat. Rows inert, so keyboard focus never
+          // lands on a control clipped half out of view; the header is the
+          // keyboard's way in.
           // Same edge as the open panel, so the two read as one thing at two
           // heights — and they ARE one element (see `shape` above).
           <div className="agw-wc-panel">
@@ -424,10 +412,11 @@ export const WorkCard: React.FC<{
               id={bodyId}
               ref={bodyRef}
               className={windowMode ? "agw-wc-body agw-scroll-hair agw-wc-window" : "agw-wc-body agw-scroll-hair"}
-              data-clipped={(windowMode && clipped) || undefined}
+              data-clipped={(measuresClip && clipped) || undefined}
+              data-live-panel={livePanel || undefined}
               // Only a reader scrolling the open panel can stop it following.
               onScroll={windowMode ? undefined : onScroll}
-              onClick={windowMode ? nudge : undefined}
+              onClick={windowMode ? toggle : undefined}
               tabIndex={windowMode || leaving ? -1 : 0}
               aria-label={`${stretch.thoughts + stretch.calls} steps`}
               aria-hidden={windowMode || undefined}
@@ -436,7 +425,7 @@ export const WorkCard: React.FC<{
                 {/* Rows know they are in the window, so a live thought stays
                     folded to its line instead of filling it with reasoning. */}
                 <WorkCardWindowContext.Provider value={windowMode}>
-                  <LiveWorkCardContext.Provider value={live}>
+                  <LiveWorkCardContext.Provider value={turnStreaming}>
                     <ArrivalHoldContext.Provider value={arrivalHold}>
                       {windowItems.map(renderItem)}
                     </ArrivalHoldContext.Provider>

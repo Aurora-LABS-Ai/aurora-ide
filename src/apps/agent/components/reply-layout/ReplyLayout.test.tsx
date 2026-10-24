@@ -139,6 +139,22 @@ describe("ReplyLayout", () => {
     expect(done.querySelector(".agw-rl-problems")?.textContent).toContain("no value here");
   });
 
+  it("folds skipped lines into one count that opens to row and reason", () => {
+    const el = mount(
+      <ReplyLayout language="aurora-checklist" source={"done | Ship\ncomplete | Build\ntodo | A | b | c\n"} closed fallback={fallback} />,
+    );
+    const toggle = el.querySelector<HTMLButtonElement>(".agw-rl-problems-toggle")!;
+    const list = el.querySelector<HTMLUListElement>(".agw-rl-problems-list")!;
+    expect(toggle.textContent).toBe("2 lines skipped");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(list.hidden).toBe(true);
+    act(() => toggle.click());
+    expect(list.hidden).toBe(false);
+    const rows = Array.from(list.querySelectorAll(".agw-rl-problems-row"), (r) => r.textContent);
+    expect(rows).toEqual(["complete | Build", "todo | A | b | c"]);
+    expect(list.querySelector(".agw-rl-problems-reason")?.textContent).toBe('"complete" is not a status; use todo, doing, done or blocked');
+  });
+
   it("falls back to the source when nothing can be drawn, and holds space while streaming", () => {
     const empty = mount(<ReplyLayout language="aurora-facts" source={"just words\n"} closed fallback={fallback} />);
     expect(empty.querySelector("[data-fallback]")).not.toBeNull();

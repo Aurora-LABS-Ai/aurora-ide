@@ -358,7 +358,10 @@ pub(crate) fn resolve_path_for_read_with_spill(
     }
     let raw = Path::new(path);
     if let Some(dir) = spill_dir {
-        if is_inside(raw, dir) {
+        // The conversation's screenshots are the agent's own output too, and
+        // the screenshot result names their path.
+        let shots = crate::agent_runtime::session_store::screenshots_dir_beside_spill(dir);
+        if is_inside(raw, dir) || shots.is_some_and(|shots| is_inside(raw, &shots)) {
             return Ok(native_absolute(raw));
         }
     }

@@ -15,6 +15,7 @@ import type { TimelineRow } from "@/apps/agent/components/conversation/timeline"
 import { groupWorkStretches, type IndexedRow, type WorkStretch } from "@/apps/agent/components/conversation/work-stretches";
 import { useAgentWorkCardStore } from "@/apps/agent/store/conversation/useAgentWorkCardStore";
 import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
+import { useInLiveWorkCard } from "@/apps/agent/components/conversation/work-card-context";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@/kernel/lib/ipc/runtime", () => ({
@@ -73,9 +74,37 @@ afterEach(() => {
   host = null;
 });
 
+describe("WorkCard holds its rows' shape for the whole turn", () => {
+  /** A row that reports what the card tells it. */
+  const seen: boolean[] = [];
+  const Probe: React.FC = () => {
+    seen.push(useInLiveWorkCard());
+    return null;
+  };
+  const renderProbeRow = ({ row }: IndexedRow) => <Probe key={row.id} />;
+
+  it("tells its rows the turn is running even when text has lifted out below it", async () => {
+    // The card is no longer the live edge (text below it), but the turn runs:
+    // its runs must not regroup and fold yet (2026-10-24, "folded asap").
+    seen.length = 0;
+    const el = mount(<WorkCard stretch={stretch} live={false} turnStreaming isLast={false} threadId={null} renderItem={renderProbeRow} />);
+    act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every(Boolean)).toBe(true);
+  });
+
+  it("lets them group once the turn has ended", () => {
+    seen.length = 0;
+    const el = mount(<WorkCard stretch={stretch} live={false} turnStreaming={false} isLast threadId={null} renderItem={renderProbeRow} />);
+    act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.some(Boolean)).toBe(false);
+  });
+});
+
 describe("WorkCard", () => {
   it("running and closed: a window of the newest rows, the reply standing still", () => {
-    const el = mount(<WorkCard stretch={stretch} live isLast threadId="t" renderItem={renderItem} />);
+    const el = mount(<WorkCard stretch={stretch} live turnStreaming isLast threadId="t" renderItem={renderItem} />);
     const head = el.querySelector(".agw-wc-head")!;
     expect(head.getAttribute("aria-expanded")).toBe("false");
     expect(head.textContent).toContain("Working");
@@ -92,17 +121,30 @@ describe("WorkCard", () => {
       "tools-toolu_3",
     ]);
     expect(window.querySelector(".agw-wc-rows")!.hasAttribute("inert")).toBe(true);
-    // Not a control (Alvan, 2026-10-23): a click on the window opened the card,
-    // with a hand cursor over all of it. Only the header opens it now, and a
-    // click inside lights the header to point there.
-    expect(head.hasAttribute("data-nudged")).toBe(false);
+    // A click anywhere in the window opens the card, as the header does
+    // (probe aurora-work-card-click-designs.html, 02). Before, it only lit the
+    // header, which read as broken (Alvan, 2026-10-24).
     act(() => (window as HTMLElement).click());
-    expect(head.getAttribute("aria-expanded")).toBe("false");
-    expect(el.querySelector(".agw-wc-window")).not.toBeNull();
-    expect(head.hasAttribute("data-nudged")).toBe(true);
-    // Opening the card puts the light out.
-    act(() => (head as HTMLButtonElement).click());
-    expect(head.hasAttribute("data-nudged")).toBe(false);
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    expect(el.querySelector(".agw-wc-window")).toBeNull();
+    expect(el.querySelector(".agw-wc-body")).not.toBeNull();
+  });
+
+  /**
+   * Alvan, 2026-10-24: the text above the newest row faded out and back in
+   * every time an open running card grew. The scroll-linked edge fade flipped
+   * under the follow; a running open panel opts out of it (`data-live-panel`),
+   * and a finished one keeps it for a reader scrolling by hand.
+   */
+  it("an open card opts out of the scroll-linked fade only while its stretch runs", () => {
+    const el = mount(<WorkCard stretch={stretch} live turnStreaming isLast threadId={null} renderItem={renderItem} />);
+    act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
+    expect(el.querySelector(".agw-wc-body")!.hasAttribute("data-live-panel")).toBe(true);
+
+    act(() => root!.render(<WorkCard stretch={stretch} live={false} turnStreaming={false} isLast threadId={null} renderItem={renderItem} />));
+    const body = el.querySelector(".agw-wc-body");
+    expect(body).not.toBeNull();
+    expect(body!.hasAttribute("data-live-panel")).toBe(false);
   });
 
   /**
@@ -128,7 +170,7 @@ describe("WorkCard", () => {
       </div>
     );
 
-    const el = mount(<WorkCard stretch={long} live isLast threadId={null} renderItem={renderProbe} />);
+    const el = mount(<WorkCard stretch={long} live turnStreaming isLast threadId={null} renderItem={renderProbe} />);
     const newest = el.querySelector("[data-row-id='tools-toolu_17']");
     expect(el.querySelectorAll("[data-row-id]")).toHaveLength(30);
     act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
@@ -141,12 +183,12 @@ describe("WorkCard", () => {
 
     // A step arriving after the click is a real arrival.
     const more = groupWorkStretches([...steps, think("t18"), tools("toolu_18")])[0] as WorkStretch;
-    act(() => root!.render(<WorkCard stretch={more} live isLast threadId={null} renderItem={renderProbe} />));
+    act(() => root!.render(<WorkCard stretch={more} live turnStreaming isLast threadId={null} renderItem={renderProbe} />));
     expect(heldAtMount.get("tools-toolu_18")).toBe(false);
   });
 
   it("open: every row as the transcript draws it, each one still its own control", () => {
-    const el = mount(<WorkCard stretch={stretch} live isLast threadId="t" renderItem={renderItem} />);
+    const el = mount(<WorkCard stretch={stretch} live turnStreaming isLast threadId="t" renderItem={renderItem} />);
     act(() => (el.querySelector(".agw-wc-head") as HTMLButtonElement).click());
     const body = el.querySelector(".agw-wc-body")!;
     expect(body).not.toBeNull();
@@ -158,7 +200,7 @@ describe("WorkCard", () => {
   });
 
   it("finished and closed: the header alone, saying how much work it was", () => {
-    const el = mount(<WorkCard stretch={stretch} live={false} isLast={false} threadId="t" renderItem={renderItem} />);
+    const el = mount(<WorkCard stretch={stretch} live={false} turnStreaming={false} isLast={false} threadId="t" renderItem={renderItem} />);
     expect(el.querySelector(".agw-wc-window")).toBeNull();
     expect(el.querySelector(".agw-wc-body")).toBeNull();
     expect(el.querySelector(".agw-wc-head")!.textContent).toContain("Worked");
@@ -166,7 +208,7 @@ describe("WorkCard", () => {
   });
 
   it("saves an opened card with its conversation, keyed by the first tool call", async () => {
-    const el = mount(<WorkCard stretch={stretch} live={false} isLast threadId="thread-9" renderItem={renderItem} />);
+    const el = mount(<WorkCard stretch={stretch} live={false} turnStreaming={false} isLast threadId="thread-9" renderItem={renderItem} />);
     await act(async () => {
       await useAgentWorkCardStore.getState().hydrate("thread-9");
     });
@@ -185,7 +227,7 @@ describe("WorkCard", () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "agent_work_cards_get" ? { open: ["toolu_1"] } : { open: ["toolu_1"] },
     );
-    const el = mount(<WorkCard stretch={stretch} live={false} isLast threadId="thread-3" renderItem={renderItem} />);
+    const el = mount(<WorkCard stretch={stretch} live={false} turnStreaming={false} isLast threadId="thread-3" renderItem={renderItem} />);
     await act(async () => {
       await useAgentWorkCardStore.getState().hydrate("thread-3");
     });

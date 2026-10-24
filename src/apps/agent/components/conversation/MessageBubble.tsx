@@ -1140,8 +1140,6 @@ const AssistantTurn: React.FC<{
             alignSelf: "flex-start",
             fontSize: "var(--agw-fs-micro)",
             fontWeight: "var(--agw-fw-medium)",
-            letterSpacing: 0.4,
-            textTransform: "uppercase",
             ...(streaming
               ? null
               : { color: labelColor ?? "var(--agw-text-subtle)" }),
@@ -1162,6 +1160,7 @@ const AssistantTurn: React.FC<{
             key={`work-${block.items[0].row.id}`}
             stretch={block}
             live={streaming && i === blocks.length - 1}
+            turnStreaming={streaming}
             isLast={block.items[block.items.length - 1].index === rows.length - 1}
             threadId={cardThreadId}
             turnStartedAt={Number.isFinite(turnStartedMs) ? turnStartedMs : undefined}

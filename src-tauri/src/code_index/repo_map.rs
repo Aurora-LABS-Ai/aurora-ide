@@ -99,6 +99,40 @@ fn file_of(path: &str) -> &str {
     }
 }
 
+/// The opening of the block when the user turned the code index off for this
+/// project. Without it the model meets a map with no landmarks and no `code`
+/// tool, and remarks on the gap the way Grok remarked on Cursor's missing
+/// built-ins. It does not mention what turning it on would give: that invites
+/// the model to suggest it, and this is the user's settled choice.
+pub const INDEX_OFF_NOTE: &str = "Code index: off for this project, by the user's choice. The `code` \
+     tool is not available and no index will be built. Below is the folder tree to depth 2; use \
+     `workspace_tree`, `glob` and `grep` to look further. No need to mention this.";
+
+/// The closing line when the index is on but not loaded for this conversation.
+const TREE_ONLY_NOTE: &str = "Folder tree to depth 2. Use `code` to find definitions by name, and \
+     `workspace_tree`, `glob` and `grep` to look further.";
+
+/// The whole `<repo_map>` block from its parts: the folder tree first, then
+/// the landmarks when an index is loaded.
+///
+/// | index | block |
+/// |---|---|
+/// | on, loaded | tree, then landmarks |
+/// | on, not loaded | tree, then a line naming the tools |
+/// | off | [`INDEX_OFF_NOTE`], then the tree |
+pub fn compose(tree: Option<String>, landmarks: Option<String>, index_off: bool) -> Option<String> {
+    if index_off {
+        let tree = tree.map(|tree| format!("\n\n{tree}")).unwrap_or_default();
+        return Some(format!("<repo_map>\n{INDEX_OFF_NOTE}{tree}\n</repo_map>"));
+    }
+    match (tree, landmarks) {
+        (Some(tree), Some(map)) => Some(map.replacen("<repo_map>\n", &format!("<repo_map>\n{tree}\n"), 1)),
+        (None, Some(map)) => Some(map),
+        (Some(tree), None) => Some(format!("<repo_map>\n{tree}\n{TREE_ONLY_NOTE}\n</repo_map>")),
+        (None, None) => None,
+    }
+}
+
 /// Build the block. Returns `None` when the workspace has nothing worth
 /// mapping — an empty `<repo_map>` is noise, so nothing is emitted at all.
 pub fn render(idx: &CodeIndex, budget: usize) -> Option<String> {
@@ -550,6 +584,39 @@ export function go() { new Orchestrator(); }
             map.len(),
             budget_chars(DEFAULT_BUDGET_TOKENS)
         );
+    }
+
+    #[test]
+    fn the_tree_leads_the_block_in_every_state() {
+        let tree = Some("<tree depth=\"2\">\nsrc/\n</tree>".to_string());
+        let landmarks = Some("<repo_map>\n3 files, 9 symbols. Landmarks only.\nsrc/\n  a.rs  fn a\n</repo_map>".to_string());
+
+        let both = compose(tree.clone(), landmarks.clone(), false).unwrap();
+        assert!(both.starts_with("<repo_map>\n<tree"), "{both}");
+        assert!(both.contains("Landmarks only"), "{both}");
+        assert_eq!(both.matches("<repo_map>").count(), 1, "one block, not two: {both}");
+
+        let tree_only = compose(tree.clone(), None, false).unwrap();
+        assert!(tree_only.contains("<tree") && tree_only.contains("Use `code`"), "{tree_only}");
+
+        assert_eq!(compose(None, None, false), None);
+    }
+
+    /// Off: the user's note first, the tree under it, never landmarks or a
+    /// pointer to `code`.
+    #[test]
+    fn off_opens_with_the_users_note_and_never_offers_code() {
+        let tree = Some("<tree depth=\"2\">\nsrc/\n</tree>".to_string());
+        let landmarks = Some("<repo_map>\nLandmarks only.\n</repo_map>".to_string());
+        let off = compose(tree, landmarks, true).unwrap();
+
+        assert!(off.starts_with(&format!("<repo_map>\n{INDEX_OFF_NOTE}")), "{off}");
+        assert!(off.contains("<tree"), "{off}");
+        assert!(!off.contains("Landmarks only"), "{off}");
+        assert!(!off.contains("Use `code`"), "{off}");
+
+        let no_tree = compose(None, None, true).unwrap();
+        assert!(no_tree.contains(INDEX_OFF_NOTE), "the note stands alone: {no_tree}");
     }
 
     #[test]

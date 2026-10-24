@@ -66,6 +66,10 @@
 .agw-iconrail-btn[data-active] {
   background: var(--agw-state-selected);
   color: var(--agw-text);
+  /* The selected glyph is drawn solid; its inner detail is painted in this.
+     Opaque on purpose: --agw-state-selected is translucent, and a translucent
+     cut would let the solid fill show through. */
+  --agw-icon-cut: color-mix(in srgb, var(--agw-text) 9%, var(--agw-rail-paint));
 }
 .agw-iconrail-btn:active {
   background: var(--agw-press-paint);

@@ -51,10 +51,15 @@ export type TurnBlock = ({ kind: "row" } & IndexedRow) | WorkStretch;
 export const MIN_WORK_STEPS = 3;
 
 /**
- * While the turn streams, text after the last step this long or shorter, in one
- * paragraph, is the model narrating ("Checking the router next.") and stays
- * inside the card; longer, or more than one paragraph, it is the answer
- * starting and lifts out below the card.
+ * While the turn streams, text after the last step this long or shorter is the
+ * model narrating ("Checking the router next.") and stays inside the card;
+ * longer, it is the answer starting and lifts out below the card.
+ *
+ * Length alone decides. A blank line used to count as the answer starting too,
+ * so two short sentences with a blank line between them lifted out, the card
+ * stopped being live and folded every run, and the next call pulled the text
+ * back in and unfolded them (Alvan, 2026-10-24: "folded asap"; probe
+ * `Documents/aurora-work-card-click-designs.html`, 06).
  *
  * Measured 2026-10-15 on 222 conversations (1,895 narration texts, 465
  * answers): narration p50 119 chars, p90 237, 97% one paragraph; answers p50
@@ -90,8 +95,7 @@ function isDeliverableRow(row: TimelineRow): boolean {
 
 /** Text the model writes between steps rather than as the answer. */
 export function isNarration(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.length <= NARRATION_MAX_CHARS && !/\n\s*\n/.test(trimmed);
+  return text.trim().length <= NARRATION_MAX_CHARS;
 }
 
 /** Rows that OPEN a turn someone other than the user started — a sub-agent's
@@ -160,7 +164,9 @@ function stretchOf(items: IndexedRow[]): WorkStretch {
  * loose rows between them — Alvan, 2026-10-12: "two Worked in one turn feels
  * odd". So the card holds everything from the start of the reply to its LAST
  * thought, tool run or chapter, the narration in between included. What comes
- * after that is the answer, and stays below the card.
+ * after that is the answer, and stays below the card. The one exception is an
+ * answer-sized text between steps (`answerBoundary`): the card ends before it,
+ * and the steps after it follow it as ordinary rows.
  *
  * While the turn streams, short text written after the latest step is the
  * model narrating and stays INSIDE the card (`isNarration`); only text that
@@ -218,6 +224,46 @@ function stretchEndIndex(rows: readonly TimelineRow[], lastWork: number, streami
   return isNarration(text) ? end : lastWork;
 }
 
+/**
+ * The last work row before the first answer-sized text BETWEEN steps, or
+ * `lastWork` when every text between steps is narration.
+ *
+ * Once text has grown past narration size it is the answer, and it stays the
+ * answer: steps the model takes after it follow it as ordinary rows instead of
+ * pulling it back into the card. Without this, a long text lifted out while it
+ * streamed, the card went "Worked" and folded its runs, and the next call put
+ * the text back inside and the card back to working. Text only ever grows, so
+ * a run that is answer-sized now stays answer-sized, and the boundary never
+ * moves back up. It reads the rows alone, so a reloaded turn draws the card
+ * the same way the live one did. Text before the first step is the model's
+ * opening and stays in the card, as before.
+ */
+function answerBoundary(rows: readonly TimelineRow[], start: number, lastWork: number): number {
+  let lastSeenWork = -1;
+  let index = start;
+  while (index <= lastWork) {
+    const row = rows[index];
+    if (isWorkRow(row)) {
+      lastSeenWork = index;
+      index += 1;
+      continue;
+    }
+    if (row.type === "content" && lastSeenWork >= 0) {
+      let text = "";
+      let next = index;
+      while (next <= lastWork && rows[next].type === "content") {
+        text += (rows[next] as Extract<TimelineRow, { type: "content" }>).text;
+        next += 1;
+      }
+      if (!isNarration(text)) return lastSeenWork;
+      index = next;
+      continue;
+    }
+    index += 1;
+  }
+  return lastWork;
+}
+
 export function groupWorkStretches(
   rows: readonly TimelineRow[],
   { streaming = false, minSteps = MIN_WORK_STEPS }: WorkStretchOptions = {},
@@ -229,7 +275,8 @@ export function groupWorkStretches(
   let start = 0;
   while (start < lastWork && isOpenerRow(rows[start])) start += 1;
 
-  const end = stretchEndIndex(rows, lastWork, streaming);
+  const boundary = answerBoundary(rows, start, lastWork);
+  const end = boundary < lastWork ? boundary : stretchEndIndex(rows, lastWork, streaming);
   const items: IndexedRow[] = [];
   for (let index = start; index <= end; index += 1) items.push({ row: rows[index], index });
   const stretch = stretchOf(items);

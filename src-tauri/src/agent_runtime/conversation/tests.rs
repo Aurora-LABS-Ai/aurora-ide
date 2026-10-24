@@ -2644,6 +2644,35 @@ fn the_stale_checklist_reminder_waits_ten_assistant_turns_and_then_ten_more() {
     assert!(!reminder.contains("<checklist>"), "{reminder}");
 }
 
+/// The person's message is a wall for the count too. Short turns added up
+/// across a chat used to reach ten and remind the model about a list that
+/// two-step answers never needed.
+#[test]
+fn short_turns_never_add_up_to_a_checklist_reminder() {
+    let thread = format!("short-turns-{}", uuid::Uuid::new_v4());
+    crate::agent_runtime::project_dir::test_thread(&thread);
+    let mut history = Vec::new();
+    for turn in 0..4 {
+        history.push(user_msg("next question"));
+        for i in 0..6 {
+            let id = format!("t{turn}-{i}");
+            history.push(assistant_tool_uses(&[(&id, "grep")]));
+            history.push(tool_result_for(&id, None));
+        }
+    }
+    assert_eq!(checklist_silence(&history), (6, 6));
+    assert!(stale_checklist_reminder(&history, &thread).is_none());
+
+    // One long run inside the latest turn still gets its nudge.
+    for i in 0..4 {
+        let id = format!("long-{i}");
+        history.push(assistant_tool_uses(&[(&id, "grep")]));
+        history.push(tool_result_for(&id, None));
+    }
+    assert_eq!(checklist_silence(&history), (10, 10));
+    assert!(stale_checklist_reminder(&history, &thread).is_some());
+}
+
 /// A compaction marker is a wall for the count: the model's past before it
 /// is a summary now, and a list it wrote there was written in that summary's
 /// world.

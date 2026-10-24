@@ -34,6 +34,7 @@
 //! | [`persist`] | compact cached form on disk |
 //! | [`module_graph`] | which parts of the workspace depend on which |
 //! | [`repo_map`] | renders the `<repo_map>` block given to the model |
+//! | [`tree_snapshot`] | the folder tree to depth 2 at the top of that block |
 //! | [`service`] | one index per workspace, cached per process |
 
 pub mod extract;
@@ -49,6 +50,7 @@ pub mod persist;
 pub mod repo_map;
 pub mod service;
 pub mod store;
+pub mod tree_snapshot;
 pub mod walk;
 
 // Only what callers outside this module actually reach for. `CodeIndex` and

@@ -13,10 +13,11 @@
  * with no controls. The choice is view state only — never saved, never sent.
  */
 
-import React, { useId, useRef, useState } from "react";
+import React from "react";
 
 import type { FlowStep } from "@/apps/agent/lib/reply-layout/parse";
 import { Field } from "./Field";
+import { useRovingTabs } from "./useRovingTabs";
 
 const StepName: React.FC<{ step: FlowStep }> = ({ step }) => (
   <>
@@ -51,12 +52,8 @@ const StepDetail: React.FC<{ step: FlowStep }> = ({ step }) =>
     </ul>
   );
 
-export const FlowSteps: React.FC<{ steps: FlowStep[] }> = ({ steps }) => {
-  const [chosen, setChosen] = useState(0);
-  const tabs = useRef<(HTMLButtonElement | null)[]>([]);
-  const baseId = useId();
-  // Steps keep arriving while the reply streams; a choice past the end falls back.
-  const open = Math.min(chosen, steps.length - 1);
+export const FlowSteps: React.FC<{ steps: FlowStep[]; foot?: React.ReactNode }> = ({ steps, foot }) => {
+  const { open, onKeyDown, tab, panel } = useRovingTabs(steps.length);
   const hasDetail = steps.some((step) => step.items.some((item) => item.caption));
 
   if (!hasDetail) {
@@ -71,26 +68,10 @@ export const FlowSteps: React.FC<{ steps: FlowStep[] }> = ({ steps }) => {
             </li>
           ))}
         </ol>
+        {foot}
       </div>
     );
   }
-
-  const choose = (i: number) => {
-    setChosen(i);
-    tabs.current[i]?.focus();
-  };
-  const onKeyDown = (event: React.KeyboardEvent) => {
-    const last = steps.length - 1;
-    const next =
-      event.key === "ArrowRight" ? (open === last ? 0 : open + 1)
-      : event.key === "ArrowLeft" ? (open === 0 ? last : open - 1)
-      : event.key === "Home" ? 0
-      : event.key === "End" ? last
-      : null;
-    if (next === null) return;
-    event.preventDefault();
-    choose(next);
-  };
 
   return (
     <div className="agw-rl agw-rl-flow">
@@ -101,18 +82,9 @@ export const FlowSteps: React.FC<{ steps: FlowStep[] }> = ({ steps }) => {
           <span key={i} className="agw-rl-step-cell">
             {i > 0 && <span className="agw-rl-step-arrow" aria-hidden="true">→</span>}
             <button
-              ref={(el) => {
-                tabs.current[i] = el;
-              }}
-              type="button"
-              role="tab"
-              id={`${baseId}-tab-${i}`}
-              aria-selected={i === open}
-              aria-controls={`${baseId}-panel`}
-              tabIndex={i === open ? 0 : -1}
+              {...tab(i)}
               className="agw-rl-step"
               data-branches={step.items.length > 1 ? step.items.length : undefined}
-              onClick={() => setChosen(i)}
             >
               <span className="agw-rl-step-n" aria-hidden="true">{i + 1}</span>
               <StepName step={step} />
@@ -120,9 +92,10 @@ export const FlowSteps: React.FC<{ steps: FlowStep[] }> = ({ steps }) => {
           </span>
         ))}
       </div>
-      <div className="agw-rl-step-detail" role="tabpanel" id={`${baseId}-panel`} aria-labelledby={`${baseId}-tab-${open}`}>
+      <div className="agw-rl-step-detail" {...panel}>
         <StepDetail step={steps[open]} />
       </div>
+      {foot}
     </div>
   );
 };

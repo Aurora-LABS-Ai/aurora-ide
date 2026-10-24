@@ -1,7 +1,10 @@
 import { auroraInvoke as invoke } from "@/kernel/lib/ipc/runtime";
 
-export interface IndexSettings { autoBuild: boolean; searchResults: number; searchBytes: number }
-export const DEFAULT_INDEX_SETTINGS: IndexSettings = { autoBuild: true, searchResults: 8, searchBytes: 24_000 };
+/** Saved per project in `code-index/settings.json` by Rust. `enabled` is the
+ *  project's off switch: off removes the `code` tool and the index from the
+ *  agent's view of this project. */
+export interface IndexSettings { enabled: boolean; autoBuild: boolean; searchResults: number; searchBytes: number }
+export const DEFAULT_INDEX_SETTINGS: IndexSettings = { enabled: true, autoBuild: true, searchResults: 8, searchBytes: 24_000 };
 export interface BuildStatus {
   id: string; workspace: string;
   phase: "queued" | "indexing" | "saving" | "complete" | "failed" | "cancelled" | "interrupted";

@@ -1222,15 +1222,31 @@ impl ToolExecutor for BrowserScreenshotTool {
             .unwrap_or("image/png");
         let width = value.get("width").and_then(Value::as_u64).unwrap_or(0);
         let height = value.get("height").and_then(Value::as_u64).unwrap_or(0);
-        // Absolute path of the on-disk PNG copy (asset-protocol loadable by the
-        // tool card). Carried in the header as `src`; the model never sees it
-        // (the whole `<aurora_image>` block becomes a vision block), and the UI
-        // strip in `conversation.rs` parses it back out for rendering.
-        let src_attr = value
-            .get("path")
-            .and_then(Value::as_str)
-            .map(|p| format!(" src=\"{}\"", crate::api::aurora_image::escape_attr(p)))
-            .unwrap_or_default();
+        // The JPEG is saved in THIS conversation's folder
+        // (`…\<thread>\screenshots`), so it lives and dies with the chat. The
+        // path rides in the header as `src` for the tool card (the UI strip in
+        // `conversation.rs` parses it back out), and in the caption so the
+        // model knows where its capture is.
+        let saved = match ctx.screenshots_dir() {
+            None => Err("this conversation has no folder on disk".to_string()),
+            Some(dir) => {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(base64)
+                    .map_err(|e| format!("the capture was not valid base64: {e}"))
+                    .and_then(|bytes| crate::services::browser_runtime::save_screenshot(&dir, &bytes))
+            }
+        };
+        let (src_attr, saved_note) = match &saved {
+            Ok(p) => (
+                format!(" src=\"{}\"", crate::api::aurora_image::escape_attr(p)),
+                format!("\nSaved to {p}"),
+            ),
+            Err(reason) => {
+                crate::logging::log_warn("browser.screenshot", &format!("not saved: {reason}"));
+                (String::new(), format!("\nNot saved to disk: {reason}"))
+            }
+        };
         // Read the URL from the PAGE, not from Aurora's record of where it sent
         // the page. A click that followed a link is a navigation Aurora never
         // performed, so the recorded URL still names the previous route and the
@@ -1266,7 +1282,7 @@ impl ToolExecutor for BrowserScreenshotTool {
             .map(|n| format!("\n\n{n}"))
             .unwrap_or_default();
         Ok(format!(
-            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel}{scope} ({w}×{h} px){page_note}{note}",
+            "<aurora_image media_type=\"{mt}\" width=\"{w}\" height=\"{h}\"{src}>{b64}</aurora_image>\nScreenshot of {url}{sel}{scope} ({w}×{h} px){saved}{page_note}{note}",
             mt = media_type,
             b64 = base64,
             src = src_attr,
@@ -1277,6 +1293,7 @@ impl ToolExecutor for BrowserScreenshotTool {
             scope = if full_page { " — full page" } else { "" },
             w = width,
             h = height,
+            saved = saved_note,
             note = emulation_note,
         ))
     }

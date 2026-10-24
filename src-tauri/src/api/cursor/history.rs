@@ -29,6 +29,21 @@ const SYSTEM_LEAD_IN: &str =
     "The following are your operating instructions for this session, from Aurora, \
      the application you are running inside. Follow them for the rest of this conversation.";
 
+/// Where this session's tools are, said once after the system prompt.
+///
+/// Cursor's models are trained with Cursor's own tools (read file, grep, run
+/// terminal command, edit) written into their prompt. Aurora hides those and
+/// its own tools only appear through the tool-catalog step, so Grok opened
+/// nearly every turn with "The usual workspace tools did not register on this
+/// turn. I'll look up the tool catalog" and then fetched the catalog nine
+/// times. Saying it up front makes the missing built-ins expected.
+const TOOL_NOTE: &str =
+    "Tools in this session: Cursor's own built-in tools (read file, grep, run terminal command, \
+     edit file and similar) are not available here. Your tools are Aurora's, and they are \
+     listed in the tool catalog. Fetch the catalog once at the start of a task, without \
+     commenting on it, then call the tools you need by name. Aurora's tools cover reading, \
+     editing and searching files, running commands, and more.";
+
 /// The acknowledgement attributed to the assistant, closing the pair.
 const SYSTEM_ACK: &str = "Understood. I'll follow those instructions for the rest of this session.";
 
@@ -99,7 +114,10 @@ pub fn build_turn_input(
     if let Some(prompt) = system_prompt.map(str::trim).filter(|p| !p.is_empty()) {
         root_messages.push(json!({
             "role": "user",
-            "content": [{ "type": "text", "text": format!("{SYSTEM_LEAD_IN}\n\n{prompt}") }],
+            "content": [{
+                "type": "text",
+                "text": format!("{SYSTEM_LEAD_IN}\n\n{prompt}\n\n{TOOL_NOTE}"),
+            }],
         }));
         root_messages.push(json!({
             "role": "assistant",
@@ -401,6 +419,19 @@ mod tests {
             "gateway framing invites the model to treat it as a competing party"
         );
         assert_eq!(input.root_messages[1]["role"], "assistant");
+    }
+
+    /// Without this the model opens turns by remarking that its usual tools
+    /// "did not register".
+    #[test]
+    fn the_opener_says_where_the_tools_are() {
+        let input = build_turn_input(Some("Be careful."), &[user("hi")]);
+        let opener = input.root_messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(opener.contains("built-in tools"), "{opener}");
+        assert!(opener.contains("tool catalog"), "{opener}");
+        assert!(opener.ends_with(TOOL_NOTE), "the note follows Aurora's own prompt");
     }
 
     #[test]

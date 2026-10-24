@@ -119,6 +119,27 @@ describe("UiReply", () => {
     expect(el.querySelector(".agw-rl-source-more")).toBeNull();
   });
 
+  it("draws a block's skipped rows once, inside that block's own card", () => {
+    const source = [
+      "root = Page([list, history])",
+      'list = Checklist("L", ["done | Good", "complete | Build"])',
+      'history = Timeline("T", ["09:10 | One", "09:20 | Two | Detail | extra", "09:30 | Three"])',
+    ].join("\n");
+    const el = mount(<ReplyLayout language="aurora-ui" source={source} closed fallback={fallback} />);
+    expect(el.querySelectorAll(".agw-rl-problems")).toHaveLength(2);
+    const own = (kind: string) => el.querySelector(`.agw-rl-${kind} > .agw-rl-card-foot .agw-rl-problems-row`)?.textContent;
+    expect(own("checklist")).toBe("complete | Build");
+    expect(own("timeline")).toBe("09:20 | Two | Detail | extra");
+    expect(el.querySelector(".agw-rl-ui > .agw-rl-problems")).toBeNull();
+  });
+
+  it("names no skipped row while the reply is still streaming", () => {
+    const source = 'root = Page([list])\nlist = Checklist("L", ["done | Good", "complete | Build"])\n';
+    const el = mount(<ReplyLayout language="aurora-ui" source={source} closed={false} fallback={fallback} />);
+    expect(el.querySelector(".agw-rl-checklist")).not.toBeNull();
+    expect(el.querySelector(".agw-rl-problems")).toBeNull();
+  });
+
   it("a layout with nothing drawable shows the model's text and says why", () => {
     const el = mount(<ReplyLayout language="aurora-ui" source={'root = Page([a])\na = Chart("x")\n'} closed fallback={fallback} />);
     expect(el.querySelector("[data-fallback]")).not.toBeNull();

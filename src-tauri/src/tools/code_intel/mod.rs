@@ -962,6 +962,20 @@ A project with automatic indexing off needs Build in Settings → Agent → Code
     async fn execute(&self, input: Value, ctx: &ToolContext) -> Result<String, ToolError> {
         ctx.bail_if_cancelled()?;
 
+        // Backstop for a model that calls `code` from habit after the user
+        // turned the index off (the roster leaves it out). A plain answer that
+        // names the fallbacks, never "unknown tool".
+        if let Some(workspace) = ctx.workspace_root.clone() {
+            let enabled = tokio::task::spawn_blocking(move || crate::code_index::service().enabled(&workspace))
+                .await
+                .unwrap_or(true);
+            if !enabled {
+                return Err(ToolError::Execution(
+                    crate::code_index::service::INDEX_OFF_MESSAGE.to_string(),
+                ));
+            }
+        }
+
         let op = input
             .get("op")
             .and_then(Value::as_str)

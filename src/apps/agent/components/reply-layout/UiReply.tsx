@@ -37,7 +37,7 @@ const Stats: React.FC<{ stats: UiStat[] }> = ({ stats }) => (
   </dl>
 );
 
-const Part: React.FC<{ part: UiPart }> = ({ part }) => {
+const Part: React.FC<{ part: UiPart; closed: boolean }> = ({ part, closed }) => {
   switch (part.kind) {
     case "title":
       return (
@@ -67,7 +67,7 @@ const Part: React.FC<{ part: UiPart }> = ({ part }) => {
               <Field text={part.heading} />
             </div>
           )}
-          <LayoutBody layout={part.layout} />
+          <LayoutBody layout={part.layout} problems={closed ? part.layout.problems : undefined} />
         </div>
       );
   }
@@ -94,9 +94,10 @@ export const UiReply: React.FC<{
     <div className="agw-rl-wrap agw-rl-ui" data-kind="ui">
       {layout.parts.map((part) => (
         <div key={part.key} className="agw-rl-ui-part">
-          <Part part={part} />
+          <Part part={part} closed={closed} />
         </div>
       ))}
+      {/* Only problems no drawn block owns: an unknown part, a name never placed. */}
       {closed && <LayoutProblems problems={layout.problems} label="Lines this layout skipped" />}
     </div>
   );

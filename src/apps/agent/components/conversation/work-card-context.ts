@@ -20,8 +20,15 @@ export function useInWorkCardWindow(): boolean {
 }
 
 /**
- * "This row is inside a work card whose stretch is still running", closed
- * (the window) or open.
+ * "This row is inside a work card and the turn is still running", closed (the
+ * window) or open.
+ *
+ * The TURN, not the card's stretch. A card stops being the live edge whenever
+ * text lifts out below it, and the stretch-level flag regrouped and folded
+ * every run inside an open card at that moment, then unfolded them when the
+ * next call arrived (Alvan, 2026-10-24: "folded asap"). Held for the whole
+ * turn, runs group once, when the turn ends. Thoughts read it too, and stay
+ * on their line instead of opening while written.
  *
  * A tool run in the transcript grows a "N calls · N done" header at its third
  * call, sits in its own height-capped box, and folds to that header once
@@ -31,12 +38,12 @@ export function useInWorkCardWindow(): boolean {
  * 600ms after the next thought (Alvan, 2026-10-18; probe
  * `Documents/aurora-work-card-motion-designs.html`, 02). Runs read this and
  * draw as plain rows that fade in instead. Open AND closed, so opening a
- * running card does not regroup its runs under the click; once the stretch
- * ends, runs group as they do everywhere else.
+ * running card does not regroup its runs under the click; once the turn ends,
+ * runs group as they do everywhere else.
  */
 export const LiveWorkCardContext = createContext(false);
 
-/** True while rendering inside a work card whose stretch is still running. */
+/** True while rendering inside a work card during a turn that is still running. */
 export function useInLiveWorkCard(): boolean {
   return useContext(LiveWorkCardContext);
 }

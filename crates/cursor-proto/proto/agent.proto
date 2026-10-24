@@ -426,6 +426,15 @@ message ToolCall {
       PiLsToolCall pi_ls_tool_call = 67;
       ConnectScmToolCall connect_scm_tool_call = 68;
       SearchConversationsToolCall search_conversations_tool_call = 69;
+      // From the Cursor CLI 2026.10.22 schema. Only the variant matters to
+      // Aurora (logs and the "Cursor answered it itself" note), so the
+      // bodies are left empty and decode their contents as unknown fields.
+      WebFetchToolCall web_fetch_tool_call = 37;
+      AwaitToolCall await_tool_call = 42;
+      // The model's "Exploring tools" step. Aurora answers it over the exec
+      // channel (`McpStateExecArgs`).
+      GetMcpToolsToolCall get_mcp_tools_tool_call = 44;
+      SendToUserToolCall send_to_user_tool_call = 58;
    }
    // Modern builds carry the call id on the envelope instead of inside each
    // variant's args. Fields 37-53, 55, 56, 58 (further tool variants) and 54
@@ -433,6 +442,11 @@ message ToolCall {
    // modelled and decode into unknown fields; do not reuse those numbers.
    optional string tool_call_id = 57;
 }
+
+message WebFetchToolCall {}
+message AwaitToolCall {}
+message GetMcpToolsToolCall {}
+message SendToUserToolCall {}
 
 message TruncatedToolCallArgs {
 }
@@ -822,6 +836,21 @@ message HeartbeatUpdate {
 }
 
 message SummaryCompletedUpdate {
+   optional string hook_message = 1;
+   optional bool failed = 2;
+}
+
+// Fields from the Cursor CLI 2026.10.22 schema.
+message ThinkingNoteUpdate {
+   string text = 1;
+}
+
+message ToolRequestsListedUpdate {
+   uint32 call_count = 1;
+}
+
+message RoutedModelUpdate {
+   string display_name = 1;
 }
 
 message ShellOutputDeltaUpdate {
@@ -833,7 +862,16 @@ message ShellOutputDeltaUpdate {
    }
 }
 
+// The turn's real token counts, summed over every step Cursor ran. This is
+// what the turn cost, not how full the conversation is (that is
+// `ConversationTokenDetails` on the checkpoint).
 message TurnEndedUpdate {
+   optional int64 input_tokens = 1;
+   optional int64 output_tokens = 2;
+   optional int64 cache_read_tokens = 3;
+   optional int64 cache_write_tokens = 4;
+   optional int64 reasoning_tokens = 5;
+   optional uint64 ended_at_ms = 6;
 }
 
 // Only: user message appended update
@@ -869,6 +907,9 @@ message InteractionUpdate {
       TurnEndedUpdate turn_ended = 14;
       StepStartedUpdate step_started = 16;
       StepCompletedUpdate step_completed = 17;
+      RoutedModelUpdate routed_model = 24;
+      ToolRequestsListedUpdate tool_requests_listed = 27;
+      ThinkingNoteUpdate thinking_note = 28;
    }
 }
 

@@ -1,90 +1,32 @@
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 
-import { CHECKLIST_STATUSES, type StructuredLayout, type TreeNode } from "@/apps/agent/lib/reply-layout/structures";
+import type { StructuredLayout } from "@/apps/agent/lib/reply-layout/structures";
+import { ChecklistItems } from "./ChecklistItems";
+import { CompareAspects } from "./CompareAspects";
 import { Field } from "./Field";
+import { TimelineEvents } from "./TimelineEvents";
+import { TreeOutline } from "./TreeOutline";
 
-function TreeItems({ nodes }: { nodes: TreeNode[] }) {
-  return (
-    <ul className="agw-rl-tree-list" role="list">
-      {nodes.map((node, i) => (
-        <li key={i}>
-          <div className="agw-rl-tree-node">
-            <div className="agw-rl-node-title"><Field text={node.title} /></div>
-            {node.caption && <div className="agw-rl-node-caption"><Field text={node.caption} /></div>}
-          </div>
-          {node.children.length > 0 && <TreeItems nodes={node.children} />}
-        </li>
-      ))}
-    </ul>
-  );
-}
+const FALLBACK_LABEL = { checklist: "Checklist", timeline: "Timeline", tree: "Hierarchy" } as const;
 
-export function StructuredLayouts({ layout }: { layout: StructuredLayout }) {
+export function StructuredLayouts({ layout, foot }: { layout: StructuredLayout; foot?: ReactNode }) {
   const titleId = useId();
 
   if (layout.kind === "compare") {
-    return (
-      <div className="agw-rl agw-rl-structure agw-rl-compare">
-        <table role="table" aria-label={layout.title ? undefined : "Comparison"}>
-          {layout.title && <caption className="agw-rl-block-title"><Field text={layout.title} /></caption>}
-          <thead role="rowgroup">
-            <tr role="row">
-              <th role="columnheader" scope="col"><Field text={layout.heading} /></th>
-              {layout.options.map((option, i) => <th key={i} role="columnheader" scope="col"><Field text={option} /></th>)}
-            </tr>
-          </thead>
-          <tbody role="rowgroup">
-            {layout.rows.map((row, i) => (
-              <tr key={i} role="row">
-                <th role="rowheader" scope="row"><Field text={row.label} /></th>
-                {row.values.map((value, j) => (
-                  <td key={j} role="cell">
-                    <span className="agw-rl-compare-option" aria-hidden="true"><Field text={layout.options[j]} /></span>
-                    <span><Field text={value} /></span>
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
+    return <CompareAspects title={layout.title} heading={layout.heading} options={layout.options} rows={layout.rows} foot={foot} />;
   }
 
   return (
     <section
       className={`agw-rl agw-rl-structure agw-rl-${layout.kind}`}
       aria-labelledby={layout.title ? titleId : undefined}
-      aria-label={layout.title ? undefined : { checklist: "Checklist", timeline: "Timeline", tree: "Hierarchy" }[layout.kind]}
+      aria-label={layout.title ? undefined : FALLBACK_LABEL[layout.kind]}
     >
       {layout.title && <div id={titleId} className="agw-rl-block-title"><Field text={layout.title} /></div>}
-      {layout.kind === "checklist" && (
-        <ul className="agw-rl-status-list" role="list">
-          {layout.items.map((item, i) => (
-            <li key={i} className="agw-rl-status-row" data-status={item.status}>
-              <span className="agw-rl-status">{CHECKLIST_STATUSES[item.status]}</span>
-              <div className="agw-rl-item-body">
-                <div className="agw-rl-node-title"><Field text={item.title} /></div>
-                {item.caption && <div className="agw-rl-node-caption"><Field text={item.caption} /></div>}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      {layout.kind === "timeline" && (
-        <ol className="agw-rl-dated-list" role="list">
-          {layout.items.map((item, i) => (
-            <li key={i} className="agw-rl-dated-row">
-              <span className="agw-rl-date"><Field text={item.when} /></span>
-              <div className="agw-rl-item-body">
-                <div className="agw-rl-node-title"><Field text={item.title} /></div>
-                {item.caption && <div className="agw-rl-node-caption"><Field text={item.caption} /></div>}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-      {layout.kind === "tree" && <TreeItems nodes={layout.nodes} />}
+      {layout.kind === "checklist" && <ChecklistItems items={layout.items} />}
+      {layout.kind === "timeline" && <TimelineEvents items={layout.items} label={layout.title || "Events"} />}
+      {layout.kind === "tree" && <TreeOutline nodes={layout.nodes} />}
+      {foot}
     </section>
   );
 }

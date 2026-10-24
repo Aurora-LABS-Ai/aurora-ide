@@ -413,12 +413,12 @@ describe("ToolCallCard streamed file targets", () => {
     expect(start).toContain('d="M18.5 4.5v6"'); // agent-start's plus
     const report = render("submit_report");
     expect(report).toContain("data-lifecycle");
-    expect(report).toContain('d="M8.75 14.25l2.25 2.25 4.25-4.5"'); // report-submit's tick
+    expect(report).toContain('d="m9 14.5 2.2 2.2 4.3-4.5"'); // report-submit's tick
     for (const quiet of ["send_message", "get_task_output", "stop_agent", "list_models", "message_parent"]) {
       const html = render(quiet);
       expect(html, quiet).not.toContain("data-lifecycle");
       // Not the file-diff fallback any more.
-      expect(html, quiet).not.toContain('d="M9.5 13.5h5"');
+      expect(html, quiet).not.toContain('d="M9.5 14h5"');
     }
   });
 

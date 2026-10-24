@@ -19,6 +19,8 @@ export const askQuestionTool: ToolDefinition = {
 
 Use this ONLY when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults (e.g. a product/scope choice, or a destructive-action confirmation). For most choices (naming, formatting, equivalent approaches) pick a reasonable option and proceed instead of asking.
 
+Use it instead of a written question whenever your reply would end by asking the user to choose between a few concrete options before you can continue — including a recommendation followed by "A or B?" at the end of an advice answer. Write your reasoning in the reply first, then call this with your recommended option listed first. This call may end your message. Keep written questions for open-ended ones with no fixed options.
+
 Behavior:
 - Renders an interactive prompt; the turn pauses until the user answers or skips.
 - Each question shows lettered options; the user can also pick "Other" and type a custom answer.

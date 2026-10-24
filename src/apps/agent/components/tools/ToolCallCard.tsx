@@ -27,6 +27,7 @@ import {
 import { getProfessionalToolName } from "@/apps/agent/services/tools/tool-display";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { ToolGlyph } from "@/apps/agent/components/tools/tool-icons/ToolGlyph";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
@@ -1464,12 +1465,11 @@ const StandardToolCallCard: React.FC<{
           data-live={status === "running" ? "" : undefined}
           data-lifecycle={delegationLifecycle ? "" : undefined}
         >
-          <AgentIcon name={icon} size={16} strokeWidth={1.5} />
+          <ToolGlyph name={icon} size={16} />
           {status === "running" && (
-            <AgentIcon
+            <ToolGlyph
               name={icon}
               size={16}
-              strokeWidth={1.5}
               className="agw-tool-glyph-scan"
             />
           )}

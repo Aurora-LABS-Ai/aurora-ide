@@ -1649,15 +1649,13 @@ impl BrowserManager {
 
     /// Bound a capture for delivery: decode → fit inside
     /// [`SCREENSHOT_MAX_EDGE`] → re-encode JPEG, base64 it for the model's
-    /// vision block, and save a copy to the app cache dir so the tool card can
-    /// render the image via the asset protocol (a `path`, never megabytes of
-    /// base64, is what lands in the thread store). One artefact serves both:
-    /// the card shows exactly the pixels the model was given.
+    /// vision block. The browser tool saves the same bytes into the
+    /// conversation's folder ([`save_screenshot`]), so the card shows exactly
+    /// the pixels the model was given.
     fn finalize_screenshot(&self, bytes: Vec<u8>, capture_path: &str) -> BrowserResult {
         use base64::Engine;
         let (jpeg, width, height) = encode_screenshot(bytes);
         let base64 = base64::engine::general_purpose::STANDARD.encode(&jpeg);
-        let path = self.save_screenshot(&jpeg);
         BrowserResult {
             ok: true,
             value: Some(json!({
@@ -1666,7 +1664,6 @@ impl BrowserManager {
                 "width": width,
                 "height": height,
                 "capturePath": capture_path,
-                "path": path,
             })),
             error: None,
         }
@@ -1712,29 +1709,23 @@ impl BrowserManager {
         }
         finalized
     }
+}
 
-    /// Persist a screenshot under `<app_cache>/aurora-screenshots/` and
-    /// return its absolute path (loadable by the frontend via `convertFileSrc`).
-    /// Best-effort — returns `None` on any IO failure so the screenshot still
-    /// works (the card just falls back to its caption). Prunes stale files first
-    /// so the directory can't grow without bound.
-    fn save_screenshot(&self, bytes: &[u8]) -> Option<String> {
-        let dir = self
-            .app
-            .path()
-            .app_cache_dir()
-            .ok()?
-            .join("aurora-screenshots");
-        std::fs::create_dir_all(&dir).ok()?;
-        prune_old_screenshots(&dir);
-        // `.jpg` because that is what `encode_screenshot` writes. Older threads
-        // still reference `.png` files here; nothing reads the extension, both
-        // are served by the asset protocol, and the `media_type` recorded in
-        // each `<aurora_image>` marker is what the request builder trusts.
-        let file = dir.join(format!("shot-{}.jpg", Uuid::new_v4()));
-        std::fs::write(&file, bytes).ok()?;
-        Some(file.to_string_lossy().to_string())
-    }
+/// Persist a screenshot in `dir` (the conversation's `screenshots` folder) and
+/// return its absolute path (loadable by the frontend via `convertFileSrc`).
+/// Prunes stale files first so the folder can't grow without bound. The error
+/// is the reason, for the tool to name; the screenshot itself still works
+/// without the file (the card falls back to its caption).
+///
+/// Older threads reference `.png` files in the former app-wide
+/// `<app_cache>/aurora-screenshots/`; those stay where they are and still draw.
+pub fn save_screenshot(dir: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    prune_old_screenshots(dir);
+    // `.jpg` because that is what `encode_screenshot` writes.
+    let file = dir.join(format!("shot-{}.jpg", Uuid::new_v4()));
+    std::fs::write(&file, bytes).map_err(|e| format!("could not write {}: {e}", file.display()))?;
+    Ok(file.to_string_lossy().to_string())
 }
 
 /// An element's box in viewport CSS pixels, and the viewport it was measured in.

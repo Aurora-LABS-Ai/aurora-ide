@@ -30,7 +30,7 @@
  * guessed at. Off, every one of these fences is a code block, as it was.
  */
 
-import { MAX_ITEMS, splitFields, titleAndRows, usableLines } from "./fields";
+import { MAX_ITEMS, hasSeparator, splitFields, titleAndRows, usableLines } from "./fields";
 import { parseStructure, type StructuredLayout } from "./structures";
 import { parseReportSource } from "@/canvas-sdk/reporting/validate";
 import type { ReportSpec } from "@/canvas-sdk/reporting/types";
@@ -153,9 +153,9 @@ function parseNote(lines: string[]): ReplyLayout {
   const [first = "", ...rest] = lines;
   // The title is the first line; a pipe there is the model skipping the
   // title, so the line is read as a pair and the title stays blank.
-  const titleFields = splitFields(first);
-  const title = titleFields.length === 1 ? first : "";
-  const body = titleFields.length === 1 ? rest : lines;
+  const titled = !hasSeparator(first);
+  const title = titled ? first : "";
+  const body = titled ? rest : lines;
   const out: NoteLine[] = [];
   for (const line of body) {
     if (out.length >= MAX_ITEMS) {

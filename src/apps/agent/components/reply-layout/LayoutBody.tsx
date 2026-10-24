@@ -7,9 +7,10 @@
  * through here and cannot drift apart.
  */
 
-import React from "react";
+import React, { useState } from "react";
 
 import type { Bar, Fact, NoteLine, Pair, ReplyLayout } from "@/apps/agent/lib/reply-layout/parse";
+import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { Field } from "./Field";
 import { FlowSteps } from "./FlowSteps";
 import { StructuredLayouts } from "./StructuredLayouts";
@@ -24,7 +25,10 @@ import { Report } from "@/canvas-sdk/reporting/Report";
  * transcript's own shape — the answer box's rows, the turn summary — and
  * takes any length without changing what it is.
  */
-const Facts: React.FC<{ title: string; facts: Fact[] }> = ({ title, facts }) => (
+/** What a block draws as the last thing inside its own card (its skipped lines). */
+type Foot = { foot?: React.ReactNode };
+
+const Facts: React.FC<{ title: string; facts: Fact[] } & Foot> = ({ title, facts, foot }) => (
   <div className="agw-rl agw-rl-facts">
     {title && (
       <div className="agw-rl-block-title">
@@ -50,10 +54,11 @@ const Facts: React.FC<{ title: string; facts: Fact[] }> = ({ title, facts }) => 
       </div>
     ))}
     </dl>
+    {foot}
   </div>
 );
 
-const Note: React.FC<{ title: string; lines: NoteLine[] }> = ({ title, lines }) => (
+const Note: React.FC<{ title: string; lines: NoteLine[] } & Foot> = ({ title, lines, foot }) => (
   <aside className="agw-rl agw-rl-note">
     {/* No icon: the rule on the left is the mark, and a glyph would say
         "warning" about what is often just a detail worth knowing. */}
@@ -78,6 +83,7 @@ const Note: React.FC<{ title: string; lines: NoteLine[] }> = ({ title, lines }) 
         </p>
       ),
     )}
+    {foot}
   </aside>
 );
 
@@ -86,7 +92,7 @@ const Note: React.FC<{ title: string; lines: NoteLine[] }> = ({ title, lines }) 
  * printed beside the bar (colour never carries a value alone); the fill is the
  * accent at reduced strength, no glow, no gradient.
  */
-const Bars: React.FC<{ title: string; bars: Bar[] }> = ({ title, bars }) => (
+const Bars: React.FC<{ title: string; bars: Bar[] } & Foot> = ({ title, bars, foot }) => (
   <div className="agw-rl agw-rl-bars">
     {title && (
       <div className="agw-rl-block-title">
@@ -114,11 +120,12 @@ const Bars: React.FC<{ title: string; bars: Bar[] }> = ({ title, bars }) => (
         </div>
       );
     })}
+    {foot}
   </div>
 );
 
 /** Pairs: a titled key / value table. The note is for a caveat; this is a lookup. */
-const Pairs: React.FC<{ title: string; pairs: Pair[] }> = ({ title, pairs }) => (
+const Pairs: React.FC<{ title: string; pairs: Pair[] } & Foot> = ({ title, pairs, foot }) => (
   <dl className="agw-rl agw-rl-pairs">
     {title && (
       <div className="agw-rl-block-title">
@@ -135,33 +142,72 @@ const Pairs: React.FC<{ title: string; pairs: Pair[] }> = ({ title, pairs }) => 
         </dd>
       </div>
     ))}
+    {foot}
   </dl>
 );
 
-export const LayoutBody: React.FC<{ layout: ReplyLayout }> = ({ layout }) => (
-  <>
-    {layout.kind === "facts" && <Facts title={layout.title} facts={layout.facts} />}
-    {layout.kind === "flow" && <FlowSteps steps={layout.steps} />}
-    {layout.kind === "note" && <Note title={layout.title} lines={layout.lines} />}
-    {layout.kind === "bars" && <Bars title={layout.title} bars={layout.bars} />}
-    {layout.kind === "pairs" && <Pairs title={layout.title} pairs={layout.pairs} />}
-    {layout.kind === "report" && layout.spec && <Report spec={layout.spec} />}
-    {(layout.kind === "compare" || layout.kind === "checklist" || layout.kind === "timeline" || layout.kind === "tree") && (
-      <StructuredLayouts layout={layout} />
-    )}
-  </>
-);
-
-/** Problems past this are counted, not listed. */
-const MAX_LISTED_PROBLEMS = 3;
-
-/** The lines a block skipped, named under it. */
-export const LayoutProblems: React.FC<{ problems: string[]; label?: string }> = ({ problems, label = "Lines this block skipped" }) =>
-  problems.length === 0 ? null : (
-    <ul className="agw-rl-problems" aria-label={label}>
-      {problems.slice(0, MAX_LISTED_PROBLEMS).map((problem, i) => (
-        <li key={i}>{problem}</li>
-      ))}
-      {problems.length > MAX_LISTED_PROBLEMS && <li>and {problems.length - MAX_LISTED_PROBLEMS} more</li>}
-    </ul>
+/**
+ * One block. `problems` are the lines it skipped, drawn at the bottom INSIDE
+ * its card: pooled under the last card of a reply, a checklist's bad row was
+ * listed under a timeline, prefixed with the part's name (Alvan, 2026-10-24).
+ * Pass them only once the block is finished; a half-written line is no fault.
+ */
+export const LayoutBody: React.FC<{ layout: ReplyLayout; problems?: string[] }> = ({ layout, problems = [] }) => {
+  const foot = problems.length > 0 && (
+    <div className="agw-rl-card-foot">
+      <LayoutProblems problems={problems} />
+    </div>
   );
+  return (
+    <>
+      {layout.kind === "facts" && <Facts title={layout.title} facts={layout.facts} foot={foot} />}
+      {layout.kind === "flow" && <FlowSteps steps={layout.steps} foot={foot} />}
+      {layout.kind === "note" && <Note title={layout.title} lines={layout.lines} foot={foot} />}
+      {layout.kind === "bars" && <Bars title={layout.title} bars={layout.bars} foot={foot} />}
+      {layout.kind === "pairs" && <Pairs title={layout.title} pairs={layout.pairs} foot={foot} />}
+      {/* A report draws its own SDK card; its problems follow it. */}
+      {layout.kind === "report" && layout.spec && <Report spec={layout.spec} />}
+      {layout.kind === "report" && problems.length > 0 && <LayoutProblems problems={problems} label="Report errors" />}
+      {(layout.kind === "compare" || layout.kind === "checklist" || layout.kind === "timeline" || layout.kind === "tree") && (
+        <StructuredLayouts layout={layout} foot={foot} />
+      )}
+    </>
+  );
+};
+
+/** "row — reason" → the two halves; the reason never holds " — ", the row may. */
+function splitProblem(problem: string): { row: string; reason: string } {
+  const at = problem.lastIndexOf(" — ");
+  return at < 0 ? { row: "", reason: problem } : { row: problem.slice(0, at), reason: problem.slice(at + 3) };
+}
+
+/**
+ * The lines a block skipped, folded under it as one quiet line. The reasons
+ * are written for the model ("write a pipe inside text as \|"); spread open
+ * in the warning colour under every block they drowned the reply they were
+ * annotating (Alvan, 2026-10-24). Folded, they stay findable without shouting.
+ */
+export const LayoutProblems: React.FC<{ problems: string[]; label?: string }> = ({ problems, label = "Lines this block skipped" }) => {
+  const [open, setOpen] = useState(false);
+  if (problems.length === 0) return null;
+  const count = `${problems.length} ${problems.length === 1 ? "line" : "lines"} skipped`;
+  return (
+    <div className="agw-rl-problems">
+      <button type="button" className="agw-rl-problems-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <AgentIcon name="chevron-right" size={12} className="agw-rl-problems-chev" />
+        {count}
+      </button>
+      <ul className="agw-rl-problems-list" aria-label={label} hidden={!open}>
+        {problems.map((problem, i) => {
+          const { row, reason } = splitProblem(problem);
+          return (
+            <li key={i}>
+              {row && <code className="agw-rl-problems-row">{row}</code>}
+              <span className="agw-rl-problems-reason">{reason}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};

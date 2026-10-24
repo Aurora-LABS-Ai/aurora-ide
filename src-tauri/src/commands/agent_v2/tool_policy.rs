@@ -155,14 +155,20 @@ pub(super) fn build_per_turn_tool_registry_scoped(
     // Resolved once per turn: `plan_store::active` walks the plans directory,
     // and the answer cannot change mid-registry-build.
     let has_plan = workspace_has_plan(workspace_path);
+    // The user's per-project off switch for the code index. A tool the model
+    // is told not to use still gets called; one it is never handed does not.
+    // Read once per turn from the project's small settings file.
+    let code_index_off = workspace_path
+        .is_some_and(|root| !crate::code_index::service().enabled(std::path::Path::new(root)));
     let mode_blocked = |name: &str| {
-        !is_tool_available_this_turn(
-            name,
-            execution_mode,
-            has_plan,
-            chapters_enabled,
-            browser_enabled,
-        )
+        (code_index_off && crate::tools::code_intel::TOOL_NAMES.contains(&name))
+            || !is_tool_available_this_turn(
+                name,
+                execution_mode,
+                has_plan,
+                chapters_enabled,
+                browser_enabled,
+            )
     };
     // 1. Native Rust executors first, in the base registry's own stable
     //    registration order.

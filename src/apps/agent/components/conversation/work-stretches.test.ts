@@ -83,11 +83,31 @@ describe("groupWorkStretches — one card per reply", () => {
       expect(kinds([...work, say("a1", atLimit)], true)).toEqual(["work(5)"]);
     });
 
-    it("lifts text out at a second paragraph, however short", () => {
-      expect(kinds([...work, say("a1", "Here is the picture.\n\nThree layers.")], true)).toEqual([
-        "work(4)",
-        "content",
+    it("keeps two short paragraphs inside the card: a blank line is not the answer", () => {
+      // Alvan, 2026-10-24: the blank line lifted the text out, the card went
+      // "Worked" and folded its runs, and the next call pulled it all back.
+      expect(kinds([...work, say("a1", "The account layer is a coordinator.\n\nNext, the services.")], true)).toEqual([
+        "work(5)",
       ]);
+    });
+
+    it("never pulls an answer-sized text back into the card when the model calls another tool", () => {
+      // Replay one event at a time: once the long text has lifted out it stays
+      // out, and the calls after it follow it as rows. The card never grows
+      // back over it, live or reloaded.
+      const long = "The desktop client hosts the Kick services in its main process. ".repeat(12);
+      const script = [...work, say("a1", long), tools("c", "file_read"), think("t3"), tools("d", "grep")];
+      for (let n = 5; n <= script.length; n += 1) {
+        const shape = kinds(script.slice(0, n), true);
+        expect(shape[0]).toBe("work(4)");
+        expect(shape[1]).toBe("content");
+      }
+      expect(kinds(script, false)).toEqual(["work(4)", "content", "tools", "thinking", "tools"]);
+    });
+
+    it("keeps an opening text before the first step in the card, however long", () => {
+      const long = "x".repeat(NARRATION_MAX_CHARS + 50);
+      expect(kinds([say("open", long), ...work], false)).toEqual(["work(5)"]);
     });
 
     it("reads several content rows as one growing text", () => {

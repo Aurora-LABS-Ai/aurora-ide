@@ -79,6 +79,16 @@ export type TranscriptReasoning = "live" | "folded" | "hidden";
  */
 export type TranscriptTextPace = "eased" | "steady" | "instant";
 
+/**
+ * Which drawing set the tool rows use for their marks (`components/tools/
+ * tool-icons/`). `classic` is the AgentIcon set every tool row has always
+ * drawn. A new set is added by appending its id here AND giving it an entry
+ * in the registry there; the registry is typed against this list, so the two
+ * cannot drift. MCP tools always keep the classic mark.
+ */
+export const TOOL_ICON_SET_IDS = ["classic", "isometric"] as const;
+export type ToolIconSetId = (typeof TOOL_ICON_SET_IDS)[number];
+
 /** Rail/dock glide duration when glide is on. */
 export const DEFAULT_RAIL_GLIDE_MS = 580;
 
@@ -176,6 +186,15 @@ export const APPEARANCE_PREFS = {
     reset: true,
     parse: bool,
   } satisfies PrefSpec<boolean>,
+
+  /** Drawing set for the marks on tool rows (read, write, search, commands,
+   *  grouped runs). Opt-in: `classic` is today's set. See `ToolIconSetId`. */
+  toolIconSet: {
+    default: "classic",
+    exported: true,
+    reset: true,
+    parse: oneOf(TOOL_ICON_SET_IDS),
+  } satisfies PrefSpec<ToolIconSetId>,
 
   /** Glide the left rail and right dock open and closed. When off they snap
    *  instantly, with no width animation. */

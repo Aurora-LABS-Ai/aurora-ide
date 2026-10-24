@@ -284,6 +284,19 @@ describe("the base system prompt does not contradict the tools", () => {
     expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/is not the end of a turn/i);
   });
 
+  /**
+   * 2026-10-24: twice in one conversation the model ended an advice answer
+   * with "Shall I go with 01?" / "Isometric only, or both?" in prose. Both
+   * were two-option decisions the user had to make before any work could
+   * start — what `ask_question` is for. The prompt framed the tool as a last
+   * resort for being "blocked", and the final-answer rule above pushed the
+   * closing question out of tool calls. These two lines settle both.
+   */
+  it("sends a closing multiple-choice question through ask_question, not prose", () => {
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/ask with `ask_question` instead of writing the question in prose/);
+    expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/exception is `ask_question`: it may end a message/);
+  });
+
   it("warns that compaction can erase earlier work from view", () => {
     expect(BASE_AGENT_SYSTEM_PROMPT).toMatch(/COMPACTED/);
   });

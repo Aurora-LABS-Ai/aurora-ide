@@ -42,8 +42,6 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
   cursor: pointer;
   outline: none;
 }

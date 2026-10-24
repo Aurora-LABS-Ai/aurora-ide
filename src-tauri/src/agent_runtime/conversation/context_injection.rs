@@ -151,33 +151,59 @@ impl ConversationRuntime {
         // No workspace attached YET — not memoized either, so a workspace
         // arriving on a later request still gets its map.
         let root = std::path::PathBuf::from(workspace_root?);
-        match crate::code_index::service().get_or_build(&root) {
-            Ok(idx) => {
-                let rendered = crate::code_index::repo_map::render(
+
+        // The first request never waits on the index. It used to call
+        // `get_or_build` here, which walks and hashes every source file and
+        // rebuilds when anything changed: measured on a 3,785-file project
+        // just after start (45 MB cache to load, then a rebuild and save), the
+        // turn sat on a skeleton for ~19 s before anything was sent. Only an
+        // index already in memory is used: the project-open probe loads a
+        // current cache, and builds earlier in this session leave one behind.
+        // Otherwise the turn goes out without a map and the index warms in the
+        // background for the next conversation and the edit-impact notes.
+        //
+        // The folder tree (two levels of directory entries, no file opened)
+        // always leads the block, so a conversation without landmarks still
+        // sees the project's shape. With the index off nothing about the
+        // index is touched: no peek, no warm-up, and the user's note opens
+        // the block instead.
+        let service = crate::code_index::service();
+        let index_off = !service.enabled(&root);
+        let tree = crate::code_index::tree_snapshot::render(&root);
+        let landmarks = if index_off {
+            None
+        } else {
+            match service.peek(&root) {
+                Some(idx) => crate::code_index::repo_map::render(
                     &idx,
                     crate::code_index::repo_map::budget_chars(
                         crate::code_index::repo_map::DEFAULT_BUDGET_TOKENS,
                     ),
-                );
-                let _ = self.repo_map.set(rendered.clone());
-                if let Ok(mut guard) = REPO_MAP_BY_THREAD.write() {
-                    guard
-                        .get_or_insert_with(HashMap::new)
-                        .insert(thread_id.to_string(), rendered.clone());
+                ),
+                None => {
+                    crate::logging::log_info(
+                        "code_index",
+                        &format!(
+                            "repo map carries the folder tree only: no index in memory for {} \
+                             yet; warming it in the background",
+                            root.display()
+                        ),
+                    );
+                    warm_index_in_background(root);
+                    None
                 }
-                rendered
             }
-            Err(error) => {
-                crate::logging::log_warn(
-                    "code_index",
-                    &format!(
-                        "repo map skipped — could not index {}: {error:#}",
-                        root.display()
-                    ),
-                );
-                None
-            }
+        };
+        let rendered = crate::code_index::repo_map::compose(tree, landmarks, index_off);
+        // Memoized either way, so the first message's bytes never change
+        // mid-conversation (a map added on turn two would break the cache).
+        let _ = self.repo_map.set(rendered.clone());
+        if let Ok(mut guard) = REPO_MAP_BY_THREAD.write() {
+            guard
+                .get_or_insert_with(HashMap::new)
+                .insert(thread_id.to_string(), rendered.clone());
         }
+        rendered
     }
 
     /// The block for the head of the FIRST user message, or `None` when there
@@ -289,6 +315,43 @@ impl ConversationRuntime {
 ///    single turn, which would cost more than the file reads it exists to avoid.
 /// 2. **API view only.** The persisted session stays verbatim; only the request
 ///    body carries this. Same contract as [`fold_message_context`].
+/// Workspaces with a background warm in flight, so several conversations
+/// opening at once start one build, not one each.
+static WARMING: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// Load or build `root`'s index off the request path. Failure is logged, never
+/// raised: the conversation already went out without a map.
+fn warm_index_in_background(root: std::path::PathBuf) {
+    {
+        let mut warming = WARMING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !warming.get_or_insert_with(Default::default).insert(root.clone()) {
+            return;
+        }
+    }
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        match crate::code_index::service().get_or_build(&root) {
+            Ok(_) => crate::logging::log_info(
+                "code_index",
+                &format!(
+                    "background index ready for {} in {} ms",
+                    root.display(),
+                    started.elapsed().as_millis()
+                ),
+            ),
+            Err(error) => crate::logging::log_warn(
+                "code_index",
+                &format!("background index for {} failed: {error:#}", root.display()),
+            ),
+        }
+        let mut warming = WARMING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(set) = warming.as_mut() {
+            set.remove(&root);
+        }
+    });
+}
+
 pub(super) fn inject_repo_map(
     messages: &[ConversationMessage],
     repo_map: &str,
@@ -463,10 +526,12 @@ pub(super) fn stale_checklist_reminder(
 /// How many assistant messages have passed since the last `todo` call and
 /// since the last reminder, counting back from the end of the transcript.
 ///
-/// A count that reaches the start of the transcript is the whole transcript:
-/// a conversation that never wrote a list has been silent since its first
-/// message. Both counts stop at a compaction marker — whatever happened before
-/// it is a summary now, and the model reads that summary as its past.
+/// Both counts stop at a compaction marker (whatever happened before it is a
+/// summary now) and at the person's last message. The reminder is for a long
+/// run of work inside ONE turn that left its list behind. Counted across
+/// turns, a chat of short questions reached ten on its own and was told
+/// "You have not used the checklist" on two-step answers: six times in one
+/// 2026-10-24 Aurora-on-Aurora thread, none of them for work a list would help.
 pub(super) fn checklist_silence(messages: &[ConversationMessage]) -> (usize, usize) {
     let mut since_write = 0usize;
     let mut since_reminder = 0usize;
@@ -476,10 +541,11 @@ pub(super) fn checklist_silence(messages: &[ConversationMessage]) -> (usize, usi
         if write_seen && reminder_seen {
             break;
         }
-        if message
-            .blocks
-            .iter()
-            .any(|b| matches!(b, ContentBlock::Compaction { .. }))
+        if message.role == MessageRole::User
+            || message
+                .blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Compaction { .. }))
         {
             break;
         }

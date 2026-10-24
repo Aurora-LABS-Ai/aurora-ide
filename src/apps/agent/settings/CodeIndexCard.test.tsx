@@ -26,8 +26,9 @@ vi.mock("@/apps/agent/services/code-index/code-index", async (importOriginal) =>
 
 const snapshot = (workspace = "A"): BuildSnapshot => ({
   index: { workspace, built: true, files: workspace === "A" ? 42 : 7, symbols: 100, refs: 200, buildMs: 10, skippedGenerated: 0, skippedDirs: [], cachePath: "", cacheBytes: 1234, reusedFiles: 0 },
-  settings: { autoBuild: true, searchResults: 8, searchBytes: 24000 }, job: null,
+  settings: { enabled: true, autoBuild: true, searchResults: 8, searchBytes: 24000 }, job: null,
 });
+const toggle = (name: string) => container.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${name}"]`);
 let container: HTMLDivElement;
 let root: Root;
 const render = async () => { await act(async () => root.render(<CodeIndexCard />)); };
@@ -55,7 +56,8 @@ afterEach(async () => {
 
 it("opening settings never builds or calls a model", async () => {
   await render();
-  expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+  expect(toggle("Use the code index in this project")?.getAttribute("aria-checked")).toBe("true");
+  expect(toggle("Build automatically when needed")?.getAttribute("aria-checked")).toBe("true");
   expect(button("Rebuild")?.disabled).toBe(false);
   expect(mocks.start).not.toHaveBeenCalled();
   expect(mocks.save).not.toHaveBeenCalled();
@@ -63,11 +65,29 @@ it("opening settings never builds or calls a model", async () => {
 
 it("saves automatic indexing for this project without building", async () => {
   await render();
-  await act(async () => container.querySelector<HTMLButtonElement>('[role="switch"]')?.click());
-  expect(mocks.save).toHaveBeenCalledWith("A", { autoBuild: false, searchResults: 8, searchBytes: 24000 });
+  await act(async () => toggle("Build automatically when needed")?.click());
+  expect(mocks.save).toHaveBeenCalledWith("A", { enabled: true, autoBuild: false, searchResults: 8, searchBytes: 24000 });
   expect(container.textContent).not.toContain("Indexing model");
   expect(container.textContent).not.toContain("AI indexing");
   expect(mocks.start).not.toHaveBeenCalled();
+});
+
+/** The switch is saved for the project through Rust, not held in the page:
+ *  the saved settings are what the agent reads on its next turn. */
+it("turns the code index off for this project and locks the controls that need it", async () => {
+  await render();
+  await act(async () => toggle("Use the code index in this project")?.click());
+  expect(mocks.save).toHaveBeenCalledWith("A", { enabled: false, autoBuild: true, searchResults: 8, searchBytes: 24000 });
+  expect(mocks.start).not.toHaveBeenCalled();
+
+  mocks.read.mockImplementation(async (workspace: string) => ({ ...snapshot(workspace), settings: { ...snapshot(workspace).settings, enabled: false } }));
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await render();
+  expect(toggle("Use the code index in this project")?.getAttribute("aria-checked")).toBe("false");
+  expect(toggle("Build automatically when needed")?.disabled).toBe(true);
+  expect(button("Rebuild")?.disabled).toBe(true);
+  expect(container.textContent).toContain("Off for this project");
 });
 
 it("lists storage without an open project and confirms before deletion", async () => {

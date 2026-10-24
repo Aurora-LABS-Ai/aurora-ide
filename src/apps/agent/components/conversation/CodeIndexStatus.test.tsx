@@ -22,7 +22,7 @@ vi.mock("@/apps/agent/services/code-index/code-index", () => ({
 }));
 
 const snapshot = (job: BuildStatus | null = null) => ({
-  settings: { autoBuild: true, searchResults: 8, searchBytes: 24000 },
+  settings: { enabled: true, autoBuild: true, searchResults: 8, searchBytes: 24000 },
   index: { built: true, files: 716, symbols: 31153 }, job,
 }) as BuildSnapshot;
 const job = (phase: BuildStatus["phase"] = "indexing") => ({ id: "build-a", phase }) as BuildStatus;
@@ -30,8 +30,8 @@ const job = (phase: BuildStatus["phase"] = "indexing") => ({ id: "build-a", phas
 const PROJECT = "E:/work/app";
 
 const probe = (
-  over: Partial<{ ready: boolean; indexableFiles: number; overAutoCap: boolean }> = {},
-) => ({ ready: false, indexableFiles: 716, overAutoCap: false, ...over });
+  over: Partial<{ ready: boolean; indexableFiles: number; overAutoCap: boolean; disabled: boolean }> = {},
+) => ({ ready: false, indexableFiles: 716, overAutoCap: false, disabled: false, ...over });
 
 describe("CodeIndexStatus", () => {
   let container: HTMLDivElement;
@@ -119,6 +119,15 @@ describe("CodeIndexStatus", () => {
 
   it("shows nothing when there is no source it could read", async () => {
     invoke.mockResolvedValue(probe({ indexableFiles: 0 }));
+    await render();
+    await probed();
+    expect(wrap()).toBeNull();
+  });
+
+  it("shows nothing when the user turned the index off for this project", async () => {
+    // Off is a choice, not a condition to fix: no offer to index it. The file
+    // count is set on purpose, so only `disabled` keeps the light out.
+    invoke.mockResolvedValue(probe({ disabled: true, indexableFiles: 716 }));
     await render();
     await probed();
     expect(wrap()).toBeNull();

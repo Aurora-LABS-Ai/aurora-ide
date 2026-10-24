@@ -117,7 +117,45 @@ pub enum TurnEvent {
     ContextUsage {
         used_tokens: u32,
     },
+    /// A tool call Cursor finished on its own side without asking Aurora to
+    /// run anything. The model saw whatever Cursor answered (usually a
+    /// refusal, since Aurora hides Cursor's built-ins); Aurora saw nothing.
+    /// `label` is the tool's kind, e.g. `Read` or `Shell`.
+    ServerToolCall {
+        label: String,
+    },
+    /// Cursor's own measure of how long one stretch of thinking took.
+    ThinkingDuration {
+        ms: u64,
+    },
+    /// The turn's real token counts from `TurnEndedUpdate`, summed over every
+    /// step Cursor ran. What the turn cost, not how full the context is.
+    TurnTotals(TurnTotals),
     Done(DoneReason),
+}
+
+/// Token counts Cursor reports when a turn ends. Older servers send none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnTotals {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub reasoning: u64,
+}
+
+impl TurnTotals {
+    fn from_update(update: &pb::TurnEndedUpdate) -> Option<Self> {
+        let count = |value: Option<i64>| value.and_then(|v| u64::try_from(v).ok()).unwrap_or(0);
+        let totals = Self {
+            input: count(update.input_tokens),
+            output: count(update.output_tokens),
+            cache_read: count(update.cache_read_tokens),
+            cache_write: count(update.cache_write_tokens),
+            reasoning: count(update.reasoning_tokens),
+        };
+        (totals != Self::default()).then_some(totals)
+    }
 }
 
 /// One in-stream tool exchange.
@@ -193,6 +231,160 @@ impl BlobStore {
 
     fn get(&self, id: &[u8]) -> Option<&Vec<u8>> {
         self.0.get(id)
+    }
+}
+
+/// What one open stream remembers between server messages.
+///
+/// Cursor reports far more than text and thinking: the steps it runs, every
+/// tool call it starts and finishes, server-side summaries. None of it used to
+/// be kept, so a turn where Cursor refused the model's calls on its own side
+/// left no trace anywhere, and the model's "every call came back unavailable"
+/// could not be checked against anything.
+#[derive(Default)]
+struct StreamState {
+    /// Tool calls Cursor has started and not yet finished, by call id.
+    open_calls: HashMap<String, OpenCall>,
+    /// Steps Cursor ran this turn. Each one is a full model call on its side.
+    steps: u32,
+    /// Calls Cursor finished without asking Aurora to run anything.
+    server_calls: u32,
+    /// Calls Aurora ran for Cursor this turn.
+    aurora_calls: u32,
+    /// What Cursor said the turn cost, once it ends.
+    totals: Option<TurnTotals>,
+    /// The model Cursor says actually served the turn, when it says.
+    routed_model: Option<String>,
+    /// A step or a call ended since the last text/thinking delta, so the next
+    /// delta starts a new paragraph instead of gluing onto the last sentence.
+    break_pending: bool,
+    /// Whether the current message segment already holds text / thinking, and
+    /// what its last character was.
+    text_tail: Option<char>,
+    thinking_tail: Option<char>,
+    /// The end of the thinking so far, kept to find a `</think>` that arrives
+    /// split across two deltas.
+    think_scan: String,
+    /// Some models put the visible answer after `</think>` inside the thinking
+    /// stream and never send a text delta. Once the tag is seen, the rest of
+    /// the thinking stream is the answer.
+    past_think_tag: bool,
+}
+
+struct OpenCall {
+    label: String,
+    /// Aurora was asked to run something while this call was open.
+    served: bool,
+}
+
+const THINK_END_TAG: &str = "</think>";
+
+impl StreamState {
+    /// Every open call is being answered by Aurora right now.
+    fn mark_open_calls_served(&mut self) {
+        for call in self.open_calls.values_mut() {
+            call.served = true;
+        }
+    }
+
+    /// A new message segment starts (Aurora is about to run a tool, and the
+    /// adapter closes the message that made the call).
+    fn start_segment(&mut self) {
+        self.text_tail = None;
+        self.thinking_tail = None;
+        self.break_pending = false;
+    }
+
+    /// The paragraph break owed before `delta`, given what is already there.
+    fn separator(pending: bool, tail: Option<char>, delta: &str) -> &'static str {
+        match tail {
+            Some(last)
+                if pending
+                    && !last.is_whitespace()
+                    && !delta.starts_with(char::is_whitespace) =>
+            {
+                "\n\n"
+            }
+            _ => "",
+        }
+    }
+
+    fn text(&mut self, delta: &str) -> String {
+        let out = format!(
+            "{}{delta}",
+            Self::separator(self.break_pending, self.text_tail, delta)
+        );
+        self.break_pending = false;
+        if let Some(last) = delta.chars().last() {
+            self.text_tail = Some(last);
+        }
+        out
+    }
+
+    fn thinking(&mut self, delta: &str) -> String {
+        let out = format!(
+            "{}{delta}",
+            Self::separator(self.break_pending, self.thinking_tail, delta)
+        );
+        self.break_pending = false;
+        if let Some(last) = delta.chars().last() {
+            self.thinking_tail = Some(last);
+        }
+        out
+    }
+
+    /// Split one thinking delta into (thinking, answer) at `</think>`.
+    fn split_thinking(&mut self, delta: &str) -> (String, String) {
+        if self.past_think_tag {
+            return (String::new(), delta.to_string());
+        }
+        let scan = format!("{}{delta}", self.think_scan);
+        let Some(at) = scan.find(THINK_END_TAG) else {
+            // Keep only enough of the end to catch a tag split across deltas.
+            let keep = scan.len().saturating_sub(THINK_END_TAG.len());
+            let keep = (keep..=scan.len())
+                .find(|i| scan.is_char_boundary(*i))
+                .unwrap_or(scan.len());
+            self.think_scan = scan[keep..].to_string();
+            return (delta.to_string(), String::new());
+        };
+        self.past_think_tag = true;
+        self.think_scan.clear();
+        let carried = scan.len() - delta.len();
+        // The part of this delta before the tag is still thinking. When the
+        // tag began in an earlier delta, those characters already went out
+        // as thinking; nothing of this delta is.
+        let before = if at >= carried {
+            delta[..at - carried].to_string()
+        } else {
+            String::new()
+        };
+        let after = scan[at + THINK_END_TAG.len()..].trim_start().to_string();
+        (before, after)
+    }
+}
+
+/// `Read`, `Shell`, `Grep`… from a Cursor tool call, for logs and notices.
+fn tool_label(call: Option<&pb::ToolCall>) -> String {
+    let Some(tool) = call.and_then(|call| call.tool.as_ref()) else {
+        // A variant this schema does not model (Cursor adds them often).
+        return "unlisted tool".to_string();
+    };
+    let debug = format!("{tool:?}");
+    let variant = debug.split('(').next().unwrap_or(&debug);
+    variant
+        .strip_suffix("ToolCall")
+        .unwrap_or(variant)
+        .to_string()
+}
+
+/// The head of a call's full debug form: its arguments and, once finished,
+/// Cursor's answer (a refusal says why). Capped, since a read result can be a
+/// whole file.
+fn tool_detail(call: Option<&pb::ToolCall>) -> String {
+    match call.and_then(|call| call.tool.as_ref()) {
+        Some(tool) => format!("{tool:?}").chars().take(400).collect(),
+        None => String::new(),
     }
 }
 
@@ -568,6 +760,7 @@ pub async fn run_turn(
     }
 
     let mut decoder = FrameDecoder::new();
+    let mut state = StreamState::default();
     let mut stream = response.bytes_stream();
     let mut done: Option<DoneReason> = None;
 
@@ -584,7 +777,19 @@ pub async fn run_turn(
         let chunk = match chunk {
             Ok(bytes) => bytes,
             Err(err) => {
-                done = Some(DoneReason::Error(format!("Cursor stream failed: {err}")));
+                // reqwest's own text here is "error decoding response body";
+                // the reason (reset stream, closed connection, timeout) is
+                // only in the cause chain. One turn died this way after 53 s of
+                // silence and the log could not say why.
+                let reason = error_chain(&err);
+                crate::logging::log_warn(
+                    "cursor.stream",
+                    &format!(
+                        "stream broke after {} step(s) and {} Aurora tool call(s) this turn: {reason}",
+                        state.steps, state.aurora_calls
+                    ),
+                );
+                done = Some(DoneReason::Error(format!("Cursor stream failed: {reason}")));
                 break;
             }
         };
@@ -613,7 +818,9 @@ pub async fn run_turn(
                     let Ok(message) = pb::AgentServerMessage::decode(payload.as_slice()) else {
                         continue;
                     };
-                    match handle(message, &mut blobs, &turn, &events, &mut body_tx).await {
+                    match handle(message, &mut blobs, &mut state, &turn, &events, &mut body_tx)
+                        .await
+                    {
                         Ok(Some(reason)) => {
                             done = Some(reason);
                             break 'outer;
@@ -629,6 +836,33 @@ pub async fn run_turn(
         }
     }
 
+    // One line per turn, so a turn that ran several steps on Cursor's side, or
+    // had calls answered there, can be read back from aurora.log afterwards.
+    let cost = state
+        .totals
+        .map(|t| {
+            format!(
+                ", Cursor counted {} in / {} out / {} cache read / {} cache write / {} reasoning",
+                t.input, t.output, t.cache_read, t.cache_write, t.reasoning
+            )
+        })
+        .unwrap_or_default();
+    let routed = state
+        .routed_model
+        .as_deref()
+        .map(|name| format!(", served by {name}"))
+        .unwrap_or_default();
+    crate::logging::log_info(
+        "cursor.turn",
+        &format!(
+            "{}: {} step(s) on Cursor's side, {} tool call(s) Cursor answered itself{cost}{routed}, ended {:?}",
+            turn.model,
+            state.steps,
+            state.server_calls,
+            done.as_ref().unwrap_or(&DoneReason::Stop)
+        ),
+    );
+
     let _ = events
         .send(PumpMessage::Event(TurnEvent::Done(
             done.unwrap_or(DoneReason::Stop),
@@ -641,6 +875,7 @@ pub async fn run_turn(
 async fn handle(
     message: pb::AgentServerMessage,
     blobs: &mut BlobStore,
+    state: &mut StreamState,
     turn: &RunTurn<'_>,
     events: &mpsc::Sender<PumpMessage>,
     body_tx: &mut futures::channel::mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
@@ -693,6 +928,8 @@ async fn handle(
                 .await?;
             }
             Some(pb::exec_server_message::Message::McpStateExecArgs(_)) => {
+                // The model's "explore tools" step, answered by Aurora.
+                state.mark_open_calls_served();
                 send(
                     body_tx,
                     build_mcp_state_reply(exec.id, exec.exec_id, turn.tools.clone()),
@@ -700,6 +937,11 @@ async fn handle(
                 .await?;
             }
             Some(pb::exec_server_message::Message::McpArgs(args)) => {
+                state.mark_open_calls_served();
+                state.aurora_calls += 1;
+                // The adapter closes the message that made this call; what
+                // follows is a new segment and owes it no paragraph break.
+                state.start_segment();
                 let id = safe_tool_call_id(&args.tool_call_id);
                 // Cursor names client tools `mcp_aurora_<tool>` for the model,
                 // and that is the name that comes back. Aurora's executor
@@ -784,14 +1026,31 @@ async fn handle(
             use pb::interaction_update::Message as Update;
             match update.message {
                 Some(Update::TextDelta(delta)) if !delta.text.is_empty() => {
-                    let _ = events
-                        .send(PumpMessage::Event(TurnEvent::Text(delta.text)))
-                        .await;
+                    let text = state.text(&delta.text);
+                    let _ = events.send(PumpMessage::Event(TurnEvent::Text(text))).await;
                 }
                 Some(Update::ThinkingDelta(delta)) if !delta.text.is_empty() => {
-                    let _ = events
-                        .send(PumpMessage::Event(TurnEvent::Thinking(delta.text)))
-                        .await;
+                    let (thinking, answer) = state.split_thinking(&delta.text);
+                    if !thinking.is_empty() {
+                        let thinking = state.thinking(&thinking);
+                        let _ = events
+                            .send(PumpMessage::Event(TurnEvent::Thinking(thinking)))
+                            .await;
+                    }
+                    if !answer.is_empty() {
+                        let text = state.text(&answer);
+                        let _ = events.send(PumpMessage::Event(TurnEvent::Text(text))).await;
+                    }
+                }
+                Some(Update::ThinkingCompleted(done)) => {
+                    // The next thinking, from a later step, is a new paragraph.
+                    state.break_pending = true;
+                    let ms = u64::try_from(done.thinking_duration_ms).unwrap_or(0);
+                    if ms > 0 {
+                        let _ = events
+                            .send(PumpMessage::Event(TurnEvent::ThinkingDuration { ms }))
+                            .await;
+                    }
                 }
                 Some(Update::TokenDelta(delta)) => {
                     let _ = events
@@ -800,25 +1059,208 @@ async fn handle(
                         }))
                         .await;
                 }
-                Some(Update::TurnEnded(_)) => return Ok(Some(DoneReason::Stop)),
-                _ => {}
+                Some(Update::ToolCallStarted(started)) => {
+                    let label = tool_label(started.tool_call.as_ref());
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!("tool call started: {label} (call {})", started.call_id),
+                    );
+                    state.open_calls.insert(
+                        started.call_id,
+                        OpenCall {
+                            label,
+                            served: false,
+                        },
+                    );
+                }
+                Some(Update::ToolCallCompleted(completed)) => {
+                    state.break_pending = true;
+                    // Aurora's own tools and the "explore tools" step both go
+                    // through Aurora; neither is a call Cursor kept to itself.
+                    let is_mcp = matches!(
+                        completed.tool_call.as_ref().and_then(|call| call.tool.as_ref()),
+                        Some(
+                            pb::tool_call::Tool::McpToolCall(_)
+                                | pb::tool_call::Tool::GetMcpToolsToolCall(_)
+                        )
+                    );
+                    let open = state.open_calls.remove(&completed.call_id);
+                    let label = open
+                        .as_ref()
+                        .map(|call| call.label.clone())
+                        .unwrap_or_else(|| tool_label(completed.tool_call.as_ref()));
+                    let served = open.map(|call| call.served).unwrap_or(false);
+                    if served || is_mcp {
+                        crate::logging::log_info(
+                            "cursor.stream",
+                            &format!("tool call finished: {label} (call {})", completed.call_id),
+                        );
+                    } else {
+                        state.server_calls += 1;
+                        crate::logging::log_warn(
+                            "cursor.stream",
+                            &format!(
+                                "Cursor answered a {label} call itself; Aurora never ran it (call {}): {}",
+                                completed.call_id,
+                                tool_detail(completed.tool_call.as_ref())
+                            ),
+                        );
+                        let _ = events
+                            .send(PumpMessage::Event(TurnEvent::ServerToolCall { label }))
+                            .await;
+                    }
+                }
+                Some(Update::StepStarted(step)) => {
+                    state.steps += 1;
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!("step {} started", step.step_id),
+                    );
+                }
+                Some(Update::StepCompleted(step)) => {
+                    state.break_pending = true;
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!(
+                            "step {} finished after {} ms",
+                            step.step_id, step.step_duration_ms
+                        ),
+                    );
+                }
+                Some(Update::SummaryStarted(_)) => {
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        "Cursor started summarising the conversation on its side",
+                    );
+                }
+                Some(Update::Summary(summary)) => {
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!(
+                            "Cursor's summary ({} chars): {}",
+                            summary.summary.chars().count(),
+                            summary.summary.chars().take(300).collect::<String>()
+                        ),
+                    );
+                }
+                Some(Update::SummaryCompleted(done)) => {
+                    state.break_pending = true;
+                    let outcome = if done.failed == Some(true) { "failed" } else { "finished" };
+                    let hook = done
+                        .hook_message
+                        .as_deref()
+                        .map(|message| format!(": {}", message.chars().take(300).collect::<String>()))
+                        .unwrap_or_default();
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!("Cursor's summary {outcome}{hook}"),
+                    );
+                }
+                // A short line Cursor writes about the thinking in progress.
+                // It is part of the thinking, so it goes there as its own
+                // paragraph rather than being dropped.
+                Some(Update::ThinkingNote(note)) if !note.text.trim().is_empty() => {
+                    state.break_pending = true;
+                    let thinking = state.thinking(note.text.trim());
+                    state.break_pending = true;
+                    let _ = events
+                        .send(PumpMessage::Event(TurnEvent::Thinking(thinking)))
+                        .await;
+                }
+                Some(Update::RoutedModel(routed)) => {
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!("Cursor routed the turn to {}", routed.display_name),
+                    );
+                    state.routed_model = Some(routed.display_name);
+                }
+                Some(Update::ToolRequestsListed(listed)) => {
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        &format!("model asked for {} tool call(s)", listed.call_count),
+                    );
+                }
+                Some(Update::ShellOutputDelta(_)) => {
+                    // Cursor only streams shell output for a shell it runs
+                    // itself, which Aurora's allow-list is meant to prevent.
+                    crate::logging::log_warn(
+                        "cursor.stream",
+                        "Cursor streamed output from a shell it ran on its own side",
+                    );
+                }
+                Some(Update::TurnEnded(ended)) => {
+                    if let Some(totals) = TurnTotals::from_update(&ended) {
+                        state.totals = Some(totals);
+                        let _ = events
+                            .send(PumpMessage::Event(TurnEvent::TurnTotals(totals)))
+                            .await;
+                    }
+                    return Ok(Some(DoneReason::Stop));
+                }
+                // Empty deltas, argument streaming for a call that is reported
+                // whole when it starts, the echo of the user's own message, and
+                // keep-alives carry nothing to keep.
+                Some(Update::TextDelta(_))
+                | Some(Update::ThinkingDelta(_))
+                | Some(Update::ThinkingNote(_))
+                | Some(Update::PartialToolCall(_))
+                | Some(Update::ToolCallDelta(_))
+                | Some(Update::UserMessageAppended(_))
+                | Some(Update::Heartbeat(_)) => {}
+                // A variant this schema does not model. The CLI's schema
+                // (2026.10.22) has a dozen more, mostly UI prompts.
+                None => {
+                    crate::logging::log_info(
+                        "cursor.stream",
+                        "skipped an update this version of the Cursor schema does not know",
+                    );
+                }
             }
         }
 
-        Server::ConversationCheckpointUpdate(state) => {
-            if let Some(details) = state
+        Server::ConversationCheckpointUpdate(checkpoint) => {
+            if let Some(details) = checkpoint
                 .token_details
                 .filter(|details| details.used_tokens > 0)
             {
-                let _ = events
-                    .send(PumpMessage::Event(TurnEvent::ContextUsage {
-                        used_tokens: details.used_tokens,
-                    }))
-                    .await;
+                // A reading past Cursor's own ceiling is not how full the
+                // conversation is (one turn read 1,712,135 against a 500k
+                // window). Passing it on drew a meter at 100% of nonsense, so
+                // it is logged and dropped; the adapter falls back to its own
+                // count.
+                if details.max_tokens > 0 && details.used_tokens > details.max_tokens {
+                    crate::logging::log_warn(
+                        "cursor.stream",
+                        &format!(
+                            "ignored a context reading of {} tokens, above Cursor's own limit of {}",
+                            details.used_tokens, details.max_tokens
+                        ),
+                    );
+                } else {
+                    let _ = events
+                        .send(PumpMessage::Event(TurnEvent::ContextUsage {
+                            used_tokens: details.used_tokens,
+                        }))
+                        .await;
+                }
             }
         }
 
-        _ => {}
+        // Cursor asking its client a question (web search approval, switch
+        // mode, ask the user). Aurora hides the tools that raise these, so one
+        // arriving is worth knowing about: the server may wait on an answer.
+        Server::InteractionQuery(query) => {
+            let variant: String = format!("{:?}", query.query).chars().take(120).collect();
+            crate::logging::log_warn(
+                "cursor.stream",
+                &format!("Cursor sent a question Aurora does not answer: {variant}"),
+            );
+        }
+
+        Server::ExecServerControlMessage(control) => {
+            let variant: String = format!("{control:?}").chars().take(120).collect();
+            crate::logging::log_info("cursor.stream", &format!("exec control: {variant}"));
+        }
     }
 
     Ok(None)
@@ -1159,9 +1601,16 @@ mod tests {
             },
         );
 
-        let done = handle(message, &mut blobs, &turn, &events, &mut body_tx)
-            .await
-            .expect("checkpoint must decode");
+        let done = handle(
+            message,
+            &mut blobs,
+            &mut StreamState::default(),
+            &turn,
+            &events,
+            &mut body_tx,
+        )
+        .await
+        .expect("checkpoint must decode");
 
         assert_eq!(done, None);
         assert!(matches!(
@@ -1170,6 +1619,293 @@ mod tests {
                 used_tokens: 42_123
             }))
         ));
+    }
+
+    fn update(message: pb::interaction_update::Message) -> pb::AgentServerMessage {
+        pb::AgentServerMessage {
+            message: Some(pb::agent_server_message::Message::InteractionUpdate(
+                pb::InteractionUpdate {
+                    message: Some(message),
+                },
+            )),
+        }
+    }
+
+    fn read_call(id: &str) -> Option<pb::ToolCall> {
+        Some(pb::ToolCall {
+            tool: Some(pb::tool_call::Tool::ReadToolCall(Default::default())),
+            tool_call_id: Some(id.into()),
+            ..Default::default()
+        })
+    }
+
+    /// Run server messages through one stream and collect what comes out.
+    async fn drive(messages: Vec<pb::AgentServerMessage>) -> Vec<TurnEvent> {
+        let (events, mut receiver) = mpsc::channel(64);
+        let (mut body_tx, _body_rx) = futures::channel::mpsc::channel(64);
+        let mut blobs = BlobStore::new();
+        let mut state = StreamState::default();
+        let turn = turn_for(
+            "cursor-grok-4.7",
+            TurnInput {
+                root_messages: Vec::new(),
+                user_text: "hi".into(),
+            },
+        );
+        for message in messages {
+            handle(message, &mut blobs, &mut state, &turn, &events, &mut body_tx)
+                .await
+                .expect("the message must be handled");
+        }
+        drop(events);
+        let mut out = Vec::new();
+        while let Some(PumpMessage::Event(event)) = receiver.recv().await {
+            out.push(event);
+        }
+        out
+    }
+
+    fn text_of(events: &[TurnEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                TurnEvent::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn thinking_of(events: &[TurnEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                TurnEvent::Thinking(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The turn behind this: the model's calls were finished on Cursor's side,
+    /// the reply said they "came back unavailable", and Aurora had no record.
+    #[tokio::test]
+    async fn a_call_cursor_answers_itself_is_reported_and_splits_the_text() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![
+            update(U::TextDelta(pb::TextDeltaUpdate {
+                text: "I'll inspect it again.".into(),
+            })),
+            update(U::ToolCallStarted(pb::ToolCallStartedUpdate {
+                call_id: "c1".into(),
+                tool_call: read_call("c1"),
+                ..Default::default()
+            })),
+            update(U::ToolCallCompleted(pb::ToolCallCompletedUpdate {
+                call_id: "c1".into(),
+                tool_call: read_call("c1"),
+                ..Default::default()
+            })),
+            update(U::TextDelta(pb::TextDeltaUpdate {
+                text: "The files could not be read.".into(),
+            })),
+        ])
+        .await;
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, TurnEvent::ServerToolCall { label } if label == "Read")),
+            "{events:?}"
+        );
+        assert_eq!(
+            text_of(&events),
+            "I'll inspect it again.\n\nThe files could not be read.",
+            "two steps' text must not glue into one sentence"
+        );
+    }
+
+    /// The model's "explore tools" step is answered by Aurora while it is
+    /// open. It must not be reported as a call Aurora never saw.
+    #[tokio::test]
+    async fn a_call_aurora_answered_while_open_is_not_reported() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![
+            update(U::ToolCallStarted(pb::ToolCallStartedUpdate {
+                call_id: "explore".into(),
+                tool_call: Some(pb::ToolCall::default()),
+                ..Default::default()
+            })),
+            pb::AgentServerMessage {
+                message: Some(pb::agent_server_message::Message::ExecServerMessage(
+                    pb::ExecServerMessage {
+                        id: 1,
+                        exec_id: "e1".into(),
+                        message: Some(pb::exec_server_message::Message::McpStateExecArgs(
+                            pb::McpStateExecArgs::default(),
+                        )),
+                        ..Default::default()
+                    },
+                )),
+            },
+            update(U::ToolCallCompleted(pb::ToolCallCompletedUpdate {
+                call_id: "explore".into(),
+                tool_call: Some(pb::ToolCall::default()),
+                ..Default::default()
+            })),
+        ])
+        .await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TurnEvent::ServerToolCall { .. })),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_keeps_cursors_duration_and_later_stretches_start_a_paragraph() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "First look.".into(),
+            })),
+            update(U::ThinkingCompleted(pb::ThinkingCompletedUpdate {
+                thinking_duration_ms: 3_000,
+            })),
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "Second look.".into(),
+            })),
+        ])
+        .await;
+
+        assert_eq!(thinking_of(&events), "First look.\n\nSecond look.");
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, TurnEvent::ThinkingDuration { ms: 3_000 })));
+    }
+
+    /// Some models write the answer after `</think>` inside the thinking
+    /// stream and never send text. Kept as thinking, the reply is empty.
+    #[tokio::test]
+    async fn an_answer_after_the_think_tag_becomes_the_reply() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "weighing it</th".into(),
+            })),
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "ink>\nThe answer".into(),
+            })),
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: " is 4.".into(),
+            })),
+        ])
+        .await;
+
+        assert_eq!(thinking_of(&events), "weighing it</th");
+        assert_eq!(text_of(&events), "The answer is 4.");
+    }
+
+    #[tokio::test]
+    async fn a_context_reading_above_cursors_own_limit_is_dropped() {
+        let events = drive(vec![pb::AgentServerMessage {
+            message: Some(
+                pb::agent_server_message::Message::ConversationCheckpointUpdate(
+                    pb::ConversationStateStructure {
+                        token_details: Some(pb::ConversationTokenDetails {
+                            used_tokens: 1_712_135,
+                            max_tokens: 500_000,
+                        }),
+                        ..Default::default()
+                    },
+                ),
+            ),
+        }])
+        .await;
+
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    /// The explore-tools call has its own variant (field 44 in the CLI's
+    /// schema). It is Aurora's, even if its exec answer lands outside the
+    /// started/finished window.
+    #[tokio::test]
+    async fn the_explore_tools_call_is_never_reported_as_cursors_own() {
+        use pb::interaction_update::Message as U;
+        let explore = Some(pb::ToolCall {
+            tool: Some(pb::tool_call::Tool::GetMcpToolsToolCall(Default::default())),
+            ..Default::default()
+        });
+        let events = drive(vec![
+            update(U::ToolCallStarted(pb::ToolCallStartedUpdate {
+                call_id: "x".into(),
+                tool_call: explore.clone(),
+                ..Default::default()
+            })),
+            update(U::ToolCallCompleted(pb::ToolCallCompletedUpdate {
+                call_id: "x".into(),
+                tool_call: explore,
+                ..Default::default()
+            })),
+        ])
+        .await;
+
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, TurnEvent::ServerToolCall { .. })),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_turn_end_carries_cursors_real_token_counts() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![update(U::TurnEnded(pb::TurnEndedUpdate {
+            input_tokens: Some(1_711_817),
+            output_tokens: Some(318),
+            cache_read_tokens: Some(1_500_000),
+            reasoning_tokens: Some(90),
+            ..Default::default()
+        }))])
+        .await;
+
+        assert_eq!(
+            events,
+            vec![TurnEvent::TurnTotals(TurnTotals {
+                input: 1_711_817,
+                output: 318,
+                cache_read: 1_500_000,
+                cache_write: 0,
+                reasoning: 90,
+            })]
+        );
+
+        // An older server sends the update empty: no made-up zeros.
+        let empty = drive(vec![update(U::TurnEnded(pb::TurnEndedUpdate::default()))]).await;
+        assert!(empty.is_empty(), "{empty:?}");
+    }
+
+    #[tokio::test]
+    async fn a_thinking_note_is_kept_as_its_own_paragraph_of_thinking() {
+        use pb::interaction_update::Message as U;
+        let events = drive(vec![
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "Reading the coordinator.".into(),
+            })),
+            update(U::ThinkingNote(pb::ThinkingNoteUpdate {
+                text: "Checking callers".into(),
+            })),
+            update(U::ThinkingDelta(pb::ThinkingDeltaUpdate {
+                text: "Twelve match.".into(),
+            })),
+        ])
+        .await;
+
+        assert_eq!(
+            thinking_of(&events),
+            "Reading the coordinator.\n\nChecking callers\n\nTwelve match."
+        );
     }
 
     /// Cursor asks who the client's MCP servers are before the model may use
@@ -1209,9 +1945,16 @@ mod tests {
             input_schema: serde_json::json!({ "type": "object" }),
         }]);
 
-        let done = handle(message, &mut blobs, &turn, &events, &mut body_tx)
-            .await
-            .expect("the handshake must be answered");
+        let done = handle(
+            message,
+            &mut blobs,
+            &mut StreamState::default(),
+            &turn,
+            &events,
+            &mut body_tx,
+        )
+        .await
+        .expect("the handshake must be answered");
         assert_eq!(done, None, "answering must not end the turn");
 
         let framed = body_rx

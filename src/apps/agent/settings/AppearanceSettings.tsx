@@ -67,6 +67,14 @@ import {
   type SelectOption,
 } from "./primitives";
 import { useSettingsQuery } from "./settings-search";
+import { TOOL_ICON_SET_LIST } from "@/apps/agent/components/tools/tool-icons/tool-icon-sets";
+import type { ToolIconSetId } from "@/apps/agent/theme/appearance-prefs";
+
+/** Built once: the sets are a static registry, not something imported live. */
+const TOOL_ICON_SET_OPTIONS: SelectOption[] = TOOL_ICON_SET_LIST.map((set) => ({
+  value: set.id,
+  label: set.name,
+}));
 import { useAgentUiStore, type AppearanceTab } from "@/apps/agent/store/ui/useAgentUiStore";
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
@@ -392,6 +400,8 @@ export const AppearanceSettings: React.FC = () => {
   const syntaxHighlighting = useAgentThemeStore((s) => s.syntaxHighlighting);
   const railGlide = useAgentThemeStore((s) => s.railGlide);
   const railGlideMs = useAgentThemeStore((s) => s.railGlideMs);
+  const toolIconSet = useAgentThemeStore((s) => s.toolIconSet);
+  const setToolIconSet = useAgentThemeStore((s) => s.setToolIconSet);
 
   // File icons live in the SHARED settings store rather than the agent theme
   // store: the editor window owns the same choice, and a second copy would let
@@ -892,6 +902,23 @@ export const AppearanceSettings: React.FC = () => {
             width={180}
           />
         </SettingsRow>
+        {/* Tool icons. Hidden until a second drawing set exists: a dropdown
+            with one choice is a control that does nothing. The registry in
+            `components/tools/tool-icons/` decides, so adding a set shows it. */}
+        {TOOL_ICON_SET_OPTIONS.length > 1 && (
+          <SettingsRow
+            label="Tool icons"
+            hint="Icon set for tool rows in the transcript: reading, writing, searching, commands and grouped runs. MCP tools keep their own icon."
+          >
+            <AgwSelect
+              value={toolIconSet}
+              ariaLabel="Tool icons"
+              options={TOOL_ICON_SET_OPTIONS}
+              onChange={(id) => setToolIconSet(id as ToolIconSetId)}
+              width={180}
+            />
+          </SettingsRow>
+        )}
         <SettingsRow
           label="Translucent sidebar"
           hint="Frosted, semi-transparent rail and dock."

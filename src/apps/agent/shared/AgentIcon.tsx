@@ -10,12 +10,24 @@
  * Usage:
  *   <AgentIcon name="send" size={14} />
  *   <AgentIcon name="chat" />            // defaults to 16px
+ *   <AgentIcon name="home" solid />      // the selected state, where one exists
  *
+ * The set is the BOLD OUTLINE family, picked 2026-10-23 from
+ * Documents\aurora-icon-direction-designs.html (card 04) after a side-by-side
+ * with Claude desktop showed the old set drawing 8–14px with a ~1px line.
  * Conventions for every glyph:
- *   • 24×24 viewBox, drawn on a 1.5px optical grid
- *   • stroke = currentColor, fill = none (so it inherits text color)
- *   • round caps + joins for a soft, modern feel
+ *   • 24×24 viewBox, live area roughly 3–21
+ *   • stroke = currentColor at 2 on the grid, fill = none
+ *   • round caps + joins; containers use a 3 corner radius
+ *   • few, large shapes — no interior detail that turns to mush at 14px
  *   • small solid accents (dots) opt into fill via `fill="currentColor"`
+ *
+ * `solid` — THE SELECTED STATE.
+ *
+ * Glyphs that can be the selected thing (a rail destination, a pinned chat)
+ * carry a filled twin in `SOLID`. Inner detail (a door, a hub) is painted in
+ * `--agw-icon-cut`, which the container sets to its own fill. A name without a
+ * twin falls back to its outline.
  *
  * `data-part` — THE WORKING PART.
  *
@@ -157,804 +169,835 @@ export type AgentIconName =
  *
  * `size` is the authored pixel size at 100%. Below 100% the glyph tracks the
  * scale exactly; above it, at HALF the rate. Both branches meet at 1, so an
- * untouched install renders the authored px and nothing moves.
+ * untouched install renders the drawn px and nothing moves.
  *
  * The half-rate branch above 100% is the part that matters. Icons live inside
  * fixed-height controls (`.agw-icon-btn` is 28px, a rail row is 34px) that do
  * not grow with the text scale, and a glyph tracking the scale 1:1 fills them.
- * Half-rate also keeps the icon reading a touch smaller than the label beside
- * it, which is the relationship the authored sizes were picked for.
- *
- * Before this, `size` was a hard px attribute: turning Interface text size up
- * to 115% grew every label and left every glyph where it was, so rows that were
- * optically balanced at 100% went lopsided at any other setting.
  */
 function scaledLength(size: number): string {
-  const half = size / 2;
-  return `min(calc(${size}px * var(--agw-ui-text-scale, 1)), calc(${half}px + ${half}px * var(--agw-ui-text-scale, 1)))`;
+  const drawn = drawnSize(size);
+  const half = drawn / 2;
+  return `min(calc(${drawn}px * var(--agw-ui-text-scale, 1)), calc(${half}px + ${half}px * var(--agw-ui-text-scale, 1)))`;
+}
+
+/**
+ * Authored size → drawn size. Call sites were authored across seven sizes
+ * (11–18px); the bold set draws at a few, one per place: 14 in rows and
+ * inline marks, 16 for search and list glyphs, 18 in the composer, 20 on the
+ * rail. Anything 20px or larger was already sized for its box and stays.
+ */
+function drawnSize(size: number): number {
+  if (size <= 10) return size + 3;
+  if (size < 14) return 14;
+  if (size < 15) return 16;
+  if (size < 18) return 18;
+  if (size < 20) return 20;
+  return size;
 }
 
 interface AgentIconProps {
   name: AgentIconName;
   /** Authored pixel size at 100% interface text size (width = height). Defaults to 16. */
   size?: number;
-  /** Stroke weight on the 24-grid. Defaults to 1.8. */
+  /** Stroke weight on the 24-grid. Defaults to 2. */
   strokeWidth?: number;
+  /** Draw the filled selected-state twin, when the glyph has one. */
+  solid?: boolean;
   className?: string;
   style?: React.CSSProperties;
   /** Accessible label; when omitted the icon is decorative (aria-hidden). */
   title?: string;
+  /**
+   * Shapes to draw in place of this name's entry, on the SAME frame: 24-grid
+   * viewBox, currentColor stroke, drawn size and text scaling. An opt-in tool
+   * icon set (`components/tools/tool-icons/`) draws through here, so its marks
+   * size, scale and animate (`data-part`) exactly like the set they replace.
+   */
+  glyph?: React.ReactNode;
 }
+
+// Shared outlines. A document is the most repeated shape in the set; drawing
+// it once keeps every file glyph the same page.
+const DOC = "M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z";
+const DOC_FOLD = "M14 3v3.5A1.5 1.5 0 0 0 15.5 8H19";
+// A document open on its lower right, so a second mark (lens, pencil, arrow)
+// can sit in the corner without crossing the page.
+const DOC_OPEN = "M10.5 21h-3A2.5 2.5 0 0 1 5 18.5v-13A2.5 2.5 0 0 1 7.5 3H14l5 5v2.5";
+const BUBBLE = "M7 4h10a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3h-5.5L7 19.5V16a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z";
+const FOLDER =
+  "M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4a2 2 0 0 1 1.4.6L11.7 7h6.8A2.5 2.5 0 0 1 21 9.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z";
+const EYE = "M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z";
+const HOUSE = "M4 10.4 12 4l8 6.4V19a1.2 1.2 0 0 1-1.2 1.2H5.2A1.2 1.2 0 0 1 4 19z";
+const GEAR =
+  "M9.41 5.39 L9.81 3.07 L14.19 3.07 L14.59 5.39 L16.43 6.45 L18.64 5.63 L20.83 9.43 L19.02 10.94 L19.02 13.06 L20.83 14.57 L18.64 18.37 L16.43 17.55 L14.59 18.61 L14.19 20.93 L9.81 20.93 L9.41 18.61 L7.57 17.55 L5.36 18.37 L3.17 14.57 L4.98 13.06 L4.98 10.94 L3.17 9.43 L5.36 5.63 L7.57 6.45Z";
+const PUZZLE =
+  "M9.5 4.5a2.5 2.5 0 0 1 5 0V6H18v3.5h-1.5a2.5 2.5 0 0 0 0 5H18V18h-3.5v-1.5a2.5 2.5 0 0 0-5 0V18H6v-3.5h1.5a2.5 2.5 0 0 0 0-5H6V6h3.5z";
+const PIN_HEAD = "M9 3.5h6l-.8 5.3 3.3 3V14h-11v-2.2l3.3-3z";
+
+/**
+ * The detail drawn ON a filled twin (a door, a hub, a horizon) is painted in
+ * the colour the mark sits on, not cut as a hole. Even-odd holes shrank by the
+ * stroke on every side and the Images twin rendered as a white blob
+ * (2026-10-23). A container that shows a solid mark sets `--agw-icon-cut` to
+ * its own OPAQUE fill.
+ */
+const CUT = "var(--agw-icon-cut, var(--agw-canvas))";
+
+/**
+ * Filled twins for glyphs that can be the selected thing. Drawn with the same
+ * stroke as the outline (so corners stay round) plus a fill; inner detail is
+ * painted over it in `CUT`.
+ *
+ * Declared ABOVE the outline table on purpose: tool-glyph-motion.test.ts reads
+ * every entry after that table's declaration as an outline, and a twin there
+ * would overwrite its outline (the twins carry no `data-part`).
+ */
+const SOLID: Partial<Record<AgentIconName, React.ReactNode>> = {
+  home: (
+    <>
+      <path d={HOUSE} />
+      <rect x="9.9" y="14.2" width="4.2" height="7" rx="1" fill={CUT} stroke="none" />
+    </>
+  ),
+  images: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <circle cx="9" cy="10" r="1.9" fill={CUT} stroke="none" />
+      <path d="m5 16.6 4-3.4 3.4 2.9 2.6-2.1 4 3.1" stroke={CUT} fill="none" />
+    </>
+  ),
+  // Each book keeps its own edge in CUT, or the three fill into one block.
+  library: (
+    <g stroke={CUT} strokeWidth={1.5}>
+      <rect x="2.4" y="3.2" width="6.9" height="17.6" rx="2.2" />
+      <rect x="9.6" y="3.2" width="6.9" height="17.6" rx="2.2" />
+      <rect x="16.6" y="3.8" width="6" height="17.2" rx="2" transform="rotate(-12 19.6 12.4)" />
+    </g>
+  ),
+  puzzle: <path d={PUZZLE} />,
+  settings: (
+    <>
+      <path d={GEAR} />
+      <circle cx="12" cy="12" r="2.8" fill={CUT} stroke="none" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 20.5c.8-3.8 3.9-6 7.5-6s6.7 2.2 7.5 6z" />
+    </>
+  ),
+  cpu: (
+    <>
+      <rect x="6" y="6" width="12" height="12" rx="3" />
+      <rect x="10" y="10" width="4" height="4" rx="1" fill={CUT} stroke="none" />
+      <path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3" />
+    </>
+  ),
+  database: (
+    <>
+      <path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13" />
+      <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
+      <path d="M5 8.6c1.6 1 4.1 1.6 7 1.6s5.4-.6 7-1.6M5 13.4c1.6 1 4.1 1.6 7 1.6s5.4-.6 7-1.6" stroke={CUT} fill="none" strokeWidth={1.6} />
+    </>
+  ),
+  pin: (
+    <>
+      <path d={PIN_HEAD} />
+      <path d="M12 14v6.5" />
+    </>
+  ),
+};
 
 /**
  * Glyph geometry. Each entry returns the inner SVG primitives; the wrapper
  * supplies the shared stroke/fill/cap defaults.
  */
 const GLYPHS: Record<AgentIconName, React.ReactNode> = {
-  // Layout — left panel with a thin sidebar column.
+  // Layout — left panel with a sidebar column.
   "panel-left": (
     <>
-      <rect x="3.25" y="4.25" width="17.5" height="15.5" rx="2.6" />
-      <line x1="9" y1="4.75" x2="9" y2="19.25" />
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M9.5 4.5v15" />
     </>
   ),
 
   // Layout — right panel (dock) with the column on the trailing edge.
   "panel-right": (
     <>
-      <rect x="3.25" y="4.25" width="17.5" height="15.5" rx="2.6" />
-      <line x1="15" y1="4.75" x2="15" y2="19.25" pathLength={1} data-part="line" />
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M14.5 4.5v15" pathLength={1} data-part="line" />
     </>
   ),
 
   // Collapse rail — double chevron pointing left.
   "chevrons-left": (
     <>
-      <path d="M11 7l-4.5 5 4.5 5" />
-      <path d="M17.5 7L13 12l4.5 5" />
+      <path d="m11.5 7-5 5 5 5" />
+      <path d="m18 7-5 5 5 5" />
     </>
   ),
 
   // Disclosure chevron.
-  "chevron-down": <path d="M5.5 9.5l6.5 6 6.5-6" />,
+  "chevron-down": <path d="m6.5 9.5 5.5 5.5 5.5-5.5" />,
   // Breadcrumb separator.
-  "chevron-right": <path d="M9.5 5.5l6 6.5-6 6.5" />,
+  "chevron-right": <path d="m9.5 6.5 5.5 5.5-5.5 5.5" />,
 
-  // Agent mode — an original faceted mark (a cut crystal / entity). Bespoke,
-  // not a stock glyph. Pairs with `book` (Plan mode).
+  // Agent mode — a cut crystal: the outline and its crown line. Pairs with
+  // `book` (Plan mode).
   facet: (
     <>
-      <path d="M12 3l6.5 6-6.5 12-6.5-12z" />
-      <path d="M5.5 9h13" />
-      <path d="M12 3v18" />
+      <path d="M12 3 19 9.5 12 21 5 9.5z" />
+      <path d="M5 9.5h14" />
+      <path d="M12 9.5V21" />
     </>
   ),
 
-  // Fast lane — a storm bolt with two streaks driving into it. Cut on the same
-  // angular grid as `facet` so the two sit together on the model pill and read
-  // as one family: the crystal says which mode, the bolt says how fast.
-  //
-  // The streaks are what make it a storm rather than a battery or a warning
-  // triangle at 13px, where the bolt alone loses its silhouette.
+  // Fast lane — a bolt with two streaks driving into it, cut on the same
+  // angular grid as `facet` so the two sit together on the model pill.
   bolt: (
     <>
-      <path d="M13.5 2.5L7 13h4l-.5 8.5L17 11h-4z" data-part="pulse" />
-      <path d="M5 6.5h2.5" />
-      <path d="M3 10h2.5" />
+      <path d="M14 3 7 13.5h5L11 21l7-10.5h-5z" data-part="pulse" />
+      <path d="M3.5 7H6" />
+      <path d="M2.5 11H5" />
     </>
   ),
 
-  // Refine / composer assists — a fountain-pen nib above its freshly written
-  // line. Bespoke mark (pairs with `facet`); deliberately NOT a sparkle.
+  // Refine / composer assists — a pen nib over its freshly written line.
+  // Deliberately NOT a sparkle.
   refine: (
     <>
-      <path d="M8 4.5h8l1 5.5-5 6.5-5-6.5z" />
-      <circle cx="12" cy="8" r="1" />
-      <path d="M12 9.6v3.4" />
-      <path d="M6.5 20.5h11" />
+      <path d="M8 3.5h8l1.2 6L12 16 6.8 9.5z" />
+      <path d="M12 7.5v4" />
+      <path d="M5.5 20.5h13" />
     </>
   ),
 
   // New chat / add.
   plus: (
     <>
-      <path d="M12 5.5v13" />
-      <path d="M5.5 12h13" />
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
     </>
   ),
 
   // Search.
   search: (
     <>
-      <circle cx="11" cy="11" r="6.4" data-part="lens" />
-      <path d="M20 20l-4.3-4.3" data-part="lens" />
+      <circle cx="10.5" cy="10.5" r="6.5" data-part="lens" />
+      <path d="m15.5 15.5 5 5" data-part="lens" />
     </>
   ),
 
   "zoom-in": (
     <>
-      <circle cx="10.5" cy="10.5" r="6.25" />
-      <path d="M15.2 15.2 20 20" />
-      <path d="M10.5 7.7v5.6M7.7 10.5h5.6" />
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m15.5 15.5 5 5" />
+      <path d="M10.5 7.5v6M7.5 10.5h6" />
     </>
   ),
 
   "zoom-out": (
     <>
-      <circle cx="10.5" cy="10.5" r="6.25" />
-      <path d="M15.2 15.2 20 20" />
-      <path d="M7.7 10.5h5.6" />
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="m15.5 15.5 5 5" />
+      <path d="M7.5 10.5h6" />
     </>
   ),
 
   fit: (
     <>
-      <path d="M9 4.5H4.5V9M15 4.5h4.5V9M9 19.5H4.5V15M15 19.5h4.5V15" />
-      <rect x="8" y="8" width="8" height="8" rx="1.5" />
+      <path d="M8.5 4H5a1 1 0 0 0-1 1v3.5M15.5 4H19a1 1 0 0 1 1 1v3.5M8.5 20H5a1 1 0 0 1-1-1v-3.5M15.5 20H19a1 1 0 0 0 1-1v-3.5" />
+      <rect x="8.5" y="8.5" width="7" height="7" rx="1.5" />
     </>
   ),
 
-  // Conversation bubble (rail list rows) — rounded with a bottom-left tail.
-  message: (
-    <path d="M7 4h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4 3.2V15a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z" />
-  ),
+  // Conversation bubble — rounded with a bottom-left tail.
+  message: <path d={BUBBLE} />,
 
-  // Chat / thread glyph (rail rows + conversation header) — TURNS, not a bubble.
-  //
-  // Two pill bars: a long one aligned LEFT, a short one aligned RIGHT. That is
-  // this app's own transcript shape (incoming stacks left, the reply stacks
-  // right) reduced to two strokes, so the mark says "a conversation with turns"
-  // instead of borrowing the generic speech balloon every other chat app uses.
-  //
-  // Why it survives 14px, where the old outlined bubble did not: no contour to
-  // enclose anything, no interior detail competing with it — two heavy strokes
-  // (2.7 vs the set's 1.8) with round caps, held 6 units apart so the gap is
-  // still ~3 device px at the sizes this is actually rendered at. The staggered
-  // alignment is what keeps it from reading as a list or a menu icon.
+  // Chat / thread glyph — TURNS, not a bubble: a long bar aligned left and a
+  // short one aligned right, this app's own transcript shape in two strokes.
+  // Heavier than the set (3 vs 2) because it has no contour to carry weight.
   chat: (
     <>
-      <path d="M4.5 8.6h12.5" strokeWidth={2.9} />
-      <path d="M13.5 15.4h6" strokeWidth={2.9} />
+      <path d="M4.5 8.5h12.5" strokeWidth={3} />
+      <path d="M13 15.5h6.5" strokeWidth={3} />
     </>
   ),
 
   // Overflow actions — three dots.
   more: (
     <>
-      <circle cx="5.2" cy="12" r="1.65" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="12" r="1.65" fill="currentColor" stroke="none" />
-      <circle cx="18.8" cy="12" r="1.65" fill="currentColor" stroke="none" />
+      <circle cx="5" cy="12" r="1.8" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.8" fill="currentColor" stroke="none" />
     </>
   ),
 
-  // design_guidelines / canvas_guidelines — an artboard with two layout guides
-  // running across it. Bespoke (pairs with `facet` and `refine`).
-  //
-  // It used to fall through to `diff`, so the tool that hands over the design
-  // doctrine wore a document-with-a-folded-corner — the file family's mark, on
-  // a tool that touches no file. What this tool uniquely carries is the RULES a
-  // surface is held to, so the mark is the thing you snap to: guides that run
-  // past the edges of the frame (a guide belongs to the canvas, not to the box)
-  // and sit deliberately OFF-centre, which reads as considered proportion
-  // rather than as a grid or a crop.
+  // design_guidelines / canvas_guidelines — an artboard with two guides that
+  // run past its edges, set off-centre: the rules a surface snaps to.
   "design-guidelines": (
     <>
-      <path d="M5 5h14v14H5z" />
+      <rect x="5" y="5" width="14" height="14" rx="2" />
       <path d="M14 2.5v19" data-part="travel" />
       <path d="M2.5 9.5h19" data-part="travel-y" />
     </>
   ),
 
-  // File diff chip — document with a folded corner and a change marker.
+  // File diff chip — the page with a change marker.
   diff: (
     <>
-      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
-      <path d="M13.5 3.5V8H18" />
-      <path d="M9.5 13.5h5" data-part="pulse" />
-      <path d="M12 11v5" data-part="pulse" />
+      <path d={DOC} />
+      <path d={DOC_FOLD} />
+      <path d="M9.5 14h5" data-part="pulse" />
+      <path d="M12 11.5v5" data-part="pulse" />
     </>
   ),
 
-  // file_read — a document showing text lines (reading existing content).
+  // file_read — the page under a lens.
   "file-read": (
     <>
-      <path d="M6 3.5h6.5L16 7v4.3" />
-      <path d="M12.5 3.5V7H16" />
-      <path d="M6 3.5v17h6" />
-      <path d="M8.8 11h3.3" pathLength={1} data-part="line" />
-      <circle cx="16.2" cy="16.2" r="3.4" data-part="lens" />
-      <path d="m18.7 18.7 2.3 2.3" data-part="lens" />
+      <path d={DOC_OPEN} />
+      <path d={DOC_FOLD} />
+      <path d="M8.5 12h3.5" pathLength={1} data-part="line" />
+      <circle cx="16" cy="16" r="3.2" data-part="lens" />
+      <path d="m18.5 18.5 2.5 2.5" data-part="lens" />
     </>
   ),
 
-  // file_write — a document with a plus: create or overwrite with new content.
+  // file_write — the page with a plus: create or overwrite.
   "file-write": (
     <>
-      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
-      <path d="M13.5 3.5V8H18" />
-      <path d="M12 11.3v5.4" data-part="pulse" />
-      <path d="M9.3 14h5.4" data-part="pulse" />
+      <path d={DOC} />
+      <path d={DOC_FOLD} />
+      <path d="M12 11v6" data-part="pulse" />
+      <path d="M9 14h6" data-part="pulse" />
     </>
   ),
 
-  // file_edit — a document with a pencil over a line: a surgical edit.
+  // file_edit — the page with a pencil in its corner: a surgical edit.
   "file-edit": (
     <>
-      <path d="M8 3.5h5.5L18 8v4.2" />
-      <path d="M8 3.5A1.5 1.5 0 0 0 6 5v13.5A1.5 1.5 0 0 0 7.5 20H10" />
-      <path d="M8.8 12.2h3" pathLength={1} data-part="line" />
-      <path d="M15.7 12.5l1.9 1.9-4.4 4.4-2.4.5.5-2.4z" data-part="nib" />
+      <path d={DOC_OPEN} />
+      <path d={DOC_FOLD} />
+      <path d="M8.5 12h3" pathLength={1} data-part="line" />
+      <path d="m17 13 2.5 2.5L14 21h-2.5v-2.5z" data-part="nib" />
     </>
   ),
 
-  // pencil — the bare tool, no document under it.
-  //
-  // `file-edit` already carries a pencil, but it carries a page as well, so it
-  // says "edit this file". Where the thing being edited is a value already on
-  // screen — a number in a row — the page is a second subject the glyph does
-  // not have.
+  // pencil — the bare tool, for editing a value already on screen.
   pencil: (
     <>
-      <path d="M16.4 4.6l3 3-9.6 9.6-4 1 1-4z" />
-      <path d="M14.3 6.7l3 3" data-part="nib" />
+      <path d="M15.5 4.5a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3L9 19l-4.5 1 1-4.5z" />
+      <path d="m14 6 4 4" data-part="nib" />
     </>
   ),
 
-  // file_move — an open document with an arrow exiting right (move / rename).
+  // file_move — the page with an arrow leaving its corner.
   "file-move": (
     <>
-      <path d="M7 4h4.8L15 7.2V11" />
-      <path d="M7 4A1.45 1.45 0 0 0 5.55 5.45V18.55A1.45 1.45 0 0 0 7 20h3.2" />
-      <path d="M12.5 16.5h6" pathLength={1} data-part="line" />
-      <path d="M16 14l2.5 2.5L16 19" data-part="travel" />
+      <path d={DOC_OPEN} />
+      <path d={DOC_FOLD} />
+      <path d="M12.5 16.5h7" pathLength={1} data-part="line" />
+      <path d="m17 13.5 3 3-3 3" data-part="travel" />
     </>
   ),
 
-  // file_delete — a document with an X (remove).
+  // file_delete — the page with an X.
   "file-delete": (
     <>
-      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
-      <path d="M13.5 3.5V8H18" />
-      <path d="M10 12.4l4 4" data-part="pulse" />
-      <path d="M14 12.4l-4 4" data-part="pulse" />
+      <path d={DOC} />
+      <path d={DOC_FOLD} />
+      <path d="m10 12.5 4 4" data-part="pulse" />
+      <path d="m14 12.5-4 4" data-part="pulse" />
     </>
   ),
 
-  // The `code` tool — one symbol and the things that reach it. Bespoke, and
-  // deliberately NOT angle brackets: `<>` says "source code" generically, which
-  // is every other tool here too. What this tool uniquely knows is the EDGES —
-  // where a definition sits and who depends on it — so the mark is a filled
-  // anchor node with three lines arriving. Reads distinctly from `search`
-  // (grep's magnifier) and from `workspace-tree` at 16px.
+  // The `code` tool — one symbol and the things that reach it: a filled anchor
+  // node with three edges arriving. Deliberately NOT angle brackets.
   "code-index": (
     <>
-      <circle cx="16.5" cy="12" r="3" fill="currentColor" stroke="none" data-part="pulse" />
-      <circle cx="5" cy="5.5" r="1.6" />
-      <circle cx="5" cy="12" r="1.6" />
-      <circle cx="5" cy="18.5" r="1.6" />
-      <path d="M6.6 5.9L13.6 10.6" data-part="flow" />
-      <path d="M6.6 12h6.9" data-part="flow" />
-      <path d="M6.6 18.1l7-4.7" data-part="flow" />
+      <circle cx="16.5" cy="12" r="3.2" fill="currentColor" stroke="none" data-part="pulse" />
+      <circle cx="5" cy="5.5" r="1.8" />
+      <circle cx="5" cy="12" r="1.8" />
+      <circle cx="5" cy="18.5" r="1.8" />
+      <path d="m6.8 6.6 6.6 4" data-part="flow" />
+      <path d="M7 12h6" data-part="flow" />
+      <path d="m6.8 17.4 6.6-4" data-part="flow" />
     </>
   ),
 
   // ── Shell family marks ──────────────────────────────────────────────
-  // The fallback for the shell badge, used whenever the active icon pack has
-  // no mark for a family (Material ships no cmd icon) or its asset fails to
-  // load. They are the real silhouettes, monochrome: a shell is recognised by
-  // its shape, and drawing them here means they inherit the chip's colour and
-  // survive a light appearance without a second set of assets.
+  // The fallback for the shell badge when the icon pack has no mark for a
+  // family. Real silhouettes, monochrome.
   //
-  // POSIX: a terminal window with a prompt caret and a command line. Shared by
-  // bash, sh and zsh — the shapes are not distinguishable and the badge already
-  // carries the name, which is the thing that separates them.
+  // POSIX: a terminal window with a prompt caret and a command line.
   "shell-posix": (
     <>
-      <rect x="2.5" y="3.5" width="19" height="17" rx="2.5" />
-      <path d="M7 9.5l3 2.5-3 2.5" />
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="m7.5 9.5 3 2.5-3 2.5" />
       <path d="M13 15h4" />
     </>
   ),
-  // PowerShell: its own outline is the giveaway — a leaning parallelogram
-  // holding a chevron and an underscore. Kept at half opacity so the chevron
-  // reads first at 12px, where the frame would otherwise swallow it.
+  // PowerShell: a leaning parallelogram holding a chevron and an underscore,
+  // the frame at half opacity so the chevron reads first.
   "shell-pwsh": (
     <>
-      <path d="M4.5 4.5h16l-3.5 15h-16z" opacity="0.5" />
-      <path d="M7.5 8l6 4.2-6 4.2" />
-      <path d="M13.5 16.5h4.5" />
+      <path d="M5.5 4.5H21l-3.5 15H2z" opacity="0.5" />
+      <path d="m8 8.5 5.5 3.5L8 15.5" />
+      <path d="M13.5 16h4" />
     </>
   ),
-  // cmd: the Windows console window, distinguished from the POSIX terminal by
-  // its title bar — which is the one thing that actually differs on screen.
+  // cmd: the Windows console window, told apart by its title bar.
   "shell-cmd": (
     <>
-      <rect x="2.5" y="4.5" width="19" height="15" rx="1.5" />
-      <path d="M2.5 8.5h19" />
-      <path d="M7 12.5l2.5 2-2.5 2" />
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path d="M3 8.5h18" />
+      <path d="m7.5 12.5 2.5 2-2.5 2" />
     </>
   ),
 
   "workspace-tree": (
     <>
-      <circle cx="6.5" cy="6" r="2" />
-      <path d="M6.5 8v10h3.5" />
-      <path d="M6.5 12h3.5" />
-      <circle cx="13" cy="12" r="1.6" data-part="flow" />
-      <circle cx="13" cy="18" r="1.6" data-part="flow" />
-      <circle cx="18.5" cy="6.5" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
+      <circle cx="6.5" cy="6" r="2.2" />
+      <path d="M6.5 8.2V18h4" />
+      <path d="M6.5 12h4" />
+      <circle cx="13.5" cy="12" r="1.8" data-part="flow" />
+      <circle cx="13.5" cy="18" r="1.8" data-part="flow" />
+      <circle cx="19" cy="6" r="1" fill="currentColor" stroke="none" opacity="0.4" />
     </>
   ),
 
   "process-stop": (
     <>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
-      <path d="M7.5 9.5l3 2.5-3 2.5" data-part="caret" />
-      <path d="M14.5 10.5l4 4" data-part="pulse" />
-      <path d="M18.5 10.5l-4 4" data-part="pulse" />
+      <rect x="3" y="4.5" width="18" height="15" rx="3" />
+      <path d="m7 9.5 3 2.5-3 2.5" data-part="caret" />
+      <path d="m14 10 4 4" data-part="pulse" />
+      <path d="m18 10-4 4" data-part="pulse" />
     </>
   ),
 
   /**
-   * The user's own terminal, being read.
-   *
-   * A pane with a prompt caret inside it, and the caret sits BEHIND a magnifier
-   * lens rather than beside one: the act is looking at a shell somebody else is
-   * driving, not running something. Deliberately distinct from `terminal`
-   * (`shell_execute`) so the transcript never blurs "the agent ran this" with
-   * "the agent read what you ran".
+   * The user's own terminal, being read: a pane whose prompt caret sits behind
+   * a lens. Deliberately distinct from `terminal` (`shell_execute`) so the
+   * transcript never blurs "the agent ran this" with "the agent read what you
+   * ran".
    */
   "terminal-watch": (
     <>
-      <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
-      <path d="M6.5 9.5l2.5 2-2.5 2" data-part="caret" />
-      <path d="M11.5 13.5h3" pathLength={1} data-part="line" />
-      <circle cx="16.5" cy="15" r="3.6" data-part="lens" />
-      <path d="M19.2 17.6L21.5 20" data-part="lens" />
+      <rect x="2.5" y="4" width="19" height="16" rx="3" />
+      <path d="m6.5 9.5 2.5 2-2.5 2" data-part="caret" />
+      <path d="M11.5 13.5h1.5" pathLength={1} data-part="line" />
+      <circle cx="16.5" cy="15" r="3.4" data-part="lens" />
+      <path d="m19 17.5 2.5 2.5" data-part="lens" />
     </>
   ),
 
   /**
-   * Shell output collected from a process the agent started (`shell_read_output`).
-   *
-   * Deliberately NOT a terminal frame: the other two shell marks are about the
-   * box (the agent runs a command / watches one of yours), and this one is about
-   * what came OUT of it — printed lines and the pull to their end, which is
-   * literally what the tool does. It also had to survive at 14px next to the
-   * frame glyphs without reading as a third rectangle.
+   * Shell output collected from a process the agent started
+   * (`shell_read_output`). Not a frame: printed lines and the pull to their end.
    */
   "shell-output": (
     <>
-      <path d="M3.75 6h15.5" />
-      <path d="M3.75 11h15.5" />
-      <path d="M3.75 16h7.5" pathLength={1} data-part="line" />
-      <path d="M16.5 13v6.5" />
-      <path d="M13.6 17l2.9 2.9 2.9-2.9" data-part="travel-y" />
+      <path d="M4 6h16" />
+      <path d="M4 11h16" />
+      <path d="M4 16h7" pathLength={1} data-part="line" />
+      <path d="M16.5 13v7" />
+      <path d="m13.5 17 3 3 3-3" data-part="travel-y" />
     </>
   ),
 
   "process-list": (
     <>
-      <circle cx="5" cy="6.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="5" cy="6.5" r="1.2" fill="currentColor" stroke="none" opacity="0.7" />
       <path d="M9 6.5h11" data-part="flow" />
-      <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" opacity="0.5" />
+      <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" opacity="0.5" />
       <path d="M9 12h11" data-part="flow" />
-      <circle cx="5" cy="17.5" r="1" fill="currentColor" stroke="none" opacity="0.3" />
+      <circle cx="5" cy="17.5" r="1.2" fill="currentColor" stroke="none" opacity="0.3" />
       <path d="M9 17.5h7" data-part="flow" />
     </>
   ),
 
   diagnostics: (
     <>
-      <path d="M8 3.5h5.5L18 8v10.5A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-13A1.5 1.5 0 0 1 7.5 4z" />
-      <path d="M13.5 3.5V8H18" />
+      <path d={DOC} />
+      <path d={DOC_FOLD} />
       <path d="M9 12h6" />
-      <path d="M9 15h3" pathLength={1} data-part="line" />
-      <path d="M14.2 17l1.4 1.4 3-3" pathLength={1} data-part="tick" />
+      <path d="M9 15.5h3" pathLength={1} data-part="line" />
+      <path d="m14 17.5 1.5 1.5 3-3" pathLength={1} data-part="tick" />
     </>
   ),
 
   /**
-   * Searching the skill catalog (`aurora_skill_search`).
-   *
-   * The book is the skill mark everywhere else in this window — the `/` picker,
-   * the transcript chip, Settings → Skills — so finding one is that same book
-   * under a magnifier, exactly the relationship `terminal` → `terminal-watch`
-   * already carries. The spine is dropped so the lens has room; at 14px a
-   * second vertical line beside the circle turned into mush.
+   * Searching the skill catalog (`aurora_skill_search`): the skill book under
+   * a lens, the same relationship `terminal` → `terminal-watch` carries.
    */
   "skill-search": (
     <>
-      <path d="M4.75 4.5h8a2 2 0 0 1 2 2v4.4" />
-      <path d="M4.75 4.5A1.5 1.5 0 0 0 3.25 6v13a1.5 1.5 0 0 1 1.5-1.5h6" />
-      <path d="M7.25 8.5h4.5" pathLength={1} data-part="line" />
-      <circle cx="16.6" cy="15.1" r="3.7" data-part="lens" />
-      <path d="M19.3 17.8l2.2 2.2" data-part="lens" />
+      <path d="M5 4.5h8a2 2 0 0 1 2 2v4" />
+      <path d="M5 4.5A1.5 1.5 0 0 0 3.5 6v13A1.5 1.5 0 0 1 5 17.5h5.5" />
+      <path d="M7.5 8.5h4" pathLength={1} data-part="line" />
+      <circle cx="16.5" cy="15.5" r="3.5" data-part="lens" />
+      <path d="m19 18 2.5 2.5" data-part="lens" />
     </>
   ),
 
   /**
-   * Searching the deferred tool roster (`tool_search`).
-   *
-   * The layer stack is the deferred-roster mark — Settings → Tool loading
-   * wears it — so finding a tool in that roster is the same stack under the
-   * magnifier, the exact relationship `book` → `skill-search` carries. Two
-   * sheets instead of three, nudged up-left, so the lens has room; the lens
-   * geometry is copied from `skill-search` so the pair reads as siblings.
+   * Searching the deferred tool roster (`tool_search`): the layer stack under
+   * the same lens as `skill-search`, so the pair reads as siblings.
    */
   "tool-search": (
     <>
-      <path d="M10 3.75 16.4 7 10 10.25 3.6 7z" />
-      <path d="M4 10.7 10 13.7l3.1-1.55" pathLength={1} data-part="line" />
-      <circle cx="16.6" cy="15.1" r="3.7" data-part="lens" />
-      <path d="M19.3 17.8l2.2 2.2" data-part="lens" />
+      <path d="M10 3.5 16.5 7 10 10.5 3.5 7z" />
+      <path d="m4 11 6 3 3-1.5" pathLength={1} data-part="line" />
+      <circle cx="16.5" cy="15.5" r="3.5" data-part="lens" />
+      <path d="m19 18 2.5 2.5" data-part="lens" />
     </>
   ),
 
-  // A page fetched off the web — the document sheet carrying `browser`'s
-  // meridian. Paired with the globe the way `file-read` is paired with the
-  // plain sheet: same subject, one mark added to say where it came from. A bare
-  // globe here would read as the browser tool, which drives a live window; this
-  // is a page that was read and is now sitting still.
+  // A page fetched off the web — a sheet carrying `browser`'s meridian.
   "web-page": (
     <>
-      <path d="M5.5 4.5h13v15h-13z" />
-      <path d="M5.5 9.2h13" />
-      <path d="M12 9.2c-2.1 2.4-2.1 8 0 10.3" data-part="turn" />
-      <path d="M12 9.2c2.1 2.4 2.1 8 0 10.3" data-part="turn-b" />
+      <rect x="4.5" y="3.5" width="15" height="17" rx="2.5" />
+      <path d="M4.5 9h15" />
+      <path d="M12 9c-2 2.5-2 8.5 0 11.5" data-part="turn" />
+      <path d="M12 9c2 2.5 2 8.5 0 11.5" data-part="turn-b" />
     </>
   ),
 
   "task-list": (
     <>
-      <rect x="4" y="5" width="3" height="3" rx="0.7" data-part="flow" />
-      <path d="M10 6.5h10" />
-      <rect x="4" y="10.5" width="3" height="3" rx="0.7" data-part="flow" />
-      <path d="M10 12h10" />
-      <rect x="4" y="16" width="3" height="3" rx="0.7" data-part="flow" />
-      <path d="M10 17.5h7" />
+      <rect x="3.5" y="4.5" width="4" height="4" rx="1" data-part="flow" />
+      <path d="M11 6.5h9.5" />
+      <rect x="3.5" y="10" width="4" height="4" rx="1" data-part="flow" />
+      <path d="M11 12h9.5" />
+      <rect x="3.5" y="15.5" width="4" height="4" rx="1" data-part="flow" />
+      <path d="M11 17.5h6" />
     </>
   ),
 
   /**
-   * The header task indicator's glyph.
-   *
-   * Distinct from `task-list` on purpose. That one is three empty boxes — it
-   * says "a list exists". This one ticks its first row and shortens the last,
-   * so at 13px it reads as PROGRESS THROUGH a list, which is the single thing
-   * the header indicator is there to communicate.
+   * The header task indicator's glyph: the first row ticked, the last one
+   * short, so it reads as PROGRESS THROUGH a list rather than a list.
    */
   checklist: (
     <>
-      <path d="M3.6 6.4l1.6 1.6 3-3.2" pathLength={1} data-part="tick" />
-      <path d="M11 6h9.4" />
-      <path d="M3.6 12.6h4.2" pathLength={1} data-part="line" />
-      <path d="M11 12h9.4" />
-      <path d="M3.6 18.2h4.2" />
-      <path d="M11 18h6" pathLength={1} data-part="line" />
+      <path d="m3.5 6.5 1.8 1.8 3.2-3.5" pathLength={1} data-part="tick" />
+      <path d="M11.5 6.5h9" />
+      <path d="M4 12.5h4" pathLength={1} data-part="line" />
+      <path d="M11.5 12.5h9" />
+      <path d="M4 18.5h4" />
+      <path d="M11.5 18.5h6" pathLength={1} data-part="line" />
     </>
   ),
 
   "browser-click": (
     <>
-      <path d="M9.5 9.5l10 3.5-4.5 2-2 4.5z" data-part="nib" />
-      <path d="M14.8 14.8l3.7 3.7" data-part="nib" />
-      <path d="M9 5.5v-2" data-part="pulse" />
-      <path d="M5.5 9h-2" data-part="pulse" />
-      <path d="M6 6 4.5 4.5" data-part="pulse" />
+      <path d="m9 9 11 3.8-4.8 1.9-1.9 4.8z" data-part="nib" />
+      <path d="m15.2 15.2 3.8 3.8" data-part="nib" />
+      <path d="M9 5V3" data-part="pulse" />
+      <path d="M5 9H3" data-part="pulse" />
+      <path d="M6.2 6.2 4.8 4.8" data-part="pulse" />
     </>
   ),
 
   "browser-fill": (
     <>
-      <rect x="3.5" y="7.5" width="17" height="10" rx="2" />
-      <circle cx="7.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
-      <circle cx="11" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
-      <circle cx="14.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.7" />
-      <circle cx="17.5" cy="11" r="0.8" fill="currentColor" stroke="none" opacity="0.4" />
-      <path d="M8 14.5h8" pathLength={1} data-part="line" />
+      <rect x="3" y="6.5" width="18" height="11" rx="3" />
+      <circle cx="7.5" cy="10.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="11" cy="10.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
+      <circle cx="14.5" cy="10.5" r="1" fill="currentColor" stroke="none" opacity="0.7" />
+      <path d="M8 14h8" pathLength={1} data-part="line" />
     </>
   ),
 
   "browser-scroll": (
     <>
-      <path d="M12 4v16" opacity="0.5" />
-      <path d="m8.5 7.5 3.5-3.5 3.5 3.5" data-part="travel-y" />
-      <path d="m8.5 16.5 3.5 3.5 3.5-3.5" data-part="travel-y" />
-      <circle cx="18.5" cy="12" r="0.9" fill="currentColor" stroke="none" opacity="0.4" />
+      <path d="M12 4.5v15" opacity="0.5" />
+      <path d="m8.5 8 3.5-3.5L15.5 8" data-part="travel-y" />
+      <path d="m8.5 16 3.5 3.5 3.5-3.5" data-part="travel-y" />
+      <circle cx="18.5" cy="12" r="1" fill="currentColor" stroke="none" opacity="0.4" />
     </>
   ),
 
   "browser-screenshot": (
     <>
-      <path d="M3.5 8.5H7l2-3h6l2 3h3.5v10H3.5z" />
+      <path d="M3 9a2 2 0 0 1 2-2h2l1.5-2.5h7L17 7h2a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
       <circle cx="12" cy="13" r="3.2" data-part="pulse" />
-      <circle cx="12" cy="13" r="0.9" fill="currentColor" stroke="none" opacity="0.7" />
-      <circle cx="18.2" cy="10.6" r="0.7" fill="currentColor" stroke="none" opacity="0.4" />
+      <circle cx="18" cy="10.2" r="0.9" fill="currentColor" stroke="none" opacity="0.5" />
     </>
   ),
 
   /* The browser tools that act on the PAGE (click, fill, scroll, screenshot)
-   * carry their own act above. These four are the ones that act on the BROWSER
-   * — where it goes, what it types, how big it is, what it is built from — so
-   * they share the chrome bar of a window frame and differ inside it. Eleven
-   * browser tools reading as one generic globe made the transcript say
-   * "something happened in the browser" and nothing more. */
+   * carry their own act above. These four act on the BROWSER — where it goes,
+   * what it types, how big it is, what it is built from — so they share the
+   * chrome bar of a window frame and differ inside it. */
 
   "browser-navigate": (
     <>
-      <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
-      <path d="M2.75 9h18.5" />
-      <path d="M8 14.5h6.5" pathLength={1} data-part="line" />
-      <path d="M12.4 12.1l2.4 2.4-2.4 2.4" data-part="travel" />
+      <rect x="2.5" y="4.5" width="19" height="15" rx="3" />
+      <path d="M2.5 9h19" />
+      <path d="M7.5 14.5h7" pathLength={1} data-part="line" />
+      <path d="m12.5 12 2.5 2.5-2.5 2.5" data-part="travel" />
     </>
   ),
 
   "browser-key": (
     <>
-      <rect x="2.5" y="6.25" width="19" height="11.5" rx="2.4" />
-      <circle cx="7" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
-      <circle cx="12" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
-      <circle cx="17" cy="10.6" r="0.85" fill="currentColor" stroke="none" data-part="flow" />
-      <path d="M8 14.4h8" pathLength={1} data-part="line" />
+      <rect x="2.5" y="6" width="19" height="12" rx="3" />
+      <circle cx="7" cy="10.5" r="1.1" fill="currentColor" stroke="none" data-part="flow" />
+      <circle cx="12" cy="10.5" r="1.1" fill="currentColor" stroke="none" data-part="flow" />
+      <circle cx="17" cy="10.5" r="1.1" fill="currentColor" stroke="none" data-part="flow" />
+      <path d="M8 14.5h8" pathLength={1} data-part="line" />
     </>
   ),
 
-  // Viewport — a desktop frame with a phone standing beside it: the tool sets
-  // the device metrics, and two sizes side by side is what that means.
+  // Viewport — a desktop frame with a phone standing beside it.
   "browser-viewport": (
     <>
-      <rect x="2.5" y="5.5" width="12.5" height="12.5" rx="2.2" />
-      <path d="M2.5 9h12.5" />
-      <rect x="16.75" y="9.5" width="4.75" height="10.5" rx="1.6" data-part="pulse" />
+      <rect x="2.5" y="5" width="12.5" height="13" rx="2.5" />
+      <path d="M2.5 9H15" />
+      <rect x="17" y="9" width="4.5" height="11" rx="1.5" data-part="pulse" />
     </>
   ),
 
-  // Page structure — the outline / accessibility tree: an indented list read
-  // out of the page rather than drawn on it.
+  // Page structure — the outline / accessibility tree read out of the page.
   "browser-outline": (
     <>
-      <rect x="2.75" y="4.75" width="18.5" height="14.5" rx="2.5" />
-      <path d="M2.75 9h18.5" />
-      <path d="M6.25 12.3h5" data-part="flow" />
-      <path d="M9.25 15.6h6.5" data-part="flow" />
+      <rect x="2.5" y="4.5" width="19" height="15" rx="3" />
+      <path d="M2.5 9h19" />
+      <path d="M6.5 12.5h5" data-part="flow" />
+      <path d="M9.5 16h6" data-part="flow" />
     </>
   ),
 
   // Layers — a stack of sheets: marks a grouped run of many tool calls.
   layers: (
     <>
-      <path d="M12 3.5 20 7.5 12 11.5 4 7.5z" />
-      <path d="M4.4 11.8 12 15.6l7.6-3.8" />
-      <path d="M4.4 15.8 12 19.6l7.6-3.8" />
+      <path d="M12 3.5 20.5 8 12 12.5 3.5 8z" />
+      <path d="m3.5 12 8.5 4.5 8.5-4.5" />
+      <path d="m3.5 16 8.5 4.5 8.5-4.5" />
     </>
   ),
 
-  // Send — a clean, centered upward arrow. Shaft and arrowhead share ONE apex at
-  // (12,5.5); the head is a symmetric 45° chevron so it reads crisp at any size.
+  // Send — an upward arrow; shaft and head share one apex.
   send: (
     <>
-      <path d="M12 19V5.5" />
-      <path d="M6.5 11 12 5.5 17.5 11" />
+      <path d="M12 19V5" />
+      <path d="M5.5 11.5 12 5l6.5 6.5" />
     </>
   ),
 
   // Microphone — speech input.
   mic: (
     <>
-      <rect x="9" y="3.25" width="6" height="11" rx="3" />
-      <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
-      <path d="M12 17.5v3.25" />
-      <path d="M8.75 20.75h6.5" />
+      <rect x="8.5" y="3" width="7" height="11.5" rx="3.5" />
+      <path d="M5 11.5a7 7 0 0 0 14 0" />
+      <path d="M12 18.5V21" />
     </>
   ),
 
   // Review — git-compare style: two nodes joined by branching arrows.
   review: (
     <>
-      <circle cx="6.25" cy="6.25" r="2.4" />
-      <circle cx="17.75" cy="17.75" r="2.4" />
-      <path d="M6.25 8.65V13a4 4 0 0 0 4 4h3.6" />
-      <path d="M12 15l2.4 2-2.4 2" fill="none" />
-      <path d="M17.75 15.35V11a4 4 0 0 0-4-4h-3.6" />
-      <path d="M12 5l-2.4 2 2.4 2" fill="none" />
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="18" r="2.5" />
+      <path d="M6 8.5V13a4 4 0 0 0 4 4h4" />
+      <path d="m12 15 2.5 2-2.5 2" />
+      <path d="M18 15.5V11a4 4 0 0 0-4-4h-4" />
+      <path d="m12 5-2.5 2 2.5 2" />
     </>
   ),
 
   // Files — folder.
-  files: (
-    <path d="M3.5 7a1.5 1.5 0 0 1 1.5-1.5h3.7L11 7.7h7.5A1.5 1.5 0 0 1 20.5 9.2v8.3A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z" />
-  ),
+  files: <path d={FOLDER} />,
 
   // Browser — globe with meridians.
   browser: (
     <>
-      <circle cx="12" cy="12" r="8.3" />
-      <path d="M3.7 12h16.6" />
-      <path d="M12 3.7c2.6 2.5 2.6 14.1 0 16.6" data-part="turn" />
-      <path d="M12 3.7c-2.6 2.5-2.6 14.1 0 16.6" data-part="turn-b" />
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M3.5 12h17" />
+      <path d="M12 3.5c2.7 2.6 2.7 14.4 0 17" data-part="turn" />
+      <path d="M12 3.5c-2.7 2.6-2.7 14.4 0 17" data-part="turn-b" />
     </>
   ),
 
   // Terminal — prompt caret and a command line.
   terminal: (
     <>
-      <rect x="3.25" y="4.5" width="17.5" height="15" rx="2.6" />
-      <path d="M7.5 9.5l3 3-3 3" data-part="caret" />
-      <path d="M13 15.5h4" pathLength={1} data-part="line" />
+      <rect x="3" y="4.5" width="18" height="15" rx="3" />
+      <path d="m7.5 9.5 3 2.5-3 2.5" data-part="caret" />
+      <path d="M13 15h4" pathLength={1} data-part="line" />
     </>
   ),
 
-  // Side chat — a foreground bubble with a second bubble peeking behind.
+  // Side chat — a foreground bubble with a second one peeking behind.
   "side-chat": (
     <>
-      <path d="M3.75 8a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v3.5a2 2 0 0 1-2 2H8l-3.25 2.6V13.5a2 2 0 0 1-1-1.7z" />
-      <path d="M9 5.7V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v3.5a2 2 0 0 1-2 2h-1" />
+      <path d="M3.5 9a2.5 2.5 0 0 1 2.5-2.5h6.5A2.5 2.5 0 0 1 15 9v3a2.5 2.5 0 0 1-2.5 2.5H8.5L5 17.5v-3.3A2.5 2.5 0 0 1 3.5 12z" />
+      <path d="M9 4.5A2 2 0 0 1 11 3h7a2.5 2.5 0 0 1 2.5 2.5v3A2.5 2.5 0 0 1 18 11h-.5" />
     </>
   ),
 
   // Close / dismiss.
   close: (
     <>
-      <path d="M6.75 6.75l10.5 10.5" />
-      <path d="M17.25 6.75L6.75 17.25" />
+      <path d="m6.5 6.5 11 11" />
+      <path d="m17.5 6.5-11 11" />
     </>
   ),
 
   // Check — selection mark (e.g. active model in the selector).
-  check: <path d="M5 12.5l4.5 4.5L19 7" />,
+  check: <path d="m4.5 12.5 5 5 10-10.5" />,
 
   // Alert — a failed check. Triangle + bang, so failure reads without
   // relying on colour alone.
   alert: (
     <>
-      <path d="M12 4.4L21 19.6H3z" />
-      <path d="M12 10v4.2" data-part="pulse" />
-      <path d="M12 17.1v.05" data-part="pulse" />
+      <path d="M10.3 4.6a2 2 0 0 1 3.4 0l7.4 13a2 2 0 0 1-1.7 3H4.6a2 2 0 0 1-1.7-3z" />
+      <path d="M12 10v4" data-part="pulse" />
+      <path d="M12 17.3v.1" data-part="pulse" />
     </>
   ),
 
-  // Copy — two stacked sheets (message bubble actions).
+  // Copy — two stacked sheets.
   copy: (
     <>
-      <rect x="9" y="9" width="11" height="11" rx="2.2" />
-      <path d="M5.5 15H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 4h8A1.5 1.5 0 0 1 14.5 5.5V6" />
+      <rect x="8.5" y="8.5" width="12" height="12" rx="2.5" />
+      <path d="M15.5 8.5V6A2.5 2.5 0 0 0 13 3.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5" />
     </>
   ),
 
-  // Wrap — a line that runs to the margin and turns back under itself
-  // (code block: wrap long lines instead of scrolling them).
+  // Wrap — a line that runs to the margin and turns back under itself.
   wrap: (
     <>
       <path d="M4 7h10a3.5 3.5 0 0 1 0 7H8" />
-      <path d="M10.5 11.5 8 14l2.5 2.5" />
+      <path d="m10.5 11.5-2.5 2.5 2.5 2.5" />
       <path d="M20.5 5v14" />
     </>
   ),
 
-  // Retry — clockwise refresh arrow (resend the last turn).
+  // Retry — clockwise refresh arrow.
   retry: (
     <>
-      <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" />
-      <path d="M19.7 4.5V9h-4.5" />
+      <path d="M20 12a8 8 0 1 1-2.4-5.7" />
+      <path d="M20 4v4.5h-4.5" />
     </>
   ),
 
-  // External — hand a file off to the IDE editor (open in new surface): a box
-  // with an arrow leaving its top-right corner.
+  // External — a box with an arrow leaving its top-right corner.
   external: (
     <>
-      <path d="M14 4.75h5.25V10" />
-      <path d="M19.25 4.75L11.5 12.5" />
-      <path d="M18 13.5v4A1.75 1.75 0 0 1 16.25 19.25h-9.5A1.75 1.75 0 0 1 5 17.5v-9.5A1.75 1.75 0 0 1 6.75 6.25H11" />
+      <path d="M14 4h6v6" />
+      <path d="M20 4 11.5 12.5" />
+      <path d="M18 14v3.5a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 4 17.5v-9A2.5 2.5 0 0 1 6.5 6H10" />
     </>
   ),
 
   // Columns — side-by-side (split) diff layout.
   columns: (
     <>
-      <rect x="3.5" y="4.75" width="17" height="14.5" rx="2.2" />
-      <line x1="12" y1="4.75" x2="12" y2="19.25" />
+      <rect x="3" y="4.5" width="18" height="15" rx="3" />
+      <path d="M12 4.5v15" />
     </>
   ),
 
   // Rows — stacked (unified) diff layout.
   rows: (
     <>
-      <rect x="3.5" y="4.75" width="17" height="14.5" rx="2.2" />
-      <line x1="3.5" y1="12" x2="20.5" y2="12" />
+      <rect x="3" y="4.5" width="18" height="15" rx="3" />
+      <path d="M3 12h18" />
     </>
   ),
 
-  // Inspect element — a pencil (pick / annotate a node on the page).
+  // Inspect element — a pencil picking a node on the page.
   inspect: (
     <>
-      <path d="M14.4 6.1l3.5 3.5" data-part="nib" />
+      <path d="m14.5 6 3.5 3.5" data-part="nib" />
       <path
-        d="M16.1 4.4a1.9 1.9 0 0 1 2.7 0l0.8 0.8a1.9 1.9 0 0 1 0 2.7L8.2 18.9l-4.2 1 1-4.2z"
+        d="M16 4.5a2.1 2.1 0 0 1 3 0l.5.5a2.1 2.1 0 0 1 0 3L8.5 19l-4.5 1 1-4.5z"
         data-part="nib"
       />
     </>
   ),
 
-  // Stop — a solid, perfectly centered rounded square (cancel an in-flight turn).
-  stop: <rect x="7" y="7" width="10" height="10" rx="2.5" fill="currentColor" stroke="none" />,
+  // Stop — a solid, centred rounded square.
+  stop: <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" fill="currentColor" stroke="none" />,
 
-  // Help — a question mark inside a speech bubble (the Questions prompt header).
+  // Help — a question mark inside a speech bubble.
   help: (
     <>
-      <path d="M7 4h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3h-6l-4 3.2V15a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z" />
-      <path d="M10.2 8.5a1.9 1.9 0 0 1 3.6.85c0 1.25-1.8 1.55-1.8 2.75" pathLength={1} data-part="line" />
-      <circle cx="12" cy="13.6" r="0.55" fill="currentColor" stroke="none" data-part="pulse" />
+      <path d={BUBBLE} />
+      <path d="M10 8.6a2 2 0 0 1 3.9.6c0 1.3-1.9 1.6-1.9 2.8" pathLength={1} data-part="line" />
+      <circle cx="12" cy="14" r="1" fill="currentColor" stroke="none" data-part="pulse" />
     </>
   ),
 
-  // Settings — the canonical cog (notched ring + hub), drawn round for a soft feel.
+  // Settings — a six-tooth cog and its hub.
   settings: (
     <>
-      <path d="M12.22 2.75h-.44a1.85 1.85 0 0 0-1.85 1.85v.18a1.85 1.85 0 0 1-.93 1.6l-.5.29a1.85 1.85 0 0 1-1.85 0l-.15-.08a1.85 1.85 0 0 0-2.52.68l-.22.38a1.85 1.85 0 0 0 .68 2.52l.15.09a1.85 1.85 0 0 1 .92 1.6v.58a1.85 1.85 0 0 1-.92 1.6l-.15.09a1.85 1.85 0 0 0-.68 2.52l.22.38a1.85 1.85 0 0 0 2.52.68l.15-.08a1.85 1.85 0 0 1 1.85 0l.5.29a1.85 1.85 0 0 1 .93 1.6v.18A1.85 1.85 0 0 0 11.78 21.25h.44a1.85 1.85 0 0 0 1.85-1.85v-.18a1.85 1.85 0 0 1 .93-1.6l.5-.29a1.85 1.85 0 0 1 1.85 0l.15.08a1.85 1.85 0 0 0 2.52-.68l.22-.38a1.85 1.85 0 0 0-.68-2.52l-.15-.09a1.85 1.85 0 0 1-.92-1.6v-.58a1.85 1.85 0 0 1 .92-1.6l.15-.09a1.85 1.85 0 0 0 .68-2.52l-.22-.38a1.85 1.85 0 0 0-2.52-.68l-.15.08a1.85 1.85 0 0 1-1.85 0l-.5-.29a1.85 1.85 0 0 1-.93-1.6V4.6a1.85 1.85 0 0 0-1.85-1.85z" />
-      <circle cx="12" cy="12" r="2.9" />
+      <path d={GEAR} />
+      <circle cx="12" cy="12" r="3" />
     </>
   ),
 
   // Providers — a stacked pair of servers, each with a status LED.
   providers: (
     <>
-      <rect x="3.5" y="4.25" width="17" height="6.5" rx="1.9" />
-      <rect x="3.5" y="13.25" width="17" height="6.5" rx="1.9" />
-      <circle cx="7" cy="7.5" r="0.7" fill="currentColor" stroke="none" />
-      <circle cx="7" cy="16.5" r="0.7" fill="currentColor" stroke="none" />
+      <rect x="3" y="4" width="18" height="7" rx="2.5" />
+      <rect x="3" y="13" width="18" height="7" rx="2.5" />
+      <circle cx="7" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="16.5" r="1.1" fill="currentColor" stroke="none" />
     </>
   ),
 
   // Shield — approval / safety, with an inset check.
   shield: (
     <>
-      <path d="M12 3 19 5.7v5.5c0 4.55-3 7.6-7 8.9-4-1.3-7-4.35-7-8.9V5.7z" />
-      <path d="M9.1 11.9l2.1 2.1 3.7-3.9" />
+      <path d="M12 3 19.5 6v5.5c0 4.6-3.1 7.9-7.5 9.5-4.4-1.6-7.5-4.9-7.5-9.5V6z" />
+      <path d="m9 12 2.2 2.2 4-4.2" />
     </>
   ),
 
   // Plug — external connection (MCP integrations).
   plug: (
     <>
-      <path d="M9 2.75v3.75M15 2.75v3.75" />
-      <path d="M6.75 6.5h10.5v3.25a5.25 5.25 0 0 1-10.5 0z" />
-      <path d="M12 15v6.25" />
+      <path d="M9 3v4M15 3v4" />
+      <path d="M6.5 7h11v3.5a5.5 5.5 0 0 1-11 0z" />
+      <path d="M12 16v5" />
     </>
   ),
 
   // Sliders — execution / tuning (two tracks, offset knobs).
   sliders: (
     <>
-      <line x1="4" y1="8.25" x2="20" y2="8.25" />
-      <line x1="4" y1="15.75" x2="20" y2="15.75" />
-      <circle cx="9" cy="8.25" r="2.4" fill="var(--agw-dock, #1c1c1f)" />
-      <circle cx="15" cy="15.75" r="2.4" fill="var(--agw-dock, #1c1c1f)" />
+      <path d="M3.5 8h17" />
+      <path d="M3.5 16h17" />
+      <circle cx="9" cy="8" r="2.6" fill="var(--agw-dock, #1c1c1f)" />
+      <circle cx="15" cy="16" r="2.6" fill="var(--agw-dock, #1c1c1f)" />
     </>
   ),
 
   // Users — two figures.
   users: (
     <>
-      <circle cx="9" cy="8" r="3.1" />
-      <path d="M3.4 19.5a5.6 5.6 0 0 1 11.2 0" />
-      <path d="M16 5.2a3.1 3.1 0 0 1 0 5.9" />
-      <path d="M17.2 13.4a5.6 5.6 0 0 1 3.4 6.1" />
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20a6 6 0 0 1 12 0" />
+      <path d="M16 4.6a3.5 3.5 0 0 1 0 6.8" />
+      <path d="M17.5 14a6 6 0 0 1 3.5 6" />
     </>
   ),
 
   // ── The sub-agent family ────────────────────────────────────────────────
-  // Each is the person the header's sub-agent indicator wears (`users`, one
-  // figure of it) plus the one act the tool does: the subject-plus-act pairing
-  // the set already uses for skill-search and tool-search. Picked from
-  // Documents\aurora-subagent-tool-icon-designs.html, card 5.
+  // Each is one figure of `users` plus the one act the tool does, the
+  // subject-plus-act pairing the set already uses for skill-search.
 
   // spawn_agent — a person and a plus: someone new joins the work.
   "agent-start": (
     <>
-      <circle cx="9.5" cy="8.2" r="3.2" />
-      <path d="M3.5 19.5a6 6 0 0 1 12 0" />
+      <circle cx="9.5" cy="8" r="3.5" />
+      <path d="M3.5 20a6 6 0 0 1 12 0" />
       <path d="M18.5 4.5v6" data-part="pulse" />
       <path d="M15.5 7.5h6" data-part="pulse" />
     </>
@@ -963,29 +1006,29 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // send_message — an arrow arriving at the person.
   "agent-message": (
     <>
-      <circle cx="8.5" cy="8.2" r="3.2" />
-      <path d="M2.75 19.5a5.75 5.75 0 0 1 11.5 0" />
-      <path d="M21.25 12.5h-6.5" data-part="travel" />
-      <path d="M17.5 9.5l-3 3 3 3" data-part="travel" />
+      <circle cx="8.5" cy="8" r="3.5" />
+      <path d="M2.5 20a6 6 0 0 1 12 0" />
+      <path d="M21.5 12.5H15" data-part="travel" />
+      <path d="m18 9.5-3 3 3 3" data-part="travel" />
     </>
   ),
 
   // get_task_output — the person under a lens.
   "agent-check": (
     <>
-      <circle cx="9" cy="8.2" r="3.2" />
-      <path d="M3 19.5a6 6 0 0 1 9.4-4.95" />
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20a6 6 0 0 1 9.5-4.9" />
       <circle cx="17" cy="16" r="3" data-part="lens" />
-      <path d="M19.2 18.2l2.05 2.05" data-part="lens" />
+      <path d="m19.2 18.2 2.3 2.3" data-part="lens" />
     </>
   ),
 
   // stop_agent — the person and a stop square.
   "agent-stop": (
     <>
-      <circle cx="9" cy="8.2" r="3.2" />
-      <path d="M3 19.5a6 6 0 0 1 9.4-4.95" />
-      <rect x="14.5" y="13.5" width="6.75" height="6.75" rx="1.5" data-part="pulse" />
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20a6 6 0 0 1 9.5-4.9" />
+      <rect x="14.5" y="13.5" width="7" height="7" rx="1.8" data-part="pulse" />
     </>
   ),
 
@@ -993,27 +1036,27 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   // started it.
   "parent-message": (
     <>
-      <circle cx="15" cy="7.8" r="3.2" />
-      <path d="M9.25 19.5a5.75 5.75 0 0 1 11.5 0" />
-      <path d="M5 20.25V10" data-part="travel-y" />
-      <path d="M2.25 12.75 5 10l2.75 2.75" data-part="travel-y" />
+      <circle cx="15" cy="8" r="3.5" />
+      <path d="M9 20a6 6 0 0 1 12 0" />
+      <path d="M5 20.5V10" data-part="travel-y" />
+      <path d="m2.2 12.8 2.8-2.8 2.8 2.8" data-part="travel-y" />
     </>
   ),
 
   // submit_report — a page with a tick: the work, handed in.
   "report-submit": (
     <>
-      <path d="M6 3.5h7.5L18 8v12.5H6z" />
-      <path d="M13.5 3.5V8H18" />
-      <path d="M8.75 14.25l2.25 2.25 4.25-4.5" pathLength={1} data-part="tick" />
+      <path d={DOC} />
+      <path d={DOC_FOLD} />
+      <path d="m9 14.5 2.2 2.2 4.3-4.5" pathLength={1} data-part="tick" />
     </>
   ),
 
   // Arrow-left — back to app.
   "arrow-left": (
     <>
-      <path d="M19 12H5.25" />
-      <path d="M11 5.75 4.75 12 11 18.25" />
+      <path d="M19.5 12h-14" />
+      <path d="m11 5.5-6.5 6.5 6.5 6.5" />
     </>
   ),
 
@@ -1021,247 +1064,223 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
   palette: (
     <>
       <path d="M12 3.5c-4.7 0-8.5 3.6-8.5 8 0 3.6 3 5.5 5.5 5.5.9 0 1.5-.7 1.5-1.5 0-.4-.2-.8-.4-1.1-.2-.3-.4-.6-.4-1 0-.8.7-1.4 1.5-1.4H13c3 0 5.5-2.2 5.5-5C18.5 6.4 15.6 3.5 12 3.5Z" />
-      <circle cx="7.5" cy="11" r="1" fill="currentColor" stroke="none" />
-      <circle cx="12" cy="8" r="1" fill="currentColor" stroke="none" />
-      <circle cx="16" cy="11" r="1" fill="currentColor" stroke="none" />
+      <circle cx="7.5" cy="11" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="7.8" r="1.3" fill="currentColor" stroke="none" />
+      <circle cx="16" cy="11" r="1.3" fill="currentColor" stroke="none" />
     </>
   ),
 
   // Upload — import / drop a file.
   upload: (
     <>
-      <path d="M12 15.5V4.5" />
-      <path d="M7.5 9 12 4.5 16.5 9" />
-      <path d="M4.5 15.5v2.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5" />
+      <path d="M12 15V4" />
+      <path d="M7.5 8.5 12 4l4.5 4.5" />
+      <path d="M4 15v3a2.5 2.5 0 0 0 2.5 2.5h11A2.5 2.5 0 0 0 20 18v-3" />
     </>
   ),
 
   // Download — export.
   download: (
     <>
-      <path d="M12 4.5v11" />
-      <path d="M7.5 11 12 15.5 16.5 11" />
-      <path d="M4.5 15.5v2.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5" />
+      <path d="M12 4v11" />
+      <path d="M7.5 10.5 12 15l4.5-4.5" />
+      <path d="M4 15v3a2.5 2.5 0 0 0 2.5 2.5h11A2.5 2.5 0 0 0 20 18v-3" />
     </>
   ),
 
   // Contrast — half-filled disc.
   contrast: (
     <>
-      <circle cx="12" cy="12" r="8.25" />
-      <path d="M12 3.75a8.25 8.25 0 0 1 0 16.5Z" fill="currentColor" stroke="none" data-part="turn" />
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor" stroke="none" data-part="turn" />
     </>
   ),
 
   // Type — typography / font.
   type: (
     <>
-      <path d="M5 7V5.5h14V7" />
-      <path d="M12 5.5v13" />
-      <path d="M9.5 18.5h5" />
+      <path d="M5 7.5V5h14v2.5" />
+      <path d="M12 5v14" />
+      <path d="M9 19h6" />
     </>
   ),
 
   // Reset — counter-clockwise rotate to defaults.
   reset: (
     <>
-      <path d="M5 8.5a8 8 0 1 1-1.2 4.3" />
-      <path d="M3.2 4.5v4.2h4.2" />
+      <path d="M5 8.5a8 8 0 1 1-1 4" />
+      <path d="M3.5 4v4.5H8" />
     </>
   ),
 
   // Book — skill playbook (global skills).
   book: (
     <>
-      <path d="M5 4.5h9.5a2 2 0 0 1 2 2V19a1.5 1.5 0 0 0-1.5-1.5H5z" />
-      <path d="M5 4.5A1.5 1.5 0 0 0 3.5 6v13A1.5 1.5 0 0 1 5 17.5" />
-      <path d="M8 8.5h5.5" pathLength={1} data-part="line" />
-      <path d="M8 11.5h5.5" pathLength={1} data-part="line" />
+      <path d="M4.5 18.5v-13a2 2 0 0 1 2-2h12v14h-12a2 2 0 0 0 0 4h12" />
+      <path d="M8.5 7.5h6" pathLength={1} data-part="line" />
+      <path d="M8.5 11h6" pathLength={1} data-part="line" />
     </>
   ),
 
-  // A picture — the frame, a horizon of two hills, and a sun. Used for the
-  // `generate_image` tool and the Canvas's image entries. The sun is the part
-  // that works: it swells while the picture is being made, the way the
-  // screenshot's shutter pupil does. Not `palette` (that is a hand-drawn
-  // graphic) and not `browser-screenshot` (that is a capture of something
-  // that already exists).
+  // A picture — the frame, a horizon of two hills, and a sun. The sun is the
+  // part that works: it swells while the picture is being made.
   image: (
     <>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" />
-      <path d="M3.5 16.2l4.6-4.4 3.6 3.4 3.1-2.6 5.7 4.6" />
-      <circle cx="15.6" cy="9.1" r="1.7" data-part="pulse" />
+      <rect x="3" y="4.5" width="18" height="15" rx="3" />
+      <path d="m3.5 16.5 5-4.5 4 3.5 3-2.5 5 4" />
+      <circle cx="15.5" cy="9" r="1.8" data-part="pulse" />
     </>
   ),
 
-  // Home — the icon rail's first cell: the chat list and the conversation. A
-  // roof over a door, not a chat bubble (`chat` is the transcript's own mark).
+  // Home — the icon rail's first cell: a house with its door.
   home: (
     <>
-      <path d="M3.75 11.4 12 4.25l8.25 7.15" />
-      <path d="M5.9 9.9v8.35A1.5 1.5 0 0 0 7.4 19.75h2.6V14.5h4v5.25h2.6a1.5 1.5 0 0 0 1.5-1.5V9.9" />
+      <path d={HOUSE} />
+      <path d="M9.6 20.2v-5.4h4.8v5.4" />
     </>
   ),
 
   // User — one person: the account cell at the foot of the icon rail.
   user: (
     <>
-      <circle cx="12" cy="8.2" r="3.4" />
-      <path d="M5 20a7 7 0 0 1 14 0" />
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4.5 20.5c.8-3.8 3.9-6 7.5-6s6.7 2.2 7.5 6" />
     </>
   ),
 
-  // Images — the rail's Images page: two photographs, one behind the other.
-  // `image` (one frame) stays the tool glyph; a PLACE where pictures are made
-  // and kept reads as a stack, not a single picture.
+  // Images — the rail's Images page: a framed picture, the sun at the left so
+  // it reads apart from the `image` tool glyph.
   images: (
     <>
-      <path d="M7.75 6.75V5.5A1.75 1.75 0 0 1 9.5 3.75h9A1.75 1.75 0 0 1 20.25 5.5v9a1.75 1.75 0 0 1-1.75 1.75H17" />
-      <rect x="3.75" y="7.5" width="13.25" height="12.75" rx="1.9" />
-      <path d="M3.75 17.2l3.7-3.5 2.7 2.5 2.3-2 4.55 3.6" />
-      <circle cx="12.4" cy="11.3" r="1.35" />
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m3.5 16.5 5-4.3 3.8 3.3 2.9-2.4 5.3 4.2" />
     </>
   ),
 
-  // Library — three books on a shelf, the third leaning. `book` (one closed
-  // book) stays the skills glyph.
+  // Library — two books on a shelf and a third leaning on them.
   library: (
     <>
-      <rect x="3.5" y="4.5" width="4" height="15.5" rx="1" />
-      <rect x="9.5" y="4.5" width="4" height="15.5" rx="1" />
-      <path d="m15.1 6.2 3.5-1a1 1 0 0 1 1.25.7l3.4 12.5a1 1 0 0 1-.7 1.25l-3.5 1a1 1 0 0 1-1.25-.7L14.4 7.45a1 1 0 0 1 .7-1.25z" />
+      <rect x="3.5" y="4" width="5" height="16" rx="1.6" />
+      <rect x="10.5" y="4" width="5" height="16" rx="1.6" />
+      <rect x="17.2" y="4.6" width="4.4" height="15.6" rx="1.5" transform="rotate(-12 19.4 12.4)" />
     </>
   ),
 
-  // CPU — the Providers page: the engines that run the models, with their
-  // keys. A chip with pins, not `providers` (two server trays), which reads
-  // as "servers" next to the MCP page and says nothing about models.
+  // CPU — the Providers page: the engines that run the models.
   cpu: (
     <>
-      <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+      <rect x="6" y="6" width="12" height="12" rx="3" />
       {/* The die: what pulses on a running `list_models` row. */}
-      <rect x="10" y="10" width="4" height="4" rx="0.8" data-part="pulse" />
-      <path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3" />
+      <rect x="10" y="10" width="4" height="4" rx="1" data-part="pulse" />
+      <path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3" />
     </>
   ),
 
-  // Puzzle — the Plugins page: things that fit into the agent. `plug` (a wall
-  // plug) stays the MCP transport glyph inside that page.
-  puzzle: (
-    <path d="M10.25 4.5a1.75 1.75 0 0 1 3.5 0V6h3.25A1.5 1.5 0 0 1 18.5 7.5v3.25H17a1.75 1.75 0 0 0 0 3.5h1.5v3.25a1.5 1.5 0 0 1-1.5 1.5h-3.25V17.5a1.75 1.75 0 0 0-3.5 0V19H7A1.5 1.5 0 0 1 5.5 17.5v-3.25H7a1.75 1.75 0 0 0 0-3.5H5.5V7.5A1.5 1.5 0 0 1 7 6h3.25z" />
-  ),
+  // Puzzle — the Plugins page: things that fit into the agent.
+  puzzle: <path d={PUZZLE} />,
 
-  // Plan mode — an OPEN book: two pages meeting at a single vertical centre
-  // spine (no text lines). Distinct from `book` (the closed skill playbook).
+  // Plan mode — an OPEN book: two pages meeting at a centre spine.
   "book-open": (
     <>
-      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H12v16H6.5A2.5 2.5 0 0 0 4 21z" />
-      <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H12v16h5.5A2.5 2.5 0 0 1 20 21z" />
+      <path d="M3.5 5.5A1.5 1.5 0 0 1 5 4h4a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H5A1.5 1.5 0 0 1 3.5 16z" />
+      <path d="M20.5 5.5A1.5 1.5 0 0 0 19 4h-4a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5H19a1.5 1.5 0 0 0 1.5-1.5z" />
     </>
   ),
 
   // Folder — project / workspace skills.
-  folder: (
-    <path d="M3.5 7a1.5 1.5 0 0 1 1.5-1.5h3.7L11 7.7h7.5A1.5 1.5 0 0 1 20.5 9.2v8.3A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z" />
-  ),
+  folder: <path d={FOLDER} />,
 
   // Pin — thumbtack (pin a chat). Trapezoidal head + needle.
   pin: (
     <>
-      <path d="M9.4 3.75h5.2l-.7 5.15 2.6 2.45v1.4H7.5v-1.4l2.6-2.45z" />
-      <path d="M12 13.25v6.9" />
+      <path d={PIN_HEAD} />
+      <path d="M12 14v6.5" />
     </>
   ),
 
-  // Archive — a lidded box with a pull slot (archive a chat).
+  // Archive — a lidded box with a pull slot.
   archive: (
     <>
-      <rect x="3.5" y="4.25" width="17" height="4" rx="1.2" />
-      <path d="M5 8.25v9.75A1.75 1.75 0 0 0 6.75 19.75h10.5A1.75 1.75 0 0 0 19 18V8.25" />
-      <path d="M10 11.75h4" />
+      <rect x="3" y="4" width="18" height="4.5" rx="1.5" />
+      <path d="M4.5 8.5V18A2.5 2.5 0 0 0 7 20.5h10a2.5 2.5 0 0 0 2.5-2.5V8.5" />
+      <path d="M10 12.5h4" />
     </>
   ),
 
-  // Trash — lidded can with two ribs (permanent delete in the archive view).
+  // Trash — lidded can with two ribs.
   trash: (
     <>
       <path d="M4 6.5h16" />
-      <path d="M9.5 6.5V5a1.25 1.25 0 0 1 1.25-1.25h2.5A1.25 1.25 0 0 1 14.5 5v1.5" />
-      <path d="M6.25 6.5l.85 12.05A1.6 1.6 0 0 0 8.7 20h6.6a1.6 1.6 0 0 0 1.6-1.45L17.75 6.5" />
-      <path d="M10.25 10.5v5.5M13.75 10.5v5.5" />
+      <path d="M9 6.5V5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5v1.5" />
+      <path d="m6 6.5.9 12.1A2 2 0 0 0 8.9 20.5h6.2a2 2 0 0 0 2-1.9L18 6.5" />
+      <path d="M10 11v5M14 11v5" />
     </>
   ),
 
-  // Database — stacked cylinder (context window / tokens).
+  // Database — stacked cylinder (context window / tokens, Memory).
   database: (
     <>
-      <ellipse cx="12" cy="5.5" rx="7" ry="2.75" />
-      <path d="M5 5.5v13c0 1.52 3.13 2.75 7 2.75s7-1.23 7-2.75v-13" />
-      <path d="M5 12c0 1.52 3.13 2.75 7 2.75s7-1.23 7-2.75" />
+      <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
+      <path d="M4.5 5.5v13c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-13" />
+      <path d="M4.5 12c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8" />
     </>
   ),
 
-  // MCP — a hub node linked to three satellite nodes (connected tools /
-  // protocol). Used for every `mcp_*` tool-call header.
+  // MCP — a hub node linked to three satellites. Every `mcp_*` tool header.
   mcp: (
     <>
-      <circle cx="12" cy="12" r="2.3" data-part="pulse" />
-      <circle cx="6" cy="6" r="1.7" />
-      <circle cx="18" cy="6" r="1.7" />
-      <circle cx="12" cy="19" r="1.7" />
-      <path d="M10.37 10.37 7.2 7.2" data-part="flow" />
-      <path d="M13.63 10.37 16.8 7.2" data-part="flow" />
-      <path d="M12 14.3v3" data-part="flow" />
+      <circle cx="12" cy="12" r="2.6" data-part="pulse" />
+      <circle cx="5.5" cy="5.5" r="2" />
+      <circle cx="18.5" cy="5.5" r="2" />
+      <circle cx="12" cy="19.5" r="2" />
+      <path d="M10.1 10.1 7 7" data-part="flow" />
+      <path d="M13.9 10.1 17 7" data-part="flow" />
+      <path d="M12 14.6v2.9" data-part="flow" />
     </>
   ),
 
-  // Sort — three descending lines with a down-arrow (change list ordering).
+  // Sort — three descending lines with a down-arrow.
   sort: (
     <>
       <path d="M4 7h11" />
       <path d="M4 12h7.5" />
       <path d="M4 17h4.5" />
-      <path d="M18 8.5v8.5" />
-      <path d="M15.25 14.25 18 17l2.75-2.75" />
+      <path d="M18 6v11.5" />
+      <path d="m15 14.5 3 3 3-3" />
     </>
   ),
 
-  // Eye — vision capability badge in the model row, and "reveal" on the API
-  // key field.
+  // Eye — vision capability, and "reveal" on the API key field.
   eye: (
     <>
-      <path d="M2.75 12S6.25 5.5 12 5.5 21.25 12 21.25 12 17.75 18.5 12 18.5 2.75 12 2.75 12z" />
-      <circle cx="12" cy="12" r="2.6" data-part="pulse" />
+      <path d={EYE} />
+      <circle cx="12" cy="12" r="2.8" data-part="pulse" />
     </>
   ),
 
-  // Eye with a rule through it — "hide" on the API key field. Deliberately the
-  // SAME outline and pupil as `eye` plus one stroke, so the pair reads as one
-  // control changing state instead of two unrelated glyphs. (Before this
-  // existed the field used `browser`, a globe, which said nothing about
-  // revealing anything.)
+  // Eye with a rule through it — "hide". The SAME outline and pupil as `eye`
+  // plus one stroke, so the pair reads as one control changing state.
   "eye-off": (
     <>
-      <path d="M2.75 12S6.25 5.5 12 5.5 21.25 12 21.25 12 17.75 18.5 12 18.5 2.75 12 2.75 12z" />
-      <circle cx="12" cy="12" r="2.6" />
-      <path d="M4.5 19.5 19.5 4.5" />
+      <path d={EYE} />
+      <circle cx="12" cy="12" r="2.8" />
+      <path d="M4 20 20 4" />
     </>
   ),
 
-  // The two composer TRIGGER CHARACTERS, drawn as themselves. The `+` menu's
-  // Mention and Actions rows do nothing but type `@` and `/` into the editor,
-  // so the glyph that names each row is the character it inserts — the row
-  // teaches the shortcut it replaces instead of hiding it behind a metaphor.
+  // The two composer TRIGGER CHARACTERS, drawn as themselves: the `+` menu's
+  // Mention and Actions rows type `@` and `/`, so the glyph is the character.
   at: (
     <>
-      <circle cx="12" cy="12" r="3.9" />
-      <path d="M15.9 8.1v5.2a2.85 2.85 0 0 0 5.7 0v-1.3A9.6 9.6 0 1 0 17.9 19.6" />
+      <circle cx="12" cy="12" r="3.8" />
+      <path d="M15.8 8.2v5.1a2.8 2.8 0 0 0 5.6 0v-1.3A9.5 9.5 0 1 0 17.8 19.5" />
     </>
   ),
   slash: (
     <>
-      <rect x="3.25" y="3.25" width="17.5" height="17.5" rx="4.2" />
-      <path d="M13.9 7.6 10.1 16.4" />
+      <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+      <path d="m14 7.5-4 9" />
     </>
   ),
 };
@@ -1269,11 +1288,14 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
 export const AgentIcon: React.FC<AgentIconProps> = ({
   name,
   size = 16,
-  strokeWidth = 1.8,
+  strokeWidth = 2,
+  solid,
   className,
   style,
   title,
+  glyph,
 }) => {
+  const solidGlyph = solid && !glyph ? SOLID[name] : undefined;
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -1288,8 +1310,8 @@ export const AgentIcon: React.FC<AgentIconProps> = ({
       className={className}
       // The width/height ATTRIBUTES above stay as the authored px so the glyph
       // has a correct intrinsic size before styles resolve; these override them
-      // with the scaled length. Caller style still wins, so a component that
-      // must pin an exact size can.
+      // with the drawn, scaled length. Caller style still wins, so a component
+      // that must pin an exact size can.
       style={{
         flexShrink: 0,
         width: scaledLength(size),
@@ -1302,7 +1324,13 @@ export const AgentIcon: React.FC<AgentIconProps> = ({
       focusable="false"
     >
       {title ? <title>{title}</title> : null}
-      {GLYPHS[name]}
+      {solidGlyph ? (
+        <g fill="currentColor" data-solid="">
+          {solidGlyph}
+        </g>
+      ) : (
+        (glyph ?? GLYPHS[name])
+      )}
     </svg>
   );
 };

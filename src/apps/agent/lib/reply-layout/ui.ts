@@ -313,9 +313,13 @@ function rowPart(reader: Reader, name: RowPartName, args: UiValue[], key: string
   }
   if (rows.length === 0 && lines.length <= 1 && !title) return null;
   const parsed = parseLayout(`aurora-${kind}`, lines.join("\n"), true);
-  for (const problem of parsed.problems) reader.problems.push(`${key}: ${problem}`);
-  const layout = "title" in parsed && kind !== "flow" ? { ...parsed, title } : parsed;
-  if (layoutIsEmpty(layout)) return null;
+  const layout = "title" in parsed && kind !== "flow" ? { ...parsed, title } : parsed;  // A drawn block names its own skipped rows inside its card (`layout.problems`).
+  // Only a block with nothing to draw hands them to the reply-level list, with
+  // its name, since no card is left to hold them.
+  if (layoutIsEmpty(layout)) {
+    for (const problem of parsed.problems) reader.problems.push(`${key}: ${problem}`);
+    return null;
+  }
   return { kind: "block", key, ...(kind === "flow" && title ? { heading: title } : {}), layout };
 }
 

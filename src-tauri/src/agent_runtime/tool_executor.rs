@@ -180,6 +180,12 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// This conversation's `screenshots` directory, beside [`Self::spill_dir`]
+    /// (`…\projects\<slug>\<thread>\screenshots`). `None` without a store.
+    pub fn screenshots_dir(&self) -> Option<PathBuf> {
+        crate::agent_runtime::session_store::screenshots_dir_beside_spill(self.spill_dir.as_deref()?)
+    }
+
     /// Convenience: short-circuit a tool's body if the turn was
     /// already cancelled before the tool was reached.
     ///

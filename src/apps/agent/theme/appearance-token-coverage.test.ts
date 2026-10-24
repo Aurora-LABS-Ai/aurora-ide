@@ -408,7 +408,7 @@ describe("agent appearance token coverage", () => {
    * dimmer than on" holds by construction, in any theme and under any
    * customization.
    */
-  it("keeps the composer send icon dim when empty and bright when ready", () => {
+  it("keeps the composer send dim when empty and a solid disc when ready", () => {
     const composer: string = readFileSync(
       `${partialsDir}/13-composer-input.css`,
       "utf8",
@@ -421,9 +421,11 @@ describe("agent appearance token coverage", () => {
 
     // Resting/disabled: the quietest step of the ramp.
     expect(block(".agw-send {")).toContain("color: var(--agw-text-subtle)");
-    // Ready: the loudest.
+    // Ready: the disc fills with the loudest step and the arrow is cut out of
+    // it in the composer's own fill (icon direction 04, 2026-10-23).
     const ready = block(".agw-send:not(.agw-send-stream):not(:disabled) {");
-    expect(ready).toContain("color: var(--agw-text)");
+    expect(ready).toContain("background: var(--agw-text)");
+    expect(ready).toContain("color: var(--agw-composer-surface)");
     // And never the accent-label token, whatever it happens to be set to.
     expect(
       ready,

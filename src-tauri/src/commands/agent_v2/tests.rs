@@ -3098,6 +3098,45 @@ mod subagents {
         .names()
     }
 
+    /// The project's code-index switch decides whether `code` is handed to the
+    /// model at all. Told-not-to-use is not enough: a listed tool gets called.
+    #[test]
+    fn a_project_with_the_code_index_off_gets_no_code_tool() {
+        let workspace = tempfile::tempdir().unwrap();
+        let service = crate::code_index::service();
+        let directory = service.project_index_dir(workspace.path()).unwrap();
+        let mut base = ToolRegistry::new();
+        crate::tools::code_intel::register(&mut base);
+        let base = Arc::new(base);
+        let names = || {
+            build_per_turn_tool_registry(
+                base.clone(),
+                &[],
+                "t-cidx".into(),
+                Arc::new(BridgeRouter::new()),
+                Arc::new(MockEmitter::default()),
+                CancellationToken::new(),
+                true,
+                AgentExecutionMode::Agent,
+                workspace.path().to_str(),
+                false,
+                true,
+                false,
+                "thread-cidx",
+            )
+            .names()
+        };
+
+        assert!(names().contains(&"code".to_string()), "on by default");
+
+        let off = crate::code_index::jobs::IndexSettings { enabled: false, ..Default::default() };
+        crate::code_index::jobs::save_settings(&directory, &off).unwrap();
+        assert!(!names().contains(&"code".to_string()), "off removes it");
+
+        crate::code_index::jobs::save_settings(&directory, &Default::default()).unwrap();
+        assert!(names().contains(&"code".to_string()), "back on, back in the roster");
+    }
+
     #[test]
     fn the_switch_decides_whether_the_parent_gets_the_tools() {
         let (registry, _dir) = temp_registry();

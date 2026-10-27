@@ -1,101 +1,65 @@
+//! Saved workspace / editor / explorer state. The bodies are written once in
+//! `host_commands::settings`; these lock the window's database and call them.
+
 use std::sync::Mutex;
 use tauri::State;
 
 use crate::db::{Database, EditorState, ExplorerState, WorkspaceState};
+use crate::host_commands::settings as core;
 
-/// Save workspace state
-#[tauri::command(async)]
-pub fn save_workspace_state(
-    state: WorkspaceState,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
+fn locked<T>(
+    db: &State<'_, Mutex<Database>>,
+    f: impl FnOnce(&Database) -> Result<T, String>,
+) -> Result<T, String> {
     let db = db.lock().map_err(|e| e.to_string())?;
-    db.workspace()
-        .save(&state)
-        .map_err(|e| format!("Failed to save workspace state: {:?}", e))
+    f(&db)
 }
 
-/// Get workspace state by path
+#[tauri::command(async)]
+pub fn save_workspace_state(state: WorkspaceState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::save_workspace_state(db, &state))
+}
+
+/// By path, or the most recent workspace when none is given.
 #[tauri::command(async)]
 pub fn get_workspace_state(
     workspace_path: Option<String>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<Option<WorkspaceState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    match workspace_path {
-        Some(path) => db
-            .workspace()
-            .get_by_path(&path)
-            .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
-        None => db
-            .workspace()
-            .get_most_recent()
-            .map_err(|e| format!("Failed to get workspace state: {:?}", e)),
-    }
+    locked(&db, |db| core::get_workspace_state(db, workspace_path.as_deref()))
 }
 
-/// Get recently opened workspaces ordered by last_opened_at desc
+/// Recently opened workspaces, newest first.
 #[tauri::command(async)]
 pub fn list_recent_workspaces(
     limit: Option<usize>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<Vec<WorkspaceState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    let max_items = limit.unwrap_or(3);
-
-    db.workspace()
-        .get_all()
-        .map(|states| {
-            states
-                .into_iter()
-                .filter(|state| state.workspace_path.is_some())
-                .take(max_items)
-                .collect()
-        })
-        .map_err(|e| format!("Failed to list recent workspaces: {:?}", e))
+    locked(&db, |db| core::list_recent_workspaces(db, limit))
 }
 
-/// Save editor state for a file
 #[tauri::command(async)]
 pub fn save_editor_state(state: EditorState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.editor()
-        .save(&state)
-        .map_err(|e| format!("Failed to save editor state: {:?}", e))
+    locked(&db, |db| core::save_editor_state(db, &state))
 }
 
-/// Get editor state for a file
 #[tauri::command(async)]
 pub fn get_editor_state(
     file_path: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<Option<EditorState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.editor()
-        .get(&file_path)
-        .map_err(|e| format!("Failed to get editor state: {:?}", e))
+    locked(&db, |db| core::get_editor_state(db, &file_path))
 }
 
-/// Save explorer state for a workspace
 #[tauri::command(async)]
-pub fn save_explorer_state(
-    state: ExplorerState,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.explorer()
-        .save(&state)
-        .map_err(|e| format!("Failed to save explorer state: {:?}", e))
+pub fn save_explorer_state(state: ExplorerState, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::save_explorer_state(db, &state))
 }
 
-/// Get explorer state for a workspace
 #[tauri::command(async)]
 pub fn get_explorer_state(
     workspace_path: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<Option<ExplorerState>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.explorer()
-        .get(&workspace_path)
-        .map_err(|e| format!("Failed to get explorer state: {:?}", e))
+    locked(&db, |db| core::get_explorer_state(db, &workspace_path))
 }

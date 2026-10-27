@@ -1,0 +1,3448 @@
+//! Thread commands — agent_v2 Session edition.
+//!
+//! Written once here, with no Tauri in them: the window's
+//! `#[tauri::command]`s (`commands/threads.rs`) are wrappers, and
+//! [`dispatch`] serves the same names to `aurora serve`. Events go through
+//! the host's [`EventSink`] (the windows, or the server's browser pages).
+//!
+//! Every chat-list / thread-load / persistence command in Aurora goes
+//! through here. The single source of truth is the
+//! [`crate::agent_runtime::session_store::SessionStore`] — there is no
+//! other persistence layer. The legacy event-sourced `ThreadEventLog`
+//! and SQLite `threads` table have both been retired.
+//!
+//! ## Wire shape
+//!
+//! The frontend's `threadService` still consumes `DbThread` /
+//! `DbMessage` / `ThreadSummary`. We synthesize those from the
+//! canonical [`Session`] so the React layer doesn't have to learn the
+//! Anthropic-style content-block model.
+//!
+//! Mapping:
+//!
+//! - `Session.thread_id` / `metadata.title` / `metadata.created_at` /
+//!   `metadata.updated_at` → top-level `DbThread` fields.
+//! - `Vec<ConversationMessage>` → `Vec<Message>` via
+//!   [`session_to_db_messages`]: each `User` message becomes a flat
+//!   `Message { role: "user", content }`; each `Assistant` message
+//!   produces one `Message { role: "assistant" }` whose
+//!   `content` is the joined text blocks, `thinking` is the joined
+//!   thinking blocks, and `tool_calls` is a `Vec<ToolCall>` populated
+//!   from the `ToolUse` blocks. `Tool` messages are folded into the
+//!   prior assistant message's `tool_calls[].result` so the UI sees
+//!   tool calls as paired with their results, the way the chat
+//!   bubbles render.
+//!
+//! ## Lifecycle
+//!
+//! 1. Frontend creates a UUID and calls `thread_save({ id, title:
+//!    "New Chat" })` — this calls `SessionStore::ensure_thread`,
+//!    materialising an empty `<id>.jsonl` + `<id>.meta.json` pair.
+//! 2. `agent_chat_v2` runs a turn; `TurnDriver` appends messages to
+//!    the JSONL via `Session::save_to_path`, then calls
+//!    `SessionStore::touch` and (on the first turn) `set_title` so
+//!    the chat list re-orders.
+//! 3. Frontend periodically calls `thread_update_usage` after each
+//!    turn completes so the modal can render token / context bars.
+//! 4. Reload / open: frontend calls `thread_load(id)`; we read the
+//!    JSONL + sidecar and synthesise the `DbThread`.
+
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::{arg, done, CommandContext, CommandError};
+use crate::agent_runtime::host::AgentRegistry;
+use crate::agent_runtime::session_store::{ContextUsageMeta, SessionStore, TokenUsageMeta};
+use crate::agent_runtime::types::{ContentBlock, ConversationMessage, MessageRole};
+use crate::host_events::{EventSink, Events};
+use crate::db::{ContextUsage, Message, ThreadState, TokenUsage, ToolCall as DbToolCall};
+use crate::services::api_converter::{ApiMessage, ApiToolCall, ApiToolFunction};
+
+// ============================================================================
+// Wire-format adapters
+// ============================================================================
+
+/// Lightweight summary shipped to the chat list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSummary {
+    pub id: String,
+    pub title: String,
+    pub message_count: usize,
+    pub preview: String,
+    /// Project scope (the thread's `workspace_root`). `None` for legacy
+    /// unscoped threads, which a project-filtered list omits entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
+    /// The model this conversation is on (`"providerId:modelKey"`), or `None`
+    /// when it has never run a turn and was never pinned to one — the composer
+    /// then falls back to the user's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Whether the chat is pinned to the top of the rail.
+    #[serde(default)]
+    pub pinned: bool,
+    /// RFC3339 instant the chat was archived, or `None` when active. Archived
+    /// chats live in the rail's "Archived" view and are purged after 15 days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// Aurora Chat: started in deep research. Fixed at creation.
+    #[serde(default)]
+    pub deep_research: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Convert a stored `Vec<ConversationMessage>` into the flat
+/// `Vec<Message>` shape the React layer renders. `Tool` messages are
+/// folded back into the prior assistant message's `tool_calls[].result`
+/// so the UI sees tool calls paired with their results.
+#[cfg(test)]
+fn session_to_db_messages(messages: &[ConversationMessage]) -> Vec<Message> {
+    session_to_db_messages_rich(messages, &std::collections::HashMap::new())
+}
+
+/// Same conversion, overlaying full-fidelity results from the
+/// `.rich.jsonl` sidecar: when a `ToolResult`'s history copy was clamped
+/// at persist time, the sidecar carries the complete (UI-shaped) payload
+/// keyed by `tool_use_id` — the reloaded card then renders the FULL diff
+/// instead of a truncated head. Errors never have rich copies.
+fn session_to_db_messages_rich(
+    messages: &[ConversationMessage],
+    rich: &std::collections::HashMap<String, String>,
+) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
+
+    for msg in messages {
+        let timestamp = millis_to_rfc3339(msg.timestamp);
+        match msg.role {
+            MessageRole::System => {
+                // A compaction marker surfaces as a dedicated card the UI
+                // renders inline (greyed, "Context compacted · before → after").
+                // The summary itself is NEVER sent to the frontend. Every other
+                // System message is internal scaffolding and stays hidden.
+                if let Some((before, after)) = msg.blocks.iter().find_map(|b| match b {
+                    ContentBlock::Compaction {
+                        before_tokens,
+                        after_tokens,
+                        ..
+                    } => Some((*before_tokens, *after_tokens)),
+                    _ => None,
+                }) {
+                    out.push(Message {
+                        id: synthetic_message_id("compaction", msg.timestamp, out.len()),
+                        role: "compaction".to_string(),
+                        content: serde_json::json!({
+                            "beforeTokens": before,
+                            "afterTokens": after,
+                            "status": "completed",
+                        })
+                        .to_string(),
+                        // Cloned: a System message carries either a compaction
+                        // marker or a notice, and the notice arm below needs the
+                        // same stamp.
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
+                // A runtime notice ("this reply is cut off at the output
+                // limit") surfaces as its own row the UI folds into the
+                // assistant turn it describes, so a reloaded thread explains
+                // its truncated reply instead of just showing one.
+                if let Some(message) = msg.blocks.iter().find_map(|b| match b {
+                    ContentBlock::Notice { message, .. } => Some(message.clone()),
+                    _ => None,
+                }) {
+                    out.push(Message {
+                        id: synthetic_message_id("notice", msg.timestamp, out.len()),
+                        role: "notice".to_string(),
+                        content: message,
+                        timestamp,
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
+            }
+            MessageRole::User => {
+                // A turn STARTED by a background process ending, not by a
+                // person. On disk it is user-role (the model's turn to
+                // respond) with a single `ProcessEvent` block; on screen it
+                // is its own `process` row carrying the one-line summary.
+                //
+                // Its own role, like `compaction`, because the transcript
+                // needs a turn boundary here: `buildTurns` merges consecutive
+                // assistant messages into one turn, and the reply to this
+                // event must NOT fold into the reply before it. A `user` row
+                // with empty content used to be that boundary by accident —
+                // and drew as a blank bubble.
+                if let Some(summary) = process_started_turn_summary(&msg.blocks) {
+                    out.push(Message {
+                        id: synthetic_message_id("process", msg.timestamp, out.len()),
+                        role: "process".to_string(),
+                        content: summary,
+                        timestamp,
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: None,
+                        tools: None,
+                        timeline: None,
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                    continue;
+                }
+                // A turn STARTED by a sub-agent finishing: the same boundary
+                // reasoning as the process row, drawn as an `agent_report`
+                // row whose timeline carries the one agent entry.
+                if let Some(block) = agent_report_started_turn(&msg.blocks) {
+                    if let Some(entry) = agent_report_timeline_entry(
+                        block,
+                        format!("agent-report-{}-0", msg.timestamp),
+                    ) {
+                        let summary = match block {
+                            ContentBlock::AgentReport { summary, .. } => summary.clone(),
+                            _ => String::new(),
+                        };
+                        out.push(Message {
+                            id: synthetic_message_id("agent-report", msg.timestamp, out.len()),
+                            role: "agent_report".to_string(),
+                            content: summary,
+                            timestamp,
+                            tool_calls: None,
+                            thinking: None,
+                            is_thinking: None,
+                            tools: None,
+                            timeline: Some(serde_json::Value::Array(vec![entry])),
+                            tool_proposal: None,
+                            attached_selected_elements: None,
+                            attached_prompt_chips: None,
+                            usage: None,
+                        });
+                        continue;
+                    }
+                }
+                let content = collect_text_blocks(&msg.blocks);
+                out.push(Message {
+                    id: synthetic_message_id("user", msg.timestamp, out.len()),
+                    role: "user".to_string(),
+                    // The text blocks hold the user's own words only —
+                    // what Aurora attached for the model rides in the
+                    // message's separate `aurora_context` field, never in
+                    // the blocks. So whatever we read back is already
+                    // display-clean.
+                    content,
+                    timestamp,
+                    tool_calls: None,
+                    thinking: None,
+                    is_thinking: None,
+                    tools: None,
+                    timeline: None,
+                    tool_proposal: None,
+                    // Browser-inspector chips persisted with this turn —
+                    // re-rendered above the user bubble on reopen.
+                    attached_selected_elements: msg.attached_selected_elements.clone(),
+                    attached_prompt_chips: msg.attached_prompt_chips.clone(),
+                    usage: None,
+                });
+            }
+            MessageRole::Assistant => {
+                let message_id = synthetic_message_id("assistant", msg.timestamp, out.len());
+                let mut content = String::new();
+                let mut thinking = String::new();
+                let mut tool_calls: Vec<DbToolCall> = Vec::new();
+                // The order the model actually emitted this turn's parts in.
+                // A real turn INTERLEAVES — it speaks, calls a tool, speaks
+                // again, calls more — and `blocks` is the only record of that.
+                // Dropping it made every reloaded turn render as "thought,
+                // spoke, then ran every tool", which is not what happened and
+                // put anything positional (a chapter marker, a notice) in the
+                // wrong place the moment the chat was reopened.
+                let mut timeline: Vec<serde_json::Value> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            push_with_newline(&mut content, text);
+                            push_timeline_text(&mut timeline, &message_id, "content", text, None);
+                        }
+                        ContentBlock::Thinking {
+                            text, duration_ms, ..
+                        } => {
+                            push_with_newline(&mut thinking, text);
+                            push_timeline_text(
+                                &mut timeline,
+                                &message_id,
+                                "thinking",
+                                text,
+                                *duration_ms,
+                            );
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let (name, input) =
+                                crate::tools::tool_search::call_identity(name, input);
+                            let arguments =
+                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(DbToolCall {
+                                id: id.clone(),
+                                name: name.to_owned(),
+                                arguments,
+                                result: None,
+                            });
+                            // ORDER ONLY. The call — and the result a later
+                            // Tool message folds in below — lives in
+                            // `tool_calls`; a second copy here would be a
+                            // second truth that can disagree with it.
+                            timeline.push(serde_json::json!({ "kind": "tool", "id": id }));
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            // Defensive — tool results live on Tool
+                            // messages, not Assistant. Ignore.
+                        }
+                        ContentBlock::Image {
+                            asset,
+                            path,
+                            media_type,
+                            width,
+                            height,
+                            prompt,
+                            model,
+                            artifact,
+                        } => {
+                            // A picture made directly. The transcript renders
+                            // it as the picture; `content` (the copy text)
+                            // gets the same one line a model would read.
+                            if let Some(line) = block.image_as_text() {
+                                push_with_newline(&mut content, &line);
+                            }
+                            timeline.push(serde_json::json!({
+                                "kind": "image",
+                                "id": format!("{message_id}-image-{}", timeline.len()),
+                                "asset": asset,
+                                "path": path,
+                                "mediaType": media_type,
+                                "width": width,
+                                "height": height,
+                                "prompt": prompt,
+                                "model": model,
+                                "artifactId": artifact,
+                                "status": "ready",
+                            }));
+                        }
+                        ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {
+                            // Compaction markers and runtime notices live on
+                            // System messages and are surfaced as their own
+                            // rows; never on Assistant.
+                        }
+                        ContentBlock::ProcessEvent { .. } | ContentBlock::AgentReport { .. } => {
+                            // Rides the Tool message the runtime was assembling
+                            // when the process ended (or the sub-agent
+                            // finished), and is surfaced there.
+                        }
+                    }
+                }
+                let thinking_opt = if thinking.is_empty() {
+                    None
+                } else {
+                    Some(thinking)
+                };
+                out.push(Message {
+                    id: message_id,
+                    role: "assistant".to_string(),
+                    content,
+                    timestamp,
+                    tool_calls: if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(tool_calls)
+                    },
+                    thinking: thinking_opt,
+                    is_thinking: Some(false),
+                    tools: None,
+                    timeline: if timeline.is_empty() {
+                        None
+                    } else {
+                        Some(serde_json::Value::Array(timeline))
+                    },
+                    tool_proposal: None,
+                    attached_selected_elements: None,
+                    attached_prompt_chips: None,
+                    usage: msg.usage.clone(),
+                });
+            }
+            MessageRole::Tool => {
+                // Fold every ToolResult block into the prior
+                // assistant message's matching tool_call entry.
+                if let Some(prev) = out.iter_mut().rev().find(|m| m.role == "assistant") {
+                    if let Some(calls) = prev.tool_calls.as_mut() {
+                        for block in &msg.blocks {
+                            if let ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } = block
+                            {
+                                if let Some(call) = calls.iter_mut().find(|c| c.id == *tool_use_id)
+                                {
+                                    let formatted = if is_error.unwrap_or(false) {
+                                        format!("[error] {content}")
+                                    } else {
+                                        rich.get(tool_use_id).unwrap_or(content).clone()
+                                    };
+                                    call.result = Some(formatted);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A mid-turn user message rides beside the tool results as a
+                // Text block. Preserve it as a tiny assistant timeline segment
+                // so the frontend merges it at the exact tool→next-response
+                // boundary instead of losing it on thread reload.
+                //
+                // Display fidelity: the persisted block is the MODEL copy —
+                // the typed text plus any `<steering_context>` directive
+                // block the composer resolved from `/` commands. The row
+                // shows only the typed part; the chips (persisted on this
+                // tool message) re-render the pills that stood for the rest.
+                for (index, text) in msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        // Aurora's own note to the model is not a message from
+                        // anyone. It rides here as a text block — the same
+                        // shape a mid-turn user message uses — so without this
+                        // filter the transcript draws `<aurora_task_reminder>`
+                        // as a row in the person's chat, tags and all. The
+                        // checklist it describes is already on screen, live, in
+                        // the header indicator.
+                        ContentBlock::Text { text }
+                            if !text.is_empty() && !is_runtime_note(text) =>
+                        {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    let display = strip_steering_context(strip_mid_turn_preamble(text));
+                    let mut event = serde_json::json!({
+                        "kind": "user_injection",
+                        "id": format!("injection-{}-{index}", msg.timestamp),
+                        "text": display,
+                    });
+                    if let Some(chips) = msg.attached_prompt_chips.as_ref() {
+                        if let Ok(chips_json) = serde_json::to_value(chips) {
+                            event["chips"] = chips_json;
+                        }
+                    }
+                    out.push(Message {
+                        id: synthetic_message_id("injection", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::Value::Array(vec![event])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
+
+                // A background process that ended while these tools ran. Its
+                // own block, so a reload can tell it from a message without
+                // sniffing the text — which is the mistake the filter above
+                // exists to undo. The transcript gets the one-line summary; the
+                // model-facing detail stays in the block for the API view.
+                for (index, summary) in msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::ProcessEvent { summary, .. } if !summary.is_empty() => {
+                            Some(summary)
+                        }
+                        _ => None,
+                    })
+                    .enumerate()
+                {
+                    out.push(Message {
+                        id: synthetic_message_id("process", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::Value::Array(vec![serde_json::json!({
+                            "kind": "process_beat",
+                            "id": format!("process-{}-{index}", msg.timestamp),
+                            "text": summary,
+                        })])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
+
+                // A sub-agent that finished while these tools ran. Same
+                // treatment as the process beat above: the transcript gets the
+                // agent row, the model-facing detail stays in the block.
+                for entry in msg
+                    .blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(block, ContentBlock::AgentReport { summary, .. } if !summary.is_empty())
+                    })
+                    .enumerate()
+                    .filter_map(|(index, block)| {
+                        agent_report_timeline_entry(
+                            block,
+                            format!("agent-report-{}-{index}", msg.timestamp),
+                        )
+                    })
+                {
+                    out.push(Message {
+                        id: synthetic_message_id("agent-report", msg.timestamp, out.len()),
+                        role: "assistant".to_string(),
+                        content: String::new(),
+                        timestamp: timestamp.clone(),
+                        tool_calls: None,
+                        thinking: None,
+                        is_thinking: Some(false),
+                        tools: None,
+                        timeline: Some(serde_json::Value::Array(vec![entry])),
+                        tool_proposal: None,
+                        attached_selected_elements: None,
+                        attached_prompt_chips: None,
+                        usage: None,
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Is this text block Aurora talking to the model rather than a person
+/// talking to anyone?
+///
+/// A tool message's text blocks are normally an injected mid-turn user message
+/// — something a person typed, which belongs on screen. The runtime uses the
+/// same slot for its own notes, and those do not: the reader never wrote them,
+/// cannot act on them, and in the checklist's case is already looking at what
+/// they describe in the header indicator.
+///
+/// Found the hard way. Moving the stale-checklist reminder out of a tool
+/// result's body and into its own block (the right fix — a tool result must
+/// hold the tool's output alone) handed it straight to this loop, and the next
+/// session drew `<aurora_task_reminder>`, angle brackets and all, as a card in
+/// the middle of the conversation.
+fn is_runtime_note(text: &str) -> bool {
+    text.contains(crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG)
+}
+
+/// Drop the runtime's mid-turn framing line from an injected message. The
+/// preamble ([`crate::agent_runtime::session::MID_TURN_PREAMBLE`]) tells the
+/// MODEL the message arrived while tools were running; the human watched it
+/// happen, so displaying it back is noise.
+fn strip_mid_turn_preamble(text: &str) -> &str {
+    let preamble = crate::agent_runtime::session::MID_TURN_PREAMBLE;
+    match text.strip_prefix(preamble) {
+        Some(rest) => rest.trim_start_matches('\n'),
+        None => text,
+    }
+}
+
+/// Cut the `<steering_context>…</steering_context>` block out of an injected
+/// mid-turn message, leaving what the user typed.
+///
+/// The composer appends that block when the user attaches `/` directives to
+/// a mid-turn send (resolved rule text, skill references, MCP nudges) — the
+/// model must see it, the human already saw it as pills. The tag pair is a
+/// contract with `useAgentWindowSend`'s mid-turn branch (`STEERING_OPEN` /
+/// `STEERING_CLOSE` there); a message without the tags passes through
+/// untouched, as does a malformed half-tagged one (showing machinery beats
+/// eating the user's words).
+fn strip_steering_context(text: &str) -> String {
+    const OPEN: &str = "<steering_context>";
+    const CLOSE: &str = "</steering_context>";
+    let (Some(start), Some(end)) = (text.find(OPEN), text.rfind(CLOSE)) else {
+        return text.to_string();
+    };
+    if end < start {
+        return text.to_string();
+    }
+    let head = text[..start].trim_end();
+    let tail = text[end + CLOSE.len()..].trim_start();
+    match (head.is_empty(), tail.is_empty()) {
+        (false, false) => format!("{head}\n\n{tail}"),
+        (false, true) => head.to_string(),
+        (true, false) => tail.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// Convert the canonical `Vec<ConversationMessage>` directly into the
+/// `Vec<ApiMessage>` shape the LLM-request builder consumes. This is
+/// what `thread_get_api_history` returns when the frontend asks for
+/// the rebuild-context view of a thread.
+fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> {
+    let mut out: Vec<ApiMessage> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        match msg.role {
+            MessageRole::System => {
+                let content = collect_text_blocks(&msg.blocks);
+                if !content.is_empty() {
+                    out.push(ApiMessage::System { content });
+                }
+            }
+            MessageRole::User => {
+                // The model's copy: a person's words, or — for a turn a
+                // background process started — the detail with the process id
+                // and log path, which is what every adapter puts on the wire.
+                let content = collect_model_text_blocks(&msg.blocks);
+                if !content.is_empty() {
+                    out.push(ApiMessage::User { content });
+                }
+            }
+            MessageRole::Assistant => {
+                let mut content = String::new();
+                let mut reasoning = String::new();
+                let mut tool_calls: Vec<ApiToolCall> = Vec::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::Text { text } => push_with_newline(&mut content, text),
+                        ContentBlock::Thinking { text, .. } => {
+                            push_with_newline(&mut reasoning, text);
+                        }
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let arguments =
+                                serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                            tool_calls.push(ApiToolCall {
+                                id: id.clone(),
+                                call_type: "function".to_string(),
+                                function: ApiToolFunction {
+                                    name: name.clone(),
+                                    arguments,
+                                },
+                            });
+                        }
+                        ContentBlock::Image { .. } => {
+                            if let Some(line) = block.image_as_text() {
+                                push_with_newline(&mut content, &line);
+                            }
+                        }
+                        ContentBlock::ToolResult { .. } => {}
+                        ContentBlock::Compaction { .. } | ContentBlock::Notice { .. } => {}
+                        // A process event never sits on an assistant message —
+                        // it rides the tool message the runtime was building
+                        // when the process ended. Handled in that branch. An
+                        // agent report is the same.
+                        ContentBlock::ProcessEvent { .. } | ContentBlock::AgentReport { .. } => {}
+                    }
+                }
+                let content_opt = if content.is_empty() {
+                    None
+                } else {
+                    Some(content)
+                };
+                let reasoning_opt = if reasoning.is_empty() {
+                    None
+                } else {
+                    Some(reasoning)
+                };
+                let tool_calls_opt = if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                };
+                // Skip empty assistant messages entirely.
+                if content_opt.is_some() || tool_calls_opt.is_some() {
+                    out.push(ApiMessage::Assistant {
+                        content: content_opt,
+                        reasoning_content: reasoning_opt,
+                        tool_calls: tool_calls_opt,
+                    });
+                }
+            }
+            MessageRole::Tool => {
+                let mut injected_text = String::new();
+                for block in &msg.blocks {
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => out.push(ApiMessage::Tool {
+                            tool_call_id: tool_use_id.clone(),
+                            content: content.clone(),
+                        }),
+                        ContentBlock::Text { text } => push_with_newline(&mut injected_text, text),
+                        // A background process ended while these tools ran. The
+                        // model gets the detail copy — the ids and the log path
+                        // it needs to act — carried in the same trailing user
+                        // message the injected text uses, which is the shape
+                        // every provider already accepts here.
+                        // A finished sub-agent's report goes the same way.
+                        ContentBlock::ProcessEvent { detail, .. }
+                        | ContentBlock::AgentReport { detail, .. } => {
+                            push_with_newline(&mut injected_text, detail);
+                        }
+                        _ => {}
+                    }
+                }
+                if !injected_text.is_empty() {
+                    out.push(ApiMessage::User {
+                        content: injected_text,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
+    let mut out = String::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => push_with_newline(&mut out, text),
+            // A directly made picture reads as its one-line description
+            // wherever the transcript is text (export, API view).
+            ContentBlock::Image { .. } => {
+                if let Some(line) = block.image_as_text() {
+                    push_with_newline(&mut out, &line);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The text a user-role message puts on the wire: its words, plus the
+/// model-facing `detail` of a process event when a background process is what
+/// started the turn. `collect_text_blocks` is the display copy and skips the
+/// event on purpose — the transcript draws its `summary` as a beat instead.
+fn collect_model_text_blocks(blocks: &[ContentBlock]) -> String {
+    let mut out = collect_text_blocks(blocks);
+    for block in blocks {
+        if let ContentBlock::ProcessEvent { detail, .. } | ContentBlock::AgentReport { detail, .. } =
+            block
+        {
+            push_with_newline(&mut out, detail);
+        }
+    }
+    out
+}
+
+/// The `AgentReport` block that started a user-role turn, or `None` when a
+/// person wrote it. The sibling of [`process_started_turn_summary`] and the
+/// same rule: ANY typed text means the message is the user's.
+fn agent_report_started_turn(blocks: &[ContentBlock]) -> Option<&ContentBlock> {
+    let typed = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()));
+    if typed {
+        return None;
+    }
+    blocks
+        .iter()
+        .find(|b| matches!(b, ContentBlock::AgentReport { summary, .. } if !summary.trim().is_empty()))
+}
+
+/// The transcript's timeline entry for a finished sub-agent. `None` for any
+/// other block. `id` is supplied by the caller so both homes (mid-turn and
+/// turn-starting) share the shape and differ only in their id.
+fn agent_report_timeline_entry(block: &ContentBlock, id: String) -> Option<serde_json::Value> {
+    match block {
+        ContentBlock::AgentReport {
+            agent_id,
+            name,
+            status,
+            summary,
+            detail,
+            ..
+        } => Some(serde_json::json!({
+            "kind": "agent_report",
+            "id": id,
+            "agentId": agent_id,
+            "name": name,
+            "status": status,
+            "summary": summary,
+            "detail": detail,
+        })),
+        _ => None,
+    }
+}
+
+/// The one-line summary of a user-role message that a background process
+/// started, or `None` when a person wrote it.
+///
+/// A person's message has text blocks; a process-started one has a single
+/// `ProcessEvent` and nothing to read as words. The presence of ANY text is
+/// what decides — a message someone typed is theirs even if an event were
+/// ever to ride beside it.
+fn process_started_turn_summary(blocks: &[ContentBlock]) -> Option<String> {
+    let typed = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()));
+    if typed {
+        return None;
+    }
+    let summaries: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ProcessEvent { summary, .. } if !summary.trim().is_empty() => {
+                Some(summary.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    if summaries.is_empty() {
+        None
+    } else {
+        Some(summaries.join(" · "))
+    }
+}
+
+fn push_with_newline(out: &mut String, s: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(s);
+}
+
+/// Append a text-bearing event to a reconstructed assistant timeline, merging
+/// into the previous event when it is already the same kind.
+///
+/// Adjacent blocks of one kind are ONE segment, which is what the live stream
+/// produces (it coalesces its deltas the same way). Without merging, a reply
+/// that happened to arrive as three text blocks would reload as three separate
+/// paragraphs — and a tool row could then appear between parts of one sentence.
+///
+/// Empty text is skipped: it contributes nothing to read, and an empty segment
+/// renders as a blank gap in the transcript.
+/// `duration_ms` is carried for reasoning segments only, and SUMS across a
+/// merge: two adjacent thinking blocks become one segment in the UI, so the
+/// number the UI prints has to describe the whole thing. Blocks written before
+/// the field existed carry `None` and contribute nothing, which correctly
+/// leaves a legacy segment with no number rather than a partial one.
+fn push_timeline_text(
+    timeline: &mut Vec<serde_json::Value>,
+    message_id: &str,
+    kind: &str,
+    text: &str,
+    duration_ms: Option<u64>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = timeline.last_mut() {
+        if last["kind"] == kind {
+            let merged = format!("{}\n{}", last["text"].as_str().unwrap_or_default(), text);
+            last["text"] = serde_json::Value::String(merged);
+            if let Some(ms) = duration_ms {
+                let total = last["durationMs"].as_u64().unwrap_or(0).saturating_add(ms);
+                last["durationMs"] = serde_json::json!(total);
+            }
+            return;
+        }
+    }
+    // Index-derived id: block order on disk is fixed, so this is stable across
+    // reloads and unique within the message.
+    let id = format!("{message_id}-e{}", timeline.len());
+    let mut event = serde_json::json!({ "kind": kind, "id": id, "text": text });
+    if let Some(ms) = duration_ms {
+        event["durationMs"] = serde_json::json!(ms);
+    }
+    timeline.push(event);
+}
+
+fn duplicate_title(title: &str) -> String {
+    let title = title.trim();
+    let base = if title.is_empty() { "New Chat" } else { title };
+    format!("{base} (copy)")
+}
+
+/// Produce a clean, portable transcript. Internal system messages, model
+/// thinking, tool calls, and tool results are deliberately omitted; only the
+/// same user/assistant prose visible in the conversation is exported.
+fn render_thread_markdown(title: &str, messages: &[ConversationMessage]) -> String {
+    let clean_title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let clean_title = if clean_title.is_empty() {
+        "Chat"
+    } else {
+        clean_title.as_str()
+    };
+    let mut markdown = format!("# {clean_title}\n");
+
+    for message in messages {
+        let role = match message.role {
+            MessageRole::User => "You",
+            MessageRole::Assistant => "Aurora",
+            MessageRole::System | MessageRole::Tool => continue,
+        };
+        let visible = collect_text_blocks(&message.blocks);
+        let visible = crate::agent_runtime::title::strip_aurora_image_blocks(&visible);
+        let visible = visible.trim();
+        if visible.is_empty() {
+            continue;
+        }
+        markdown.push_str("\n## ");
+        markdown.push_str(role);
+        markdown.push_str("\n\n");
+        markdown.push_str(visible);
+        markdown.push('\n');
+    }
+
+    markdown
+}
+
+fn millis_to_rfc3339(millis: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+/// Synthesise a stable id for a message reconstructed from the
+/// `ConversationMessage` stream. The runtime doesn't carry per-message
+/// ids (tool_use ids exist, regular messages don't) — the React layer
+/// only needs a unique key for `<List>` rendering, so a deterministic
+/// composite is fine.
+fn synthetic_message_id(role: &str, timestamp_millis: i64, ordinal: usize) -> String {
+    format!("{role}-{timestamp_millis}-{ordinal}")
+}
+
+// ============================================================================
+// Token / context usage adapters (db ↔ session_store)
+// ============================================================================
+
+fn db_token_to_meta(usage: &TokenUsage) -> TokenUsageMeta {
+    TokenUsageMeta {
+        prompt_tokens: usage.prompt_tokens.max(0) as u32,
+        completion_tokens: usage.completion_tokens.max(0) as u32,
+        total_tokens: usage.total_tokens.max(0) as u32,
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        estimated: usage.estimated,
+    }
+}
+
+fn db_context_to_meta(usage: &ContextUsage) -> ContextUsageMeta {
+    ContextUsageMeta {
+        used_tokens: usage.used_tokens.max(0) as u32,
+        context_window: usage.context_window.max(0) as u32,
+        percentage: usage.percentage,
+    }
+}
+
+fn meta_to_db_token(meta: &TokenUsageMeta) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: i64::from(meta.prompt_tokens),
+        completion_tokens: i64::from(meta.completion_tokens),
+        total_tokens: i64::from(meta.total_tokens),
+        estimated: meta.estimated,
+    }
+}
+
+fn meta_to_db_context(meta: &ContextUsageMeta) -> ContextUsage {
+    ContextUsage {
+        used_tokens: i64::from(meta.used_tokens),
+        context_window: i64::from(meta.context_window),
+        percentage: meta.percentage,
+    }
+}
+
+// ============================================================================
+// Events — same wire channels the legacy code shipped so the
+// React layer doesn't need a migration.
+// ============================================================================
+
+fn emit<S: Serialize>(events: &Events, event: &str, payload: &S) {
+    if let Err(e) = <dyn EventSink>::emit(events.as_ref(), event, payload) {
+        crate::logging::log_warn("threads", &e);
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct ThreadCreatedPayload {
+    thread: ThreadSummary,
+}
+#[derive(Serialize, Clone)]
+struct ThreadLoadedPayload {
+    thread: ThreadState,
+}
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ThreadDeletedPayload {
+    thread_id: String,
+}
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ThreadUsageUpdatedPayload {
+    thread_id: String,
+    token_usage: TokenUsage,
+    context_usage: ContextUsage,
+}
+
+// ============================================================================
+// Helpers — shared between commands
+// ============================================================================
+
+/// Resolve an existing conversation without inventing an owner for a missing ID.
+fn store_for_thread(
+    registry: &Arc<AgentRegistry>,
+    thread_id: &str,
+) -> Result<Arc<SessionStore>, String> {
+    registry
+        .require_store_for_thread(thread_id)
+        .map_err(|e| e.to_string())
+}
+
+/// New conversations route by surface and workspace.
+fn store_for_surface(
+    registry: &Arc<AgentRegistry>,
+    surface: Option<&str>,
+    workspace: Option<&str>,
+) -> Result<Arc<SessionStore>, String> {
+    if surface == Some("chat") {
+        Ok(registry.chat_store().clone())
+    } else {
+        registry
+            .store_for_workspace(workspace)
+            .map_err(|e| e.to_string())
+    }
+}
+
+fn build_thread_state(
+    store: &SessionStore,
+    thread_id: &str,
+) -> Result<Option<ThreadState>, String> {
+    let loaded = store
+        .load(thread_id)
+        .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+    let Some(loaded) = loaded else {
+        return Ok(None);
+    };
+    let rich = store.load_rich_results(thread_id);
+    let messages = session_to_db_messages_rich(loaded.session.messages(), &rich);
+    Ok(Some(ThreadState {
+        id: thread_id.to_string(),
+        title: loaded.metadata.title,
+        summary: None,
+        messages,
+        token_usage: loaded.metadata.token_usage.as_ref().map(meta_to_db_token),
+        context_usage: loaded
+            .metadata
+            .context_usage
+            .as_ref()
+            .map(meta_to_db_context),
+        model: loaded.metadata.model,
+        execution_mode: loaded.metadata.execution_mode,
+        created_at: loaded.metadata.created_at,
+        updated_at: loaded.metadata.updated_at,
+    }))
+}
+
+fn build_thread_summary(
+    summary: crate::agent_runtime::session_store::SessionSummary,
+) -> ThreadSummary {
+    ThreadSummary {
+        id: summary.id,
+        title: summary.title,
+        message_count: summary.message_count,
+        preview: summary.preview,
+        workspace_root: summary.workspace_root,
+        model: summary.model,
+        pinned: summary.pinned,
+        archived_at: summary.archived_at,
+        deep_research: summary.deep_research,
+        created_at: summary.created_at,
+        updated_at: summary.updated_at,
+    }
+}
+
+// ============================================================================
+// Commands
+// ============================================================================
+
+/// Upsert thread metadata. Frontend calls this immediately after
+/// generating a UUID for a new chat (optimistic create) and again
+/// whenever a stored `Thread` is mutated client-side. Only the
+/// `title` field is persisted — message history is owned exclusively
+/// by the agent runtime.
+pub async fn thread_save(
+    thread: ThreadState,
+    workspace_root: Option<String>,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<(), String> {
+    let registry = registry.clone();
+    let app = events.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = registry
+            .store_for_save(&thread.id, workspace_root.as_deref())
+            .map_err(|e| e.to_string())?;
+        // An Aurora Chat conversation has no workspace; stamping one would
+        // contaminate its metadata (see `clear_chat_workspace_root`).
+        let workspace_root = if registry.is_chat_store(&store) {
+            None
+        } else {
+            workspace_root
+        };
+        store
+            .ensure_thread(&thread.id, Some(thread.title.clone()), workspace_root)
+            .map_err(|e| format!("Failed to ensure thread {}: {e}", thread.id))?;
+        if !thread.title.is_empty() {
+            store
+                .set_title(&thread.id, thread.title.clone())
+                .map_err(|e| format!("Failed to update title: {e}"))?;
+        }
+
+        if let Some(state) = build_thread_state(&store, &thread.id)? {
+            emit(
+                &app,
+                "thread-loaded",
+                &ThreadLoadedPayload { thread: state },
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Materialise an empty thread and return the freshly-bootstrapped
+/// `ThreadState`. The frontend currently generates UUIDs itself and
+/// uses `thread_save` to upsert, so this command is rarely called —
+/// kept for symmetry with the historic API surface.
+#[allow(clippy::too_many_arguments)]
+pub async fn thread_create(
+    title: Option<String>,
+    workspace_root: Option<String>,
+    // `surface`: `"chat"` creates the conversation in Aurora Chat's store;
+    // anything else, including omitting it, creates a Build conversation. One
+    // of the two commands that cannot look the store up, because the
+    // conversation does not exist yet.
+    surface: Option<String>,
+    // `deep_research`: stamped ONCE, here, and never changed. This is the only
+    // place it can be set — see `SessionMetadata::deep_research`.
+    deep_research: Option<bool>,
+    // `model`: the model the conversation is born on (`"providerId:modelKey"`).
+    // Written into the sidecar before the id is returned, so the conversation
+    // owns its model from its first instant. Without it the model existed
+    // nowhere until the first turn ENDED, and for that whole turn every window
+    // showed — and a second send ran on — whichever model was picked last
+    // anywhere else.
+    model: Option<String>,
+    // `execution_mode`: Build's Agent/Plan, recorded with the model and for
+    // the same reason. Ignored for Aurora Chat, which has no modes.
+    execution_mode: Option<crate::agent_runtime::ipc::AgentExecutionMode>,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<ThreadState, String> {
+    let registry = registry.clone();
+    let app = events.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_surface(&registry, surface.as_deref(), workspace_root.as_deref())?;
+        let thread_id = uuid::Uuid::new_v4().to_string();
+        let mut meta = store
+            .ensure_thread(&thread_id, title, workspace_root)
+            .map_err(|e| format!("Failed to create thread: {e}"))?;
+        if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
+            meta = store
+                .set_model(&thread_id, Some(model))
+                .map_err(|e| format!("Failed to record the new chat's model: {e}"))?;
+        }
+        if let Some(mode) = execution_mode.filter(|m| !m.is_chat()) {
+            meta = store
+                .set_execution_mode(&thread_id, mode)
+                .map_err(|e| format!("Failed to record the new chat's mode: {e}"))?;
+        }
+
+        // Best-effort: a conversation that failed to record its framing is still a
+        // conversation, and refusing to create it would be the worse outcome.
+        if deep_research.unwrap_or(false) {
+            if let Err(err) = store.mark_deep_research(&thread_id) {
+                crate::logging::log_warn(
+                    "threads",
+                    &format!("could not mark {thread_id} as deep research: {err}"),
+                );
+            }
+        }
+
+        let ws_root = meta.workspace_root.clone();
+        let state = ThreadState {
+            id: thread_id,
+            title: meta.title,
+            summary: None,
+            messages: Vec::new(),
+            token_usage: None,
+            context_usage: None,
+            model: meta.model.clone(),
+            execution_mode: meta.execution_mode,
+            created_at: meta.created_at,
+            updated_at: meta.updated_at,
+        };
+        emit(
+            &app,
+            "thread-created",
+            &ThreadCreatedPayload {
+                thread: ThreadSummary {
+                    id: state.id.clone(),
+                    title: state.title.clone(),
+                    message_count: 0,
+                    preview: String::new(),
+                    workspace_root: ws_root,
+                    model: state.model.clone(),
+                    pinned: false,
+                    archived_at: None,
+                    deep_research: deep_research.unwrap_or(false),
+                    created_at: state.created_at.clone(),
+                    updated_at: state.updated_at.clone(),
+                },
+            },
+        );
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Duplicate a persisted conversation as a new, active chat. The Rust store
+/// owns the full operation so the frontend never reconstructs or rewrites
+/// transcript data.
+pub async fn thread_duplicate(
+    thread_id: String,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<ThreadSummary, String> {
+    let app = events.clone();
+    let store = store_for_thread(registry, &thread_id)?;
+    let new_thread_id = uuid::Uuid::new_v4().to_string();
+    let source_thread_id = thread_id.clone();
+    let worker_store = store.clone();
+    let worker_new_thread_id = new_thread_id.clone();
+
+    let summary = tokio::task::spawn_blocking(move || {
+        let source = worker_store
+            .load(&source_thread_id)
+            .map_err(|error| format!("Failed to load chat for duplication: {error}"))?
+            .ok_or_else(|| "The chat no longer exists".to_string())?;
+        let title = duplicate_title(&source.metadata.title);
+        drop(source);
+
+        worker_store
+            .duplicate(&source_thread_id, &worker_new_thread_id, title)
+            .map_err(|error| format!("Failed to duplicate chat: {error}"))?;
+
+        if let Err(error) = crate::agent_runtime::artifacts::duplicate_thread_artifacts(
+            &worker_store,
+            &source_thread_id,
+            &worker_new_thread_id,
+        ) {
+            let _ = worker_store.delete(&worker_new_thread_id);
+            return Err(format!("Failed to duplicate chat artifacts: {error}"));
+        }
+
+        worker_store
+            .list_summaries()
+            .map_err(|error| format!("Failed to read duplicated chat: {error}"))?
+            .into_iter()
+            .find(|entry| entry.id == worker_new_thread_id)
+            .map(build_thread_summary)
+            .ok_or_else(|| "The duplicated chat could not be found after saving".to_string())
+    })
+    .await
+    .map_err(|error| format!("Chat duplication task failed: {error}"))??;
+
+    emit(
+        &app,
+        "thread-created",
+        &ThreadCreatedPayload {
+            thread: summary.clone(),
+        },
+    );
+    Ok(summary)
+}
+
+/// Where a conversation's files live on disk, for "Show in folder".
+pub async fn thread_folder(thread_id: String, registry: &Arc<AgentRegistry>) -> Result<String, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        Ok(store.thread_dir(&thread_id).to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Move a Build conversation to another project.
+///
+/// Its folder moves under that project's directory (one rename, same
+/// volume) and its sidecar names the new workspace. The rail's "Move to"
+/// is the only caller. Refused for an Aurora Chat conversation, which has
+/// no project, and while a turn runs on it: the runtime holds paths into the
+/// old folder for as long as the turn lives.
+pub async fn thread_move_to_project(
+    thread_id: String,
+    workspace_root: String,
+    registry: &Arc<AgentRegistry>,
+) -> Result<ThreadSummary, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        if registry.is_turn_active(&thread_id) {
+            return Err("This chat is still working. Stop it, then move it.".to_string());
+        }
+        let source = store_for_thread(&registry, &thread_id)?;
+        if Arc::ptr_eq(&source, registry.chat_store()) {
+            return Err("An Aurora Chat conversation has no project to move between.".to_string());
+        }
+        let target = registry
+            .store_for_workspace(Some(&workspace_root))
+            .map_err(|e| e.to_string())?;
+        if source.dir() == target.dir() {
+            return Err("This chat is already in that project.".to_string());
+        }
+        use crate::agent_runtime::session_store::StoreLayout;
+        if source.layout() != StoreLayout::Folder || target.layout() != StoreLayout::Folder {
+            return Err("Only folder conversations can be moved.".to_string());
+        }
+        let from = source.thread_dir(&thread_id);
+        let to = target.thread_dir(&thread_id);
+        if to.exists() {
+            return Err("That project already holds a chat with this id.".to_string());
+        }
+        std::fs::create_dir_all(target.dir())
+            .map_err(|e| format!("Could not prepare the project folder: {e}"))?;
+        std::fs::rename(&from, &to).map_err(|e| format!("Could not move the chat's folder: {e}"))?;
+        // Every cache that remembers where the conversation was.
+        crate::agent_runtime::project_dir::forget(&thread_id);
+        if let Some(index) = crate::agent_runtime::session_index::SessionIndex::open(source.dir()) {
+            index.forget(&thread_id);
+        }
+        registry.forget_thread_runtime(&thread_id);
+        target
+            .set_workspace_root(&thread_id, &workspace_root)
+            .map_err(|e| format!("Moved the folder, but could not record the new project: {e}"))?;
+        target
+            .list_summaries()
+            .map_err(|e| format!("Failed to read the moved chat: {e}"))?
+            .into_iter()
+            .find(|entry| entry.id == thread_id)
+            .map(build_thread_summary)
+            .ok_or_else(|| "The moved chat could not be found after moving".to_string())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// The visible conversation as Markdown, for "Copy as Markdown". The desktop
+/// command writes it to the native clipboard (`commands/threads.rs`); a host
+/// with no window has no clipboard of the user's to write to.
+pub async fn thread_markdown(thread_id: String, registry: &Arc<AgentRegistry>) -> Result<String, String> {
+    let store = store_for_thread(registry, &thread_id)?;
+    tokio::task::spawn_blocking(move || {
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|error| format!("Failed to load chat for export: {error}"))?
+            .ok_or_else(|| "The chat no longer exists".to_string())?;
+        let markdown = render_thread_markdown(&loaded.metadata.title, loaded.session.messages());
+        if !markdown.contains("\n## ") {
+            return Err("This chat has no visible messages to copy".to_string());
+        }
+        Ok(markdown)
+    })
+    .await
+    .map_err(|error| format!("Chat export task failed: {error}"))?
+}
+
+// ============================================================================
+// Cost accounting
+// ============================================================================
+
+/// Token totals for every request in a thread that ran on ONE model.
+///
+/// Grouped rather than summed flat because price is a property of the model,
+/// and a conversation can move between models freely — start on a cheap one,
+/// switch to a frontier model mid-task, switch back. Summing all tokens and
+/// pricing them once at whatever model happens to be selected now would
+/// misprice every request that ran under a different one, in either direction.
+/// The caller prices each group with ITS model and adds up the money.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsageGroup {
+    /// `"{provider_id}:{model}"`, or `None` for requests recorded before the
+    /// model was persisted per message. Those are reported separately rather
+    /// than folded into a priced group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Fresh (uncached) input tokens.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// API requests in this group.
+    pub requests: u32,
+    /// How many of those requests carry Aurora's own estimate rather than
+    /// provider-reported usage. Non-zero means the group's cost is
+    /// approximate and must be presented that way.
+    pub estimated_requests: u32,
+    /// Total USD the PROVIDER reported for these requests.
+    ///
+    /// `Some` means every request here came with its own price from the
+    /// provider, and that figure is used verbatim — no token arithmetic. That
+    /// is the honest ordering: a reported cost already includes gateway
+    /// markup, BYOK rates and account discounts that a published list price
+    /// cannot know about.
+    ///
+    /// Groups are SPLIT on whether cost was reported (see the grouping key),
+    /// so this is never a partial sum sitting next to tokens that also need
+    /// pricing — a group is entirely reported or entirely computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reported_cost_usd: Option<f64>,
+}
+
+/// A thread's complete cost basis, derived from the transcript on disk.
+///
+/// Deliberately computed from the JSONL rather than accumulated in the UI:
+/// the transcript is the only record that survives a reload, a second window,
+/// or a crash mid-turn, and a frontend running total would drift from it the
+/// first time any of those happened.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUsageBreakdown {
+    pub thread_id: String,
+    /// Every request in the thread.
+    pub by_model: Vec<ModelUsageGroup>,
+    /// Only the most recent turn (everything after the last user message).
+    pub last_turn: Vec<ModelUsageGroup>,
+    /// User messages — i.e. how many times the user asked for something.
+    pub turns: u32,
+    /// API requests across the thread. Always >= `turns`, usually far more:
+    /// one turn makes one request per tool iteration.
+    pub requests: u32,
+}
+
+/// Fold every message that carries usage into per-model token groups.
+///
+/// Keyed on the PRESENCE OF USAGE rather than on the role, because an
+/// assistant reply is not the only thing Aurora pays for: a compaction marker
+/// is a `System` message and the summarization request behind it is often the
+/// largest single request in a conversation. Anything that cost money records
+/// usage; anything that records usage is counted here.
+///
+/// A message with no usage (a turn that errored before the provider answered)
+/// is not counted as a request — `requests` sits next to a dollar figure, and
+/// a request with no measurement would imply a cost basis that does not exist.
+fn group_usage_by_model(messages: &[ConversationMessage]) -> Vec<ModelUsageGroup> {
+    let mut groups: Vec<ModelUsageGroup> = Vec::new();
+    for message in messages {
+        let Some(usage) = message.usage.as_ref() else {
+            continue;
+        };
+        // Grouped by (model, did the provider price it). Splitting on the
+        // second half is what keeps a group entirely reported or entirely
+        // computed: mixing them would leave a partial dollar sum sitting next
+        // to tokens that still need pricing, and any consumer would either
+        // double-count or drop one of the two.
+        let reported = usage.cost_usd.is_some();
+        let slot = match groups
+            .iter_mut()
+            .find(|g| g.model == message.model && g.reported_cost_usd.is_some() == reported)
+        {
+            Some(existing) => existing,
+            None => {
+                groups.push(ModelUsageGroup {
+                    model: message.model.clone(),
+                    reported_cost_usd: if reported { Some(0.0) } else { None },
+                    ..Default::default()
+                });
+                groups.last_mut().expect("just pushed")
+            }
+        };
+        if let Some(cost) = usage.cost_usd {
+            slot.reported_cost_usd = Some(slot.reported_cost_usd.unwrap_or(0.0) + cost);
+        }
+        slot.input_tokens = slot
+            .input_tokens
+            .saturating_add(u64::from(usage.input_tokens));
+        slot.output_tokens = slot
+            .output_tokens
+            .saturating_add(u64::from(usage.output_tokens));
+        slot.cache_read_tokens = slot
+            .cache_read_tokens
+            .saturating_add(u64::from(usage.cache_read_input_tokens.unwrap_or(0)));
+        slot.cache_write_tokens = slot
+            .cache_write_tokens
+            .saturating_add(u64::from(usage.cache_creation_input_tokens.unwrap_or(0)));
+        slot.requests = slot.requests.saturating_add(1);
+        if usage.estimated == Some(true) {
+            slot.estimated_requests = slot.estimated_requests.saturating_add(1);
+        }
+    }
+    groups
+}
+
+/// The slice of the transcript belonging to the most recent turn: everything
+/// after the last user message.
+///
+/// A "turn" is one user request and all the work it caused, which is exactly
+/// what the cost card labels "Last turn" — not the last API call, which is
+/// what the old snapshot showed and why a long tool-using turn under-reported
+/// its cost by an order of magnitude.
+fn last_turn_slice(messages: &[ConversationMessage]) -> &[ConversationMessage] {
+    match messages.iter().rposition(|m| m.role == MessageRole::User) {
+        Some(index) => &messages[index..],
+        // No user message: either an empty thread or a synthesized one. The
+        // whole transcript is the only honest answer.
+        None => messages,
+    }
+}
+
+/// Build a thread's cost basis from its transcript.
+fn usage_breakdown(thread_id: &str, messages: &[ConversationMessage]) -> ThreadUsageBreakdown {
+    let by_model = group_usage_by_model(messages);
+    let requests = by_model.iter().map(|g| g.requests).sum();
+    ThreadUsageBreakdown {
+        thread_id: thread_id.to_string(),
+        last_turn: group_usage_by_model(last_turn_slice(messages)),
+        by_model,
+        turns: messages
+            .iter()
+            .filter(|m| m.role == MessageRole::User)
+            .count() as u32,
+        requests,
+    }
+}
+
+/// Token totals for a thread, grouped by the model that produced them.
+///
+/// The frontend applies pricing (which lives in the settings store) and sums
+/// the resulting money. Tokens are Rust's truth, prices are the settings
+/// store's truth — neither layer guesses at the other's.
+pub async fn thread_usage_breakdown(
+    thread_id: String,
+    registry: &Arc<AgentRegistry>,
+) -> Result<Option<ThreadUsageBreakdown>, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+        Ok(loaded.map(|loaded| usage_breakdown(&thread_id, loaded.session.messages())))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Read a sub-agent's transcript in the chat panel's shape, for the Agents
+/// panel's read-only view. The child lives in `agents/` under its parent's
+/// thread folder, where `thread_load` cannot see it.
+pub async fn subagent_thread_load(
+    parent_thread_id: String,
+    agent_id: String,
+    registry: &Arc<AgentRegistry>,
+) -> Result<Option<ThreadState>, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(parent_store) = registry
+            .store_for_thread(&parent_thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let store = crate::agent_runtime::subagents::store::child_store_for(
+            &parent_store,
+            &parent_thread_id,
+        );
+        build_thread_state(&store, &agent_id)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Read a full thread (metadata + transcript) for the chat panel.
+pub async fn thread_load(
+    thread_id: String,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<Option<ThreadState>, String> {
+    let registry = registry.clone();
+    let app = events.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let state = build_thread_state(&store, &thread_id)?;
+        if let Some(s) = state.as_ref() {
+            emit(
+                &app,
+                "thread-loaded",
+                &ThreadLoadedPayload { thread: s.clone() },
+            );
+        }
+        Ok(state)
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Drop both files and clear any in-memory context for the thread.
+pub async fn thread_delete(
+    thread_id: String,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<(), String> {
+    crate::agent_runtime::host::delete_conversation(registry.clone(), thread_id.clone())
+        .await.map_err(|e| format!("Failed to delete thread {thread_id}: {e}"))?;
+    emit(events, "thread-deleted", &ThreadDeletedPayload { thread_id });
+    Ok(())
+}
+
+/// List threads newest-first.
+///
+/// When `workspace_root` is provided, only threads belonging to that
+/// project are returned (legacy unscoped threads are omitted) — this
+/// powers the agent window's project-scoped chat list. Omit it (the
+/// IDE's global history) to get every thread.
+/// Async + `spawn_blocking`: listing walks every session file on disk, and
+/// synchronous commands run on the main thread (Tauri v2), where a large
+/// store froze the whole app into "Not Responding" during boot.
+pub async fn thread_list_summaries(
+    workspace_root: Option<String>,
+    // `surface`: `"chat"` lists Aurora Chat's conversations instead of Build's.
+    // The other command that has to be told, because a listing has no
+    // conversation to look up.
+    //
+    // `workspace_root` is meaningless alongside it and callers should omit it:
+    // chat conversations carry no workspace, so a filter returns nothing.
+    surface: Option<String>,
+    registry: &Arc<AgentRegistry>,
+) -> Result<Vec<ThreadSummary>, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let entries = if surface.as_deref() == Some("chat") {
+            registry.chat_store().list_summaries_filtered(workspace_root.as_deref())
+        } else {
+            registry.list_project_summaries(workspace_root.as_deref())
+        }.map_err(|e| format!("Failed to list threads: {e}"))?;
+        // A slow listing is exactly what the boot-time "Not Responding"
+        // freeze looked like before this ran off the main thread — keep a
+        // trace so a regression names itself in the log.
+        let elapsed_ms = started.elapsed().as_millis();
+        if elapsed_ms > 300 {
+            crate::logging::log_warn(
+                "threads.list",
+                &format!("thread_list_summaries scanned {} threads in {elapsed_ms}ms (expected <300ms; this is the boot chat-list path)", entries.len()),
+            );
+        }
+        Ok(entries.into_iter().map(build_thread_summary).collect())
+    })
+    .await
+    .map_err(|e| format!("Thread listing task failed: {e}"))?
+}
+
+/// Update the user-facing title without touching message history.
+pub async fn thread_update_title(
+    thread_id: String,
+    title: String,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<(), String> {
+    let registry = registry.clone();
+    let changed_id = thread_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_title(&thread_id, title)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to update title: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))??;
+    // Other open clients (the desktop window, a browser tab) refresh their
+    // rail on this; the one that renamed it already shows the new title.
+    emit(
+        events,
+        crate::agent_runtime::host::THREAD_CHANGED_EVENT,
+        &crate::agent_runtime::host::ThreadChanged {
+            thread_id: changed_id,
+            workspace_root: None,
+            reason: "renamed",
+            turn_id: None,
+            user_message: None,
+        },
+    );
+    Ok(())
+}
+
+/// Pin / unpin a chat. Pinned chats sort to a dedicated section at the
+/// top of the rail. Persisted in the metadata sidecar; does not bump
+/// `updated_at` (pinning shouldn't reorder by recency).
+pub async fn thread_set_pinned(thread_id: String, pinned: bool, registry: &Arc<AgentRegistry>) -> Result<(), String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_pinned(&thread_id, pinned)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set pinned: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Archive / unarchive a chat. Archived chats leave the rail tree for the
+/// "Archived" view and are automatically purged 15 days after archiving.
+/// Persisted in the metadata sidecar; does not bump `updated_at`.
+pub async fn thread_set_archived(thread_id: String, archived: bool, registry: &Arc<AgentRegistry>) -> Result<(), String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_archived(&thread_id, archived)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set archived: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Pin a conversation to a model (`"providerId:modelKey"`), or clear it with
+/// `None` so it falls back to the user's default.
+///
+/// Written when the user picks a model for an OPEN chat — before any turn has
+/// run with it. The runtime writes the same field per turn, so the two agree:
+/// whichever happened last is what the conversation is on. Persisted in the
+/// metadata sidecar; does not bump `updated_at` (choosing a model isn't
+/// activity and must not reorder the rail).
+pub async fn thread_set_model(
+    thread_id: String,
+    model: Option<String>,
+    registry: &Arc<AgentRegistry>,
+) -> Result<(), String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_model(&thread_id, model)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set model: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Put a Build conversation in Agent or Plan mode, on its own sidecar.
+///
+/// Written when the user flips the mode in a conversation's composer, so the
+/// choice belongs to that conversation and survives reopening it. Does not bump
+/// `updated_at`.
+pub async fn thread_set_execution_mode(
+    thread_id: String,
+    mode: crate::agent_runtime::ipc::AgentExecutionMode,
+    registry: &Arc<AgentRegistry>,
+) -> Result<(), String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &thread_id)?;
+        store
+            .set_execution_mode(&thread_id, mode)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to set mode: {e}"))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Persist usage metadata after a turn so the chat list can show
+/// token + context bars.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateUsageRequest {
+    pub thread_id: String,
+    pub token_usage: TokenUsage,
+    pub context_usage: ContextUsage,
+}
+
+pub async fn thread_update_usage(
+    request: UpdateUsageRequest,
+    registry: &Arc<AgentRegistry>,
+    events: &Events,
+) -> Result<(), String> {
+    let registry = registry.clone();
+    let app = events.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = store_for_thread(&registry, &request.thread_id)?;
+        store
+            .set_usage(
+                &request.thread_id,
+                Some(db_token_to_meta(&request.token_usage)),
+                Some(db_context_to_meta(&request.context_usage)),
+            )
+            .map_err(|e| format!("Failed to persist usage: {e}"))?;
+        emit(
+            &app,
+            "thread-usage-updated",
+            &ThreadUsageUpdatedPayload {
+                thread_id: request.thread_id,
+                token_usage: request.token_usage,
+                context_usage: request.context_usage,
+            },
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Rebuild the API-shaped message list for a thread. Used by the
+/// frontend when reseeding the in-memory context engine on
+/// thread-switch.
+pub async fn thread_get_api_history(thread_id: String, registry: &Arc<AgentRegistry>) -> Result<Vec<ApiMessage>, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(store) = registry
+            .store_for_thread(&thread_id)
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Vec::new());
+        };
+        let loaded = store
+            .load(&thread_id)
+            .map_err(|e| format!("Failed to load thread {thread_id}: {e}"))?;
+        let Some(loaded) = loaded else {
+            return Ok(Vec::new());
+        };
+        Ok(session_to_api_messages(loaded.session.messages()))
+    })
+    .await
+    .map_err(|e| format!("Thread operation failed: {e}"))?
+}
+
+/// Announce that a thread's turn was stopped. The agent runtime owns
+/// turn lifecycle through `agent_cancel(turn_id)`; this command only
+/// tells listeners (`thread-cancelled`) so the "Stop" button's effect
+/// reaches every window.
+///
+/// Always returns `Some("session")`; the frontend treats it as
+/// fire-and-forget.
+pub fn thread_cancel_current_turn(thread_id: String, events: &Events) -> Result<Option<String>, String> {
+    emit(
+        events,
+        "thread-cancelled",
+        &serde_json::json!({
+            "threadId": thread_id,
+            "reason": "user_stop",
+        }),
+    );
+    Ok(Some("session".to_string()))
+}
+
+// ============================================================================
+// The registry's arms
+// ============================================================================
+
+pub const COMMANDS: &[&str] = &[
+    "thread_save",
+    "thread_create",
+    "thread_duplicate",
+    "thread_folder",
+    "thread_move_to_project",
+    "thread_usage_breakdown",
+    "subagent_thread_load",
+    "thread_load",
+    "thread_delete",
+    "thread_list_summaries",
+    "thread_update_title",
+    "thread_set_pinned",
+    "thread_set_archived",
+    "thread_set_model",
+    "thread_set_execution_mode",
+    "thread_update_usage",
+    "thread_get_api_history",
+    "thread_cancel_current_turn",
+];
+
+/// An argument by its Tauri key, or return the decoding error from `dispatch`.
+macro_rules! take {
+    ($name:expr, $args:expr, $key:literal) => {
+        match arg($name, $args, $key) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(error)),
+        }
+    };
+}
+
+/// Run `name` if it is a thread command; `None` hands it on.
+pub(super) async fn dispatch(
+    ctx: &CommandContext,
+    name: &str,
+    args: &Value,
+) -> Option<Result<Value, CommandError>> {
+    let (r, ev) = (&ctx.registry, &ctx.events);
+    Some(match name {
+        "thread_save" => done(thread_save(take!(name, args, "thread"), take!(name, args, "workspaceRoot"), r, ev).await),
+        "thread_create" => done(
+            thread_create(
+                take!(name, args, "title"),
+                take!(name, args, "workspaceRoot"),
+                take!(name, args, "surface"),
+                take!(name, args, "deepResearch"),
+                take!(name, args, "model"),
+                take!(name, args, "executionMode"),
+                r,
+                ev,
+            )
+            .await,
+        ),
+        "thread_duplicate" => done(thread_duplicate(take!(name, args, "threadId"), r, ev).await),
+        "thread_folder" => done(thread_folder(take!(name, args, "threadId"), r).await),
+        "thread_move_to_project" => done(
+            thread_move_to_project(take!(name, args, "threadId"), take!(name, args, "workspaceRoot"), r).await,
+        ),
+        "thread_usage_breakdown" => done(thread_usage_breakdown(take!(name, args, "threadId"), r).await),
+        "subagent_thread_load" => done(
+            subagent_thread_load(take!(name, args, "parentThreadId"), take!(name, args, "agentId"), r).await,
+        ),
+        "thread_load" => done(thread_load(take!(name, args, "threadId"), r, ev).await),
+        "thread_delete" => done(thread_delete(take!(name, args, "threadId"), r, ev).await),
+        "thread_list_summaries" => done(
+            thread_list_summaries(take!(name, args, "workspaceRoot"), take!(name, args, "surface"), r).await,
+        ),
+        "thread_update_title" => done(
+            thread_update_title(take!(name, args, "threadId"), take!(name, args, "title"), r, ev).await,
+        ),
+        "thread_set_pinned" => done(thread_set_pinned(take!(name, args, "threadId"), take!(name, args, "pinned"), r).await),
+        "thread_set_archived" => done(
+            thread_set_archived(take!(name, args, "threadId"), take!(name, args, "archived"), r).await,
+        ),
+        "thread_set_model" => done(thread_set_model(take!(name, args, "threadId"), take!(name, args, "model"), r).await),
+        "thread_set_execution_mode" => done(
+            thread_set_execution_mode(take!(name, args, "threadId"), take!(name, args, "mode"), r).await,
+        ),
+        "thread_update_usage" => done(thread_update_usage(take!(name, args, "request"), r, ev).await),
+        "thread_get_api_history" => done(thread_get_api_history(take!(name, args, "threadId"), r).await),
+        "thread_cancel_current_turn" => done(thread_cancel_current_turn(take!(name, args, "threadId"), ev)),
+        _ => return None,
+    })
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_runtime::types::TokenUsage as RuntimeTokenUsage;
+
+    fn user_msg(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::user_text(text, ts)
+    }
+
+    fn assistant_text(text: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            ts,
+        )
+    }
+
+    /// A runtime notice must reload as its own `notice` row so a thread
+    /// reopened after a truncated turn still explains why the reply stops.
+    /// Before this it was a live-only UI event: the cut-off reply persisted,
+    /// the reason for it did not.
+    #[test]
+    fn notice_marker_reloads_as_its_own_row() {
+        let messages = vec![
+            user_msg("build it", 1),
+            assistant_text("half an ans", 2),
+            ConversationMessage {
+                event_id: None,
+                role: MessageRole::System,
+                blocks: vec![ContentBlock::Notice {
+                    message: "This reply is cut off.".into(),
+                    created_at: 3,
+                }],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+
+        let out = session_to_db_messages(&messages);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "notice"]);
+        let notice = out.last().expect("notice row");
+        assert_eq!(notice.content, "This reply is cut off.");
+    }
+
+    /// One background-process ending, written to disk and read back.
+    ///
+    /// The first version of this rode in as plain TEXT on the tool message —
+    /// the same shape a mid-turn user message uses. Live, a flag on the event
+    /// told the transcript to draw a beat; the flag was not persisted, so a
+    /// reloaded thread had only the text and drew what text on a tool message
+    /// means: the user's own injected row, carrying the model-facing sentence
+    /// ("The background process … has ended with exit code 0") in the user's
+    /// voice. Its own block is what makes the two distinguishable on disk.
+    #[test]
+    fn a_process_ending_reloads_as_a_beat_and_never_as_a_message() {
+        let messages = vec![
+            user_msg("build it", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell_read_output".into(),
+                    input: serde_json::json!({ "processId": "toolu_1" }),
+                }],
+                2,
+            ),
+            ConversationMessage {
+                event_id: None,
+                role: MessageRole::Tool,
+                blocks: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "no new output".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ProcessEvent {
+                        summary: "Finished pnpm build · exit 0".into(),
+                        detail: "The background process \"pnpm build\" (id toolu_1) has ended \
+                                 with exit code 0."
+                            .into(),
+                        created_at: 3,
+                    },
+                ],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+
+        let out = session_to_db_messages(&messages);
+
+        // Nothing in the reloaded transcript is the user speaking except the
+        // one thing the user actually said.
+        assert_eq!(
+            out.iter().filter(|m| m.role == "user").count(),
+            1,
+            "the process ending must not reload as a user message"
+        );
+        let timelines: Vec<String> = out
+            .iter()
+            .filter_map(|m| m.timeline.as_ref())
+            .map(std::string::ToString::to_string)
+            .collect();
+        let joined = timelines.join(" ");
+        assert!(
+            joined.contains("process_beat"),
+            "expected a process beat, saw {joined}"
+        );
+        assert!(
+            joined.contains("Finished pnpm build"),
+            "the beat shows the one-line summary: {joined}"
+        );
+        assert!(
+            !joined.contains("user_injection"),
+            "it is nobody's message: {joined}"
+        );
+        // The model-facing copy stays out of the transcript row — it is for the
+        // API view, which the next test covers.
+        assert!(
+            !joined.contains("has ended with exit code"),
+            "the detail copy belongs on the wire, not in the row: {joined}"
+        );
+    }
+
+    /// The other half: the model must still be TOLD. A notice is stripped from
+    /// every provider view because it is product copy about Aurora; a process
+    /// the agent started ending is a fact about the work, and it goes on the
+    /// wire with the id and exit code the model needs to act on.
+    #[test]
+    fn the_model_is_told_the_process_ended() {
+        let messages = vec![
+            user_msg("build it", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell_read_output".into(),
+                    input: serde_json::json!({}),
+                }],
+                2,
+            ),
+            ConversationMessage {
+                event_id: None,
+                role: MessageRole::Tool,
+                blocks: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "no new output".into(),
+                        is_error: None,
+                    },
+                    ContentBlock::ProcessEvent {
+                        summary: "Finished pnpm build · exit 0".into(),
+                        detail: "The background process \"pnpm build\" (id toolu_1) has ended \
+                                 with exit code 0."
+                            .into(),
+                        created_at: 3,
+                    },
+                ],
+                usage: None,
+                timestamp: 3,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+
+        let api = session_to_api_messages(&messages);
+        let sent = serde_json::to_string(&api).expect("serialises");
+        assert!(
+            sent.contains("has ended with exit code 0"),
+            "the model has to hear it: {sent}"
+        );
+        assert!(
+            sent.contains("toolu_1"),
+            "with the id, because the next move is shell_read_output: {sent}"
+        );
+    }
+
+    fn agent_report_block(created_at: i64) -> ContentBlock {
+        ContentBlock::AgentReport {
+            agent_id: "agent-7".into(),
+            name: Some("Login finder".into()),
+            status: "completed".into(),
+            summary: "Finished \"Find the login flow\" · completed".into(),
+            detail: "Sub-agent agent-7 completed. Report: the login flow is in auth.rs.".into(),
+            created_at,
+        }
+    }
+
+    fn message_with(role: MessageRole, blocks: Vec<ContentBlock>, ts: i64) -> ConversationMessage {
+        ConversationMessage {
+            event_id: None,
+            role,
+            blocks,
+            usage: None,
+            timestamp: ts,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    /// A sub-agent finishing mid-turn reloads as an `agent_report` timeline
+    /// entry on an assistant row, never as the user's words, and the model is
+    /// still told through the API view.
+    #[test]
+    fn a_mid_turn_agent_report_reloads_as_an_agent_entry_and_reaches_the_model() {
+        let messages = vec![
+            user_msg("find the login flow", 1),
+            ConversationMessage::assistant(
+                vec![ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "TaskList".into(),
+                    input: serde_json::json!({}),
+                }],
+                2,
+            ),
+            message_with(
+                MessageRole::Tool,
+                vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "[]".into(),
+                        is_error: None,
+                    },
+                    agent_report_block(3),
+                ],
+                3,
+            ),
+        ];
+
+        let out = session_to_db_messages(&messages);
+        assert_eq!(out.iter().filter(|m| m.role == "user").count(), 1);
+        let row = out
+            .iter()
+            .find(|m| {
+                m.timeline
+                    .as_ref()
+                    .is_some_and(|t| t.to_string().contains("agent_report"))
+            })
+            .expect("an agent report row");
+        assert_eq!(row.role, "assistant");
+        let entry = &row.timeline.as_ref().expect("timeline")[0];
+        assert_eq!(entry["kind"], "agent_report");
+        assert_eq!(entry["id"], "agent-report-3-0");
+        assert_eq!(entry["agentId"], "agent-7");
+        assert_eq!(entry["name"], "Login finder");
+        assert_eq!(entry["status"], "completed");
+        assert_eq!(entry["summary"], "Finished \"Find the login flow\" · completed");
+        assert_eq!(
+            entry["detail"],
+            "Sub-agent agent-7 completed. Report: the login flow is in auth.rs."
+        );
+
+        let sent = serde_json::to_string(&session_to_api_messages(&messages)).expect("serialises");
+        assert!(sent.contains("the login flow is in auth.rs"), "{sent}");
+    }
+
+    /// A sub-agent finishing while the conversation was idle starts a turn: a
+    /// user-role message with only the report. It reloads as an `agent_report`
+    /// row, and a person's typed text beside it keeps the message theirs.
+    #[test]
+    fn an_agent_started_turn_reloads_as_an_agent_report_row() {
+        let messages = vec![
+            user_msg("find the login flow", 1),
+            assistant_text("Started an agent.", 2),
+            message_with(MessageRole::User, vec![agent_report_block(3)], 3),
+            assistant_text("It found it.", 4),
+        ];
+
+        let out = session_to_db_messages(&messages);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "agent_report", "assistant"]);
+        let row = &out[2];
+        assert_eq!(row.content, "Finished \"Find the login flow\" · completed");
+        let entry = &row.timeline.as_ref().expect("timeline")[0];
+        assert_eq!(entry["kind"], "agent_report");
+        assert_eq!(entry["agentId"], "agent-7");
+
+        let sent = serde_json::to_string(&session_to_api_messages(&messages)).expect("serialises");
+        assert!(sent.contains("the login flow is in auth.rs"), "{sent}");
+
+        // Typed text means a person wrote it.
+        let typed = vec![ContentBlock::Text { text: "hi".into() }, agent_report_block(5)];
+        assert!(agent_report_started_turn(&typed).is_none());
+    }
+
+    /// A process ending that STARTED a turn (the conversation was idle) is a
+    /// user-role message with one process-event block. It reloads as its own
+    /// `process` row carrying the summary — the boundary the transcript needs
+    /// so the reply gets its own turn — and never as a user bubble, blank or
+    /// otherwise.
+    #[test]
+    fn a_process_started_turn_reloads_as_a_process_row() {
+        let messages = vec![
+            user_msg("run it in background", 1),
+            assistant_text("It's running.", 2),
+            ConversationMessage::user_process_event(
+                "Finished count_seconds.py · exit 0",
+                "The background process \"count_seconds.py\" (id bg-1) has ended with exit \
+                 code 0.",
+                3,
+            ),
+            assistant_text("It finished cleanly.", 4),
+        ];
+
+        let out = session_to_db_messages(&messages);
+
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "process", "assistant"]);
+        let row = &out[2];
+        assert_eq!(row.content, "Finished count_seconds.py · exit 0");
+        assert!(
+            row.timeline.is_none(),
+            "the row IS the beat; the frontend draws it: {:?}",
+            row.timeline
+        );
+        assert!(
+            !format!("{out:?}").contains("has ended with exit"),
+            "the model-facing detail stays off the transcript: {out:?}"
+        );
+    }
+
+    /// The other half of the same message: the API view carries the detail,
+    /// because that is what went on the wire. A `process` row with nothing
+    /// behind it would make the rebuild-context view claim the model was
+    /// woken by an empty message.
+    #[test]
+    fn a_process_started_turn_reaches_the_api_view_with_its_detail() {
+        let messages = vec![
+            user_msg("run it in background", 1),
+            ConversationMessage::user_process_event(
+                "Finished count_seconds.py · exit 0",
+                "The background process \"count_seconds.py\" (id bg-1) has ended with exit \
+                 code 0.",
+                3,
+            ),
+        ];
+
+        let api = session_to_api_messages(&messages);
+        let sent = serde_json::to_string(&api).expect("serialises");
+
+        assert!(sent.contains("has ended with exit code 0"), "{sent}");
+        assert!(sent.contains("bg-1"), "{sent}");
+    }
+
+    #[test]
+    fn markdown_export_contains_only_visible_conversation_text() {
+        let messages = vec![
+            user_msg("Please inspect this", 1),
+            ConversationMessage::assistant(
+                vec![
+                    ContentBlock::Thinking {
+                        text: "private reasoning".into(),
+                        signature: None,
+                        duration_ms: None,
+                    },
+                    ContentBlock::Text {
+                        text: "Here is the answer".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        input: serde_json::json!({ "path": "secret.txt" }),
+                    },
+                ],
+                2,
+            ),
+            tool_result("call-1", "private tool output", 3),
+        ];
+
+        let markdown = render_thread_markdown("  Export   test  ", &messages);
+
+        assert!(markdown.starts_with("# Export test\n"));
+        assert!(markdown.contains("## You\n\nPlease inspect this"));
+        assert!(markdown.contains("## Aurora\n\nHere is the answer"));
+        assert!(!markdown.contains("private reasoning"));
+        assert!(!markdown.contains("private tool output"));
+        assert!(!markdown.contains("secret.txt"));
+    }
+
+    #[test]
+    fn duplicate_title_uses_a_customer_ready_suffix() {
+        assert_eq!(
+            duplicate_title("Architecture review"),
+            "Architecture review (copy)"
+        );
+        assert_eq!(duplicate_title("  "), "New Chat (copy)");
+    }
+
+    fn assistant_with_tool(
+        tool_id: &str,
+        name: &str,
+        input: serde_json::Value,
+        ts: i64,
+    ) -> ConversationMessage {
+        ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text {
+                    text: "running tool".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: tool_id.to_string(),
+                    name: name.to_string(),
+                    input,
+                },
+            ],
+            ts,
+        )
+    }
+
+    fn tool_result(tool_id: &str, content: &str, ts: i64) -> ConversationMessage {
+        ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_id.to_string(),
+                content: content.to_string(),
+                is_error: None,
+            }],
+            usage: None,
+            timestamp: ts,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn user_message_round_trips_text_only() {
+        let messages = vec![user_msg("hello", 1)];
+        let db = session_to_db_messages(&messages);
+        assert_eq!(db.len(), 1);
+        assert_eq!(db[0].role, "user");
+        assert_eq!(db[0].content, "hello");
+        assert!(db[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn user_prompt_chips_survive_db_projection() {
+        let mut message = user_msg("check @src/main.ts", 1);
+        message.attached_prompt_chips =
+            Some(vec![crate::agent_runtime::types::AttachedPromptChip {
+                kind: "file".into(),
+                title: "main.ts".into(),
+                value: Some("src/main.ts".into()),
+                path: Some("E:/work/src/main.ts".into()),
+            }]);
+        let db = session_to_db_messages(&[message]);
+        let chips = db[0].attached_prompt_chips.as_ref().expect("prompt chips");
+        assert_eq!(chips[0].title, "main.ts");
+        assert_eq!(chips[0].value.as_deref(), Some("src/main.ts"));
+    }
+
+    #[test]
+    fn assistant_message_collapses_text_and_thinking() {
+        let assistant = ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "reasoning step".into(),
+                    signature: None,
+                    duration_ms: Some(7_000),
+                },
+                ContentBlock::Text {
+                    text: "answer".into(),
+                },
+            ],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        assert_eq!(db[0].role, "assistant");
+        assert_eq!(db[0].content, "answer");
+        assert_eq!(db[0].thinking.as_deref(), Some("reasoning step"));
+    }
+
+    /// The UI prints "Thought · 7s" from this field. A live turn measures its
+    /// own reasoning, so a regression here is invisible until a chat is
+    /// REOPENED — at which point the number silently disappears.
+    #[test]
+    fn reloaded_thinking_segment_carries_its_duration() {
+        let assistant = ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: "reasoning step".into(),
+                signature: None,
+                duration_ms: Some(7_000),
+            }],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        let event = &timeline.as_array().expect("array")[0];
+        assert_eq!(event["kind"], "thinking");
+        assert_eq!(event["durationMs"], 7_000);
+    }
+
+    /// Adjacent reasoning blocks render as ONE segment, so the number has to
+    /// describe the whole thing rather than only its last part.
+    #[test]
+    fn merged_thinking_segments_sum_their_durations() {
+        let assistant = ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "first".into(),
+                    signature: None,
+                    duration_ms: Some(4_000),
+                },
+                ContentBlock::Thinking {
+                    text: "second".into(),
+                    signature: None,
+                    duration_ms: Some(3_500),
+                },
+            ],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        let events = timeline.as_array().expect("array");
+        assert_eq!(events.len(), 1, "adjacent thinking blocks merge");
+        assert_eq!(events[0]["durationMs"], 7_500);
+    }
+
+    /// The transcript's turn summary adds up generated tokens per turn. A live
+    /// turn counts them from the stream, so losing the field here would only
+    /// show once the chat is REOPENED: the summary would drop its token count.
+    #[test]
+    fn reloaded_assistant_message_carries_its_usage() {
+        let assistant = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text {
+                text: "answer".into(),
+            }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: 90_000,
+                output_tokens: 1_503,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
+            },
+            10,
+        );
+        let user = ConversationMessage::user_text("go", 5);
+        let db = session_to_db_messages(&[user, assistant]);
+        assert!(db[0].usage.is_none(), "only assistant messages carry usage");
+        let usage = db[1].usage.as_ref().expect("assistant usage survives reload");
+        assert_eq!(usage.output_tokens, 1_503);
+        let wire = serde_json::to_value(&db[1]).expect("serializes");
+        assert_eq!(wire["usage"]["output_tokens"], 1_503);
+    }
+
+    // ── Cost accounting ─────────────────────────────────────────────────
+
+    /// Assistant message with usage attributed to a model.
+    fn priced(
+        model: Option<&str>,
+        input: u32,
+        output: u32,
+        cache_read: u32,
+        cache_write: u32,
+        estimated: bool,
+    ) -> ConversationMessage {
+        let mut m = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text { text: "x".into() }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_input_tokens: Some(cache_read),
+                cache_creation_input_tokens: Some(cache_write),
+                estimated: if estimated { Some(true) } else { None },
+                cost_usd: None,
+            },
+            0,
+        );
+        m.model = model.map(str::to_string);
+        m
+    }
+
+    /// The reported bug: a turn makes one API request per tool iteration, and
+    /// the card showed only the last one. Cost has to cover the whole turn.
+    #[test]
+    fn a_turn_costs_every_request_it_made_not_just_the_last() {
+        let messages = vec![
+            user_msg("do the thing", 1),
+            priced(Some("openai:gpt-5.6"), 1_000, 500, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 2_000, 300, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 3_000, 200, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.last_turn.len(), 1);
+        assert_eq!(out.last_turn[0].input_tokens, 6_000);
+        assert_eq!(out.last_turn[0].output_tokens, 1_000);
+        assert_eq!(out.last_turn[0].requests, 3);
+        assert_eq!(out.turns, 1);
+        assert_eq!(out.requests, 3);
+    }
+
+    /// A conversation can move between models freely, and their prices differ.
+    /// Tokens must stay in separate groups so each is priced with the model
+    /// that actually produced it — merging them would misprice both.
+    #[test]
+    fn a_model_switch_mid_conversation_keeps_the_groups_apart() {
+        let messages = vec![
+            user_msg("start cheap", 1),
+            priced(Some("openai:gpt-5.6-mini"), 1_000, 100, 0, 0, false),
+            user_msg("now think hard", 2),
+            priced(Some("anthropic:claude-opus-5"), 5_000, 4_000, 0, 0, false),
+            priced(Some("anthropic:claude-opus-5"), 6_000, 1_000, 0, 0, false),
+            user_msg("back to cheap", 3),
+            priced(Some("openai:gpt-5.6-mini"), 2_000, 200, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+
+        assert_eq!(out.by_model.len(), 2, "one group per model");
+        let mini = out
+            .by_model
+            .iter()
+            .find(|g| g.model.as_deref() == Some("openai:gpt-5.6-mini"))
+            .expect("mini group");
+        let opus = out
+            .by_model
+            .iter()
+            .find(|g| g.model.as_deref() == Some("anthropic:claude-opus-5"))
+            .expect("opus group");
+        // Non-adjacent requests on the same model fold into ONE group.
+        assert_eq!(mini.input_tokens, 3_000);
+        assert_eq!(mini.requests, 2);
+        assert_eq!(opus.input_tokens, 11_000);
+        assert_eq!(opus.output_tokens, 5_000);
+        assert_eq!(out.turns, 3);
+        assert_eq!(out.requests, 4);
+
+        // The last turn is only the final model's work.
+        assert_eq!(out.last_turn.len(), 1);
+        assert_eq!(
+            out.last_turn[0].model.as_deref(),
+            Some("openai:gpt-5.6-mini")
+        );
+        assert_eq!(out.last_turn[0].input_tokens, 2_000);
+    }
+
+    /// Cache tokens are billed. Dropping them (as the old card did for cache
+    /// writes) understates the real spend.
+    #[test]
+    fn cache_read_and_write_tokens_are_carried_separately() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("m"), 400, 100, 250_000, 12_000, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].cache_read_tokens, 250_000);
+        assert_eq!(out.by_model[0].cache_write_tokens, 12_000);
+        assert_eq!(
+            out.by_model[0].input_tokens, 400,
+            "fresh input stays distinct from cached input"
+        );
+    }
+
+    /// Estimated requests are counted so the UI can mark the total approximate
+    /// instead of presenting a guess as a measurement.
+    #[test]
+    fn estimated_requests_are_counted_within_their_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("ollama:llama"), 100, 50, 0, 0, true),
+            priced(Some("ollama:llama"), 200, 60, 0, 0, true),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].requests, 2);
+        assert_eq!(out.by_model[0].estimated_requests, 2);
+    }
+
+    /// Requests written before the model was recorded cannot be priced against
+    /// any particular model. They get their own group so the UI can disclose
+    /// them rather than silently pricing them at today's selection.
+    #[test]
+    fn unattributed_requests_get_their_own_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            priced(None, 900, 90, 0, 0, false),
+            priced(Some("openai:gpt-5.6"), 100, 10, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 2);
+        let unknown = out
+            .by_model
+            .iter()
+            .find(|g| g.model.is_none())
+            .expect("unattributed group");
+        assert_eq!(unknown.input_tokens, 900);
+    }
+
+    /// Assistant message whose cost the PROVIDER reported.
+    fn provider_priced(model: &str, input: u32, output: u32, cost: f64) -> ConversationMessage {
+        let mut m = ConversationMessage::assistant_with_usage(
+            vec![ContentBlock::Text { text: "x".into() }],
+            crate::agent_runtime::types::TokenUsage {
+                input_tokens: input,
+                output_tokens: output,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: Some(cost),
+            },
+            0,
+        );
+        m.model = Some(model.to_string());
+        m
+    }
+
+    /// A provider-reported cost is the number on the bill. It is summed
+    /// verbatim and never re-derived from tokens.
+    #[test]
+    fn provider_reported_costs_are_summed_verbatim() {
+        let messages = vec![
+            user_msg("go", 1),
+            provider_priced("gw:m", 1_000, 100, 0.0123),
+            provider_priced("gw:m", 2_000, 200, 0.0456),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 1);
+        let reported = out.by_model[0].reported_cost_usd.expect("reported");
+        assert!((reported - 0.0579).abs() < 1e-9, "got {reported}");
+        assert_eq!(out.by_model[0].requests, 2);
+    }
+
+    /// A conversation can mix a reporting provider with a non-reporting one.
+    /// The two must NOT share a group: one is priced from its own dollars and
+    /// the other from tokens, and merging them would either double-count the
+    /// reported half or silently drop the computed half.
+    #[test]
+    fn reported_and_computed_requests_never_share_a_group() {
+        let messages = vec![
+            user_msg("go", 1),
+            provider_priced("gw:m", 1_000, 100, 0.05),
+            priced(Some("gw:m"), 3_000, 300, 0, 0, false),
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 2, "same model, split by cost source");
+
+        let reported = out
+            .by_model
+            .iter()
+            .find(|g| g.reported_cost_usd.is_some())
+            .expect("reported group");
+        let computed = out
+            .by_model
+            .iter()
+            .find(|g| g.reported_cost_usd.is_none())
+            .expect("computed group");
+
+        assert_eq!(reported.requests, 1);
+        assert_eq!(computed.requests, 1);
+        assert_eq!(
+            computed.input_tokens, 3_000,
+            "the computed group carries only its own tokens"
+        );
+        assert_eq!(out.requests, 2);
+    }
+
+    /// `cost: 0` is a claim ("this request was free"), not an absence. It must
+    /// stay reported rather than falling through to catalog pricing, which
+    /// would invent a charge the provider says it did not make.
+    #[test]
+    fn a_reported_zero_cost_is_kept_as_reported() {
+        let messages = vec![user_msg("go", 1), provider_priced("gw:m", 5_000, 500, 0.0)];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model[0].reported_cost_usd, Some(0.0));
+    }
+
+    /// Compaction summarizes the whole head of a conversation — often the
+    /// largest single request in the thread — and it is a `System` message,
+    /// not an assistant reply. Counting only assistant messages hid it.
+    #[test]
+    fn a_compaction_request_is_counted_toward_the_cost() {
+        let mut marker = ConversationMessage {
+            event_id: None,
+            role: MessageRole::System,
+            blocks: vec![ContentBlock::Compaction {
+                summary: "…".into(),
+                before_tokens: 100_000,
+                after_tokens: 20_000,
+                created_at: 0,
+            }],
+            usage: Some(crate::agent_runtime::types::TokenUsage {
+                input_tokens: 90_000,
+                output_tokens: 1_200,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                estimated: None,
+                cost_usd: None,
+            }),
+            timestamp: 0,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: Some("openai:gpt-5.6".into()),
+        };
+        marker.model = Some("openai:gpt-5.6".into());
+
+        let messages = vec![
+            user_msg("go", 1),
+            priced(Some("openai:gpt-5.6"), 1_000, 100, 0, 0, false),
+            marker,
+        ];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.by_model.len(), 1, "same model, one group");
+        assert_eq!(
+            out.by_model[0].input_tokens, 91_000,
+            "the summarization request's input is part of the bill"
+        );
+        assert_eq!(out.requests, 2);
+    }
+
+    /// A turn that died before the provider answered has no cost basis. It
+    /// must not inflate the request count, which the UI shows next to a
+    /// dollar figure.
+    #[test]
+    fn messages_without_usage_are_not_counted_as_requests() {
+        let mut no_usage = ConversationMessage::assistant(
+            vec![ContentBlock::Text {
+                text: "partial".into(),
+            }],
+            0,
+        );
+        no_usage.model = Some("openai:gpt-5.6".into());
+        let messages = vec![user_msg("go", 1), no_usage];
+        let out = usage_breakdown("t", &messages);
+        assert_eq!(out.requests, 0);
+        assert!(out.by_model.is_empty());
+        assert_eq!(out.turns, 1);
+    }
+
+    /// An empty thread reports zeros rather than failing — the card renders
+    /// nothing at all in that state, and a panic here would take the whole
+    /// chat load with it.
+    #[test]
+    fn an_empty_thread_reports_a_zero_breakdown() {
+        let out = usage_breakdown("t", &[]);
+        assert_eq!(out.turns, 0);
+        assert_eq!(out.requests, 0);
+        assert!(out.by_model.is_empty());
+        assert!(out.last_turn.is_empty());
+    }
+
+    /// A session written before `duration_ms` existed must render NO number,
+    /// never a zero — "measured as instant" and "never measured" are
+    /// different facts and the UI shows them differently.
+    #[test]
+    fn legacy_thinking_segment_emits_no_duration() {
+        let assistant = ConversationMessage::assistant(
+            vec![ContentBlock::Thinking {
+                text: "old reasoning".into(),
+                signature: None,
+                duration_ms: None,
+            }],
+            10,
+        );
+        let db = session_to_db_messages(&[assistant]);
+        let timeline = db[0].timeline.as_ref().expect("ordered timeline");
+        assert!(timeline.as_array().expect("array")[0]
+            .get("durationMs")
+            .is_none());
+    }
+
+    #[test]
+    fn tool_result_folds_into_prior_assistant_tool_call() {
+        let messages = vec![
+            user_msg("ls", 1),
+            assistant_with_tool("call-1", "list_dir", serde_json::json!({"path": "."}), 2),
+            tool_result("call-1", "FILES: a.rs b.rs", 3),
+        ];
+        let db = session_to_db_messages(&messages);
+        // user + assistant only — Tool messages are folded.
+        assert_eq!(db.len(), 2);
+        let assistant = &db[1];
+        let calls = assistant.tool_calls.as_ref().expect("tool_calls present");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call-1");
+        assert_eq!(calls[0].name, "list_dir");
+        assert_eq!(calls[0].result.as_deref(), Some("FILES: a.rs b.rs"));
+    }
+
+    #[test]
+    fn rich_sidecar_overlays_clamped_tool_result() {
+        let messages = vec![
+            assistant_with_tool(
+                "call-1",
+                "file_edit",
+                serde_json::json!({"path": "a.ts"}),
+                1,
+            ),
+            tool_result(
+                "call-1",
+                "{\"oldContent\":\"head\\n\\n[truncated 4923 bytes in persisted history]\"}",
+                2,
+            ),
+        ];
+        let mut rich = std::collections::HashMap::new();
+        rich.insert(
+            "call-1".to_string(),
+            "{\"oldContent\":\"the full before\",\"newContent\":\"the full after\"}".to_string(),
+        );
+
+        let db = session_to_db_messages_rich(&messages, &rich);
+        let calls = db[0].tool_calls.as_ref().expect("tool_calls present");
+        assert_eq!(
+            calls[0].result.as_deref(),
+            Some("{\"oldContent\":\"the full before\",\"newContent\":\"the full after\"}"),
+        );
+
+        // Without a sidecar entry the clamped copy still renders.
+        let plain = session_to_db_messages(&messages);
+        let plain_calls = plain[0].tool_calls.as_ref().unwrap();
+        assert!(plain_calls[0]
+            .result
+            .as_deref()
+            .unwrap()
+            .contains("[truncated 4923 bytes in persisted history]"));
+    }
+
+    #[test]
+    fn wrapped_tool_displays_its_target_but_replays_the_original_envelope() {
+        let input = serde_json::json!({"name":"browser_navigate","arguments":{"url":"https://example.test"}});
+        let messages = vec![
+            assistant_with_tool("original-id", "call_tool", input.clone(), 1),
+            tool_result("original-id", "opened", 2),
+        ];
+        let db = session_to_db_messages(&messages);
+        let call = &db[0].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.id, "original-id");
+        assert_eq!(call.name, "browser_navigate");
+        assert_eq!(call.arguments, input["arguments"].to_string());
+        assert_eq!(call.result.as_deref(), Some("opened"));
+        let api = serde_json::to_value(session_to_api_messages(&messages)).unwrap();
+        let text = api.to_string();
+        assert!(text.contains("call_tool"));
+        assert!(text.contains("original-id"));
+        assert!(text.contains("browser_navigate"));
+        // The in-memory source is unchanged too, so JSONL retains the schema
+        // the provider actually called regardless of the UI projection.
+        assert!(messages[0].blocks.iter().any(|block| matches!(block,ContentBlock::ToolUse{name,input:stored,..} if name == "call_tool" && stored == &input)));
+    }
+
+    #[test]
+    fn tool_result_error_is_prefixed_in_db_shape() {
+        let messages = vec![
+            assistant_with_tool("c", "x", serde_json::json!({}), 1),
+            ConversationMessage {
+                event_id: None,
+                role: MessageRole::Tool,
+                blocks: vec![ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "boom".into(),
+                    is_error: Some(true),
+                }],
+                usage: None,
+                timestamp: 2,
+                attached_selected_elements: None,
+                attached_prompt_chips: None,
+                aurora_context: None,
+                model: None,
+            },
+        ];
+        let db = session_to_db_messages(&messages);
+        let assistant = &db[0];
+        let calls = assistant.tool_calls.as_ref().unwrap();
+        assert_eq!(calls[0].result.as_deref(), Some("[error] boom"));
+    }
+
+    #[test]
+    fn mid_turn_injection_survives_db_and_api_reload_shapes() {
+        let tool_message = ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "use the returned id".into(),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(db.len(), 2);
+        assert_eq!(db[1].role, "assistant");
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["kind"], "user_injection");
+        assert_eq!(timeline[0]["text"], "use the returned id");
+
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content }) if content == "use the returned id"
+        ));
+    }
+
+    /// A steered injection persists the MODEL copy (typed text + directive
+    /// block) and the composer chips. The reload row must show only the
+    /// typed part, with the chips riding on the timeline event — while the
+    /// API view keeps the full model copy.
+    #[test]
+    fn steered_injection_reloads_display_text_and_chips() {
+        use crate::agent_runtime::types::AttachedPromptChip;
+        let tool_message = ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: "check @src/app.ts\n\n<steering_context>\n<project_rules>be careful</project_rules>\n</steering_context>".into(),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: Some(vec![AttachedPromptChip {
+                kind: "file".into(),
+                title: "app.ts".into(),
+                value: Some("src/app.ts".into()),
+                path: Some("E:/proj/src/app.ts".into()),
+            }]),
+            model: None,
+            aurora_context: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["text"], "check @src/app.ts");
+        assert_eq!(timeline[0]["chips"][0]["kind"], "file");
+        assert_eq!(timeline[0]["chips"][0]["value"], "src/app.ts");
+
+        // The model-facing view keeps the directive block verbatim.
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content }) if content.contains("<steering_context>")
+        ));
+    }
+
+    /// The runtime prepends the mid-turn framing line for the model; the
+    /// reload row must show only what the user typed.
+    #[test]
+    fn injected_row_drops_the_mid_turn_preamble() {
+        let framed = format!(
+            "{}\nwait, don't run pnpm",
+            crate::agent_runtime::session::MID_TURN_PREAMBLE
+        );
+        let tool_message = ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text { text: framed },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("injection timeline");
+        assert_eq!(timeline[0]["text"], "wait, don't run pnpm");
+
+        // The API view keeps the framing — that's what it exists for.
+        let api = session_to_api_messages(&messages);
+        assert!(matches!(
+            api.last(),
+            Some(ApiMessage::User { content })
+                if content.contains("while your tool calls were running")
+        ));
+    }
+
+    /// Aurora's note to the model never becomes a row in the person's chat.
+    ///
+    /// Regression, and one I shipped: the stale-checklist reminder moved out of
+    /// a tool result's body into its own text block — correct, a tool result
+    /// must carry the tool's output alone — which is the same slot a mid-turn
+    /// user message uses. The very next reloaded thread drew
+    /// `<aurora_task_reminder>`, angle brackets and all, as a card mid-conversation.
+    #[test]
+    fn the_checklist_reminder_never_becomes_a_transcript_row() {
+        let reminder = format!(
+            "{}\nYou have not used the checklist in this conversation.\n</aurora_task_reminder>",
+            crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG
+        );
+        let tool_message = ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text { text: reminder },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        // No row, and no message to hold one: a tool message whose only text
+        // block is a runtime note contributes nothing to the transcript beyond
+        // the tool result it already folded into the assistant above it.
+        assert_eq!(db.len(), 1, "no extra transcript message: {db:?}");
+        assert!(
+            !format!("{:?}", db[0].timeline).contains("aurora_task_reminder"),
+            "the reminder must appear nowhere in the timeline: {:?}",
+            db[0].timeline
+        );
+
+        // The MODEL still gets it — this is a display filter, not a deletion.
+        // Stripping it from the API view would restart the ten-turn cadence on
+        // every reload and nag someone who was already reminded.
+        let api = session_to_api_messages(&messages);
+        assert!(
+            matches!(api.last(), Some(ApiMessage::User { content }) if content.contains("aurora_task_reminder")),
+            "the reminder must survive into the API view"
+        );
+    }
+
+    /// A real mid-turn message riding beside a reminder still shows. The filter
+    /// is per BLOCK, so one runtime note must not silence what a person typed.
+    #[test]
+    fn a_reminder_beside_a_typed_message_hides_only_the_reminder() {
+        let tool_message = ConversationMessage {
+            event_id: None,
+            role: MessageRole::Tool,
+            blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c".into(),
+                    content: "pong".into(),
+                    is_error: None,
+                },
+                ContentBlock::Text {
+                    text: format!(
+                        "{}\nlist as it stands\n</aurora_task_reminder>",
+                        crate::agent_runtime::conversation::context_injection::CHECKLIST_REMINDER_TAG
+                    ),
+                },
+                ContentBlock::Text {
+                    text: format!(
+                        "{}\nstop, wrong folder",
+                        crate::agent_runtime::session::MID_TURN_PREAMBLE
+                    ),
+                },
+            ],
+            usage: None,
+            timestamp: 2,
+            attached_selected_elements: None,
+            attached_prompt_chips: None,
+            aurora_context: None,
+            model: None,
+        };
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_message,
+        ];
+        let db = session_to_db_messages(&messages);
+        let timeline = db[1]
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("the typed message still has a row");
+        assert_eq!(timeline.len(), 1, "exactly one row: {timeline:?}");
+        assert_eq!(timeline[0]["text"], "stop, wrong folder");
+    }
+
+    #[test]
+    fn strip_steering_context_variants() {
+        assert_eq!(strip_steering_context("plain note"), "plain note");
+        assert_eq!(
+            strip_steering_context("note\n\n<steering_context>\nrules\n</steering_context>"),
+            "note"
+        );
+        assert_eq!(
+            strip_steering_context("<steering_context>rules</steering_context>\n\ntail"),
+            "tail"
+        );
+        assert_eq!(
+            strip_steering_context("a\n<steering_context>x</steering_context>\nb"),
+            "a\n\nb"
+        );
+        // Malformed half-tags pass through rather than eating words.
+        assert_eq!(
+            strip_steering_context("note <steering_context> unclosed"),
+            "note <steering_context> unclosed"
+        );
+    }
+
+    #[test]
+    fn api_history_emits_role_tagged_messages() {
+        let messages = vec![
+            user_msg("hi", 1),
+            assistant_text("hello", 2),
+            assistant_with_tool("c", "ping", serde_json::json!({}), 3),
+            tool_result("c", "pong", 4),
+        ];
+        let api = session_to_api_messages(&messages);
+        assert_eq!(
+            api.len(),
+            4,
+            "user / assistant text / assistant tool_use / tool result"
+        );
+        match &api[0] {
+            ApiMessage::User { content } => assert_eq!(content, "hi"),
+            other => panic!("expected user, got {other:?}"),
+        }
+        match &api[3] {
+            ApiMessage::Tool {
+                tool_call_id,
+                content,
+            } => {
+                assert_eq!(tool_call_id, "c");
+                assert_eq!(content, "pong");
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn api_history_skips_empty_assistant_messages() {
+        let messages = vec![ConversationMessage::assistant(vec![], 1)];
+        let api = session_to_api_messages(&messages);
+        assert!(api.is_empty(), "empty assistant blocks should be skipped");
+    }
+
+    #[test]
+    fn token_meta_round_trips_through_db_shape() {
+        let original = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            estimated: Some(true),
+        };
+        let meta = db_token_to_meta(&original);
+        let back = meta_to_db_token(&meta);
+        assert_eq!(back.prompt_tokens, 100);
+        assert_eq!(back.completion_tokens, 50);
+        assert_eq!(back.total_tokens, 150);
+        assert_eq!(back.estimated, Some(true));
+
+        // Use the runtime-side TokenUsage just to make sure the
+        // metadata layer doesn't accidentally collide with it.
+        let _ = RuntimeTokenUsage::default();
+    }
+
+    #[test]
+    fn synthetic_message_id_is_deterministic() {
+        let id1 = synthetic_message_id("user", 42, 0);
+        let id2 = synthetic_message_id("user", 42, 0);
+        assert_eq!(id1, id2);
+        assert_ne!(synthetic_message_id("user", 42, 1), id1);
+    }
+
+    /// Read the `kind` of every event in a reloaded message's timeline.
+    fn timeline_kinds(message: &Message) -> Vec<String> {
+        message
+            .timeline
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .expect("assistant messages carry an ordered timeline")
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_reloaded_turn_keeps_the_order_the_model_emitted() {
+        // The whole point: a real turn interleaves. Before this, reload
+        // flattened every turn to thinking → content → all tools, so anything
+        // positional landed somewhere the model never put it.
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Thinking {
+                    text: "let me look".into(),
+                    signature: None,
+                    duration_ms: None,
+                },
+                ContentBlock::Text {
+                    text: "Reading the hook first.".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "file_read".into(),
+                    input: serde_json::json!({"path": "a.ts"}),
+                },
+                ContentBlock::Text {
+                    text: "Now the fix.".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t2".into(),
+                    name: "search_replace".into(),
+                    input: serde_json::json!({"path": "a.ts"}),
+                },
+            ],
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(
+            timeline_kinds(&db[0]),
+            vec!["thinking", "content", "tool", "content", "tool"],
+        );
+    }
+
+    #[test]
+    fn a_reloaded_tool_event_carries_only_its_id() {
+        // Order lives in the timeline, the payload lives in `tool_calls`. Two
+        // copies of the call would be two truths that can drift apart.
+        let messages = vec![assistant_with_tool(
+            "c",
+            "ping",
+            serde_json::json!({"x": 1}),
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        let tool = events.iter().find(|e| e["kind"] == "tool").expect("tool");
+
+        assert_eq!(tool["id"], "c");
+        assert!(
+            tool.get("call").is_none(),
+            "the call is not duplicated here"
+        );
+        assert!(tool.get("name").is_none(), "nor is its name");
+
+        let calls = db[0].tool_calls.as_ref().expect("tool_calls");
+        assert_eq!(calls[0].id, "c");
+        assert_eq!(calls[0].name, "ping");
+        assert_eq!(calls[0].arguments, r#"{"x":1}"#);
+    }
+
+    #[test]
+    fn adjacent_text_blocks_merge_into_one_segment() {
+        // Otherwise a reply split across blocks reloads as separate paragraphs
+        // that a tool row can slot between — mid-sentence.
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text { text: "one".into() },
+                ContentBlock::Text { text: "two".into() },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            1,
+        )];
+
+        let db = session_to_db_messages(&messages);
+        assert_eq!(timeline_kinds(&db[0]), vec!["content", "tool"]);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(events[0]["text"], "one\ntwo");
+        assert_eq!(db[0].content, "one\ntwo", "content stays the joined prose");
+    }
+
+    #[test]
+    fn empty_text_blocks_do_not_become_blank_segments() {
+        let messages = vec![ConversationMessage::assistant(
+            vec![
+                ContentBlock::Text {
+                    text: String::new(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "grep".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            1,
+        )];
+
+        assert_eq!(
+            timeline_kinds(&session_to_db_messages(&messages)[0]),
+            vec!["tool"]
+        );
+    }
+
+    #[test]
+    fn a_result_reaches_the_call_the_timeline_points_at() {
+        // The timeline references by id, so folding the result into
+        // `tool_calls` is enough for the reloaded card to render it.
+        let messages = vec![
+            assistant_with_tool("c", "ping", serde_json::json!({}), 1),
+            tool_result("c", "pong", 2),
+        ];
+
+        let db = session_to_db_messages(&messages);
+        let events = db[0].timeline.as_ref().unwrap().as_array().unwrap();
+        let referenced = events
+            .iter()
+            .find(|e| e["kind"] == "tool")
+            .and_then(|e| e["id"].as_str())
+            .expect("tool event");
+        let call = db[0]
+            .tool_calls
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|c| c.id == referenced)
+            .expect("the referenced call exists");
+
+        assert_eq!(call.result.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn a_message_with_no_renderable_blocks_has_no_timeline() {
+        // `None` keeps the frontend on its synthesis fallback rather than
+        // handing it an empty array to render.
+        let messages = vec![ConversationMessage::assistant(vec![], 1)];
+        assert!(session_to_db_messages(&messages)[0].timeline.is_none());
+    }
+
+    // Routing is exercised against the real registry in agent_v2::tests.
+}

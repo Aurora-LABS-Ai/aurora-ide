@@ -57,10 +57,7 @@ mod crash;
 mod db;
 mod explorer;
 mod file_cache;
-/// The commands any host serves, by name (the window's IPC and HTTP). The
-/// desktop's own browser host still runs commands through the window's
-/// webview, so `dispatch` waits for `aurora serve` (Phase 6.1) as its caller.
-#[cfg_attr(feature = "desktop", allow(dead_code))]
+/// The commands any host serves, by name (the window's IPC and `aurora serve`).
 mod host_commands;
 /// Named events core code sends to its host (the windows, or a headless host).
 mod host_events;
@@ -74,6 +71,8 @@ mod plans;
 /// Job objects and process trees for everything Aurora starts.
 mod process;
 mod pty_sessions;
+/// `aurora serve`: the engine and its interface on an HTTP port, no window.
+pub mod serve;
 mod services;
 mod shell;
 /// Helper executables Aurora ships next to its own binary (currently ripgrep,

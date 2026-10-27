@@ -37,6 +37,7 @@ fn context() -> (CommandContext, tempfile::TempDir) {
         registry: Arc::new(AgentRegistry::new(Arc::new(NoApi), dir.path().to_path_buf())),
         permissions: Arc::new(PermissionRouter::new()),
         events: Arc::new(Recorded::default()),
+        db: Arc::new(Mutex::new(crate::db::Database::in_memory().expect("in-memory database"))),
     };
     (ctx, dir)
 }
@@ -47,7 +48,7 @@ fn context() -> (CommandContext, tempfile::TempDir) {
 #[test]
 fn every_command_here_is_one_the_window_registers() {
     let handlers = include_str!("../lib.rs");
-    for name in COMMANDS.iter().chain(WINDOW_ONLY) {
+    for name in all_commands().chain(WINDOW_ONLY.iter().copied()) {
         assert!(
             handlers.contains(&format!("::{name},")) || handlers.contains(&format!("::{name}\n")),
             "`{name}` is not in lib.rs's generate_handler! list"
@@ -58,7 +59,7 @@ fn every_command_here_is_one_the_window_registers() {
 #[tokio::test]
 async fn every_listed_command_is_served() {
     let (ctx, _dir) = context();
-    for name in COMMANDS {
+    for name in all_commands() {
         if let Err(CommandError::Unknown(_)) = dispatch(&ctx, name, Value::Null).await {
             panic!("`{name}` is listed but dispatch does not know it");
         }
@@ -136,5 +137,29 @@ async fn a_turn_request_from_the_window_reaches_the_driver() {
     assert!(
         matches!(&result, Err(CommandError::Failed(message)) if message.contains("no model in this test")),
         "{result:?}"
+    );
+}
+
+/// The interface's start-up calls, against a real (in-memory) database.
+#[tokio::test]
+async fn settings_read_back_what_was_written() {
+    let (ctx, _dir) = context();
+    assert_eq!(dispatch(&ctx, "has_providers", Value::Null).await, Ok(json!(false)));
+
+    let set = dispatch(&ctx, "set_setting", json!({ "key": "probe", "value": "42" })).await;
+    assert_eq!(set, Ok(Value::Null));
+    assert_eq!(
+        dispatch(&ctx, "get_setting", json!({ "key": "probe" })).await,
+        Ok(json!("42"))
+    );
+
+    let settings = dispatch(&ctx, "get_app_settings", Value::Null).await.expect("settings");
+    assert!(settings.get("selectedModel").is_some(), "{settings}");
+
+    // A required argument left out says which one.
+    let missing = dispatch(&ctx, "get_setting", json!({})).await;
+    assert!(
+        matches!(&missing, Err(CommandError::BadArguments { reason, .. }) if reason.contains("`key`")),
+        "{missing:?}"
     );
 }

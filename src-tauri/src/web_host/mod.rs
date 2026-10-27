@@ -43,13 +43,12 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::serve::auth;
+
 pub const DEFAULT_PORT: u16 = 3721;
 
 /// Sent to every window whenever the host starts or stops, with its status.
 pub const WEB_HOST_CHANGED_EVENT: &str = "web_host_changed";
-
-/// The cookie a browser holds after opening the sign-in link.
-const COOKIE: &str = "aurora_web";
 
 pub(crate) struct WebHost {
     app: AppHandle,
@@ -125,11 +124,8 @@ pub async fn start(app: &AppHandle, port: Option<u16>) -> Result<WebHostStatus, 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("could not listen on {addr}: {e}"))?;
-    let token = std::env::var("AURORA_WEB_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(|| format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()));
-    if let Err(error) = write_token(&token) {
+    let token = auth::new_token();
+    if let Err(error) = auth::write_token(&token) {
         crate::logging::log_warn("web", &format!("could not write the token file: {error}"));
     }
     let host = Arc::new(WebHost {
@@ -183,12 +179,6 @@ pub fn stop() {
     }
 }
 
-fn write_token(token: &str) -> std::io::Result<()> {
-    let dir = crate::paths::root().join("web");
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("token"), token)
-}
-
 fn router(host: Arc<WebHost>) -> Router {
     Router::new()
         .route("/api/invoke/:command", post(invoke::handle))
@@ -211,32 +201,17 @@ async fn guard(State(host): State<Arc<WebHost>>, request: Request<Body>, next: N
         .headers()
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| is_loopback_host(value, host.port));
+        .is_some_and(|value| auth::is_loopback_host(value, host.port));
     if !host_ok {
         return (StatusCode::FORBIDDEN, "Aurora's web host only answers 127.0.0.1 and localhost").into_response();
     }
     let token = host.token.as_bytes();
-    let bearer_ok = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| constant_time_eq(value.as_bytes(), token));
-    let cookie_ok = request
-        .headers()
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(';'))
-        .filter_map(|pair| pair.trim().split_once('='))
-        .any(|(name, value)| name == COOKIE && constant_time_eq(value.as_bytes(), token));
-    if bearer_ok || cookie_ok {
+    if auth::is_signed_in(request.headers(), token) {
         return next.run(request).await;
     }
-    if let Some(rest) = sign_in(&request, token) {
-        let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", host.token);
+    if let Some(rest) = auth::sign_in(&request, token) {
         let mut response = Redirect::to(&rest).into_response();
-        if let Ok(value) = cookie.parse() {
+        if let Ok(value) = auth::sign_in_cookie(&host.token).parse() {
             response.headers_mut().insert(header::SET_COOKIE, value);
         }
         return response;
@@ -246,82 +221,5 @@ async fn guard(State(host): State<Arc<WebHost>>, request: Request<Body>, next: N
     }
     page::signed_out()
 }
-
-/// A valid `?token=` on a page address: where to send the browser next (the
-/// same address without the token).
-fn sign_in(request: &Request<Body>, token: &[u8]) -> Option<String> {
-    let uri = request.uri();
-    let query = uri.query()?;
-    let mut matched = false;
-    let rest: Vec<&str> = query
-        .split('&')
-        .filter(|pair| match pair.split_once('=') {
-            Some(("token", value)) => {
-                matched = constant_time_eq(value.as_bytes(), token);
-                false
-            }
-            _ => true,
-        })
-        .collect();
-    matched.then(|| {
-        if rest.is_empty() {
-            uri.path().to_string()
-        } else {
-            format!("{}?{}", uri.path(), rest.join("&"))
-        }
-    })
-}
-
-fn is_loopback_host(value: &str, port: u16) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    ["127.0.0.1", "localhost"]
-        .iter()
-        .any(|name| value == *name || value == format!("{name}:{port}"))
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_loopback_hosts_on_our_port_pass() {
-        assert!(is_loopback_host("127.0.0.1:3721", 3721));
-        assert!(is_loopback_host("localhost:3721", 3721));
-        assert!(is_loopback_host("LOCALHOST", 3721));
-        // DNS rebinding: an attacker's name resolving to 127.0.0.1.
-        assert!(!is_loopback_host("evil.example:3721", 3721));
-        assert!(!is_loopback_host("127.0.0.1:9999", 3721));
-        assert!(!is_loopback_host("127.0.0.1.evil.example", 3721));
-    }
-
-    fn request(uri: &str) -> Request<Body> {
-        Request::builder().uri(uri).body(Body::empty()).unwrap()
-    }
-
-    #[test]
-    fn a_sign_in_link_sends_the_browser_on_without_the_token() {
-        let token = b"secret";
-        assert_eq!(
-            sign_in(&request("/agent-window?token=secret"), token).as_deref(),
-            Some("/agent-window")
-        );
-        assert_eq!(
-            sign_in(&request("/agent-window/p/e--repo?ws=x&token=secret"), token).as_deref(),
-            Some("/agent-window/p/e--repo?ws=x")
-        );
-        assert_eq!(sign_in(&request("/agent-window?token=wrong"), token), None);
-        assert_eq!(sign_in(&request("/agent-window"), token), None);
-    }
-
-    #[test]
-    fn token_comparison_needs_the_whole_token() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"ab", b"abc"));
-        assert!(!constant_time_eq(b"", b"abc"));
-    }
-}
+// The sign-in helpers and their tests live in `crate::serve::auth`, shared
+// with `aurora serve`.

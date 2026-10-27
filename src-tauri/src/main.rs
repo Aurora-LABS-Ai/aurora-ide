@@ -18,15 +18,26 @@ const AURORA_CLI_FILE_ENV: &str = "AURORA_CLI_FILE";
 #[cfg(feature = "desktop")]
 const AURORA_CLI_AGENT_ENV: &str = "AURORA_CLI_AGENT";
 
-/// A build without the window. The headless host (`aurora serve`) is Phase 6
-/// of `DOCS/rust-core-extraction.md`; until then this binary only says so.
+/// A build without the window: the commands that need none, `aurora serve`
+/// above all (Phase 6 of `DOCS/rust-core-extraction.md`). Anything that
+/// would open the app says this build has no app to open.
 #[cfg(not(feature = "desktop"))]
 fn main() {
-    eprintln!(
-        "This Aurora was built without the desktop feature; it has no window to open yet. \
-         Build with `--features desktop` for the app."
-    );
-    std::process::exit(2);
+    let args = aurora_lib::cli::CliArgs::parse_args();
+    match args.execute_non_gui_command() {
+        Ok(Some(code)) => std::process::exit(code),
+        Ok(None) => {
+            eprintln!(
+                "This Aurora was built without the desktop feature, so it has no window to open. \
+                 Run `aurora serve` to use it from a browser, or build with `--features desktop`."
+            );
+            std::process::exit(2);
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(feature = "desktop")]

@@ -15,6 +15,8 @@
 //! [`CommandError::NotOnThisHost`].
 
 pub mod agent;
+pub mod settings;
+pub mod threads;
 
 use std::sync::Arc;
 
@@ -24,29 +26,67 @@ use serde_json::Value;
 
 use crate::agent_runtime::host::{AgentRegistry, Engine, HostEmitter};
 use crate::agent_runtime::ipc::AgentChatRequest;
+use crate::db::{Database, DatabaseAccess};
 use crate::host_events::Events;
 use crate::tools::permissions::PermissionRouter;
 
-/// What a command runs against: the started engine and where its events go.
+/// What a command runs against: the started engine, the settings database
+/// and where events go.
 #[derive(Clone)]
 pub struct CommandContext {
     pub registry: Arc<AgentRegistry>,
     pub permissions: Arc<PermissionRouter>,
     pub events: Events,
+    pub db: Arc<dyn DatabaseAccess>,
 }
 
 impl CommandContext {
-    pub fn new(engine: &Engine, events: Events) -> Self {
+    pub fn new(engine: &Engine, events: Events, db: Arc<dyn DatabaseAccess>) -> Self {
         Self {
             registry: engine.registry.clone(),
             permissions: engine.permission_router.clone(),
             events,
+            db,
         }
     }
 
     fn emitter(&self) -> Arc<HostEmitter> {
         Arc::new(HostEmitter::new(self.events.clone()))
     }
+
+    /// Run `f` against the database, off the async threads (SQLite blocks).
+    pub(crate) async fn with_db<T, F>(&self, f: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Database) -> Result<T, String> + Send + 'static,
+    {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut f = Some(f);
+            let mut out = None;
+            let reached = db.with_db(&mut |db| {
+                if let Some(f) = f.take() {
+                    out = Some(f(db));
+                }
+            });
+            match out {
+                Some(result) => result,
+                None if !reached => Err("Aurora's database is not available".to_string()),
+                None => Err("the database call did not run".to_string()),
+            }
+        })
+        .await
+        .map_err(|e| format!("the database task stopped: {e}"))?
+    }
+}
+
+/// Every command this host serves, across the groups.
+pub fn all_commands() -> impl Iterator<Item = &'static str> {
+    COMMANDS
+        .iter()
+        .chain(settings::COMMANDS)
+        .chain(threads::COMMANDS)
+        .copied()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +118,8 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
-/// Every command [`dispatch`] serves.
+/// The conversation commands [`dispatch`] serves itself; the other groups
+/// list theirs in their own module (see [`all_commands`]).
 pub const COMMANDS: &[&str] = &[
     "agent_chat_v2",
     "agent_compact_thread",
@@ -96,6 +137,8 @@ pub const COMMANDS: &[&str] = &[
 /// "unknown", so a client can hide what it cannot use.
 pub const WINDOW_ONLY: &[&str] = &[
     "browser_eval_value",
+    // Writes the user's clipboard; the server's clipboard is not theirs.
+    "thread_copy_markdown",
     "reveal_in_explorer",
     "speech_transcribe_pcm",
     "speech_validate_config",
@@ -166,9 +209,31 @@ pub async fn dispatch(
                     .map_err(|_| "no pending permission request".to_string()),
             )
         }
-        _ if WINDOW_ONLY.contains(&name) => Err(CommandError::NotOnThisHost(name.to_string())),
-        _ => Err(CommandError::Unknown(name.to_string())),
+        _ => {
+            if let Some(result) = settings::dispatch(ctx, name, &args).await {
+                return result;
+            }
+            if let Some(result) = threads::dispatch(ctx, name, &args).await {
+                return result;
+            }
+            if WINDOW_ONLY.contains(&name) {
+                Err(CommandError::NotOnThisHost(name.to_string()))
+            } else {
+                Err(CommandError::Unknown(name.to_string()))
+            }
+        }
     }
+}
+
+/// One argument by the key Tauri gives it (a parameter `provider_id` arrives
+/// as `providerId`). A missing key reads as `null`, so an `Option` argument
+/// may be left out and a required one says which key was missing.
+pub(crate) fn arg<T: DeserializeOwned>(command: &str, args: &Value, key: &str) -> Result<T, CommandError> {
+    let value = args.get(key).cloned().unwrap_or(Value::Null);
+    serde_json::from_value(value).map_err(|e| CommandError::BadArguments {
+        command: command.to_string(),
+        reason: format!("`{key}`: {e}"),
+    })
 }
 
 fn decode<T: DeserializeOwned>(command: &str, args: Value) -> Result<T, CommandError> {
@@ -179,7 +244,7 @@ fn decode<T: DeserializeOwned>(command: &str, args: Value) -> Result<T, CommandE
     })
 }
 
-fn done<T: serde::Serialize>(result: Result<T, String>) -> Result<Value, CommandError> {
+pub(crate) fn done<T: serde::Serialize>(result: Result<T, String>) -> Result<Value, CommandError> {
     let value = result.map_err(CommandError::Failed)?;
     serde_json::to_value(value).map_err(|e| CommandError::Failed(format!("could not encode the result: {e}")))
 }

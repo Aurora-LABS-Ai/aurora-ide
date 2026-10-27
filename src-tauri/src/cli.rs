@@ -127,6 +127,23 @@ pub enum CliCommand {
     /// starts one.
     #[command(flatten)]
     Delegate(crate::cli_delegate::command::DelegateCommand),
+
+    /// Serve Aurora's interface on an HTTP port, with no window: the engine
+    /// runs in this process and a browser is the client. Prints a one-time
+    /// sign-in link. Ctrl+C stops it.
+    Serve {
+        /// Port to listen on.
+        #[arg(long, default_value_t = crate::serve::DEFAULT_PORT)]
+        port: u16,
+        /// Address to listen on. Anything but 127.0.0.1 lets other machines
+        /// reach it: anyone with the link can then run commands here.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: std::net::IpAddr,
+        /// The built interface (`pnpm build`'s `dist/`). Without it only the
+        /// API is served; run `pnpm dev` for the interface.
+        #[arg(long, value_name = "FOLDER")]
+        dist: Option<PathBuf>,
+    },
 }
 
 impl CliArgs {
@@ -254,6 +271,21 @@ impl CliArgs {
                 DelegateCommand::Mcp(_) => run::run_mcp(),
                 DelegateCommand::Tui(args) => run::run_interactive(args.path),
             })),
+            Some(CliCommand::Serve { port, host, dist }) => {
+                // Relative to where the command was run.
+                let dist = dist.clone().map(|d| {
+                    if d.is_absolute() {
+                        d
+                    } else {
+                        std::env::current_dir().map(|cwd| cwd.join(&d)).unwrap_or(d)
+                    }
+                });
+                Ok(Some(crate::serve::run(crate::serve::ServeOptions {
+                    port: *port,
+                    host: *host,
+                    dist,
+                })))
+            }
             None => Ok(None),
         }
     }

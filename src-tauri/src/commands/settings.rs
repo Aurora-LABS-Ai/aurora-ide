@@ -1,260 +1,156 @@
+//! Settings, providers, provider models and tool approval. The bodies are
+//! written once in `host_commands::settings`, which `aurora serve` serves too;
+//! these lock the window's database and call them.
+
 use std::sync::Mutex;
 use tauri::State;
 
 use crate::db::{AppSettings, Database, LLMProvider, ProviderModel, ToolSetting};
+use crate::host_commands::settings as core;
 use crate::launch_prefs::{self, LaunchSurface};
+
+fn locked<T>(
+    db: &State<'_, Mutex<Database>>,
+    f: impl FnOnce(&Database) -> Result<T, String>,
+) -> Result<T, String> {
+    let db = db.lock().map_err(|e| e.to_string())?;
+    f(&db)
+}
 
 // ============================================================
 // APP SETTINGS COMMANDS
 // ============================================================
 
-/// Get all app settings
 #[tauri::command(async)]
 pub fn get_app_settings(db: State<'_, Mutex<Database>>) -> Result<AppSettings, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .get_app_settings()
-        .map_err(|e| format!("Failed to get settings: {:?}", e))
+    locked(&db, core::get_app_settings)
 }
 
-/// Save all app settings
 #[tauri::command(async)]
-pub fn save_app_settings(
-    settings: AppSettings,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .save_app_settings(&settings)
-        .map_err(|e| format!("Failed to save settings: {:?}", e))
+pub fn save_app_settings(settings: AppSettings, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::save_app_settings(db, &settings))
 }
 
-/// Save only the given settings (`[key, jsonValue]` pairs), in one
-/// transaction. Each window writes the keys it owns through this, so neither
-/// overwrites the other's settings with a stale copy. Unknown keys are refused.
+/// Only the given `[key, jsonValue]` pairs, in one transaction; each window
+/// writes the keys it owns. Unknown keys are refused.
 #[tauri::command(async)]
 pub fn save_app_settings_entries(
     entries: Vec<(String, serde_json::Value)>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .save_app_setting_entries(&entries)
-        .map_err(|e| format!("Failed to save settings: {e}"))
+    locked(&db, |db| core::save_app_settings_entries(db, &entries))
 }
 
 #[tauri::command]
 pub fn get_global_skills_path() -> Result<Option<String>, String> {
-    // `.agents/skills` (plural) matches the workspace convention
-    // (`WORKSPACE_SKILL_FOLDERS`) and the cross-agent shared-skills layout
-    // used by other tooling. Previously this pointed at `.agent` (singular),
-    // so the user's real global skills were never discovered.
-    Ok(dirs::home_dir().map(|home| {
-        home.join(".agents")
-            .join("skills")
-            .to_string_lossy()
-            .to_string()
-    }))
+    Ok(core::global_skills_path())
 }
 
-/// Get a single setting by key
 #[tauri::command(async)]
 pub fn get_setting(key: String, db: State<'_, Mutex<Database>>) -> Result<Option<String>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    let setting = db
-        .settings()
-        .get_setting(&key)
-        .map_err(|e| format!("Failed to get setting: {:?}", e))?;
-    Ok(setting.map(|s| s.value))
+    locked(&db, |db| core::get_setting(db, &key))
 }
 
-/// Set a single setting
 #[tauri::command(async)]
-pub fn set_setting(
-    key: String,
-    value: String,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .set_setting(&key, &value)
-        .map_err(|e| format!("Failed to set setting: {:?}", e))
+pub fn set_setting(key: String, value: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::set_setting(db, &key, &value))
 }
 
 // ============================================================
 // LLM PROVIDER COMMANDS
 // ============================================================
 
-/// Get all LLM providers
 #[tauri::command(async)]
 pub fn get_all_providers(db: State<'_, Mutex<Database>>) -> Result<Vec<LLMProvider>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .get_all_providers()
-        .map_err(|e| format!("Failed to get providers: {:?}", e))
+    locked(&db, core::get_all_providers)
 }
 
-/// Get a single provider by ID
 #[tauri::command(async)]
-pub fn get_provider(
-    id: String,
-    db: State<'_, Mutex<Database>>,
-) -> Result<Option<LLMProvider>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .get_provider(&id)
-        .map_err(|e| format!("Failed to get provider: {:?}", e))
+pub fn get_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<Option<LLMProvider>, String> {
+    locked(&db, |db| core::get_provider(db, &id))
 }
 
-/// Save or update a provider
 #[tauri::command(async)]
 pub fn save_provider(provider: LLMProvider, db: State<'_, Mutex<Database>>) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .save_provider(&provider)
-        .map_err(|e| format!("Failed to save provider: {:?}", e))
+    locked(&db, |db| core::save_provider(db, &provider))
 }
 
-/// Delete a provider
 #[tauri::command(async)]
 pub fn delete_provider(id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .delete_provider(&id)
-        .map_err(|e| format!("Failed to delete provider: {:?}", e))
+    locked(&db, |db| core::delete_provider(db, &id))
 }
 
-/// Check if any providers exist
 #[tauri::command(async)]
 pub fn has_providers(db: State<'_, Mutex<Database>>) -> Result<bool, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .has_providers()
-        .map_err(|e| format!("Failed to check providers: {:?}", e))
+    locked(&db, core::has_providers)
 }
 
-/// Save multiple providers at once
 #[tauri::command(async)]
-pub fn save_all_providers(
-    providers: Vec<LLMProvider>,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    for provider in providers {
-        db.settings()
-            .save_provider(&provider)
-            .map_err(|e| format!("Failed to save provider: {:?}", e))?;
-    }
-    Ok(())
+pub fn save_all_providers(providers: Vec<LLMProvider>, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::save_all_providers(db, &providers))
 }
 
 // ============================================================
 // PROVIDER MODELS COMMANDS (v15+)
 // ============================================================
-//
-// As of schema v15 per-model capabilities (vision, thinking,
-// tool-stream) and per-model context/output overrides live in the
-// `provider_models` table rather than on the provider row. These
-// commands expose the [`ModelsRepository`] surface to the frontend.
 
-/// List every provider_model row across every provider.
 #[tauri::command(async)]
 pub fn list_provider_models(db: State<'_, Mutex<Database>>) -> Result<Vec<ProviderModel>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.models()
-        .list_all()
-        .map_err(|e| format!("Failed to list provider models: {:?}", e))
+    locked(&db, core::list_provider_models)
 }
 
-/// List models for one provider.
 #[tauri::command(async)]
 pub fn list_provider_models_for(
     provider_id: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<Vec<ProviderModel>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.models()
-        .list_by_provider(&provider_id)
-        .map_err(|e| format!("Failed to list provider models: {:?}", e))
+    locked(&db, |db| core::list_provider_models_for(db, &provider_id))
 }
 
-/// Insert-or-update a single provider_model row.
 #[tauri::command(async)]
-pub fn upsert_provider_model(
-    model: ProviderModel,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.models()
-        .upsert(&model)
-        .map_err(|e| format!("Failed to upsert provider model: {:?}", e))
+pub fn upsert_provider_model(model: ProviderModel, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::upsert_provider_model(db, &model))
 }
 
-/// Delete one provider_model row by `(provider_id, model_key)`.
 #[tauri::command(async)]
 pub fn delete_provider_model(
     provider_id: String,
     model_key: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.models()
-        .delete(&provider_id, &model_key)
-        .map_err(|e| format!("Failed to delete provider model: {:?}", e))
+    locked(&db, |db| core::delete_provider_model(db, &provider_id, &model_key))
 }
 
-/// Replace the full model list for a provider in one transaction —
-/// used by the unified Providers hub when the user finishes editing
-/// a provider's model roster or accepts a Discover Local Servers
-/// result.
 #[tauri::command(async)]
 pub fn replace_provider_models(
     provider_id: String,
     models: Vec<ProviderModel>,
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.models()
-        .replace_for_provider(&provider_id, &models)
-        .map_err(|e| format!("Failed to replace provider models: {:?}", e))
+    locked(&db, |db| core::replace_provider_models(db, &provider_id, &models))
 }
 
 // ============================================================
 // TOOL SETTINGS COMMANDS
 // ============================================================
 
-/// Get all tool settings
 #[tauri::command(async)]
 pub fn get_all_tool_settings(db: State<'_, Mutex<Database>>) -> Result<Vec<ToolSetting>, String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .get_all_tool_settings()
-        .map_err(|e| format!("Failed to get tool settings: {:?}", e))
+    locked(&db, core::get_all_tool_settings)
 }
 
-/// Set tool approval mode
 #[tauri::command(async)]
 pub fn set_tool_approval(
     tool_name: String,
     approval_mode: String,
     db: State<'_, Mutex<Database>>,
 ) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .set_tool_setting(&tool_name, &approval_mode)
-        .map_err(|e| format!("Failed to set tool approval: {:?}", e))
+    locked(&db, |db| core::set_tool_approval(db, &tool_name, &approval_mode))
 }
 
-/// Save all tool settings at once
 #[tauri::command(async)]
-pub fn save_all_tool_settings(
-    settings: Vec<(String, String)>,
-    db: State<'_, Mutex<Database>>,
-) -> Result<(), String> {
-    let db = db.lock().map_err(|e| e.to_string())?;
-    db.settings()
-        .save_all_tool_settings(&settings)
-        .map_err(|e| format!("Failed to save tool settings: {:?}", e))
+pub fn save_all_tool_settings(settings: Vec<(String, String)>, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    locked(&db, |db| core::save_all_tool_settings(db, &settings))
 }
 
 // ============================================================

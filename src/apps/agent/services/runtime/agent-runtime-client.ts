@@ -477,6 +477,8 @@ export interface EngineMessageContext {
 export interface EngineModelFacts {
   /** `isFastOn(row.id)` for the resolved model row; `null` without a row. */
   cursorFast: boolean | null;
+  /** The same for the compaction pin's row (Settings → Agent); `null` without one. */
+  compactionCursorFast: boolean | null;
 }
 
 /** What only the message knows, for a prompt the engine composes. */

@@ -578,11 +578,16 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       : `${providerConfig.id}:${providerConfig.model}`;
 
     let compactionProvider;
+    // The pinned row, kept so the engine can be told its Fast switch too
+    // (`modelFacts.compactionCursorFast`): the engine resolves the pin the
+    // same way and this is the one input it cannot read.
+    let compactionModelRow = null;
     try {
-      compactionProvider = settings.compactionModel
+      const compaction = settings.compactionModel
         ? resolveModelRequest(settings.compactionModel, settings.thinkingEnabled)
-            ?.providerConfig
-        : undefined;
+        : null;
+      compactionProvider = compaction?.providerConfig;
+      compactionModelRow = compaction?.model ?? null;
     } catch {
       // Keep the chat usable when a pinned auxiliary Cursor variant vanished;
       // the Rust runtime will summarize on this conversation's own model.
@@ -888,7 +893,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
           attachedRuleFiles: commandSelection.ruleFilenames,
           messageContext,
           // The one input of the model choice the engine cannot read itself.
-          modelFacts: { cursorFast: activeModel ? isFastOn(activeModel.id) : null },
+          modelFacts: {
+            cursorFast: activeModel ? isFastOn(activeModel.id) : null,
+            compactionCursorFast: compactionModelRow ? isFastOn(compactionModelRow.id) : null,
+          },
           // Persist the inspector chips natively onto the user message in the
           // session JSONL so they re-render above the bubble on reopen.
           attachedSelectedElements: selectionPills.length > 0 ? selectionPills : null,

@@ -206,6 +206,8 @@ const CASES: ProviderCase[] = [
   { name: "cursor-unknown", selection: "cursor:nope" },
   { name: "compaction-pinned", selection: "oa:gpt-4o", compactionModel: "anth:claude" },
   { name: "compaction-pin-missing", selection: "oa:gpt-4o", compactionModel: "ghost:x" },
+  // Found live: the pin's own Fast switch, on a chat model that is not Cursor.
+  { name: "compaction-pin-cursor-fast", selection: "oa:gpt-4o", compactionModel: "cursor:cursor-grok-4.6" },
 ];
 
 function seedStore(): void {

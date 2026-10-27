@@ -636,6 +636,12 @@
       "selection": "oa:gpt-4o",
       "thinkingPreference": true,
       "compactionModel": "ghost:x"
+    },
+    {
+      "name": "compaction-pin-cursor-fast",
+      "selection": "oa:gpt-4o",
+      "thinkingPreference": true,
+      "compactionModel": "cursor:cursor-grok-4.6"
     }
   ]
 }

@@ -45,6 +45,10 @@ pub const DEFAULT_CONTEXT_WINDOW: u32 = 262_000;
 pub struct EngineModelFacts {
     /// `isFastOn(row.id)` for the resolved model row; `None` without a row.
     pub cursor_fast: Option<bool>,
+    /// The same for the compaction pin's row; `None` without one. Found live:
+    /// a pin on a Cursor row with Fast on resolved to the slow id until the
+    /// window sent this switch too.
+    pub compaction_cursor_fast: Option<bool>,
 }
 
 /// The rows the resolution reads: every provider, every model, and the ids
@@ -129,7 +133,9 @@ pub fn resolve_turn_model(
     let compaction_provider_config = if inputs.compaction_model.is_empty() {
         None
     } else {
-        resolve_request(rows, inputs.compaction_model, inputs.selected_model, inputs.thinking_preference, inputs.facts)
+        // The pin's own Fast switch, not the chat model's.
+        let facts = EngineModelFacts { cursor_fast: inputs.facts.compaction_cursor_fast, ..Default::default() };
+        resolve_request(rows, inputs.compaction_model, inputs.selected_model, inputs.thinking_preference, &facts)
             .ok()
             .flatten()
             .map(|r| r.provider_config)
@@ -760,11 +766,16 @@ mod tests {
                     .unwrap_or_else(|e| panic!("golden {}: {e}", case.name)),
             )
             .unwrap();
-            // The window's Fast preference for the row the selection resolves to.
-            let (provider_id, model_key) = case.selection.split_once(':').unwrap_or((&case.selection, ""));
+            // The window's Fast preference for the rows the selection and
+            // the compaction pin resolve to.
+            let fast_for = |selection: &str| {
+                let (provider_id, model_key) = selection.split_once(':').unwrap_or((selection, ""));
+                find_model(&rows, provider_id, model_key)
+                    .map(|m| golden.cursor_fast.get(&m.id).copied().unwrap_or(false))
+            };
             let facts = EngineModelFacts {
-                cursor_fast: find_model(&rows, provider_id, model_key)
-                    .map(|m| golden.cursor_fast.get(&m.id).copied().unwrap_or(false)),
+                cursor_fast: fast_for(&case.selection),
+                compaction_cursor_fast: fast_for(&case.compaction_model),
             };
             let result = resolve_turn_model(
                 &rows,

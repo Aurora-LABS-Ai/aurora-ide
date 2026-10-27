@@ -1,0 +1,7 @@
+<preferred_mcp_servers>
+The user explicitly referenced these connected MCP server(s) for this task: GitHub, Postgres. Prefer their tools where relevant.
+</preferred_mcp_servers>
+
+<image_request>
+The user attached /image: they want a picture made of this message, and that comes before any other reply. Reply in a sentence at most, then call generate_image with a prompt written out from what they said. If what they wrote is too thin to draw from (a bare noun, no subject or setting), offer one fuller prompt in one or two lines and ask before spending the call. Otherwise do not ask; make it.
+</image_request>

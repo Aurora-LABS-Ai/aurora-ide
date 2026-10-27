@@ -1,0 +1,19 @@
+{
+  "type": "function",
+  "function": {
+    "name": "aurora_skill_load",
+    "description": "Load the full SKILL.md body for a single skill by id. Returns name, description, source, optional path, triggers, and the complete skill content as a JSON object.\n\nUse this immediately after `aurora_skill_search` returns a relevant skill — or when an explicit attachment references a skill you don't have the full body for. Do not call this tool eagerly; only load skills that are clearly applicable to the current task.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The skill id to load (matches the id returned by aurora_skill_search). Storage keys are also accepted."
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+}

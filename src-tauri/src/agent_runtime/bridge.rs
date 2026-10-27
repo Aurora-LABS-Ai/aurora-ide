@@ -188,7 +188,7 @@ const UNBOUNDED_BRIDGE_TOOLS: &[&str] = &["ask_question"];
 /// Two minutes is far beyond any healthy bridged call (a skill load reads a
 /// file; a canvas write compiles one component) and still well inside the
 /// point where a person watching a spinner has concluded the app is broken.
-const BRIDGE_TIMEOUT: crate::tools::timeout::TimeoutPolicy =
+pub(crate) const BRIDGE_TIMEOUT: crate::tools::timeout::TimeoutPolicy =
     crate::tools::timeout::TimeoutPolicy::new(
         120_000,
         5_000,

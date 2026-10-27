@@ -1,0 +1,19 @@
+<selected_elements>
+The user picked these elements in the in-app browser. A token like
+`@element:2` in their message marks WHERE in the sentence they meant the
+element with index="2" below. First LOCATE the source file(s) in this
+workspace that render them — search (grep) by the component name, the id,
+the class names, or the visible text — then make the requested change in
+that source. `size` and `styles` are what the element looks like on the
+page right now; `siblings` is the row it sits in, the pick marked.
+<element index="1">
+  tag: <div>
+  selector: main > div
+  component: none named (vue page)
+</element>
+<element index="2">
+  tag: <p>
+  text: Hello
+  selector: main > div
+</element>
+</selected_elements>

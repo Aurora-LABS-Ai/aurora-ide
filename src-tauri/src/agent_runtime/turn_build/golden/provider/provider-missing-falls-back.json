@@ -1,0 +1,32 @@
+{
+  "providerId": "pool",
+  "model": "m",
+  "providerConfig": {
+    "providerId": "pool",
+    "providerType": "openai",
+    "baseUrl": "https://pool.example.invalid/v1",
+    "apiKey": "sk-pool",
+    "apiKeys": [
+      "k1",
+      "k2"
+    ],
+    "model": "m",
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "none",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

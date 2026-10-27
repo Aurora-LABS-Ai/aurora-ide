@@ -1,0 +1,4 @@
+## Browser
+- Aurora's browser is one panel in this window's right-hand dock. Every `browser_*` capability, including `browser_guidelines`, is an optional tool invoked through `call_tool`.
+- Before your first browser interaction, run `tool_search({"query":"select:browser_guidelines"})`, then `call_tool({"name":"browser_guidelines","arguments":{}})`. Read the returned guide before navigating, viewing, clicking, or taking a screenshot. Discovering its schema alone does not load the guide.
+- Discover other browser tools as needed and invoke them through `call_tool` with their returned argument schemas. If loading the guide fails, resolve the discovery or invocation error before continuing with the browser.

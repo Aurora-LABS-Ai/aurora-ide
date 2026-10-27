@@ -1,4 +1,12 @@
+// The headless core (no `desktop` feature) compiles with no window and, until
+// the HTTP command registry of Phase 6.2 exists, with nothing calling most
+// of what the IPC commands called. Those items are not dead, they are
+// waiting for their caller; the desktop build still reports real dead code.
+#![cfg_attr(not(feature = "desktop"), allow(dead_code, unused_imports))]
+
+#[cfg(feature = "desktop")]
 use std::sync::Mutex;
+#[cfg(feature = "desktop")]
 use tauri::{Emitter, Manager};
 
 /// Linker directive that gives **test binaries only** a Windows application
@@ -43,6 +51,7 @@ pub mod cli_delegate;
 /// from it — see the module docs for why that matters.
 mod chat_memory;
 mod code_index;
+#[cfg(feature = "desktop")]
 mod commands;
 mod crash;
 mod db;
@@ -51,6 +60,7 @@ mod file_cache;
 /// Named events core code sends to its host (the windows, or a headless host).
 mod host_events;
 pub mod icon_pack;
+#[cfg(feature = "desktop")]
 mod launch_prefs;
 mod logging;
 mod mcp;
@@ -78,6 +88,7 @@ mod reply_suggest;
 mod rt;
 /// Live dictation: a warm `audiocpp_cli` child that transcribes while you talk.
 /// The batch path stays in `commands::speech`.
+#[cfg(feature = "desktop")]
 mod speech_stream;
 pub mod tools;
 mod typing_assist;
@@ -85,10 +96,12 @@ mod undo_redo;
 mod usage_ledger;
 mod websearch;
 /// The interface in a browser: an HTTP host inside the desktop app.
+#[cfg(feature = "desktop")]
 mod web_host;
 /// Workspace file work shared by the tools and the IPC commands.
 mod workspace;
 
+#[cfg(feature = "desktop")]
 use cli::{CliArgs, CliOpenRequest};
 
 // ---------------------------------------------------------------------------
@@ -110,10 +123,12 @@ use cli::{CliArgs, CliOpenRequest};
 // `Permitter` (a `TauriPermitter` over an emitter that posts the
 // `"agent_permission_request"` channel) and attaches it to the
 // `ToolRegistry` via `with_permitter`.
+#[cfg(feature = "desktop")]
 struct ProductionIdeEventSink {
     app: tauri::AppHandle,
 }
 
+#[cfg(feature = "desktop")]
 impl ProductionIdeEventSink {
     fn new(app: tauri::AppHandle) -> Self {
         Self { app }
@@ -176,6 +191,7 @@ impl ProductionIdeEventSink {
 }
 
 #[async_trait::async_trait]
+#[cfg(feature = "desktop")]
 impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
     fn emit_editor_open(
         &self,
@@ -414,8 +430,10 @@ impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
 // only place that interprets `api_key`, `base_url`, `custom_headers`,
 // and `custom_params`. The factory is intentionally a thin shim — it
 // must NOT introduce its own provider-routing logic.
+#[cfg(feature = "desktop")]
 struct RealApiFactory;
 
+#[cfg(feature = "desktop")]
 impl commands::agent_v2::ApiFactory for RealApiFactory {
     fn build(
         &self,
@@ -429,12 +447,14 @@ impl commands::agent_v2::ApiFactory for RealApiFactory {
 }
 
 /// Run Aurora with default (no CLI arguments)
+#[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     run_with_args(CliArgs::default())
 }
 
 /// Run Aurora with CLI arguments (e.g., from `aurora .` command)
+#[cfg(feature = "desktop")]
 pub fn run_with_args(cli_args: CliArgs) {
     // File logging + panic hook first: anything that fails from here on —
     // including startup itself — must leave a trace on disk in the packaged
@@ -1008,6 +1028,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::agent_v2::agent_chat_v2,
             commands::agent_v2::agent_compact_thread,
             commands::agent_v2::agent_cancel,
+            commands::agent_v2::agent_active_turns,
             commands::agent_v2::agent_load_thread,
             commands::agent_v2::agent_rewind_to_user_message,
             commands::agent_v2::agent_post_tool_result,
@@ -1251,7 +1272,9 @@ pub fn run_with_args(cli_args: CliArgs) {
                     commands::agent_v2::DatabaseProviderLookup::new(std::sync::Arc::new(
                         handle.clone(),
                     )),
-                )),
+                ))
+                // A turn whose prompt the engine composes reads Settings here.
+                .with_settings_source(std::sync::Arc::new(handle.clone())),
             );
 
             // Phase 3 — pre-populate the AgentRegistry's ToolRegistry

@@ -353,6 +353,14 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub defer_tools: Option<bool>,
 
+    /// Present: the engine composes the system prompt itself
+    /// (`turn_build`) and [`Self::system_prompt`] is ignored. Absent: the
+    /// client's composed prompt is used, as before. Phase 3 of
+    /// `DOCS/rust-core-extraction.md`; the window switches over once the
+    /// engine's prompt is proven equal to its own.
+    #[serde(default)]
+    pub engine_prompt: Option<EnginePromptRequest>,
+
     /// Browser-inspector element chips the user attached to this message
     /// in the composer. Persisted verbatim onto the user
     /// [`crate::agent_runtime::types::ConversationMessage`] so the chips
@@ -396,6 +404,43 @@ pub struct AgentChatRequest {
     /// `model:` and an explicit `model` on `spawn_agent` both outrank it.
     #[serde(default)]
     pub subagent_model: Option<String>,
+}
+
+/// What only the message knows, for a prompt the engine composes
+/// ([`AgentChatRequest::engine_prompt`]). Everything else (settings, rules,
+/// skills, the plan) the engine reads itself.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EnginePromptRequest {
+    /// Transcript → Reply layout is on.
+    pub reply_layout: bool,
+    /// The Aurora Chat conversation was started in deep research.
+    pub deep_research: bool,
+    /// Skills attached with `/` this turn, by storage key.
+    pub explicit_skill_keys: Vec<String>,
+    /// Rule files attached with `/` this turn; left out of the standing block.
+    pub attached_rule_files: Vec<String>,
+    /// The engine also renders the message's context
+    /// ([`AgentChatRequest::ide_context`]) from these facts
+    /// (`turn_build::context`). `None` for a client that renders its own.
+    pub context: Option<crate::agent_runtime::turn_build::context::MessageContextFacts>,
+    /// The engine also resolves [`AgentChatRequest::model_selection`] into
+    /// [`AgentChatRequest::provider_config`] and the knobs beside it
+    /// (`turn_build::provider`), from the database. `None` for a client
+    /// that sends its own.
+    pub model: Option<crate::agent_runtime::turn_build::provider::EngineModelFacts>,
+    /// The engine runs MCP calls itself (`mcp::tool`, Phase 4.1) instead of
+    /// bridging them to the client. Not a shadow: it decides who executes.
+    pub mcp: bool,
+    /// The engine also builds [`AgentChatRequest::tools`]: the window's own
+    /// tools plus every connected MCP server's, filtered by mode
+    /// (`turn_build::tools`). Off for a client that sends a custom list.
+    pub tools: bool,
+    /// Compose, compare with the client's own [`AgentChatRequest::system_prompt`]
+    /// (and `tools`, when built) byte for byte, log the first difference, and
+    /// still send the client's. How the switch is proven on real turns without
+    /// touching the prompt cache: one changed byte in the static half re-bills it.
+    pub shadow: bool,
 }
 
 /// One tool entry in [`AgentChatRequest::tools`].
@@ -498,6 +543,7 @@ mod tests {
             transcript_chapters: None,
             browser_tools: None,
             defer_tools: None,
+            engine_prompt: None,
             subagents_enabled: None,
             subagent_model: None,
         }
@@ -670,6 +716,7 @@ mod tests {
             transcript_chapters: None,
             browser_tools: None,
             defer_tools: None,
+            engine_prompt: None,
             subagents_enabled: None,
             subagent_model: None,
         };

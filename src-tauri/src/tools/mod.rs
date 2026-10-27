@@ -60,6 +60,7 @@
 /// delivers an argument in a shape the schema did not ask for. Not a bucket —
 /// it registers no tool.
 mod arguments;
+#[cfg(feature = "browser")]
 pub mod browser;
 pub mod canvas;
 pub mod code_intel;
@@ -152,6 +153,21 @@ pub mod transcript;
 /// start, type into and stop the agent's own Terminal-panel tabs.
 pub const BUILTIN_TOOL_COUNT: usize = 50;
 
+/// Tools whose result only a vision model can read (`browser_screenshot`
+/// returns an image). Lives here rather than in the browser bucket because
+/// the per-turn roster and the sub-agent roster consult it in every build,
+/// including one without the `browser` feature.
+pub const VISION_REQUIRED_TOOLS: &[&str] = &["browser_screenshot"];
+
+/// What a build with a native browser hands [`register_builtin_tools`]: the
+/// manager the 19 `browser_*` tools and the web search's browser rung drive.
+/// Without the `browser` feature no value of this type exists, so the only
+/// argument is `None`.
+#[cfg(feature = "browser")]
+pub type BrowserSupport = std::sync::Arc<crate::services::browser_runtime::BrowserManager>;
+#[cfg(not(feature = "browser"))]
+pub type BrowserSupport = std::convert::Infallible;
+
 /// Compose Sub-C and Sub-D's tool buckets onto `reg`.
 ///
 /// `sink` is shared across Sub-D's event-firing tools
@@ -180,7 +196,7 @@ pub const BUILTIN_TOOL_COUNT: usize = 50;
 pub fn register_builtin_tools(
     reg: &crate::agent_runtime::tool_executor::ToolRegistry,
     sink: std::sync::Arc<dyn shell_editor_todo::IdeEventSink>,
-    browser_manager: Option<std::sync::Arc<crate::services::browser_runtime::BrowserManager>>,
+    browser_manager: Option<BrowserSupport>,
 ) {
     use crate::agent_runtime::tool_executor::ToolRegistry;
 
@@ -192,7 +208,17 @@ pub fn register_builtin_tools(
     // only through a cloned Arc). `ToolRegistry::register` takes
     // `&self`, so the transfer is a normal interior-mutating insert.
     let mut staging = ToolRegistry::new();
-    file_workspace_search::register(&mut staging, sink.clone(), browser_manager.clone());
+    // The web search's browser rung: the same manager, seen as a page source.
+    #[cfg(feature = "browser")]
+    let page_source: Option<std::sync::Arc<dyn crate::websearch::PageSource>> = browser_manager
+        .clone()
+        .map(|manager| {
+            std::sync::Arc::new(crate::services::browser_search::BrowserPageSource::new(manager))
+                as std::sync::Arc<dyn crate::websearch::PageSource>
+        });
+    #[cfg(not(feature = "browser"))]
+    let page_source: Option<std::sync::Arc<dyn crate::websearch::PageSource>> = None;
+    file_workspace_search::register(&mut staging, sink.clone(), page_source);
     shell_editor_todo::register(&mut staging, sink.clone());
     plan::register(&mut staging, sink);
     design::register(&mut staging);
@@ -203,9 +229,12 @@ pub fn register_builtin_tools(
     memory::register(&mut staging);
     image::register(&mut staging);
     video::register(&mut staging);
+    #[cfg(feature = "browser")]
     if let Some(manager) = browser_manager {
         browser::register(&mut staging, manager);
     }
+    #[cfg(not(feature = "browser"))]
+    let _ = browser_manager;
 
     // `staging.names()` is in registration order, so the production
     // registry inherits bucket order (file/workspace/search, then
@@ -288,21 +317,12 @@ mod tests {
     #[test]
     fn builtin_tool_count_is_correct() {
         assert_eq!(BUILTIN_TOOL_COUNT, 50);
-        assert_eq!(
-            file_workspace_search::TOOL_NAMES.len()
-                + shell_editor_todo::TOOL_NAMES.len()
-                + plan::TOOL_NAMES.len()
-                + design::TOOL_NAMES.len()
-                + canvas::TOOL_NAMES.len()
-                + transcript::TOOL_NAMES.len()
-                + code_intel::TOOL_NAMES.len()
-                + diagnostics::TOOL_NAMES.len()
-                + memory::TOOL_NAMES.len()
-                + image::TOOL_NAMES.len()
-                + video::TOOL_NAMES.len()
-                + browser::TOOL_NAMES.len(),
-            BUILTIN_TOOL_COUNT
-        );
+        // `BUILTIN_TOOL_COUNT` names the full roster. A build without the
+        // `browser` feature registers everything but the 19 `browser_*` tools.
+        #[cfg(feature = "browser")]
+        assert_eq!(count_without_browser() + browser::TOOL_NAMES.len(), BUILTIN_TOOL_COUNT);
+        #[cfg(not(feature = "browser"))]
+        assert_eq!(count_without_browser(), BUILTIN_TOOL_COUNT - 19);
     }
 
     /// What `tool_search` is actually holding back, in tools and in tokens.

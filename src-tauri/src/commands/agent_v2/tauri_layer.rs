@@ -256,6 +256,16 @@ pub async fn agent_cancel(
     Ok(state.cancel(&turn_id))
 }
 
+/// The conversation turns running now. A client that opens mid-turn (a
+/// browser tab, the desktop window after a reload) follows these, since it
+/// missed their `turn_start`.
+#[tauri::command]
+pub async fn agent_active_turns(
+    state: State<'_, Arc<AgentRegistry>>,
+) -> Result<Vec<crate::agent_runtime::host::ActiveTurn>, String> {
+    Ok(state.active_conversation_turns())
+}
+
 /// Load (or initialize) a thread's session and return its message
 /// history. The frontend calls this on thread-switch to render the
 /// existing transcript before any new turn begins.

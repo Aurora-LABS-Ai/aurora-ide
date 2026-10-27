@@ -1,0 +1,641 @@
+{
+  "providers": [
+    {
+      "baseUrl": "https://oa.example.invalid/v1",
+      "apiKey": "sk-oa",
+      "model": "gpt-4o",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "openai",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "oa",
+      "name": "OpenAI",
+      "customHeaders": {
+        "X-Org": "acme"
+      },
+      "customParams": {
+        "bar": 2
+      },
+      "defaultTemperature": 0.7,
+      "defaultMaxTokens": 4096,
+      "toolImagesInResult": true
+    },
+    {
+      "baseUrl": "https://anth.example.invalid/v1",
+      "apiKey": "sk-anth",
+      "model": "claude",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": true,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "anthropic",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "anth",
+      "name": "Anthropic"
+    },
+    {
+      "baseUrl": "https://pool.example.invalid/v1",
+      "apiKey": "sk-pool",
+      "model": "m",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "openai",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "pool",
+      "name": "Pool",
+      "apiKeys": [
+        "k1",
+        "  ",
+        "k2"
+      ]
+    },
+    {
+      "baseUrl": "https://zero.example.invalid/v1",
+      "apiKey": "sk-zero",
+      "model": "z",
+      "contextWindow": 0,
+      "maxOutputTokens": 0,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "zero",
+      "name": "Zero",
+      "defaultTemperature": 0,
+      "defaultMaxTokens": 0,
+      "customParams": {}
+    },
+    {
+      "baseUrl": "https://opencode-go.example.invalid/v1",
+      "apiKey": "sk-opencode-go",
+      "model": "kimi-k3",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "opencode-go-chat",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "opencode-go",
+      "name": "OpenCode Go"
+    },
+    {
+      "baseUrl": "https://antigravity.example.invalid/v1",
+      "apiKey": "sk-antigravity",
+      "model": "gemini-4-argon",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "antigravity",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "antigravity",
+      "name": "Antigravity",
+      "customParams": {
+        "reasoning_effort": "medium",
+        "keep": 1
+      }
+    },
+    {
+      "baseUrl": "https://cursor.example.invalid/v1",
+      "apiKey": "sk-cursor",
+      "model": "cursor-grok-4.6",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": true,
+      "isCustom": false,
+      "providerType": "cursor",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "cursor",
+      "name": "Cursor",
+      "customParams": {
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "baseUrl": "https://off.example.invalid/v1",
+      "apiKey": "sk-off",
+      "model": "x",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsToolStream": false,
+      "enabled": false,
+      "isCustom": false,
+      "providerType": "openai",
+      "requiresApiKey": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "id": "off",
+      "name": "Off"
+    }
+  ],
+  "models": [
+    {
+      "id": "oa::gpt-4o",
+      "providerId": "oa",
+      "modelKey": "gpt-4o",
+      "label": null,
+      "contextWindow": 200000,
+      "maxOutputTokens": 32000,
+      "supportsVision": true,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "temperature": 0.2
+    },
+    {
+      "id": "oa::o4-mini",
+      "providerId": "oa",
+      "modelKey": "o4-mini",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "effort",
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium"
+      },
+      "extraBody": {
+        "foo": 1,
+        "reasoning_replay": "off"
+      }
+    },
+    {
+      "id": "oa::replay-only",
+      "providerId": "oa",
+      "modelKey": "replay-only",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "extraBody": {
+        "reasoning_replay": "reasoning"
+      }
+    },
+    {
+      "id": "anth::claude",
+      "providerId": "anth",
+      "modelKey": "claude",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": true,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "budget",
+        "min": 1024,
+        "max": 32000,
+        "default": 8000
+      }
+    },
+    {
+      "id": "anth::claude-off",
+      "providerId": "anth",
+      "modelKey": "claude-off",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "effort",
+        "levels": [
+          "low",
+          "high"
+        ],
+        "default": "high",
+        "enabled": false
+      }
+    },
+    {
+      "id": "anth::plain-thinker",
+      "providerId": "anth",
+      "modelKey": "plain-thinker",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "pool::m",
+      "providerId": "pool",
+      "modelKey": "m",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 2,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "pool::first",
+      "providerId": "pool",
+      "modelKey": "first",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 1,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "opencode-go::kimi-k3",
+      "providerId": "opencode-go",
+      "modelKey": "kimi-k3",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "opencode-go::qwen3.9-max",
+      "providerId": "opencode-go",
+      "modelKey": "qwen3.9-max",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "opencode-go::grok-5",
+      "providerId": "opencode-go",
+      "modelKey": "grok-5",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "opencode-go::glm-5.3",
+      "providerId": "opencode-go",
+      "modelKey": "glm-5.3",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "providerType": "opencode-go"
+    },
+    {
+      "id": "antigravity::gemini-4-argon",
+      "providerId": "antigravity",
+      "modelKey": "gemini-4-argon",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "effort",
+        "levels": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default": "medium"
+      }
+    },
+    {
+      "id": "antigravity::gemini-4-plain",
+      "providerId": "antigravity",
+      "modelKey": "gemini-4-plain",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "cursor::cursor-grok-4.6",
+      "providerId": "cursor",
+      "modelKey": "cursor-grok-4.6",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "effort",
+        "levels": [
+          "high",
+          "xhigh"
+        ],
+        "default": "high"
+      }
+    },
+    {
+      "id": "cursor::claude-opus-5",
+      "providerId": "cursor",
+      "modelKey": "claude-opus-5",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": true,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "toggle",
+        "default": true
+      }
+    },
+    {
+      "id": "cursor::composer-2",
+      "providerId": "cursor",
+      "modelKey": "composer-2",
+      "label": null,
+      "contextWindow": null,
+      "maxOutputTokens": null,
+      "supportsVision": false,
+      "supportsThinking": false,
+      "supportsToolStream": false,
+      "enabled": true,
+      "sortOrder": 0,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "reasoning": {
+        "type": "effort",
+        "levels": [
+          "max"
+        ],
+        "default": "max"
+      }
+    }
+  ],
+  "cursorCatalogue": [
+    "cursor-grok-4.6",
+    "cursor-grok-4.6-high",
+    "cursor-grok-4.6-high-fast",
+    "claude-opus-5-thinking",
+    "claude-opus-5-thinking-high",
+    "composer-2",
+    "composer-2-fast"
+  ],
+  "cursorFast": {
+    "cursor::cursor-grok-4.6": true
+  },
+  "selectedModel": "pool:m",
+  "cases": [
+    {
+      "name": "openai-plain",
+      "selection": "oa:gpt-4o",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "openai-effort-extra-body",
+      "selection": "oa:o4-mini",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "openai-replay-only-extra",
+      "selection": "oa:replay-only",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "openai-thinking-off",
+      "selection": "oa:o4-mini",
+      "thinkingPreference": false,
+      "compactionModel": ""
+    },
+    {
+      "name": "anthropic-budget",
+      "selection": "anth:claude",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "anthropic-effort-disabled",
+      "selection": "anth:claude-off",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "anthropic-thinker-no-profile",
+      "selection": "anth:plain-thinker",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "no-model-row",
+      "selection": "oa:ghost-model",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "empty-model-key",
+      "selection": "oa:",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "provider-missing-falls-back",
+      "selection": "ghost:x",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "pool-direct-drops-keys",
+      "selection": "pool:m",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "zero-defaults",
+      "selection": "zero:z",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "opencode-table",
+      "selection": "opencode-go:kimi-k3",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "opencode-prefix",
+      "selection": "opencode-go:qwen3.9-max",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "opencode-responses",
+      "selection": "opencode-go:grok-5",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "opencode-override",
+      "selection": "opencode-go:glm-5.3",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "antigravity-tier",
+      "selection": "antigravity:gemini-4-argon",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "antigravity-plain",
+      "selection": "antigravity:gemini-4-plain",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "cursor-effort-fast",
+      "selection": "cursor:cursor-grok-4.6",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "cursor-thinking-only",
+      "selection": "cursor:claude-opus-5",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "cursor-unsupported",
+      "selection": "cursor:composer-2",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "cursor-unknown",
+      "selection": "cursor:nope",
+      "thinkingPreference": true,
+      "compactionModel": ""
+    },
+    {
+      "name": "compaction-pinned",
+      "selection": "oa:gpt-4o",
+      "thinkingPreference": true,
+      "compactionModel": "anth:claude"
+    },
+    {
+      "name": "compaction-pin-missing",
+      "selection": "oa:gpt-4o",
+      "thinkingPreference": true,
+      "compactionModel": "ghost:x"
+    }
+  ]
+}

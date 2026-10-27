@@ -23,21 +23,20 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
 use crate::websearch::request::{aurora_websearch_with, AuroraWebSearchRequest};
-use crate::services::browser_runtime::BrowserManager;
-use crate::services::browser_search::BrowserPageSource;
-use crate::websearch::{DEFAULT_MAX_CHARS, MAX_MAX_CHARS};
+use crate::websearch::{PageSource, DEFAULT_MAX_CHARS, MAX_MAX_CHARS};
 
 pub struct AuroroWebSearchTool {
-    /// The search ladder's last rung, when this build has a browser.
+    /// The search ladder's last rung, when this build has a browser: the
+    /// desktop app hands in its WebView as a page source
+    /// (`services::browser_search::BrowserPageSource`).
     ///
-    /// `None` in the IDE window and in tests, and the ladder says so rather
-    /// than silently having one rung fewer — see
-    /// [`crate::services::browser_search`].
-    browser: Option<std::sync::Arc<BrowserManager>>,
+    /// `None` in the IDE window, in tests and in a headless build, and the
+    /// ladder says so rather than silently having one rung fewer.
+    browser: Option<std::sync::Arc<dyn PageSource>>,
 }
 
 impl AuroroWebSearchTool {
-    pub fn new(browser: Option<std::sync::Arc<BrowserManager>>) -> Self {
+    pub fn new(browser: Option<std::sync::Arc<dyn PageSource>>) -> Self {
         Self { browser }
     }
 }
@@ -172,13 +171,7 @@ impl ToolExecutor for AuroroWebSearchTool {
             offset: number_arg(&input, &["offset"]),
         };
 
-        // Built per call rather than held: it is a thin handle over the
-        // manager, and building it here keeps the tool's own state to the one
-        // `Arc` it was given.
-        let page_source = self.browser.clone().map(BrowserPageSource::new);
-        let browser = page_source
-            .as_ref()
-            .map(|s| s as &dyn crate::websearch::PageSource);
+        let browser = self.browser.as_deref();
 
         match aurora_websearch_with(request, browser).await {
             Ok(response) => serde_json::to_string(&response).map_err(|e| {

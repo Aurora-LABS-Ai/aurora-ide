@@ -1,0 +1,443 @@
+{
+  "rules": [
+    {
+      "filename": "a-tests.md",
+      "content": "﻿  Run the tests before saying done.\n\n"
+    },
+    {
+      "filename": "b-style.md",
+      "content": "Tabs, not spaces.\nShort names."
+    },
+    {
+      "filename": "c-empty.md",
+      "content": "   \n"
+    }
+  ],
+  "cases": [
+    {
+      "name": "empty",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "open-files",
+      "facts": {
+        "openFiles": [
+          "E:\\work\\shop\\src\\app.ts",
+          "  E:\\work\\shop\\README.md ",
+          "",
+          "E:\\work\\shop\\src\\api.ts"
+        ],
+        "activeFile": "E:\\work\\shop\\src\\api.ts",
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "open-files-none-showing",
+      "facts": {
+        "openFiles": [
+          "E:\\work\\shop\\src\\app.ts"
+        ],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "pick-full",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [
+          {
+            "index": 1,
+            "element": {
+              "label": "pick",
+              "selector": "#hero > button.cta",
+              "tagName": "button",
+              "id": "buy",
+              "className": "cta primary",
+              "text": "  Buy now\n  and save  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+              "outerHtml": "<button id=\"buy\" class=\"cta primary\">xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</button>",
+              "url": "http://localhost:5173/pricing",
+              "boundingRect": {
+                "x": 10.5,
+                "y": 20.49,
+                "width": 120.5,
+                "height": 39.5
+              },
+              "attributes": [
+                {
+                  "name": "id",
+                  "value": "buy"
+                },
+                {
+                  "name": "class",
+                  "value": "cta primary"
+                },
+                {
+                  "name": "data-a0",
+                  "value": "v0"
+                },
+                {
+                  "name": "data-a1",
+                  "value": "v1"
+                },
+                {
+                  "name": "data-a2",
+                  "value": "v2"
+                },
+                {
+                  "name": "data-a3",
+                  "value": "v3"
+                },
+                {
+                  "name": "data-a4",
+                  "value": "v4"
+                },
+                {
+                  "name": "data-a5",
+                  "value": "v5"
+                },
+                {
+                  "name": "data-a6",
+                  "value": "v6"
+                },
+                {
+                  "name": "data-a7",
+                  "value": "v7"
+                },
+                {
+                  "name": "data-a8",
+                  "value": "v8"
+                },
+                {
+                  "name": "data-a9",
+                  "value": "v9"
+                },
+                {
+                  "name": "data-a10",
+                  "value": "v10"
+                },
+                {
+                  "name": "data-a11",
+                  "value": "v11"
+                },
+                {
+                  "name": "data-a12",
+                  "value": "v12"
+                },
+                {
+                  "name": "data-a13",
+                  "value": "v13"
+                }
+              ],
+              "source": "inspector",
+              "note": null,
+              "path": "main.flex-1 > section.hero",
+              "styles": [
+                {
+                  "name": "color",
+                  "value": "rgb(255, 255, 255)"
+                },
+                {
+                  "name": "font",
+                  "value": "16px\n  Inter"
+                }
+              ],
+              "parent": "<section class=\"hero\">",
+              "siblings": [
+                "<h1>Pricing</h1>",
+                "<button class=\"cta primary\"><!-- SELECTED -->",
+                "<a>Learn more</a>"
+              ],
+              "framework": "react",
+              "component": "PricingHero",
+              "props": [
+                {
+                  "name": "plan",
+                  "value": "pro"
+                }
+              ]
+            }
+          }
+        ],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "pick-minimal-two",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [
+          {
+            "index": 1,
+            "element": {
+              "label": "pick",
+              "selector": "main > div",
+              "tagName": "div",
+              "id": "",
+              "className": null,
+              "text": "   ",
+              "outerHtml": null,
+              "url": null,
+              "boundingRect": {
+                "x": 0,
+                "y": 0,
+                "width": 0,
+                "height": 0
+              },
+              "attributes": [],
+              "source": "inspector",
+              "note": null,
+              "framework": "vue",
+              "siblings": []
+            }
+          },
+          {
+            "index": 2,
+            "element": {
+              "label": "pick",
+              "selector": "main > div",
+              "tagName": "p",
+              "id": null,
+              "className": null,
+              "text": "Hello",
+              "outerHtml": null,
+              "url": "",
+              "boundingRect": null,
+              "attributes": null,
+              "source": "inspector",
+              "note": null
+            }
+          }
+        ],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "rules",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [
+        "b-style.md",
+        "a-tests.md"
+      ],
+      "workspace": true
+    },
+    {
+      "name": "rules-empty-file",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [
+        "c-empty.md"
+      ],
+      "workspace": true
+    },
+    {
+      "name": "rules-none-match",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [
+        "zzz.md"
+      ],
+      "workspace": true
+    },
+    {
+      "name": "rules-no-workspace",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [],
+        "imageRequested": false
+      },
+      "attachedRuleFiles": [
+        "a-tests.md"
+      ],
+      "workspace": false
+    },
+    {
+      "name": "mcp-image",
+      "facts": {
+        "openFiles": [],
+        "activeFile": null,
+        "pickedElements": [],
+        "mcpServerNames": [
+          "GitHub",
+          "Postgres"
+        ],
+        "imageRequested": true
+      },
+      "attachedRuleFiles": [],
+      "workspace": true
+    },
+    {
+      "name": "everything",
+      "facts": {
+        "openFiles": [
+          "E:\\work\\shop\\src\\app.ts"
+        ],
+        "activeFile": "E:\\work\\shop\\src\\app.ts",
+        "pickedElements": [
+          {
+            "index": 1,
+            "element": {
+              "label": "pick",
+              "selector": "#hero > button.cta",
+              "tagName": "button",
+              "id": "buy",
+              "className": "cta primary",
+              "text": "  Buy now\n  and save  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+              "outerHtml": "<button id=\"buy\" class=\"cta primary\">xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</button>",
+              "url": "http://localhost:5173/pricing",
+              "boundingRect": {
+                "x": 10.5,
+                "y": 20.49,
+                "width": 120.5,
+                "height": 39.5
+              },
+              "attributes": [
+                {
+                  "name": "id",
+                  "value": "buy"
+                },
+                {
+                  "name": "class",
+                  "value": "cta primary"
+                },
+                {
+                  "name": "data-a0",
+                  "value": "v0"
+                },
+                {
+                  "name": "data-a1",
+                  "value": "v1"
+                },
+                {
+                  "name": "data-a2",
+                  "value": "v2"
+                },
+                {
+                  "name": "data-a3",
+                  "value": "v3"
+                },
+                {
+                  "name": "data-a4",
+                  "value": "v4"
+                },
+                {
+                  "name": "data-a5",
+                  "value": "v5"
+                },
+                {
+                  "name": "data-a6",
+                  "value": "v6"
+                },
+                {
+                  "name": "data-a7",
+                  "value": "v7"
+                },
+                {
+                  "name": "data-a8",
+                  "value": "v8"
+                },
+                {
+                  "name": "data-a9",
+                  "value": "v9"
+                },
+                {
+                  "name": "data-a10",
+                  "value": "v10"
+                },
+                {
+                  "name": "data-a11",
+                  "value": "v11"
+                },
+                {
+                  "name": "data-a12",
+                  "value": "v12"
+                },
+                {
+                  "name": "data-a13",
+                  "value": "v13"
+                }
+              ],
+              "source": "inspector",
+              "note": null,
+              "path": "main.flex-1 > section.hero",
+              "styles": [
+                {
+                  "name": "color",
+                  "value": "rgb(255, 255, 255)"
+                },
+                {
+                  "name": "font",
+                  "value": "16px\n  Inter"
+                }
+              ],
+              "parent": "<section class=\"hero\">",
+              "siblings": [
+                "<h1>Pricing</h1>",
+                "<button class=\"cta primary\"><!-- SELECTED -->",
+                "<a>Learn more</a>"
+              ],
+              "framework": "react",
+              "component": "PricingHero",
+              "props": [
+                {
+                  "name": "plan",
+                  "value": "pro"
+                }
+              ]
+            }
+          }
+        ],
+        "mcpServerNames": [
+          "GitHub"
+        ],
+        "imageRequested": true
+      },
+      "attachedRuleFiles": [
+        "a-tests.md"
+      ],
+      "workspace": true
+    }
+  ]
+}

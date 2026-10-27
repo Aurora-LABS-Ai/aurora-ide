@@ -291,6 +291,8 @@ use std::sync::Mutex as StdMutex;
 struct MockApi {
     script: StdMutex<Vec<TurnScript>>,
     last_model: StdMutex<Option<String>>,
+    /// The system prompt the last `stream` call carried.
+    last_system: StdMutex<Option<String>>,
     /// If set, `stream` waits on `cancel.cancelled().await` before
     /// doing anything else and returns `ApiError::Cancelled`. Used
     /// by the cancel-path tests to make timing deterministic.
@@ -314,6 +316,7 @@ impl MockApi {
         Self {
             script: StdMutex::new(turns),
             last_model: StdMutex::new(None),
+            last_system: StdMutex::new(None),
             wait_for_cancel: false,
             gate: None,
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -324,6 +327,7 @@ impl MockApi {
         Self {
             script: StdMutex::new(Vec::new()),
             last_model: StdMutex::new(None),
+            last_system: StdMutex::new(None),
             wait_for_cancel: true,
             gate: None,
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -336,6 +340,7 @@ impl MockApi {
         let api = Self {
             script: StdMutex::new(turns),
             last_model: StdMutex::new(None),
+            last_system: StdMutex::new(None),
             wait_for_cancel: false,
             gate: Some(gate.clone()),
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -369,6 +374,8 @@ impl StreamingApiClient for MockApi {
         cancel_token: CancellationToken,
     ) -> Result<TurnUsage, ApiError> {
         *self.last_model.lock().expect("last_model mutex") = Some(request.model.to_string());
+        *self.last_system.lock().expect("last_system mutex") =
+            request.system_prompt.map(str::to_string);
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -502,9 +509,13 @@ struct MockEmitter {
     errors: StdMutex<Vec<(String, String, Option<RecoveryHint>)>>,
     tool_pendings: StdMutex<Vec<ToolBridgeRequest>>,
     subagent_events: StdMutex<Vec<crate::agent_runtime::subagents::SubagentEvent>>,
+    thread_changes: StdMutex<Vec<ThreadChanged>>,
 }
 
 impl MockEmitter {
+    fn snapshot_thread_changes(&self) -> Vec<ThreadChanged> {
+        self.thread_changes.lock().expect("thread_changes mutex").clone()
+    }
     fn snapshot_subagent_events(&self) -> Vec<crate::agent_runtime::subagents::SubagentEvent> {
         self.subagent_events
             .lock()
@@ -559,6 +570,12 @@ impl EventEmitter for MockEmitter {
             .lock()
             .expect("subagent_events mutex")
             .push(event.clone());
+    }
+    fn emit_thread_changed(&self, change: &ThreadChanged) {
+        self.thread_changes
+            .lock()
+            .expect("thread_changes mutex")
+            .push(change.clone());
     }
 }
 
@@ -657,6 +674,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         transcript_chapters: None,
         browser_tools: None,
         defer_tools: None,
+        engine_prompt: None,
         subagents_enabled: None,
         subagent_model: None,
     }
@@ -1392,6 +1410,131 @@ fn unregister_then_cancel_returns_false() {
 
     registry.unregister_in_flight("t-2");
     assert!(!registry.cancel("t-2"));
+}
+
+// A client that did not send the message (the desktop window while a
+// browser tab sends, or the other way round) learns the turn started, by
+// which id, and what the person wrote; once it ends it is no longer listed
+// for a client that opens late.
+#[tokio::test]
+async fn a_conversation_turn_is_announced_with_its_id() {
+    let api = Arc::new(MockApi::new(vec![TurnScript::Reply {
+        events: vec![AssistantEvent::TextDelta { delta: "ok".into() }],
+        result: Ok(turn_usage(assistant_text_msg("ok"), "end_turn")),
+    }]));
+    let factory = Arc::new(MockApiFactory::from_api(api));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+    let emitter = Arc::new(MockEmitter::default());
+    let driver = TurnDriver::new(registry.clone(), emitter.clone());
+    driver
+        .run_turn(make_request("t-follow", "thread-follow", "hello there"))
+        .await
+        .expect("ok");
+
+    let changes = emitter.snapshot_thread_changes();
+    let start = changes
+        .iter()
+        .find(|c| c.reason == "turn_start")
+        .expect("a turn_start notice");
+    assert_eq!(start.thread_id, "thread-follow");
+    assert_eq!(start.turn_id.as_deref(), Some("t-follow"));
+    assert_eq!(start.user_message.as_deref(), Some("hello there"));
+    assert!(changes.iter().any(|c| c.reason == "turn_end"));
+    assert!(registry.active_conversation_turns().is_empty(), "nothing listed after the turn");
+}
+
+// A request with `engine_prompt` reaches the model with the prompt the
+// engine composed (its rules, its mode), not the one the client sent; one
+// without keeps the client's prompt exactly.
+#[tokio::test]
+async fn the_engine_composes_the_prompt_when_asked_and_leaves_it_alone_otherwise() {
+    let reply = || TurnScript::Reply {
+        events: vec![AssistantEvent::TextDelta { delta: "ok".into() }],
+        result: Ok(turn_usage(assistant_text_msg("ok"), "end_turn")),
+    };
+    let api = Arc::new(MockApi::new(vec![reply(), reply()]));
+    let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(factory, dir.path().join("projects")));
+    let driver = TurnDriver::new(registry.clone(), Arc::new(MockEmitter::default()));
+
+    let project = dir.path().join("shop");
+    std::fs::create_dir_all(project.join(".aurora")).expect("rules dir");
+    std::fs::write(project.join(".aurora/style.md"), "Use tabs.").expect("rule");
+
+    let mut asked = make_request("t-engine", "thread-engine", "hi");
+    asked.workspace_path = Some(project.to_string_lossy().to_string());
+    asked.system_prompt = Some("client prompt".into());
+    asked.engine_prompt = Some(crate::agent_runtime::ipc::EnginePromptRequest::default());
+    driver.run_turn(asked).await.expect("engine turn");
+    let sent = api.last_system.lock().unwrap().clone().expect("a system prompt");
+    assert!(sent.starts_with("You are Aurora Agent"), "engine prompt: {}", &sent[..80]);
+    assert!(sent.contains("<rule file=\"style.md\">\nUse tabs.\n</rule>"));
+    assert!(sent.contains("## Active Execution Mode: Agent"));
+    assert!(!sent.contains("client prompt"));
+
+    let mut plain = make_request("t-client", "thread-client", "hi");
+    plain.system_prompt = Some("client prompt".into());
+    driver.run_turn(plain).await.expect("client turn");
+    assert_eq!(chosen_prompt(&api).as_deref(), Some("client prompt"));
+}
+
+/// The system prompt the turn chose, without the `<machine_tools>` block the
+/// runtime appends to every prompt after the choice.
+fn chosen_prompt(api: &MockApi) -> Option<String> {
+    api.last_system
+        .lock()
+        .unwrap()
+        .as_deref()
+        .map(|sent| sent.split("\n\n<machine_tools>").next().unwrap_or(sent).to_string())
+}
+
+// Shadow mode composes but never sends: the model gets the client's prompt.
+#[tokio::test]
+async fn a_shadow_engine_prompt_is_compared_and_the_clients_is_sent() {
+    let api = Arc::new(MockApi::new(vec![TurnScript::Reply {
+        events: vec![AssistantEvent::TextDelta { delta: "ok".into() }],
+        result: Ok(turn_usage(assistant_text_msg("ok"), "end_turn")),
+    }]));
+    let factory = Arc::new(MockApiFactory::from_api(api.clone()));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+    let driver = TurnDriver::new(registry, Arc::new(MockEmitter::default()));
+
+    let mut req = make_request("t-shadow", "thread-shadow", "hi");
+    req.system_prompt = Some("client prompt".into());
+    req.engine_prompt = Some(crate::agent_runtime::ipc::EnginePromptRequest {
+        shadow: true,
+        ..Default::default()
+    });
+    driver.run_turn(req).await.expect("shadow turn");
+    assert_eq!(chosen_prompt(&api).as_deref(), Some("client prompt"));
+}
+
+// The list is conversations only: a turn marked active without being a
+// conversation's (a sub-agent's) is not something a client opens.
+#[test]
+fn active_conversation_turns_lists_only_conversations() {
+    let factory = Arc::new(MockApiFactory::from_api(Arc::new(MockApi::new(vec![]))));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let registry = AgentRegistry::new(factory, dir.path().to_path_buf());
+    registry.mark_turn_active("chat", "t-chat");
+    registry.mark_conversation_turn("chat", Some("E:\\proj".into()));
+    registry.mark_turn_active("child", "t-child");
+
+    let listed = registry.active_conversation_turns();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].thread_id, "chat");
+    assert_eq!(listed[0].turn_id, "t-chat");
+    assert_eq!(listed[0].workspace_root.as_deref(), Some("E:\\proj"));
+
+    // An older turn ending must not drop a newer one on the same thread.
+    registry.mark_turn_active("chat", "t-chat-2");
+    registry.clear_turn_active("chat", "t-chat");
+    assert_eq!(registry.active_conversation_turns()[0].turn_id, "t-chat-2");
+    registry.clear_turn_active("chat", "t-chat-2");
+    assert!(registry.active_conversation_turns().is_empty());
 }
 
 // ── Test 7 ──────────────────────────────────────────────────────
@@ -3095,8 +3238,109 @@ mod subagents {
             false,
             &request.thread_id,
             &scope,
+            None,
         )
         .names()
+    }
+
+    /// A running server's tools, as `MCP_MANAGER.list()` would hand them over.
+    fn mcp_servers() -> Vec<crate::mcp::types::McpServerState> {
+        use crate::mcp::types::{McpServerConfig, McpServerState, McpServerStatus, McpToolInfo};
+        let tool = |name: &str, description: &str| McpToolInfo {
+            name: name.into(),
+            description: Some(description.into()),
+            input_schema: None,
+        };
+        let server = |id: &str, name: &str, enabled: bool, tools: Vec<McpToolInfo>| {
+            let mut config = McpServerConfig::new_stdio(id, name, "server");
+            config.enabled = enabled;
+            McpServerState {
+                config,
+                status: McpServerStatus::Connected,
+                error: None,
+                tools,
+                resources: vec![],
+                server_info: None,
+                recent_output: vec![],
+                instructions: None,
+            }
+        };
+        vec![
+            server(
+                "github",
+                "GitHub",
+                true,
+                vec![tool("search_issues", "Search issues."), tool("whoami", "The signed-in account.")],
+            ),
+            server("off", "Switched Off", false, vec![tool("hidden", "Must not appear.")]),
+        ]
+    }
+
+    fn registry_with_engine_mcp(mode: AgentExecutionMode, client_tools: &[AllowedTool]) -> ToolRegistry {
+        let emitter: Arc<MockEmitter> = Arc::new(MockEmitter::default());
+        build_per_turn_tool_registry_scoped(
+            native_test_registry(),
+            client_tools,
+            "turn-mcp".into(),
+            Arc::new(BridgeRouter::new()),
+            emitter,
+            CancellationToken::new(),
+            true,
+            mode,
+            None,
+            false,
+            true,
+            false,
+            "thread-mcp",
+            &ToolScope::Plain,
+            Some(&mcp_servers()),
+        )
+    }
+
+    /// With the engine running MCP calls, a server's tool resolves to the
+    /// engine's own executor (no window lifecycle), the client's bridge
+    /// entry for the same name is not used, and a switched-off server adds
+    /// nothing.
+    #[test]
+    fn engine_mcp_tools_replace_the_bridge_entries_of_the_same_name() {
+        let client = [AllowedTool {
+            name: "mcp_github_search_issues".into(),
+            description: "[MCP: GitHub] Search issues.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let registry = registry_with_engine_mcp(AgentExecutionMode::Agent, &client);
+        // Deferred behind `tool_search`, like every MCP tool.
+        assert!(registry.get("mcp_github_search_issues").is_none());
+        let resolved = registry
+            .resolve_call("call_tool", &serde_json::json!({"name": "mcp_github_search_issues", "arguments": {}}))
+            .unwrap();
+        assert_eq!(resolved.executor.name(), "mcp_github_search_issues");
+        assert!(!resolved.executor.uses_frontend_lifecycle(), "ran by the engine, not the window");
+        assert_eq!(
+            resolved.executor.schema().description,
+            "[MCP: GitHub] Search issues.",
+            "the schema the window advertises"
+        );
+        let whoami = registry
+            .resolve_call("call_tool", &serde_json::json!({"name": "mcp_github_whoami", "arguments": {}}))
+            .unwrap();
+        assert!(!whoami.executor.uses_frontend_lifecycle());
+        assert!(registry
+            .resolve_call("call_tool", &serde_json::json!({"name": "mcp_off_hidden", "arguments": {}}))
+            .is_err());
+    }
+
+    /// Plan mode keeps the window's verb rule: a tool whose name opens with a
+    /// read verb stays, one without goes.
+    #[test]
+    fn engine_mcp_tools_follow_the_plan_mode_verb_rule() {
+        let registry = registry_with_engine_mcp(AgentExecutionMode::Plan, &[]);
+        assert!(registry
+            .resolve_call("call_tool", &serde_json::json!({"name": "mcp_github_search_issues", "arguments": {}}))
+            .is_ok());
+        assert!(registry
+            .resolve_call("call_tool", &serde_json::json!({"name": "mcp_github_whoami", "arguments": {}}))
+            .is_err());
     }
 
     /// The project's code-index switch decides whether `code` is handed to the

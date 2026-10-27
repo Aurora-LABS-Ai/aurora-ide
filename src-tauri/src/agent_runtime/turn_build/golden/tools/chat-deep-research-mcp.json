@@ -1,0 +1,277 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "present_artifact",
+      "description": "Create or update a rich visual artifact in the conversation's Canvas side panel.\n\nUse this when a rendered, inspectable result materially communicates better than ordinary chat text—for example a working UI prototype, diagram, visual plan, formatted report, or interactive explainer. Do not use it for routine prose, a short code sample, raw logs, or status updates.\n\nBehavior:\n- The Canvas opens automatically beside the conversation.\n- A new artifactId creates v1 from content.\n- For a small revision, reuse the SAME artifactId and send baseVersionTag plus exact-text patches. Aurora applies them atomically to the latest version and saves the complete result as an immutable v2, v3, and so on.\n- If the version source is no longer in context, call read_artifact first—optionally with a focused query—so each patch find value exactly matches the saved source.\n- Every patch find is matched against the same unchanged base version. Patch regions cannot overlap and patches cannot target text created by an earlier patch; combine dependent or overlapping changes into one replacement.\n- Use full content again only for a broad rewrite. Never resend a large unchanged document for a small edit.\n- A source-identical update is rejected instead of creating a meaningless duplicate version.\n- The user can switch artifacts, inspect any saved version, and toggle Preview/Source after reopening the conversation.\n- Use mermaid for architecture, flowchart, sequence, state, class, ER, journey, timeline, quadrant, or mind-map diagrams. Send raw Mermaid syntax without Markdown fences. Canvas provides pan, zoom, fit, Source view, and themed rendering.\n- Use react for a LIVE canvas: one component file Aurora compiles and runs, so it can have working controls, sortable tables, filters, and tabs. It is the default whenever the deliverable is a dataset or a set of findings the user will study — anything you were about to render as a large markdown table. Call canvas_guidelines before your first react artifact for the components and the rules the compiler checks.\n- Use html for custom interactive compositions, svg for bespoke graphics Mermaid cannot express, and markdown for document-style artifacts. Prefer mermaid over hand-writing diagram SVG, and react over hand-writing an interactive HTML page.\n- Produce self-contained content. HTML, SVG, and react canvases render in a sandbox with no network access; embed the data instead of fetching it, and do not depend on the parent app or local files.\n\nSend artifactCategory, artifactId, artifactKind and artifactTitle FIRST, before content or patches. The transcript labels the card and starts its animation the moment those four arrive, and a canvas write is the longest call you make — a header that arrives after the body leaves the reader watching an unnamed card for the whole write.\n\nReturns artifactId, title, kind, and the saved immutable versionTag. Mermaid source is FULLY RENDERED and react source is COMPILED before saving — Mermaid parse and layout errors (invalid syntax, cyclic nesting) and compile errors (invalid syntax, a missing default export, a disallowed import) reject the write with the engine's exact message. Type errors are not caught yet, so a react canvas that compiles can still throw at run time; the panel reports the crash, but write defensively against missing or empty data rather than relying on the compiler. Patch failures do not create a version: overlap errors name both conflicting patch indices, stale errors report the latest version, ambiguous matches report their count, and Mermaid errors include renderer context. Correct the identified input and retry; use read_artifact when the exact latest source is needed.\n\nDeep research also unlocks report. Use it for the long-form answer a research conversation actually produces — a document the user reads down, not a dashboard they look at. It is Markdown, plus three conventions Canvas reads back out of the source:\n- One `# Title` at the top, then `##` sections (and `###` where a section genuinely subdivides). Those headings become the contents strip, so they are the document's structure rather than decoration.\n- Cite with a `[^key]` marker immediately after the claim it supports, and define each source once at the end: `[^key]: Source name — https://example.com/page`. Keys can be words (`[^nyt-2024]`); Canvas numbers them in the order the reader meets them and turns each into a link that opens the real page. Never write a URL you did not actually reach — an unreachable source is worse than no citation, because it reads as verified.\n- Quote a source in its own words as a block quotation whose last line is an attribution opening with an em dash: `— Author, Publication`.\nEverything else is ordinary Markdown: lists, tables, and fenced code all render. Prefer report over markdown whenever the answer has sections and sources, and over react whenever it is prose rather than a dataset.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "artifactCategory": {
+            "type": "string",
+            "enum": [
+              "architecture",
+              "flow",
+              "structure",
+              "api",
+              "roadmap",
+              "comparison",
+              "metrics",
+              "ui",
+              "report"
+            ],
+            "description": "What this canvas is ABOUT, which is not what file it is — the same markdown document can explain an architecture, an API or a roadmap. Pick exactly one:\n\n- architecture: how a system is put together — layers, services, modules, what owns what\n- flow: a process or lifecycle that proceeds in steps — a request path, a state machine\n- structure: the shape of data — a schema, a type, a tree, a payload\n- api: an interface contract — endpoints, calls and what comes back\n- roadmap: a plan across time — phases, milestones, what ships when\n- comparison: options weighed against each other — trade-offs, a decision matrix\n- metrics: anything measured — cost, timings, benchmarks, usage\n- ui: a working screen — a mockup, a dashboard, a prototype with controls\n- report: findings or an explanation in prose — and the fallback when none of the others fit\n\nChoose on the subject, never on the rendering format; `artifactKind` already carries that. Use `report` when none of the others genuinely fits."
+          },
+          "artifactId": {
+            "type": "string",
+            "description": "Stable artifact id (letters/numbers plus dots, dashes, or underscores; max 64). Reuse it only to version the same deliverable."
+          },
+          "artifactKind": {
+            "type": "string",
+            "enum": [
+              "html",
+              "svg",
+              "markdown",
+              "mermaid",
+              "react",
+              "report"
+            ],
+            "description": "Rendering format. Use mermaid for diagrams and provide raw Mermaid syntax without ``` fences. Use react for a live, interactive canvas — one component file with a default export, importing only from \"react\" and \"aurora/canvas\". The kind cannot change for an existing artifactId."
+          },
+          "artifactTitle": {
+            "type": "string",
+            "description": "Short customer-facing title shown in Canvas (max 120 characters)."
+          },
+          "artifactPlacement": {
+            "type": "string",
+            "enum": [
+              "dock",
+              "inline"
+            ],
+            "description": "Where a react canvas is shown. \"inline\" draws it inside your reply, at the point you call this, sized to its content — for a small interactive piece the reader uses while reading: a picker over a few items, tabs over a few views, a chart with one control, a short set of headline figures. \"dock\" (the default) opens it in the Canvas side panel — for a report, a dashboard, a long table, anything taller than a screen. Only react canvases can be inline; other kinds always dock."
+          },
+          "content": {
+            "type": "string",
+            "description": "Complete self-contained source. Required for v1 and available for broad rewrites. Omit for a patch revision."
+          },
+          "baseVersionTag": {
+            "type": "string",
+            "description": "Latest version tag to patch, such as v1. Required with patches and rejected if stale."
+          },
+          "patches": {
+            "type": "array",
+            "description": "Exact-text replacements matched atomically against baseVersionTag. Regions cannot overlap and finds cannot depend on earlier replacements. Prefer this for focused, independent changes so unchanged source is not resent.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "find": {
+                  "type": "string",
+                  "description": "Exact text from the base version. Include enough surrounding text to make it unique unless all is true."
+                },
+                "replace": {
+                  "type": "string",
+                  "description": "Replacement text. Use an empty string to delete the matched text."
+                },
+                "all": {
+                  "type": "boolean",
+                  "description": "Replace every exact match. Defaults to false and otherwise requires one unique match."
+                }
+              },
+              "required": [
+                "find",
+                "replace"
+              ]
+            }
+          }
+        },
+        "required": [
+          "artifactCategory",
+          "artifactId",
+          "artifactKind",
+          "artifactTitle"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "read_artifact",
+      "description": "Read the immutable source of a saved Canvas artifact before revising it.\n\nCall it with NO artifactId to list every artifact this conversation has saved, with titles, kinds, and latest version tags. Do that when reopening older work or when you no longer have an id in context — artifacts persist for the life of the conversation, long after the turn that created them.\n\nOtherwise pass the artifactId and versionTag from an earlier present_artifact result. Omit query to retrieve the complete source. For a focused edit, provide a case-sensitive query and this returns exact matching excerpts with line numbers, reducing context usage while preserving text suitable for a patch find value.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "description": "Stable artifact id to read. Omit it to list every artifact saved in this conversation."
+          },
+          "versionTag": {
+            "type": "string",
+            "description": "Saved version such as v1. Defaults to the latest version."
+          },
+          "query": {
+            "type": "string",
+            "description": "Optional case-sensitive source text to find. When present, returns matching excerpts instead of the full document."
+          },
+          "contextLines": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Lines of surrounding context for query matches. Defaults to 2."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "aurora_skill_search",
+      "description": "Browse Aurora skill catalog by query. Returns a ranked list of matching skills (id, name, description, source, optional path).\n\nUse this when:\n- The user's task may benefit from a specialized playbook that is not currently enabled in settings.\n- You want to discover what skills exist for a given topic (e.g. \"react performance\", \"rust async\", \"tailwind v4\").\n\nBehavior:\n- With `query`: ranks by id/name/description/trigger match and returns the best matches.\n- Without `query`: returns the first `limit` skills (alphabetical / source order).\n- Always returns a small JSON array; load full content via `aurora_skill_load`.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Optional free-text query. Matches against id, name, description, and triggers."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Maximum number of results to return (1-100). Default: 30.",
+            "default": 30
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "builtin",
+              "workspace",
+              "global"
+            ],
+            "description": "Restrict results to a specific skill source."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "aurora_skill_load",
+      "description": "Load the full SKILL.md body for a single skill by id. Returns name, description, source, optional path, triggers, and the complete skill content as a JSON object.\n\nUse this immediately after `aurora_skill_search` returns a relevant skill — or when an explicit attachment references a skill you don't have the full body for. Do not call this tool eagerly; only load skills that are clearly applicable to the current task.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The skill id to load (matches the id returned by aurora_skill_search). Storage keys are also accepted."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ask_question",
+      "description": "Ask the user one or more multiple-choice questions and wait for their answer.\n\nUse this ONLY when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults (e.g. a product/scope choice, or a destructive-action confirmation). For most choices (naming, formatting, equivalent approaches) pick a reasonable option and proceed instead of asking.\n\nUse it instead of a written question whenever your reply would end by asking the user to choose between a few concrete options before you can continue — including a recommendation followed by \"A or B?\" at the end of an advice answer. Write your reasoning in the reply first, then call this with your recommended option listed first. This call may end your message. Keep written questions for open-ended ones with no fixed options.\n\nBehavior:\n- Renders an interactive prompt; the turn pauses until the user answers or skips.\n- Each question shows lettered options; the user can also pick \"Other\" and type a custom answer.\n- Set `allow_multiple: true` on a question to let the user choose several options.\n- The result is a JSON object: `{ skipped, responses: [{ id, prompt, answer }] }`. If `skipped` is true the user declined — continue with your best judgment.\n- Prefer ONE call with all the questions you need over several sequential calls. Keep it to a small number of focused questions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Optional heading for the prompt card. Defaults to \"Questions\"."
+          },
+          "questions": {
+            "type": "array",
+            "description": "The questions to ask (1 or more).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Stable identifier for this question (echoed back in the result)."
+                },
+                "prompt": {
+                  "type": "string",
+                  "description": "The question text shown to the user."
+                },
+                "allow_multiple": {
+                  "type": "boolean",
+                  "description": "Allow selecting more than one option. Default false (single choice)."
+                },
+                "options": {
+                  "type": "array",
+                  "description": "The selectable options. An 'Other' free-text entry is always added automatically.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "description": "Stable identifier for this option."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Display text for this option."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "prompt",
+                "options"
+              ]
+            }
+          }
+        },
+        "required": [
+          "questions"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_github_search_issues",
+      "description": "[MCP: GitHub] Search issues in a repository.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "query"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp_github_whoami",
+      "description": "[MCP: GitHub] The signed-in account.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  }
+]

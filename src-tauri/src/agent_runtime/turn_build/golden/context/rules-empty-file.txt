@@ -1,0 +1,7 @@
+<project_rules>
+The user explicitly attached these project rules to this turn. Treat them as authoritative standing rules for this task.
+
+<rule file="c-empty.md">
+
+</rule>
+</project_rules>

@@ -1,0 +1,29 @@
+{
+  "providerId": "zero",
+  "model": "z",
+  "providerConfig": {
+    "providerId": "zero",
+    "providerType": "custom",
+    "baseUrl": "https://zero.example.invalid/v1",
+    "apiKey": "sk-zero",
+    "model": "z",
+    "customParams": {},
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "none",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 262000,
+    "maxOutputTokens": 64000
+  },
+  "temperature": null,
+  "maxOutputTokens": 64000,
+  "contextWindow": 262000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

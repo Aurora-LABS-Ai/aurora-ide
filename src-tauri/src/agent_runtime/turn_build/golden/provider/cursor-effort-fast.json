@@ -1,0 +1,29 @@
+{
+  "providerId": "cursor",
+  "model": "cursor-grok-4.6-high-fast",
+  "providerConfig": {
+    "providerId": "cursor",
+    "providerType": "cursor",
+    "baseUrl": "https://cursor.example.invalid/v1",
+    "apiKey": "sk-cursor",
+    "model": "cursor-grok-4.6-high-fast",
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "effort",
+      "effort": "high",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

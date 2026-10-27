@@ -72,6 +72,7 @@ pub(super) fn build_per_turn_tool_registry(
         defer_tools,
         thread_id,
         &ToolScope::Plain,
+        None,
     )
 }
 
@@ -137,6 +138,10 @@ pub(super) fn build_per_turn_tool_registry_scoped(
     _defer_tools: bool,
     _thread_id: &str,
     scope: &ToolScope,
+    // `Some(servers)`: the engine runs MCP calls itself (Phase 4.1), building
+    // one `McpToolExecutor` per tool of every running, enabled server, and
+    // the client's own `mcp_*` entries for those names are not bridged.
+    engine_mcp: Option<&[crate::mcp::types::McpServerState]>,
 ) -> ToolRegistry {
     let registry = ToolRegistry::new();
     // Chat mode has no workspace, and the plan lookup below walks one.
@@ -150,7 +155,7 @@ pub(super) fn build_per_turn_tool_registry_scoped(
     // permission gate (native) or its bridge routing (MCP).
     let mut deferred: Vec<Arc<dyn ToolExecutor>> = Vec::new();
     let vision_blocked = |name: &str| {
-        !supports_vision && crate::tools::browser::VISION_REQUIRED_TOOLS.contains(&name)
+        !supports_vision && crate::tools::VISION_REQUIRED_TOOLS.contains(&name)
     };
     // Resolved once per turn: `plan_store::active` walks the plans directory,
     // and the answer cannot change mid-registry-build.
@@ -218,7 +223,55 @@ pub(super) fn build_per_turn_tool_registry_scoped(
         }
         return registry;
     }
-    // 2. Bridge fallback for every AllowedTool the Rust registry does NOT
+    // 2a. MCP tools the engine runs itself: one executor per tool of every
+    //     running, enabled server, with the schema the window advertises
+    //     and the window's Plan-mode verb rule. Gated like a native tool
+    //     (permission outside the timeout, as `install_permission_gate`
+    //     orders them), and deferred behind `tool_search` like every MCP
+    //     tool. A name built here is never bridged below.
+    let mut engine_mcp_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(servers) = engine_mcp {
+        let permitter = base.permitter();
+        let manager: Arc<crate::mcp::manager::McpManager> = crate::mcp::manager::MCP_MANAGER.clone();
+        for server in servers {
+            if server.status != crate::mcp::types::McpServerStatus::Connected || !server.config.enabled {
+                continue;
+            }
+            for info in &server.tools {
+                let tool = crate::agent_runtime::turn_build::tools::mcp_tool(
+                    &server.config.id,
+                    &server.config.name,
+                    info,
+                );
+                if mode_blocked(&tool.name)
+                    || !crate::agent_runtime::turn_build::tools::allowed_in_mode(
+                        execution_mode,
+                        &tool.name,
+                        Some((&info.name, &tool.description)),
+                    )
+                {
+                    continue;
+                }
+                engine_mcp_names.insert(tool.name.clone());
+                let executor: Arc<dyn ToolExecutor> = Arc::new(crate::mcp::tool::McpToolExecutor::new(
+                    manager.clone(),
+                    server.config.id.clone(),
+                    info.name.clone(),
+                    tool,
+                    server.config.auto_approve,
+                ));
+                let executor = crate::tools::timeout::TimeoutGuardedExecutor::maybe_wrap(executor);
+                let executor = match &permitter {
+                    Some(permitter) => {
+                        crate::tools::permissions::PermissionGuardedExecutor::maybe_wrap(executor, permitter)
+                    }
+                    None => executor,
+                };
+                defer(&mut deferred, executor);
+            }
+        }
+    }
+    // 2b. Bridge fallback for every AllowedTool the Rust registry does NOT
     //    know — primarily `mcp_*`, plus skill/question tools.
     //
     //    Sorted by name so the partition is a function of WHICH servers are
@@ -226,7 +279,7 @@ pub(super) fn build_per_turn_tool_registry_scoped(
     //    turns with the same server set now serialize identically.
     let mut bridged: Vec<&AllowedTool> = tools
         .iter()
-        .filter(|tool| base.get(&tool.name).is_none())
+        .filter(|tool| base.get(&tool.name).is_none() && !engine_mcp_names.contains(&tool.name))
         .collect();
     bridged.sort_by(|a, b| a.name.cmp(&b.name));
     for tool in bridged {
@@ -309,7 +362,7 @@ pub(super) const PLAN_MUTATING_TOOLS: &[&str] = &[
     "plan_step_update",
 ];
 
-pub(super) fn is_plan_mutating_tool(name: &str) -> bool {
+pub(crate) fn is_plan_mutating_tool(name: &str) -> bool {
     PLAN_MUTATING_TOOLS.contains(&name)
 }
 
@@ -417,7 +470,7 @@ pub(super) const CHAT_MODE_TOOLS: &[&str] = &[
 /// Exact match against [`CHAT_MODE_TOOLS`], plus the `mcp_` prefix. Nothing
 /// else, and deliberately no `starts_with` conveniences: a prefix rule is how
 /// an allow-list quietly becomes a deny-list.
-pub(super) fn is_chat_mode_tool(name: &str) -> bool {
+pub(crate) fn is_chat_mode_tool(name: &str) -> bool {
     CHAT_MODE_TOOLS.contains(&name) || name.starts_with("mcp_")
 }
 
@@ -441,7 +494,7 @@ pub(super) fn is_chat_mode_tool(name: &str) -> bool {
 pub(super) const CHAT_ONLY_TOOLS: &[&str] =
     &["recall", "remember", "generate_image", "generate_video"];
 
-pub(super) fn is_chat_only_tool(name: &str) -> bool {
+pub(crate) fn is_chat_only_tool(name: &str) -> bool {
     CHAT_ONLY_TOOLS.contains(&name)
 }
 

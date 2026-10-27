@@ -1,6 +1,10 @@
 fn main() {
     stage_sidecar_binaries();
-    tauri_build::build()
+    // The Tauri build step reads tauri.conf.json and generates the window's
+    // context; a headless build (no `desktop` feature) has no window to build.
+    if std::env::var_os("CARGO_FEATURE_DESKTOP").is_some() {
+        tauri_build::build();
+    }
 }
 
 /// Copy the vendored helper executables from `src-tauri/binaries/` into the

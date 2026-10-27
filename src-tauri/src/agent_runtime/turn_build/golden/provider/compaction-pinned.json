@@ -1,0 +1,54 @@
+{
+  "providerId": "oa",
+  "model": "gpt-4o",
+  "providerConfig": {
+    "providerId": "oa",
+    "providerType": "openai",
+    "baseUrl": "https://oa.example.invalid/v1",
+    "apiKey": "sk-oa",
+    "model": "gpt-4o",
+    "customHeaders": {
+      "X-Org": "acme"
+    },
+    "customParams": {
+      "bar": 2
+    },
+    "defaultTemperature": 0.7,
+    "defaultMaxTokens": 4096,
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "none",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": true,
+    "toolImagesInResult": true,
+    "contextWindow": 200000,
+    "maxOutputTokens": 32000
+  },
+  "temperature": 0.2,
+  "maxOutputTokens": 4096,
+  "contextWindow": 200000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": {
+    "providerId": "anth",
+    "providerType": "anthropic",
+    "baseUrl": "https://anth.example.invalid/v1",
+    "apiKey": "sk-anth",
+    "model": "claude",
+    "supportsThinking": true,
+    "reasoning": {
+      "enabled": true,
+      "control": "budget",
+      "budgetTokens": 8000,
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  }
+}

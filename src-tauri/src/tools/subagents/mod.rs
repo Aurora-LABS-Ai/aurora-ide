@@ -283,6 +283,7 @@ pub(crate) mod test_support {
             transcript_chapters: None,
             browser_tools: None,
             defer_tools: None,
+            engine_prompt: None,
             attached_selected_elements: None,
             attached_prompt_chips: None,
             image_providers: Vec::new(),

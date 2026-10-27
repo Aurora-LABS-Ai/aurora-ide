@@ -158,7 +158,11 @@ Otherwise pass the artifactId and versionTag from an earlier present_artifact re
  * revised by a patch cannot end up with a contents strip describing the version
  * before it.
  */
-const REPORT_KIND_INSTRUCTIONS = `
+/**
+ * Appended to `present_artifact`'s description in deep research. Shared with
+ * the Rust engine as `turn_build/tools/report-kind.md` (`agent-tools.texts.test.ts`).
+ */
+export const REPORT_KIND_INSTRUCTIONS = `
 
 Deep research also unlocks report. Use it for the long-form answer a research conversation actually produces — a document the user reads down, not a dashboard they look at. It is Markdown, plus three conventions Canvas reads back out of the source:
 - One \`# Title\` at the top, then \`##\` sections (and \`###\` where a section genuinely subdivides). Those headings become the contents strip, so they are the document's structure rather than decoration.

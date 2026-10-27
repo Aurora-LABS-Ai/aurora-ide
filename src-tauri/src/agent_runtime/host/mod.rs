@@ -200,8 +200,28 @@ pub struct ThreadChanged {
     pub thread_id: String,
     /// The project it belongs to; `None` for Aurora Chat.
     pub workspace_root: Option<String>,
-    /// `"message"`, `"turn_end"`, `"created"`, `"renamed"` or `"deleted"`.
+    /// `"turn_start"` (a conversation's turn began), `"message"` (a sub-agent's
+    /// did), `"turn_end"`, `"created"`, `"renamed"` or `"deleted"`.
     pub reason: &'static str,
+    /// The turn that began, on `"turn_start"`: a client that did not send the
+    /// message follows the turn's stream by this id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// What a person sent, on a `"turn_start"` their message opened. Another
+    /// client draws it while the turn runs; the journal may not hold it yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_message: Option<String>,
+}
+
+/// A conversation's turn that is running now, for a client that opens while
+/// it runs (`agent_active_turns`).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTurn {
+    pub thread_id: String,
+    pub turn_id: String,
+    /// The project it runs in; `None` for Aurora Chat.
+    pub workspace_root: Option<String>,
 }
 
 /// `BridgeEmitter` is the narrower surface the bridge module needs.
@@ -225,7 +245,7 @@ mod subagent_host;
 mod lifecycle;
 #[cfg(test)]
 mod tests;
-mod tool_policy;
+pub(crate) mod tool_policy;
 mod turn_driver;
 
 /// The database-backed model lookup sub-agents resolve a `model` pin with.

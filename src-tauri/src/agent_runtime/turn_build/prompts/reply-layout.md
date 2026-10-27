@@ -1,0 +1,3 @@
+## Reply layout
+Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, adds an `aurora-ui` fence for the parts it draws better than markdown (a diagram, a flow, stats, a checklist). Everything else stays structured markdown.
+Never write one from memory: call `canvas_guidelines` with `topic: "reply-layout"` first unless its text is already in this conversation, then follow it exactly.

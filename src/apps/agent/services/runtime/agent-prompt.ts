@@ -14,6 +14,10 @@ import {
   type AgentExecutionMode,
 } from "@/apps/agent/services/runtime/agent-execution-mode";
 import { getActivePlan } from "@/apps/agent/services/plans/agent-plans";
+import type {
+  EngineMessageContext,
+  EngineModelFacts,
+} from "@/apps/agent/services/runtime/agent-runtime-client";
 import { answerBoxInstructions } from "@/apps/agent/lib/answer-box/instructions";
 import { REPLY_LAYOUT_INSTRUCTIONS } from "@/apps/agent/lib/reply-layout/instructions";
 import { SURFACE_DOCTRINE_CORE } from "@/apps/agent/services/skills/surface-doctrine";
@@ -64,6 +68,19 @@ export interface AgentPromptContext {
    * reference agent keeps its instruction files.
    */
   projectRules?: string | null;
+  /**
+   * The rule files the user attached with `/` this turn, which
+   * `projectRules` leaves out. Forwarded so the engine can build the same
+   * block (`EnginePromptRequest.attachedRuleFiles`).
+   */
+  attachedRuleFiles?: string[];
+  /**
+   * The facts the message's context (`ideContext`) was built from, for the
+   * engine to build it too (`EnginePromptRequest.context`).
+   */
+  messageContext?: EngineMessageContext | null;
+  /** The window's part of the model choice (`EnginePromptRequest.model`). */
+  modelFacts?: EngineModelFacts | null;
   /**
    * Browser-inspector element chips the user attached to this turn in the
    * composer. Forwarded to the runtime so they persist into the session
@@ -191,7 +208,7 @@ Your main goal is to follow the USER's instructions at each message.
 - If your reply would end by asking the user to choose between a few concrete options before you can continue — including a recommendation followed by "A or B?" at the end of an advice answer — ask with \`ask_question\` instead of writing the question in prose. Write your reasoning first, then call it, with your recommended option listed first. Keep prose for open-ended questions that have no fixed options.
 `;
 
-const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
+export const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
 - Skills are modular instruction overlays — focused playbooks for a specific kind of task.
 - Only the user's hand-picked skills (capped at 10) are previewed up front, with a 5-line snippet each. Everything else is browsable on demand.
 - Use \`aurora_skill_search\` to discover skills by query (e.g. \`{ query: "react performance" }\`) when a task may benefit from one.
@@ -227,7 +244,7 @@ const SKILL_SYSTEM_INSTRUCTIONS = `## Skill System
  * The same preference gates the tool itself in Rust, so this is never present
  * without `chapter` available to act on it.
  */
-const CHAPTER_INSTRUCTIONS = `## Chapters
+export const CHAPTER_INSTRUCTIONS = `## Chapters
 - Before starting work that will take several steps, decide the two to four distinct parts it breaks into.
 - Call \`chapter\` as you begin each one, naming what you are about to do, so the user can see the shape of a long reply.
 - This is the normal way to answer anything multi-part — a long reply with no chapters is the exception, not the default.
@@ -253,19 +270,19 @@ const CHAPTER_INSTRUCTIONS = `## Chapters
  * prompt carries only the decision — which here is "call it before you touch
  * the panel", the one thing the model cannot learn from a tool it has not read.
  */
-const BROWSER_INSTRUCTIONS = `## Browser
+export const BROWSER_INSTRUCTIONS = `## Browser
 - Aurora's browser is one panel in this window's right-hand dock. Every \`browser_*\` capability, including \`browser_guidelines\`, is an optional tool invoked through \`call_tool\`.
 - Before your first browser interaction, run \`tool_search({"query":"select:browser_guidelines"})\`, then \`call_tool({"name":"browser_guidelines","arguments":{}})\`. Read the returned guide before navigating, viewing, clicking, or taking a screenshot. Discovering its schema alone does not load the guide.
 - Discover other browser tools as needed and invoke them through \`call_tool\` with their returned argument schemas. If loading the guide fails, resolve the discovery or invocation error before continuing with the browser.`;
 
-const DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
+export const DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
 - Call the core tools in your tool list directly. File operations, code search, shell, tasks, and skills do not need discovery.
 - Browser and connected MCP apps are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn's mode.
 - Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
 - Search results can be partial. If a needed name is absent, use \`select:exact_name\` before concluding it is unavailable. If a direct call to an optional tool returns "tool not found", recover through exact discovery and \`call_tool\` before reporting a missing capability.
 - Reuse a schema while it remains in context. Search again after compaction removes it, when you need a different capability, or when a tool becomes unavailable. An empty result means no matching optional tool is currently available.`;
 
-const CHAT_DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
+export const CHAT_DEFERRED_TOOL_INSTRUCTIONS = `## Optional tools
 - Call the core tools in your tool list directly, including research, memory, canvas, images, and skills.
 - Connected MCP apps are available through \`tool_search\`. Search by task keywords, or \`select:exact_name\` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn.
 - Invoke an optional tool with \`call_tool({"name":"exact_name","arguments":{...}})\`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
@@ -475,7 +492,7 @@ export function formatEnvironment(input: {
  * Moved here from the per-turn context block: it is a setting, so it is the
  * same on every request of a conversation and belongs in the cached half.
  */
-const WORKSPACE_ACCESS_RULES: Record<string, string> = {
+export const WORKSPACE_ACCESS_RULES: Record<string, string> = {
   workspace: "",
   read: "The user has ALLOWED reading files outside this workspace: when given an absolute path elsewhere on disk, read it with file_read (pass an array of paths to read several at once) instead of refusing. Searching, edits and new files still stay inside the workspace.",
   full: "The user has granted FULL FILE ACCESS: every file tool — file_read, grep, glob, workspace_tree, file_write, file_edit, folder_create, move_path, delete_path — works on any absolute path on this computer, not only inside the workspace. Read a dependency's source, search a second checkout, or open a config in the home directory directly instead of reporting that you cannot reach it. Stay inside the project unless the task genuinely needs otherwise, and say which outside path you are touching and why. Full access also automatically approves tools and disables command guards for shell_execute and shell_spawn.",

@@ -1,0 +1,31 @@
+{
+  "type": "function",
+  "function": {
+    "name": "aurora_skill_search",
+    "description": "Browse Aurora skill catalog by query. Returns a ranked list of matching skills (id, name, description, source, optional path).\n\nUse this when:\n- The user's task may benefit from a specialized playbook that is not currently enabled in settings.\n- You want to discover what skills exist for a given topic (e.g. \"react performance\", \"rust async\", \"tailwind v4\").\n\nBehavior:\n- With `query`: ranks by id/name/description/trigger match and returns the best matches.\n- Without `query`: returns the first `limit` skills (alphabetical / source order).\n- Always returns a small JSON array; load full content via `aurora_skill_load`.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Optional free-text query. Matches against id, name, description, and triggers."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum number of results to return (1-100). Default: 30.",
+          "default": 30
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "workspace",
+            "global"
+          ],
+          "description": "Restrict results to a specific skill source."
+        }
+      },
+      "required": []
+    }
+  }
+}

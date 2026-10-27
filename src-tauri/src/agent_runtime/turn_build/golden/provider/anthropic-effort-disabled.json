@@ -1,0 +1,28 @@
+{
+  "providerId": "anth",
+  "model": "claude-off",
+  "providerConfig": {
+    "providerId": "anth",
+    "providerType": "anthropic",
+    "baseUrl": "https://anth.example.invalid/v1",
+    "apiKey": "sk-anth",
+    "model": "claude-off",
+    "supportsThinking": true,
+    "reasoning": {
+      "enabled": false,
+      "control": "effort",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

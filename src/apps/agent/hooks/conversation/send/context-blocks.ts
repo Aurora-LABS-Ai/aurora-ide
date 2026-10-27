@@ -137,3 +137,13 @@ export function buildMcpDirective(serverNames: string[]): string | null {
   const list = serverNames.join(", ");
   return `<preferred_mcp_servers>\nThe user explicitly referenced these connected MCP server(s) for this task: ${list}. Prefer their tools where relevant.\n</preferred_mcp_servers>`;
 }
+
+/**
+ * The message's context as one text: the blocks that exist, in the order
+ * given, a blank line between them. `null` when there is none. The one join
+ * the send path and the golden test share, so the engine's port
+ * (`turn_build/context.rs`) is proven against exactly what is sent.
+ */
+export function joinContextBlocks(blocks: Array<string | null>): string | null {
+  return blocks.filter(Boolean).join("\n\n") || null;
+}

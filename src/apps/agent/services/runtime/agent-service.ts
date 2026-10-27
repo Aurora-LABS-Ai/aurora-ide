@@ -309,6 +309,28 @@ export class AgentService {
 
       const result = await client.chat({
         userMessage,
+        // Shadow only: the engine composes its own prompt and tool list from
+        // the same inputs and logs whether each is byte-identical to
+        // `systemPrompt` / `tools`. Nothing the model receives changes. Only
+        // for the window's own default prompt and catalogue; a caller's custom
+        // base prompt or tool list is not the engine's.
+        enginePrompt:
+          this.config.systemPrompt?.trim() === BASE_AGENT_SYSTEM_PROMPT.trim()
+            ? {
+                replyLayout: this.config.replyLayout ?? false,
+                deepResearch: this.config.deepResearch ?? false,
+                explicitSkillKeys: promptContext?.explicitSkillKeys ?? [],
+                attachedRuleFiles: promptContext?.attachedRuleFiles ?? [],
+                context: promptContext?.messageContext ?? null,
+                model: promptContext?.modelFacts ?? null,
+                // The one engine port that is not a shadow: MCP calls run in
+                // the engine from this turn on. `false` hands them back to
+                // this window's bridge.
+                mcp: true,
+                tools: tools === undefined,
+                shadow: true,
+              }
+            : null,
         // Everything else on this request is built exactly as it is for a
         // person's turn — same prompt, same tools, same model — so a
         // machine-started turn APPENDS to the cached prefix instead of

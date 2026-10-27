@@ -1,0 +1,6 @@
+## Optional tools
+- Call the core tools in your tool list directly. File operations, code search, shell, tasks, and skills do not need discovery.
+- Browser and connected MCP apps are available through `tool_search`. Search by task keywords, or `select:exact_name` when you know the name. Results contain descriptions and complete argument schemas for tools available in this turn's mode.
+- Invoke an optional tool with `call_tool({"name":"exact_name","arguments":{...}})`, following its returned schema. Discovery does not add direct tools. Use {} for a tool with no arguments. Existing permission checks still apply.
+- Search results can be partial. If a needed name is absent, use `select:exact_name` before concluding it is unavailable. If a direct call to an optional tool returns "tool not found", recover through exact discovery and `call_tool` before reporting a missing capability.
+- Reuse a schema while it remains in context. Search again after compaction removes it, when you need a different capability, or when a tool becomes unavailable. An empty result means no matching optional tool is currently available.

@@ -41,6 +41,10 @@ pub struct AgentRegistry {
     /// at a time (its session mutex sees to that); this answers "is one
     /// running" without touching the mutex.
     active_turns: DashMap<String, String>,
+    /// The threads in `active_turns` that are conversations a person opens,
+    /// not sub-agents, with the project each runs in. Read by a client that
+    /// opens while one runs.
+    conversation_turns: DashMap<String, Option<String>>,
     deleted_threads: dashmap::DashSet<String>,
     turns_finished: tokio::sync::Notify,
 
@@ -85,6 +89,11 @@ pub struct AgentRegistry {
     /// How a sub-agent's `model` pin becomes a provider snapshot. `None` (tests,
     /// the verify crate) means a child can only run on its parent's provider.
     provider_lookup: Option<Arc<dyn crate::agent_runtime::subagents::ProviderLookup>>,
+
+    /// Where the engine reads Settings when it composes a turn's prompt
+    /// itself (`AgentChatRequest::engine_prompt`). `None` (tests) reads the
+    /// defaults.
+    settings_source: Option<Arc<dyn crate::db::DatabaseAccess>>,
 }
 
 impl std::fmt::Debug for AgentRegistry {
@@ -114,6 +123,7 @@ impl AgentRegistry {
             queue_slots: DashMap::new(),
             in_flight: DashMap::new(),
             active_turns: DashMap::new(),
+            conversation_turns: DashMap::new(),
             deleted_threads: dashmap::DashSet::new(),
             turns_finished: tokio::sync::Notify::new(),
             api_factory,
@@ -126,6 +136,7 @@ impl AgentRegistry {
             subagent_tasks: Arc::new(crate::agent_runtime::subagents::TaskRegistry::new()),
             wake_outbox: crate::agent_runtime::subagents::outbox::WakeOutbox::new(),
             provider_lookup: None,
+            settings_source: None,
         }
     }
 
@@ -156,6 +167,37 @@ impl AgentRegistry {
         &self,
     ) -> Option<&Arc<dyn crate::agent_runtime::subagents::ProviderLookup>> {
         self.provider_lookup.as_ref()
+    }
+
+    /// Read Settings from this database when composing a turn's prompt.
+    #[must_use]
+    pub fn with_settings_source(mut self, db: Arc<dyn crate::db::DatabaseAccess>) -> Self {
+        self.settings_source = Some(db);
+        self
+    }
+
+    /// The database Settings are read from, for a turn that resolves its own
+    /// provider rows (`turn_build::provider`). `None` without one (tests).
+    #[must_use]
+    pub fn settings_source(&self) -> Option<Arc<dyn crate::db::DatabaseAccess>> {
+        self.settings_source.clone()
+    }
+
+    /// The saved Settings, or the defaults when there is no database (tests)
+    /// or it cannot be read (logged).
+    #[must_use]
+    pub fn app_settings(&self) -> crate::db::AppSettings {
+        let mut found = None;
+        if let Some(db) = &self.settings_source {
+            db.with_db(&mut |db| match db.settings().get_app_settings() {
+                Ok(settings) => found = Some(settings),
+                Err(error) => crate::logging::log_warn(
+                    "agent_v2",
+                    &format!("could not read settings for the turn's prompt: {error}"),
+                ),
+            });
+        }
+        found.unwrap_or_default()
     }
 
     /// Point Aurora Chat's conversations at `dir`. Production wiring; see
@@ -628,7 +670,32 @@ impl AgentRegistry {
     pub fn clear_turn_active(&self, thread_id: &str, turn_id: &str) {
         self.active_turns
             .remove_if(thread_id, |_, active| active == turn_id);
+        if !self.active_turns.contains_key(thread_id) {
+            self.conversation_turns.remove(thread_id);
+        }
         self.turns_finished.notify_waiters();
+    }
+
+    /// Mark the turn just made active on `thread_id` as a conversation's, so
+    /// [`Self::active_conversation_turns`] lists it.
+    pub fn mark_conversation_turn(&self, thread_id: &str, workspace_root: Option<String>) {
+        self.conversation_turns
+            .insert(thread_id.to_string(), workspace_root);
+    }
+
+    /// Every conversation turn running now, for a client that opens mid-turn.
+    #[must_use]
+    pub fn active_conversation_turns(&self) -> Vec<super::ActiveTurn> {
+        self.conversation_turns
+            .iter()
+            .filter_map(|entry| {
+                self.active_turns.get(entry.key()).map(|turn| super::ActiveTurn {
+                    thread_id: entry.key().clone(),
+                    turn_id: turn.value().clone(),
+                    workspace_root: entry.value().clone(),
+                })
+            })
+            .collect()
     }
 
     pub fn ensure_thread_live(&self, thread_id: &str) -> Result<(), RuntimeError> {

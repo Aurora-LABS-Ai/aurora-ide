@@ -1,0 +1,7 @@
+<open_files count="3">
+Open in the user's Files panel right now. Filenames only — read one with file_read if you need what is in it.
+
+- E:\work\shop\src\app.ts
+- E:\work\shop\README.md
+- E:\work\shop\src\api.ts  (showing)
+</open_files>

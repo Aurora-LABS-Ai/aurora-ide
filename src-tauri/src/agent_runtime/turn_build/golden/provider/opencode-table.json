@@ -1,0 +1,28 @@
+{
+  "providerId": "opencode-go",
+  "model": "kimi-k3",
+  "providerConfig": {
+    "providerId": "opencode-go",
+    "providerType": "opencode-go-chat",
+    "baseUrl": "https://opencode-go.example.invalid/v1",
+    "apiKey": "sk-opencode-go",
+    "model": "kimi-k3",
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "none",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

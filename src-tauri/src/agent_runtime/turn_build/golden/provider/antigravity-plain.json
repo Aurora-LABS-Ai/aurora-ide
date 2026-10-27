@@ -1,0 +1,32 @@
+{
+  "providerId": "antigravity",
+  "model": "gemini-4-plain",
+  "providerConfig": {
+    "providerId": "antigravity",
+    "providerType": "antigravity",
+    "baseUrl": "https://antigravity.example.invalid/v1",
+    "apiKey": "sk-antigravity",
+    "model": "gemini-4-plain",
+    "customParams": {
+      "reasoning_effort": "medium",
+      "keep": 1
+    },
+    "supportsThinking": false,
+    "reasoning": {
+      "enabled": false,
+      "control": "none",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": false,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

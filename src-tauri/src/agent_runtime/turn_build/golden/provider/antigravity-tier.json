@@ -1,0 +1,32 @@
+{
+  "providerId": "antigravity",
+  "model": "gemini-4-argon-medium",
+  "providerConfig": {
+    "providerId": "antigravity",
+    "providerType": "antigravity",
+    "baseUrl": "https://antigravity.example.invalid/v1",
+    "apiKey": "sk-antigravity",
+    "model": "gemini-4-argon-medium",
+    "customParams": {
+      "keep": 1
+    },
+    "supportsThinking": true,
+    "reasoning": {
+      "enabled": true,
+      "control": "effort",
+      "effort": "medium",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": true,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

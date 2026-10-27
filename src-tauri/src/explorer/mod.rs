@@ -1,5 +1,6 @@
 //! Rust-owned explorer state and commands.
 
+#[cfg(feature = "desktop")]
 pub mod commands;
 pub mod file_list;
 pub mod service;

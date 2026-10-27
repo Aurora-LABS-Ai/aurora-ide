@@ -34,6 +34,7 @@ import type { ToolCallRequest, TokenUsage } from "@/kernel/services/providers/ty
 import type { AgentCallbacks, AgentConfig } from "@/apps/agent/services/runtime/agent-service.types";
 import type { AgentExecutionMode } from "@/apps/agent/services/runtime/agent-execution-mode";
 import type { ImageProvider } from "@/apps/agent/services/providers/image-providers";
+import type { PickedElement } from "@/apps/agent/services/browser/browser-service";
 import type {
   AttachedPromptChip,
   AttachedSelectedElement,
@@ -252,6 +253,13 @@ export interface AgentChatRequest {
   /** Legacy wire field; Rust always uses the static discovery wrappers. */
   deferTools: boolean | null;
   /**
+   * Ask the engine to compose the system prompt (`turn_build`, Rust
+   * `EnginePromptRequest`). With `shadow` the engine only compares its prompt
+   * with `systemPrompt` byte for byte and logs the result; `systemPrompt` is
+   * still what the model gets. Phase 3 of `DOCS/rust-core-extraction.md`.
+   */
+  enginePrompt?: EnginePromptRequest | null;
+  /**
    * Browser-inspector element chips attached to this user turn. Persisted
    * by the runtime onto the user `ConversationMessage` in the session JSONL
    * (camelCase on the wire → Rust `attached_selected_elements`). `null`/
@@ -447,8 +455,68 @@ export interface AgentRuntimeCallbacks extends AgentCallbacks {
   onTurnError?: (payload: TurnErrorPayload) => void;
 }
 
+/**
+ * The facts behind a message's context, for the engine to render the same
+ * blocks the window renders (`send/context-blocks.ts`, `buildSelectionContext`):
+ * what is open in the Files panel, the inspector picks in full, the `/`
+ * directives. The `/`-attached rules ride as `attachedRuleFiles`.
+ */
+export interface EngineMessageContext {
+  openFiles: string[];
+  activeFile: string | null;
+  pickedElements: Array<{ index: number; element: PickedElement }>;
+  mcpServerNames: string[];
+  imageRequested: boolean;
+}
+
+/**
+ * What only the window knows about the model choice: the per-row Cursor Fast
+ * preference (browser storage). Everything else the engine reads from the
+ * database (`turn_build/provider.rs`).
+ */
+export interface EngineModelFacts {
+  /** `isFastOn(row.id)` for the resolved model row; `null` without a row. */
+  cursorFast: boolean | null;
+}
+
+/** What only the message knows, for a prompt the engine composes. */
+export interface EnginePromptRequest {
+  replyLayout: boolean;
+  deepResearch: boolean;
+  explicitSkillKeys: string[];
+  attachedRuleFiles: string[];
+  /**
+   * The engine also resolves `modelSelection` into the provider snapshot and
+   * the request knobs (temperature, output cap, window, thinking, the
+   * compaction provider). Under `shadow` it is only compared with what the
+   * window sent.
+   */
+  model: EngineModelFacts | null;
+  /**
+   * The engine also renders the message's context (`ideContext`) from these
+   * facts. Under `shadow` it is only compared with `ideContext`.
+   */
+  context: EngineMessageContext | null;
+  /**
+   * The engine also builds the tool list (the window's own tools plus MCP,
+   * filtered by mode), from the same files `agent-tools.texts.test.ts` keeps
+   * equal to the TypeScript definitions. Under `shadow` it is only compared
+   * with `tools`.
+   */
+  tools: boolean;
+  /**
+   * The engine runs MCP calls itself instead of handing them to this client
+   * (`mcp::tool`). Not a shadow: it decides who executes. Approval still
+   * reaches this client through the native permission prompt.
+   */
+  mcp: boolean;
+  shadow: boolean;
+}
+
 export interface AgentRuntimeChatInput {
   userMessage: string;
+  /** See {@link AgentChatRequest.enginePrompt}. */
+  enginePrompt?: EnginePromptRequest | null;
   /**
    * Who started this turn. See {@link AgentChatRequest.userMessageOrigin}.
    *
@@ -496,6 +564,13 @@ export interface AgentRuntimeClientOptions {
   providerConfig: ProviderConfig;
   /** Used by the bridge listener to dispatch tools through the existing approval flow. */
   beforeToolExecution?: () => Promise<void>;
+}
+
+/** A turn another client started, as {@link AgentRuntimeClient.follow} hears it. */
+export interface FollowedTurn {
+  done: Promise<"complete" | "error">;
+  stop: () => Promise<void>;
+  dispose: () => void;
 }
 
 export interface AgentRuntimeChatResult {
@@ -745,6 +820,7 @@ export class AgentRuntimeClient {
       subagentModel: config.subagentModel?.trim() || null,
       deferTools:
         typeof config.deferTools === "boolean" ? config.deferTools : null,
+      enginePrompt: input.enginePrompt ?? null,
       attachedSelectedElements:
         input.attachedSelectedElements && input.attachedSelectedElements.length > 0
           ? input.attachedSelectedElements
@@ -1009,7 +1085,95 @@ export class AgentRuntimeClient {
    * boundary so `ChatPanel` and friends keep working unchanged.
    */
   private dispatchAssistantEvent(event: AssistantEvent): void {
-    const { callbacks } = this.options;
+    AgentRuntimeClient.dispatchTo(this.options.callbacks, event);
+  }
+
+  /**
+   * Follow a turn another client started: the desktop window watching a turn
+   * sent from a browser tab, or the other way round. Only the stream and the
+   * turn's end are heard. Tool approvals and frontend-owned tools stay with
+   * the client that sent the message, which is the one answering them.
+   *
+   * `done` settles once the turn ends, however it ends; `stop` cancels the
+   * turn in the runtime; `dispose` stops listening without touching it.
+   */
+  public static async follow(
+    turnId: string,
+    callbacks: AgentRuntimeCallbacks,
+  ): Promise<FollowedTurn> {
+    const cleanups: Array<() => void> = [];
+    let settle!: (outcome: "complete" | "error") => void;
+    const done = new Promise<"complete" | "error">((resolve) => {
+      settle = resolve;
+    });
+    let settled = false;
+    const dispose = () => {
+      while (cleanups.length > 0) {
+        try {
+          cleanups.pop()?.();
+        } catch (err) {
+          console.warn("[agent-runtime-client] follow cleanup threw:", err);
+        }
+      }
+    };
+    const finish = (outcome: "complete" | "error") => {
+      if (settled) return;
+      settled = true;
+      dispose();
+      settle(outcome);
+    };
+    try {
+      cleanups.push(
+        await auroraListen<AgentEventEnvelope>(AGENT_EVENT_CHANNEL, ({ payload }) => {
+          if (extractTurnId(payload) !== turnId) return;
+          try {
+            AgentRuntimeClient.dispatchTo(callbacks, payload.event);
+          } catch (err) {
+            console.warn("[agent-runtime-client] followed event dispatch threw:", err);
+          }
+        }),
+      );
+      cleanups.push(
+        await auroraListen<TurnCompletionPayload>(AGENT_TURN_COMPLETE_CHANNEL, ({ payload }) => {
+          if (extractTurnId(payload) !== turnId) return;
+          callbacks.onTurnComplete?.(payload);
+          finish("complete");
+        }),
+      );
+      cleanups.push(
+        await auroraListen<TurnErrorPayload>(AGENT_TURN_ERROR_CHANNEL, ({ payload }) => {
+          if (extractTurnId(payload) !== turnId) return;
+          callbacks.onTurnError?.(payload);
+          finish("error");
+        }),
+      );
+    } catch (error) {
+      dispose();
+      throw error;
+    }
+    return {
+      done,
+      stop: async () => {
+        try {
+          await auroraInvoke<boolean>(AGENT_CANCEL_COMMAND, { turnId });
+        } catch (err) {
+          console.warn("[agent-runtime-client] agent_cancel failed:", err);
+        }
+      },
+      dispose: () => finish("error"),
+    };
+  }
+
+  /**
+   * Translate one `AssistantEvent` into the existing UI callbacks.
+   *
+   * The legacy callbacks expect `ToolCallRequest` objects (with
+   * `function.arguments` as a JSON string). The Rust runtime
+   * delivers `tool_use { id, name, input }` where `input` is already
+   * a parsed object — we re-encode it as a JSON string at the
+   * boundary so `ChatPanel` and friends keep working unchanged.
+   */
+  private static dispatchTo(callbacks: AgentRuntimeCallbacks, event: AssistantEvent): void {
     switch (event.type) {
       case "stream_attempt_started":
         callbacks.onStreamAttemptStarted?.();

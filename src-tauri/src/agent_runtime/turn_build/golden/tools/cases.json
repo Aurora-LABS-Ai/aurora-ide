@@ -1,0 +1,300 @@
+[
+  {
+    "name": "agent",
+    "mode": "agent",
+    "supportsVision": true,
+    "deepResearch": false,
+    "servers": []
+  },
+  {
+    "name": "agent-no-vision",
+    "mode": "agent",
+    "supportsVision": false,
+    "deepResearch": false,
+    "servers": []
+  },
+  {
+    "name": "agent-mcp",
+    "mode": "agent",
+    "supportsVision": true,
+    "deepResearch": false,
+    "servers": [
+      {
+        "config": {
+          "id": "github",
+          "name": "GitHub",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "search_issues",
+            "description": "Search issues in a repository.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "query"
+              ]
+            }
+          },
+          {
+            "name": "whoami",
+            "description": "The signed-in account."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "off",
+          "name": "Switched Off",
+          "enabled": false,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "hidden",
+            "description": "Must not appear."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "down",
+          "name": "Not Running",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "disconnected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "gone",
+            "description": "Must not appear."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "plan",
+    "mode": "plan",
+    "supportsVision": true,
+    "deepResearch": false,
+    "servers": []
+  },
+  {
+    "name": "plan-mcp",
+    "mode": "plan",
+    "supportsVision": true,
+    "deepResearch": false,
+    "servers": [
+      {
+        "config": {
+          "id": "github",
+          "name": "GitHub",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "search_issues",
+            "description": "Search issues in a repository.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "query"
+              ]
+            }
+          },
+          {
+            "name": "whoami",
+            "description": "The signed-in account."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "off",
+          "name": "Switched Off",
+          "enabled": false,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "hidden",
+            "description": "Must not appear."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "down",
+          "name": "Not Running",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "disconnected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "gone",
+            "description": "Must not appear."
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "chat",
+    "mode": "chat",
+    "supportsVision": true,
+    "deepResearch": false,
+    "servers": []
+  },
+  {
+    "name": "chat-deep-research-mcp",
+    "mode": "chat",
+    "supportsVision": true,
+    "deepResearch": true,
+    "servers": [
+      {
+        "config": {
+          "id": "github",
+          "name": "GitHub",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "search_issues",
+            "description": "Search issues in a repository.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "query"
+              ]
+            }
+          },
+          {
+            "name": "whoami",
+            "description": "The signed-in account."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "off",
+          "name": "Switched Off",
+          "enabled": false,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "connected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "hidden",
+            "description": "Must not appear."
+          }
+        ]
+      },
+      {
+        "config": {
+          "id": "down",
+          "name": "Not Running",
+          "enabled": true,
+          "args": [],
+          "autoApprove": false,
+          "autoStart": true,
+          "env": {},
+          "headers": {},
+          "transport": "stdio"
+        },
+        "status": "disconnected",
+        "resources": [],
+        "tools": [
+          {
+            "name": "gone",
+            "description": "Must not appear."
+          }
+        ]
+      }
+    ]
+  }
+]

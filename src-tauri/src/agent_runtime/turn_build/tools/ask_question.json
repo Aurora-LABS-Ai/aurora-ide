@@ -1,0 +1,66 @@
+{
+  "type": "function",
+  "function": {
+    "name": "ask_question",
+    "description": "Ask the user one or more multiple-choice questions and wait for their answer.\n\nUse this ONLY when you are blocked on a decision that is genuinely the user's to make — one you cannot resolve from the request, the code, or sensible defaults (e.g. a product/scope choice, or a destructive-action confirmation). For most choices (naming, formatting, equivalent approaches) pick a reasonable option and proceed instead of asking.\n\nUse it instead of a written question whenever your reply would end by asking the user to choose between a few concrete options before you can continue — including a recommendation followed by \"A or B?\" at the end of an advice answer. Write your reasoning in the reply first, then call this with your recommended option listed first. This call may end your message. Keep written questions for open-ended ones with no fixed options.\n\nBehavior:\n- Renders an interactive prompt; the turn pauses until the user answers or skips.\n- Each question shows lettered options; the user can also pick \"Other\" and type a custom answer.\n- Set `allow_multiple: true` on a question to let the user choose several options.\n- The result is a JSON object: `{ skipped, responses: [{ id, prompt, answer }] }`. If `skipped` is true the user declined — continue with your best judgment.\n- Prefer ONE call with all the questions you need over several sequential calls. Keep it to a small number of focused questions.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Optional heading for the prompt card. Defaults to \"Questions\"."
+        },
+        "questions": {
+          "type": "array",
+          "description": "The questions to ask (1 or more).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable identifier for this question (echoed back in the result)."
+              },
+              "prompt": {
+                "type": "string",
+                "description": "The question text shown to the user."
+              },
+              "allow_multiple": {
+                "type": "boolean",
+                "description": "Allow selecting more than one option. Default false (single choice)."
+              },
+              "options": {
+                "type": "array",
+                "description": "The selectable options. An 'Other' free-text entry is always added automatically.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Stable identifier for this option."
+                    },
+                    "label": {
+                      "type": "string",
+                      "description": "Display text for this option."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "prompt",
+              "options"
+            ]
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ]
+    }
+  }
+}

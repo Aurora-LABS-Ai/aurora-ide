@@ -393,6 +393,7 @@ impl<E: EventEmitter> TurnDriver<E> {
         );
         let turn_id = request.turn_id.clone();
         let thread_id = request.thread_id.clone();
+        let is_conversation = matches!(kind, TurnKind::Conversation);
 
         // 0. Tee this turn into a CLI task's transcript, when it is running one.
         //
@@ -455,7 +456,96 @@ impl<E: EventEmitter> TurnDriver<E> {
         // From here until step 10 a sub-agent finishing can queue its report
         // into this turn instead of waking the conversation.
         self.registry.mark_turn_active(&thread_id, &turn_id);
+        if is_conversation {
+            self.registry
+                .mark_conversation_turn(&thread_id, request.workspace_path.clone());
+        }
         drop(admission);
+
+        // 2a. A client that asked the engine to resolve the model
+        //     (`engine_prompt.model`, Phase 3.6) gets the provider snapshot
+        //     and the knobs beside it from the database rows, in place of
+        //     what it sent. First, because the API client (step 5) and the
+        //     tool list (2b: vision) read the snapshot. Shadow: compared only.
+        //     A selection the window would have refused the turn on (a
+        //     Cursor run the account lacks) is logged here and the client's
+        //     snapshot kept.
+        let engine_model = request
+            .engine_prompt
+            .as_ref()
+            .filter(|_| is_conversation)
+            .and_then(|engine| engine.model.clone().map(|facts| (engine.shadow, facts)));
+        if let (Some((shadow, facts)), Some(selection)) = (engine_model, request.model_selection.clone()) {
+            let registry = self.registry.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                let db = registry
+                    .settings_source()
+                    .ok_or_else(|| "no database for the turn's provider rows".to_string())?;
+                let rows = crate::agent_runtime::turn_build::provider::ProviderRows::load(&db)?;
+                let settings = registry.app_settings();
+                crate::agent_runtime::turn_build::provider::resolve_turn_model(
+                    &rows,
+                    crate::agent_runtime::turn_build::provider::TurnModelInputs {
+                        selection: &selection,
+                        selected_model: &settings.selected_model,
+                        compaction_model: &settings.compaction_model,
+                        thinking_preference: settings.thinking_enabled,
+                        facts: &facts,
+                    },
+                )
+            })
+            .await;
+            match resolved {
+                Ok(Ok(Some(model))) if shadow => {
+                    crate::agent_runtime::turn_build::provider::report_shadow_model(&thread_id, &request, &model);
+                }
+                Ok(Ok(Some(model))) => crate::agent_runtime::turn_build::provider::apply(&mut request, model),
+                Ok(Ok(None)) => crate::logging::log_warn(
+                    "turn_build",
+                    &format!("shadow model for {thread_id}: no provider resolves, keeping the client's"),
+                ),
+                Ok(Err(error)) => crate::logging::log_warn(
+                    "turn_build",
+                    &format!("shadow model for {thread_id}: engine refused ({error}), keeping the client's"),
+                ),
+                Err(error) => crate::logging::log_warn(
+                    "agent_v2",
+                    &format!("engine model for thread {thread_id} failed, keeping the client's: {error}"),
+                ),
+            }
+        }
+
+        // 2b. A client that asked the engine to build the tool list
+        //     (`engine_prompt.tools`, Phase 3.4) gets the window's own tools
+        //     plus every running MCP server's, filtered for the mode, in
+        //     place of the list it sent. Before step 3, which registers one
+        //     bridge executor per entry of `request.tools`. In shadow mode
+        //     the client's list is kept and the engine's only compared.
+        let engine_tools = request
+            .engine_prompt
+            .as_ref()
+            .filter(|engine| is_conversation && engine.tools)
+            .map(|engine| (engine.shadow, engine.deep_research));
+        if let Some((shadow, deep_research)) = engine_tools {
+            let facts = crate::agent_runtime::turn_build::tools::ToolFacts {
+                mode: request.execution_mode,
+                supports_vision: request.provider_config.supports_vision,
+                deep_research,
+            };
+            let composed = crate::agent_runtime::turn_build::tools::compose_tool_list(
+                &facts,
+                &crate::mcp::manager::MCP_MANAGER.list(),
+            );
+            if shadow {
+                crate::agent_runtime::turn_build::tools::report_shadow_tools(
+                    &thread_id,
+                    &request.tools,
+                    &composed,
+                );
+            } else {
+                request.tools = composed;
+            }
+        }
 
         // 3. Build the per-turn ToolRegistry. Start with the
         //    registry-level base (empty in Phase 2.3) and overlay one
@@ -491,6 +581,13 @@ impl<E: EventEmitter> TurnDriver<E> {
             }
             TurnKind::Conversation => ToolScope::Plain,
         };
+        // A client that lets the engine run MCP calls (`engine_prompt.mcp`,
+        // Phase 4.1) hands the manager's server list to the registry builder.
+        let engine_mcp = request
+            .engine_prompt
+            .as_ref()
+            .filter(|engine| is_conversation && engine.mcp)
+            .map(|_| crate::mcp::manager::MCP_MANAGER.list());
         let per_turn_tools = build_per_turn_tool_registry_scoped(
             self.registry.tools(),
             &request.tools,
@@ -506,6 +603,7 @@ impl<E: EventEmitter> TurnDriver<E> {
             request.defer_tools.unwrap_or(false),
             &request.thread_id,
             &scope,
+            engine_mcp.as_deref(),
         );
 
         // 3b. Hand `generate_image` this conversation's image providers and
@@ -520,6 +618,73 @@ impl<E: EventEmitter> TurnDriver<E> {
                     store: store.clone(),
                 },
             );
+        }
+
+        // 3b. A client that asked the engine to compose the system prompt
+        //     (`engine_prompt`, Phase 3) gets it built here, from Settings,
+        //     the rule and skill folders and the plan, instead of sending its
+        //     own. A failure keeps whatever prompt the client sent.
+        //     In shadow mode the client's prompt is sent and the engine's is
+        //     only compared with it.
+        if let (true, Some(engine)) = (is_conversation, request.engine_prompt.as_ref()) {
+            let shadow = engine.shadow;
+            let facts = crate::agent_runtime::turn_build::request_facts(&request, engine);
+            let registry = self.registry.clone();
+            match tokio::task::spawn_blocking(move || {
+                crate::agent_runtime::turn_build::compose_for_turn(&registry.app_settings(), facts)
+            })
+            .await
+            {
+                Ok(prompt) if shadow => crate::agent_runtime::turn_build::report_shadow(
+                    &thread_id,
+                    request.system_prompt.as_deref().unwrap_or_default(),
+                    &prompt,
+                ),
+                Ok(prompt) => request.system_prompt = Some(prompt),
+                Err(error) => crate::logging::log_warn(
+                    "agent_v2",
+                    &format!("engine prompt for thread {thread_id} failed, keeping the client's: {error}"),
+                ),
+            }
+        }
+
+        // 3c. The message's context (Phase 3.5): a client that sends the
+        //     facts (`engine_prompt.context`) gets the blocks rendered here,
+        //     in place of the `ide_context` it sent. Reads the attached rule
+        //     files, so off the async threads. Shadow: compared only.
+        let engine_context = request
+            .engine_prompt
+            .as_ref()
+            .filter(|_| is_conversation)
+            .and_then(|engine| {
+                engine.context.clone().map(|facts| {
+                    (engine.shadow, facts, engine.attached_rule_files.clone())
+                })
+            });
+        if let Some((shadow, facts, rule_files)) = engine_context {
+            let workspace = request.workspace_path.clone().map(std::path::PathBuf::from);
+            match tokio::task::spawn_blocking(move || {
+                crate::agent_runtime::turn_build::context::compose_message_context(
+                    &facts,
+                    workspace.as_deref(),
+                    &rule_files,
+                )
+            })
+            .await
+            {
+                Ok(context) if shadow => {
+                    crate::agent_runtime::turn_build::context::report_shadow_context(
+                        &thread_id,
+                        request.ide_context.as_deref(),
+                        context.as_deref(),
+                    );
+                }
+                Ok(context) => request.ide_context = context,
+                Err(error) => crate::logging::log_warn(
+                    "agent_v2",
+                    &format!("engine context for thread {thread_id} failed, keeping the client's: {error}"),
+                ),
+            }
         }
 
         // 4. Construct the runtime with a fresh RuntimeConfig overlaying
@@ -706,10 +871,17 @@ impl<E: EventEmitter> TurnDriver<E> {
         let changed_root = request.workspace_path.clone();
         {
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
+            // A conversation's turn is announced with its id, so a client that
+            // did not send the message can show it running and follow its
+            // stream. A sub-agent's turn is not a chat anyone opens.
+            let typed = request.user_message_origin
+                == crate::agent_runtime::types::InjectedOrigin::User;
             self.emitter.emit_thread_changed(&ThreadChanged {
                 thread_id: thread_id.clone(),
                 workspace_root: changed_root.clone(),
-                reason: "message",
+                reason: if is_conversation { "turn_start" } else { "message" },
+                turn_id: is_conversation.then(|| turn_id.clone()),
+                user_message: (is_conversation && typed).then(|| request.user_message.clone()),
             });
             if let Err(err) = store.set_model(&thread_id, Some(pinned_model(&request))) {
                 crate::logging::log_warn(
@@ -929,6 +1101,8 @@ impl<E: EventEmitter> TurnDriver<E> {
             thread_id: thread_id.clone(),
             workspace_root: changed_root,
             reason: "turn_end",
+            turn_id: None,
+            user_message: None,
         });
 
         // 11. Closing event. Cancellations get an error event with the

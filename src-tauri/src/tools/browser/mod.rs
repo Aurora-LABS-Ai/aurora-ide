@@ -333,7 +333,7 @@ pub const TOOLS_REQUIRING_PERMISSION: &[&str] = &[
 /// (`VISION_REQUIRED_TOOLS` in `src/services/agent-service.ts`), which
 /// became ineffective once the Rust registry — not the frontend list —
 /// became the source of advertised native tools.
-pub const VISION_REQUIRED_TOOLS: &[&str] = &["browser_screenshot"];
+pub use crate::tools::VISION_REQUIRED_TOOLS;
 
 /// Mount every tool in this bucket onto `reg`. Idempotent.
 ///

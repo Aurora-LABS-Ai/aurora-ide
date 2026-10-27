@@ -26,8 +26,13 @@ pub async fn read_directory(
     path: String,
     include_hidden: Option<bool>,
 ) -> Result<Vec<FileEntry>, String> {
-    let dir_path = Path::new(&path);
-    let show_hidden = include_hidden.unwrap_or(true); // Default to showing hidden files
+    list_directory(&path, include_hidden.unwrap_or(true)) // Default to showing hidden files
+}
+
+/// [`read_directory`] without the async wrapper, for the engine's own reads
+/// (skills, project rules) that must list a folder exactly as the window did.
+pub fn list_directory(path: &str, show_hidden: bool) -> Result<Vec<FileEntry>, String> {
+    let dir_path = Path::new(path);
 
     if !dir_path.exists() {
         return Err(format!("Directory does not exist: {}", path));

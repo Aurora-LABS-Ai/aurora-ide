@@ -2086,9 +2086,12 @@ mod tests {
         std::fs::write(&file, &body).unwrap();
         let ctx = ctx_for(Some(tmp.path().to_path_buf()));
         let canonical = dunce::canonicalize(&file).unwrap();
-        super::super::read_tracker::record_window(
+        // What `file_read` records for lines 1–30: a window is not a read by
+        // itself (`record_window` only remembers where to look next).
+        super::super::read_tracker::record_window_content(
             &ctx.thread_id,
             &canonical.to_string_lossy(),
+            &body,
             1,
             30,
             200,

@@ -60,6 +60,7 @@ fn schema_bytes(registry: &ToolRegistry) -> Vec<u8> {
 
 /// Regression from the storefront conversation: the model called the guide
 /// directly, treated the direct roster as complete, and skipped the guide.
+#[cfg(feature = "browser")]
 #[tokio::test]
 async fn a_direct_browser_guide_miss_leads_to_discovery_and_real_guide_execution() {
     let registry = ToolRegistry::new();

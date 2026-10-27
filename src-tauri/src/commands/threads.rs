@@ -1718,6 +1718,8 @@ pub async fn thread_update_title(
             thread_id: changed_id,
             workspace_root: None,
             reason: "renamed",
+            turn_id: None,
+            user_message: None,
         },
     );
     Ok(())

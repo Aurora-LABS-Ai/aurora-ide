@@ -349,9 +349,12 @@ mod tests {
         std::fs::write(&file, lines(1990)).unwrap();
         let ctx = ctx_for(Some(tmp.path().to_path_buf()));
         let canonical = dunce::canonicalize(&file).unwrap();
-        super::super::read_tracker::record_window(
+        // What `file_read` records for lines 1–30: a window is not a read by
+        // itself (`record_window` only remembers where to look next).
+        super::super::read_tracker::record_window_content(
             &ctx.thread_id,
             &canonical.to_string_lossy(),
+            &lines(1990),
             1,
             30,
             1990,
@@ -541,12 +544,20 @@ mod tests {
     #[tokio::test]
     async fn an_overwrite_reports_real_line_change_counts() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("pre.txt"), "one\ntwo\nthree").unwrap();
+        let file = tmp.path().join("pre.txt");
+        std::fs::write(&file, "one\ntwo\nthree").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        // An overwrite needs a read first (the read gate); this is a whole one.
+        super::super::read_tracker::record_whole_content(
+            &ctx.thread_id,
+            &dunce::canonicalize(&file).unwrap().to_string_lossy(),
+            "one\ntwo\nthree",
+        );
         let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
         let result = tool
             .execute(
                 serde_json::json!({ "path": "pre.txt", "content": "one\nTWO\nthree\nfour" }),
-                &ctx_for(Some(tmp.path().to_path_buf())),
+                &ctx,
             )
             .await
             .expect("ok");
@@ -604,12 +615,20 @@ mod tests {
     #[tokio::test]
     async fn emits_modified_for_existing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("pre.txt"), "before").unwrap();
+        let file = tmp.path().join("pre.txt");
+        std::fs::write(&file, "before").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        // An overwrite needs a read first (the read gate); this is a whole one.
+        super::super::read_tracker::record_whole_content(
+            &ctx.thread_id,
+            &dunce::canonicalize(&file).unwrap().to_string_lossy(),
+            "before",
+        );
         let sink = RecordingIdeEventSink::new();
         let tool = FileWriteTool::new(sink.clone());
         tool.execute(
             serde_json::json!({ "path": "pre.txt", "content": "after" }),
-            &ctx_for(Some(tmp.path().to_path_buf())),
+            &ctx,
         )
         .await
         .expect("ok");

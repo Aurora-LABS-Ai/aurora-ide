@@ -71,6 +71,7 @@ pub fn list_files(root: &Path, limit: usize) -> Result<FileList, String> {
 }
 
 /// The project's files for the composer's `@` picker.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn explorer_list_files(root: String) -> Result<FileList, String> {
     tauri::async_runtime::spawn_blocking(move || list_files(Path::new(&root), MAX_LISTED_FILES))

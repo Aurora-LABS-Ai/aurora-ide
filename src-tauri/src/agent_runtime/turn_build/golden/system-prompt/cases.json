@@ -1,0 +1,289 @@
+[
+  {
+    "name": "agent-default",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-no-workspace",
+    "input": {
+      "mode": "agent",
+      "workspacePath": null,
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-browser-off",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": false,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-everything-on",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "full",
+      "projectRules": "<project_rules>\n<rule name=\"style.md\">\nUse tabs.\n</rule>\n</project_rules>",
+      "globalInstructions": "Answer in British English.",
+      "hasActivePlan": false,
+      "transcriptChapters": true,
+      "replyLayout": true,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-read-access",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "read",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-skills",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 3,
+        "enabled": [
+          {
+            "id": "react-perf",
+            "description": "What react-perf is for.",
+            "previewLines": [
+              "# react-perf",
+              "First rule of this skill.",
+              "Second rule."
+            ],
+            "source": "workspace",
+            "sourcePath": "E:\\work\\shop\\.aurora\\skills\\react-perf\\SKILL.md"
+          },
+          {
+            "id": "rust-async",
+            "description": "What rust-async is for.",
+            "previewLines": [
+              "# rust-async",
+              "First rule of this skill.",
+              "Second rule."
+            ],
+            "source": "global",
+            "sourcePath": null
+          }
+        ],
+        "explicit": [
+          {
+            "id": "react-perf",
+            "description": "What react-perf is for.",
+            "previewLines": [
+              "# react-perf",
+              "First rule of this skill.",
+              "Second rule."
+            ],
+            "source": "workspace",
+            "sourcePath": "E:\\work\\shop\\.aurora\\skills\\react-perf\\SKILL.md"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "agent-skills-none-enabled",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 2,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "plan-default",
+    "input": {
+      "mode": "plan",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "plan-active-plan",
+    "input": {
+      "mode": "plan",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": true,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "agent-active-plan",
+    "input": {
+      "mode": "agent",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": true,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "chat-default",
+    "input": {
+      "mode": "chat",
+      "workspacePath": "E:\\work\\shop",
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "Ignored in chat.",
+      "hasActivePlan": false,
+      "transcriptChapters": false,
+      "replyLayout": false,
+      "deepResearch": false,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  },
+  {
+    "name": "chat-deep-research-layout",
+    "input": {
+      "mode": "chat",
+      "workspacePath": null,
+      "workspaceAccess": "workspace",
+      "projectRules": null,
+      "globalInstructions": "",
+      "hasActivePlan": false,
+      "transcriptChapters": true,
+      "replyLayout": true,
+      "deepResearch": true,
+      "browserTools": true,
+      "today": "2026-10-27",
+      "skills": {
+        "totalCount": 0,
+        "enabled": [],
+        "explicit": []
+      }
+    }
+  }
+]

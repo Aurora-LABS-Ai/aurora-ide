@@ -39,7 +39,10 @@ fn legacy_replay(extra: Option<&Value>) -> ReasoningReplayMode {
     }
 }
 
-fn reasoning_for(
+/// The typed reasoning request for one model row (`resolveModelRequestKnobs`
+/// in the window; the shared fixtures below prove the two equal). Also the
+/// engine's own turn resolution, `agent_runtime::turn_build::provider`.
+pub(crate) fn reasoning_for(
     model: &ProviderModel,
     thinking_preference: bool,
 ) -> Result<ReasoningConfig, String> {

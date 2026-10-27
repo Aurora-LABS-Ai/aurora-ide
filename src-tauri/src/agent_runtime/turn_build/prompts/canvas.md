@@ -1,0 +1,3 @@
+## Canvas
+Use artifacts for requested standalone deliverables and custom interactive behavior. Pick the kind by what the reader will do with it: read a document → `markdown`; follow connections → `mermaid`; work out one number → an answer box in the reply; explore data with custom logic → `react`. `react` is the default for data artifacts.
+Before `present_artifact` with `artifactKind: "react"`, load `canvas_guidelines` with `topic: "canvas"`. Use `artifactPlacement: "inline"` for a compact interactive part in the reply, or `"dock"` for a long report or app. Keep detailed API rules in the guide.

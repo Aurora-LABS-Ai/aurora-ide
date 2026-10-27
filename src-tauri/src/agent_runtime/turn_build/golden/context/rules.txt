@@ -1,0 +1,12 @@
+<project_rules>
+The user explicitly attached these project rules to this turn. Treat them as authoritative standing rules for this task.
+
+<rule file="a-tests.md">
+Run the tests before saying done.
+</rule>
+
+<rule file="b-style.md">
+Tabs, not spaces.
+Short names.
+</rule>
+</project_rules>

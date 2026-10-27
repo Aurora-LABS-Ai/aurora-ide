@@ -22,13 +22,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # `unstable` enables the multi-webview API (Window::add_child / WebviewBuilder)
 # used by the agent window's embedded in-tab browser (commands::embedded_browser).
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "devtools", "unstable"] }
-tauri-plugin-shell = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-process = "2"
-tauri-plugin-os = "2"
-tauri-plugin-clipboard-manager = "2"
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "devtools", "unstable"], optional = true }
+tauri-plugin-shell = { version = "2", optional = true }
+tauri-plugin-fs = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+tauri-plugin-os = { version = "2", optional = true }
+tauri-plugin-clipboard-manager = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 # `gzip`/`brotli`/`deflate` let the web tools accept compressed pages, which is
 # what every site serves a browser — without them a page arrives as compressed
@@ -127,7 +127,7 @@ portable-pty = "0.9"
 # the screen and scrollback a person sees, so the agent's `terminal` tool reads
 # clean text from Rust rather than from the window's xterm.
 vt100 = "0.18"
-tauri-plugin-pty = "0.1"
+tauri-plugin-pty = { version = "0.1", optional = true }
 
 # MCP (Model Context Protocol) client support
 # The official Rust SDK carries the protocol (handshake, id correlation,
@@ -291,7 +291,7 @@ windows-sys = { version = "0.61", features = [
 # path in `services::browser_native_capture::windows`. The version is pinned
 # to whatever `webview2-com` itself depends on so we share one copy of the
 # generated COM bindings instead of pulling a parallel duplicate.
-windows = { version = "0.61", features = [
+windows = { version = "0.61", optional = true, features = [
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
@@ -303,7 +303,7 @@ windows = { version = "0.61", features = [
 # via Tauri's `Webview::with_webview` platform escape hatch. It was already a
 # transitive dep through wry; promoting it to a direct dep just lets us name
 # the types in our own code.
-webview2-com = "0.38"
+webview2-com = { version = "0.38", optional = true }
 
 [dev-dependencies]
 # Isolated tempdirs for filesystem tests (threads JSONL, paths, writer/reader).
@@ -330,11 +330,29 @@ tokio = { version = "1", features = ["test-util"] }
 # an existing build command with `--features cpu-only` still resolves.
 default = ["cpu-only", "desktop"]
 
-# The window: Tauri, its plugins, the IPC commands and the native browser.
-# Without it the crate is the headless core (see DOCS/rust-core-extraction.md).
-# Tauri itself becomes optional in Phase 1.9; until then this only switches
-# the code paths written for both cases (e.g. `rt::spawn`).
-desktop = []
+# The window: Tauri, its plugins, the IPC commands, the window services, the
+# web host and the native browser. Without it the crate is the headless core
+# (`cargo check --lib --no-default-features`; see DOCS/rust-core-extraction.md,
+# Phase 1.9): no `commands/`, no `lib.rs::run`, and `main` is a stub until
+# `aurora serve` exists.
+desktop = [
+    "browser",
+    "dep:tauri",
+    "dep:tauri-plugin-shell",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-process",
+    "dep:tauri-plugin-os",
+    "dep:tauri-plugin-clipboard-manager",
+    "dep:tauri-plugin-pty",
+    "dep:webview2-com",
+    "dep:windows",
+]
+
+# The 19 `browser_*` tools and the web search's browser rung. They drive the
+# desktop app's native WebViews, so this needs `desktop`; it is its own name
+# so the tool bucket can be gated on what it is, not on who hosts it.
+browser = []
 
 # CPU-only build (no GPU acceleration) — safest default
 cpu-only = []

@@ -193,7 +193,10 @@ pub(crate) fn merge_remaining(mut known: KenariUsage, remaining: &[(String, f64)
                 window.resets_in_secs = Some(((at - now_ms) / 1000).max(0));
             }
             if let Some(budget) = window.budget_rp {
-                let used = ((budget as f64) * window.used_frac).ceil() as i64;
+                // The header carries two decimals, so budget × fraction is a
+                // whole number of RP up to float noise (`1.0 - 0.99` is not
+                // exactly 0.01; a ceiling made 300,000 × 0.01 into 3,001).
+                let used = ((budget as f64) * window.used_frac).round() as i64;
                 window.used_rp = Some(used);
                 window.remaining_rp = Some((budget - used).max(0));
             }

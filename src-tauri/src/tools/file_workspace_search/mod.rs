@@ -128,7 +128,7 @@ pub(crate) mod write_retry;
 pub fn register(
     reg: &mut ToolRegistry,
     sink: std::sync::Arc<dyn crate::tools::shell_editor_todo::IdeEventSink>,
-    browser: Option<std::sync::Arc<crate::services::browser_runtime::BrowserManager>>,
+    browser: Option<std::sync::Arc<dyn crate::websearch::PageSource>>,
 ) {
     use std::sync::Arc;
 

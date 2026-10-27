@@ -5,14 +5,31 @@
     windows_subsystem = "windows"
 )]
 
+#[cfg(feature = "desktop")]
 use aurora_lib::cli::{install, CliArgs};
+#[cfg(feature = "desktop")]
 use std::env;
 
 // Environment variable used to pass CLI args to spawned GUI process
+#[cfg(feature = "desktop")]
 const AURORA_CLI_PATH_ENV: &str = "AURORA_CLI_PATH";
+#[cfg(feature = "desktop")]
 const AURORA_CLI_FILE_ENV: &str = "AURORA_CLI_FILE";
+#[cfg(feature = "desktop")]
 const AURORA_CLI_AGENT_ENV: &str = "AURORA_CLI_AGENT";
 
+/// A build without the window. The headless host (`aurora serve`) is Phase 6
+/// of `DOCS/rust-core-extraction.md`; until then this binary only says so.
+#[cfg(not(feature = "desktop"))]
+fn main() {
+    eprintln!(
+        "This Aurora was built without the desktop feature; it has no window to open yet. \
+         Build with `--features desktop` for the app."
+    );
+    std::process::exit(2);
+}
+
+#[cfg(feature = "desktop")]
 fn main() {
     // Check if we were spawned with CLI path via environment variable
     // This means we're the detached GUI process
@@ -104,6 +121,7 @@ fn main() {
 }
 
 /// Spawn Aurora as a detached process so the terminal is freed
+#[cfg(feature = "desktop")]
 fn spawn_detached_gui(args: &CliArgs) -> Result<(), String> {
     let current_exe =
         env::current_exe().map_err(|e| format!("Failed to get current executable: {}", e))?;

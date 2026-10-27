@@ -62,6 +62,7 @@ pub mod tool_executor;
 pub mod tool_pairing;
 pub mod tool_spill;
 pub mod tool_suggest;
+pub mod turn_build;
 pub mod types;
 pub mod work_cards;
 

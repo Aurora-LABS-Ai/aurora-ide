@@ -1,0 +1,38 @@
+{
+  "providerId": "oa",
+  "model": "o4-mini",
+  "providerConfig": {
+    "providerId": "oa",
+    "providerType": "openai",
+    "baseUrl": "https://oa.example.invalid/v1",
+    "apiKey": "sk-oa",
+    "model": "o4-mini",
+    "customHeaders": {
+      "X-Org": "acme"
+    },
+    "customParams": {
+      "bar": 2,
+      "foo": 1
+    },
+    "defaultTemperature": 0.7,
+    "defaultMaxTokens": 4096,
+    "supportsThinking": true,
+    "reasoning": {
+      "enabled": true,
+      "control": "effort",
+      "effort": "medium",
+      "requestMode": "auto",
+      "replay": "off"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": true,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": 0.7,
+  "maxOutputTokens": 4096,
+  "contextWindow": 128000,
+  "thinkingEnabled": true,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

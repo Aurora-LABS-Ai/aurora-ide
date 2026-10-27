@@ -102,7 +102,7 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
                 && super::tool_policy::is_tool_available_this_turn(name,
                     parent.request.execution_mode, false, false,
                     parent.request.browser_tools.unwrap_or(true))
-                && (model.config.supports_vision || !crate::tools::browser::VISION_REQUIRED_TOOLS.contains(&name.as_str()))
+                && (model.config.supports_vision || !crate::tools::VISION_REQUIRED_TOOLS.contains(&name.as_str()))
         }).collect();
         crate::agent_runtime::subagents::grant::resolve(definition, requested, &available)
     }
@@ -221,6 +221,8 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
             transcript_chapters: Some(false),
             browser_tools: Some(browser),
             defer_tools: Some(false),
+            // A sub-agent's prompt is its definition's, never the engine's.
+            engine_prompt: None,
             attached_selected_elements: None,
             attached_prompt_chips: None,
             image_providers: Vec::new(),

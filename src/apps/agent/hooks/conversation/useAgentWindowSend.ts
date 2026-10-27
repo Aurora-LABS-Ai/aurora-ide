@@ -27,11 +27,7 @@
 
 import { useCallback, useRef, useState } from "react";
 
-import {
-  AgentService,
-  threadService,
-  type ToolCallRequest,
-} from "@/apps/agent/services";
+import { AgentService, threadService } from "@/apps/agent/services";
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import {
@@ -40,7 +36,6 @@ import {
   resolveModelRequest,
   resolveTemperature,
 } from "@/apps/agent/services/runtime/model-request-config";
-import { classifyError } from "@/apps/agent/lib/error-classifier";
 import type { SendOutcome } from "./send-outcome";
 import type {
   AttachedPromptChip,
@@ -57,12 +52,6 @@ import { runDirectImageTurn } from "./direct-image-turn";
 import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSuggestStore";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
-import {
-  parseKillResult,
-  parseSpawnResult,
-  useAgentBackgroundStore,
-} from "@/apps/agent/store/conversation/useAgentBackgroundStore";
-import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
 import {
   composerImages,
   composerKey,
@@ -81,21 +70,7 @@ import {
   useAgentSelectionStore,
 } from "@/apps/agent/store/composer/useAgentSelectionStore";
 import { useAgentWorkspaceStore } from "@/apps/agent/store/workspace/useAgentWorkspaceStore";
-import {
-  appendAgentReport,
-  appendCompaction,
-  appendContent,
-  appendNotice,
-  appendProcessBeat,
-  appendUserInjection,
-  beginReconnect,
-  clearReconnect,
-  finishCompaction,
-  nextEventId,
-  textOf,
-  upsertToolEvent,
-} from "@/apps/agent/components/conversation/timeline";
-import { describeToolActivity, type AgentActivity } from "@/apps/agent/components/conversation/activity";
+import { upsertToolEvent } from "@/apps/agent/components/conversation/timeline";
 import type {
   AgentWindowSend,
   BackgroundSendTarget,
@@ -110,7 +85,10 @@ import {
   buildMcpDirective,
   buildOpenFilesContext,
   buildRuleContext,
+  joinContextBlocks,
 } from "./send/context-blocks";
+import type { EngineMessageContext } from "@/apps/agent/services/runtime/agent-runtime-client";
+import { isFastOn } from "@/apps/agent/lib/model/cursor-fast";
 import { maybeGenerateTitle } from "./send/title";
 import {
   MODEL_SWITCH_END_TIMEOUT_MS,
@@ -122,8 +100,9 @@ import {
   waitForTurnEnd,
 } from "./send/turn-registry";
 import { maybeSuggestReplies } from "./send/reply-suggestions";
-import { createStreamText, timelineOf } from "./send/stream-text";
-import { createToolTimer } from "./send/tool-timing";
+import { timelineOf } from "./send/stream-text";
+import { createTurnWriter } from "./send/turn-writer";
+import { stopFollowedTurn } from "./send/followed-turns";
 import { steerRunningTurn } from "./send/steer";
 import { runManualCompaction } from "./send/compact";
 
@@ -194,7 +173,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // or backgrounded, keeps going.
     if (targetThreadId) {
       resolveApproval(false);
-      runningAgents.get(targetThreadId)?.stop();
+      // A turn another client sent is stopped in the runtime directly.
+      const agent = runningAgents.get(targetThreadId);
+      if (agent) agent.stop();
+      else stopFollowedTurn(targetThreadId);
     }
   }, [resolveApproval, targetThreadId]);
 
@@ -620,122 +602,19 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       timeline: [],
     };
     store.appendTurnMessage(threadId, assistantSeed);
-    let streamAttemptCheckpoint: DbMessage | null = null;
 
-    // Every streaming write is queued for the next frame and lands together
-    // with every other conversation's in one store update (`queueTurnPatch`).
-    // Patches still apply in the order they are made, so a patch that reads
-    // the message (the stream checkpoint below) sees exactly what came before.
-    // Anything that READS the live turn back synchronously must call
-    // `flushTurnPatches()` first.
-    const queueTurn = useAgentChatStore.getState().queueTurnPatch;
-    const patchMessage = (id: string, patch: (m: DbMessage) => DbMessage) =>
-      queueTurn(threadId, id, patch);
-    // Header narrator: a short, plain-language line of what the agent is doing
-    // right now. Written on phase changes (thinking → tool → responding); the
-    // store setter no-ops when unchanged, so calling it per token is free.
-    const setActivity = (activity: AgentActivity) =>
-      useAgentChatStore.getState().setThreadActivity(threadId, activity);
-
-    // Streaming text lands in frame-sized buffers (`send/stream-text.ts`);
-    // anything that appends a non-text timeline event flushes first so the
-    // ordered timeline stays exact.
-    const stream = createStreamText((patch) => patchMessage(assistantId, patch));
-    // Wall-clock per tool call, approval waits taken out (`send/tool-timing.ts`).
-    const timer = createToolTimer();
-
-    const upsertToolCall = (
-      tc: ToolCallRequest,
-      result?: string | null,
-      startedAt?: number,
-    ) => {
-      // Keep timeline order exact: buffered text lands BEFORE this tool event.
-      stream.flush();
-      patchMessage(assistantId, (m) => {
-        const calls = m.tool_calls ? [...m.tool_calls] : [];
-        const idx = calls.findIndex((c) => c.id === tc.id);
-        const next = {
-          id: tc.id,
-          name: tc.function.name,
-          arguments: tc.function.arguments || "",
-          result: result !== undefined ? result : idx >= 0 ? calls[idx].result : null,
-          durationMs: idx >= 0 ? calls[idx].durationMs : undefined,
-          // This object is rebuilt from scratch on every argument delta, so a
-          // field that is not carried forward here is a field that is wiped
-          // dozens of times per call.
-          startedAt: startedAt ?? (idx >= 0 ? calls[idx].startedAt : undefined),
-        };
-        if (idx >= 0) calls[idx] = next;
-        else calls.push(next);
-        // A tool starting means the reasoning phase is over — collapse it
-        // (mirrors the IDE flipping `isThinking` off once work begins). The
-        // tool is also appended to the ORDERED timeline so it renders in the
-        // exact spot the model emitted it (between content segments).
-        return {
-          ...m,
-          tool_calls: calls,
-          isThinking: false,
-          // `clearReconnect` for the case where the recovered attempt opens
-          // with a tool call instead of text — the text flush is the usual
-          // place the marker goes, and it never runs on that path.
-          timeline: upsertToolEvent(clearReconnect(timelineOf(m)), next),
-        };
-      });
-    };
-    // `shell_spawn` starts something that outlives the tool call, so the user
-    // needs a way to see and stop it. Mirror the spawn into the per-thread
-    // background store, which drives the cards docked above the composer; a
-    // `shell_kill` settles the matching card so it stops claiming to run.
-    const captureBackgroundProcess = (tc: ToolCallRequest, result: string) => {
-      if (tc.function.name === "shell_spawn") {
-        const spawned = parseSpawnResult(result);
-        if (spawned) useAgentBackgroundStore.getState().track(threadId, spawned);
-        return;
-      }
-      if (tc.function.name === "shell_kill") {
-        const killed = parseKillResult(result);
-        // "stopped", not "exited": the agent ended it deliberately, which is
-        // also what the log's closing line says. A row reporting a natural
-        // finish for a kill would contradict the file.
-        if (killed) useAgentBackgroundStore.getState().settle(killed, "stopped");
-      }
-    };
-
-    // `generate_image` lands its picture on the Canvas from the Rust side, so
-    // the artifact store has not seen it. Re-read the bundle on success (an
-    // error result is a sentinel string, never a marker) so the card's "Open in
-    // Canvas" finds the entry and the dock's Canvas tab lists it without a
-    // reload. Fire-and-forget: the tool already succeeded.
-    const captureCanvasWrite = (tc: ToolCallRequest, result: string) => {
-      if (tc.function.name !== "generate_image") return;
-      if (result.trimStart().startsWith("[error]")) return;
-      void useAgentArtifactStore.getState().absorbRuntimeWrite(threadId);
-    };
+    // Everything the stream writes into the transcript (`send/turn-writer.ts`),
+    // shared with a window following this turn from another client. What
+    // stays here is what only the sender does: usage for the ring, approval,
+    // and the end-of-turn hand-off.
+    const writer = createTurnWriter(threadId, assistantId);
+    const { patchMessage, timer } = writer;
 
     // The checklist is NOT mirrored from tool-call arguments any more. Rust
     // emits `agent_todo_write` after every todo tool call and
     // `useAgentTaskStore` subscribes to it, so `todo_update` and `todo_write`
     // both move the panel. Parsing args here only ever saw `todo_write`, which
     // is why the panel froze at 0/N while the agent worked the list.
-
-    const setToolResult = (tc: ToolCallRequest, result: string, durationMs?: number) => {
-      stream.flush();
-      patchMessage(assistantId, (m) => {
-        const calls = (m.tool_calls ?? []).map((c) =>
-          c.id === tc.id
-            ? { ...c, result, durationMs: durationMs ?? c.durationMs }
-            : c,
-        );
-        const updated = calls.find((c) => c.id === tc.id);
-        return {
-          ...m,
-          tool_calls: calls,
-          timeline: updated
-            ? upsertToolEvent(timelineOf(m), updated)
-            : timelineOf(m),
-        };
-      });
-    };
 
     // The workspace path and the access rules used to ride here, and they do
     // not belong: neither changes while a conversation runs, so re-sending
@@ -805,10 +684,22 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // words, and it never changes again. Standing facts (rules, skills, the
     // mode) are in the system prompt — putting them here
     // meant a copy of the project rules in every message's saved context.
-    const ideContext =
-      [openFilesBlock, selectionBlock, ruleBlock, mcpBlock, imageBlock]
-        .filter(Boolean)
-        .join("\n\n") || null;
+    const ideContext = joinContextBlocks([
+      openFilesBlock,
+      selectionBlock,
+      ruleBlock,
+      mcpBlock,
+      imageBlock,
+    ]);
+    // The same facts, for the engine to build that text itself (Phase 3.5,
+    // shadow for now: the engine compares its text with `ideContext`).
+    const messageContext: EngineMessageContext = {
+      openFiles: fileTabs.map((tab) => tab.path as string),
+      activeFile: activeFilePath,
+      pickedElements: picks.map((pick) => ({ index: pick.index, element: pick.element })),
+      mcpServerNames: commandSelection.mcpServerNames,
+      imageRequested: commandSelection.imageRequested,
+    };
 
     // Per-model reasoning: the active model may carry an effort, toggle, or
     // budget profile set in Provider settings / the composer picker. The
@@ -821,17 +712,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
     // doesn't (many OpenAI-compatible backends skip `stream_options.include_usage`),
     // we fall back to a local tiktoken estimate so the context ring still shows.
     let usageFired = false;
-    // The live compaction timeline-event id, set when a compaction starts mid-
-    // turn so its completion can flip the same inline marker (before→after,
-    // stop shimmer). It rides INSIDE the streaming assistant message's timeline
-    // so content streamed after compaction renders below the marker.
-    let compactionEventId: string | null = null;
-
-    // Runtime notices already shown inline this turn. A failure the runtime
-    // announces first and then fails on (a dropped stream) arrives twice —
-    // once as the notice event, once as the rejection — and must only be said
-    // once. Scoped per turn so a later turn can legitimately repeat it.
-    const noticedMessages = new Set<string>();
 
     // A DEDICATED service instance for this turn so concurrent turns on other
     // threads keep their own client/config. Registered so `stop()` can target it.
@@ -908,23 +788,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       await agent.chat(
         contentForModel,
         {
-          onToken: (token) => {
-            // Final-answer text is streaming — the narrator reads "Responding…".
-            setActivity({ label: "Responding…" });
-            stream.queue("content", token);
-          },
-          onThinking: (text) => {
-            setActivity({ label: "Thinking…" });
-            // A zero-length thinking event carries no renderable text — the
-            // Anthropic adapter emits one at `content_block_stop` purely to
-            // hand over the block signature, which the UI has no use for.
-            // Appending it would open an empty reasoning segment that renders
-            // as a bare "…" (AgentThinkingBlock's `content || "…"` fallback),
-            // and after a tool row it can't merge into a prior segment so it
-            // becomes its own stray row.
-            if (!text) return;
-            stream.queue("thinking", text);
-          },
+          ...writer.callbacks,
           onUsage: (usage) => {
             usageFired = true;
             const context = useAgentContextStore.getState();
@@ -947,135 +811,7 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
             // compaction it triggered. Marking is free; the refetch happens
             // only while the card is actually open.
             context.invalidateBreakdown(threadId);
-            // The transcript's turn summary counts what this turn generated.
-            // Every request of the turn lands on this one streaming message, so
-            // they are added up here; a reload reads the same numbers back per
-            // message from the session file.
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              usage: {
-                input_tokens: (m.usage?.input_tokens ?? 0) + usage.promptTokens,
-                output_tokens: (m.usage?.output_tokens ?? 0) + usage.completionTokens,
-                estimated: m.usage?.estimated === true || usage.estimated === true || undefined,
-              },
-            }));
-          },
-          onQueuedMessageInjected: (text, chips, origin, agent, detail) => {
-            // The runtime drained the queue and stapled the user's text onto the
-            // tool message it's about to send. Render it inline in the streaming
-            // assistant message — after the tool result, before the agent
-            // continues — so the order matches what the model saw. No separate
-            // user bubble (that would land after the streaming message and read
-            // as if the agent replied before the user spoke). Then drop the pill.
-            // `text` is the display copy; `chips` re-render the composer pills.
-            //
-            // The same slot also carries machine events — a background process
-            // ending or being stopped. Those are nobody's words, so they get
-            // the checklist beat's one-line row instead of the user's, and they
-            // never touch the composer pill (they never lit it).
-            stream.flush();
-            if (origin === "process") {
-              patchMessage(assistantId, (m) => ({
-                ...m,
-                timeline: appendProcessBeat(timelineOf(m), text),
-              }));
-              return;
-            }
-            if (origin === "subagent") {
-              // A sub-agent reported back mid-turn. `text` is the one-line
-              // summary, `detail` the report the model read; both ride the
-              // card, the same shape `threads.rs` rebuilds after a reload.
-              patchMessage(assistantId, (m) => ({
-                ...m,
-                timeline: appendAgentReport(timelineOf(m), {
-                  agentId: agent?.agentId ?? "",
-                  name: agent?.name ?? null,
-                  status: agent?.status ?? "completed",
-                  summary: text,
-                  detail: detail ?? "",
-                  arrivedLive: true,
-                }),
-              }));
-              return;
-            }
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              timeline: appendUserInjection(timelineOf(m), text, chips),
-            }));
-            useAgentChatStore.getState().clearQueuedMessage(threadId);
-          },
-          // Context compaction (Rust runtime). The marker is appended to the
-          // live transcript so the user sees it immediately; the authoritative
-          // inline marker re-renders from the session JSONL on reopen. The
-          // summary text is never sent to the UI — only the before→after drop.
-          onCompactionStarted: () => {
-            setActivity({ label: "Compacting context…" });
-            stream.flush();
-            const id = nextEventId();
-            compactionEventId = id;
-            // Drop the marker INTO the streaming assistant timeline at the
-            // current point, so prior content stays above it and everything the
-            // agent streams next lands below it.
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              timeline: appendCompaction(timelineOf(m), id),
-            }));
-          },
-          onCompactionCompleted: (beforeTokens, afterTokens) => {
-            setActivity({ label: "Responding…" });
-            if (compactionEventId) {
-              const id = compactionEventId;
-              patchMessage(assistantId, (m) => ({
-                ...m,
-                timeline: finishCompaction(timelineOf(m), id, {
-                  status: "completed",
-                  beforeTokens,
-                  afterTokens,
-                }),
-              }));
-              compactionEventId = null;
-            }
-            // Drop the ring immediately to the post-compaction size; the next
-            // real usage event replaces it with a measurement. Recorded as a
-            // PROJECTION rather than as usage — see `setProjectedUsage`.
-            useAgentContextStore.getState().setProjectedUsage(threadId, afterTokens);
-          },
-          onCompactionFailed: ({ beforeTokens, reason, cancelled }) => {
-            setActivity({ label: cancelled ? "Stopped" : "Responding…" });
-            if (!compactionEventId) return;
-            const id = compactionEventId;
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              timeline: finishCompaction(timelineOf(m), id, {
-                status: cancelled ? "cancelled" : "failed",
-                beforeTokens,
-                reason,
-              }),
-            }));
-            compactionEventId = null;
-          },
-          onToolCall: (tc) => {
-            setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
-            upsertToolCall(tc);
-          },
-          onToolExecutionStart: (tc) => {
-            timer.start(tc.id);
-            setActivity(describeToolActivity(tc.function.name, tc.function.arguments || ""));
-            // The card's clock starts here, on the same event `timer.start`
-            // anchors the measured duration to, so the running number and the
-            // settled one describe the same span.
-            upsertToolCall(tc, undefined, Date.now());
-          },
-          onToolExecutionComplete: (tc, result) => {
-            captureBackgroundProcess(tc, result);
-            captureCanvasWrite(tc, result);
-            setToolResult(tc, result, timer.settle(tc.id));
-          },
-          onToolExecutionError: (tc, error) =>
-            setToolResult(tc, `[error] ${error}`, timer.settle(tc.id)),
-          onToolRejected: (tc, reason) => {
-            timer.forget(tc.id);
-            setToolResult(tc, `[rejected] ${reason}`);
+            writer.addUsage(usage);
           },
           onToolApprovalRequired: async (tc) => {
             const approvalBegan = performance.now();
@@ -1127,82 +863,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               }
             }
           },
-          // Something the runtime needs to say that the model did NOT say —
-          // most importantly "this reply is cut off at the output limit".
-          // Its own marker, never folded into the assistant's text.
-          onRuntimeNotice: ({ message }) => {
-            noticedMessages.add(message);
-            stream.flush();
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              // Retrying is over — either it worked and this notice is about
-              // something else, or it ran out of attempts and THIS is the
-              // explanation. Either way a spinner promising another try would
-              // be a lie, so it goes.
-              timeline: appendNotice(clearReconnect(timelineOf(m)), message),
-            }));
-          },
-          onStreamAttemptStarted: () => {
-            // Text queued before this point belongs to an earlier attempt and
-            // survives a discard of this one.
-            stream.beginAttempt();
-            // Store patches and timeline appenders replace their values; this
-            // immutable snapshot also preserves text merged into an older row.
-            patchMessage(assistantId, (m) => {
-              streamAttemptCheckpoint = m;
-              return m;
-            });
-          },
-          // Restore only this attempt's output. The next flush replaces the
-          // reconnect marker with the new response from its first token.
-          onPartialReplyDiscarded: ({ attempt, maxAttempts }) => {
-            stream.dropPending();
-            patchMessage(assistantId, (m) => {
-              const timeline = beginReconnect(
-                timelineOf(m),
-                nextEventId(),
-                attempt,
-                maxAttempts,
-                streamAttemptCheckpoint ? timelineOf(streamAttemptCheckpoint) : undefined,
-              );
-              return {
-                ...m,
-                timeline,
-                // Flat mirrors of the timeline, used by Copy and as the reload
-                // fallback. They cannot be un-appended, so they are rebuilt
-                // from what survived — otherwise the discarded text is gone
-                // from the transcript but still in everything derived from it.
-                content: textOf(timeline, "content"),
-                thinking: textOf(timeline, "thinking"),
-                // Drop abandoned tool IDs from the flat mirror too. Otherwise
-                // timeline hydration can resurrect a discarded preview card.
-                tool_calls: timeline.flatMap((event) =>
-                  event.kind === "tool" ? [event.call] : [],
-                ),
-                isThinking: false,
-              };
-            });
-            setActivity({ label: "Reconnecting…" });
-          },
-          onError: (error) => {
-            const message =
-              error instanceof Error ? error.message : String(error);
-            if (/cancel|abort/i.test(message)) return; // user stop → not an error
-            // Already shown as an inline notice (the runtime emits the event
-            // first, then fails the turn with the same message). Re-appending
-            // it as message prose would say it twice, in two different voices.
-            if (noticedMessages.has(message)) return;
-            const classified = classifyError(
-              error instanceof Error ? error : new Error(message),
-            );
-            const note = `\n\n**${classified.title}**\n\n${classified.message}\n\n${classified.suggestion}`;
-            stream.flush();
-            patchMessage(assistantId, (m) => ({
-              ...m,
-              content: `${m.content || ""}${note}`,
-              timeline: appendContent(timelineOf(m), note),
-            }));
-          },
         },
         undefined,
         ideContext,
@@ -1225,6 +885,10 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
               : undefined,
           // Standing facts for the system prompt: the project's rules.
           projectRules: autoRulesBlock,
+          attachedRuleFiles: commandSelection.ruleFilenames,
+          messageContext,
+          // The one input of the model choice the engine cannot read itself.
+          modelFacts: { cursorFast: activeModel ? isFastOn(activeModel.id) : null },
           // Persist the inspector chips natively onto the user message in the
           // session JSONL so they re-render above the bubble on reopen.
           attachedSelectedElements: selectionPills.length > 0 ? selectionPills : null,
@@ -1296,8 +960,6 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
         delete next[threadId];
         return next;
       });
-      // Land any tail of buffered stream text, then close the reasoning phase.
-      stream.flush();
       // The transcript on disk just gained this turn's requests, so the stored
       // conversation total is out of date. Marked rather than re-read: a
       // background turn on a chat nobody is looking at should not pay for a
@@ -1307,32 +969,8 @@ export function useAgentWindowSend(bound?: BoundConversation): AgentWindowSend {
       // tokens on every request it completed, and a total that quietly omits
       // them is exactly the kind of wrong this work exists to remove.
       useAgentContextStore.getState().invalidateBreakdown(threadId);
-      // Re-stamp the assistant message to the moment the turn SETTLED. It was
-      // seeded at send time because there was nothing to stamp yet, and
-      // `buildTurns` reads the last assistant message's timestamp as the turn's
-      // `endedAt` — so leaving the seed value makes every just-finished turn
-      // measure ~0ms and the "Worked 4m" footer silently disappears. It only
-      // came back after reopening the thread, because the runtime stamps the
-      // PERSISTED message at end-of-stream. This mirrors that on the optimistic
-      // message so the live view and the reloaded view agree.
-      const settledAt = nowIso();
-      patchMessage(assistantId, (m) => ({
-        ...m,
-        isThinking: false,
-        timestamp: settledAt,
-        // The turn has settled, so no further attempt is coming — and a live
-        // "Connection lost — retrying (2 of 3)" spinner is now a promise
-        // nothing will keep. It was only ever cleared by a recovered attempt
-        // streaming text or a tool event, or by a runtime notice landing in
-        // its place; a turn that ran out of attempts fails through `onError`,
-        // which cleared nothing, and a turn cancelled mid-retry returned from
-        // `onError` earlier still. Both left the spinner promising a fourth
-        // try, above a composer that had correctly gone back to Send — the
-        // transcript and the composer disagreeing about whether anything was
-        // running. Clearing here covers every way a turn can end, rather than
-        // one more path at a time.
-        timeline: clearReconnect(timelineOf(m)),
-      }));
+      // Land the stream's tail and stamp the message with when it settled.
+      writer.settle();
       const s = useAgentChatStore.getState();
       // The settle patch above is queued; the turn is read back below.
       s.flushTurnPatches();

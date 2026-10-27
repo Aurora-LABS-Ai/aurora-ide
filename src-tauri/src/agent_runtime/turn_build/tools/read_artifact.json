@@ -1,0 +1,31 @@
+{
+  "type": "function",
+  "function": {
+    "name": "read_artifact",
+    "description": "Read the immutable source of a saved Canvas artifact before revising it.\n\nCall it with NO artifactId to list every artifact this conversation has saved, with titles, kinds, and latest version tags. Do that when reopening older work or when you no longer have an id in context — artifacts persist for the life of the conversation, long after the turn that created them.\n\nOtherwise pass the artifactId and versionTag from an earlier present_artifact result. Omit query to retrieve the complete source. For a focused edit, provide a case-sensitive query and this returns exact matching excerpts with line numbers, reducing context usage while preserving text suitable for a patch find value.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "description": "Stable artifact id to read. Omit it to list every artifact saved in this conversation."
+        },
+        "versionTag": {
+          "type": "string",
+          "description": "Saved version such as v1. Defaults to the latest version."
+        },
+        "query": {
+          "type": "string",
+          "description": "Optional case-sensitive source text to find. When present, returns matching excerpts instead of the full document."
+        },
+        "contextLines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "Lines of surrounding context for query matches. Defaults to 2."
+        }
+      },
+      "required": []
+    }
+  }
+}

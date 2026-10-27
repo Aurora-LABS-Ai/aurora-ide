@@ -1,0 +1,28 @@
+{
+  "providerId": "anth",
+  "model": "plain-thinker",
+  "providerConfig": {
+    "providerId": "anth",
+    "providerType": "anthropic",
+    "baseUrl": "https://anth.example.invalid/v1",
+    "apiKey": "sk-anth",
+    "model": "plain-thinker",
+    "supportsThinking": true,
+    "reasoning": {
+      "enabled": true,
+      "control": "toggle",
+      "requestMode": "auto",
+      "replay": "auto"
+    },
+    "supportsVision": false,
+    "toolImagesInResult": false,
+    "contextWindow": 128000,
+    "maxOutputTokens": 16384
+  },
+  "temperature": null,
+  "maxOutputTokens": 16384,
+  "contextWindow": 128000,
+  "thinkingEnabled": true,
+  "thinkingBudgetTokens": null,
+  "compactionProviderConfig": null
+}

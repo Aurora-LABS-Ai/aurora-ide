@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { reasoningChoices, reasoningSummary } from "./model-settings";
+import { effortTier, reasoningChoices, reasoningSummary } from "./model-settings";
 
 const labels = (r: Parameters<typeof reasoningChoices>[0], max?: number) =>
   reasoningChoices(r, max).map((c) => (c.current ? `[${c.label}]` : c.label));
+
+describe("effortTier", () => {
+  it("colours levels above Low, more for each step", () => {
+    expect(["Off", "Minimal", "Low", "Medium", "High", "X-High", "Max"].map(effortTier)).toEqual([
+      0, 0, 0, 1, 2, 3, 4,
+    ]);
+  });
+
+  it("treats a toggle's Thinking as High and a budget size as plain", () => {
+    expect(effortTier("Thinking")).toBe(2);
+    expect(effortTier("8K")).toBe(0);
+    expect(effortTier(null)).toBe(0);
+  });
+});
 
 describe("reasoning choices", () => {
   it("offers Off and the levels, without a duplicate 'none', and names X-High", () => {

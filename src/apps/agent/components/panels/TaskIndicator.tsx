@@ -51,6 +51,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createPortal } from "react-dom";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { AGW_DURATION, AGW_EASE, sweepMotion } from "@/apps/agent/theme/motion";
 import { ToolGlyph } from "@/apps/agent/components/tools/tool-icons/ToolGlyph";
 import { toolMarkGlyph } from "@/apps/agent/components/tools/tool-icons/tool-icon-sets";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
@@ -77,14 +78,11 @@ export const TaskIndicator: React.FC = () => {
   const [peeking, setPeeking] = useState(false);
   const [flashing, setFlashing] = useState(false);
   const open = pinned || peeking || flashing;
-  // This card is the only popover in the window that can open with nobody
-  // touching it — the agent editing the list shows it. A menu that appears
-  // under the cursor you just clicked with should be quick; a panel that
-  // appears on its own at the same speed reads as a flicker in the corner of
-  // your eye. So the self-opening reveal gets its own, slower curve, and the
-  // hover/click paths keep the house tween the other menus use.
-  const selfOpened = flashing && !pinned && !peeking;
+  // One entrance however it opened: the sweep is slow enough for a card that
+  // appears with nobody touching it (it replaced a separate, slower curve for
+  // that case, which was 260ms against the sweep's 320ms).
   const reduceMotion = useReducedMotion();
+  const sweep = sweepMotion(true, !!reduceMotion);
 
   // The card is portaled and sits 8px below the trigger, so travelling from one
   // to the other crosses a gap that belongs to neither. Closing on the raw
@@ -319,27 +317,18 @@ export const TaskIndicator: React.FC = () => {
                   // that corner rather than swelling from its own middle.
                   transformOrigin: "top right",
                 }}
-                initial={{ opacity: 0, scale: 0.98, y: -6 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{
-                  opacity: 0,
-                  scale: 0.98,
-                  y: -4,
-                  // Leaving is always quicker than arriving, on an
-                  // accelerating curve — the panel gets out of the way rather
-                  // than easing to a stop on its way out.
-                  transition: { duration: reduceMotion ? 0 : 0.14, ease: [0.4, 0, 1, 1] },
-                }}
-                transition={
-                  reduceMotion
+                // Hangs below the indicator: it sweeps DOWN, opened by a hover,
+                // a click or the agent alike (`sweepMotion`). The resize stays
+                // on the quick house tween.
+                initial={sweep.initial}
+                animate={sweep.animate}
+                exit={sweep.exit}
+                transition={{
+                  ...sweep.transition,
+                  layout: reduceMotion
                     ? { duration: 0 }
-                    : selfOpened
-                      ? // Unprompted: longer, and decelerating the whole way in.
-                        { duration: 0.26, ease: [0, 0, 0.2, 1] }
-                      : // Answering a hover or a click: the house tween the
-                        // model menu and the rail popovers use.
-                        { duration: 0.16, ease: [0.16, 1, 0.3, 1] }
-                }
+                    : { duration: AGW_DURATION.base, ease: AGW_EASE.enter },
+                }}
                 // A peek must survive the pointer travelling from trigger to
                 // card, and reading the list inside it.
                 onMouseEnter={openPeek}

@@ -15,7 +15,7 @@
  * Themed purely with `--agw-*`. No focus halos — deliberate.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
@@ -204,6 +204,8 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   /** The message box itself — what a downward `@` / `/` menu hangs from. */
   const surfaceRef = useRef<HTMLDivElement>(null);
   const lastEmittedRef = useRef<string>("");
+  // The body's measure, so a value written from outside sizes it before paint.
+  const bodyMeasureRef = useRef<(() => void) | null>(null);
   // `isEmpty` = nothing SENDABLE (drives the send button + submit). A `/` command
   // pill serializes to nothing, so a command-only composer is still "empty".
   // `blank` = nothing VISIBLE at all (drives the placeholder) — a command pill
@@ -762,7 +764,13 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
   };
 
   // External value (suggestion prefill) → write plain text into the editor.
-  useEffect(() => {
+  //
+  // BEFORE paint (a layout effect), then the body measured at once. As a
+  // passive effect it ran after the screen had already painted the new state
+  // with the old, empty editor, and the body caught up a frame later still:
+  // a starter click showed the placeholder, then the text clipped at the top,
+  // then the final box — the composer shook (Alvan, 2026-10-28).
+  useLayoutEffect(() => {
     if (value === undefined) return;
     const el = editorRef.current;
     if (!el) return;
@@ -775,6 +783,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
       // work; the empty-state must then match the DOM we just wrote.
       syncEmpty();
       placeCaretAtEnd(el);
+      bodyMeasureRef.current?.();
     }
   }, [value, clearTyping, syncEmpty]);
 
@@ -1257,7 +1266,7 @@ export const AgentComposer: React.FC<AgentComposerProps> = ({
             input as pills (see `pickCommand` and the selection-sync effect),
             exactly like `@`-mentions — no separate chip rows. */}
 
-        <ComposerBody>
+        <ComposerBody measureRef={bodyMeasureRef}>
           {/* Staged image attachments + the vision-gate warning. */}
           {(images.length > 0 || visionWarn) && (
             <div className="agw-attach-row" onClick={(e) => e.stopPropagation()}>

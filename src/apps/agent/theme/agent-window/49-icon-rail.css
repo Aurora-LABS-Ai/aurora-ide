@@ -108,3 +108,8 @@
   background: var(--agw-accent);
   box-shadow: 0 0 0 2px var(--agw-iconrail-paint);
 }
+/* The browser cell's menu stands ABOVE its button (anchored by its bottom
+   edge), so it sweeps up rather than the project menu's down. */
+.agw-webhost-menu {
+  animation-name: agw-sweep-up;
+}

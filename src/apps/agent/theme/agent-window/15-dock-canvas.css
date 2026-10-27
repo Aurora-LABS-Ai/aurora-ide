@@ -996,17 +996,7 @@
   background: var(--agw-popover-surface);
   border: 1px solid var(--agw-border);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-enter);
-}
-@keyframes agw-pop-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+  /* A menu: opens in one frame (the Motion note in 01-root.css). */
 }
 .agw-addmenu-item {
   display: flex;

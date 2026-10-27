@@ -16,6 +16,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
+import { sweepMotion } from "@/apps/agent/theme/motion";
+
+const SWEEP_UP = sweepMotion(false);
 
 interface RailChipProps {
   icon: AgentIconName;
@@ -83,11 +86,11 @@ export const RailChip: React.FC<RailChipProps> = ({
           <motion.div
             className="agw-menu agw-crail-pop"
             onClick={(event) => event.stopPropagation()}
-            // Same tween as the model menu — a short rise, no spring overshoot.
-            initial={{ opacity: 0, scale: 0.98, y: 6 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.98, y: 6 }}
-            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+            // Stands above its chip, so it sweeps UP (`sweepMotion`).
+            initial={SWEEP_UP.initial}
+            animate={SWEEP_UP.animate}
+            exit={SWEEP_UP.exit}
+            transition={SWEEP_UP.transition}
           >
             {children}
           </motion.div>

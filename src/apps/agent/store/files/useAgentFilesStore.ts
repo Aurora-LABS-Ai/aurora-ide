@@ -33,6 +33,22 @@ function sortEntries(entries: FileEntry[]): FileEntry[] {
     });
 }
 
+export interface FilesView {
+  query: string;
+  scrollTop: number;
+}
+
+const EMPTY_VIEW: FilesView = { query: "", scrollTop: 0 };
+
+/** One spelling per file for `fileStamp`: the watcher and a tab may differ in
+ *  slash direction and (on Windows) letter case for the same file. */
+export function fileStampKey(path: string): string {
+  return path.replace(/\\/g, "/").toLowerCase();
+}
+
+/** Folders changed while their read was in flight: read again when it lands. */
+const rereadWhenDone = new Set<string>();
+
 interface AgentFilesState {
   /** The project the tree is bound to. */
   root: string | null;
@@ -46,13 +62,33 @@ interface AgentFilesState {
   loading: Record<string, boolean>;
   /** dir paths whose read failed (unreadable / permission). */
   failed: Record<string, boolean>;
+  /**
+   * Where the user was, per project: the filter text and the scroll position.
+   * The Files tab is rebuilt every time it becomes the active tab, and these
+   * lived in it, so switching away and back reset you to the top with the
+   * filter cleared. Kept per root like the Codex reference's file tree; kept
+   * across project switches, so going back to a project restores it too.
+   */
+  view: Record<string, FilesView>;
+  /** Merge into the view of `root`. */
+  setView: (root: string, patch: Partial<FilesView>) => void;
+  /**
+   * How many times the watcher has reported each file changed, keyed by
+   * `fileStampKey`. An open file tab reads it so it re-reads its file when the
+   * agent (or anything else) writes it, instead of showing the old content.
+   */
+  fileStamp: Record<string, number>;
 
   /** Bind to a project root; resets the tree and loads the root level. */
   setRoot: (root: string | null) => void;
   /** Pick a file for the viewer (null returns to the tree). */
   select: (path: string | null) => void;
-  /** Read a directory's children into the cache (no-op if already cached). */
-  loadDir: (path: string) => Promise<void>;
+  /**
+   * Read a directory's children into the cache. A no-op if already cached,
+   * unless `fresh`: then it re-reads and REPLACES the listing when the read
+   * lands, keeping the old one on screen meanwhile.
+   */
+  loadDir: (path: string, fresh?: boolean) => Promise<void>;
   /** Expand/collapse a folder, loading its children on first open. */
   toggleDir: (path: string) => void;
   /** Collapse every folder (keeps the cache). */
@@ -74,9 +110,20 @@ export const useAgentFilesStore = create<AgentFilesState>((set, get) => ({
   childrenByDir: {},
   loading: {},
   failed: {},
+  view: {},
+  fileStamp: {},
+
+  setView: (root, patch) =>
+    set((prev) => {
+      const current = prev.view[root] as FilesView | undefined;
+      return {
+        view: { ...prev.view, [root]: { ...(current ?? EMPTY_VIEW), ...patch } },
+      };
+    }),
 
   setRoot: (root) => {
     if (root === get().root) return;
+    rereadWhenDone.clear();
     set({
       root,
       selectedPath: null,
@@ -90,9 +137,15 @@ export const useAgentFilesStore = create<AgentFilesState>((set, get) => ({
 
   select: (path) => set({ selectedPath: path }),
 
-  loadDir: async (path) => {
+  loadDir: async (path, fresh = false) => {
     const s = get();
-    if (s.childrenByDir[path] || s.loading[path]) return;
+    if (s.loading[path]) {
+      // A read is already out, and it may have started before this change:
+      // read once more when it lands rather than trust it.
+      if (fresh) rereadWhenDone.add(path);
+      return;
+    }
+    if (s.childrenByDir[path] && !fresh) return;
     set((prev) => ({ loading: { ...prev.loading, [path]: true } }));
     try {
       const entries = await readDirectory(path, { includeHidden: true });
@@ -115,6 +168,7 @@ export const useAgentFilesStore = create<AgentFilesState>((set, get) => ({
         return { loading, failed: { ...prev.failed, [path]: true } };
       });
     }
+    if (rereadWhenDone.delete(path)) void get().loadDir(path, true);
   },
 
   toggleDir: (path) => {
@@ -125,18 +179,27 @@ export const useAgentFilesStore = create<AgentFilesState>((set, get) => ({
 
   collapseAll: () => set({ expanded: {} }),
 
+  // Re-read what is on screen and swap each listing in as it lands. Nothing is
+  // cleared first: clearing blanked the whole tree to "Loading…" and back.
   refresh: () => {
     const { root, expanded, loadDir } = get();
     const toReload = [root, ...Object.keys(expanded).filter((p) => expanded[p])].filter(
       (p): p is string => !!p,
     );
-    set({ childrenByDir: {}, failed: {}, loading: {} });
-    for (const p of toReload) void loadDir(p);
+    for (const p of toReload) void loadDir(p, true);
   },
 
   applyFsChange: (paths) => {
     const { root, childrenByDir, loadDir } = get();
     if (!root) return;
+    set((prev) => {
+      const fileStamp = { ...prev.fileStamp };
+      for (const p of paths) {
+        const key = fileStampKey(p);
+        fileStamp[key] = (fileStamp[key] ?? 0) + 1;
+      }
+      return { fileStamp };
+    });
     const dirs = new Set<string>();
     for (const p of paths) {
       // The directory that GAINED/LOST this entry (a create/remove shows up as a
@@ -148,12 +211,9 @@ export const useAgentFilesStore = create<AgentFilesState>((set, get) => ({
       if (childrenByDir[p] !== undefined) dirs.add(p);
     }
     if (dirs.size === 0) return;
-    // Evict so `loadDir` re-reads instead of short-circuiting on the cache.
-    set((prev) => {
-      const next = { ...prev.childrenByDir };
-      for (const d of dirs) delete next[d];
-      return { childrenByDir: next };
-    });
-    for (const d of dirs) void loadDir(d);
+    // Re-read in place. This used to evict first, and an evicted folder
+    // renders as empty until the read lands, so every agent edit made the open
+    // folder blink.
+    for (const d of dirs) void loadDir(d, true);
   },
 }));

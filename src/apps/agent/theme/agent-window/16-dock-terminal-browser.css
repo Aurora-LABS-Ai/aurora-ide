@@ -676,7 +676,8 @@
   background: var(--agw-popover-surface);
   border: 1px solid var(--agw-border);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-enter);
+  /* A suggestion list under a field: it appears in one frame, like the
+     browser's own address-bar dropdown. */
 }
 .agw-br-sugg-head {
   padding: 6px 9px 3px;

@@ -15,7 +15,7 @@ import React from "react";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { AgwSwitch } from "@/apps/agent/settings/primitives";
 
-import type { ReasoningChoice } from "./model-settings";
+import { effortTier, type ReasoningChoice } from "./model-settings";
 
 export interface FlyoutFast {
   /** Fast can run with the reasoning chosen now. */
@@ -62,7 +62,9 @@ export const EffortFlyout = React.forwardRef<
         onMouseEnter={() => onPoint(i)}
         onClick={() => onChoose(i)}
       >
-        <span>{choice.label}</span>
+        <span className="agw-model-fly-label" data-effort={effortTier(choice.label)}>
+          {choice.label}
+        </span>
         {choice.current && <AgentIcon name="check" size={14} className="agw-model-check" />}
       </div>
     ))}

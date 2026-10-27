@@ -14,7 +14,7 @@
  * `openFileTab`; editing is handed off to the IDE. Themed with `--agw-*`.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
@@ -215,7 +215,16 @@ export const FilesPanel: React.FC = () => {
   const refresh = useAgentFilesStore((s) => s.refresh);
   const activeFile = useActiveFilePath();
 
-  const [query, setQuery] = useState("");
+  // Filter text and scroll position live in the store, per project: this tab
+  // is rebuilt each time it becomes active, and kept here they were lost on
+  // every tab switch.
+  const query = useAgentFilesStore((s) => (projectRoot ? (s.view[projectRoot]?.query ?? "") : ""));
+  const setView = useAgentFilesStore((s) => s.setView);
+  const setQuery = (value: string) => {
+    if (projectRoot) setView(projectRoot, { query: value });
+  };
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollSave = useRef<number | undefined>(undefined);
   // The flat index, tagged with the project it was built for. Switching
   // project keeps this panel mounted, so an untagged list went on answering
   // the filter with the PREVIOUS project's files.
@@ -293,6 +302,29 @@ export const FilesPanel: React.FC = () => {
     setRoot(projectRoot);
   }, [projectRoot, setRoot]);
 
+  // Put the tree back where the user left it, once its rows are there (they
+  // are at once when the listing is cached), and save the spot on the way out.
+  // Scrolling saves 100ms after it stops, like the Codex reference.
+  const hasRows = rootKids !== undefined;
+  const filteringNow = query.trim().length > 0;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !projectRoot || !hasRows || filteringNow) return;
+    el.scrollTop = useAgentFilesStore.getState().view[projectRoot]?.scrollTop ?? 0;
+    return () => {
+      window.clearTimeout(scrollSave.current);
+      setView(projectRoot, { scrollTop: el.scrollTop });
+    };
+  }, [projectRoot, hasRows, filteringNow, setView]);
+  const onTreeScroll = () => {
+    const el = scrollRef.current;
+    if (!el || !projectRoot || filteringNow) return;
+    window.clearTimeout(scrollSave.current);
+    scrollSave.current = window.setTimeout(() => {
+      setView(projectRoot, { scrollTop: el.scrollTop });
+    }, 100);
+  };
+
   // Lazily load the flat index the first time the user filters.
   useEffect(() => {
     if (!query.trim() || index || !projectRoot || indexLoading.current === projectRoot) return;
@@ -323,7 +355,7 @@ export const FilesPanel: React.FC = () => {
     );
   }
 
-  const filtering = query.trim().length > 0;
+  const filtering = filteringNow;
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -365,7 +397,12 @@ export const FilesPanel: React.FC = () => {
       </div>
 
       {/* Body */}
-      <div className="agw-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
+      <div
+        ref={scrollRef}
+        onScroll={onTreeScroll}
+        className="agw-scroll"
+        style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}
+      >
         {filtering ? (
           index === null ? (
             <div className="agw-tree-hint" style={{ padding: "14px 12px" }}>

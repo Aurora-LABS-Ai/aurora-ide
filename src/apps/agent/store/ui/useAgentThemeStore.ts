@@ -29,6 +29,7 @@ import {
   type TranscriptTextPace,
   type WorkCardGlide,
   APPEARANCE_PREFS,
+  DEFAULT_RAIL_GLIDE_MS,
   defaultAppearancePrefs,
   hasAppearancePrefChanges,
   resettableAppearancePrefs,
@@ -380,7 +381,7 @@ export const useAgentThemeStore = create<AgentThemeState>()(
     }),
     {
       name: "aurora-agent-window-theme",
-      version: 2,
+      version: 3,
       // v0 → v1: prune STALE typography overrides so old snapshots stop
       // silently overriding the shipped baseline. Two cases only, both safe:
       //   - an override equal to a RETIRED default (the pre-variable Inter
@@ -395,12 +396,21 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       // saved default apart from a choice, and the switch was off by default
       // for its whole life, so it is turned on once here; turning it off again
       // afterwards sticks.
+      //
+      // v2 → v3: the panel glide default went 580ms → 300ms (the Codex
+      // reference's largest reveal; 580 read as heavy). Same reasoning: the old
+      // default sits in every snapshot, so exactly 580 moves to the new
+      // default once; any other value was chosen and is kept.
       migrate: (persisted, version) => {
         const state = persisted as {
           customizations?: Record<string, Partial<AgentThemeTokens>>;
           transcriptSmoothTools?: boolean;
+          railGlideMs?: number;
         } | null;
         if (state && version < 2) state.transcriptSmoothTools = true;
+        if (state && version < 3 && state.railGlideMs === 580) {
+          state.railGlideMs = DEFAULT_RAIL_GLIDE_MS;
+        }
         const customizations = state?.customizations;
         if (!customizations) return persisted;
         const retired = new Set<string>([

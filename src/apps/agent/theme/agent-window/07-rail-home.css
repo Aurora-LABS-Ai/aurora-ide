@@ -554,7 +554,11 @@
   border-radius: 10px;
   background: var(--agw-surface-elevated);
   box-shadow: var(--agw-shadow-menu);
-  animation: agw-projmenu-in var(--agw-dur-fast) ease-out both;
+  /* Sweeps open below its trigger (project picker, surface switcher, the `+`
+     menu on the home screen). A `+` menu that opened upward sweeps up instead
+     (03-composer.css). */
+  animation: agw-sweep-down var(--agw-dur-sweep) var(--agw-ease-snappy)
+    var(--agw-sweep-delay) backwards;
 }
 .agw-projmenu:focus {
   outline: none;
@@ -626,20 +630,15 @@
 /* Keyboard and pointer share one highlight — the active row is the same row
  * whichever input is driving, so there is never a second, competing cursor.
  *
- * DERIVED from the text colour, not a literal. This was `#ffffff0f`, white at
- * 6%, which is a visible highlight on the dark popover and NOTHING on Daylight
- * (white at 6% over a white menu), so the project menu and the `+` menu built
- * on it had no highlight at all in the light theme — neither hover nor the
- * keyboard cursor. `--agw-state-selected` is a text mix, and text is the
- * high-contrast pole in either appearance. */
+ * The window's one hover fill (`--agw-hover-paint`), as on the left rail: it
+ * used to paint `--agw-state-selected`, a stronger fill the Appearance hover
+ * setting never reached (Alvan, 2026-10-28). Never a white-at-N% literal: the
+ * theme's hover token is ink-based in light themes, so it shows on Daylight. */
 .agw-projmenu-row[data-active] {
-  background: var(--agw-state-selected);
+  background: var(--agw-hover-paint);
 }
-/* Pressed, one step past the highlight. Derived from the SELECTED fill rather
-   than `--agw-press-paint`, because this row's resting highlight is
-   `--agw-state-selected` and a press has to deepen whatever it is sitting on. */
 .agw-projmenu-row:active {
-  background: color-mix(in srgb, var(--agw-state-selected) 80%, var(--agw-text) 20%);
+  background: var(--agw-press-paint);
 }
 .agw-projmenu-row[data-current] .agw-projmenu-name {
   color: var(--agw-accent);
@@ -683,20 +682,7 @@
   border-radius: 0 0 7px 7px;
   flex: none;
 }
-@keyframes agw-projmenu-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
-  .agw-projmenu {
-    animation: none;
-  }
   .agw-projsw-chev {
     transition: color var(--agw-dur-fast) ease;
   }

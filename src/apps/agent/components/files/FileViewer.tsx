@@ -31,6 +31,7 @@ import {
 import { AgentMarkdown } from "@/apps/agent/components/conversation/AgentMarkdown";
 import { openInIde } from "@/apps/agent/adapters/open-in-ide";
 import { selectActiveAgentTheme, useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
+import { fileStampKey, useAgentFilesStore } from "@/apps/agent/store/files/useAgentFilesStore";
 
 /** Bytes past which we refuse inline preview (Shiki janks; viewer scroll lags). */
 const MAX_VIEW_BYTES = 1.5 * 1024 * 1024; // 1.5 MiB
@@ -51,6 +52,24 @@ const BINARY_EXT = new Set([
   "mkv", "webm", "woff", "woff2", "ttf", "otf", "eot",
   "db", "sqlite", "node",
 ]);
+
+/**
+ * The last text read per path, for the file tabs (most recent last). Small on
+ * purpose: it exists so switching between a few open tabs is instant, not to
+ * hold the project in memory.
+ */
+const TEXT_CACHE_MAX = 24;
+const textCache = new Map<string, string>();
+
+function rememberText(path: string, content: string): void {
+  textCache.delete(path);
+  textCache.set(path, content);
+  while (textCache.size > TEXT_CACHE_MAX) {
+    const oldest = textCache.keys().next().value;
+    if (oldest === undefined) break;
+    textCache.delete(oldest);
+  }
+}
 
 function extOf(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -230,12 +249,21 @@ export const FileViewer: React.FC<{
       ? "binary"
       : "text";
 
+  // A file tab is rebuilt every time it becomes the active tab. It starts from
+  // the last text read for this path, so switching back shows the file at
+  // once instead of "loading"; the read below still runs and replaces it if
+  // the file changed.
   const [text, setText] = useState<
     | { kind: "loading" }
     | { kind: "ready"; content: string }
     | { kind: "unsupported" }
     | { kind: "error"; message: string }
-  >({ kind: "loading" });
+  >(() => {
+    const cached = textCache.get(path);
+    return cached === undefined ? { kind: "loading" } : { kind: "ready", content: cached };
+  });
+  // Bumped by the watcher when this file changes on disk: read it again.
+  const stamp = useAgentFilesStore((s) => s.fileStamp[fileStampKey(path)] ?? 0);
 
   // Markdown renders as rich preview by default (it isn't editable here); the
   // toggle lets you drop to the raw source. Non-markdown ignores this.
@@ -243,9 +271,10 @@ export const FileViewer: React.FC<{
 
   const reqId = useRef(0);
 
-  // Read the bytes for text files. The effect body calls no setState directly
-  // (only its async callbacks do), so a fresh instance starts on "loading" from
-  // the initializer and settles once the read resolves.
+  // Read the bytes for text files, on open and on every change the watcher
+  // reports. The effect body calls no setState directly (only its async
+  // callbacks do); a fresh instance starts from the cache or "loading" via the
+  // initializer and settles once the read resolves.
   useEffect(() => {
     if (mode !== "text") return;
     const id = ++reqId.current;
@@ -254,16 +283,22 @@ export const FileViewer: React.FC<{
         if (id !== reqId.current) return;
         // Oversized, or a NUL byte (never present in source text) -> unviewable.
         if (content.length > MAX_VIEW_BYTES || content.includes(String.fromCharCode(0))) {
+          textCache.delete(path);
           setText({ kind: "unsupported" });
           return;
         }
-        setText({ kind: "ready", content });
+        rememberText(path, content);
+        // Same text as on screen: keep the object, so nothing re-renders.
+        setText((prev) =>
+          prev.kind === "ready" && prev.content === content ? prev : { kind: "ready", content },
+        );
       })
       .catch((err) => {
         if (id !== reqId.current) return;
+        textCache.delete(path);
         setText({ kind: "error", message: String(err?.message ?? err) });
       });
-  }, [mode, path]);
+  }, [mode, path, stamp]);
 
   // The markdown toggle only makes sense once we have text to show.
   const showMdToggle = isMarkdown && mode === "text" && text.kind === "ready";

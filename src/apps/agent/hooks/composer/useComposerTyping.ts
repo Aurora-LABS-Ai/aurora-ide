@@ -157,6 +157,33 @@ export interface ComposerTyping {
   isProgrammaticEdit: () => boolean;
 }
 
+/**
+ * Does a just-placed ghost sit whole on the line the caret is on?
+ *
+ * False when it broke across lines, or moved to the next line as a unit
+ * (compared with whatever precedes it: the last character of the text, or a
+ * pill). Without layout (tests) there is nothing to measure and it fits.
+ */
+export function fitsCaretLine(span: HTMLElement): boolean {
+  const own = span.getClientRects();
+  if (own.length === 0) return true;
+  if (own.length > 1) return false;
+  const prev = span.previousSibling;
+  let rects: DOMRectList | null = null;
+  if (prev && prev.nodeType === Node.TEXT_NODE && (prev as Text).length > 0) {
+    const text = prev as Text;
+    const range = document.createRange();
+    range.setStart(text, text.length - 1);
+    range.setEnd(text, text.length);
+    rects = range.getClientRects();
+  } else if (prev && prev.nodeType === Node.ELEMENT_NODE) {
+    rects = (prev as Element).getClientRects();
+  }
+  const before = rects && rects.length > 0 ? rects[rects.length - 1] : null;
+  if (!before) return true;
+  return Math.abs(before.top - own[0].top) < Math.max(1, before.height / 2);
+}
+
 export function useComposerTyping(
   editorRef: React.RefObject<HTMLDivElement | null>,
 ): ComposerTyping {
@@ -379,6 +406,14 @@ export function useComposerTyping(
           sel.removeAllRanges();
           sel.addRange(pin);
         }
+      }
+      // A suggestion that would not fit on the caret's line is not shown. Let it
+      // wrap and the composer grew a line for grey text, then shrank when it
+      // went: the whole box jumped while typing (Alvan, 2026-10-28). Measured
+      // and removed in the same task, so the wrapped version is never painted.
+      if (!fitsCaretLine(span)) {
+        span.remove();
+        return;
       }
       ghostElRef.current = span;
       ghostInfoRef.current = ghost;

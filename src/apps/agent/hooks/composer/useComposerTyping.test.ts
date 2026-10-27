@@ -1,7 +1,37 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { serializeFragment, splitTail } from "./useComposerTyping";
+import { fitsCaretLine, serializeFragment, splitTail } from "./useComposerTyping";
+
+/** jsdom has no layout: give an element the line boxes a browser would. */
+function boxes(el: Element, tops: number[]): void {
+  const list = tops.map((top) => ({ top, height: 24 }) as DOMRect);
+  el.getClientRects = () => list as unknown as DOMRectList;
+}
+
+describe("fitsCaretLine", () => {
+  const ghostAfterPill = (ghostTops: number[], pillTop: number) => {
+    const root = document.createElement("div");
+    const pill = document.createElement("span");
+    const ghost = document.createElement("span");
+    root.append(pill, ghost);
+    boxes(pill, [pillTop]);
+    boxes(ghost, ghostTops);
+    return ghost;
+  };
+
+  it("shows a suggestion that stays on the caret's line", () => {
+    expect(fitsCaretLine(ghostAfterPill([100], 100))).toBe(true);
+  });
+
+  it("drops one that breaks across lines", () => {
+    expect(fitsCaretLine(ghostAfterPill([100, 124], 100))).toBe(false);
+  });
+
+  it("drops one that moved whole to the next line", () => {
+    expect(fitsCaretLine(ghostAfterPill([124], 100))).toBe(false);
+  });
+});
 
 describe("splitTail", () => {
   it("splits the word being typed from the word before it", () => {

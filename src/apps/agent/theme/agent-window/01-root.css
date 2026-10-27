@@ -241,15 +241,35 @@
    * `pop`    quick start, soft stop — popovers and menus appearing.
    * `out`    plain decelerate — things leaving or resizing.
    * `standard` accelerate-then-decelerate — moves between two resting places.
-   * `spring` slight overshoot — a toggle or thumb snapping into place. */
+   * `spring` slight overshoot — a toggle or thumb snapping into place.
+   * `snappy` short reveal with a soft landing — the model picker's entrance.
+   * `exit`   accelerates away — anything leaving. Leaving is never the
+   *          entrance played backwards: it is quicker (`--agw-dur-exit`, about
+   *          two thirds of `base`) and gets out of the way instead of easing
+   *          to a stop. Values from the Codex reference
+   *          (thirdparty/aurora-visual-foundation-reference/docs/MOTION.md).
+   *
+   * Ordinary menus do NOT animate: they open and close in one frame, like a
+   * native menu. Only purpose-built surfaces (the model picker, popovers that
+   * open on their own) get an entrance. */
   --agw-dur-fast: 0.12s;
   --agw-dur-base: 0.16s;
   --agw-dur-slow: 0.24s;
+  --agw-dur-exit: 0.1s;
+  /* The SWEEP: how a dropdown or hover card opens (model picker, project
+     picker, `+` menu, context card, checklist, rail chips). Revealed from the
+     edge next to its trigger, outward; 320ms after 30ms, `snappy` curve.
+     Keyframes `agw-sweep-down` / `agw-sweep-up` in 02-shell.css; the
+     JS-animated ones use `sweepMotion` in theme/motion.ts. */
+  --agw-dur-sweep: 0.32s;
+  --agw-sweep-delay: 30ms;
   --agw-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
   --agw-ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1);
   --agw-ease-out: cubic-bezier(0, 0, 0.2, 1);
   --agw-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --agw-ease-spring: cubic-bezier(0.34, 1.4, 0.6, 1);
+  --agw-ease-snappy: cubic-bezier(0.23, 1, 0.32, 1);
+  --agw-ease-exit: cubic-bezier(0.8, 0, 0.4, 1);
   /* Every height that opens or folds in the transcript (lib/motion/glide.ts). */
   --agw-glide-dur: 0.28s;
   --agw-glide-ease: var(--agw-ease-standard);

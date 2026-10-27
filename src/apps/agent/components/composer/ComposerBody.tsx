@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type MutableRefObject, type ReactNode } from "react";
 
 /**
  * Animate the space occupied by attachments, without scaling them.
@@ -10,7 +10,20 @@ import { useLayoutEffect, useRef, type ReactNode } from "react";
  * the caret by a frame or two on every Enter, and in a chat the transcript's
  * own auto-scroll was answering the same keystroke a second time.
  */
-export function ComposerBody({ children }: { children: ReactNode }) {
+export function ComposerBody({
+  children,
+  measureRef: parentMeasureRef,
+}: {
+  children: ReactNode;
+  /**
+   * Filled with this body's measure, for a parent that changes the content
+   * outside a render: the composer writing a starter prompt into its editor.
+   * Measured then, before paint, the box takes the new height in the same
+   * frame; left to the observer it showed one frame at the old height with
+   * the new text pinned to the bottom and its top lines cut off.
+   */
+  measureRef?: MutableRefObject<(() => void) | null>;
+}) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<(() => void) | null>(null);
@@ -50,6 +63,7 @@ export function ComposerBody({ children }: { children: ReactNode }) {
     };
 
     measureRef.current = measure;
+    if (parentMeasureRef) parentMeasureRef.current = measure;
     // A child resize can change the observed home column through this body's
     // height. Do not resize that ancestor during ResizeObserver delivery.
     const observer = new ResizeObserver(() => {
@@ -64,8 +78,9 @@ export function ComposerBody({ children }: { children: ReactNode }) {
       observer.disconnect();
       if (frame !== null) cancelAnimationFrame(frame);
       measureRef.current = null;
+      if (parentMeasureRef) parentMeasureRef.current = null;
     };
-  }, []);
+  }, [parentMeasureRef]);
 
   // Mount and normal editor renders still size before paint, without making
   // typing wait for the observer's deferred pass. Only attachments animate.

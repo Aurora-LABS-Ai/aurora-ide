@@ -176,11 +176,11 @@
      and the composer casts DOWN onto the panel instead (rule below). */
   box-shadow: 0 -10px 30px -16px
     color-mix(in srgb, var(--agw-overlay) 65%, transparent);
-  /* ENTRANCE IS OWNED BY THE COMPONENT, NOT BY CSS. `.agw-menu` sets
+  /* ENTRANCE IS OWNED BY THE COMPONENT, NOT BY CSS. `.agw-menu` used to set
      `agw-pop-in`, and a running CSS animation outranks the inline styles the
      motion layer writes — so the panel played the keyframe for 120ms and then
      snapped to wherever the JS animation had already travelled. That handoff
-     was the jolt. One owner; this family opts out. */
+     was the jolt. `.agw-menu` has no entrance now; this stays as a guard. */
   animation: none;
   transition: height var(--agw-dur-base) var(--agw-ease-out);
 }

@@ -25,6 +25,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createPortal } from "react-dom";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
+import { AGW_DURATION, AGW_EASE, sweepMotion } from "@/apps/agent/theme/motion";
 import { AgentLead } from "@/apps/agent/components/panels/subagent-parts";
 import {
   agentElapsedMs,
@@ -56,8 +57,9 @@ export const SubagentIndicator: React.FC = () => {
   const [peeking, setPeeking] = useState(false);
   const [flashing, setFlashing] = useState(false);
   const open = pinned || peeking || flashing;
-  const selfOpened = flashing && !pinned && !peeking;
   const reduceMotion = useReducedMotion();
+  // Same card, same entrance as the checklist's (TaskIndicator).
+  const sweep = sweepMotion(true, !!reduceMotion);
 
   const closeTimer = useRef<number | null>(null);
   const cancelClose = useCallback(() => {
@@ -224,21 +226,15 @@ export const SubagentIndicator: React.FC = () => {
                   zIndex: 12000,
                   transformOrigin: "top right",
                 }}
-                initial={{ opacity: 0, scale: 0.98, y: -6 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{
-                  opacity: 0,
-                  scale: 0.98,
-                  y: -4,
-                  transition: { duration: reduceMotion ? 0 : 0.14, ease: [0.4, 0, 1, 1] },
-                }}
-                transition={
-                  reduceMotion
+                initial={sweep.initial}
+                animate={sweep.animate}
+                exit={sweep.exit}
+                transition={{
+                  ...sweep.transition,
+                  layout: reduceMotion
                     ? { duration: 0 }
-                    : selfOpened
-                      ? { duration: 0.26, ease: [0, 0, 0.2, 1] }
-                      : { duration: 0.16, ease: [0.16, 1, 0.3, 1] }
-                }
+                    : { duration: AGW_DURATION.base, ease: AGW_EASE.enter },
+                }}
                 onMouseEnter={openPeek}
                 onMouseLeave={closePeekSoon}
               >

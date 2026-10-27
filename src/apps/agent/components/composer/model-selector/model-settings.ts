@@ -80,7 +80,29 @@ export function reasoningChoices(r: Reasoning | undefined, maxOutputTokens?: num
   return [];
 }
 
-/** The grey word on a row: what the model will do if picked as it stands. */
+/**
+ * How strongly a reasoning word is coloured, 0–4 (`data-effort` in CSS):
+ * Off/Minimal/Low plain, then Medium, High (and a toggle's "Thinking"),
+ * X-High, Max, each a stronger mix of the accent. A budget size ("8K") is not
+ * a level and stays plain.
+ */
+export function effortTier(label: string | null | undefined): number {
+  switch ((label ?? "").toLowerCase().replace(/[\s_-]/g, "")) {
+    case "medium":
+      return 1;
+    case "high":
+    case "thinking":
+      return 2;
+    case "xhigh":
+      return 3;
+    case "max":
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+/** The word on a row: what the model will do if picked as it stands. */
 export function reasoningSummary(r: Reasoning | undefined, maxOutputTokens?: number): string | null {
   const chosen = reasoningChoices(r, maxOutputTokens).find((c) => c.current);
   return chosen?.label ?? null;

@@ -38,6 +38,7 @@ import { useAgentFsWatch } from "@/apps/agent/hooks/window/useAgentFsWatch";
 import { useAgentBrowserOpen } from "@/apps/agent/hooks/useAgentBrowserOpen";
 import { useNewTabShortcut } from "@/apps/agent/hooks/window/useNewTabShortcut";
 import { useAgentBrowserDrivingEvents } from "@/apps/agent/hooks/useAgentBrowserDrivingEvents";
+import { holdBrowserHidden } from "@/apps/agent/services/browser/browser-visibility";
 import { subscribeToPlanChanges } from "@/apps/agent/store/artifacts/useAgentPlanStore";
 import {
   subscribeToTodoChanges,
@@ -163,6 +164,28 @@ export const AgentShell: React.FC = () => {
     if (dockOpen) setDockMounted(true);
   }, [dockOpen]);
 
+  // The dock's browser page is a native window. It used to follow the glide by
+  // being moved over IPC on every frame, which a native window cannot do in
+  // step with the DOM, so the page trailed the panel's edge. It now stays
+  // hidden while the dock glides and comes back where the panel came to rest
+  // (`transitionend` below, or a timeout if none fires). Not on first mount.
+  const glideHold = useRef<(() => void) | null>(null);
+  const dockWasOpen = useRef(dockOpen);
+  const releaseGlideHold = useCallback(() => {
+    glideHold.current?.();
+    glideHold.current = null;
+  }, []);
+  useEffect(() => {
+    if (dockWasOpen.current === dockOpen) return;
+    dockWasOpen.current = dockOpen;
+    if (!railGlide) return;
+    releaseGlideHold();
+    glideHold.current = holdBrowserHidden();
+    const fallback = window.setTimeout(releaseGlideHold, railGlideMs + 150);
+    return () => window.clearTimeout(fallback);
+  }, [dockOpen, railGlide, railGlideMs, releaseGlideHold]);
+  useEffect(() => releaseGlideHold, [releaseGlideHold]);
+
   // With glide OFF (0ms) a width change fires NO `transitionend`, so the
   // `onTransitionEnd` unmount below never runs — the dock content (incl. the
   // native browser webview) would stay mounted/shown off-screen after a close.
@@ -257,6 +280,8 @@ export const AgentShell: React.FC = () => {
       {/* Left rail — outer width glides to 0; inner stays fixed-width, clipped. */}
       <div
         className="agw-shell-side"
+        // Opening and closing glide differently (02-shell.css).
+        data-open={railOpen || undefined}
         style={{ width: railOpen ? `${effectiveRailWidth}%` : 0 }}
         // `inert`, not `aria-hidden`: the rail is width-0 but still mounted, so
         // aria-hidden left every rail button in the tab order, and Chromium
@@ -319,11 +344,14 @@ export const AgentShell: React.FC = () => {
       )}
       <div
         className="agw-shell-side"
+        data-open={dockOpen || undefined}
         style={{ width: dockOpen ? `${effectiveDockWidth}%` : 0 }}
         // Same as the left rail above.
         {...inertWhen(!dockOpen)}
         onTransitionEnd={(e) => {
-          if (e.propertyName === "width" && !dockOpen) setDockMounted(false);
+          if (e.target !== e.currentTarget || e.propertyName !== "width") return;
+          if (!dockOpen) setDockMounted(false);
+          releaseGlideHold();
         }}
       >
         {dockContentMounted && (

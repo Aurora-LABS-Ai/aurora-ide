@@ -8,8 +8,20 @@
   min-width: 0;
   overflow: hidden;
   /* Duration is driven by Appearance → Motion (glide on/off + speed). 0ms
-   * (glide off) collapses to an instant open/close. */
-  transition: width var(--agw-rail-anim, 580ms) var(--agw-ease-standard);
+   * (glide off) collapses to an instant open/close.
+   *
+   * CLOSING (this rule): two thirds of the opening, accelerating away. The
+   * Codex reference's rule: leaving is quicker than arriving and gets out of
+   * the way instead of easing to a stop. */
+  /* `--agw-rail-anim` is always set by AgentShell (Appearance → Motion,
+     default 300ms); the 0s fallback only means "no glide" if it ever isn't. */
+  transition: width calc(var(--agw-rail-anim, 0s) * 2 / 3) var(--agw-ease-exit);
+}
+/* OPENING: the full duration on the decelerating curve, so the panel arrives
+   fast and settles. Was 580ms on a symmetric ease-in-out both ways, which
+   started slowly and read as a heavy panel arriving late. */
+.agw-shell-side[data-open] {
+  transition: width var(--agw-rail-anim, 0s) var(--agw-ease-enter);
 }
 /* No transition mid-drag so a manual resize tracks the cursor exactly. */
 .agw-shell-flex[data-agw-dragging="true"] .agw-shell-side {
@@ -174,36 +186,12 @@
  * whole family" claim. Members may still override radius/animation below. */
 .agw-menu,
 .agw-ctx-card {
-  /* Hover boost for the whole popover subtree. Popovers sit on the ELEVATED
-   * surface, which is much brighter than the rail/dock, so the plain 4% hover
-   * overlay loses more than half its perceived strength here (see the
-   * --agw-hover-paint note on .agw-root). Roughly 2.2x the alpha restores the
-   * same felt lift.
-   *
-   * Still MIXED WITH the user's own --agw-hover rather than replacing it, so
-   * the Appearance → "Hover fill" control keeps working inside menus; it just
-   * gets amplified for the brighter ground. Re-pointing the alias means every
-   * row type in here (menu items, model rows, mention/command/context rows)
-   * inherits this with no per-selector changes. */
-  --agw-hover-paint: color-mix(
-    in srgb,
-    var(--agw-hover) 50%,
-    color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
-  );
-  /* The press, re-derived from the AMPLIFIED hover above. It has to be restated
-   * here: a var() inside a custom property is substituted where the property is
-   * declared, so the `--agw-press-paint` on .agw-root closed over the root's
-   * hover value and a pressed menu row would have come out lighter than the
-   * same row merely hovered. */
-  --agw-press-paint: color-mix(
-    in srgb,
-    color-mix(
-      in srgb,
-      var(--agw-hover) 50%,
-      color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
-    ) 88%,
-    var(--agw-text) 12%
-  );
+  /* Hover inside a popover is the SAME fill as everywhere else
+   * (`--agw-hover-paint`, Appearance → Hover fill). It used to be re-pointed
+   * here to a boosted mix (about twice the alpha) to make up for the brighter
+   * ground, and the project menu painted a third fill of its own; Alvan
+   * (2026-10-28) compared them side by side and the rail's plain fill is the
+   * one that reads right. One hover, one setting that controls all of it. */
 
   /* Near-opaque glass. The blur is kept for depth, but the tint is 95% so the
    * BACKDROP contributes almost nothing to the final colour.
@@ -223,7 +211,57 @@
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-lg);
   box-shadow: var(--agw-shadow-pop);
-  animation: agw-pop-in var(--agw-dur-fast) var(--agw-ease-pop);
+  /* No entrance on `.agw-menu`: a menu opens in one frame, like a native one
+     (the Codex reference turns menu animation off on desktop). It also leaves
+     the members that animate in JS (model picker, rail chips, checklist,
+     agents) with ONE animator; a CSS keyframe running beside framer's inline
+     styles was a second mover and jolted the panel on open. */
+}
+/* ── The sweep ─────────────────────────────────────────────────────────────
+ * How a dropdown or hover card opens (Alvan, 2026-10-28, after the model
+ * picker): revealed from the edge next to its trigger outward, with 6px of
+ * travel toward its rest and a fade that finishes halfway. `down` for a panel
+ * hanging below its trigger, `up` for one standing above it.
+ *
+ * `backwards` fill only: the start state holds through the 30ms delay, and
+ * when the sweep ends the clip is GONE, so the panel's shadow is never cut.
+ * The JS-animated panels use the same recipe (`sweepMotion`, theme/motion.ts). */
+@keyframes agw-sweep-down {
+  from {
+    opacity: 0;
+    clip-path: inset(0% 0% 100% 0% round 12px);
+    transform: translateY(-6px);
+  }
+  50% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(-10% -10% -10% -10% round 12px);
+    transform: none;
+  }
+}
+@keyframes agw-sweep-up {
+  from {
+    opacity: 0;
+    clip-path: inset(100% 0% 0% 0% round 12px);
+    transform: translateY(6px);
+  }
+  50% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(-10% -10% -10% -10% round 12px);
+    transform: none;
+  }
+}
+
+/* The context card hangs below the ring (ContextRing places it at the ring's
+   bottom edge). */
+.agw-ctx-card {
+  animation: agw-sweep-down var(--agw-dur-sweep) var(--agw-ease-snappy)
+    var(--agw-sweep-delay) backwards;
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-menu,
@@ -231,8 +269,9 @@
     background: var(--agw-surface-elevated);
   }
 }
-/* Shared popover entrance — a short rise + fade, matching how Codex menus
-   appear (never a hard pop into place). */
+/* Shared popover entrance — a short rise + fade (never a hard pop into
+   place). The ONE definition: a second keyframe of this name later in the
+   cascade silently replaced this one for every user. */
 @keyframes agw-pop-in {
   from {
     opacity: 0;

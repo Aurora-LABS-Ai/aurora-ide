@@ -398,9 +398,5 @@
   height: 12px;
   border-width: 1.5px;
 }
-@keyframes agw-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
+/* `agw-spin` is declared once, in 09-tool-cards.css. */
 

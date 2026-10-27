@@ -102,8 +102,11 @@ export const DEFAULT_GLIDE_MS = 340;
 export const TOOL_ICON_SET_IDS = ["classic", "isometric"] as const;
 export type ToolIconSetId = (typeof TOOL_ICON_SET_IDS)[number];
 
-/** Rail/dock glide duration when glide is on. */
-export const DEFAULT_RAIL_GLIDE_MS = 580;
+/** Rail/dock glide duration when glide is on: the OPENING. Closing takes two
+ * thirds of it (`.agw-shell-side` in 02-shell.css). 300 is the Codex
+ * reference's largest reveal (`docs/MOTION.md`); it was 580, which read as a
+ * heavy panel arriving late. */
+export const DEFAULT_RAIL_GLIDE_MS = 300;
 
 /** Neutral contrast — no adjustment. */
 export const DEFAULT_CONTRAST = 50;

@@ -9,13 +9,13 @@
   border: none;
 }
 /* Reasoning effort of the selected model, shown inline on the trigger so the
-   chosen level is visible without opening the picker. Just accent-tinted text —
-   no pill/wrapper, so it reads as part of the label, not a chip. */
+   chosen level is visible without opening the picker. At the name's weight,
+   grey at Low and coloured by level above it (see "Reasoning level colour"
+   below); no longer bold and letter-spaced. */
 .agw-model-trigger-effort {
   flex-shrink: 0;
-  color: var(--agw-accent);
-  font-weight: var(--agw-fw-strong);
-  letter-spacing: 0.02em;
+  color: var(--agw-text-muted);
+  font-weight: var(--agw-fw-body);
 }
 /* Leading mode glyph on the trigger — gives the pill identity and shows the
    Agent/Plan posture at a glance (shield = agent, book = plan → warning-tinted). */
@@ -123,7 +123,8 @@
 .agw-model-trigger-name {
   min-width: 0;
   overflow: hidden;
-  font-weight: var(--agw-fw-medium);
+  /* Regular, like the rows it opens (see `.agw-model-name`). */
+  font-weight: var(--agw-fw-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -271,11 +272,13 @@
 .agw-model-menu {
   display: flex;
   flex-direction: column;
-  /* 384px could not hold a real name. With 49 models across 18 providers the
-   * ids that actually need telling apart ("…GPT-5.6 Luna (2x usage)" vs
-   * "…GPT 5.6 Sol") differ at the END — exactly what an ellipsis removes. */
-  width: 440px;
-  max-width: min(520px, calc(100vw - 24px));
+  /* 340px: the short list's rows are a name over its provider with a value on
+   * the right, and at 440 most of every row was an empty gap (Alvan,
+   * 2026-10-28). Names that need telling apart often differ at the END
+   * ("…GPT-5.6 Luna (2x usage)" vs "…GPT 5.6 Sol"), so a long name WRAPS
+   * (`.agw-model-name`) rather than losing its ending to an ellipsis. */
+  width: 340px;
+  max-width: min(340px, calc(100vw - 24px));
   /* Set inline by ModelSelector from the same constant its up/down placement
      uses, so the two cannot disagree. */
   max-height: var(--agw-model-menu-max-h);
@@ -385,6 +388,12 @@
 .agw-model-group + .agw-model-group {
   margin-top: 4px;
 }
+/* A model inside a provider's section starts where the section's NAME starts
+   (label padding 8 + caret 11 + gap 6), so it reads as belonging to it. The
+   row's fill still spans the full width. */
+.agw-model-group > .agw-model-item {
+  padding-left: 25px;
+}
 /* Selected and Frequent are plain labels; a provider section's is a BUTTON that
    folds it — same rule and same chrome as the providers rail, so one concept
    keeps one shape. The button resets are here rather than on a second class
@@ -398,13 +407,14 @@
   border: 0;
   background: none;
   font-family: inherit;
-  font-size: var(--agw-fs-micro);
-  font-weight: var(--agw-fw-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  /* Sentence case, muted, like the reference's "Select model" heading. The
+     uppercase letter-spaced eyebrow this was shouted a provider name that is
+     already proper-cased ("MiniMax", "DeepSeek"). */
+  font-size: var(--agw-fs-label);
+  font-weight: var(--agw-fw-body);
   text-align: left;
   color: var(--agw-text-subtle);
-  padding: 7px 8px 4px;
+  padding: 8px 8px 4px;
 }
 button.agw-model-group-label {
   cursor: pointer;
@@ -437,8 +447,8 @@ button.agw-model-group-label:focus-visible {
    of "provider … N" rather than a ragged list. */
 .agw-model-group-count {
   margin-left: auto;
-  font-weight: var(--agw-fw-medium);
-  opacity: 0.75;
+  font-weight: var(--agw-fw-body);
+  color: var(--agw-text-subtle);
 }
 .agw-model-item {
   display: flex;
@@ -449,6 +459,8 @@ button.agw-model-group-label:focus-visible {
   border: 1px solid transparent;
   border-radius: var(--agw-radius-md);
   background: transparent;
+  /* Regular for every row, the "All models" row included. */
+  font-weight: var(--agw-fw-body);
   /* Menu-row labels read at FULL text strength at rest (Codex-style) —
      hover/selected change the background, not gray→white text. Secondary
      info stays quiet via .agw-model-sub. Same rule applies to every
@@ -461,10 +473,11 @@ button.agw-model-group-label:focus-visible {
   outline: none;
 }
 
-.agw-model-item:hover,
-/* The row the arrow keys are on. Focus stays in the search box, so this is the
-   keyboard's only mark — the same fill as hover, because the mouse moves the
-   same marker. */
+/* The highlighted row. ONE marker for the keyboard and the pointer: the arrow
+   keys move it, and moving the mouse onto a row moves it there too
+   (`onMouseEnter` → `pointRow`). No `:hover` here: with both, the row under a
+   resting pointer stayed lit while the arrow keys lit another, two highlights
+   at once. Focus stays in the search box, so this is the keyboard's only mark. */
 .agw-model-item[data-kbd-active] {
   background: var(--agw-hover-paint);
   color: var(--agw-text);
@@ -473,37 +486,39 @@ button.agw-model-group-label:focus-visible {
   flex-shrink: 0;
   color: var(--agw-accent);
 }
+/* The model in use is marked by its CHECK alone, never a fill. The fill means
+   one thing in this list — where the pointer and the arrow keys are — and a
+   selected row wearing a fill too looked exactly like a second hovered row
+   (Alvan, 2026-10-28). */
 .agw-model-item[data-active] {
-  /* Calm, neutral selected fill (no accent box) — the accent check is the only
-     colored cue. Stronger than hover so it still reads as selected. */
-  background: color-mix(in srgb, var(--agw-text) 9%, transparent);
   border-color: transparent;
   color: var(--agw-text);
 }
 .agw-model-item:focus-visible {
   box-shadow: var(--agw-focus-ring);
 }
+/* Identity column: the name, and the provider under it when shown.
+ *
+ * Type follows the Codex reference (docs/FOUNDATION.md): list text at 14px
+ * REGULAR. It was 15px at 500, which Inter on a dark Windows surface draws
+ * close to bold — every row shouted at the same volume, so the selected one
+ * could not stand out by anything but its fill. Emphasis here comes from the
+ * fill and the check, never from weight. */
 .agw-model-meta {
   display: flex;
   flex-direction: column;
+  gap: 1px;
   flex: 1;
   min-width: 0;
 }
+/* Wraps instead of ellipsizing: the part of a long name that tells two models
+   apart is usually its end. A raw id with no spaces breaks anywhere. */
 .agw-model-name {
-  font-size: var(--agw-fs-md);
-  font-weight: var(--agw-fw-medium);
+  font-size: var(--agw-fs-ui);
+  font-weight: var(--agw-fw-body);
+  line-height: 18px;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Name + capability badges share one line; the name flexes/ellipsizes while the
-   badges keep their intrinsic width. */
-.agw-model-nameline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+  overflow-wrap: anywhere;
 }
 /* Capability badge (Vision / Tools) — quiet, outline chip, accent-neutral. */
 /* Capability glyphs — they live in the CONTROL cluster, not next to the name.
@@ -533,23 +548,25 @@ button.agw-model-group-label:focus-visible {
   gap: 8px;
 }
 
-/* ── Rows: reasoning word and `›` ─────────────────────────────────────────────
- * Probe: aurora-model-picker-rows-designs.html, card 04. The reasoning a row
- * would run at reads as a grey word after the name, the way the trigger shows
- * it; `›` opens that model's reasoning list beside the menu. */
+/* ── Rows: the reasoning value and `›` ────────────────────────────────────────
+ * The reasoning a row would run at is a VALUE, set on the right like a
+ * settings row ("High ›"), in the secondary grey the trigger uses for it.
+ * Value and chevron are one target: it opens that model's reasoning list
+ * beside the menu. A row with nothing to change shows the value alone. */
 .agw-model-effort {
   flex: 0 0 auto;
   font-size: var(--agw-fs-label);
-  color: var(--agw-text-subtle);
+  font-weight: var(--agw-fw-body);
+  color: var(--agw-text-muted);
   white-space: nowrap;
 }
 .agw-model-more {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin: -2px -4px -2px 0;
+  gap: 2px;
+  height: 22px;
+  padding: 0 2px 0 6px;
+  margin: -2px 0;
   border-radius: var(--agw-radius-sm);
   color: var(--agw-text-subtle);
   transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
@@ -558,6 +575,37 @@ button.agw-model-group-label:focus-visible {
 .agw-model-item[data-settings-open] .agw-model-more {
   color: var(--agw-text);
   background: var(--agw-state-selected);
+}
+.agw-model-more:hover .agw-model-effort[data-effort="0"],
+.agw-model-item[data-settings-open] .agw-model-effort[data-effort="0"] {
+  color: var(--agw-text);
+}
+/* ── Reasoning level colour ────────────────────────────────────────────────
+ * The reasoning word is coloured by level wherever it appears (the trigger,
+ * a row's value, the reasoning list): Off/Minimal/Low plain, then each level
+ * a stronger mix of the ACCENT into the grey, Max at the full accent (Alvan,
+ * 2026-10-28). Derived, so it follows the theme and Appearance → Accent; no
+ * colour of its own. Levels come from `effortTier` (model-settings.ts). */
+:is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="1"] {
+  color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-text-muted));
+}
+:is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="2"] {
+  color: color-mix(in srgb, var(--agw-accent) 65%, var(--agw-text-muted));
+}
+:is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="3"] {
+  color: color-mix(in srgb, var(--agw-accent) 85%, var(--agw-text-muted));
+}
+:is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="4"] {
+  color: var(--agw-accent);
+}
+/* The check's column is always there, so names and values line up down the
+   list whether or not a row is the one in use. */
+.agw-model-check-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 14px;
+  width: 14px;
 }
 
 /* "All models" and its way back: rows that move between the short list and
@@ -610,7 +658,7 @@ button.agw-model-group-label:focus-visible {
   cursor: pointer;
   transition: background var(--agw-dur-fast) ease;
 }
-.agw-model-fly-row:hover,
+/* One marker for keys and pointer, like the model rows (no `:hover`). */
 .agw-model-fly-row[data-kbd-active],
 .agw-model-fly-fast[data-kbd-active] {
   background: var(--agw-hover-paint);
@@ -665,19 +713,15 @@ button.agw-model-group-label:focus-visible {
 .agw-model-mode-btn:focus-visible {
   box-shadow: var(--agw-focus-ring);
 }
-/* Provider name on Recent rows — renders inline after the capability chips, so
- * a Recent row is the same height as a provider-grouped row. It yields space
- * before the model name does (the name is the identifying label). */
-/* Provider name, shown ONLY in the Selected and Recent strips — everywhere else
- * a section header already states it and repeating it per row is noise.
- *
- * The absurd shrink factor is load-bearing: this is the part of the row that
- * can be sacrificed, so it must lose width long before the model name does.
- * Equal shrink is what let secondary text truncate the primary text. */
+/* Provider name, the second line of a row in the short list — everywhere else
+ * a section header already states it and repeating it per row is noise. Its
+ * own line, so it can never be read as part of the name and never takes width
+ * from it. */
 .agw-model-sub {
-  flex: 0 1000000 auto;
   min-width: 0;
-  font-size: var(--agw-fs-label);
+  font-size: var(--agw-fs-micro);
+  font-weight: var(--agw-fw-body);
+  line-height: 16px;
   color: var(--agw-text-subtle);
   white-space: nowrap;
   overflow: hidden;
@@ -711,8 +755,12 @@ button.agw-model-group-label:focus-visible {
   background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
+/* The window's one selected fill (`--agw-state-selected`), as on the model
+   rows and the rail. It used to paint `--agw-surface`, which in the default
+   dark theme (#1d1d1d) is DARKER than the popover around it (about #232323),
+   so a selected row read as a hole while every other selection is a lift. */
 .agw-menu-item[aria-selected="true"] {
-  background: var(--agw-surface);
+  background: var(--agw-state-selected);
   color: var(--agw-text);
 }
 /* Pressed. A menu row is the one control where the press and the result are
@@ -742,20 +790,10 @@ button.agw-model-group-label:focus-visible {
  * instead. A menu that slides the opposite way to the direction it opened in
  * reads as a glitch even when nobody can say why. */
 .agw-plusmenu[data-place="up"] {
-  animation-name: agw-plusmenu-in;
-}
-@keyframes agw-plusmenu-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation-name: agw-sweep-up;
 }
 @media (prefers-reduced-motion: reduce) {
-  .agw-plusmenu {
+  .agw-projmenu {
     animation: none;
   }
 }

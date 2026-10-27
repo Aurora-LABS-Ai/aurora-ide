@@ -34,7 +34,7 @@ import {
   formatProviderNickname,
 } from "@/kernel/lib/llm/provider-display";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
-import { AGW_DURATION, AGW_EASE } from "@/apps/agent/theme/motion";
+import { sweepMotion } from "@/apps/agent/theme/motion";
 import { groupProviders } from "@/apps/agent/services/providers/built-in";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
@@ -79,7 +79,12 @@ import { EffortFlyout, type FlyoutFast } from "./EffortFlyout";
 import { ModelRow } from "./ModelRow";
 import { levelLabel, optionKey, type RichOption } from "./model-option";
 import { placeFlyout, placeMenu, visibleBounds, visibleRect } from "./menu-room";
-import { reasoningChoices, reasoningSummary, type ReasoningChoice } from "./model-settings";
+import {
+  effortTier,
+  reasoningChoices,
+  reasoningSummary,
+  type ReasoningChoice,
+} from "./model-settings";
 
 /** One line of the list, in drawing order — what the arrow keys walk. */
 type ListRow =
@@ -745,6 +750,8 @@ export const ModelSelector: React.FC<{
   };
 
   const down = placement === "down";
+  // Down from the home screen's composer, up from the composer docked low.
+  const sweep = sweepMotion(down);
 
   // Rows are numbered in drawing order, which is `visibleRows` order, so the
   // arrow keys and the pointer address the same row.
@@ -849,7 +856,11 @@ export const ModelSelector: React.FC<{
           <span className="agw-model-trigger-shine" aria-hidden />
         </span>
         <span className="agw-model-trigger-name">{currentLabel}</span>
-        {currentEffort && <span className="agw-model-trigger-effort">{currentEffort}</span>}
+        {currentEffort && (
+          <span className="agw-model-trigger-effort" data-effort={effortTier(currentEffort)}>
+            {currentEffort}
+          </span>
+        )}
         {/* Fast is a glyph here, not the word: the pill is the one control whose
             label routinely gets ellipsized. The bolt shimmers only while a turn
             streams. `aria-hidden`: the trigger's own accessible name says it. */}
@@ -872,12 +883,14 @@ export const ModelSelector: React.FC<{
             aria-label="Choose a model"
             className="agw-menu agw-model-menu"
             onClick={(e) => e.stopPropagation()}
-            // A gentle ease-out — NOT a spring. An underdamped spring overshot
-            // past 1 and sprang back; a tween opens smoothly.
-            initial={{ opacity: 0, scale: 0.98, y: down ? -6 : 6 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.98, y: down ? -6 : 6 }}
-            transition={{ duration: AGW_DURATION.base, ease: AGW_EASE.enter }}
+            // The sweep (`sweepMotion`): revealed from the trigger's edge
+            // outward. A tween, NOT a spring: an underdamped spring overshot
+            // and sprang back. This component is the panel's ONLY animator:
+            // `.agw-menu` has no CSS entrance.
+            initial={sweep.initial}
+            animate={sweep.animate}
+            exit={sweep.exit}
+            transition={sweep.transition}
             style={{
               position: "absolute",
               ...(align === "left" ? { left: 0 } : { right: 0 }),

@@ -22,6 +22,7 @@ import { auroraListen } from "@/kernel/lib/ipc/runtime";
 import { isTauri, readFileContent } from "@/kernel/lib/ipc/tauri";
 import { useEditorStore } from "@/kernel/store/useEditorStore";
 import { loadFileContent } from "@/kernel/store/useWorkspaceStore";
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
 
 interface EditorOpenPayload {
   path: string;
@@ -133,7 +134,7 @@ export const installAgentIdeListeners = async (): Promise<() => void> => {
   // window (which would open into a non-existent editor and steal focus).
   // Every other channel is harmless to run in any window.
   const path = typeof window !== "undefined" ? window.location.pathname : "/";
-  const isSecondaryWindow = path === "/agent-window";
+  const isSecondaryWindow = isAgentWindowPath(path);
 
   if (!isSecondaryWindow) {
     cleanups.push(

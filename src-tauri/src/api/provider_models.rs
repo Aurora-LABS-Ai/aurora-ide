@@ -167,8 +167,9 @@ fn explain(status: reqwest::StatusCode, url: &str, body: &str) -> String {
 /// Ask a provider for its model list.
 ///
 /// `async` because a sync `#[tauri::command] pub fn` runs on the UI thread in
-/// Tauri v2 — see `commands::command_thread_safety`.
-#[tauri::command]
+/// Tauri v2 — see `commands::command_thread_safety`. A command only with the
+/// `desktop` feature; the window reaches it as `commands::provider_models`.
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_list_models(
     base_url: String,
     api_key: String,

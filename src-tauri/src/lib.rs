@@ -48,12 +48,16 @@ mod crash;
 mod db;
 mod explorer;
 mod file_cache;
+/// Named events core code sends to its host (the windows, or a headless host).
+mod host_events;
 pub mod icon_pack;
 mod launch_prefs;
 mod logging;
 mod mcp;
 mod paths;
 mod plans;
+/// Job objects and process trees for everything Aurora starts.
+mod process;
 mod pty_sessions;
 mod services;
 mod shell;
@@ -70,6 +74,8 @@ mod prompt_refine;
 /// Reply suggestions from a cloud model: the conversation brief, the
 /// `suggest_replies` tool, and the per-conversation suggestion log.
 mod reply_suggest;
+/// Background tasks for core code, with or without the Tauri runtime.
+mod rt;
 /// Live dictation: a warm `audiocpp_cli` child that transcribes while you talk.
 /// The batch path stays in `commands::speech`.
 mod speech_stream;
@@ -78,6 +84,10 @@ mod typing_assist;
 mod undo_redo;
 mod usage_ledger;
 mod websearch;
+/// The interface in a browser: an HTTP host inside the desktop app.
+mod web_host;
+/// Workspace file work shared by the tools and the IPC commands.
+mod workspace;
 
 use cli::{CliArgs, CliOpenRequest};
 
@@ -620,6 +630,10 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::shell_background_processes,
             commands::create_file,
             commands::create_folder,
+            commands::list_filesystem_roots,
+            commands::web_host::web_host_status,
+            commands::web_host::web_host_start,
+            commands::web_host::web_host_stop,
             commands::delete_path,
             commands::rename_path,
             commands::copy_path,
@@ -642,6 +656,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::get_cache_stats,
             commands::terminal_pty::terminal_pty_open,
             commands::terminal_pty::terminal_pty_attach,
+            commands::terminal_pty::terminal_pty_attach_events,
+            commands::terminal_pty::terminal_pty_open_events,
             commands::terminal_pty::terminal_pty_write,
             commands::terminal_pty::terminal_pty_resize,
             commands::terminal_pty::terminal_pty_kill,
@@ -1068,7 +1084,13 @@ pub fn run_with_args(cli_args: CliArgs) {
         })
         .setup(move |app| {
             // Terminal sessions announce agent-opened tabs and their endings.
-            pty_sessions::install(app.handle().clone());
+            // The interface in a browser (`AURORA_WEB=1`); off otherwise.
+            web_host::start_if_enabled(app.handle());
+
+            let pty_handle = app.handle().clone();
+            pty_sessions::install(std::sync::Arc::new(move |notice| {
+                let _ = pty_handle.emit(notice.event_name(), notice.payload());
+            }));
 
             // Devtools stay available in every build (the `devtools`
             // Cargo feature is on for the `tauri` crate), but we no
@@ -1107,7 +1129,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // bailing — instead of the previous `.expect()` which hard-
             // crashed the process and produced a useless dialog.
             let handle = app.handle();
-            let db = match db::Database::init(&handle) {
+            let db = match db::Database::init() {
                 Ok(db) => db,
                 Err(err) => {
                     let resolved = paths::db_file();
@@ -1165,7 +1187,13 @@ pub fn run_with_args(cli_args: CliArgs) {
             // `.mcp.json` through `mcp_set_workspace`.
             let mcp_handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
-                mcp::manager::MCP_MANAGER.init(mcp_handle);
+                mcp::manager::MCP_MANAGER.init(std::sync::Arc::new(move |servers| {
+                    if let Err(e) =
+                        mcp_handle.emit(mcp::manager::SERVERS_CHANGED_EVENT, servers)
+                    {
+                        logging::log_warn("mcp", &format!("could not send server list: {e}"));
+                    }
+                }));
             });
 
             // Store shared chat state for multi-window sync
@@ -1220,7 +1248,9 @@ pub fn run_with_args(cli_args: CliArgs) {
                 // resolved against the same provider rows the Providers page
                 // edits.
                 .with_provider_lookup(std::sync::Arc::new(
-                    commands::agent_v2::DatabaseProviderLookup::new(handle.clone()),
+                    commands::agent_v2::DatabaseProviderLookup::new(std::sync::Arc::new(
+                        handle.clone(),
+                    )),
                 )),
             );
 
@@ -1295,7 +1325,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             // of the app.
             let resolver: std::sync::Arc<dyn tools::permissions::SettingsResolver> =
                 std::sync::Arc::new(tools::permissions::DatabaseSettingsResolver::new(
-                    handle.clone(),
+                    std::sync::Arc::new(handle.clone()),
                 ));
             let settings_aware: std::sync::Arc<dyn agent_runtime::tool_executor::Permitter> =
                 std::sync::Arc::new(tools::permissions::SettingsAwarePermitter::new(

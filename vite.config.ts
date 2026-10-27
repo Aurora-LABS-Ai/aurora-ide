@@ -1,9 +1,42 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 import { auroraCanvasRuntime } from "./vite-canvas-plugin";
+
+/**
+ * The token Aurora's web host (`src-tauri/src/web_host`, `AURORA_WEB=1`)
+ * wrote for this run, read on every request because a restart writes a new
+ * one. Same root as `src-tauri/src/paths.rs`.
+ */
+const auroraWebToken = (): string | null => {
+    if (process.env.AURORA_WEB_TOKEN) {
+        return process.env.AURORA_WEB_TOKEN;
+    }
+    const root = process.env.AURORA_DATA_ROOT;
+    if (root) {
+        try {
+            return readFileSync(join(root, "web", "token"), "utf8").trim();
+        } catch {
+            return null;
+        }
+    }
+    const base =
+        process.platform === "win32"
+            ? process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local")
+            : process.platform === "darwin"
+              ? join(homedir(), "Library", "Application Support")
+              : process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share");
+    try {
+        return readFileSync(join(base, "AuroraIDE", "web", "token"), "utf8").trim();
+    } catch {
+        return null;
+    }
+};
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -145,6 +178,21 @@ export default defineConfig({
             ignored: ["**/thirdparty/**"],
         },
         proxy: {
+            // The interface in a browser: http://localhost:5273 talks to the
+            // web host inside a running Aurora (`AURORA_WEB=1`). The proxy
+            // adds the token so it never lives in the page.
+            "/api": {
+                target: `http://127.0.0.1:${process.env.AURORA_WEB_PORT ?? "3721"}`,
+                changeOrigin: true,
+                configure: (proxy) => {
+                    proxy.on("proxyReq", (proxyReq) => {
+                        const token = auroraWebToken();
+                        if (token) {
+                            proxyReq.setHeader("Authorization", `Bearer ${token}`);
+                        }
+                    });
+                },
+            },
             "/proxy/ollama": {
                 target: "http://localhost:11434",
                 changeOrigin: true,

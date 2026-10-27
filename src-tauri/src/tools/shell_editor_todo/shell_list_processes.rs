@@ -77,7 +77,7 @@ struct ProcessRow {
 
 #[cfg(not(feature = "verify_only"))]
 fn list_active_streams() -> Vec<ProcessRow> {
-    crate::commands::list_command_streams()
+    crate::process::streams::list_command_streams()
         .into_iter()
         .map(|stream| ProcessRow {
             process_id: stream.process_id,

@@ -1,4 +1,5 @@
 import type { FileNode } from "@/kernel/types";
+import { pickInBrowser } from "@/kernel/lib/ipc/web-file-picker";
 import {
   auroraInvoke as invoke,
   isAuroraRuntimeAvailable,
@@ -307,8 +308,13 @@ export const openFileDialog = async (options?: {
   filters?: { name: string; extensions: string[] }[];
 }): Promise<string | string[] | null> => {
   if (!isTauri()) {
-    console.warn('openFileDialog: Not running in Tauri');
-    return null;
+    // A browser: the page's own picker, one path at a time.
+    const picked = await pickInBrowser({
+      directory: options?.directory ?? false,
+      filters: options?.filters,
+    });
+    if (picked === null) return null;
+    return options?.multiple ? [picked] : picked;
   }
 
   const { open } = await import('@tauri-apps/plugin-dialog');

@@ -19,7 +19,39 @@ pub use repositories::{
     ExplorerRepository, ModelsRepository, SettingsRepository, ThemeRepository, WorkspaceRepository,
 };
 
-use tauri::AppHandle;
+/// Where core code finds the shared connection. Runs `f` with it and
+/// returns `false` when there is none (not opened yet, or lock poisoned).
+///
+/// The desktop app keeps the connection in Tauri's managed state; a host
+/// with no window owns a `Mutex<Database>` itself. Code that reads settings
+/// or provider rows per call takes an `Arc<dyn DatabaseAccess>` so it works
+/// under either.
+pub trait DatabaseAccess: Send + Sync + 'static {
+    fn with_db(&self, f: &mut dyn FnMut(&Database)) -> bool;
+}
+
+impl DatabaseAccess for std::sync::Mutex<Database> {
+    fn with_db(&self, f: &mut dyn FnMut(&Database)) -> bool {
+        match self.lock() {
+            Ok(db) => {
+                f(&db);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
+impl DatabaseAccess for tauri::AppHandle {
+    fn with_db(&self, f: &mut dyn FnMut(&Database)) -> bool {
+        use tauri::Manager;
+        match self.try_state::<std::sync::Mutex<Database>>() {
+            Some(state) => state.with_db(f),
+            None => false,
+        }
+    }
+}
 
 /// Main database manager
 pub struct Database {
@@ -27,9 +59,11 @@ pub struct Database {
 }
 
 impl Database {
-    /// Initialize the database with migrations
-    pub fn init(app: &AppHandle) -> DbResult<Self> {
-        let conn = DbConnection::new(app)?;
+    /// Initialize the database with migrations. Only the process that owns
+    /// the schema calls this: the desktop app, or a headless host standing in
+    /// for it.
+    pub fn init() -> DbResult<Self> {
+        let conn = DbConnection::new()?;
 
         // Run migrations
         migrations::run_migrations(conn.connection())?;

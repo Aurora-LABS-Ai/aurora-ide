@@ -7,7 +7,7 @@
 //! "Search and replace" names the *mechanism*; "edit" names the
 //! *intent* — they are the same operation, so we expose one door.
 //! The backing engine is unchanged: it still calls
-//! `crate::commands::editor_ops::apply_search_replace` /
+//! `crate::workspace::edit::apply_search_replace` /
 //! `apply_multi_search_replace` and renders results via the shared
 //! [`super::search_replace`] helpers, so matching, uniqueness,
 //! `replace_all`, rollback of a failed disk write, and the Review-panel diff payload
@@ -29,7 +29,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::editor_ops::{
+use crate::workspace::edit::{
     apply_multi_search_replace, apply_search_replace, ApplyMultiSearchReplaceRequest,
     ApplySearchReplaceRequest, SearchReplaceItem, SearchReplaceResponse,
 };
@@ -843,12 +843,12 @@ fn resolve_by_content(
         return ContentResolution::NotApplicable;
     }
 
-    let normalized = crate::commands::editor_ops::normalize_line_endings(old_string);
+    let normalized = crate::workspace::edit::normalize_line_endings(old_string);
     // The same text with one escape level off, so a call that is BOTH
     // over-escaped and pathless resolves instead of failing twice. The engine
     // applies the same recovery once the file is chosen.
-    let unescaped = crate::commands::editor_ops::unescape_once(&normalized)
-        .map(|text| crate::commands::editor_ops::normalize_line_endings(&text));
+    let unescaped = crate::workspace::edit::unescape_once(&normalized)
+        .map(|text| crate::workspace::edit::normalize_line_endings(&text));
 
     let mut hits: Vec<&String> = Vec::new();
     let mut readable = 0usize;
@@ -863,7 +863,7 @@ fn resolve_by_content(
             .entry(key)
             .or_insert_with_key(|path| crate::file_cache::read_file_cached(path).ok())
             .as_deref()
-            .map(crate::commands::editor_ops::normalize_line_endings);
+            .map(crate::workspace::edit::normalize_line_endings);
         let Some(content) = content else {
             continue;
         };

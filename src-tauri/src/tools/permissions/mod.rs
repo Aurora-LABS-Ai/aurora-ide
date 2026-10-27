@@ -38,7 +38,7 @@ pub mod prompter;
 #[cfg(not(feature = "verify_only"))]
 pub mod settings_aware;
 
-#[cfg(not(feature = "verify_only"))]
+#[cfg(all(feature = "desktop", not(feature = "verify_only")))]
 pub mod tauri_emitter;
 
 pub use crate::agent_runtime::tool_executor::Permitter;
@@ -54,5 +54,5 @@ pub use prompter::TauriPermitter;
 #[cfg(not(feature = "verify_only"))]
 pub use settings_aware::{DatabaseSettingsResolver, SettingsAwarePermitter, SettingsResolver};
 
-#[cfg(not(feature = "verify_only"))]
+#[cfg(all(feature = "desktop", not(feature = "verify_only")))]
 pub use tauri_emitter::TauriPermissionEmitter;

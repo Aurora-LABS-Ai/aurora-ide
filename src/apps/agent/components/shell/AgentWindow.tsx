@@ -13,6 +13,7 @@ import { AgentDragGhost } from "@/apps/agent/components/composer/AgentDragGhost"
 import { AgentThemeProvider } from "@/apps/agent/components/theme/AgentThemeProvider";
 import { AgentTitlebar } from "@/apps/agent/components/shell/AgentTitlebar";
 import { AgentToaster } from "@/apps/agent/components/shell/AgentToaster";
+import { WebFilePickerHost } from "@/apps/agent/components/modals/WebFilePicker";
 import { AgentShell } from "@/apps/agent/components/shell/AgentShell";
 import { IconRail } from "@/apps/agent/components/shell/IconRail";
 import { ImagesPage } from "@/apps/agent/components/images/ImagesPage";
@@ -38,6 +39,9 @@ import { useAgentWindowBounds } from "@/apps/agent/hooks/window/useAgentWindowBo
 import { useAuroraBridge } from "@/apps/agent/hooks/window/useAuroraBridge";
 import { useMcpSync } from "@/apps/agent/hooks/window/useMcpSync";
 import { restoreThreadAfterReload, useReloadRestore } from "@/apps/agent/hooks/window/useReloadRestore";
+import { openWebChatUrl, startWebChatUrlSync } from "@/apps/agent/hooks/window/web-chat-url-sync";
+import { useCrossClientThreadSync } from "@/apps/agent/hooks/window/useCrossClientThreadSync";
+import { isDesktopRuntime } from "@/kernel/lib/ipc/runtime";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentQuestionStore } from "@/apps/agent/store/tools/useAgentQuestionStore";
 import { useAgentUiStore } from "@/apps/agent/store/ui/useAgentUiStore";
@@ -62,6 +66,10 @@ export const AgentWindow: React.FC = () => {
 
   // Track the open chat so an in-window reload can land back in it.
   useReloadRestore();
+
+  // A chat changed from another client (a browser tab, the desktop window):
+  // re-read the rail and, if it is the open chat, reload it.
+  useCrossClientThreadSync();
 
   // Tell other processes this window is here and what it is doing, so an agent
   // connected over MCP knows whether it can send work — and what happens to it.
@@ -99,11 +107,24 @@ export const AgentWindow: React.FC = () => {
   // auto-reload after a renderer crash), re-open the chat that was on screen —
   // a crash mid-run then recovers straight into the live transcript instead of
   // dumping the user on the project home.
+  //
+  // In a browser the address names the project and chat
+  // (`/agent-window/p/<slug>/<id>`): that wins over the reload snapshot, and
+  // from then on the address follows whatever is open.
   useEffect(() => {
+    let stopUrlSync: (() => void) | undefined;
+    let cancelled = false;
     void (async () => {
       await init(readProjectRootFromUrl());
-      restoreThreadAfterReload();
+      const web = !isDesktopRuntime();
+      const openedFromUrl = web && (await openWebChatUrl());
+      if (!openedFromUrl) restoreThreadAfterReload();
+      if (web && !cancelled) stopUrlSync = startWebChatUrlSync();
     })();
+    return () => {
+      cancelled = true;
+      stopUrlSync?.();
+    };
   }, [init]);
 
   // Cursor's catalogue lives in its own table, so the models someone switched
@@ -181,6 +202,8 @@ export const AgentWindow: React.FC = () => {
         <AgentDragGhost />
         {/* "Prompt copied" and friends, from anywhere: `toast()`. */}
         <AgentToaster />
+        {/* In a browser only: the folder/file picker behind `openFileDialog`. */}
+        <WebFilePickerHost />
       </AgentThemeProvider>
     </MotionConfig>
   );

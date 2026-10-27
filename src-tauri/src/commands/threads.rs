@@ -1696,8 +1696,10 @@ pub async fn thread_update_title(
     thread_id: String,
     title: String,
     registry: State<'_, Arc<AgentRegistry>>,
+    app: AppHandle,
 ) -> Result<(), String> {
     let registry = registry.inner().clone();
+    let changed_id = thread_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let store = store_for_thread(&registry, &thread_id)?;
         store
@@ -1706,7 +1708,19 @@ pub async fn thread_update_title(
             .map_err(|e| format!("Failed to update title: {e}"))
     })
     .await
-    .map_err(|e| format!("Thread operation failed: {e}"))?
+    .map_err(|e| format!("Thread operation failed: {e}"))??;
+    // Other open clients (the desktop window, a browser tab) refresh their
+    // rail on this; the one that renamed it already shows the new title.
+    emit(
+        &app,
+        crate::agent_runtime::host::THREAD_CHANGED_EVENT,
+        &crate::agent_runtime::host::ThreadChanged {
+            thread_id: changed_id,
+            workspace_root: None,
+            reason: "renamed",
+        },
+    );
+    Ok(())
 }
 
 /// Pin / unpin a chat. Pinned chats sort to a dedicated section at the

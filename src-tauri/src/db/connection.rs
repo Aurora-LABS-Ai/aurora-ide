@@ -14,7 +14,7 @@ impl DbConnection {
     /// The database file lives under the single AuroraIDE root:
     ///   `<AuroraIDE>/data/aurora.db`
     /// (see `crate::paths` for the per-platform root resolution).
-    pub fn new(_app: &tauri::AppHandle) -> DbResult<Self> {
+    pub fn new() -> DbResult<Self> {
         Self::open_headless()
     }
 

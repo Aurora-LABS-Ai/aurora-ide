@@ -20,7 +20,10 @@
  */
 
 import { useEffect } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  auroraListen as listen,
+  type AuroraUnlistenFn as UnlistenFn,
+} from "@/kernel/lib/ipc/runtime";
 
 import { isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { startFsWatcher } from "@/kernel/lib/ipc/tauri";

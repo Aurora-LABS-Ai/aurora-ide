@@ -13,9 +13,8 @@
  */
 
 import React, { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 
-import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
 import { SilkPlaceholder } from "@/apps/agent/components/theme/SilkPlaceholder";
@@ -44,11 +43,7 @@ export const DirectImage: React.FC<{ image: DirectImageEvent }> = ({ image }) =>
   const aspectRatio = aspectOf(image);
   const label = image.prompt?.trim() || "Generated picture";
   const src =
-    image.status === "ready" && image.path
-      ? isTauri()
-        ? convertFileSrc(image.path)
-        : image.path
-      : null;
+    image.status === "ready" && image.path ? localFileUrl(image.path) : null;
 
   const openInCanvas = () => {
     if (!image.artifactId || !threadId) return;

@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::{aurora_websearch_with, AuroraWebSearchRequest};
+use crate::websearch::request::{aurora_websearch_with, AuroraWebSearchRequest};
 use crate::services::browser_runtime::BrowserManager;
 use crate::services::browser_search::BrowserPageSource;
 use crate::websearch::{DEFAULT_MAX_CHARS, MAX_MAX_CHARS};

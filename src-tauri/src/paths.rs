@@ -35,6 +35,17 @@ pub fn root() -> PathBuf {
     if let Some(cached) = RESOLVED_ROOT.get() {
         return cached.clone();
     }
+    // A whole separate Aurora (database, chats, MCP config, logs) for a test
+    // run or a second host, so it never shares state with the installed app.
+    if let Some(custom) = std::env::var_os("AURORA_DATA_ROOT").filter(|v| !v.is_empty()) {
+        let root = PathBuf::from(custom);
+        ensure(&root);
+        if std::env::var_os("AURORA_QUIET_PATHS").is_none() {
+            eprintln!("[paths] AuroraIDE root set by AURORA_DATA_ROOT: {}", root.display());
+        }
+        let _ = RESOLVED_ROOT.set(root.clone());
+        return root;
+    }
     let base = dirs::data_local_dir()
         .or_else(dirs::data_dir)
         .or_else(dirs::home_dir)

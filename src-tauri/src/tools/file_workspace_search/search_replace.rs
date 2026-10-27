@@ -1,6 +1,6 @@
 //! `search_replace` — single find-and-replace edit on one file.
 //!
-//! Wraps `crate::commands::editor_ops::apply_search_replace` with
+//! Wraps `crate::workspace::edit::apply_search_replace` with
 //! `write: true`, then renders the result into the same JSON shape
 //! the TS `searchReplaceExecutor` produces (success + replacement
 //! count, or one of the structured `not_found` / `not_unique` /
@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::editor_ops::{
+use crate::workspace::edit::{
     apply_search_replace, ApplySearchReplaceRequest, MatchDiagnosis, SearchReplaceItem,
     SearchReplaceResponse,
 };

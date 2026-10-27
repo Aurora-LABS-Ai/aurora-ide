@@ -13,9 +13,8 @@
  */
 
 import React, { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 
-import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
 import {
@@ -52,7 +51,7 @@ export const CanvasImage: React.FC<CanvasImageProps> = ({ source, title, refresh
     );
   }
 
-  const src = isTauri() ? convertFileSrc(record.path) : record.path;
+  const src = localFileUrl(record.path);
   const made = SOURCE_LABEL[record.source];
   const by = [record.model, record.provider].filter(Boolean);
 

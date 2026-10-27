@@ -14,8 +14,8 @@
 //! constructed: the IDE window is created invisible (`"visible": false` in
 //! tauri.conf.json) and only revealed by the `on_page_load` hook when the
 //! launch is NOT agent-mode — a decision wired into the builder itself.
-//! `db::Database::init` runs later in `setup()` (it needs the `AppHandle`, and
-//! it runs migrations), so a value read from SQLite would arrive after the
+//! `db::Database::init` runs later in `setup()` (it runs migrations), so a
+//! value read from SQLite would arrive after the
 //! moment it is needed.
 //!
 //! So this is *boot config* — the small set of facts needed before the app's

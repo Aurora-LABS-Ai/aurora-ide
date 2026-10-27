@@ -38,6 +38,7 @@
 
 pub mod answer_boxes;
 pub mod api_client;
+pub mod artifacts;
 pub mod bridge;
 pub mod context_limits;
 pub mod conversation;
@@ -46,6 +47,7 @@ pub mod error;
 pub mod event_batch;
 pub mod events;
 pub mod hooks;
+pub mod host;
 pub mod ipc;
 pub mod project_dir;
 pub mod recovery;

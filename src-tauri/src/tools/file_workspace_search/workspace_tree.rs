@@ -79,7 +79,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::{read_directory, FileEntry};
+use crate::workspace::{read_directory, FileEntry};
 
 /// `LARGE_FILE_LINE_THRESHOLD` from `file-read-policy.ts`.
 const LARGE_FILE_LINE_THRESHOLD: usize = 1_500;

@@ -65,6 +65,9 @@ toml = "0.8"
 rusqlite = { version = "0.38.0", features = ["bundled", "serde_json"] }
 time = { version = "0.3", features = ["serde", "formatting"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
+# The web host (`web_host/`, AURORA_WEB=1): the interface in a browser, served
+# from 127.0.0.1 only. HTTP/1 and JSON are all it needs.
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio", "query"] }
 thiserror = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -325,7 +328,13 @@ tokio = { version = "1", features = ["test-util"] }
 # `cpu-only` no longer gates anything: speech moved out of process (CrispASR),
 # so there is no compiled GPU runtime left to opt into. Kept as the default so
 # an existing build command with `--features cpu-only` still resolves.
-default = ["cpu-only"]
+default = ["cpu-only", "desktop"]
+
+# The window: Tauri, its plugins, the IPC commands and the native browser.
+# Without it the crate is the headless core (see DOCS/rust-core-extraction.md).
+# Tauri itself becomes optional in Phase 1.9; until then this only switches
+# the code paths written for both cases (e.g. `rt::spawn`).
+desktop = []
 
 # CPU-only build (no GPU acceleration) — safest default
 cpu-only = []

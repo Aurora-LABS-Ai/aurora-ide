@@ -12,8 +12,7 @@
 
 import { create } from "zustand";
 
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import { isTauri } from "@/kernel/lib/ipc/tauri";
+import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 
 export interface MemoryFact {
   id: string;
@@ -58,7 +57,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
   rebuilding: false,
 
   load: async () => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     set({ loading: true, error: null });
     try {
       const [facts, stats] = await Promise.all([
@@ -73,7 +72,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
 
   add: async (text) => {
     const trimmed = text.trim();
-    if (!trimmed || !isTauri()) return;
+    if (!trimmed || !isAuroraRuntimeAvailable()) return;
     try {
       await auroraInvoke("chat_memory_add_fact", { text: trimmed });
       // Reload rather than splice the returned row in. Adding a fact that
@@ -87,7 +86,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
 
   update: async (id, text) => {
     const trimmed = text.trim();
-    if (!trimmed || !isTauri()) return;
+    if (!trimmed || !isAuroraRuntimeAvailable()) return;
     // Optimistic: the row is already on screen and the write is a single
     // UPDATE by primary key. A reload here would make every keystroke-then-save
     // flash the whole list.
@@ -106,7 +105,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
   },
 
   setPinned: async (id, pinned) => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     const previous = get().facts;
     // Re-sorted locally to match the server's order (pinned first, then
     // newest), so a pinned row moves to the top under the cursor exactly as it
@@ -127,7 +126,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
   },
 
   forget: async (id) => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     const previous = get().facts;
     set({
       facts: previous.filter((fact) => fact.id !== id),
@@ -146,7 +145,7 @@ export const useAgentMemoryStore = create<MemoryState>((set, get) => ({
   beginEdit: (id) => set({ editingId: id }),
 
   rebuildIndex: async () => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     set({ rebuilding: true, error: null });
     try {
       await auroraInvoke<number>("chat_memory_rebuild_index");

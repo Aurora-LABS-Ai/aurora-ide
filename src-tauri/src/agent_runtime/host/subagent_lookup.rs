@@ -4,43 +4,39 @@
 //! request means reading the provider row (URL, key, wire type, headers) and
 //! the model row (window, output cap, vision, thinking) out of the app's
 //! SQLite database — the same rows the Providers page edits. This is the
-//! only piece of the sub-agent system that touches the database, and it is
-//! Tauri-only because the database is managed Tauri state.
+//! only piece of the sub-agent system that touches the database.
 
-use std::sync::Mutex;
-
-use tauri::{AppHandle, Manager};
+use std::sync::Arc;
 
 use crate::agent_runtime::subagents::host::{ModelChoice, ProviderLookup, ResolvedModel, SubagentError};
-use crate::db::{Database, LLMProvider, ProviderModel};
+use crate::db::{DatabaseAccess, LLMProvider, ProviderModel};
 
 pub struct DatabaseProviderLookup {
-    app: AppHandle,
+    db: Arc<dyn DatabaseAccess>,
 }
 
 impl DatabaseProviderLookup {
     #[must_use]
-    pub fn new(app: AppHandle) -> Self {
-        Self { app }
+    pub fn new(db: Arc<dyn DatabaseAccess>) -> Self {
+        Self { db }
     }
 
     fn rows(&self) -> Result<(Vec<LLMProvider>, Vec<ProviderModel>), String> {
-        let state = self
-            .app
-            .try_state::<Mutex<Database>>()
-            .ok_or_else(|| "Aurora's database is not available".to_string())?;
-        let db = state
-            .lock()
-            .map_err(|e| format!("database lock poisoned: {e}"))?;
-        let providers = db
-            .settings()
-            .get_all_providers()
-            .map_err(|e| format!("could not read providers: {e}"))?;
-        let models = db
-            .models()
-            .list_all()
-            .map_err(|e| format!("could not read models: {e}"))?;
-        Ok((providers, models))
+        let mut rows = Err("Aurora's database is not available".to_string());
+        self.db.with_db(&mut |db| {
+            rows = (|| {
+                let providers = db
+                    .settings()
+                    .get_all_providers()
+                    .map_err(|e| format!("could not read providers: {e}"))?;
+                let models = db
+                    .models()
+                    .list_all()
+                    .map_err(|e| format!("could not read models: {e}"))?;
+                Ok((providers, models))
+            })();
+        });
+        rows
     }
 }
 

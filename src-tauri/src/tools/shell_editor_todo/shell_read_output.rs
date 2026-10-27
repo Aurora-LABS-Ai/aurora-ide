@@ -239,7 +239,7 @@ fn read_log(path: &str) -> LogSnapshot {
         .iter()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .filter(|line| line.starts_with(crate::commands::PROCESS_LOG_FOOTER_PREFIX))
+        .filter(|line| line.starts_with(crate::process::streams::PROCESS_LOG_FOOTER_PREFIX))
         .cloned();
 
     LogSnapshot {
@@ -414,7 +414,7 @@ fn build_message(
 
 #[cfg(not(feature = "verify_only"))]
 fn process_is_tracked(process_id: &str) -> bool {
-    crate::commands::list_command_streams()
+    crate::process::streams::list_command_streams()
         .iter()
         .any(|stream| stream.process_id == process_id)
 }

@@ -236,6 +236,13 @@ pub struct AgentChatRequest {
     #[serde(default)]
     pub ide_context: Option<String>,
 
+    /// Which surface the user sent this message from: `"web"` when it came
+    /// through the browser host (`web_host` overwrites it on every browser
+    /// call), nothing for the desktop window. Told to the model in the
+    /// message's `aurora_context`, so it knows what the user is looking at.
+    #[serde(default)]
+    pub client: Option<String>,
+
     /// Tool catalogue advertised to the model. Each entry's
     /// `parameters` is a JSON-Schema object describing the tool's
     /// input. Phase 2.3 forwards every tool name through the
@@ -465,6 +472,7 @@ mod tests {
             provider_config: minimal_provider_config(),
             system_prompt: Some("You are Aurora.".into()),
             ide_context: Some("<open_files>main.rs</open_files>".into()),
+            client: None,
             tools: vec![AllowedTool {
                 name: "file_read".into(),
                 description: "Read a file".into(),
@@ -644,6 +652,7 @@ mod tests {
             provider_config: minimal_provider_config(),
             system_prompt: None,
             ide_context: None,
+            client: None,
             tools: Vec::new(),
             temperature: None,
             max_output_tokens: None,

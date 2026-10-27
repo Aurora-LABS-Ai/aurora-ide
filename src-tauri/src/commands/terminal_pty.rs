@@ -6,7 +6,14 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 
 use super::terminal::RunningChild;
-use crate::pty_sessions::{self, PtyEvent, SessionInfo, Spawn};
+use crate::pty_sessions::{self, PtyEvent, PtyOutput, SessionInfo, Spawn};
+
+/// A tab's Tauri channel as the session's output sink.
+fn channel_output(channel: Channel<PtyEvent>) -> PtyOutput {
+    std::sync::Arc::new(move |event| {
+        let _ = channel.send(event);
+    })
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +24,22 @@ pub struct PtySpawned {
     pub pid: Option<u32>,
     /// The executable that was started, for the "exited immediately" notice.
     pub exe: String,
+}
+
+/// A tab in a browser: the session's output as the named event
+/// [`pty_event_name`], which the web host forwards like any other event (a
+/// Tauri `Channel` cannot cross HTTP).
+fn event_output(app: tauri::AppHandle, id: u32) -> PtyOutput {
+    use tauri::Emitter;
+    let name = pty_event_name(id);
+    std::sync::Arc::new(move |event| {
+        let _ = app.emit(&name, event);
+    })
+}
+
+/// `terminal-pty-<id>`: one session's output for a browser tab.
+pub fn pty_event_name(id: u32) -> String {
+    format!("terminal-pty-{id}")
 }
 
 /// Open a user's Terminal tab: resolve the shell from the verified registry,
@@ -30,6 +53,32 @@ pub async fn terminal_pty_open(
     cols: u16,
     rows: u16,
     on_event: Channel<PtyEvent>,
+) -> Result<PtySpawned, String> {
+    open_session(profile, cwd, title, cols, rows, Some(channel_output(on_event))).await
+}
+
+/// The same for a browser tab, which has no `Channel` to pass: the session
+/// starts with nothing attached and the tab calls
+/// [`terminal_pty_attach_events`] next, which replays what was printed
+/// meanwhile.
+#[tauri::command]
+pub async fn terminal_pty_open_events(
+    profile: Option<String>,
+    cwd: Option<String>,
+    title: Option<String>,
+    cols: u16,
+    rows: u16,
+) -> Result<PtySpawned, String> {
+    open_session(profile, cwd, title, cols, rows, None).await
+}
+
+async fn open_session(
+    profile: Option<String>,
+    cwd: Option<String>,
+    title: Option<String>,
+    cols: u16,
+    rows: u16,
+    output: Option<PtyOutput>,
 ) -> Result<PtySpawned, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let requested = profile.as_deref().unwrap_or("pwsh");
@@ -47,7 +96,7 @@ pub async fn terminal_pty_open(
                 owner_thread: None,
                 command: None,
             },
-            channel: Some(on_event),
+            channel: output,
         })?;
         Ok(PtySpawned {
             id: session.id,
@@ -63,7 +112,15 @@ pub async fn terminal_pty_open(
 /// so far, then live output.
 #[tauri::command]
 pub async fn terminal_pty_attach(id: u32, on_event: Channel<PtyEvent>) -> Result<(), String> {
-    pty_sessions::session(id)?.attach(on_event)
+    pty_sessions::session(id)?.attach(channel_output(on_event))
+}
+
+/// The same for a browser tab: replay, then live output, as
+/// `terminal-pty-<id>` events. A session streams to one tab at a time, so this
+/// takes it over from a desktop tab showing it (and the other way round).
+#[tauri::command]
+pub async fn terminal_pty_attach_events(app: tauri::AppHandle, id: u32) -> Result<(), String> {
+    pty_sessions::session(id)?.attach(event_output(app, id))
 }
 
 /// Type into a session.

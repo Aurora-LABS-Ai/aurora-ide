@@ -18,6 +18,7 @@ import { useWorkspaceStore } from '@/kernel/store/useWorkspaceStore';
 import { useEditorStore } from '@/kernel/store/useEditorStore';
 import { isTauri, readFileContent } from '@/kernel/lib/ipc/tauri';
 import { getLanguageFromExtension } from '@/kernel/lib/fs/file-utils';
+import { isAgentWindowPath } from '@/kernel/lib/agent-window-path';
 
 export interface CliOpenRequest {
   /** Workspace root folder to open */
@@ -39,8 +40,7 @@ export function useCliOpen() {
     // `cli-open` event (a global Tauri event) must not repoint its workspace
     // out from under the pinned project. Only the IDE window handles CLI opens.
     if (
-      typeof window !== "undefined" &&
-      window.location.pathname === "/agent-window"
+      isAgentWindowPath()
     )
       return;
 

@@ -17,14 +17,13 @@
 
 #![cfg(not(feature = "verify_only"))]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use tauri::{AppHandle, Manager};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_runtime::tool_executor::{Permitter, ToolError};
-use crate::db::Database;
+use crate::db::DatabaseAccess;
 
 /// Resolver trait so the permitter can be unit-tested without a live
 /// SQLite connection. Production wires
@@ -46,36 +45,37 @@ pub trait SettingsResolver: Send + Sync + 'static {
     }
 }
 
-/// `AppHandle`-backed resolver — production wiring.
+/// Database-backed resolver — production wiring.
 ///
-/// Pulls the managed `Mutex<Database>` from Tauri state on every
-/// call so the same SQLite connection used by the rest of the app
-/// (settings UI, etc.) is what the permitter sees. Re-reading per
-/// call means a setting change in the UI takes effect on the next
-/// tool dispatch with no agent restart.
+/// Reads the same SQLite connection the rest of the app uses (settings
+/// UI, etc.) on every call. Re-reading per call means a setting change
+/// in the UI takes effect on the next tool dispatch with no agent
+/// restart.
 pub struct DatabaseSettingsResolver {
-    app: AppHandle,
+    db: Arc<dyn DatabaseAccess>,
 }
 
 impl DatabaseSettingsResolver {
     #[must_use]
-    pub fn new(app: AppHandle) -> Self {
-        Self { app }
+    pub fn new(db: Arc<dyn DatabaseAccess>) -> Self {
+        Self { db }
     }
 }
 
 impl SettingsResolver for DatabaseSettingsResolver {
     fn approval_mode(&self, tool_name: &str) -> Option<String> {
-        let state = self.app.try_state::<Mutex<Database>>()?;
-        let db = state.lock().ok()?;
-        match db.settings().get_tool_setting(tool_name) {
-            Ok(Some(setting)) => Some(setting.approval_mode),
-            Ok(None) => None,
-            Err(err) => {
-                eprintln!("[SettingsAwarePermitter] DB lookup for {tool_name} failed: {err}");
-                None
-            }
-        }
+        let mut mode = None;
+        self.db.with_db(&mut |db| {
+            mode = match db.settings().get_tool_setting(tool_name) {
+                Ok(Some(setting)) => Some(setting.approval_mode),
+                Ok(None) => None,
+                Err(err) => {
+                    eprintln!("[SettingsAwarePermitter] DB lookup for {tool_name} failed: {err}");
+                    None
+                }
+            };
+        });
+        mode
     }
 
     /// Reads the `autoApproveTools` row out of `app_settings`. The
@@ -86,18 +86,18 @@ impl SettingsResolver for DatabaseSettingsResolver {
     /// (missing row, malformed JSON, lock poisoned, DB error) we
     /// conservatively return `false` so the modal still pops up.
     fn auto_approve_all(&self) -> bool {
-        let Some(state) = self.app.try_state::<Mutex<Database>>() else {
-            return false;
-        };
-        let Ok(db) = state.lock() else { return false };
-        match db.settings().get_setting("autoApproveTools") {
-            Ok(Some(setting)) => serde_json::from_str(&setting.value).unwrap_or(false),
-            Ok(None) => false,
-            Err(err) => {
-                eprintln!("[SettingsAwarePermitter] auto-approve lookup failed: {err}");
-                false
-            }
-        }
+        let mut on = false;
+        self.db.with_db(&mut |db| {
+            on = match db.settings().get_setting("autoApproveTools") {
+                Ok(Some(setting)) => serde_json::from_str(&setting.value).unwrap_or(false),
+                Ok(None) => false,
+                Err(err) => {
+                    eprintln!("[SettingsAwarePermitter] auto-approve lookup failed: {err}");
+                    false
+                }
+            };
+        });
+        on
     }
 }
 

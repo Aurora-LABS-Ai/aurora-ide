@@ -17,9 +17,8 @@
  */
 
 import React, { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 
-import { isTauri } from "@/kernel/lib/ipc/tauri";
 import { AgentIcon } from "@/apps/agent/shared";
 import { AgentImageModal } from "@/apps/agent/components/modals/AgentImageModal";
 import { baseName, type ToolImage } from "@/apps/agent/components/tool-views/tool-result";
@@ -49,7 +48,7 @@ export const ImageResult: React.FC<{ image: ToolImage }> = ({ image }) => {
       : undefined,
   );
   const fileSrc =
-    image.path && !fileBroken ? (isTauri() ? convertFileSrc(image.path) : image.path) : null;
+    image.path && !fileBroken ? localFileUrl(image.path) : null;
   // The marker records what it encoded; a `file_read` image is JPEG, and a data
   // URI that mislabels its bytes as PNG renders as a broken image.
   const dataSrc = image.base64

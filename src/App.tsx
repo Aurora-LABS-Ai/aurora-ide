@@ -43,6 +43,7 @@ import { useWindowClose } from "@/bridge/useWindowClose";
 import { initializeSystemInfo } from "@/apps/agent/services/runtime/context-builder";
 import { installAgentIdeListeners } from "@/bridge/agent-ide-events";
 import { useMcpStore } from "@/apps/agent/store/tools/useMcpStore";
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
 
 // Global handler to suppress Tauri stream cancellation errors
 // These are expected when user clicks stop during AI streaming
@@ -71,8 +72,7 @@ if (typeof window !== 'undefined') {
 function App() {
   const { initializeFromDatabase } = useThemeStore();
   const initializeSettings = useSettingsStore((state) => state.initializeFromDatabase);
-  const isAgentWindow =
-    typeof window !== "undefined" && window.location.pathname === "/agent-window";
+  const isAgentWindow = isAgentWindowPath();
 
   // Everything below this line runs in BOTH windows. Anything that belongs to
   // one product lives in that product's surface component — see

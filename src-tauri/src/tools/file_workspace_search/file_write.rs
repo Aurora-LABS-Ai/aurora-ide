@@ -198,7 +198,7 @@ impl ToolExecutor for FileWriteTool {
                 // The same counter `file_edit` reports through, so both tools
                 // and the Review panel state one −removed/+added pair.
                 let (lines_added, lines_removed) =
-                    crate::commands::editor_ops::line_change_counts(
+                    crate::workspace::edit::line_change_counts(
                         &old_normalized,
                         &new_normalized,
                     );

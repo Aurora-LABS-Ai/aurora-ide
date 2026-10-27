@@ -28,7 +28,10 @@
  *   that sentence. `onFinal` carries no text; it only says the program is done.
  */
 
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  auroraListen as listen,
+  type AuroraUnlistenFn as UnlistenFn,
+} from "@/kernel/lib/ipc/runtime";
 
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
 import type {

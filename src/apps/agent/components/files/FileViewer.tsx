@@ -18,9 +18,9 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 
-import { isTauri, readFileContent } from "@/kernel/lib/ipc/tauri";
+import { readFileContent } from "@/kernel/lib/ipc/tauri";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { FileIcon } from "@/kernel/ui/FileIcons";
 import {
@@ -139,7 +139,7 @@ const ImageBody: React.FC<{ path: string; name: string }> = ({ path, name }) => 
   const [actual, setActual] = useState(false);
   const [errored, setErrored] = useState(false);
 
-  const src = useMemo(() => (isTauri() ? convertFileSrc(path) : path), [path]);
+  const src = useMemo(() => localFileUrl(path), [path]);
 
   // Each file opens as its OWN dock tab (keyed remount in RightDock), so `path`
   // is stable for this instance's life — transient state needs no manual reset.

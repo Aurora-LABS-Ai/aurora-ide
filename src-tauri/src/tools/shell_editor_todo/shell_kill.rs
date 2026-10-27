@@ -1,5 +1,5 @@
 //! `shell_kill` — wrapper around
-//! [`crate::commands::cancel_command_stream`].
+//! [`crate::process::streams::cancel_command_stream`].
 //!
 //! Per the contract, `requires_permission()` returns **false**:
 //! killing your own spawned process is safe and shouldn't prompt.
@@ -123,7 +123,7 @@ impl ToolExecutor for ShellKillTool {
 fn cancel_stream(request_id: String) -> Result<Option<(String, String)>, String> {
     // Recorded as an agent stop, which is what the process's log file will say.
     // A later reader must be able to tell this apart from the user hitting stop.
-    crate::commands::cancel_tracked_command_stream(&request_id, crate::commands::StopReason::Agent)
+    crate::process::streams::cancel_tracked_command_stream(&request_id, crate::process::streams::StopReason::Agent)
         .map(|stream| Some((stream.process_id, stream.request_id)))
 }
 
@@ -170,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn happy_path_returns_success_payload() {
         #[cfg(not(feature = "verify_only"))]
-        crate::commands::register_command_stream(
+        crate::process::streams::register_command_stream(
             "req-123".into(),
             "req-123".into(),
             Some("test-watcher".into()),
@@ -194,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_request_id_does_not_swallow_the_process_id() {
         #[cfg(not(feature = "verify_only"))]
-        crate::commands::register_command_stream(
+        crate::process::streams::register_command_stream(
             "req-blank".into(),
             "req-blank".into(),
             Some("blank-watcher".into()),
@@ -242,7 +242,7 @@ mod tests {
     #[cfg(not(feature = "verify_only"))]
     #[tokio::test]
     async fn stopping_by_name_reports_the_real_process_id() {
-        crate::commands::register_command_stream(
+        crate::process::streams::register_command_stream(
             "req-named".into(),
             "bg-named".into(),
             Some("Named ticker".into()),

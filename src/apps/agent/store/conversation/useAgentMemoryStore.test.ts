@@ -4,8 +4,8 @@ const invoke = vi.fn();
 
 vi.mock("@/kernel/lib/ipc/runtime", () => ({
   auroraInvoke: (...args: unknown[]) => invoke(...args),
+  isAuroraRuntimeAvailable: () => true,
 }));
-vi.mock("@/kernel/lib/ipc/tauri", () => ({ isTauri: () => true }));
 
 const { useAgentMemoryStore } = await import(
   "@/apps/agent/store/conversation/useAgentMemoryStore"

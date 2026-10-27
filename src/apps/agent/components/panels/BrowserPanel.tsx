@@ -20,7 +20,7 @@
  */
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { auroraListen as listen } from "@/kernel/lib/ipc/runtime";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";

@@ -1,4 +1,5 @@
-import { isTauri, readDirectory } from '@/kernel/lib/ipc/tauri';
+import { isAuroraRuntimeAvailable } from '@/kernel/lib/ipc/runtime';
+import { readDirectory } from '@/kernel/lib/ipc/tauri';
 
 export interface WorkspaceSummary {
   name: string;
@@ -37,7 +38,7 @@ const SKIP_DIRS = new Set([
 ]);
 
 export async function scanWorkspace(rootPath: string): Promise<WorkspaceSummary | null> {
-  if (!isTauri()) return null;
+  if (!isAuroraRuntimeAvailable()) return null;
 
   try {
     const name = rootPath.split(/[/\\]/).pop() || 'workspace';

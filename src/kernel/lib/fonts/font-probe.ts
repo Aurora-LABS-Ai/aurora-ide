@@ -56,6 +56,8 @@
  * is what the `skipped (missing)` column is for.
  */
 
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
+
 /** Generic CSS families — always "available" by definition, never measured. */
 const GENERIC_FAMILIES = new Set([
   "serif",
@@ -239,7 +241,7 @@ export function readFontState(): FontReading[] {
   const root = document.documentElement;
   const agentRoot = document.querySelector(".agw-root");
   const body = document.body;
-  const isAgentWindow = window.location.pathname === "/agent-window";
+  const isAgentWindow = isAgentWindowPath();
 
   const readings: (FontReading | null)[] = [
     readStack("Agent · UI", cssVar(agentRoot, "--agw-font-ui")),
@@ -329,7 +331,7 @@ export function startFontProbe(): () => void {
   const BASELINE_DEADLINE_MS = 8000;
   let last: FontReading[] | null = null;
 
-  const isAgentWindow = window.location.pathname === "/agent-window";
+  const isAgentWindow = isAgentWindowPath();
   const rootsMounted = () => (isAgentWindow ? !!document.querySelector(".agw-root") : !!document.body);
   const settled = () =>
     (rootsMounted() && document.fonts.status === "loaded") ||

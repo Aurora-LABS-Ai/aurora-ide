@@ -16,7 +16,7 @@ pub async fn delete_conversation(
     let _admission = registry.subagent_tasks().lock_agent(&thread_id).await;
     let lookup_registry = registry.clone();
     let lookup_id = thread_id.clone();
-    let (store, mut ids) = tauri::async_runtime::spawn_blocking(move || {
+    let (store, mut ids) = tokio::task::spawn_blocking(move || {
         let store = lookup_registry.store_for_thread(&lookup_id)?;
         let ids = store
             .as_ref()
@@ -69,7 +69,7 @@ pub async fn delete_conversation(
             Some(store) => {
                 let deleting_registry = registry.clone();
                 let deleting_id = thread_id.clone();
-                tauri::async_runtime::spawn_blocking(move || {
+                tokio::task::spawn_blocking(move || {
                     if store.dir() == deleting_registry.chat_store().dir() {
                         if let Some(memory) = crate::chat_memory::service() {
                             let _ = memory.forget_chat(&deleting_id);
@@ -107,8 +107,8 @@ pub async fn delete_conversation(
 
 async fn stop_owned_processes(ids: &BTreeSet<String>) -> Result<(), RuntimeError> {
     let owned = ids.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        for process in crate::commands::list_command_streams() {
+    tokio::task::spawn_blocking(move || {
+        for process in crate::process::streams::list_command_streams() {
             if !process
                 .thread_id
                 .as_ref()
@@ -116,11 +116,11 @@ async fn stop_owned_processes(ids: &BTreeSet<String>) -> Result<(), RuntimeError
             {
                 continue;
             }
-            if let Err(error) = crate::commands::cancel_tracked_command_stream(
+            if let Err(error) = crate::process::streams::cancel_tracked_command_stream(
                 &process.request_id,
-                crate::commands::StopReason::User,
+                crate::process::streams::StopReason::User,
             ) {
-                if crate::commands::list_command_streams()
+                if crate::process::streams::list_command_streams()
                     .iter()
                     .any(|current| current.request_id == process.request_id)
                 {
@@ -135,7 +135,7 @@ async fn stop_owned_processes(ids: &BTreeSet<String>) -> Result<(), RuntimeError
     })
     .await
     .map_err(|e| RuntimeError::InvalidState(format!("process cleanup failed: {e}")))??;
-    while crate::commands::list_command_streams()
+    while crate::process::streams::list_command_streams()
         .iter()
         .any(|process| {
             process

@@ -67,6 +67,7 @@ pub mod minimax;
 pub(crate) mod model_config;
 pub mod openai_compat;
 pub mod pool;
+pub mod provider_models;
 pub mod provider_kernel_adapter;
 pub mod responses;
 pub mod sse;

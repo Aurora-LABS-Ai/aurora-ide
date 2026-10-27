@@ -92,6 +92,24 @@ fn pinned_model(request: &AgentChatRequest) -> String {
     )
 }
 
+/// Where the user typed this message, for the model.
+///
+/// The same conversation can be open in the desktop window and in a browser
+/// at once, and they do not show the same things (no Terminal panel or
+/// browser dock on the web), so the model is told which one this message
+/// came from. The web host overwrites `client` on every browser call; the
+/// desktop window does not send it. It is a label, not a permission.
+fn client_note(client: Option<&str>) -> String {
+    let surface = match client {
+        Some("web") => {
+            "Aurora's web interface, in a browser. The same conversation may also be open in \
+             the desktop app; the browser has no Terminal panel and no browser dock."
+        }
+        _ => "the Aurora desktop app.",
+    };
+    format!("<message_source>Sent from {surface}</message_source>")
+}
+
 /// Attach a turn to the `aurora agent` task that asked for it.
 ///
 /// The task's own file is the authority for the `--out` mirror path: the
@@ -630,19 +648,26 @@ impl<E: EventEmitter> TurnDriver<E> {
                  op \"edit\".\n</attached_images>"
             )
         });
-        user_message.aurora_context = match (
+        let parts: Vec<String> = [
             request
                 .ide_context
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
             attached_note,
-        ) {
-            (Some(ide), Some(note)) => Some(format!("{ide}\n{note}")),
-            (Some(ide), None) => Some(ide.to_string()),
-            (None, Some(note)) => Some(note),
-            (None, None) => None,
-        };
+            // Only the user's own words have a surface they were typed on; a
+            // process ending or a sub-agent report was started by Aurora.
+            matches!(
+                request.user_message_origin,
+                crate::agent_runtime::types::InjectedOrigin::User
+            )
+            .then(|| client_note(request.client.as_deref())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        user_message.aurora_context = (!parts.is_empty()).then(|| parts.join("\n"));
         // Attach browser-inspector element chips so they persist into the
         // session JSONL as a permanent part of this turn (re-rendered above
         // the user bubble on thread reopen). Empty vecs collapse to None so
@@ -678,8 +703,14 @@ impl<E: EventEmitter> TurnDriver<E> {
         //     end. The sidecar says which model the conversation is on, and a
         //     model picked while this turn runs belongs to the NEXT turn: an
         //     end-of-turn write put this turn's model back over that pick.
+        let changed_root = request.workspace_path.clone();
         {
             let _ = store.ensure_thread(&thread_id, None, request.workspace_path.clone());
+            self.emitter.emit_thread_changed(&ThreadChanged {
+                thread_id: thread_id.clone(),
+                workspace_root: changed_root.clone(),
+                reason: "message",
+            });
             if let Err(err) = store.set_model(&thread_id, Some(pinned_model(&request))) {
                 crate::logging::log_warn(
                     "agent_v2",
@@ -894,6 +925,11 @@ impl<E: EventEmitter> TurnDriver<E> {
         //      the composer expects it.
         self.registry.clear_turn_active(&thread_id, &turn_id);
         self.sweep_leftover_reports(&thread_id);
+        self.emitter.emit_thread_changed(&ThreadChanged {
+            thread_id: thread_id.clone(),
+            workspace_root: changed_root,
+            reason: "turn_end",
+        });
 
         // 11. Closing event. Cancellations get an error event with the
         //     literal "cancelled" so the frontend has ONE observable

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor};
-use crate::commands::{ripgrep_search, RipgrepSearchRequest};
+use crate::workspace::{ripgrep_search, RipgrepSearchRequest};
 use crate::tools::timeout::TimeoutPolicy;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;

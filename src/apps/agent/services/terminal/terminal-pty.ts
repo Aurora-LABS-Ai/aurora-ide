@@ -10,7 +10,7 @@
 
 import { Channel } from "@tauri-apps/api/core";
 
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+import { auroraInvoke, auroraListen, isDesktopRuntime } from "@/kernel/lib/ipc/runtime";
 import type { ShellProfile } from "@/apps/agent/adapters/shell-config";
 import type { RunningChild } from "@/apps/agent/services/terminal/terminal-sessions";
 
@@ -45,14 +45,48 @@ function stream(onData: (data: string) => void, onExit: (code: number) => void) 
   return onEvent;
 }
 
+/**
+ * A browser has no Tauri `Channel`: the session's output arrives as the
+ * `terminal-pty-<id>` event instead (`commands::terminal_pty`), which the web
+ * host forwards. Listening starts before the attach, whose replay of what was
+ * printed so far is sent as the same events.
+ */
+async function attachByEvents(
+  id: number,
+  onData: (data: string) => void,
+  onExit: (code: number) => void,
+): Promise<void> {
+  const stop = await auroraListen<PtyEvent>(`terminal-pty-${id}`, ({ payload }) => {
+    if (payload.kind === "data") onData(payload.data);
+    else {
+      stop();
+      onExit(payload.code);
+    }
+  });
+  try {
+    await auroraInvoke("terminal_pty_attach_events", { id });
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
 /** Start a shell. Rejects with Rust's sentence when no such shell is set up. */
-export function openPty(options: OpenPtyOptions): Promise<OpenedPty> {
-  return auroraInvoke<OpenedPty>("terminal_pty_open", {
+export async function openPty(options: OpenPtyOptions): Promise<OpenedPty> {
+  const args = {
     profile: options.profile,
     cwd: options.cwd ?? null,
     title: options.title,
     cols: options.cols,
     rows: options.rows,
+  };
+  if (!isDesktopRuntime()) {
+    const opened = await auroraInvoke<OpenedPty>("terminal_pty_open_events", args);
+    await attachByEvents(opened.id, options.onData, options.onExit);
+    return opened;
+  }
+  return auroraInvoke<OpenedPty>("terminal_pty_open", {
+    ...args,
     onEvent: stream(options.onData, options.onExit),
   });
 }
@@ -64,6 +98,7 @@ export function attachPty(
   onData: (data: string) => void,
   onExit: (code: number) => void,
 ): Promise<void> {
+  if (!isDesktopRuntime()) return attachByEvents(id, onData, onExit);
   return auroraInvoke("terminal_pty_attach", { id, onEvent: stream(onData, onExit) });
 }
 

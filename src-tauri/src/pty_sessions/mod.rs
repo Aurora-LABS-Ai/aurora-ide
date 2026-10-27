@@ -37,11 +37,9 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::ipc::Channel;
-use tauri::Emitter;
 
-use crate::commands::process_tracking::ShellJob;
-use crate::commands::terminal::RunningChild;
+use crate::process::tracking::ShellJob;
+use crate::process::tree::RunningChild;
 
 /// What a session reports to the window, in order: output, then one exit.
 #[derive(Clone, Serialize)]
@@ -50,6 +48,37 @@ pub enum PtyEvent {
     Data { data: String },
     Exit { code: u32 },
 }
+
+/// Where an attached tab receives a session's [`PtyEvent`]s. The desktop app
+/// wraps a Tauri `Channel`; a web host would wrap its socket.
+pub type PtyOutput = Arc<dyn Fn(PtyEvent) + Send + Sync>;
+
+/// What a session tells its host outside any one tab: an agent opened a
+/// terminal, or an agent's terminal ended.
+pub enum PtyNotice {
+    Opened(TerminalOpened),
+    Exited(TerminalExited),
+}
+
+impl PtyNotice {
+    /// The window event name the desktop app sends this as.
+    pub fn event_name(&self) -> &'static str {
+        match self {
+            Self::Opened(_) => "terminal-opened",
+            Self::Exited(_) => "terminal-exited",
+        }
+    }
+
+    pub fn payload(&self) -> serde_json::Value {
+        let value = match self {
+            Self::Opened(opened) => serde_json::to_value(opened),
+            Self::Exited(exited) => serde_json::to_value(exited),
+        };
+        value.unwrap_or(serde_json::Value::Null)
+    }
+}
+
+pub type PtyNotices = Arc<dyn Fn(PtyNotice) + Send + Sync>;
 
 /// Who a session belongs to and what it is called.
 #[derive(Clone, Debug, Serialize)]
@@ -80,7 +109,7 @@ pub struct Session {
     /// that attaches after the start is shown first.
     history: Mutex<Vec<u8>>,
     /// The window's stream, while one is attached.
-    channel: Mutex<Option<Channel<PtyEvent>>>,
+    channel: Mutex<Option<PtyOutput>>,
     /// Total bytes received: lets a caller tell when output has gone quiet.
     received: AtomicU64,
     running: AtomicBool,
@@ -104,13 +133,19 @@ fn sessions() -> &'static Mutex<HashMap<u32, Arc<Session>>> {
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
-/// The app, for the window events an agent session sends. Unset in unit
-/// tests, where those events have nowhere to go.
-static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+/// Where an agent session's [`PtyNotice`]s go. Unset in unit tests, where
+/// those notices have nowhere to go.
+static NOTICES: OnceLock<PtyNotices> = OnceLock::new();
 
 /// Called once at startup.
-pub fn install(app: tauri::AppHandle) {
-    let _ = APP.set(app);
+pub fn install(notices: PtyNotices) {
+    let _ = NOTICES.set(notices);
+}
+
+fn notify(notice: PtyNotice) {
+    if let Some(notices) = NOTICES.get() {
+        notices(notice);
+    }
 }
 
 pub fn session(id: u32) -> Result<Arc<Session>, String> {
@@ -233,7 +268,7 @@ impl Session {
     }
 
     /// Stream to a window: replay what was printed so far, then live output.
-    pub fn attach(&self, channel: Channel<PtyEvent>) -> Result<(), String> {
+    pub fn attach(&self, channel: PtyOutput) -> Result<(), String> {
         let mut slot = self
             .channel
             .lock()
@@ -244,10 +279,10 @@ impl Session {
             // Replayed, xterm would answer it again — straight into the
             // running program's input.
             let replay = String::from_utf8_lossy(&history).replace("\x1b[6n", "");
-            let _ = channel.send(PtyEvent::Data { data: replay });
+            channel(PtyEvent::Data { data: replay });
         }
         if !self.running() {
-            let _ = channel.send(PtyEvent::Exit {
+            channel(PtyEvent::Exit {
                 code: self.exit_code().unwrap_or(0),
             });
         }
@@ -266,7 +301,7 @@ impl Session {
                     name: survivor.name,
                 })
                 .collect()),
-            (None, Some(pid)) => crate::commands::terminal::descendants_of(pid),
+            (None, Some(pid)) => crate::process::tree::descendants_of(pid),
             (None, None) => Ok(Vec::new()),
         }
     }
@@ -358,7 +393,7 @@ pub struct Spawn<'a> {
     pub cols: u16,
     pub rows: u16,
     pub info: SessionInfo,
-    pub channel: Option<Channel<PtyEvent>>,
+    pub channel: Option<PtyOutput>,
 }
 
 /// Start a shell on a new pseudo terminal and put it in a job.
@@ -516,7 +551,7 @@ impl Session {
             match slot.as_ref().ok().and_then(|slot| slot.as_ref()) {
                 Some(channel) => {
                     if !text.is_empty() {
-                        let _ = channel.send(PtyEvent::Data { data: text });
+                        channel(PtyEvent::Data { data: text });
                     }
                     true
                 }
@@ -537,7 +572,7 @@ impl Session {
     fn send(&self, event: PtyEvent) {
         if let Ok(slot) = self.channel.lock() {
             if let Some(channel) = slot.as_ref() {
-                let _ = channel.send(event);
+                channel(event);
             }
         }
     }
@@ -549,23 +584,18 @@ impl Session {
         let Some(owner) = info.owner_thread.clone() else {
             return;
         };
-        if let Some(app) = APP.get() {
-            let _ = app.emit(
-                "terminal-exited",
-                TerminalExited {
-                    id: self.id,
-                    title: info.title,
-                    exit_code: code,
-                    owner_thread: owner,
-                },
-            );
-        }
+        notify(PtyNotice::Exited(TerminalExited {
+            id: self.id,
+            title: info.title,
+            exit_code: code,
+            owner_thread: owner,
+        }));
     }
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TerminalExited {
+pub struct TerminalExited {
     id: u32,
     title: String,
     exit_code: u32,
@@ -574,7 +604,7 @@ struct TerminalExited {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TerminalOpened {
+pub struct TerminalOpened {
     id: u32,
     #[serde(flatten)]
     info: SessionInfo,
@@ -619,15 +649,10 @@ pub fn open_for_agent(
         ShellKind::Bash | ShellKind::Sh | ShellKind::Zsh => format!("{command}; exit $?\r"),
     };
     session.write(typed.as_bytes())?;
-    if let Some(app) = APP.get() {
-        let _ = app.emit(
-            "terminal-opened",
-            TerminalOpened {
-                id: session.id,
-                info: session.info(),
-            },
-        );
-    }
+    notify(PtyNotice::Opened(TerminalOpened {
+        id: session.id,
+        info: session.info(),
+    }));
     Ok(session)
 }
 
@@ -654,7 +679,7 @@ pub fn kill(id: u32) -> Result<(), String> {
         }
         None => {
             if let Some(pid) = session.pid {
-                if let Err(error) = crate::commands::try_kill_pid(pid) {
+                if let Err(error) = crate::process::streams::try_kill_pid(pid) {
                     failures.push(error);
                 }
             }

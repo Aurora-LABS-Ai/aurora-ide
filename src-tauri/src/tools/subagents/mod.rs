@@ -268,6 +268,7 @@ pub(crate) mod test_support {
             },
             system_prompt: None,
             ide_context: None,
+            client: None,
             tools: Vec::new(),
             temperature: None,
             max_output_tokens: None,

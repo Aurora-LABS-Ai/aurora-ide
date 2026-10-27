@@ -48,6 +48,7 @@
  */
 
 import { readFontState } from "./font-probe";
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
 
 // ── What is watched ──────────────────────────────────────────────────────
 
@@ -70,8 +71,7 @@ interface TextTarget {
  * buried the row that actually explains a wrong size under rows that never
  * apply. Same rule `font-probe.ts` already follows.
  */
-const IS_AGENT_WINDOW =
-  typeof window !== "undefined" && window.location.pathname === "/agent-window";
+const IS_AGENT_WINDOW = isAgentWindowPath();
 
 const appliesHere = (scope: "agent" | "ide" | "both"): boolean =>
   scope === "both" || (IS_AGENT_WINDOW ? scope === "agent" : scope === "ide");

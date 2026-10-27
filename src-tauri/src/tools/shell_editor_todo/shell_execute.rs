@@ -488,7 +488,7 @@ pub(crate) fn resolve_shell(requested: Option<String>) -> Option<String> {
     }
     #[cfg(target_os = "windows")]
     {
-        if crate::commands::find_git_bash().is_some() {
+        if crate::process::streams::find_git_bash().is_some() {
             return Some("bash".to_string());
         }
     }

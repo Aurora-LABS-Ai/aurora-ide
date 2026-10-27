@@ -19,8 +19,9 @@
 
 import { create } from "zustand";
 
-import { isTauri } from "@/kernel/lib/ipc/tauri";
-import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
+// The backend, not the window: in a browser the web host answers the same
+// commands (src-tauri/src/web_host).
+import { auroraInvoke, isAuroraRuntimeAvailable } from "@/kernel/lib/ipc/runtime";
 import { useAgentContextStore } from "@/apps/agent/store/conversation/useAgentContextStore";
 import { useAgentSubagentStore } from "@/apps/agent/store/subagents/useAgentSubagentStore";
 import { toast } from "@/apps/agent/store/ui/useAgentToastStore";
@@ -70,7 +71,7 @@ function currentSurface(): AuroraSurface {
 }
 
 function bindRuntimeWorkspace(projectRoot: string | null): void {
-  if (!isTauri()) return;
+  if (!isAuroraRuntimeAvailable()) return;
   try {
     useWorkspaceStore.setState({ rootPath: projectRoot ?? undefined });
   } catch (err) {
@@ -94,7 +95,7 @@ function bindRuntimeWorkspace(projectRoot: string | null): void {
  * Best-effort — failing to remember a path must never break switching to it.
  */
 function rememberAgentWorkspace(projectRoot: string | null): void {
-  if (!isTauri()) return;
+  if (!isAuroraRuntimeAvailable()) return;
   void databaseService
     .setSetting(AGENT_LAST_WORKSPACE_KEY, projectRoot ?? "")
     .catch((err) => console.warn("[agent-chat] failed to remember workspace:", err));
@@ -573,7 +574,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   },
 
   loadKnownProjects: async () => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     try {
       // The distinct workspace roots, taken from the unscoped list
       // `refreshThreads` has already fetched into `allThreads`.
@@ -599,7 +600,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   },
 
   refreshThreads: async () => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
     const { projectRoot } = get();
@@ -646,7 +647,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   },
 
   enterSurface: async (surface) => {
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     // Remember where THIS side was before leaving it, so coming back lands on
     // the conversation you left rather than on whatever the other side did.
     const leaving = get().currentThreadId;
@@ -675,7 +676,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   },
 
   selectThread: async (id, workspaceRoot) => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
     if (get().currentThreadId === id && get().currentThread) {
@@ -728,7 +729,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
   },
 
   deleteThread: async (id) => {
-    if (!isTauri()) {
+    if (!isAuroraRuntimeAvailable()) {
       return;
     }
     // Drop any stale completion dot for a chat that's about to disappear.
@@ -771,7 +772,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     });
     // Optimistic — the row, header, and live turn all rename instantly.
     set(apply(clean));
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     try {
       await threadService.updateTitle(id, clean);
     } catch (err) {
@@ -790,7 +791,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     });
     // Optimistic flip so the row jumps sections immediately.
     set(flip(next));
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     try {
       await threadService.setPinned(id, next);
     } catch (err) {
@@ -814,7 +815,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     };
     // Optimistic — the composer pill must change the instant it's picked.
     set(apply(selection));
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     // A listing or a load already on its way back read the sidecar BEFORE this
     // write; until the write lands, what it reports is the old model.
     modelWritesInFlight.set(id, (modelWritesInFlight.get(id) ?? 0) + 1);
@@ -841,7 +842,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
       return { threadModes };
     };
     set(apply(mode));
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     modeWritesInFlight.set(id, (modeWritesInFlight.get(id) ?? 0) + 1);
     try {
       await threadService.setExecutionMode(id, mode);
@@ -890,7 +891,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // An archived row leaves the tree — clear its dot so it can't keep a
     // project marker lit from the "Archived" section.
     if (willArchive) get().clearUnseenDone(id);
-    if (!isTauri()) return;
+    if (!isAuroraRuntimeAvailable()) return;
     try {
       await threadService.setArchived(id, willArchive);
     } catch (err) {
@@ -1192,7 +1193,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     // Rust first: if it refuses (a turn is still streaming) the transcript
     // must stay exactly as it was, or the UI would drop messages the model
     // is still appending to.
-    if (isTauri()) {
+    if (isAuroraRuntimeAvailable()) {
       await auroraInvoke("agent_rewind_to_user_message", {
         threadId: thread.id,
         userMessageOrdinal: ordinal,
@@ -1206,7 +1207,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
     const kept = thread.messages.slice(0, userIndex);
     const trimmed: DbThread = { ...thread, messages: kept };
     set({ currentThread: trimmed });
-    if (isTauri()) {
+    if (isAuroraRuntimeAvailable()) {
       await threadService.saveThread(trimmed);
     }
     return content;
@@ -1214,7 +1215,7 @@ export const useAgentChatStore = create<AgentChatState>((set, get) => ({
 
   reloadCurrentThread: async () => {
     const id = get().currentThreadId;
-    if (!id || !isTauri()) return;
+    if (!id || !isAuroraRuntimeAvailable()) return;
     try {
       const thread = await threadService.loadThread(id);
       // Guard against a race where the user switched chats during the turn.

@@ -50,6 +50,12 @@ impl EventEmitter for TauriEmitter {
         }
     }
 
+    fn emit_thread_changed(&self, change: &crate::agent_runtime::host::ThreadChanged) {
+        let _ = self
+            .app
+            .emit(crate::agent_runtime::host::THREAD_CHANGED_EVENT, change);
+    }
+
     fn emit_turn_complete(&self, turn_id: &str, summary: &TurnCompletion) {
         flush_agent_events(&self.app, turn_id);
         let _ = self.app.emit("agent_turn_complete", summary);

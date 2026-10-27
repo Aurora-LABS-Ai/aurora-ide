@@ -410,7 +410,7 @@ impl IdeEventSink for NoopIdeEventSink {
     #[cfg(not(feature = "verify_only"))]
     async fn run_shell_stream(&self, req: ShellStreamRequest) -> Result<ShellRunOutput, String> {
         let output =
-            crate::commands::execute_command(req.command, req.cwd, req.shell, req.timeout_ms)
+            crate::process::streams::execute_command(req.command, req.cwd, req.shell, req.timeout_ms)
                 .await?;
         Ok(ShellRunOutput {
             stdout: output.stdout,

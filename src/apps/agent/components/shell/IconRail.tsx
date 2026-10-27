@@ -20,6 +20,7 @@ import React from "react";
 
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { SubagentRail } from "@/apps/agent/components/shell/SubagentRail";
+import { WebHostCell } from "@/apps/agent/components/shell/WebHostCell";
 import {
   DESTINATIONS,
   litRailCell,
@@ -109,6 +110,9 @@ export const IconRail: React.FC = () => {
       {/* The open conversation's sub-agents, low on the rail where the eye
           drops to after the composer. Renders nothing when there are none. */}
       <SubagentRail />
+
+      {/* The interface in a browser on this computer (desktop window only). */}
+      <WebHostCell />
 
       {/* Providers has its own page: it carries its own list on the left, and
           inside Settings that made two sidebars side by side. */}

@@ -38,6 +38,7 @@ pub mod engines;
 mod extract;
 mod http;
 mod images;
+pub mod request;
 pub mod scholar;
 pub mod types;
 

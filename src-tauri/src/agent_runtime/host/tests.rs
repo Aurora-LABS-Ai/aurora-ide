@@ -67,7 +67,7 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
 
     let mut refused = 0usize;
     for name in registry.names() {
-        if crate::commands::agent_v2::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str()) {
+        if super::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str()) {
             continue;
         }
         assert!(
@@ -87,7 +87,7 @@ fn chat_mode_refuses_every_native_tool_it_does_not_name() {
         .names()
         .iter()
         .filter(|name| {
-            crate::commands::agent_v2::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str())
+            super::tool_policy::CHAT_MODE_TOOLS.contains(&name.as_str())
         })
         .count();
     assert_eq!(
@@ -172,7 +172,7 @@ fn chat_mode_offers_exactly_research_presentation_and_memory() {
 /// covered the moment it lands.
 #[test]
 fn build_modes_never_offer_chats_own_tools() {
-    use crate::commands::agent_v2::tool_policy::CHAT_ONLY_TOOLS;
+    use super::tool_policy::CHAT_ONLY_TOOLS;
 
     for mode in [AgentExecutionMode::Agent, AgentExecutionMode::Plan] {
         for name in CHAT_ONLY_TOOLS {
@@ -639,6 +639,7 @@ fn make_request(turn_id: &str, thread_id: &str, msg: &str) -> AgentChatRequest {
         provider_config: default_provider_config(),
         system_prompt: None,
         ide_context: None,
+        client: None,
         tools: Vec::new(),
         temperature: None,
         max_output_tokens: None,

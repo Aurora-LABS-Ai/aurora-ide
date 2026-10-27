@@ -15,6 +15,7 @@ import { tokensToCssVars } from "@/apps/agent/theme/tokens";
 // this provider only decides which of them the agent window asks for, via the
 // fontUi/fontCode theme tokens.
 import "@/apps/agent/theme/agent-window.css";
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
 
 interface AgentThemeProviderProps {
   className?: string;
@@ -63,7 +64,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   // agent window's own webview, but the guard keeps a hypothetical mount
   // inside the IDE document from restyling the IDE's body.
   useEffect(() => {
-    if (window.location.pathname !== "/agent-window") return;
+    if (!isAgentWindowPath()) return;
     const fontUi = theme.tokens.fontUi;
     if (!fontUi) return;
     const body = document.body;

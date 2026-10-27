@@ -1,34 +1,15 @@
 //! Tauri command surface for the Rust agent loop in [`crate::agent_runtime`].
 //!
 //! This module is the **only** layer that knows about both the agent
-//! runtime and Tauri's IPC. Everything else stays decoupled: the runtime
-//! never imports `tauri`, and `lib.rs` never imports the runtime
-//! directly — it goes through the commands and the [`AgentRegistry`]
-//! state object.
+//! runtime and Tauri's IPC. The host it drives (registry, turn driver,
+//! sub-agents, tool policy, the `EventEmitter` trait) is
+//! [`crate::agent_runtime::host`], re-exported here.
 //!
 //! ## What lives here
 //!
-//! 1. [`AgentRegistry`] — in-memory ownership of per-thread sessions
-//!    (lazy load + cache), per-turn `CancellationToken`s, the API client
-//!    factory, **and** the [`BridgeRouter`] that powers frontend tool
-//!    execution.
-//! 2. [`ApiFactory`] — a small dyn-trait the parent integration step
-//!    plugs the real provider builder into. The `build` signature
-//!    takes the full [`crate::api::ProviderConfigSnapshot`] so the
-//!    adapter can read api_key / custom_headers / custom_params
-//!    straight from the request payload.
-//! 3. [`EventEmitter`] — a small dyn-trait that abstracts Tauri's
-//!    `AppHandle::emit`. Production code uses [`TauriEmitter`]; tests
-//!    use a recording mock that captures every envelope/turn-complete/
-//!    turn-error/tool-pending in memory.
-//! 4. [`TurnDriver`] — the testable core: takes an [`AgentChatRequest`],
-//!    builds the per-turn [`RuntimeConfig`] + per-turn [`ToolRegistry`]
-//!    (native Rust tools + one [`FrontendBridgeExecutor`] per bridged
-//!    [`AllowedTool`]), drives one
-//!    [`ConversationRuntime::run_turn`] end-to-end, forwards every
-//!    [`AgentEventEnvelope`] through the emitter, persists the
-//!    post-turn session as JSONL, and emits the per-turn closing event.
-//! 5. Eight `#[tauri::command]` wrappers in `tauri_layer.rs`
+//! 1. `TauriEmitter`: the [`EventEmitter`] that sends a turn's events to
+//!    the window.
+//! 2. Eight `#[tauri::command]` wrappers in `tauri_layer.rs`
 //!    (`agent_chat_v2`, `agent_compact_thread`, `agent_cancel`,
 //!    `agent_load_thread`, `agent_rewind_to_user_message`,
 //!    `agent_post_tool_result`, `agent_enqueue_message`,
@@ -84,147 +65,19 @@
 
 #![allow(dead_code, unexpected_cfgs)]
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
-use dashmap::DashMap;
-use tokio::sync::{mpsc, Mutex};
-use tokio_util::sync::CancellationToken;
-
-use crate::agent_runtime::api_client::StreamingApiClient;
-use crate::agent_runtime::bridge::{
-    BridgeEmitter, BridgeRouter, FrontendBridgeExecutor, ToolBridgeRequest, ToolBridgeResponse,
-};
-use crate::agent_runtime::conversation::{ConversationRuntime, RuntimeConfig};
-use crate::agent_runtime::error::RuntimeError;
+use crate::agent_runtime::bridge::ToolBridgeRequest;
 use crate::agent_runtime::events::TurnCompletion;
-use crate::agent_runtime::ipc::{
-    AgentChatRequest, AgentEventEnvelope, AgentExecutionMode, AllowedTool,
-};
-use crate::agent_runtime::recovery::{classify_error, RecoveryHint};
-use crate::agent_runtime::session::Session;
-use crate::agent_runtime::session_store::SessionStore;
-use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
+use crate::agent_runtime::ipc::{AgentChatRequest, AgentEventEnvelope};
+use crate::agent_runtime::recovery::RecoveryHint;
 use crate::agent_runtime::types::ConversationMessage;
-use crate::agent_safety::bash_validation::ExecutionMode;
 
-// ============================================================================
-// API factory — dyn-trait so the real provider builder drops in unchanged
-// ============================================================================
-
-/// Builds [`StreamingApiClient`] instances on demand for a given
-/// [`crate::api::ProviderConfigSnapshot`].
-///
-/// Stored as a trait object inside [`AgentRegistry`] so the parent
-/// integration can bind the real factory (`RealApiFactory` in
-/// `lib.rs`) via a one-liner adapter. Tests inject a mock
-/// implementation.
-///
-/// Returning a `Result` lets the factory surface configuration errors
-/// (unknown provider, missing API key, malformed model id, …) as
-/// [`RuntimeError`] without panicking.
-///
-/// Phase 2.3 changes the signature from the Phase 2.2
-/// `(provider_id, model)` pair to the full snapshot so the adapter
-/// can read api_key / base_url / custom_headers / custom_params /
-/// preset defaults straight from the request payload.
-pub trait ApiFactory: Send + Sync + 'static {
-    fn build(
-        &self,
-        config: &crate::api::ProviderConfigSnapshot,
-    ) -> Result<Arc<dyn StreamingApiClient>, RuntimeError>;
-}
-
-// ============================================================================
-// Event emitter abstraction — production path is Tauri, tests use a mock
-// ============================================================================
-
-/// Sink for the four Tauri events Phase 2.3 emits per turn.
-///
-/// Splitting this out behind a trait keeps [`TurnDriver`] testable
-/// without dragging in the `tauri` crate. Production code uses
-/// [`TauriEmitter`]; tests assert against a recording mock that captures
-/// every call.
-pub trait EventEmitter: Send + Sync + 'static {
-    /// Emit one streamed envelope (text delta, thinking, tool use,
-    /// usage, message_stop, error). Wire-channel: `"agent_event"`.
-    fn emit_event(&self, envelope: &AgentEventEnvelope);
-
-    /// Emit the per-turn completion summary. Wire-channel:
-    /// `"agent_turn_complete"`. The summary already carries `turn_id`
-    /// inside [`TurnCompletion`], but the trait still takes `turn_id`
-    /// explicitly so error and complete have a uniform signature.
-    fn emit_turn_complete(&self, turn_id: &str, summary: &TurnCompletion);
-
-    /// Emit a turn-level error. Wire-channel: `"agent_turn_error"`.
-    /// Cancellations are emitted as errors too, with `error == "cancelled"`,
-    /// so the frontend has one observable signal for "this turn is over
-    /// without a clean stop".
-    ///
-    /// Phase 4 adds the optional `recovery_hint` parameter. When the
-    /// runtime can classify the error string into a known recovery
-    /// recipe (auth failure, rate limit, …), the hint is propagated to
-    /// the wire payload as the camelCase `recoveryHint` field. `None`
-    /// produces the same shape Phase 2.3 already shipped — the field
-    /// is simply omitted.
-    fn emit_turn_error(&self, turn_id: &str, error: &str, recovery_hint: Option<RecoveryHint>);
-
-    /// Emit a frontend-bridge tool-call request. Wire-channel:
-    /// `"agent_tool_pending"`. Phase 2.3 fires this when the model
-    /// asks for a tool whose executor is the
-    /// [`FrontendBridgeExecutor`]; the frontend reads the payload,
-    /// runs the tool through the existing `agent-tool-runner.ts`
-    /// pipeline, and posts the result back via
-    /// `agent_post_tool_result`.
-    fn emit_tool_pending(&self, request: &ToolBridgeRequest);
-
-    /// Emit a sub-agent lifecycle event (started, finished, message).
-    /// Wire-channel: `"agent_subagent"`. A child's own stream rides
-    /// `agent_event` under the child's turn id like any other turn; this is
-    /// the part that stream cannot say — that the child exists, who started
-    /// it, and how it ended. Defaulted to a no-op so emitters that do not
-    /// care (tests, the verify crate) need not mention it.
-    fn emit_subagent(&self, _event: &crate::agent_runtime::subagents::SubagentEvent) {}
-}
-
-/// `BridgeEmitter` is the narrower surface the bridge module needs.
-/// Every [`EventEmitter`] is automatically a [`BridgeEmitter`] —
-/// blanket impl so the bridge module doesn't need to know about the
-/// other event channels.
-impl<E: EventEmitter + ?Sized> BridgeEmitter for E {
-    fn emit_tool_pending(&self, request: &ToolBridgeRequest) {
-        EventEmitter::emit_tool_pending(self, request);
-    }
-}
-
-// ── Module map ──────────────────────────────────────────────────────────
-//
-// Split out of one 3,238-line file. Each child does `use super::*`, which
-// keeps the original import surface: a child can see its parent's private
-// imports. `pub use` on the first two preserves the outside-world paths
-// `commands::agent_v2::{AgentRegistry, ApiFactory, EventEmitter, TurnDriver}`.
-
-mod registry;
-mod subagent_host;
-mod lifecycle;
-#[cfg(test)]
-mod tests;
-mod tool_policy;
-mod turn_driver;
-
-pub use registry::*;
-pub use lifecycle::delete_conversation;
-pub use subagent_host::*;
-use tool_policy::*;
-pub use turn_driver::*;
-
-/// The database-backed model lookup sub-agents resolve a `model` pin with.
-/// Tauri-only: it reads the managed `Mutex<Database>`.
-#[cfg(not(feature = "verify_only"))]
-mod subagent_lookup;
-#[cfg(not(feature = "verify_only"))]
-pub use subagent_lookup::DatabaseProviderLookup;
+// The host itself (registry, driver, sub-agents, tool policy, the
+// `ApiFactory` and `EventEmitter` traits) lives in
+// `agent_runtime::host`. Re-exported so `commands::agent_v2::AgentRegistry`
+// and the other old paths keep working.
+pub use crate::agent_runtime::host::*;
 
 // ============================================================================
 // Tauri layer — production glue. Excluded from the verify crate via the

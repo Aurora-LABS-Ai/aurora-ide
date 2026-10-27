@@ -43,7 +43,7 @@ pub async fn list_models(base_url: &str, api_key: &str) -> Result<Vec<(String, O
     }
     // Same normalisation as the generic lister: a pasted `…/v1/messages`
     // still finds `…/v1/models`.
-    let url = crate::commands::provider_models::models_url(base_url);
+    let url = crate::api::provider_models::models_url(base_url);
     let client = reqwest::Client::builder()
         .timeout(LIST_TIMEOUT)
         .build()

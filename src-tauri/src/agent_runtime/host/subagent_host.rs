@@ -205,6 +205,7 @@ impl<E: EventEmitter> AgentV2SubagentHost<E> {
             provider_config: model.config.clone(),
             system_prompt: Some(child_system_prompt(def, p.workspace_path.as_deref())),
             ide_context: None,
+            client: None,
             // No frontend-bridged tools: a child's roster is natives only.
             tools: Vec::new(),
             temperature: model.temperature,

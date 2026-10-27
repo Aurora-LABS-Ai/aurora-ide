@@ -4,8 +4,7 @@ import {
   parseImageArtifactContent,
   type AgentArtifactKind,
 } from "@/apps/agent/services/artifacts/agent-artifacts";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { isTauri } from "@/kernel/lib/ipc/tauri";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 import type { PlanStepStatus } from "@/apps/agent/services/plans/agent-plans";
 import { buildArtifactDocument } from "@/apps/agent/lib/render/artifact-render";
 import { useAgentArtifactStore } from "@/apps/agent/store/artifacts/useAgentArtifactStore";
@@ -90,7 +89,7 @@ const CanvasIndexThumb: React.FC<{ content: string }> = ({ content }) => {
   if (!record || broken) {
     return <AgentIcon name="image" size={15} />;
   }
-  const src = isTauri() ? convertFileSrc(record.path) : record.path;
+  const src = localFileUrl(record.path);
   return (
     <img
       className="agw-canvas-index-thumb"

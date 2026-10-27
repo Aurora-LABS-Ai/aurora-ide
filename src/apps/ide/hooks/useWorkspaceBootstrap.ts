@@ -6,6 +6,7 @@ import { databaseService } from "@/kernel/services/database";
 import { useEditorStore } from "@/kernel/store/useEditorStore";
 import { useWorkspaceStore } from "@/kernel/store/useWorkspaceStore";
 import { getLanguageFromExtension } from "@/kernel/lib/fs/file-utils";
+import { isAgentWindowPath } from "@/kernel/lib/agent-window-path";
 
 /**
  * CLI open request returned by the `cli_take_pending_open_request`
@@ -53,8 +54,7 @@ export const useWorkspaceBootstrap = (): void => {
     // `rootPath` to the IDE's last folder, so tools/context read the wrong
     // project while the UI (driven by `projectRoot`) still shows the scoped one.
     if (
-      typeof window !== "undefined" &&
-      window.location.pathname === "/agent-window"
+      isAgentWindowPath()
     )
       return;
     if (hasInitialized.current) return;

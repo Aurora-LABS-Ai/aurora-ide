@@ -46,7 +46,7 @@ use serde_json::{json, Value};
 use crate::agent_runtime::api_client::ToolSchema;
 use crate::agent_runtime::tool_executor::{ToolContext, ToolError, ToolExecutor, ToolRegistry};
 use crate::api::aurora_image;
-use crate::commands::artifacts::{ArtifactKind, ArtifactUpsertRequest};
+use crate::agent_runtime::artifacts::{ArtifactKind, ArtifactUpsertRequest};
 
 use self::assets::{AssetRecord, AssetSource, ImageArtifactContent, NewAsset};
 use self::client::ImageClient;
@@ -494,7 +494,7 @@ pub(crate) fn place_in_canvas(
     let artifact_id = assets::artifact_id_for(&record.name);
     let content = serde_json::to_string(&ImageArtifactContent::from_record(assets_dir, record))
         .map_err(|error| format!("could not encode the artifact: {error}"))?;
-    crate::commands::artifacts::upsert(
+    crate::agent_runtime::artifacts::upsert(
         store,
         ArtifactUpsertRequest {
             thread_id: thread_id.to_string(),
@@ -888,7 +888,7 @@ mod tests {
         assert_eq!(std::fs::read(assets_dir.join(&held[0].name)).unwrap(), picture);
 
         // It is in the Canvas as an image artifact whose content names the file.
-        let bundle = crate::commands::artifacts::load_bundle_for_test(&h.store, &h.thread_id);
+        let bundle = crate::agent_runtime::artifacts::load_bundle_for_test(&h.store, &h.thread_id);
         assert_eq!(bundle.artifacts.len(), 1);
         assert_eq!(bundle.artifacts[0].id, "image-001-generated-an-aurora-over-mountains");
         assert_eq!(bundle.artifacts[0].kind, ArtifactKind::Image);
@@ -967,7 +967,7 @@ mod tests {
         assert!(out.contains("Edited into 002-edited-make-the-cat-orange.png"));
         assert!(out.contains("Started from 001-generated-a-cat.png"));
 
-        let bundle = crate::commands::artifacts::load_bundle_for_test(&h.store, &h.thread_id);
+        let bundle = crate::agent_runtime::artifacts::load_bundle_for_test(&h.store, &h.thread_id);
         assert_eq!(bundle.artifacts.len(), 2, "an edit is a new Canvas entry, not a version");
     }
 

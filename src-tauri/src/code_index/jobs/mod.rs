@@ -106,7 +106,7 @@ impl BuildManager {
         let initial = job.snapshot();
         let slots = self.slots.clone();
         // The runtime, not the IPC future or mounted settings page, owns this task.
-        tauri::async_runtime::spawn(async move {
+        crate::rt::spawn(async move {
             let work = job.clone();
             let outcome = tokio::spawn(async move { run(root, work, slots).await }).await;
             let result =

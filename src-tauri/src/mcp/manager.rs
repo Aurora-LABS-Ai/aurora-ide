@@ -28,7 +28,6 @@ use rmcp::model::{CallToolRequest, CallToolRequestParams, ServerResult};
 use rmcp::service::{Peer, PeerRequestOptions, QuitReason, ServiceError};
 use rmcp::RoleClient;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
 use super::client::{self, AuroraClient, OutputTail};
@@ -38,6 +37,11 @@ use super::types::*;
 
 /// Pushed to every window with the full server list after any change.
 pub const SERVERS_CHANGED_EVENT: &str = "mcp_servers_changed";
+
+/// Receives the full server list after any change. The desktop app sends it
+/// to every window as [`SERVERS_CHANGED_EVENT`]; a headless host may log it
+/// or forward it to its own clients.
+pub type ServersChangedSink = Arc<dyn Fn(&[McpServerState]) + Send + Sync>;
 
 /// Seconds between reconnect attempts for a remote server that dropped.
 const RECONNECT_DELAYS_SECS: [u64; 5] = [1, 2, 4, 8, 16];
@@ -59,7 +63,7 @@ pub struct McpManager {
     servers: RwLock<HashMap<String, McpServerState>>,
     live: RwLock<HashMap<String, Live>>,
     workspace: RwLock<Option<String>>,
-    app: RwLock<Option<AppHandle>>,
+    on_change: RwLock<Option<ServersChangedSink>>,
     generation: AtomicU64,
     /// One connect at a time per server, so two callers can't race a spawn.
     connect_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
@@ -71,7 +75,7 @@ impl McpManager {
             servers: RwLock::new(HashMap::new()),
             live: RwLock::new(HashMap::new()),
             workspace: RwLock::new(None),
-            app: RwLock::new(None),
+            on_change: RwLock::new(None),
             generation: AtomicU64::new(0),
             connect_locks: Mutex::new(HashMap::new()),
         }
@@ -81,10 +85,10 @@ impl McpManager {
     // Startup, workspace, config
     // -----------------------------------------------------------------
 
-    /// Called once from `setup`: remember where to send events, read the
-    /// global config, start the global auto-start servers.
-    pub fn init(&self, app: AppHandle) {
-        *self.app.write() = Some(app);
+    /// Called once at startup: remember where to send the server list, read
+    /// the global config, start the global auto-start servers.
+    pub fn init(&self, on_change: ServersChangedSink) {
+        *self.on_change.write() = Some(on_change);
         self.reload();
         self.autostart();
     }
@@ -166,7 +170,7 @@ impl McpManager {
             .map(|s| s.config.id.clone())
             .collect();
         for id in ids {
-            tauri::async_runtime::spawn(async move {
+            crate::rt::spawn(async move {
                 let _ = MCP_MANAGER.connect_server(&id).await;
             });
         }
@@ -426,7 +430,7 @@ impl McpManager {
                     ),
                 );
                 let watch_id = id.to_string();
-                tauri::async_runtime::spawn(async move {
+                crate::rt::spawn(async move {
                     let reason = service.waiting().await;
                     MCP_MANAGER.on_closed(&watch_id, generation, reason).await;
                 });
@@ -483,7 +487,7 @@ impl McpManager {
 
         if remote && state.config.enabled {
             let id = id.to_string();
-            tauri::async_runtime::spawn(async move {
+            crate::rt::spawn(async move {
                 for (attempt, delay) in RECONNECT_DELAYS_SECS.iter().enumerate() {
                     tokio::time::sleep(Duration::from_secs(*delay)).await;
                     match MCP_MANAGER.get_server(&id) {
@@ -655,11 +659,9 @@ impl McpManager {
     }
 
     fn emit(&self) {
-        let app = self.app.read().clone();
-        if let Some(app) = app {
-            if let Err(e) = app.emit(SERVERS_CHANGED_EVENT, self.list()) {
-                crate::logging::log_warn("mcp", &format!("could not send server list: {e}"));
-            }
+        let sink = self.on_change.read().clone();
+        if let Some(sink) = sink {
+            sink(&self.list());
         }
     }
 }

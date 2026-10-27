@@ -216,10 +216,11 @@ export const ProjectSwitcher: React.FC = () => {
     }
   };
 
-  if (!projectRoot) return null;
-
-  const name = folderName(projectRoot);
-  const parent = compactParentPath(projectRoot);
+  // No project open (a browser at plain `/agent-window`, or a first run): the
+  // same control, asking for one, so the home screen is never left without a
+  // way to pick where the agent works.
+  const name = projectRoot ? folderName(projectRoot) : "Choose a project";
+  const parent = projectRoot ? compactParentPath(projectRoot) : "";
 
   return (
     <>
@@ -229,10 +230,10 @@ export const ProjectSwitcher: React.FC = () => {
           type="button"
           className="agw-projsw"
           data-open={open || undefined}
-          title={projectRoot}
+          title={projectRoot ?? undefined}
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={`Project: ${name}. Change project`}
+          aria-label={projectRoot ? `Project: ${name}. Change project` : "Choose a project"}
           onClick={() => (open ? setMenu(null) : openMenu())}
           onKeyDown={onTriggerKeyDown}
         >

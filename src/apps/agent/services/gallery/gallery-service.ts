@@ -1,6 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { localFileUrl } from "@/kernel/lib/ipc/runtime";
 import { auroraInvoke } from "@/kernel/lib/ipc/runtime";
-import { isTauri } from "@/kernel/lib/ipc/tauri";
 import type { ImageAttachment } from "@/apps/agent/store/composer/useAgentAttachmentStore";
 import type { VideoData } from "./video-service";
 
@@ -32,7 +31,7 @@ export const galleryImageId = (image: GalleryImage): string =>
 export const galleryImageTitle = (image: GalleryImage): string =>
   image.prompt || image.name;
 export const galleryFileSrc = (path: string): string =>
-  isTauri() ? convertFileSrc(path) : path;
+  localFileUrl(path);
 
 export const listGallery = async (): Promise<GalleryResult> => {
   const result = await auroraInvoke<GalleryResult>("chat_gallery_list");

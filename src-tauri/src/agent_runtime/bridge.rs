@@ -80,8 +80,8 @@ pub struct ToolBridgeRequest {
 /// Pulled out of [`crate::commands::agent_v2::EventEmitter`] as a
 /// minimal surface so [`FrontendBridgeExecutor`] doesn't have to know
 /// about `AgentEventEnvelope` plumbing — it only needs to emit the
-/// `tool_pending` channel. Implemented by `TauriEmitter` in
-/// `commands/agent_v2.rs`.
+/// `tool_pending` channel. Implemented by every `EventEmitter` (the
+/// production one is `agent_runtime::host::HostEmitter`).
 pub trait BridgeEmitter: Send + Sync + 'static {
     fn emit_tool_pending(&self, request: &ToolBridgeRequest);
 }

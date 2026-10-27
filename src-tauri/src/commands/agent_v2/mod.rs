@@ -7,8 +7,8 @@
 //!
 //! ## What lives here
 //!
-//! 1. `TauriEmitter`: the [`EventEmitter`] that sends a turn's events to
-//!    the window.
+//! 1. `window_emitter`: the core `HostEmitter` over the app's event sink,
+//!    so a turn's events reach the windows.
 //! 2. Eight `#[tauri::command]` wrappers in `tauri_layer.rs`
 //!    (`agent_chat_v2`, `agent_compact_thread`, `agent_cancel`,
 //!    `agent_load_thread`, `agent_rewind_to_user_message`,
@@ -67,10 +67,7 @@
 
 use std::sync::Arc;
 
-use crate::agent_runtime::bridge::ToolBridgeRequest;
-use crate::agent_runtime::events::TurnCompletion;
-use crate::agent_runtime::ipc::{AgentChatRequest, AgentEventEnvelope};
-use crate::agent_runtime::recovery::RecoveryHint;
+use crate::agent_runtime::ipc::AgentChatRequest;
 use crate::agent_runtime::types::ConversationMessage;
 
 // The host itself (registry, driver, sub-agents, tool policy, the

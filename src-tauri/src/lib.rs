@@ -57,6 +57,11 @@ mod crash;
 mod db;
 mod explorer;
 mod file_cache;
+/// The commands any host serves, by name (the window's IPC and HTTP). The
+/// desktop's own browser host still runs commands through the window's
+/// webview, so `dispatch` waits for `aurora serve` (Phase 6.1) as its caller.
+#[cfg_attr(feature = "desktop", allow(dead_code))]
+mod host_commands;
 /// Named events core code sends to its host (the windows, or a headless host).
 mod host_events;
 pub mod icon_pack;
@@ -103,348 +108,6 @@ mod workspace;
 
 #[cfg(feature = "desktop")]
 use cli::{CliArgs, CliOpenRequest};
-
-// ---------------------------------------------------------------------------
-// Phase 3 — production IDE event sink
-// ---------------------------------------------------------------------------
-//
-// `ProductionIdeEventSink` plugs Sub-D's `shell_editor_todo` bucket into
-// real Tauri events emitted on the main `AppHandle`. The fire-and-forget
-// editor/todo tools (`editor_open_file`, the task tools) dispatch through
-// `AppHandle::emit`; the
-// `shell_spawn` background launcher hands its work off to a
-// `tokio::spawn` running `commands::execute_command_stream` — the
-// same loop the legacy TS executor invoked via `invoke()`.
-//
-// The Phase 4 permission emitter is intentionally NOT wired here —
-// `agent_grant_permission` only needs the `Arc<PermissionRouter>` in
-// managed state to resolve oneshots. The parent agent's final-10%
-// step writes whatever shape it wants for the modal-emitting
-// `Permitter` (a `TauriPermitter` over an emitter that posts the
-// `"agent_permission_request"` channel) and attaches it to the
-// `ToolRegistry` via `with_permitter`.
-#[cfg(feature = "desktop")]
-struct ProductionIdeEventSink {
-    app: tauri::AppHandle,
-}
-
-#[cfg(feature = "desktop")]
-impl ProductionIdeEventSink {
-    fn new(app: tauri::AppHandle) -> Self {
-        Self { app }
-    }
-
-    fn emit_payload<T: serde::Serialize + Clone>(
-        &self,
-        channel: &str,
-        payload: T,
-    ) -> Result<(), String> {
-        self.app.emit(channel, payload).map_err(|e| e.to_string())
-    }
-
-    /// Where a background process's output is mirrored.
-    ///
-    /// Lives in the thread's `tool-results` directory, so it is cleaned up
-    /// with the thread and sits alongside spilled tool output. `None` when the
-    /// registry is not yet managed or the directory cannot be created — the
-    /// process still runs and still streams to the UI, the agent just cannot
-    /// read it back.
-    fn resolve_background_log_path(&self, thread_id: &str, process_id: &str) -> Option<String> {
-        use tauri::Manager;
-
-        let registry = self
-            .app
-            .try_state::<std::sync::Arc<commands::agent_v2::AgentRegistry>>()?;
-        let store = registry
-            .require_store_for_thread(thread_id)
-            .map_err(|e| {
-                logging::log_warn(
-                    "shell.background",
-                    &format!("cannot locate conversation {thread_id}: {e}"),
-                );
-            })
-            .ok()?;
-        let dir = store.tool_results_dir(thread_id);
-        std::fs::create_dir_all(&dir).ok()?;
-
-        // Process ids are Aurora-generated (`bg-<hex>-<epoch>`), but keep the
-        // same defensive filter used for spilled output.
-        let stem: String = process_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .take(64)
-            .collect();
-        let path = dir.join(format!("{stem}.log"));
-        Some(
-            dunce::canonicalize(&path)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string(),
-        )
-    }
-}
-
-#[async_trait::async_trait]
-#[cfg(feature = "desktop")]
-impl tools::shell_editor_todo::IdeEventSink for ProductionIdeEventSink {
-    fn emit_editor_open(
-        &self,
-        path: &str,
-        line: Option<u64>,
-        column: Option<u64>,
-    ) -> Result<(), String> {
-        #[derive(Clone, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Payload<'a> {
-            path: &'a str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            line: Option<u64>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            column: Option<u64>,
-        }
-        self.emit_payload("agent_editor_open", Payload { path, line, column })
-    }
-
-    fn emit_todo_write(&self, thread_id: &str, todos: &serde_json::Value) -> Result<(), String> {
-        #[derive(Clone, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Payload<'a> {
-            thread_id: &'a str,
-            todos: &'a serde_json::Value,
-        }
-        self.emit_payload("agent_todo_write", Payload { thread_id, todos })
-    }
-
-    fn emit_plan_changed(
-        &self,
-        payload: &tools::shell_editor_todo::ide_event_sink::PlanChangedPayload,
-    ) -> Result<(), String> {
-        self.emit_payload(
-            tools::shell_editor_todo::ide_event_sink::PLAN_CHANGED_EVENT,
-            payload.clone(),
-        )
-    }
-
-    async fn spawn_shell_stream(
-        &self,
-        req: tools::shell_editor_todo::ide_event_sink::ShellStreamRequest,
-    ) -> Result<tools::shell_editor_todo::ide_event_sink::SpawnOutcome, String> {
-        use tools::shell_editor_todo::ide_event_sink::{ShellRunOutput, SpawnOutcome};
-
-        // A background process streams to the UI, which the model never sees.
-        // Mirror it into a file beside the thread so the agent can read what
-        // its dev server actually printed — the same shape as spilled tool
-        // output, and cleaned up with the thread.
-        let log_path = self.resolve_background_log_path(&req.thread_id, &req.process_id);
-
-        // Register synchronously before yielding to the spawned task. This
-        // makes an immediate shell_list_processes call see the new process.
-        commands::register_command_stream(
-            req.request_id.clone(),
-            req.process_id.clone(),
-            req.name.clone(),
-            req.command.clone(),
-            req.cwd.clone(),
-            log_path.clone(),
-        );
-        commands::tag_command_stream_thread(&req.request_id, &req.thread_id);
-        let app = self.app.clone();
-        let process_id = req.process_id.clone();
-        let log_for_task = log_path.clone();
-        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
-        // Queue the streaming command. The frontend already listens on
-        // `shell-stream-{request_id}` so events flow through the existing
-        // emit path; the short wait below only confirms startup.
-        tokio::spawn(async move {
-            let result = commands::execute_command_stream(
-                app,
-                req.request_id,
-                req.command,
-                req.cwd,
-                req.shell,
-                req.timeout_ms,
-                log_for_task,
-                // A background process gets a stdin Aurora holds open for its
-                // whole life. Inheriting a GUI app's dead stdin means instant
-                // EOF, and a server that reads stdin and treats EOF as "shut
-                // down" then dies seconds after a clean start — silently.
-                Some(true),
-            )
-            .await;
-            let _ = completion_tx.send(result);
-        });
-
-        // shell_spawn is specifically for long-running work. Give the wrapper
-        // a short window to settle before claiming it started; otherwise a port
-        // collision such as EADDRINUSE returns a plausible process ID that is
-        // already absent from the ledger by the next tool call.
-        //
-        // Exiting inside that window is reported, not judged: the caller
-        // decides, because exit 0 means the command simply finished quickly
-        // while a non-zero exit means it never got going.
-        match tokio::time::timeout(std::time::Duration::from_millis(1_000), completion_rx).await {
-            Err(_) => Ok(SpawnOutcome::Running {
-                output_file: log_path,
-            }),
-            Ok(Ok(Ok(output))) => Ok(SpawnOutcome::Exited(ShellRunOutput {
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.exit_code,
-                success: output.success,
-                timed_out: output.timed_out,
-                left_running: output.left_running,
-                survivors: output.survivors.clone(),
-                // A spawn that exited inside its startup window ran to
-                // completion; nothing detached it.
-                detached: false,
-                output_file: log_path.clone(),
-            })),
-            Ok(Ok(Err(error))) => Err(error),
-            Ok(Err(_)) => Err(format!(
-                "background process {process_id} stopped before startup could be confirmed"
-            )),
-        }
-    }
-
-    async fn run_shell_stream(
-        &self,
-        req: tools::shell_editor_todo::ide_event_sink::ShellStreamRequest,
-    ) -> Result<tools::shell_editor_todo::ide_event_sink::ShellRunOutput, String> {
-        // `execute_command_stream` registers the process itself, emits
-        // `shell-stream-{request_id}` chunks as they arrive, and resolves with
-        // the complete output. Awaiting it gives the tool one final result
-        // while the UI has already been painting the output live.
-        //
-        // It is spawned rather than awaited inline so the run can OUTLIVE this
-        // await. "Run in background" on the card must not stop the loop — the
-        // loop is what drains the child's pipes, and a full pipe blocks the
-        // child — so the only thing that ends here is the waiting.
-        let request_id = req.request_id.clone();
-        // A foreground command now mirrors to a log for the same reason a
-        // background one does: the moment it is detached, the tool result stops
-        // being the record of what it printed. Written for every run, because a
-        // file opened at the click would begin after everything already said.
-        let log_path = self.resolve_background_log_path(&req.thread_id, &req.process_id);
-        let app = self.app.clone();
-        let log_for_task = log_path.clone();
-        let handle = tokio::spawn(async move {
-            commands::execute_command_stream(
-                app,
-                req.request_id,
-                req.command,
-                req.cwd,
-                req.shell,
-                req.timeout_ms,
-                log_for_task,
-                // Foreground commands read a deterministic, immediately closed
-                // stdin — anything that waits on input gets EOF, not a hang.
-                Some(false),
-            )
-            .await
-        });
-
-        let output = tokio::select! {
-            biased;
-            // Checked first: a command that finishes in the same instant the
-            // button is pressed has a real result, and reporting "still
-            // running" over a process that has already exited would be the
-            // `browser_navigate` lie again (lesson.md, 2026-08-21).
-            joined = handle => match joined {
-                Ok(result) => result?,
-                Err(err) => return Err(format!("shell command task failed: {err}")),
-            },
-            () = commands::detached_mid_run(&request_id) => {
-                // The task is deliberately NOT aborted. It keeps streaming into
-                // the card's channel, keeps writing the log, keeps its ledger
-                // row for the dock and `shell_kill`, and still announces the
-                // ending on `shell-process-ended`.
-                return Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
-                    // What it printed before the hand-off. Read back off the
-                    // log because the buffers live inside the task that is
-                    // still filling them.
-                    stdout: commands::read_process_log_tail(log_path.as_deref()),
-                    stderr: String::new(),
-                    exit_code: None,
-                    success: false,
-                    timed_out: false,
-                    left_running: true,
-                    survivors: Vec::new(),
-                    detached: true,
-                    output_file: log_path,
-                });
-            }
-        };
-
-        Ok(tools::shell_editor_todo::ide_event_sink::ShellRunOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: output.exit_code,
-            success: output.success,
-            timed_out: output.timed_out,
-            left_running: output.left_running,
-            survivors: output.survivors,
-            detached: false,
-            output_file: log_path,
-        })
-    }
-
-    fn emit_file_changed(
-        &self,
-        payload: &tools::shell_editor_todo::FileChangedPayload,
-    ) -> Result<(), String> {
-        // Forward the full payload verbatim. `FileChangedPayload`
-        // is `serde(rename_all = "camelCase")` so the frontend reads
-        // `kind`, `isDirectory`, `oldPath`, `sourceTool`, `toolCallId`
-        // without case juggling.
-        self.emit_payload(
-            tools::shell_editor_todo::FILE_CHANGED_EVENT,
-            payload.clone(),
-        )
-    }
-
-    /// Same path `spawn_shell_stream` mirrors output into, recomputed on
-    /// demand — that is what lets `shell_read_output` find a log after the
-    /// process is gone from the ledger.
-    fn background_log_path(&self, thread_id: &str, process_id: &str) -> Option<String> {
-        self.resolve_background_log_path(thread_id, process_id)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Phase 2.3 — agent_v2 wiring
-// ---------------------------------------------------------------------------
-//
-// `RealApiFactory` is the production glue between the Rust agent loop
-// (`commands::agent_v2`) and the existing provider adapters in
-// `crate::api`. The factory takes the `ProviderConfigSnapshot` carried
-// inside every `AgentChatRequest` (frontend → Rust via the Phase 2.3
-// camelCase IPC) and forwards it verbatim to `crate::api::build_api_client`.
-//
-// The adapter layer (`api/anthropic.rs`, `api/openai_compat.rs`) is the
-// only place that interprets `api_key`, `base_url`, `custom_headers`,
-// and `custom_params`. The factory is intentionally a thin shim — it
-// must NOT introduce its own provider-routing logic.
-#[cfg(feature = "desktop")]
-struct RealApiFactory;
-
-#[cfg(feature = "desktop")]
-impl commands::agent_v2::ApiFactory for RealApiFactory {
-    fn build(
-        &self,
-        config: &api::ProviderConfigSnapshot,
-    ) -> Result<
-        std::sync::Arc<dyn agent_runtime::api_client::StreamingApiClient>,
-        agent_runtime::error::RuntimeError,
-    > {
-        Ok(api::build_api_client(config))
-    }
-}
 
 /// Run Aurora with default (no CLI arguments)
 #[cfg(feature = "desktop")]
@@ -1020,8 +683,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::undo_redo::undo_clear_file,
             commands::undo_redo::undo_clear_all,
             // Agent v2 — Rust-side ConversationRuntime entrypoint.
-            // Phase 2.3 swaps the StubApiFactory for `RealApiFactory`,
-            // which forwards each `ProviderConfigSnapshot` straight to
+            // The registry's `ApiAdapters` forward each
+            // `ProviderConfigSnapshot` straight to
             // `api::build_api_client`. The new `agent_post_tool_result`
             // command lets the frontend close the loop on bridge tool
             // calls (`FrontendBridgeExecutor`).
@@ -1179,43 +842,25 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Store database in app state (wrapped in Mutex for thread safety)
             app.manage(Mutex::new(db));
 
-            let usage_handle = handle.clone();
-            let usage_ledger = std::sync::Arc::new(
-                usage_ledger::UsageLedger::open(&paths::db_file(), paths::root())?
-                    .with_notifier(std::sync::Arc::new(move || {
-                        let _ = usage_handle.emit("usage-updated", ());
-                    })),
+            // Native browser-window manager. Owns the lifecycle of every
+            // browser-* WebviewWindow used for previews, element inspection,
+            // and the agent browser tools. Built before the engine so the
+            // browser bucket can hold an Arc to it.
+            let browser_manager = std::sync::Arc::new(
+                crate::services::browser_runtime::BrowserManager::new(handle.clone()),
             );
-            // Import retained history off the startup/UI thread. Profile also
-            // reconciles changed sources before reading, so interrupted imports retry.
-            let usage_import = usage_ledger.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                if let Err(error) = usage_import.reconcile() {
-                    logging::log_error(
-                        "usage_ledger",
-                        &format!("historical import failed: {error:#}"),
-                    );
-                }
-            });
 
-            // Populate the shell registry. On a first run this scans the
-            // machine so the agent has a verified, correctly configured shell
-            // before the user ever opens settings. Runs off the startup path.
-            commands::shell_profiles::bootstrap(app.handle().clone());
-
-            // MCP servers start here, once per app — not once per window.
-            // Global config only; the agent window adds its project's
-            // `.mcp.json` through `mcp_set_workspace`.
-            let mcp_handle = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                mcp::manager::MCP_MANAGER.init(std::sync::Arc::new(move |servers| {
-                    if let Err(e) =
-                        mcp_handle.emit(mcp::manager::SERVERS_CHANGED_EVENT, servers)
-                    {
-                        logging::log_warn("mcp", &format!("could not send server list: {e}"));
-                    }
-                }));
-            });
+            // The engine: usage ledger, shell registry, MCP servers, the
+            // agent registry (the single owner of all chat-history
+            // persistence), the native tools and the permission gate. The
+            // same start-up a host with no window runs; the app hands it the
+            // managed database (read per call through the handle), its
+            // windows as the event sink, and the browser.
+            let engine = agent_runtime::host::start_engine(agent_runtime::host::EngineHost {
+                db: std::sync::Arc::new(handle.clone()),
+                events: std::sync::Arc::new(handle.clone()),
+                browser: Some(browser_manager.clone()),
+            })?;
 
             // Store shared chat state for multi-window sync
             app.manage(commands::chat::SharedChatState::default());
@@ -1239,132 +884,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             // Composer prompt-refine (drives the user's llama-completion.exe).
             app.manage(std::sync::Arc::new(prompt_refine::RefineState::default()));
 
-            // Rust agent runtime registry — the single owner of all
-            // chat-history persistence.
-            //
-            // Sessions live in `<paths::root()>/sessions/{thread_id}.jsonl`
-            // (`%LOCALAPPDATA%\AuroraIDE\sessions\` on Windows)
-            // with a metadata sidecar at `<thread_id>.meta.json`. The
-            // `SessionStore` (held inside the `AgentRegistry`) is the
-            // sole source of truth for everything the chat list and
-            // Thread History modal display — title, token/context
-            // usage, timestamps, message history. There is no other
-            // persistence layer.
-            //
-            // The `RealApiFactory` plugs the `api` adapters in for
-            // live LLM traffic; the registry's internal `BridgeRouter`
-            // powers the `agent_post_tool_result` round trip with the
-            // frontend tool runner.
-            let agent_registry = std::sync::Arc::new(
-                commands::agent_v2::AgentRegistry::new(
-                    std::sync::Arc::new(RealApiFactory),
-                    paths::projects_dir(),
-                )
-                // Aurora Chat's conversations, folder per chat. A sibling of
-                // `projects/`, never inside it — the two products' histories
-                // are separate stores and deleting one must not reach the other.
-                .with_chat_dir(paths::chats_dir())
-                .with_usage_ledger(usage_ledger.clone())
-                // Sub-agents may run on any configured model; the pin is
-                // resolved against the same provider rows the Providers page
-                // edits.
-                .with_provider_lookup(std::sync::Arc::new(
-                    commands::agent_v2::DatabaseProviderLookup::new(std::sync::Arc::new(
-                        handle.clone(),
-                    )),
-                ))
-                // A turn whose prompt the engine composes reads Settings here.
-                .with_settings_source(std::sync::Arc::new(handle.clone())),
-            );
-
-            // Phase 3 — pre-populate the AgentRegistry's ToolRegistry
-            // with all 22 native tools (Sub-C: file/workspace/search,
-            // Sub-D: shell/editor/todo). The registry uses interior
-            // mutability via DashMap, so we register through the
-            // shared Arc returned by `tools()` — the AgentRegistry's
-            // own view sees the same backing map.
-            //
-            // The production IDE event sink emits Tauri events for the
-            // event-firing tools (`editor_open_file`, the task tools) and
-            // re-enters
-            // `commands::execute_command_stream` from a `tokio::spawn`
-            // for `shell_spawn`, mirroring the legacy TS executor's
-            // `invoke()` shape.
-            let production_sink: std::sync::Arc<dyn tools::shell_editor_todo::IdeEventSink> =
-                std::sync::Arc::new(ProductionIdeEventSink::new(handle.clone()));
-
-            // Build the BrowserManager BEFORE tool registration so the
-            // browser bucket can hold an Arc to it. The same Arc is
-            // also installed as managed Tauri state below so the IPC
-            // commands in `commands::browser` see the same instance.
-            let browser_manager = std::sync::Arc::new(
-                crate::services::browser_runtime::BrowserManager::new(handle.clone()),
-            );
-
-            tools::register_builtin_tools(
-                &agent_registry.tools(),
-                production_sink,
-                Some(browser_manager.clone()),
-            );
-
-            // Phase 4 — production permission gate.
-            //
-            // Layered design (outer → inner):
-            //   SettingsAwarePermitter → TauriPermitter → modal
-            //
-            // 1. `SettingsAwarePermitter` consults the
-            //    `tool_settings` SQLite table on every call.
-            //    `auto`  → approve without asking (no event emitted).
-            //    `deny`  → deny without asking (no event emitted).
-            //    `always_ask` (or unset) → fall through to inner.
-            // 2. `TauriPermitter` registers a oneshot in the router,
-            //    fires the `"agent_permission_request"` event, and
-            //    parks until the frontend posts a verdict via
-            //    `agent_grant_permission`.
-            // 3. `PermissionGuardedExecutor` wraps every native tool
-            //    whose `requires_permission()` is `true` so the
-            //    runtime's gate-free `tool.execute(...)` path
-            //    transparently consults the chain — no changes to
-            //    `ConversationRuntime::run_turn`.
-            //
-            // The DB-backed resolver re-reads on every call, so
-            // toggling a setting in the UI takes effect immediately
-            // on the next tool dispatch.
-            let permission_router =
-                std::sync::Arc::new(tools::permissions::PermissionRouter::new());
-            let permission_emitter: std::sync::Arc<dyn tools::permissions::PermissionEmitter> =
-                std::sync::Arc::new(tools::permissions::TauriPermissionEmitter::new(
-                    handle.clone(),
-                ));
-            let tauri_permitter: std::sync::Arc<dyn agent_runtime::tool_executor::Permitter> =
-                std::sync::Arc::new(tools::permissions::TauriPermitter::new(
-                    permission_router.clone(),
-                    permission_emitter,
-                ));
-
-            // The resolver holds an `AppHandle` and pulls
-            // `Mutex<Database>` from managed state on each call —
-            // sharing the same SQLite connection used by the rest
-            // of the app.
-            let resolver: std::sync::Arc<dyn tools::permissions::SettingsResolver> =
-                std::sync::Arc::new(tools::permissions::DatabaseSettingsResolver::new(
-                    std::sync::Arc::new(handle.clone()),
-                ));
-            let settings_aware: std::sync::Arc<dyn agent_runtime::tool_executor::Permitter> =
-                std::sync::Arc::new(tools::permissions::SettingsAwarePermitter::new(
-                    resolver,
-                    tauri_permitter,
-                ));
-            // Order is load-bearing: the timeout guard goes on FIRST so the
-            // permission gate ends up outside it. Reversed, the clock would
-            // start ticking while the approval modal is still on screen and a
-            // command approved after a minute's thought would be killed for
-            // taking a minute.
-            tools::install_timeout_guards(&agent_registry.tools());
-            tools::install_permission_gate(&agent_registry.tools(), settings_aware);
-
-            app.manage(agent_registry);
-            app.manage(permission_router);
+            // The commands reach the engine through managed state.
+            app.manage(engine.registry);
+            app.manage(engine.permission_router);
 
             // Native browser-window manager. Owns the lifecycle of
             // every browser-* WebviewWindow used for previews,

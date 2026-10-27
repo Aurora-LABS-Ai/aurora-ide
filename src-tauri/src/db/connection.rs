@@ -52,6 +52,14 @@ impl DbConnection {
         Ok(Self { conn })
     }
 
+    /// A private database in memory, for tests that need real rows.
+    #[cfg(test)]
+    pub fn in_memory() -> DbResult<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(Self { conn })
+    }
+
     /// Get the underlying SQLite connection
     pub fn connection(&self) -> &Connection {
         &self.conn

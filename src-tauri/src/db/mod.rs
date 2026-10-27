@@ -90,6 +90,14 @@ impl Database {
         })
     }
 
+    /// A migrated database in memory, for tests that need real rows.
+    #[cfg(test)]
+    pub fn in_memory() -> DbResult<Self> {
+        let conn = DbConnection::in_memory()?;
+        migrations::run_migrations(conn.connection())?;
+        Ok(Self { _conn: conn })
+    }
+
     /// Get a workspace repository
     pub fn workspace(&self) -> WorkspaceRepository<'_> {
         WorkspaceRepository::new(self._conn.connection())

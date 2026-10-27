@@ -36,6 +36,7 @@ pub mod delivery;
 pub mod discovery;
 pub mod env;
 pub mod kinds;
+pub mod stored;
 pub mod text;
 pub mod toolchain;
 pub mod windows_terminal;

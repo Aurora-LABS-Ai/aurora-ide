@@ -4945,3 +4945,6 @@ mod subagent_grants;
 
 #[path = "tests/subagent_messaging.rs"]
 mod subagent_messaging;
+
+#[path = "tests/engine_turn.rs"]
+mod engine_turn;

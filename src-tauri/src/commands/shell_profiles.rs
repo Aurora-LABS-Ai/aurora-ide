@@ -10,31 +10,12 @@ use std::sync::Mutex;
 use tauri::State;
 
 use crate::db::Database;
+use crate::shell::stored::persist;
+pub use crate::shell::stored::load;
 use crate::shell::{
     discovery, kinds::ShellKind, HealthState, ProfileSource, ShellHealth, ShellProfile,
-    ShellProfiles, SETTINGS_KEY,
+    ShellProfiles,
 };
-
-/// Load the persisted registry, or an empty one when nothing is stored yet.
-///
-/// A corrupt payload is treated as absent rather than fatal: the user gets an
-/// empty list they can rescan, not a settings page that will not open.
-pub fn load(db: &Database) -> ShellProfiles {
-    db.settings()
-        .get_setting(SETTINGS_KEY)
-        .ok()
-        .flatten()
-        .and_then(|setting| serde_json::from_str::<ShellProfiles>(&setting.value).ok())
-        .unwrap_or_default()
-}
-
-fn persist(db: &Database, state: &ShellProfiles) -> Result<(), String> {
-    let encoded = serde_json::to_string(state)
-        .map_err(|error| format!("Failed to encode shell profiles: {error}"))?;
-    db.settings()
-        .set_setting(SETTINGS_KEY, &encoded)
-        .map_err(|error| format!("Failed to save shell profiles: {error:?}"))
-}
 
 fn commit(db: &Database, state: ShellProfiles) -> Result<ShellProfiles, String> {
     persist(db, &state)?;
@@ -298,39 +279,4 @@ pub async fn shell_tools_inventory() -> Vec<crate::shell::toolchain::FoundTool> 
     tokio::task::spawn_blocking(crate::shell::toolchain::inventory)
         .await
         .unwrap_or_default()
-}
-
-/// Load the registry at startup and, on a first run, scan so the agent has a
-/// correctly configured shell before the user ever opens settings.
-///
-/// Runs off the startup path: scanning launches a process per candidate.
-pub fn bootstrap(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        use tauri::Manager;
-
-        let stored = {
-            let Some(db) = app.try_state::<Mutex<Database>>() else {
-                return;
-            };
-            let Ok(guard) = db.lock() else { return };
-            load(&guard)
-        };
-
-        if !stored.profiles.is_empty() {
-            crate::shell::install(stored);
-            return;
-        }
-
-        let scanned = discovery::scan().await;
-        let merged = ShellProfiles::default().merged_with_scan(scanned);
-
-        let Some(db) = app.try_state::<Mutex<Database>>() else {
-            return;
-        };
-        let Ok(guard) = db.lock() else { return };
-        // Best effort: a failed write still leaves a working in-memory
-        // registry for this session.
-        let _ = persist(&guard, &merged);
-        crate::shell::install(merged);
-    });
 }

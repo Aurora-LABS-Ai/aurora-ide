@@ -20,7 +20,7 @@
 //!    adapter can read api_key / custom_headers / custom_params
 //!    straight from the request payload.
 //! 3. [`EventEmitter`] — a small dyn-trait for where a turn's events go.
-//!    The desktop app uses `TauriEmitter` (`commands::agent_v2`); tests
+//!    Every host uses [`HostEmitter`] over its event sink; tests
 //!    use a recording mock that captures every envelope/turn-complete/
 //!    turn-error/tool-pending in memory.
 //! 4. [`TurnDriver`] — the testable core: takes an [`AgentChatRequest`],
@@ -112,8 +112,8 @@ use crate::agent_safety::bash_validation::ExecutionMode;
 /// [`crate::api::ProviderConfigSnapshot`].
 ///
 /// Stored as a trait object inside [`AgentRegistry`] so the parent
-/// integration can bind the real factory (`RealApiFactory` in
-/// `lib.rs`) via a one-liner adapter. Tests inject a mock
+/// integration can bind the real factory ([`ApiAdapters`] in
+/// `startup.rs`). Tests inject a mock
 /// implementation.
 ///
 /// Returning a `Result` lets the factory surface configuration errors
@@ -138,7 +138,7 @@ pub trait ApiFactory: Send + Sync + 'static {
 /// Sink for the events a turn emits.
 ///
 /// Splitting this out behind a trait keeps [`TurnDriver`] testable
-/// and free of the `tauri` crate. The desktop app uses `TauriEmitter`;
+/// and free of the `tauri` crate. Every host uses [`HostEmitter`];
 /// tests assert against a recording mock that captures every call.
 pub trait EventEmitter: Send + Sync + 'static {
     /// Emit one streamed envelope (text delta, thinking, tool use,
@@ -253,6 +253,32 @@ mod turn_driver;
 mod subagent_lookup;
 #[cfg(not(feature = "verify_only"))]
 pub use subagent_lookup::DatabaseProviderLookup;
+
+/// A turn's events, sent through the host's event sink.
+#[cfg(not(feature = "verify_only"))]
+mod emitter;
+#[cfg(not(feature = "verify_only"))]
+pub use emitter::HostEmitter;
+
+/// A turn the engine builds from `{thread, message, mode}` alone.
+#[cfg(not(feature = "verify_only"))]
+mod engine_turn;
+// No caller in the desktop build yet: `aurora serve` (Phase 6.1) is the first.
+#[cfg(not(feature = "verify_only"))]
+#[allow(unused_imports)]
+pub use engine_turn::EngineTurn;
+
+/// What the native tools tell the host (editor, checklist, shell streams).
+#[cfg(not(feature = "verify_only"))]
+mod ide_events;
+#[cfg(not(feature = "verify_only"))]
+pub use ide_events::HostIdeEventSink;
+
+/// Starting the engine, for the desktop app and a host with no window.
+#[cfg(not(feature = "verify_only"))]
+mod startup;
+#[cfg(not(feature = "verify_only"))]
+pub use startup::{start_engine, Engine, EngineHost};
 
 pub use registry::*;
 pub use lifecycle::delete_conversation;

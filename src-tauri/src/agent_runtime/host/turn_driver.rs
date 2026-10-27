@@ -55,7 +55,7 @@ use super::*;
 ///     `agent_turn_error` with the rendered error (cancellations
 ///     surface as the literal `"cancelled"`).
 pub struct TurnDriver<E: EventEmitter> {
-    registry: Arc<AgentRegistry>,
+    pub(super) registry: Arc<AgentRegistry>,
     emitter: Arc<E>,
 }
 
@@ -108,6 +108,37 @@ fn client_note(client: Option<&str>) -> String {
         _ => "the Aurora desktop app.",
     };
     format!("<message_source>Sent from {surface}</message_source>")
+}
+
+/// The provider snapshot and knobs the engine resolves `selection`
+/// (`"providerId:modelKey"`) to, from the database rows and Settings.
+/// `Ok(None)`: nothing resolves (no provider with a key). `Err`: the engine
+/// refuses the turn, with the reason the window would show.
+pub(super) async fn resolve_engine_model(
+    registry: &Arc<AgentRegistry>,
+    selection: String,
+    facts: crate::agent_runtime::turn_build::provider::EngineModelFacts,
+) -> Result<Option<crate::agent_runtime::turn_build::provider::ResolvedTurnModel>, String> {
+    let registry = registry.clone();
+    tokio::task::spawn_blocking(move || {
+        let db = registry
+            .settings_source()
+            .ok_or_else(|| "no database for the turn's provider rows".to_string())?;
+        let rows = crate::agent_runtime::turn_build::provider::ProviderRows::load(&db)?;
+        let settings = registry.app_settings();
+        crate::agent_runtime::turn_build::provider::resolve_turn_model(
+            &rows,
+            crate::agent_runtime::turn_build::provider::TurnModelInputs {
+                selection: &selection,
+                selected_model: &settings.selected_model,
+                compaction_model: &settings.compaction_model,
+                thinking_preference: settings.thinking_enabled,
+                facts: &facts,
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("the model lookup stopped: {error}"))?
 }
 
 /// Attach a turn to the `aurora agent` task that asked for it.
@@ -432,6 +463,36 @@ impl<E: EventEmitter> TurnDriver<E> {
             drop(session_arc.lock().await);
         };
 
+        // 2a. A client that asked the engine to resolve the model
+        //     (`engine_prompt.model`, Phase 3.6) gets the provider snapshot
+        //     and the knobs beside it from the database rows, in place of
+        //     what it sent. First, because the API client (step 2) and the
+        //     tool list (2b: vision) read the snapshot. Shadow: compared only.
+        //     A selection the window would have refused the turn on (a
+        //     Cursor run the account lacks) is logged here and the client's
+        //     snapshot kept.
+        let engine_model = request
+            .engine_prompt
+            .as_ref()
+            .filter(|_| is_conversation)
+            .and_then(|engine| engine.model.clone().map(|facts| (engine.shadow, facts)));
+        if let (Some((shadow, facts)), Some(selection)) = (engine_model, request.model_selection.clone()) {
+            match resolve_engine_model(&self.registry, selection, facts).await {
+                Ok(Some(model)) if shadow => {
+                    crate::agent_runtime::turn_build::provider::report_shadow_model(&thread_id, &request, &model);
+                }
+                Ok(Some(model)) => crate::agent_runtime::turn_build::provider::apply(&mut request, model),
+                Ok(None) => crate::logging::log_warn(
+                    "turn_build",
+                    &format!("shadow model for {thread_id}: no provider resolves, keeping the client's"),
+                ),
+                Err(error) => crate::logging::log_warn(
+                    "turn_build",
+                    &format!("shadow model for {thread_id}: engine refused ({error}), keeping the client's"),
+                ),
+            }
+        }
+
         // 2. Build the API client BEFORE registering the cancel token —
         //    if the factory fails we don't want a stale `in_flight`
         //    entry hanging around for a turn that never started. The
@@ -461,59 +522,6 @@ impl<E: EventEmitter> TurnDriver<E> {
                 .mark_conversation_turn(&thread_id, request.workspace_path.clone());
         }
         drop(admission);
-
-        // 2a. A client that asked the engine to resolve the model
-        //     (`engine_prompt.model`, Phase 3.6) gets the provider snapshot
-        //     and the knobs beside it from the database rows, in place of
-        //     what it sent. First, because the API client (step 5) and the
-        //     tool list (2b: vision) read the snapshot. Shadow: compared only.
-        //     A selection the window would have refused the turn on (a
-        //     Cursor run the account lacks) is logged here and the client's
-        //     snapshot kept.
-        let engine_model = request
-            .engine_prompt
-            .as_ref()
-            .filter(|_| is_conversation)
-            .and_then(|engine| engine.model.clone().map(|facts| (engine.shadow, facts)));
-        if let (Some((shadow, facts)), Some(selection)) = (engine_model, request.model_selection.clone()) {
-            let registry = self.registry.clone();
-            let resolved = tokio::task::spawn_blocking(move || {
-                let db = registry
-                    .settings_source()
-                    .ok_or_else(|| "no database for the turn's provider rows".to_string())?;
-                let rows = crate::agent_runtime::turn_build::provider::ProviderRows::load(&db)?;
-                let settings = registry.app_settings();
-                crate::agent_runtime::turn_build::provider::resolve_turn_model(
-                    &rows,
-                    crate::agent_runtime::turn_build::provider::TurnModelInputs {
-                        selection: &selection,
-                        selected_model: &settings.selected_model,
-                        compaction_model: &settings.compaction_model,
-                        thinking_preference: settings.thinking_enabled,
-                        facts: &facts,
-                    },
-                )
-            })
-            .await;
-            match resolved {
-                Ok(Ok(Some(model))) if shadow => {
-                    crate::agent_runtime::turn_build::provider::report_shadow_model(&thread_id, &request, &model);
-                }
-                Ok(Ok(Some(model))) => crate::agent_runtime::turn_build::provider::apply(&mut request, model),
-                Ok(Ok(None)) => crate::logging::log_warn(
-                    "turn_build",
-                    &format!("shadow model for {thread_id}: no provider resolves, keeping the client's"),
-                ),
-                Ok(Err(error)) => crate::logging::log_warn(
-                    "turn_build",
-                    &format!("shadow model for {thread_id}: engine refused ({error}), keeping the client's"),
-                ),
-                Err(error) => crate::logging::log_warn(
-                    "agent_v2",
-                    &format!("engine model for thread {thread_id} failed, keeping the client's: {error}"),
-                ),
-            }
-        }
 
         // 2b. A client that asked the engine to build the tool list
         //     (`engine_prompt.tools`, Phase 3.4) gets the window's own tools

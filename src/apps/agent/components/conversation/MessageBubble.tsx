@@ -34,9 +34,10 @@ import { CompactionCard } from "@/apps/agent/components/conversation/CompactionC
 import { DirectImage } from "@/apps/agent/components/conversation/DirectImage";
 import { NoticeCard } from "@/apps/agent/components/conversation/NoticeCard";
 import { ReconnectCard } from "@/apps/agent/components/conversation/ReconnectCard";
-import { WorkCard } from "@/apps/agent/components/conversation/WorkCard";
 import { BoundedRows } from "@/apps/agent/components/conversation/BoundedRows";
-import { groupWorkStretches, lastWorkRowIndex } from "@/apps/agent/components/conversation/work-stretches";
+import { WorkLog } from "@/apps/agent/components/conversation/work-log/WorkLog";
+import { WorkSteps } from "@/apps/agent/components/conversation/work-log/WorkSteps";
+import { splitTurn } from "@/apps/agent/components/conversation/work-log/split-turn";
 import { useConversationScope } from "@/apps/agent/lib/thread/conversation-scope";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import {
@@ -44,6 +45,7 @@ import {
   buildSections,
   formatReplyTime,
   formatWorkedDuration,
+  lastWorkRowIndex,
   type TimelineEvent,
   type TimelineRow,
 } from "@/apps/agent/components/conversation/timeline";
@@ -931,16 +933,11 @@ const AssistantTurn: React.FC<{
   }, [streaming, startedAt, workedMs]);
   const sections = useMemo(() => buildSections(rows, turnEndedAt), [rows, turnEndedAt]);
 
-  // Transcript → Work cards: the turn as ordinary rows and folded stretches of
-  // quiet work. `null` when the setting is off, which leaves the chapter
-  // sections below exactly as they were.
+  // Transcript → Work cards: the turn's work in one card, the answer below it
+  // (`work-log/split-turn`). `null` when the setting is off, which leaves the
+  // chapter sections below exactly as they were.
   const workCardsOn = useAgentThemeStore((s) => s.transcriptWorkCards);
-  // `streaming` is passed so narration the model is still writing stays
-  // inside the card; after the turn, trailing text is the answer.
-  const blocks = useMemo(
-    () => (workCardsOn ? groupWorkStretches(rows, { streaming }) : null),
-    [workCardsOn, rows, streaming],
-  );
+  const split = useMemo(() => (workCardsOn ? splitTurn(rows) : null), [workCardsOn, rows]);
   // Where the answer starts: after the turn's last thought or tool run.
   const lastWorkIndex = useMemo(() => lastWorkRowIndex(rows), [rows]);
   // The conversation a card saves its open state to. A docked chat declares
@@ -984,8 +981,11 @@ const AssistantTurn: React.FC<{
   };
 
   /** `index` is the row's position in the FLAT turn list — see
-   *  `renderRowWrapper` for why it is turn-wide and not chapter-local. */
-  const renderRow = (row: TimelineRow, index: number) => {
+   *  `renderRowWrapper` for why it is turn-wide and not chapter-local.
+   *  `inWorkCard`: the row is drawn inside the work card, where a thought stays
+   *  on its line and a tool run is plain steps. Said here, not through a
+   *  context the rows read, so nothing outside the card can be affected. */
+  const renderRow = (row: TimelineRow, index: number, inWorkCard = false) => {
     if (row.type === "thinking") {
       return (
         <AgentThinkingBlock
@@ -993,8 +993,12 @@ const AssistantTurn: React.FC<{
           isGenerating={row.id === activeThinkingId}
           startedAt={row.startedAt}
           durationMs={row.durationMs}
+          folded={inWorkCard}
         />
       );
+    }
+    if (row.type === "tools" && inWorkCard) {
+      return <WorkSteps tools={row.tools} streaming={streaming} />;
     }
     if (row.type === "content") {
       return (
@@ -1091,7 +1095,7 @@ const AssistantTurn: React.FC<{
    * would terminate the rail at every chapter break and put a shimmer on the
    * last row of every collapsed section.
    */
-  const renderRowWrapper = (row: TimelineRow, index: number) => (
+  const renderRowWrapper = (row: TimelineRow, index: number, inWorkCard = false) => (
     // Every row carries the same wrapper, on every turn, whether or not an
     // opt-in transcript treatment is on. It is the single hook those
     // treatments style — and keeping it unconditional means switching one on
@@ -1116,7 +1120,7 @@ const AssistantTurn: React.FC<{
           display:none by default, exactly like the wrapper itself, so
           toggling the spine never remounts a row. */}
       <i className="agw-row-branch" aria-hidden="true" />
-      {renderRow(row, index)}
+      {renderRow(row, index, inWorkCard)}
     </div>
   );
 
@@ -1149,27 +1153,24 @@ const AssistantTurn: React.FC<{
         </span>
       )}
 
-      {blocks?.map((block, i) =>
-        block.kind === "row" ? (
-          renderRowWrapper(block.row, block.index)
-        ) : (
-          <WorkCard
-            // The first row's id, not the card's: the card id moves to the
-            // first tool call once one arrives, and remounting the card at
-            // that moment would throw away what it was showing.
-            key={`work-${block.items[0].row.id}`}
-            stretch={block}
-            live={streaming && i === blocks.length - 1}
-            turnStreaming={streaming}
-            isLast={block.items[block.items.length - 1].index === rows.length - 1}
-            threadId={cardThreadId}
-            turnStartedAt={Number.isFinite(turnStartedMs) ? turnStartedMs : undefined}
-            renderItem={({ row, index }) => renderRowWrapper(row, index)}
-          />
-        ),
+      {/* Three fixed slots — rows above the card, the card, rows below — so
+          the card is never remounted: it is one per turn and always in the
+          middle slot. A row only ever moves from "below" into the card. */}
+      {split?.before.map(({ row, index }) => renderRowWrapper(row, index))}
+      {split && split.work.length > 0 && (
+        <WorkLog
+          work={split.work}
+          tally={split.tally}
+          running={streaming}
+          isLast={split.after.length === 0}
+          threadId={cardThreadId}
+          turnStartedAt={Number.isFinite(turnStartedMs) ? turnStartedMs : undefined}
+          renderItem={({ row, index }) => renderRowWrapper(row, index, true)}
+        />
       )}
+      {split?.after.map(({ row, index }) => renderRowWrapper(row, index))}
 
-      {!blocks && sections.map((section, sectionIndex) => {
+      {!split && sections.map((section, sectionIndex) => {
         if (!section.chapter) {
           return section.rows.map(({ row, index }) => renderRowWrapper(row, index));
         }

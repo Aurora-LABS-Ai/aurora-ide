@@ -54,6 +54,7 @@ pub mod session_index;
 pub mod session_store;
 pub mod subagents;
 pub mod title;
+pub mod tool_alias;
 pub mod tool_bridge;
 pub mod tool_executor;
 pub mod tool_pairing;

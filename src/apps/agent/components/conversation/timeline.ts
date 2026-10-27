@@ -1143,6 +1143,28 @@ export function buildSections(
   return sections;
 }
 
+/**
+ * Calls whose result IS the reply: an artifact shown to the reader, a plan
+ * written for them. In the chapter view (Work cards off) the reply starts at
+ * the first run holding one, so it is not trapped in a bounded chapter body.
+ */
+const DELIVERABLE_TOOLS = new Set(["present_artifact", "plan_write"]);
+
+/**
+ * Index of the turn's last thought, tool run or chapter BEFORE the reply
+ * starts, or -1. Everything after it is the answer, drawn at full size below a
+ * chapter's bounded body. Work cards draw their own line (`work-log/split-turn`).
+ */
+export function lastWorkRowIndex(rows: readonly TimelineRow[]): number {
+  let last = -1;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row.type === "tools" && row.tools.some((call) => DELIVERABLE_TOOLS.has(call.name))) break;
+    if (row.type === "thinking" || row.type === "tools" || row.type === "chapter") last = index;
+  }
+  return last;
+}
+
 export function buildRows(events: TimelineEvent[]): TimelineRow[] {
   const rows: TimelineRow[] = [];
   let run: ToolCall[] = [];

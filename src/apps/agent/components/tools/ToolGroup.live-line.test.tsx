@@ -10,8 +10,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToolGroup } from "@/apps/agent/components/tools/ToolGroup";
-import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
-import { LiveWorkCardContext } from "@/apps/agent/components/conversation/work-card-context";
 import type { ToolCall } from "@/apps/agent/components/tools/tool-call";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 
@@ -85,7 +83,6 @@ afterEach(async () => {
     transcriptLiveLine: false,
     transcriptSmoothTools: true,
     transcriptToolRunsOpen: false,
-    transcriptWorkCardGroupRuns: false,
   });
 });
 
@@ -177,34 +174,6 @@ describe("Transcript → One live line: what a run becomes after it is live", ()
     expect(entering[0].textContent).toContain("splitdevice.go");
   });
 
-  /**
-   * 2026-10-16: opening a running work card mounted every older step again,
-   * and each one grew from height 0 at the same time. A step the card is only
-   * redrawing is not arriving; one that mounts after that render still is.
-   */
-  it("does not play the entrance for steps mounted under an arrival hold", async () => {
-    useAgentThemeStore.setState({ transcriptSmoothTools: true });
-    const hold = { current: true };
-    const el = await draw(
-      <ArrivalHoldContext.Provider value={hold}>
-        <ToolGroup tools={run} isActivelyStreaming isLastRow />
-      </ArrivalHoldContext.Provider>,
-    );
-    expect(el.querySelectorAll(".agw-tool-step")).toHaveLength(3);
-    expect(el.querySelectorAll(".agw-tool-step[data-enter]")).toHaveLength(0);
-
-    hold.current = false;
-    const four = [...run, read("c4", "internal/tunnel/wireguard/peer.go", false)];
-    await redraw(
-      <ArrivalHoldContext.Provider value={hold}>
-        <ToolGroup tools={four} isActivelyStreaming isLastRow />
-      </ArrivalHoldContext.Provider>,
-    );
-    const entering = el.querySelectorAll(".agw-tool-step[data-enter]");
-    expect(entering).toHaveLength(1);
-    expect(entering[0].textContent).toContain("peer.go");
-  });
-
   /** Parallel calls: the newest can finish first. The line is not waiting
    *  while an older call in the run is still running. */
   it("does not shimmer while an older parallel call is still running", async () => {
@@ -274,53 +243,5 @@ describe("Transcript → One live line for tool calls", () => {
 
     expect(el.querySelector(".agw-tool-liveline")).toBeNull();
     expect(el.querySelectorAll(".agw-tool-card")).toHaveLength(3);
-  });
-});
-
-/**
- * 2026-10-18: inside a running work card a fast model (a round of two calls
- * every 0.8s) made runs grow a header at their third call and fold 600ms after
- * the next thought, over and over. Probe: aurora-work-card-motion-designs.html, 02.
- */
-describe("Inside a running work card", () => {
-  const inCard = (tools: ToolCall[], isLastRow = true) => (
-    <LiveWorkCardContext.Provider value>
-      <ToolGroup tools={tools} isActivelyStreaming isLastRow={isLastRow} />
-    </LiveWorkCardContext.Provider>
-  );
-
-  it("draws a run of three or more as plain rows, and nothing folds when a row lands below", async () => {
-    const el = await draw(inCard(done(run)));
-    expect(el.querySelector(".agw-tool-group-head")).toBeNull();
-    expect(el.querySelector(".agw-tool-group-body")).toBeNull();
-    expect(el.querySelectorAll(".agw-tool-step")).toHaveLength(3);
-
-    await redraw(inCard(done(run), false));
-    expect(el.querySelector(".agw-tool-group-head")).toBeNull();
-    expect(el.querySelectorAll(".agw-tool-step")).toHaveLength(3);
-  });
-
-  it("fades a new step in where it lands instead of growing it from 0", async () => {
-    useAgentThemeStore.setState({ transcriptSmoothTools: true });
-    const el = await draw(inCard(twoCalls));
-    const three = [...twoCalls, read("c3", "internal/tunnel/wireguard/splitdevice.go", false)];
-    await redraw(inCard(three));
-
-    expect(el.querySelectorAll(".agw-tool-step[data-enter]")).toHaveLength(0);
-    const fading = el.querySelectorAll(".agw-tool-step[data-fade]");
-    expect(fading[fading.length - 1].textContent).toContain("splitdevice.go");
-  });
-
-  it("ignores the live line there: the card already bounds the run", async () => {
-    useAgentThemeStore.setState({ transcriptLiveLine: true });
-    const el = await draw(inCard(run));
-    expect(el.querySelector(".agw-tool-liveline")).toBeNull();
-    expect(el.querySelectorAll(".agw-tool-step")).toHaveLength(3);
-  });
-
-  it("groups as before when Group tool calls while working is on", async () => {
-    useAgentThemeStore.setState({ transcriptWorkCardGroupRuns: true });
-    const el = await draw(inCard(done(run)));
-    expect(el.querySelector(".agw-tool-group-head")).not.toBeNull();
   });
 });

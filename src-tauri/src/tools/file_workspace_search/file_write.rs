@@ -46,7 +46,10 @@ impl ToolExecutor for FileWriteTool {
                           "Create a new file or completely overwrite an existing one with the full \
                           content you supply. {rule} Creates parent \
                           directories automatically. `content` is REQUIRED — provide the entire \
-                          file body. Use file_edit for targeted changes; set must_not_exist=true to \
+                          file body. Use file_edit for targeted changes and to add to a file. \
+                          Overwriting a file that already has content requires that you read some \
+                          of it first in this conversation (any part); otherwise nothing is written \
+                          and the result tells you how long the file is. Set must_not_exist=true to \
                           fail instead of overwriting if the file already exists. An overwrite may \
                           return an `impact` field naming symbols this file exports that OTHER \
                           files use — if their signatures or behavior changed, check those call \
@@ -121,6 +124,21 @@ impl ToolExecutor for FileWriteTool {
                 "fullPath": resolved_str,
             }))
             .unwrap());
+        }
+
+        // An existing file this chat has never seen is not overwritten. See
+        // `read_gate` for the incident this answers.
+        if existed_before {
+            if let Some(refusal) = super::read_gate::refuse_unread(
+                ctx,
+                super::read_gate::Change::Write,
+                &raw_path,
+                &resolved_str,
+            )
+            .await
+            {
+                return Ok(refusal.to_string());
+            }
         }
 
         let content_for_event = content.clone();
@@ -291,6 +309,80 @@ mod tests {
 
     fn noop_tool() -> FileWriteTool {
         FileWriteTool::new(Arc::new(NoopIdeEventSink))
+    }
+
+    fn lines(n: usize) -> String {
+        (1..=n).map(|i| format!("lesson {i}\n")).collect()
+    }
+
+    /// 2026-10-25: an agent "added a lesson" with file_write and replaced a
+    /// 1,990-line `.knowledge/lesson.md` it had never read. The same call is
+    /// now refused, the file is untouched, and the refusal names its size.
+    #[tokio::test]
+    async fn an_existing_file_this_chat_never_read_is_not_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(".knowledge/lesson.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, lines(1990)).unwrap();
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let out = tool
+            .execute(
+                serde_json::json!({ "path": ".knowledge/lesson.md", "content": "# Lessons\n\nnew\n" }),
+                &ctx_for(Some(tmp.path().to_path_buf())),
+            )
+            .await
+            .expect("structured refusal");
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], false, "{out}");
+        assert_eq!(parsed["lines"], 1990);
+        assert!(parsed["error"].as_str().unwrap().contains("1990 lines"), "{out}");
+        assert!(parsed["hint"].as_str().unwrap().contains("file_edit"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), lines(1990));
+    }
+
+    /// Reading any part is enough — lines 1–30 of 1,990 already told the
+    /// agent what it is about to replace.
+    #[tokio::test]
+    async fn a_partial_read_allows_the_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("notes.md");
+        std::fs::write(&file, lines(1990)).unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let canonical = dunce::canonicalize(&file).unwrap();
+        super::super::read_tracker::record_window(
+            &ctx.thread_id,
+            &canonical.to_string_lossy(),
+            1,
+            30,
+            1990,
+        );
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        let out = tool
+            .execute(serde_json::json!({ "path": "notes.md", "content": "short\n" }), &ctx)
+            .await
+            .expect("ok");
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "short\n");
+    }
+
+    /// Nothing to lose, nothing to read: a new file and an empty file are
+    /// written without a read.
+    #[tokio::test]
+    async fn new_and_empty_files_need_no_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("empty.md"), "").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let tool: Arc<dyn ToolExecutor> = Arc::new(noop_tool());
+        for name in ["brand-new.md", "empty.md"] {
+            let out = tool
+                .execute(serde_json::json!({ "path": name, "content": "hello\n" }), &ctx)
+                .await
+                .expect("ok");
+            let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(parsed["success"], true, "{name}: {out}");
+            assert_eq!(std::fs::read_to_string(tmp.path().join(name)).unwrap(), "hello\n");
+        }
     }
 
     /// `file_write` is the tool this matters most for: `content` is an entire

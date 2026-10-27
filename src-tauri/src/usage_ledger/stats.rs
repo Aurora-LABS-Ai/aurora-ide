@@ -100,6 +100,125 @@ pub struct ModelTotal {
     pub requests: u32,
     /// Input (incl. cache writes) + output.
     pub tokens: u64,
+    /// Input incl. cache writes; `tokens` minus `output_tokens`.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// Estimated USD cost of the requests that had a price (see `CostSummary`).
+    pub cost_usd: f64,
+    /// Requests counted in `cost_usd`; the rest of `requests` had no price.
+    pub priced_requests: u32,
+}
+
+/// What the ledger's usage would cost at the prices set on each model.
+///
+/// A provider-reported cost wins when the request carries one. Otherwise the
+/// request is priced from its own provider's model row, and failing that from
+/// the cheapest priced row with the same model key, so a subscription gateway
+/// that never set prices still reads at the model's list price. Requests with
+/// no price anywhere are left out and counted, never guessed at zero.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CostSummary {
+    pub usd: f64,
+    pub priced_requests: u32,
+    /// Of `priced_requests`, how many used a cost the provider reported.
+    pub reported_requests: u32,
+}
+
+/// Per-million-token USD prices of one model row.
+#[derive(Debug, Clone, Copy)]
+struct ModelPrice {
+    input: f64,
+    cache_read: f64,
+    output: f64,
+    cache_write: f64,
+}
+
+impl ModelPrice {
+    fn cost(&self, input: u64, cache_write: u64, cache_read: u64, output: u64) -> f64 {
+        (input as f64 * self.input
+            + cache_write as f64 * self.cache_write
+            + cache_read as f64 * self.cache_read
+            + output as f64 * self.output)
+            / 1_000_000.0
+    }
+}
+
+/// Prices keyed on (provider id, model key), plus a per-model fallback.
+#[derive(Default)]
+struct PriceBook {
+    exact: HashMap<(String, String), ModelPrice>,
+    by_model: HashMap<String, ModelPrice>,
+}
+
+impl PriceBook {
+    /// USD rows only: a price in another currency is never added into a
+    /// dollar total. A missing cache price falls back to the input price,
+    /// which is what an uncached request is charged. The settings tables live
+    /// in the same database; a ledger opened without them has no prices.
+    fn load(conn: &rusqlite::Connection) -> Self {
+        let mut book = PriceBook::default();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT provider_id,model_key,price_cache_miss_per_mtok,price_cache_hit_per_mtok,
+                    price_output_per_mtok,price_cache_write_per_mtok
+             FROM provider_models
+             WHERE (price_cache_miss_per_mtok IS NOT NULL OR price_output_per_mtok IS NOT NULL)
+               AND COALESCE(UPPER(price_currency),'USD')='USD'",
+        ) else {
+            return book;
+        };
+        let Ok(rows) = stmt.query_map([], |r| {
+            let input = r.get::<_, Option<f64>>(2)?.unwrap_or(0.0);
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                ModelPrice {
+                    input,
+                    cache_read: r.get::<_, Option<f64>>(3)?.unwrap_or(input),
+                    output: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                    cache_write: r.get::<_, Option<f64>>(5)?.unwrap_or(input),
+                },
+            ))
+        }) else {
+            return book;
+        };
+        for (provider, model, price) in rows.flatten() {
+            book.by_model
+                .entry(model.clone())
+                .and_modify(|p| {
+                    if price.input + price.output < p.input + p.output {
+                        *p = price;
+                    }
+                })
+                .or_insert(price);
+            book.exact.insert((provider, model), price);
+        }
+        book
+    }
+
+    fn get(&self, provider: &str, model: &str) -> Option<&ModelPrice> {
+        self.exact
+            .get(&(provider.to_string(), model.to_string()))
+            .or_else(|| self.by_model.get(model))
+    }
+}
+
+/// One project's lifetime use: every thread that ran in one workspace folder,
+/// or every Aurora Chat conversation together.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUsage {
+    /// The workspace folder as recorded, `None` for Aurora Chat and for build
+    /// threads imported before a folder was saved.
+    pub root: Option<String>,
+    /// `"chat"` for Aurora Chat, `"build"` for project threads.
+    pub surface: String,
+    pub requests: u32,
+    /// Input (incl. cache writes) + output.
+    pub tokens: u64,
+    pub cache_read_tokens: u64,
+    pub threads: u32,
 }
 
 /// Usage recorded before the runtime saved which model answered.
@@ -165,7 +284,8 @@ pub struct UsageStats {
     pub lifetime_cache_read_tokens: u64,
     /// Ascending by date; days with no activity are absent.
     pub days: Vec<DayUsage>,
-    /// Most-used tools, descending, capped at 10.
+    /// Every tool ever called from a visible message, descending. Not capped:
+    /// the Profile page lists them all and sums them for the total.
     pub top_tools: Vec<ToolUsage>,
     /// Most-used models, by tokens descending, capped at 8.
     pub top_models: Vec<ModelUsage>,
@@ -180,6 +300,40 @@ pub struct UsageStats {
     /// — one call per tool iteration, so it is far larger than the turn count.
     pub total_requests: u32,
     pub longest_task: Option<LongestTask>,
+    /// Requests by local weekday (Monday first) and hour: 7 rows of 24.
+    pub hour_of_week: Vec<Vec<u32>>,
+    /// Usage per workspace folder, Aurora Chat as one entry. By tokens
+    /// descending, not capped.
+    pub projects: Vec<ProjectUsage>,
+    pub cost: CostSummary,
+}
+
+/// Local (weekday from Monday, hour) of a stamp, or `None` for zero/invalid.
+fn hour_slot(ts_ms: i64) -> Option<(usize, usize)> {
+    use chrono::{Datelike, Timelike};
+    if ts_ms <= 0 {
+        return None;
+    }
+    let dt = Local.timestamp_millis_opt(ts_ms).single()?;
+    Some((dt.weekday().num_days_from_monday() as usize, dt.hour() as usize))
+}
+
+/// The key a thread's usage is grouped under on the Projects list.
+///
+/// Aurora Chat conversations have no folder and read as one entry. A folder
+/// is compared case-insensitively with either slash, because Windows paths
+/// reach the ledger spelled both ways from different import layouts.
+fn project_key(root: Option<&str>, surface: &str) -> String {
+    if surface == "chat" {
+        return "chat".to_string();
+    }
+    match root.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(root) => root
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase(),
+        None => String::new(),
+    }
 }
 
 /// Running tally of API requests, grouped by provider then model.
@@ -288,35 +442,50 @@ impl RequestTally {
 /// Running per-model totals keyed on the model alone (see `ModelTotal`).
 #[derive(Default)]
 struct ModelTotals {
-    by_model: HashMap<String, (std::collections::BTreeSet<String>, u32, u64)>,
+    by_model: HashMap<String, (std::collections::BTreeSet<String>, ModelTotal)>,
     unattributed: UnattributedUsage,
 }
 
 impl ModelTotals {
-    fn record(&mut self, selection: Option<&str>, tokens: u64) {
+    /// `input` already includes cache writes, as everywhere in the ledger.
+    /// `cost` is this request's price, `None` when it had none.
+    fn record(
+        &mut self,
+        selection: Option<&str>,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cost: Option<f64>,
+    ) {
         let (provider_id, model) = split_model_selection(selection);
         if model.is_empty() {
             self.unattributed.requests = self.unattributed.requests.saturating_add(1);
-            self.unattributed.tokens += tokens;
+            self.unattributed.tokens += input + output;
             return;
         }
-        let entry = self.by_model.entry(model).or_default();
+        let (providers, total) = self.by_model.entry(model).or_default();
         if !provider_id.is_empty() {
-            entry.0.insert(provider_id);
+            providers.insert(provider_id);
         }
-        entry.1 = entry.1.saturating_add(1);
-        entry.2 += tokens;
+        total.requests = total.requests.saturating_add(1);
+        total.tokens += input + output;
+        total.input_tokens += input;
+        total.output_tokens += output;
+        total.cache_read_tokens += cache_read;
+        if let Some(cost) = cost {
+            total.cost_usd += cost;
+            total.priced_requests = total.priced_requests.saturating_add(1);
+        }
     }
 
     fn finish(self) -> (Vec<ModelTotal>, UnattributedUsage) {
         let mut out: Vec<ModelTotal> = self
             .by_model
             .into_iter()
-            .map(|(model, (providers, requests, tokens))| ModelTotal {
+            .map(|(model, (providers, total))| ModelTotal {
                 model,
                 providers: providers.into_iter().collect(),
-                requests,
-                tokens,
+                ..total
             })
             .collect();
         out.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.model.cmp(&b.model)));
@@ -354,11 +523,36 @@ fn local_day(ts_ms: i64) -> Option<String> {
 
 pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
     let mut titles = HashMap::<String, String>::new();
-    let mut stmt = conn.prepare("SELECT thread_id,title FROM usage_threads")?;
-    for row in stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
-        let (id, title) = row?;
+    // thread -> project key; project key -> totals (threads counted once each).
+    let mut thread_project = HashMap::<String, String>::new();
+    let mut projects = HashMap::<String, (ProjectUsage, std::collections::HashSet<String>)>::new();
+    let mut stmt = conn.prepare("SELECT thread_id,title,workspace_root,surface FROM usage_threads")?;
+    for row in stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })? {
+        let (id, title, root, surface) = row?;
+        let key = project_key(root.as_deref(), &surface);
+        projects.entry(key.clone()).or_insert_with(|| {
+            (
+                ProjectUsage {
+                    root: root.filter(|_| surface != "chat"),
+                    surface: surface.clone(),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+        });
+        thread_project.insert(id.clone(), key);
         titles.insert(id, title);
     }
+    let mut hour_of_week = vec![vec![0u32; 24]; 7];
+    let prices = PriceBook::load(conn);
+    let mut cost = CostSummary::default();
     let mut days = HashMap::<String, DayUsage>::new();
     let mut tools = HashMap::<String, u32>::new();
     let mut models = HashMap::<String, (std::collections::HashSet<String>, u64)>::new();
@@ -423,6 +617,25 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         }
         let provider: String = row.get(4)?;
         let model: String = row.get(5)?;
+        let reported_cost: Option<f64> = row.get(12)?;
+        let request_cost = match reported_cost.filter(|c| c.is_finite() && *c >= 0.0) {
+            Some(c) => {
+                cost.reported_requests = cost.reported_requests.saturating_add(1);
+                Some(c)
+            }
+            None if model.is_empty() => None,
+            None => match prices.get(&provider, &model) {
+                Some(price) => {
+                    let count = |i: usize| row.get::<_, u32>(i).map(u64::from);
+                    Some(price.cost(count(7)?, count(9)?, count(10)?, count(8)?))
+                }
+                None => None,
+            },
+        };
+        if let Some(c) = request_cost {
+            cost.usd += c;
+            cost.priced_requests = cost.priced_requests.saturating_add(1);
+        }
         let selection = if provider.is_empty() {
             model
         } else {
@@ -444,7 +657,26 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         lifetime_output += output;
         lifetime_cache_read += cache;
         requests.record(Some(&selection), &usage, &mut providers_in_thread);
-        totals.record(Some(&selection), input + output);
+        totals.record(Some(&selection), input, output, cache, request_cost);
+        if let Some((weekday, hour)) = hour_slot(timestamp) {
+            hour_of_week[weekday][hour] = hour_of_week[weekday][hour].saturating_add(1);
+        }
+        // A thread with usage but no `usage_threads` row is a live chat the
+        // import has not described yet; it groups with the folderless threads.
+        let key = thread_project.get(&thread).cloned().unwrap_or_default();
+        let (project, threads) = projects.entry(key).or_insert_with(|| {
+            (
+                ProjectUsage {
+                    surface: "build".into(),
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+        });
+        project.requests = project.requests.saturating_add(1);
+        project.tokens += input + output;
+        project.cache_read_tokens += cache;
+        threads.insert(thread.clone());
         let entry = models.entry(selection).or_default();
         entry.0.insert(thread);
         entry.1 += input + output;
@@ -479,7 +711,19 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         .map(|(name, count)| ToolUsage { name, count })
         .collect();
     top_tools.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
-    top_tools.truncate(10);
+    let mut projects: Vec<ProjectUsage> = projects
+        .into_values()
+        .filter(|(project, _)| project.requests > 0)
+        .map(|(project, threads)| ProjectUsage {
+            threads: threads.len() as u32,
+            ..project
+        })
+        .collect();
+    projects.sort_by(|a, b| {
+        b.tokens
+            .cmp(&a.tokens)
+            .then_with(|| a.root.cmp(&b.root))
+    });
     let mut top_models: Vec<_> = models
         .into_iter()
         .map(|(name, (threads, tokens))| ModelUsage {
@@ -508,6 +752,9 @@ pub(super) fn read(conn: &rusqlite::Connection) -> anyhow::Result<UsageStats> {
         total_requests: requests.total(),
         requests_by_provider: requests.into_providers(),
         longest_task,
+        hour_of_week,
+        projects,
+        cost,
     })
 }
 
@@ -563,6 +810,56 @@ mod tests {
     }
 
     #[test]
+    fn prices_come_from_the_own_row_then_the_cheapest_same_model_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE provider_models (provider_id TEXT, model_key TEXT,
+               price_cache_miss_per_mtok REAL, price_cache_hit_per_mtok REAL,
+               price_output_per_mtok REAL, price_cache_write_per_mtok REAL, price_currency TEXT);
+             INSERT INTO provider_models VALUES ('openai','sol',5,0.5,30,NULL,'USD');
+             INSERT INTO provider_models VALUES ('gw','sol',4,NULL,20,NULL,NULL);
+             INSERT INTO provider_models VALUES ('cny','glm',3,NULL,9,NULL,'CNY');",
+        )
+        .unwrap();
+        let book = PriceBook::load(&conn);
+        let own = book.get("openai", "sol").unwrap();
+        // 1M input, 1M cache write (charged as input when unset), 2M cache read, 1M output.
+        assert_eq!(own.cost(1_000_000, 1_000_000, 2_000_000, 1_000_000), 5.0 + 5.0 + 1.0 + 30.0);
+        // A gateway with no row of its own reads at the cheapest list price.
+        assert_eq!(book.get("claude-code", "sol").unwrap().output, 20.0);
+        // Never mix currencies, never invent a price.
+        assert!(book.get("cny", "glm").is_none());
+        assert!(book.get("x", "unknown").is_none());
+        // A ledger database without the settings tables simply has no prices.
+        let bare = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(PriceBook::load(&bare).get("openai", "sol").is_none());
+    }
+
+    #[test]
+    fn one_folder_spelled_two_ways_is_one_project() {
+        assert_eq!(
+            project_key(Some("E:/VOID-EDITOR/Aurora-Agent-IDE/"), "build"),
+            project_key(Some(r"e:\void-editor\aurora-agent-ide"), "build"),
+        );
+        // Aurora Chat is one entry whatever folder a thread recorded.
+        assert_eq!(project_key(Some(r"C:\x"), "chat"), "chat");
+        assert_eq!(project_key(None, "build"), "");
+        assert_eq!(project_key(Some("  "), "build"), "");
+    }
+
+    #[test]
+    fn hour_slot_is_local_weekday_from_monday_and_hour() {
+        let stamp = Local
+            .with_ymd_and_hms(2026, 10, 19, 21, 30, 0) // a Monday
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(hour_slot(stamp), Some((0, 21)));
+        assert_eq!(hour_slot(stamp + 6 * 24 * HOUR), Some((6, 21)));
+        assert_eq!(hour_slot(0), None);
+    }
+
+    #[test]
     fn a_selection_splits_on_its_first_colon_only() {
         // A provider id never contains a colon; a model key can.
         assert_eq!(
@@ -600,16 +897,23 @@ mod tests {
         // name appeared three times. Keyed on the model, it is one row that
         // knows every provider it came through.
         let mut totals = ModelTotals::default();
-        totals.record(Some("kenari:gpt-5.6-sol"), 100);
-        totals.record(Some("codex:gpt-5.6-sol"), 50);
-        totals.record(Some("kenari:gpt-5.6-sol"), 10);
-        totals.record(Some("kenari:glm-5.3"), 20);
-        totals.record(None, 7);
+        totals.record(Some("kenari:gpt-5.6-sol"), 90, 10, 400, Some(1.5));
+        totals.record(Some("codex:gpt-5.6-sol"), 45, 5, 200, None);
+        totals.record(Some("kenari:gpt-5.6-sol"), 8, 2, 0, Some(0.25));
+        totals.record(Some("kenari:glm-5.3"), 20, 0, 0, None);
+        totals.record(None, 7, 0, 3, None);
         let (models, unattributed) = totals.finish();
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model, "gpt-5.6-sol");
         assert_eq!(models[0].tokens, 160);
         assert_eq!(models[0].requests, 3);
+        // The split the Models list shows, summed across providers too.
+        assert_eq!(
+            (models[0].input_tokens, models[0].output_tokens, models[0].cache_read_tokens),
+            (143, 17, 600)
+        );
+        // Cost covers only the priced requests, and says how many those were.
+        assert_eq!((models[0].cost_usd, models[0].priced_requests), (1.75, 2));
         assert_eq!(models[0].providers, vec!["codex".to_string(), "kenari".to_string()]);
         // No recorded model is reported apart, never as a model row.
         assert_eq!(unattributed.requests, 1);

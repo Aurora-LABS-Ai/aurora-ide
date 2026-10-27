@@ -5,9 +5,7 @@
  * closed by default. Opening one is a choice, so it is SAVED WITH THE
  * CONVERSATION, in its `work-cards.json` (Rust: `agent_runtime/work_cards.rs`):
  * a card opened today is open when the chat is reopened next week. Cards are
- * keyed by their first tool call's id (`work-stretches.ts`).
- *
- * Probe: Documents/aurora-work-card-designs.html, 02.
+ * keyed by their turn's first tool call id (`work-log/split-turn.ts`).
  */
 
 import { create } from "zustand";

@@ -18,9 +18,10 @@
 //!   backend speaks the same typed-event `/responses` dialect Aurora
 //!   already implements — `store:false`, `instructions`, encrypted
 //!   reasoning persistence.
-//! - [`usage`] — rate-limit snapshot for the settings card, fetched from
-//!   the same endpoint Codex CLI's `/status` uses
-//!   (`GET https://chatgpt.com/backend-api/wham/usage`).
+//! - [`usage`] — rate-limit snapshot for the settings card and the ring:
+//!   read off every reply's `x-codex-*` headers, and from the endpoint
+//!   Codex CLI's `/status` uses (`GET https://chatgpt.com/backend-api/wham/usage`)
+//!   only when nothing recent is known.
 //!
 //! The chat endpoint (`chatgpt.com/backend-api/codex/responses`) is not a
 //! documented public API; OpenAI has publicly endorsed personal

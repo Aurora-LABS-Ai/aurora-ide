@@ -1715,14 +1715,8 @@
     transform: none;
   }
 }
-/* Inside a running work card (`data-fade`, set by `ToolStep`): the step takes
- * its full height at once and only fades in where it lands. The card already
- * bounds the work and glides to its newest row, so a height opening from 0
- * there only added motion: with a fast model, one per call, several a second.
- * Probe: Documents/aurora-work-card-motion-designs.html, 02. */
-.agw-tool-step[data-fade] {
-  animation: agw-tool-fade-in var(--agw-dur-slow) var(--agw-ease-out) both;
-}
+/* A step fading in at full height, without growing from 0: the work card's
+ * arrivals (`.agw-wc-step[data-arrive]`, 56-work-cards.css). */
 @keyframes agw-tool-fade-in {
   from {
     opacity: 0;
@@ -1740,9 +1734,6 @@
   }
   .agw-tool-step[data-enter] > * {
     overflow: visible;
-    animation: none;
-  }
-  .agw-tool-step[data-fade] {
     animation: none;
   }
 }

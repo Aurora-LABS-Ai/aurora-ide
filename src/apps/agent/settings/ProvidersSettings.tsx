@@ -1958,6 +1958,7 @@ export const ProviderDetail: React.FC<{
            list still render underneath — unlike Codex, kenari has a real key
            and real models to edit. */
         <KenariUsageCard
+          apiKey={provider.apiKey}
           enabled={provider.enabled}
           onToggleEnabled={(v) => updateProvider(provider.id, { enabled: v })}
         />

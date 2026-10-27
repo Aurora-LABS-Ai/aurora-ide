@@ -479,11 +479,18 @@ impl ToolRegistry {
         name: &str,
         input: &serde_json::Value,
     ) -> Result<ToolInvocation, ToolError> {
-        let executor = self
-            .get(name)
-            .ok_or_else(|| self.unknown_tool_error(name))?;
+        let Some(executor) = self.get(name) else {
+            // Another harness's name, or a call packed inside another: run the
+            // tool it means, with a note. See `tool_alias`.
+            return super::tool_alias::resolve(self, name, input)
+                .ok_or_else(|| self.unknown_tool_error(name));
+        };
         if let Some(resolved) = executor.resolve_call(input) {
-            return resolved;
+            // `call_tool {"name": "write", …}` — a foreign name sent through
+            // the forwarding envelope reaches the alias table too.
+            return resolved.or_else(|error| {
+                super::tool_alias::resolve_forwarded(self, input).ok_or(error)
+            });
         }
         Ok(ToolInvocation {
             executor,

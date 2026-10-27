@@ -7,7 +7,7 @@ use super::*;
 
 /// Estimate token count of a plain string using cl100k (the encoding
 /// the existing context engine uses). Falls back to a 4-chars-per-token
-/// approximation if tiktoken initialization fails — the trim is
+/// approximation if tiktoken initialization fails — the estimate is
 /// best-effort, not load-bearing for correctness.
 pub(super) fn estimate_text_tokens(text: &str) -> u32 {
     if text.is_empty() {

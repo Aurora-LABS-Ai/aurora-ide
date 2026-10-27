@@ -155,14 +155,18 @@
  * can be a pasted spec or a stack trace; letting it run full height buries the
  * agent's own output below it. Capped at ~9 lines, then it scrolls in place —
  * `flex: 1` so the scrollbar sits at a stable right edge instead of hugging a
- * short first line, and `overscroll-behavior` so reaching the end doesn't hand
- * the gesture to the transcript and yank the reader away. */
+ * short first line.
+ *
+ * No `overscroll-behavior: contain`: `overflow-y: auto` makes this a scroll
+ * container even when the note fits, and `contain` then forbids it to pass
+ * the wheel on, so with the pointer over a short note the chat did not
+ * scroll at all (Alvan, 2026-10-27, "sometimes scroll sometimes not"). The
+ * same trap the pinned question had (`11-transcript-bubbles.css`). */
 .agw-injection > span {
   min-width: 0;
   flex: 1 1 auto;
   max-height: calc(1.45em * 9);
   overflow-y: auto;
-  overscroll-behavior: contain;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -195,13 +199,13 @@
 }
 /* Capped and scrollable for the same reason the injection marker is: a
  * provider error body can be long, and letting it run full height buries the
- * agent's own output underneath it. */
+ * agent's own output underneath it. It passes the wheel on at its ends, like
+ * the marker. */
 .agw-notice > span {
   min-width: 0;
   flex: 1 1 auto;
   max-height: calc(1.45em * 6);
   overflow-y: auto;
-  overscroll-behavior: contain;
   overflow-wrap: anywhere;
 }
 .agw-notice svg {

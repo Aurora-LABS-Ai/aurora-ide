@@ -38,6 +38,7 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
   const reduceMotion = useAgentThemeStore((s) => s.reduceMotion);
   const transcriptSpine = useAgentThemeStore((s) => s.transcriptSpine);
   const transcriptStickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
+  const transcriptWorkCards = useAgentThemeStore((s) => s.transcriptWorkCards);
   const transcriptActionsVisible = useAgentThemeStore((s) => s.transcriptActionsVisible);
 
   const theme = useMemo(
@@ -95,7 +96,11 @@ export const AgentThemeProvider: React.FC<AgentThemeProviderProps> = ({
       // Same reasoning as the spine: pinning is a property of the transcript, so
       // it rides on the root and re-styles every turn wrapper without touching
       // ConversationPane or remounting a single turn.
-      data-transcript-sticky-user={transcriptStickyUser || undefined}
+      // With Work cards on the question is always pinned, and slides away going
+      // down (`data-question-headroom`, `useQuestionHeadroom`); the Keep the
+      // question on screen switch is locked meanwhile.
+      data-transcript-sticky-user={transcriptStickyUser || transcriptWorkCards || undefined}
+      data-question-headroom={transcriptWorkCards || undefined}
       // Pure CSS, like the two above: only the resting opacity of every
       // message's Copy / Retry row changes.
       data-transcript-actions-visible={transcriptActionsVisible || undefined}

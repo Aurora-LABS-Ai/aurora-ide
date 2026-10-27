@@ -107,8 +107,11 @@ export const SettingsRow: React.FC<{
   alignTop?: boolean;
   /** Extra words this row should be findable by (synonyms, the token it sets). */
   searchTerms?: string;
+  /** Locked by another setting: the label greys out, the hint (which should
+   *  say why) stays readable. Disable the control itself too. */
+  disabled?: boolean;
   children: React.ReactNode;
-}> = ({ label, hint, last, alignTop, searchTerms, children }) => {
+}> = ({ label, hint, last, alignTop, searchTerms, disabled, children }) => {
   const query = useSettingsQuery();
   const section = useSectionSearch();
   const key = useId();
@@ -134,6 +137,8 @@ export const SettingsRow: React.FC<{
       // know — drop dividers entirely for a filtered view.
       data-last={last || query ? true : undefined}
       data-search-hit={query && matched ? true : undefined}
+      data-disabled={disabled || undefined}
+      aria-disabled={disabled || undefined}
       style={alignTop ? { alignItems: "flex-start" } : undefined}
     >
       <div className="agw-set-row-label">

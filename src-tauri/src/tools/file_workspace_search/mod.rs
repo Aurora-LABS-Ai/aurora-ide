@@ -88,6 +88,8 @@ pub mod multi_file_read;
 pub mod edits_argument;
 pub mod path_argument;
 pub mod path_recovery;
+/// Internal: read-before-change rule shared by `file_write` and `file_edit`.
+pub(crate) mod read_gate;
 /// Internal: per-session read-before-edit guard state.
 pub mod read_tracker;
 /// Internal: shared edit-result/diff helpers used by `file_edit` and

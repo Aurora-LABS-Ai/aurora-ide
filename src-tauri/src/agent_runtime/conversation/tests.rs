@@ -3417,12 +3417,7 @@ async fn run_turn_propagates_recoverable_api_error_with_event() {
     assert!(message.contains("rate"), "got message: {message}");
 }
 
-// ── Budget-aware trim tests ────────────────────────────────────────
-//
-// Pure unit tests for `trim_to_budget` / `build_trim_notice` plus an
-// integration test that asserts the runtime forwards a trimmed
-// message slice + an augmented system prompt to the API once a
-// session blows past the configured window.
+// ── Session builders for token-size tests ──────────────────────────
 
 fn user_with_text(text: &str, ts: i64) -> ConversationMessage {
     ConversationMessage::user_text(text, ts)
@@ -3432,185 +3427,9 @@ fn assistant_with_text(text: &str, ts: i64) -> ConversationMessage {
     ConversationMessage::assistant(vec![ContentBlock::Text { text: text.into() }], ts)
 }
 
-/// Building block for trim tests: 60 char text yields ~15 tokens
-/// under cl100k. Used to construct sessions whose total token count
-/// is predictable enough to compare against a budget.
+/// 60 char text yields ~15 tokens under cl100k. Used to construct sessions
+/// whose total token count is predictable enough to compare against a budget.
 const FILLER_60: &str = "0123456789012345678901234567890123456789012345678901234567";
-
-#[test]
-fn trim_is_noop_when_context_window_is_none() {
-    let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-    let outcome = trim_to_budget(messages.clone(), None, 4096, "", ReasoningReplay::Text);
-    assert_eq!(outcome.dropped, 0);
-    assert_eq!(outcome.messages, messages);
-}
-
-#[test]
-fn trim_is_noop_when_under_threshold() {
-    // 200k window minus 4096 reserved → ~195k budget; threshold is
-    // ~146k. Two short messages don't come close.
-    let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-    let outcome = trim_to_budget(
-        messages.clone(),
-        Some(200_000),
-        4096,
-        "system",
-        ReasoningReplay::Text,
-    );
-    assert_eq!(outcome.dropped, 0);
-    assert_eq!(outcome.messages.len(), 2);
-}
-
-#[test]
-fn trim_drops_oldest_user_turn_when_over_threshold() {
-    // Tiny window (1000 tokens) with a 100-token reserve → budget
-    // 890, threshold ~667. Each big_text is ~250 tokens; three
-    // user-anchored turns will exceed the threshold.
-    let big = FILLER_60.repeat(60); // ~900 chars → ~225 tokens cl100k
-    let messages = vec![
-        user_with_text(&big, 0), // turn 1
-        assistant_with_text(&big, 1),
-        user_with_text(&big, 2), // turn 2
-        assistant_with_text(&big, 3),
-        user_with_text("latest", 4), // turn 3 (latest)
-        assistant_with_text("reply", 5),
-    ];
-
-    let outcome = trim_to_budget(messages, Some(1000), 100, "", ReasoningReplay::Text);
-
-    // Should drop the first turn (user + assistant = 2 messages),
-    // keep the last 2 user-anchored turns intact.
-    assert_eq!(outcome.dropped, 2, "must drop the oldest turn");
-    assert_eq!(outcome.messages.len(), 4);
-    // First kept message must be a User (we cut at a user boundary).
-    assert_eq!(outcome.messages[0].role, MessageRole::User);
-    // The latest turn is intact.
-    assert!(matches!(
-        &outcome.messages[2].blocks[0],
-        ContentBlock::Text { text } if text == "latest"
-    ));
-}
-
-#[test]
-fn trim_refuses_to_drop_below_preserve_floor() {
-    // Only two user-rooted turns total; PRESERVE_LAST_USER_TURNS = 2,
-    // so there's nothing safe to drop even if we're over budget.
-    let big = FILLER_60.repeat(200); // ~750 tokens
-    let messages = vec![
-        user_with_text(&big, 0),
-        assistant_with_text(&big, 1),
-        user_with_text(&big, 2),
-        assistant_with_text(&big, 3),
-    ];
-
-    let outcome = trim_to_budget(messages.clone(), Some(1000), 100, "", ReasoningReplay::Text);
-
-    assert_eq!(outcome.dropped, 0, "no safe cut → no-op");
-    assert_eq!(outcome.messages.len(), 4);
-}
-
-#[test]
-fn trim_keeps_tool_use_and_tool_result_paired() {
-    // Cut at a User boundary so a Tool message never lands at index
-    // 0 of the kept slice (which would orphan its tool_use_id).
-    let big = FILLER_60.repeat(60);
-    let tool_use = ConversationMessage::assistant(
-        vec![ContentBlock::ToolUse {
-            id: "call-1".into(),
-            name: "echo".into(),
-            input: serde_json::json!({"x": 1}),
-        }],
-        10,
-    );
-    let tool_result = ConversationMessage {
-        event_id: None,
-        role: MessageRole::Tool,
-        blocks: vec![ContentBlock::ToolResult {
-            tool_use_id: "call-1".into(),
-            content: big.clone(),
-            is_error: None,
-        }],
-        usage: None,
-        timestamp: 11,
-        attached_selected_elements: None,
-        attached_prompt_chips: None,
-        aurora_context: None,
-        model: None,
-    };
-    let messages = vec![
-        user_with_text(&big, 0),
-        tool_use,
-        tool_result,
-        user_with_text(&big, 12),
-        assistant_with_text(&big, 13),
-        user_with_text("now", 14),
-        assistant_with_text("done", 15),
-    ];
-
-    let outcome = trim_to_budget(messages, Some(1000), 100, "", ReasoningReplay::Text);
-
-    // Whatever gets dropped, the first kept message MUST be a User.
-    assert!(outcome.dropped > 0, "expected at least one drop");
-    assert_eq!(
-        outcome.messages[0].role,
-        MessageRole::User,
-        "trim must cut on a user boundary so tool pairs stay intact"
-    );
-    // No orphaned Tool message at index 0.
-    for msg in &outcome.messages {
-        if msg.role == MessageRole::Tool {
-            // Every Tool message must follow an Assistant in the kept
-            // slice — find the preceding tool_use by id.
-            let rid = match &msg.blocks[0] {
-                ContentBlock::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
-                _ => panic!("tool message must carry a ToolResult block"),
-            };
-            let has_matching_use = outcome.messages.iter().any(|m| {
-                m.blocks.iter().any(|b| {
-                    matches!(b,
-                        ContentBlock::ToolUse { id, .. } if id == &rid)
-                })
-            });
-            assert!(
-                has_matching_use,
-                "tool_result {rid} must have its tool_use in the kept slice"
-            );
-        }
-    }
-}
-
-#[test]
-fn trim_handles_pathological_max_output_greater_than_window() {
-    // Window 1000, max_output 5000 → reserve = 5500 > window.
-    // budget saturates to 0; we should bail out without touching
-    // the message list (let the provider surface the real error).
-    let messages = vec![user_with_text("hi", 0), assistant_with_text("ok", 1)];
-    let outcome = trim_to_budget(
-        messages.clone(),
-        Some(1000),
-        5000,
-        "",
-        ReasoningReplay::Text,
-    );
-    assert_eq!(outcome.dropped, 0);
-    assert_eq!(outcome.messages, messages);
-}
-
-#[test]
-fn build_trim_notice_appends_to_existing_prompt() {
-    let out = build_trim_notice("you are aurora", 7);
-    assert!(out.starts_with("you are aurora"));
-    assert!(out.contains("<context_trim_notice>"));
-    assert!(out.contains("7 earlier message(s)"));
-    assert!(out.ends_with("</context_trim_notice>"));
-}
-
-#[test]
-fn build_trim_notice_handles_empty_base_prompt() {
-    let out = build_trim_notice("", 3);
-    assert!(out.starts_with("<context_trim_notice>"));
-    assert!(out.contains("3 earlier message(s)"));
-}
 
 #[test]
 fn estimate_message_tokens_includes_per_message_overhead() {
@@ -5385,15 +5204,15 @@ async fn a_pinned_compaction_model_runs_and_is_billed_for_the_summary() {
     assert_eq!(marker.model.as_deref(), Some("cheap-provider:cheap-model"));
 }
 
-/// API mock that records every messages slice it sees so we can
-/// assert what was actually trimmed.
+/// API mock that records every system prompt and messages slice it sees, so
+/// a test can assert what was actually sent.
 #[derive(Default)]
-struct CapturingTrimApi {
+struct RequestLogApi {
     captured: Mutex<Vec<(Option<String>, Vec<ConversationMessage>)>>,
 }
 
 #[async_trait]
-impl StreamingApiClient for CapturingTrimApi {
+impl StreamingApiClient for RequestLogApi {
     async fn stream(
         &self,
         request: ApiRequest<'_>,
@@ -5408,25 +5227,28 @@ impl StreamingApiClient for CapturingTrimApi {
     }
 }
 
+/// Nothing drops old turns to fit the window. A budget trim used to cut every
+/// turn but the last two once the request passed 75% of (window − 1.1 × max
+/// output), below the compaction line, so compaction never ran and the model
+/// silently lost the history (2026-10-27). Shrinking is compaction's job only.
+/// With the old trim this fails: 2 of the 5 messages were dropped.
 #[tokio::test]
-async fn run_turn_trims_session_and_appends_trim_notice_when_over_budget() {
-    // Pre-seed a session with three user-rooted turns where the
-    // first two are large enough to exceed a tight budget.
+async fn run_turn_never_drops_history_to_fit_the_window() {
     let big = FILLER_60.repeat(60); // ~225 tokens cl100k
     let mut session = Session::new("t");
     session.append_message(user_with_text(&big, 0));
     session.append_message(assistant_with_text(&big, 1));
     session.append_message(user_with_text(&big, 2));
     session.append_message(assistant_with_text(&big, 3));
-    // Third user message comes from `run_turn` itself.
 
-    let api = Arc::new(CapturingTrimApi::default());
+    let api = Arc::new(RequestLogApi::default());
     let runtime = ConversationRuntime::new(
         api.clone(),
         Arc::new(ToolRegistry::new()),
         RuntimeConfig {
             system_prompt: Some("you are aurora".into()),
             default_max_output_tokens: 100,
+            // Far smaller than the session: the old trim's budget was ~667.
             context_window: Some(1000),
             ..RuntimeConfig::default()
         },
@@ -5440,73 +5262,12 @@ async fn run_turn_trims_session_and_appends_trim_notice_when_over_budget() {
 
     let captured = api.captured.lock().expect("captured");
     let (sys, msgs) = captured.first().expect("api was called");
-
-    // Trim notice was appended to the system prompt.
-    let sys = sys.as_deref().expect("system prompt was set");
-    assert!(
-        sys.contains("<context_trim_notice>"),
-        "system prompt should carry trim notice, got: {sys}"
-    );
-    assert!(
-        sys.contains("you are aurora"),
-        "original prompt must be preserved, got: {sys}"
-    );
-
-    // The first kept message must be a User (cut at user boundary).
-    assert_eq!(msgs[0].role, MessageRole::User);
-    // The latest user message ("now") must still be present.
-    assert!(
-        msgs.iter().any(|m| matches!(
-            &m.blocks[0],
-            ContentBlock::Text { text } if text == "now"
-        )),
-        "latest user message must survive trim"
-    );
-
-    // Persisted session is untouched — still 5 messages (4 seeded + 1
-    // appended user + 1 appended assistant from MockApi return).
-    assert_eq!(session.len(), 6);
-}
-
-#[tokio::test]
-async fn run_turn_does_not_trim_when_context_window_is_none() {
-    // No window set → legacy behaviour: send everything every turn.
-    let big = FILLER_60.repeat(60);
-    let mut session = Session::new("t");
-    session.append_message(user_with_text(&big, 0));
-    session.append_message(assistant_with_text(&big, 1));
-    session.append_message(user_with_text(&big, 2));
-    session.append_message(assistant_with_text(&big, 3));
-
-    let api = Arc::new(CapturingTrimApi::default());
-    let runtime = ConversationRuntime::new(
-        api.clone(),
-        Arc::new(ToolRegistry::new()),
-        RuntimeConfig {
-            system_prompt: Some("you are aurora".into()),
-            default_max_output_tokens: 100,
-            context_window: None,
-            ..RuntimeConfig::default()
-        },
-    );
-
-    let (tx, _rx) = mpsc::channel(32);
-    runtime
-        .run_turn(&mut session, user_msg("now"), tx, CancellationToken::new())
-        .await
-        .expect("ok");
-
-    let captured = api.captured.lock().expect("captured");
-    let (sys, msgs) = captured.first().expect("api was called");
-
-    // System prompt unmodified: no trim notice, just what every request of
-    // this conversation carries.
     assert_eq!(
         sys.as_deref(),
-        runtime.request_system_prompt(&session.thread_id).as_deref()
+        runtime.request_system_prompt(&session.thread_id).as_deref(),
+        "the system prompt carries nothing about dropped history"
     );
-    // All 5 messages (4 seeded + the new user) reach the API.
-    assert_eq!(msgs.len(), 5, "no trim → full session sent");
+    assert_eq!(msgs.len(), 5, "all 4 seeded messages + the new question reach the API");
 }
 
 /// The call site for `Session::resync_journal`.

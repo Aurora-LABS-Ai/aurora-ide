@@ -1,7 +1,8 @@
 # Reply layout
 
-Use ordinary markdown for prose, headings and code. Choose only parts that help this answer.
-Keep a short reply short. Prose explains around a layout; it never repeats a part.
+Outside the fence, write structured markdown: headings, short paragraphs, bullet and numbered
+lists, tables and code. The fence adds parts; it does not replace that structure. Choose only
+parts that help this answer. Keep a short reply short. Text around a layout never repeats a part.
 
 For a composed report with interactive filters, charts, metrics, sortable tables or detail
 views, write one `aurora-report` fence containing JSON. Load `canvas_guidelines` with

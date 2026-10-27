@@ -182,6 +182,18 @@ impl ToolExecutor for GrepTool {
             ToolError::Execution(format!("failed to serialize ripgrep response: {e}"))
         })?;
 
+        // Lines this search put in front of the agent count as reading those
+        // files, so an edit built from a hit passes `read_gate`. Only `matches`
+        // carries lines; a file list or a count shows no content.
+        if let Some(matches) = value.get("matches").and_then(Value::as_array) {
+            super::read_gate::record_shown(
+                ctx,
+                matches
+                    .iter()
+                    .filter_map(|m| m.get("file").and_then(Value::as_str)),
+            );
+        }
+
         // Convert absolute file paths back to workspace-relative
         // form when we have a workspace root, matching the TS
         // executor.

@@ -174,7 +174,9 @@ async function getCodexUsageCached(): Promise<CodexUsageSnapshot | null> {
   try {
     const snap = await codexUsageGet();
     codexUsageCache = { at: Date.now(), snap };
-    lastPlanReadAt = codexUsageCache.at;
+    // The backend keeps the last reply's `x-codex-*` reading and serves it
+    // for five minutes; the age shown is that reading's, not this call's.
+    lastPlanReadAt = snap.fetchedAtMs || codexUsageCache.at;
     return snap;
   } catch {
     // Signed out / offline — the tooltip simply omits the quota section.
@@ -293,39 +295,33 @@ async function getCommandCodeUsageCached(
 }
 
 /**
- * kenari plan headroom, cached the same way.
- *
- * Not keyed by anything, unlike OpenCode's: the `kn-` key cannot read this data
- * at all, so there is no key to key it by. It comes from a stored sign-in, and
- * there is exactly one of those.
- *
- * `"signed-out"` is a distinct outcome from `null`, because the card says
- * different things about them. No sign-in is a state with an obvious next step;
- * a failed read is not, and offering "sign in" over a network error sends
- * someone to re-authenticate a session that was working fine.
+ * kenari plan headroom, cached the same way and keyed by the API key like
+ * OpenCode's: the key that serves chat is the key that reads the quota
+ * (since 2026-10-26; before that it took a browser sign-in).
  */
-type KenariPlanState = KenariUsage | "signed-out" | null;
+let kenariUsageCache: { at: number; key: string; usage: KenariUsage } | null = null;
 
-let kenariUsageCache: { at: number; state: KenariPlanState } | null = null;
-
-async function getKenariUsageCached(): Promise<KenariPlanState> {
-  if (kenariUsageCache && Date.now() - kenariUsageCache.at < PLAN_USAGE_TTL_MS) {
+async function getKenariUsageCached(apiKey: string): Promise<KenariUsage | null> {
+  if (
+    kenariUsageCache &&
+    kenariUsageCache.key === apiKey &&
+    Date.now() - kenariUsageCache.at < PLAN_USAGE_TTL_MS
+  ) {
     lastPlanReadAt = kenariUsageCache.at;
-    return kenariUsageCache.state;
+    return kenariUsageCache.usage;
   }
-  let state: KenariPlanState = null;
   try {
-    state = await fetchKenariUsage();
+    const usage = await fetchKenariUsage(apiKey);
+    kenariUsageCache = { at: Date.now(), key: apiKey, usage };
+    // Rust serves the last chat reply's reading for five minutes; the age
+    // shown is that reading's, not this call's.
+    lastPlanReadAt = usage.fetchedAtMs || kenariUsageCache.at;
+    return usage;
   } catch {
-    // Rust refuses with a message for both "never signed in" and "the session
-    // expired", and the honest answer to each is the same one: sign in. A read
-    // that failed for any other reason is cached as a miss and simply retried
-    // after the TTL.
-    state = "signed-out";
+    // A shared or restricted key, a revoked one, or offline — the section is
+    // omitted rather than shown empty. The provider card says why in words.
+    return null;
   }
-  kenariUsageCache = { at: Date.now(), state };
-  lastPlanReadAt = kenariUsageCache.at;
-  return state;
 }
 
 /**
@@ -760,6 +756,13 @@ export const ContextRing: React.FC = () => {
     const row = s.providers.find((p) => p.id === providerId);
     return row ? isKenariProvider(row) : false;
   });
+  // The chat key reads the quota too. Read from the row so pasting a new one
+  // changes what the ring reports.
+  const kenariKey = useAgentSettingsStore((s) => {
+    const split = selectedModel.indexOf(":");
+    if (split <= 0) return "";
+    return s.providers.find((p) => p.id === selectedModel.slice(0, split))?.apiKey ?? "";
+  });
   // And the sixth: Volcano's Coding Plan meters a rolling five-hour window, a
   // week and a month, all as a share. Recognised like kenari and MiniMax rather
   // than by an id prefix, because a row someone added themselves carries a UUID
@@ -902,7 +905,7 @@ export const ContextRing: React.FC = () => {
   const [commandCodeUsage, setCommandCodeUsage] = useState<CommandCodeUsageSnapshot | null>(
     null,
   );
-  const [kenariPlan, setKenariPlan] = useState<KenariPlanState>(null);
+  const [kenariPlan, setKenariPlan] = useState<KenariUsage | null>(null);
   const [arkPlan, setArkPlan] = useState<ArkPlanState>(null);
   const [cursorUsage, setCursorUsage] = useState<CursorUsageSnapshot | null>(null);
   const [minimaxUsage, setMinimaxUsage] = useState<MinimaxUsageSnapshot | null>(null);
@@ -962,11 +965,11 @@ export const ContextRing: React.FC = () => {
       });
       return;
     }
-    // No key to gate on, unlike the other two: kenari's plan data comes from a
-    // stored sign-in, and whether there is one is exactly what this asks.
-    if (isKenari) {
-      void getKenariUsageCached().then((state) => {
-        setKenariPlan(state);
+    // Gated on the key, like MiniMax's: with nothing pasted there is no
+    // account to ask.
+    if (isKenari && kenariKey) {
+      void getKenariUsageCached(kenariKey).then((usage) => {
+        if (usage) setKenariPlan(usage);
         stampPlanRead();
       });
       return;
@@ -1019,6 +1022,7 @@ export const ContextRing: React.FC = () => {
     isCursor,
     openCodeKey,
     commandCodeKey,
+    kenariKey,
     minimaxKey,
     deepseekKey,
     deepseekBaseUrl,
@@ -1091,6 +1095,12 @@ export const ContextRing: React.FC = () => {
   // Prefer live usage; fall back to the thread's persisted snapshot.
   const usage: TokenUsage | null =
     liveUsage ?? (currentThread?.token_usage as TokenUsage | undefined) ?? null;
+  // A reopened chat has no live usage until its next request. Its saved
+  // `token_usage` holds only fresh input and output, no cache, so a cached
+  // 241,838-token chat read 2,350 ("0%") after a reload (Alvan, 2026-10-27).
+  // The saved `context_usage` is the full measured total of the last request;
+  // it is the reading until a live one arrives.
+  const savedUsedTokens = liveUsage ? undefined : currentThread?.context_usage?.usedTokens;
 
   // How much of the window the last measured request occupied — EVERY slice
   // of it. The three input fields are disjoint: Anthropic reports fresh,
@@ -1109,7 +1119,9 @@ export const ContextRing: React.FC = () => {
   const cacheWriteTokens = usage?.cacheWriteTokens ?? 0;
   const completionTokens = usage?.completionTokens ?? 0;
   const rawMeasuredTokens =
-    promptTokens + cacheWriteTokens + cacheReadTokens + completionTokens;
+    typeof savedUsedTokens === "number" && savedUsedTokens > 0
+      ? savedUsedTokens
+      : promptTokens + cacheWriteTokens + cacheReadTokens + completionTokens;
   // Never let the reading fall while the conversation is only growing. A
   // provider that fans one model out across several upstream accounts returns
   // different counts for the same bytes depending on which one served the
@@ -1181,7 +1193,7 @@ export const ContextRing: React.FC = () => {
         ? openCodePlanView(openCodeUsage)
         : isCommandCode && commandCodeUsage
           ? commandCodePlanView(commandCodeUsage)
-          : isKenari && kenariPlan && kenariPlan !== "signed-out"
+          : isKenari && kenariPlan
             ? kenariPlanView(kenariPlan)
             : isArk && arkPlan && arkPlan !== "signed-out"
               ? arkPlanView(arkPlan)
@@ -1408,22 +1420,6 @@ export const ContextRing: React.FC = () => {
               * sixth block. `plan-view.ts` does the per-provider wording; this
               * renders a list and knows nothing about who filled it. */}
             {planView && <PlanSection view={planView} readAgo={planAgeLabel(planReadAt)} />}
-
-            {/* Said rather than left blank. kenari's key reaches the models but
-              * not the account, so this is the one provider where Aurora can
-              * be correctly configured and still know nothing about the plan —
-              * an empty space here reads as "no limits", which is the opposite
-              * of the truth on a plan that refuses requests when it runs out. */}
-            {isKenari && kenariPlan === "signed-out" && (
-              <>
-                <div className="agw-ctx-divider" />
-                <div className="agw-ctx-note">
-                  <strong>Plan usage not connected</strong> — kenari only reports quota to a
-                  signed-in browser, not to an API key. Connect it in Settings › Providers ›
-                  kenari.
-                </div>
-              </>
-            )}
 
             {/* Said rather than left blank, for kenari's reason: the Coding
               * Plan key reaches the models but Volcano's control plane refuses

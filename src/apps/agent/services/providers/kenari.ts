@@ -104,101 +104,95 @@ export function kenariWire(
 
 // ── Plan usage ───────────────────────────────────────────────────────────────
 //
-// ## Why this needs a sign-in and not the key
+// Read with the API key: `GET /v1/account/quota` (kenari docs,
+// `/en/docs/account-quota`), plus the `x-kenari-plan-remaining` header every
+// served chat reply carries, which Rust lays over the last reading
+// (`api/kenari/usage.rs`). Until 2026-10-26 the key could not read the
+// account and Aurora kept a browser session's cookies for this; that is gone.
 //
-// The `kn-` key reaches the models. It does not reach the account. Every
-// account-shaped read lives on the dashboard's `/api/*` surface, which answers
-// `401 no session` to the key as a bearer token, as `x-api-key`, and as a
-// cookie — measured on three endpoints, on both a dashboard key and one minted
-// by `kenari login`.
-//
-// That is not an oversight to route around. `openapi.json` lists twenty-one
-// paths and not one of them is an account read, and kenari's own CLI contains
-// exactly three kenari URLs (`/v1/models`, `/api/cli-auth/token`, and a printed
-// dashboard link) with no usage command at all.
-//
-// **kenari's MCP server is the one exception, and it answers a different
-// question.** `https://kenari.id/mcp` exposes a key-authenticated
-// `kenari_usage` returning 30 days of per-model requests and tokens. Useful,
-// and reachable through Aurora's existing MCP client with no code — but it
-// takes no arguments, returns Markdown rather than JSON, and reports WALLET
-// cost, which is `Rp 0` for every plan-billed request. It cannot say how much
-// of the weekly window is gone, which is the only thing the ring draws.
-//
-// So the ring reads a session, captured by signing in to kenari's own page in
-// a window Aurora opens. See `commands/kenari.rs` for how that is taken and
-// why the User-Agent travels with it.
-
-/** Whether Aurora holds a kenari sign-in, and whose. */
-export interface KenariSessionStatus {
-  connected: boolean;
-  email: string | null;
-  /** RFC3339. Displayed only — expiry is discovered by being refused. */
-  savedAt: string | null;
-}
-
-/** What a completed sign-in reports back. */
-export interface KenariAccount {
-  email: string | null;
-  /** kenari's own rate, so a Rupiah figure can be shown in dollars without
-   *  Aurora inventing an exchange rate. */
-  usdIdrRate: number | null;
-}
+// An unrestricted key of the account reads it. A shared key or a restricted
+// one (model scope, spend cap, token cap) is refused with a reason, which the
+// card shows in words.
 
 /**
  * One rolling quota window.
  *
- * `usedFrac` is a FRACTION (0..1), not a percent — the wire sends
- * `0.20203278766666666` for a fifth-spent week, and reading it as a percent
- * draws a 0.2%-full bar over a fifth-spent window.
+ * `usedFrac` is a FRACTION (0..1), not a percent — the wire sends `0.0088` for
+ * a week that is under one percent spent, and reading it as a percent draws a
+ * bar over the wrong number. Rupiah figures are whole Rupiah, as the endpoint
+ * rounds them (the ceiling down, use up, the remainder down).
  */
 export interface KenariWindow {
   usedFrac: number;
   resetsInSecs: number | null;
+  resetsAtMs: number | null;
+  budgetRp: number | null;
+  usedRp: number | null;
+  remainingRp: number | null;
+}
+
+/** The active coupon, kept apart from the plan: an account can hold one
+ *  without a plan. */
+export interface KenariCoupon {
+  name: string | null;
+  usedRp: number | null;
+  /** `null` when the coupon has no spending limit. */
+  remainingRp: number | null;
+  expiresAtMs: number | null;
+  scopeModels: string[];
 }
 
 /**
  * The plan's headroom.
  *
- * Every window is optional because a plan can leave one unset — `/api/plans`
- * reports `0` for "no limit on this window", and the Studio plan genuinely has
- * no 5-hour or monthly cap. An unset window is absent here rather than drawn as
- * a limit that is 100% spent.
+ * Every window is optional because a plan can leave one uncapped — the
+ * endpoint leaves such a window out, and the Studio plan genuinely has no
+ * 5-hour cap. An unset window is absent here rather than drawn as a limit that
+ * is 100% spent.
  */
 export interface KenariUsage {
   planName: string | null;
-  planStatus: string | null;
   window5h: KenariWindow | null;
   windowWeek: KenariWindow | null;
   windowMonth: KenariWindow | null;
-  webSearchAllowance: number | null;
-  webSearchUsedToday: number | null;
-  /** Spend this billing cycle, in micro-Rupiah — kenari's own unit, divided
-   *  where it is displayed so nothing is rounded twice. */
-  catalogThisCycleMicroIdr: number | null;
-  marketThisCycleMicroIdr: number | null;
-  /** kenari's own judgement that the account is close to a limit, not a
-   *  threshold Aurora invented. */
+  coupon: KenariCoupon | null;
+  /** The account's quota-alert threshold: 50, 80 or 90. */
+  alertPct: number | null;
+  /** A window has reached the account's own threshold — kenari's judgement
+   *  (its `alert_pct`), not one Aurora invented. */
   nearLimit: boolean;
+  /** When these numbers were read: the endpoint's answer, or the last chat
+   *  reply that carried the fractions. */
+  fetchedAtMs: number;
 }
 
 /** Rust's snake_case, which is what crosses the IPC boundary. */
 interface RawWindow {
   used_frac?: unknown;
   resets_in_secs?: unknown;
+  resets_at_ms?: unknown;
+  budget_rp?: unknown;
+  used_rp?: unknown;
+  remaining_rp?: unknown;
+}
+
+interface RawCoupon {
+  name?: unknown;
+  used_rp?: unknown;
+  remaining_rp?: unknown;
+  expires_at_ms?: unknown;
+  scope_models?: unknown;
 }
 
 interface RawUsage {
   plan_name?: unknown;
-  plan_status?: unknown;
   window_5h?: RawWindow | null;
   window_week?: RawWindow | null;
   window_month?: RawWindow | null;
-  web_search_allowance?: unknown;
-  web_search_used_today?: unknown;
-  catalog_this_cycle_micro_idr?: unknown;
-  market_this_cycle_micro_idr?: unknown;
+  coupon?: RawCoupon | null;
+  alert_pct?: unknown;
   near_limit?: unknown;
+  fetched_at_ms?: unknown;
 }
 
 function num(value: unknown): number | null {
@@ -216,68 +210,49 @@ function readWindow(raw: RawWindow | null | undefined): KenariWindow | null {
     // bug rather than as "over the limit".
     usedFrac: Math.min(1, Math.max(0, num(raw.used_frac) ?? 0)),
     resetsInSecs: num(raw.resets_in_secs),
+    resetsAtMs: num(raw.resets_at_ms),
+    budgetRp: num(raw.budget_rp),
+    usedRp: num(raw.used_rp),
+    remainingRp: num(raw.remaining_rp),
   };
 }
 
-/** Is there a stored sign-in, and whose. Never throws — no session is a state,
- *  not a failure. */
-export async function kenariSessionStatus(): Promise<KenariSessionStatus> {
-  try {
-    const raw = await invoke<{
-      connected?: unknown;
-      email?: unknown;
-      saved_at?: unknown;
-    }>("kenari_session_status");
-    return {
-      connected: raw.connected === true,
-      email: str(raw.email),
-      savedAt: str(raw.saved_at),
-    };
-  } catch {
-    return { connected: false, email: null, savedAt: null };
-  }
+function readCoupon(raw: RawCoupon | null | undefined): KenariCoupon | null {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    name: str(raw.name),
+    usedRp: num(raw.used_rp),
+    remainingRp: num(raw.remaining_rp),
+    expiresAtMs: num(raw.expires_at_ms),
+    scopeModels: Array.isArray(raw.scope_models)
+      ? raw.scope_models.filter((m): m is string => typeof m === "string")
+      : [],
+  };
 }
 
 /**
- * Open kenari's login page and keep the session signed in with.
+ * How much of the plan is left, read with `apiKey`.
  *
- * Resolves once a cookie has been observed AND verified — a `kn_session` can
- * exist before a password is accepted, and storing it on sight buys a card that
- * says "connected" over an account that is not. Rejects when the person closes
- * the window or five minutes pass.
+ * Throws with a worded reason when the key is missing, refused, shared or
+ * restricted — the card shows the words, the ring omits the section.
  */
-export function kenariConnect(): Promise<KenariAccount> {
-  return invoke<{ email?: unknown; usd_idr_rate?: unknown }>("kenari_connect").then(
-    (raw) => ({ email: str(raw.email), usdIdrRate: num(raw.usd_idr_rate) }),
-  );
-}
-
-/** Forget the stored sign-in. Aurora's copy only — kenari.id stays signed in. */
-export function kenariDisconnect(): Promise<void> {
-  return invoke<void>("kenari_disconnect");
-}
-
-/**
- * How much of the plan is left.
- *
- * Throws when there is no session or the session has expired, and the message
- * says which — the card's answer to an expired session is a button, not an
- * error in red.
- */
-export async function fetchKenariUsage(): Promise<KenariUsage> {
-  const raw = await invoke<RawUsage>("kenari_usage");
+export async function fetchKenariUsage(apiKey: string): Promise<KenariUsage> {
+  const raw = await invoke<RawUsage>("kenari_usage", { apiKey });
   return {
     planName: str(raw.plan_name),
-    planStatus: str(raw.plan_status),
     window5h: readWindow(raw.window_5h),
     windowWeek: readWindow(raw.window_week),
     windowMonth: readWindow(raw.window_month),
-    webSearchAllowance: num(raw.web_search_allowance),
-    webSearchUsedToday: num(raw.web_search_used_today),
-    catalogThisCycleMicroIdr: num(raw.catalog_this_cycle_micro_idr),
-    marketThisCycleMicroIdr: num(raw.market_this_cycle_micro_idr),
+    coupon: readCoupon(raw.coupon),
+    alertPct: num(raw.alert_pct),
     nearLimit: raw.near_limit === true,
+    fetchedAtMs: num(raw.fetched_at_ms) ?? Date.now(),
   };
+}
+
+/** Whole Rupiah as kenari's own pages write it: `Rp 297,364`. */
+export function fmtRupiah(rp: number): string {
+  return `Rp ${Math.round(rp).toLocaleString("en-US")}`;
 }
 
 /**

@@ -349,6 +349,64 @@
   min-height: calc(100vh - 300px);
 }
 
+/* ── The question slides away going down (Work cards on) ────────────────
+ * `useQuestionHeadroom` marks the ONE pinned question `data-headroom`. Hidden,
+ * it slides up past the top edge together with its dissolve (`::after`, 30px
+ * below it); shown, it slides back. `translate`, not `transform`: the newest
+ * turn's entrance animates `transform`, and the two must not overwrite each
+ * other. A hidden question takes no clicks, so nothing behind its old place is
+ * blocked. */
+.agw-root[data-question-headroom] [data-uturn] {
+  transition: translate var(--agw-glide-dur) var(--agw-glide-ease);
+}
+/* Back in its place because a fold moved the page, not the reader: no slide. */
+.agw-root[data-question-headroom] [data-uturn][data-headroom-snap] {
+  transition: none;
+}
+.agw-root[data-question-headroom] [data-uturn][data-headroom="hidden"] {
+  translate: 0 calc(-100% - 34px);
+  pointer-events: none;
+}
+/* With no question showing at the top, the reply ran into the top edge with a
+ * hard cut. It dissolves there instead, the way a long tool output fades under
+ * its card's header (Alvan, 2026-10-25). A zero-height sticky first child of the
+ * scroller, so the fade spans exactly the content's width, never the scrollbar.
+ * On while the view is scrolled and no pinned question is shown
+ * (`data-top-fade`, set by useQuestionHeadroom); a shown question carries its
+ * own dissolve (`[data-uturn]::after`). Above the question (z 3 vs 2), so the
+ * one sliding away fades through it. */
+.agw-transcript-topfade {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.agw-transcript-topfade::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  height: 32px;
+  background: linear-gradient(to bottom, var(--agw-conversation), transparent);
+  opacity: 0;
+  transition: opacity var(--agw-glide-dur) var(--agw-glide-ease);
+}
+.agw-root[data-question-headroom] [data-top-fade] > .agw-transcript-topfade::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-root[data-question-headroom] [data-uturn],
+  .agw-transcript-topfade::before {
+    transition: none;
+  }
+}
+.agw-root[data-reduce-motion][data-question-headroom] [data-uturn],
+.agw-root[data-reduce-motion] .agw-transcript-topfade::before {
+  transition: none;
+}
+
 /* Finished exchanges skip layout and paint while they are off screen.
  *
  * Every streamed frame changes the newest exchange, and without this the

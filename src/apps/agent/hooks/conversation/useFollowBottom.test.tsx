@@ -13,9 +13,9 @@
  * stubbed BEFORE each render, exactly where a browser would have computed it.
  */
 
-import { act, useLayoutEffect, useRef } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { useFollowBottom } from "./useFollowBottom";
 
@@ -151,138 +151,5 @@ describe("useFollowBottom", () => {
     readerScrollsTo(0);
     render(false, 12);
     expect(box().scrollTop).toBe(0);
-  });
-});
-
-/**
- * The glide a running work card uses (2026-10-18, probe
- * aurora-work-card-motion-designs.html, 02): content growth is travelled, not
- * jumped. The ResizeObserver and animation frames are stubbed so each frame
- * can be stepped and the box read in between.
- */
-describe("useFollowBottom with glide", () => {
-  let observers: { cb: ResizeObserverCallback; targets: Element[] }[] = [];
-  let frames: FrameRequestCallback[] = [];
-  let clock = 0;
-  const api: { compensate: ((px: number) => void) | null } = { compensate: null };
-
-  beforeEach(() => {
-    observers = [];
-    frames = [];
-    clock = 0;
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        private entry: { cb: ResizeObserverCallback; targets: Element[] };
-        constructor(cb: ResizeObserverCallback) {
-          this.entry = { cb, targets: [] };
-          observers.push(this.entry);
-        }
-        observe(target: Element) {
-          this.entry.targets.push(target);
-        }
-        disconnect() {
-          observers = observers.filter((o) => o !== this.entry);
-        }
-      },
-    );
-    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
-    vi.stubGlobal("cancelAnimationFrame", (id: number) => {
-      frames[id - 1] = () => {};
-    });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    api.compensate = null;
-  });
-
-  const Glider: React.FC = () => {
-    const rows = useRef<HTMLDivElement>(null);
-    const { ref, onScroll, compensate } = useFollowBottom(true, rows, { glide: true });
-    useLayoutEffect(() => {
-      api.compensate = compensate;
-    });
-    return (
-      <div data-testid="box" ref={ref} onScroll={onScroll}>
-        <div ref={rows} />
-      </div>
-    );
-  };
-
-  /** The rows resized (content grew or shrank), as a browser would report it. */
-  const rowsResized = (): void => {
-    const rows = box().firstElementChild as Element;
-    act(() => observers.forEach((o) => o.cb([{ target: rows } as ResizeObserverEntry], {} as ResizeObserver)));
-  };
-
-  /** Run one animation frame, 16ms after the previous one. */
-  const frame = (): void => {
-    clock += 16;
-    const pending = frames;
-    frames = [];
-    act(() => pending.forEach((cb) => cb(clock)));
-  };
-
-  const mount = (rows: number): void => {
-    act(() => root.render(<Glider />));
-    measure(rows);
-    act(() => root.render(<Glider />));
-    box().scrollTop = bottom(rows);
-    rowsResized();
-    // Let the hook see where the box is, as it would on the next frame.
-    frame();
-  };
-
-  it("travels to a new row over several frames, never more than 11px in one", () => {
-    mount(10);
-    const start = box().scrollTop;
-    measure(11);
-    rowsResized();
-    const positions: number[] = [];
-    for (let i = 0; i < 40 && box().scrollTop < bottom(11); i++) {
-      frame();
-      positions.push(box().scrollTop);
-    }
-    expect(box().scrollTop).toBe(bottom(11));
-    expect(positions.length).toBeGreaterThan(3);
-    let prev = start;
-    for (const top of positions) {
-      expect(top - prev).toBeLessThanOrEqual(0.7 * 16 + 0.001);
-      prev = top;
-    }
-  });
-
-  it("keeps following when content shrinks above and clamps the box down", () => {
-    mount(10);
-    // A thought folds above the view: the browser clamps scrollTop to the new bottom.
-    measure(9);
-    box().scrollTop = bottom(9);
-    rowsResized();
-    frame();
-    // The next row still gets followed.
-    measure(10);
-    rowsResized();
-    for (let i = 0; i < 40; i++) frame();
-    expect(box().scrollTop).toBe(bottom(10));
-  });
-
-  it("lets go when the reader scrolls up during a glide", () => {
-    mount(10);
-    measure(12);
-    rowsResized();
-    frame();
-    box().scrollTop = 100; // the reader, mid-glide
-    for (let i = 0; i < 10; i++) frame();
-    expect(box().scrollTop).toBe(100);
-  });
-
-  it("moves the box up by rows removed above, so what is on screen stays put", () => {
-    mount(40);
-    // The window dropped its oldest row and gained a new one: same height.
-    act(() => api.compensate!(ROW));
-    expect(box().scrollTop).toBe(bottom(40) - ROW);
-    for (let i = 0; i < 40; i++) frame();
-    expect(box().scrollTop).toBe(bottom(40));
   });
 });

@@ -163,7 +163,7 @@ impl ConversationRuntime {
     /// Summarize older history into a persistent compaction marker when the
     /// projected request crosses the configured threshold. Best-effort: any
     /// disabled/too-short/failed case returns WITHOUT mutating the session,
-    /// so the turn always proceeds (trim stays the last-resort net).
+    /// so the turn always proceeds (a provider overflow compacts once more).
     /// See `DOCS/compaction-design.md`.
     pub(super) async fn maybe_compact(
         &self,
@@ -222,7 +222,7 @@ impl ConversationRuntime {
                     "agent_runtime.compaction",
                     &format!(
                         "automatic compaction is disabled for thread {} after one failed attempt; \
-                         deterministic trim remains active and only an explicit /compact may retry",
+                         only an explicit /compact or a provider overflow may retry",
                         session.thread_id,
                     ),
                 );
@@ -1018,7 +1018,7 @@ pub(super) fn compaction_preamble(summary: &str, transcript_hint: Option<&str>) 
 /// so the sequence stays user-led and valid for every provider — and keeps the
 /// tail unchanged. A session with no marker round-trips unchanged. The
 /// persisted JSONL is never touched; this is an API-view transform, exactly
-/// like `inject_ide_context`/`trim_to_budget`, but summary-backed.
+/// like `inject_ide_context`, but summary-backed.
 pub(super) fn apply_compaction(
     messages: &[ConversationMessage],
     transcript_hint: Option<&str>,

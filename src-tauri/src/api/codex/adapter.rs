@@ -158,6 +158,11 @@ impl StreamingApiClient for CodexAdapter {
             break response;
         };
 
+        // Every reply, refused ones included, carries the plan's windows and
+        // credits in `x-codex-*` headers; keeping them is what lets the card
+        // and ring skip the usage endpoint.
+        super::usage::record_headers(access.account_id.as_deref(), response.headers());
+
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();

@@ -1,15 +1,15 @@
 /* ── Work cards (Transcript → Work cards, opt-in) ──────────────────────────
- * `components/conversation/WorkCard.tsx`. Probe: Documents/aurora-work-card-
- * designs.html, 02. One long quiet stretch of a reply — thoughts and tool
- * calls — folded into a header line, with the newest steps in a fixed window
- * while it runs. Open, the rows inside are the transcript's own rows,
- * unchanged.
+ * `components/conversation/work-log/WorkLog.tsx`, rebuilt 2026-10-25. One card
+ * per turn: a header line and the turn's work under it. Kept from the card
+ * before, each Alvan's call: not a box (two side hairlines), rows on the spine,
+ * one 55vh limit open and closed, the window grows down from the header, a
+ * click on the running window opens the card, the wheel over it scrolls the
+ * chat. The body is one normal scroller kept on the newest row by
+ * `work-log/pin.ts` (2026-10-27), and there is one height glide, a grid row.
  *
- * Not a box. The card is a spine row (`.agw-row[data-row="work"]`), and its
- * rows keep their own row wrappers at the same left edge, so the timeline
- * thread runs through the card unbroken. The window borrows the agent tail's
- * construction (`.agw-tail`, 53-subagents.css): a rule at the left, accent
- * while running, newest line at the bottom, older lines into a top fade. */
+ * The card is a spine row (`.agw-row[data-row="work"]`) and its rows keep their
+ * own row wrappers at the same left edge, so the timeline thread runs through
+ * it unbroken. */
 
 .agw-wc {
   display: flex;
@@ -85,24 +85,28 @@
   transform: rotate(90deg);
 }
 
-/* The height animator (WorkCard's `motion.div`). It clips while it moves, so
-   it carries the 6px gap above the panel itself rather than the panel's
-   margin, which the clip would eat. */
+/* The one height change: a grid row between 0fr (nothing) and 1fr (the body),
+   gliding only when WorkLog asks (a click, a finished turn folding). */
 .agw-wc-anim {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-width: 0;
+}
+.agw-wc-anim[data-expanded] {
+  grid-template-rows: 1fr;
+}
+.agw-wc-anim[data-glide] {
+  transition: grid-template-rows var(--agw-glide-dur) var(--agw-glide-ease);
+}
+.agw-wc-clip {
+  min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-/* Open: the rows in a panel of their own that scrolls inside itself. The card
-   folds a long stretch so the reply stays short; opening it must not undo that
-   by pouring every row back into the page. It must also LOOK like a place that
-   scrolls — rows in the same shape as the transcript around them read as more
-   transcript (Alvan, 2026-10-12) — so it is bracketed by two vertical
-   hairlines, left and right, each fading out to nothing at both ends. No box:
-   a fill read as a card brighter than the chat, and a full border read as a
-   square card; both were rejected the same day. No corners, no top or bottom
-   edge, just the sides of the scrolling area. Each row inside still opens and
-   folds on its own and grows inside it. */
+/* The scrolling area, bracketed by two vertical hairlines that fade out at
+   both ends. No fill, no full border: both read as a card brighter than the
+   chat (Alvan, 2026-10-12). */
 .agw-wc-panel {
   position: relative;
   margin-top: 6px;
@@ -122,7 +126,6 @@
     transparent
   );
   pointer-events: none;
-  transition: opacity var(--agw-dur-fast) ease;
 }
 .agw-wc-panel::before {
   left: 0;
@@ -130,27 +133,29 @@
 .agw-wc-panel::after {
   right: 0;
 }
-/* The scroller, inside the edge so the fades below do not fade the border.
-   Both ends fade while there is more that way, from the scroll position
-   itself (`agw-wc-scroll-fade`): a box at its top shows no top fade, one at
-   its bottom no bottom fade. */
+
+/* A bounded scrolling area. Two users: a chapter's body with work cards OFF
+   (`BoundedRows`, which follows its newest row with `useFollowBottom`), and
+   the work card's body, which overrides it just below. Both ends fade while
+   there is more that way, from the scroll position itself. It passes the
+   wheel on at its ends: `contain` on a box that is a scroll container even
+   when it fits froze the chat under the pointer (2026-10-27). */
 .agw-wc-body {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  /* Grows with its rows up to 55% of the window, then scrolls (Alvan,
-     2026-10-16: 460px was far too short on a tall window, 70vh too big). */
   max-height: 55vh;
   overflow-y: auto;
-  overscroll-behavior: contain;
-  /* The browser's scroll anchoring moves `scrollTop` by itself when rows
-     above the view change (the window drops its oldest row, a step folds).
-     That scroll read as the reader leaving the bottom and stopped the follow
-     for good (Alvan, 2026-10-16: bottom cut off, no auto-scroll). Following
-     the newest row is done in WorkCard; nothing else moves this box. */
+  /* The 6px hairline bar takes layout width. Without a reserved gutter it
+     appeared the moment the content outgrew the box (a step opening, the card
+     opening from its window, which is overflow hidden) and every row lost 6px
+     and re-wrapped at once: the card shook (Alvan, 2026-10-25; headless Edge:
+     row width 400 → 394 on opening, 394 → 394 with this). */
+  scrollbar-gutter: stable;
+  /* `useFollowBottom` moves this box itself; the browser's anchoring moving
+     it too read as the reader leaving (2026-10-16). */
   overflow-anchor: none;
   padding: 10px 12px 12px;
-  /* The scrollbar is the hairline one (`.agw-scroll-hair`, 01-root.css). */
   outline: none;
   animation-name: agw-wc-scroll-fade;
   animation-duration: auto;
@@ -173,25 +178,74 @@
     mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 22px), #000 100%);
   }
 }
-/* Open while its stretch runs: no scroll-linked fade. The panel follows its
-   newest row, and every row that lands takes it off the bottom for a moment
-   (the whole 0.28s glide with smooth arrival on). Gradients do not blend
-   between keyframes, they switch halfway, so the bottom fade snapped on and
-   off with every new row: the newest text vanished and came back each time the
-   card grew (Alvan, 2026-10-24). A fixed top fade instead, and only while rows
-   are actually cut off above (`data-clipped`, measured in WorkCard), the same
-   way the running window does it. */
-.agw-wc-body[data-live-panel] {
+
+/* The work card's body: one column of rows (`work-log/pin.ts`, rebuilt
+   2026-10-27 on Alvan's `scroll-fix.html`). While the turn runs
+   (`data-driven`) the pin places the rows and grows the box itself; once it
+   ends this is a normal scroller. As tall as its rows up to 55vh, or the view
+   while running, growing down from the header until then.
+
+   NOTHING HERE CHANGES HOW THE TEXT IS DRAWN while the card is on screen: the
+   rows are on their own layer for the body's whole life (`will-change`, and
+   the pin always sets a transform), and the edge fades are always present
+   with only their size changing (`--agw-wc-fade-*`, set by the pin). A layer
+   or mask switched on and off flips the text's smoothing, which read as the
+   rows shimmering sideways (Alvan, 2026-10-27). */
+.agw-wc .agw-wc-body {
+  gap: 0;
+  overflow-anchor: auto;
   animation: none;
-  -webkit-mask-image: none;
-  mask-image: none;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--agw-wc-fade-top, 0px),
+    #000 calc(100% - var(--agw-wc-fade-bottom, 0px)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--agw-wc-fade-top, 0px),
+    #000 calc(100% - var(--agw-wc-fade-bottom, 0px)),
+    transparent 100%
+  );
 }
-.agw-wc-body[data-live-panel][data-clipped] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+/* While the turn runs the rows are placed by `pin.ts` alone (one transform,
+   one controller): no native scrolling to get out of step with it. */
+.agw-wc .agw-wc-body[data-driven] {
+  overflow-y: hidden;
+  overflow-anchor: none;
 }
-/* Keyboard users scroll the panel with the arrow keys once it has focus; the
-   two hairlines step up to show it, never a ring around it. */
+/* Running, in the main transcript: as tall as the view less the card's own
+   header line and the transcript's padding, not 55vh. It keeps growing once it
+   reaches the composer, the follow takes the view down and the question slides
+   away above it (Alvan, 2026-10-27). `--agw-transcript-h` is the scroller's
+   height (ConversationPane); the dock has none and keeps 55vh. */
+.agw-wc[data-running] .agw-wc-body {
+  max-height: calc(var(--agw-transcript-h, calc(55vh + 80px)) - 80px);
+}
+.agw-wc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agw-wc .agw-wc-rows {
+  will-change: transform;
+}
+
+/* Running and closed: the same box, not scrollable by hand, its rows not
+   controls; a click anywhere opens the card (probe aurora-work-card-click-
+   designs.html, 02) with the ordinary arrow cursor (Alvan, 2026-10-23). The
+   wheel goes on to the chat. */
+.agw-wc .agw-wc-body[data-window] {
+  overflow-y: hidden;
+}
+.agw-wc .agw-wc-body[data-window] .agw-wc-rows {
+  pointer-events: none;
+}
+
+/* Keyboard users scroll the open body with the arrow keys once it has focus;
+   the two hairlines step up to show it, never a ring around it. */
 .agw-wc-panel:has(.agw-wc-body:focus-visible)::before,
 .agw-wc-panel:has(.agw-wc-body:focus-visible)::after {
   background: linear-gradient(
@@ -203,47 +257,16 @@
   );
 }
 
-/* The rows, one wrapper in both shapes so the window and the open panel are the
-   same element tree (WorkCard: opening must not rebuild a row). */
-.agw-wc-rows {
+/* A tool run inside the card: plain steps, no header, cap or fold. */
+.agw-wc-steps {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
-
-/* Closed while it runs: the same scroller as the open panel, as tall as its
-   steps up to the SAME 55vh the open panel stops at. It grows DOWNWARD from the
-   header as steps arrive — a fixed-height window pinned its rows to the bottom,
-   which left a hole under the header and made every step push the others up
-   (Alvan, 2026-10-12). It used to stop at 380px, about half the open limit on a
-   tall window, and read as a card stuck halfway; one limit for both shapes
-   (Alvan, 2026-10-17). Once
-   it is full, WorkCard keeps it scrolled to the newest step, so the oldest
-   leave through the top, and the top fades only while something is actually
-   cut off there (`data-clipped`, measured in WorkCard). It does not scroll by
-   hand, and the rows inside are not controls here. A click anywhere in it
-   opens the card, like the header (probe aurora-work-card-click-designs.html,
-   02), with the ordinary arrow cursor: it once had a hand cursor over all 55vh
-   of it (Alvan, 2026-10-23: "anywhere I move my cursor it becomes a pointer"),
-   and in between a click there only lit the header, which read as broken.
-   `overscroll-behavior` goes back to auto: `overflow: hidden` is still a
-   scroll container to the browser, so the wheel landed here, had nothing to
-   scroll, and the open panel's `contain` stopped it reaching the chat — the
-   chat would not scroll with the pointer over a running card (same day). */
-.agw-wc-body.agw-wc-window {
-  max-height: 55vh;
-  overflow: hidden;
-  overscroll-behavior: auto;
-  animation: none;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-.agw-wc-body.agw-wc-window[data-clipped] {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 72px);
-}
-.agw-wc-window .agw-wc-rows {
-  pointer-events: none;
+/* A step that is new fades in where it lands, at full height, so nothing
+   above or below it moves (`WorkSteps`). */
+.agw-wc[data-arrivals] .agw-wc-step[data-arrive] {
+  animation: agw-tool-fade-in var(--agw-dur-slow) var(--agw-ease-out);
 }
 
 /* A chapter with work cards on: a named divider, no toggle (the card folds). */
@@ -259,38 +282,32 @@
 .agw-root[data-transcript-spine] .agw-row[data-row="work"] > .agw-row-branch {
   top: 8px;
 }
-/* The spine already runs down the open area's left side, 13px left of where
-   the panel's own left hairline would sit; both together drew two parallel
-   lines (Alvan, 2026-10-12). With the spine on, the spine IS the left edge. */
+/* The spine already runs down the left side; with it on, the spine IS the
+   left edge (two parallel lines otherwise, Alvan 2026-10-12). */
 .agw-root[data-transcript-spine] .agw-wc-panel::before {
   display: none;
 }
-/* Open, the rows stay ON the spine: each keeps its marker and branch, landing
-   on the same line as every row outside the card (hiding them left the rows
-   floating, Alvan 2026-10-12). Both the height animator and the scroller clip,
-   which would cut the gutter those marks are drawn in, so each is widened
-   leftwards by the gutter (the `.agw-chapter-body` fix). The scroller's own
-   left padding is replaced by the gutter, so its rows sit at exactly the
-   transcript's content edge and their line is the spine's line. */
-.agw-root[data-transcript-spine] .agw-wc-anim {
-  padding-left: 20px;
-  margin-left: -20px;
-}
-.agw-root[data-transcript-spine] .agw-wc-body,
-/* The running window too: it wears the open panel's edge, and its rows sit on
-   the spine the same way (Alvan, 2026-10-12: one look at both heights). */
-.agw-root[data-transcript-spine] .agw-wc-window {
+/* The rows stay ON the spine, each with its marker and branch. The clip and
+   the scroller would cut the gutter those marks are drawn in, so each is
+   widened leftwards by it; the scroller's left padding becomes the gutter. */
+.agw-root[data-transcript-spine] .agw-wc-clip,
+.agw-root[data-transcript-spine] .agw-wc-body {
   padding-left: 20px;
   margin-left: -20px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .agw-wc-head,
-  .agw-wc-chev {
+  .agw-wc-chev,
+  .agw-wc-anim[data-glide] {
     transition: none;
+  }
+  .agw-wc[data-arrivals] .agw-wc-step[data-arrive] {
+    animation: none;
   }
 }
 .agw-root[data-reduce-motion] .agw-wc-head,
-.agw-root[data-reduce-motion] .agw-wc-chev {
+.agw-root[data-reduce-motion] .agw-wc-chev,
+.agw-root[data-reduce-motion] .agw-wc-anim[data-glide] {
   transition: none;
 }

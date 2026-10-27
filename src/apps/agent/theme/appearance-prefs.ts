@@ -80,6 +80,19 @@ export type TranscriptReasoning = "live" | "folded" | "hidden";
 export type TranscriptTextPace = "eased" | "steady" | "instant";
 
 /**
+ * How a running work card's rows climb as steps arrive
+ * (`components/conversation/work-log/pin.ts`).
+ *
+ * `spring` and `steady` both glide with the one follow `pin.ts` has since
+ * 2026-10-27 (speed blended toward the distance left); the length setting
+ * sets how fast. `off` — each arrival jumps the rows up in one frame.
+ */
+export type WorkCardGlide = "spring" | "steady" | "off";
+
+/** How long one glide takes to settle, in ms (the lab's C). */
+export const DEFAULT_GLIDE_MS = 340;
+
+/**
  * Which drawing set the tool rows use for their marks (`components/tools/
  * tool-icons/`). `classic` is the AgentIcon set every tool row has always
  * drawn. A new set is added by appending its id here AND giving it an entry
@@ -270,6 +283,24 @@ export const APPEARANCE_PREFS = {
     parse: bool,
   } satisfies PrefSpec<boolean>,
 
+  /** How a running work card's rows climb as steps arrive: `spring` glides
+   *  (the default), `steady` moves at an even speed like a teleprompter, `off`
+   *  jumps. Chosen in Documents/aurora-scroll-glide-lab.html (C and F). */
+  transcriptWorkCardGlide: {
+    default: "spring",
+    exported: true,
+    reset: true,
+    parse: oneOf(["spring", "steady", "off"] as const),
+  } satisfies PrefSpec<WorkCardGlide>,
+
+  /** How long one glide takes to settle, in ms. 340 is the lab's C. */
+  transcriptWorkCardGlideMs: {
+    default: DEFAULT_GLIDE_MS,
+    exported: true,
+    reset: true,
+    parse: intIn(150, 1000),
+  } satisfies PrefSpec<number>,
+
   /** Each new tool call opens its own space instead of landing at full height
    *  in one frame, so the transcript glides up rather than jumping; with the
    *  timeline spine on, the call also grows off the spine. A finished run stays
@@ -304,18 +335,6 @@ export const APPEARANCE_PREFS = {
    *  thought and each tool still opens on its own. Opt-in. Probe:
    *  Documents/aurora-work-card-designs.html, 02. */
   transcriptWorkCards: {
-    default: false,
-    exported: true,
-    reset: true,
-    parse: bool,
-  } satisfies PrefSpec<boolean>,
-
-  /** Inside a running work card, keep grouping tool runs the transcript way
-   *  (a "N calls" header at the third call, a capped box, a fold once the
-   *  agent moves on). Off, the default: every call is its own row that fades
-   *  in, nothing folds until the stretch ends, and the card glides to its
-   *  newest row. Probe: Documents/aurora-work-card-motion-designs.html, 02. */
-  transcriptWorkCardGroupRuns: {
     default: false,
     exported: true,
     reset: true,

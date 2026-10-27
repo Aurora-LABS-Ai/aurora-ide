@@ -44,6 +44,7 @@ import { useAgentSuggestStore } from "@/apps/agent/store/composer/useAgentSugges
 import { useAgentSettingsStore } from "@/apps/agent/store/settings/useAgentSettingsStore";
 import { FileIcon, FolderIcon } from "@/kernel/ui/FileIcons";
 import { useAgentAutoScroll } from "@/apps/agent/hooks/conversation/useAgentAutoScroll";
+import { useQuestionHeadroom } from "@/apps/agent/hooks/conversation/useQuestionHeadroom";
 import { useAgentWindowSend } from "@/apps/agent/hooks/conversation/useAgentWindowSend";
 import { requestReplySuggestions } from "@/apps/agent/hooks/conversation/send/reply-suggestions";
 import { useCliTask } from "@/apps/agent/hooks/conversation/useCliTask";
@@ -379,7 +380,32 @@ export const ConversationPane: React.FC = () => {
    * `scrollIntoView` is deliberately avoided: it scrolls every scrollable
    * ancestor, and this transcript sits inside the window's own panes.
    */
-  const stickyUser = useAgentThemeStore((s) => s.transcriptStickyUser);
+  // With Work cards on the question is pinned too, and slides away while the
+  // view goes down (`useQuestionHeadroom`).
+  const workCards = useAgentThemeStore((s) => s.transcriptWorkCards);
+  const stickyUser = useAgentThemeStore((s) => s.transcriptStickyUser) || workCards;
+  const { reset: resetHeadroom } = useQuestionHeadroom(
+    containerRef,
+    workCards,
+    openIsStreaming,
+    currentThreadId ?? null,
+  );
+  // A running work card grows to the height of this view, not 55vh: once it
+  // reaches the composer it keeps growing, the follow takes the view down and
+  // the question slides away (Alvan, 2026-10-27). The card reads the height
+  // from `--agw-transcript-h` (`56-work-cards.css`).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const write = () => el.style.setProperty("--agw-transcript-h", `${el.clientHeight}px`);
+    write();
+    const observer = new ResizeObserver(write);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      el.style.removeProperty("--agw-transcript-h");
+    };
+  }, [containerRef, currentThreadId]);
   // Pin when a NEW QUESTION appears, and only then. Keyed on the newest
   // question's id rather than on the message count: a sub-agent's report or a
   // process ending adds messages too, and re-pinning on those yanked the view
@@ -396,7 +422,10 @@ export const ConversationPane: React.FC = () => {
     // Its section is what actually scrolls; the question is pinned inside it.
     const section = newest.closest<HTMLElement>(".agw-section") ?? newest;
     el.scrollTop = section.offsetTop - content.offsetTop;
-  }, [stickyUser, newestQuestionId, containerRef, contentRef]);
+    // A new question is shown at the top, and this jump is not the reader
+    // going anywhere. Also covers switching chats (the newest question changes).
+    resetHeadroom();
+  }, [stickyUser, newestQuestionId, containerRef, contentRef, resetHeadroom]);
 
   // The drum, with its replies or holding their place while they are written.
   const showDrum = !openIsStreaming && (suggestions.length > 0 || suggestionsPending);
@@ -630,6 +659,9 @@ export const ConversationPane: React.FC = () => {
                 : undefined
             }
           >
+            {/* The top edge's dissolve (Work cards on), sticky at the top of
+                this scroller; switched by useQuestionHeadroom. */}
+            <div className="agw-transcript-topfade" aria-hidden="true" />
             {threadLoading && messages.length === 0 ? (
               <CenterNote text="Loading…" />
             ) : messages.length === 0 ? (

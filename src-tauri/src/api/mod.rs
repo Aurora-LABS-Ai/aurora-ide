@@ -61,6 +61,7 @@ pub mod codex;
 pub mod commandcode;
 pub mod cursor;
 pub mod deepseek;
+pub mod kenari;
 pub mod meta;
 pub mod minimax;
 pub(crate) mod model_config;

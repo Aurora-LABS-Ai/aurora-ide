@@ -502,6 +502,11 @@
   line-height: 1.45;
   color: var(--agw-text-subtle);
 }
+/* A row another setting has locked: its name greys out like its switch
+   (`.agw-switch[data-disabled]`); the hint, which says why, stays readable. */
+.agw-set-row[data-disabled] .agw-set-row-label-text {
+  color: var(--agw-text-subtle);
+}
 .agw-set-row-hint code {
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);

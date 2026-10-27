@@ -145,11 +145,16 @@ export function codexFmtCredits(value: number): string {
  * The credit balance as one readable phrase, or `null` when there is nothing
  * true to say about it.
  *
- * Deliberately more permissive than the account switcher's `rowCredits`, which
- * requires `hasCredits`. Once a plan window is spent, credits are the only
- * thing still answering "can I keep working" — so a balance the backend
- * reported is shown even if that flag says otherwise. Silence in that moment
- * reads as "you are out", which is the opposite of the truth.
+ * More permissive than the account switcher's `rowCredits`, which requires
+ * `hasCredits`: once a plan window is spent, credits are the only thing still
+ * answering "can I keep working", so a NON-ZERO balance the backend reported
+ * is shown even if that flag says otherwise. Silence in that moment reads as
+ * "you are out", which is the opposite of the truth.
+ *
+ * The one case that stays silent: `hasCredits: false` with a zero balance.
+ * That is an account that never bought credits, not one that spent them, and
+ * "Credits 0" under a plan at 92% left read as being broke (Alvan,
+ * 2026-10-26). A zero WITH `hasCredits` is a spent balance and is shown.
  *
  * The balance arrives as a STRING and is formatted only when it parses as a
  * number: the backend has been seen to send `3850.0000001`, and it may equally
@@ -161,6 +166,7 @@ export function codexCreditsLabel(credits: CodexCredits | null | undefined): str
   const raw = credits.balance?.trim();
   if (!raw) return null;
   const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed === 0 && !credits.hasCredits) return null;
   return Number.isFinite(parsed) ? codexFmtCredits(parsed) : raw;
 }
 

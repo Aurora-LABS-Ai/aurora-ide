@@ -34,7 +34,7 @@
 //!    that were already broken on disk, and any future path that forgets rule 1.
 //!
 //! The repair is **API-view only**, exactly like `inject_ide_context` and
-//! `trim_to_budget`: the persisted JSONL is never rewritten, so the UI keeps
+//! `apply_compaction`: the persisted JSONL is never rewritten, so the UI keeps
 //! rendering what actually happened.
 
 use super::types::{ContentBlock, ConversationMessage, MessageRole};

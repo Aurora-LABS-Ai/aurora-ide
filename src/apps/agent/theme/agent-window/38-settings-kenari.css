@@ -43,22 +43,8 @@
   text-align: right;
 }
 
-/* Before a session exists. One paragraph saying why a sign-in is being asked
-   for beside a working API key, then one control. */
-.agw-kenari-signin {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.agw-kenari-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
+/* The line under the bars: when the numbers were read, and the account's own
+   alert threshold. */
 .agw-kenari-note {
   font-size: var(--agw-fs-label);
   line-height: 1.5;
@@ -79,6 +65,25 @@
 }
 .agw-kenari-foot-spacer {
   flex: 1;
+}
+
+/* ── Browser sign-in, now Ark's only ───────────────────────────────────────
+   kenari's quota reads with the API key since 2026-10-26 and no longer signs
+   in, but `ArkUsageCard` still does (Volcano's console cookie) and borrows
+   these: one paragraph saying why a sign-in is asked for beside a working
+   key, one control, and a two-click Disconnect. */
+.agw-kenari-signin {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.agw-kenari-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .agw-kenari-confirm {

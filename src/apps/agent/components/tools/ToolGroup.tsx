@@ -24,19 +24,15 @@
  * All colour comes from `--agw-*`.
  */
 
-import React, { useContext, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { ToolGlyph } from "@/apps/agent/components/tools/tool-icons/ToolGlyph";
-import { ErrorBoundary } from "@/kernel/ui/ErrorBoundary";
-import { ChecklistBeatCard, ToolCallCard } from "@/apps/agent/components/tools/ToolCallCard";
-import { McpServerLane } from "@/apps/agent/components/tools/McpServerLane";
-import { mcpServerIdForCard } from "@/apps/agent/components/tools/mcp-card";
+import { RunView } from "@/apps/agent/components/tools/RunView";
 import {
   formatToolDuration,
   groupToolRuns,
-  isChecklistCall,
   toolStatus,
   type ToolCall,
 } from "@/apps/agent/components/tools/tool-call";
@@ -49,8 +45,6 @@ import {
   RUN_LINGER_MS,
   type ArrivalStagger,
 } from "@/apps/agent/components/tools/tool-arrival";
-import { ArrivalHoldContext } from "@/apps/agent/components/tools/arrival-hold";
-import { useInLiveWorkCard } from "@/apps/agent/components/conversation/work-card-context";
 import { GLIDE } from "@/apps/agent/lib/motion/glide";
 
 /**
@@ -67,42 +61,27 @@ import { GLIDE } from "@/apps/agent/lib/motion/glide";
  * entrance's LAST part — the content sliding in — ends, so the clip never
  * outlives it and a card that later grows (expanded output, a popover) is
  * never cut off.
- *
- * Inside a running work card the entrance is `fade` instead: the step takes
- * its full height at once and only its paint fades in, together with any
- * step landing in the same moment. Growing from 0 there moved every row above
- * it once per call, which a fast model turns into constant motion.
  */
 const ToolStep: React.FC<{
   animate: boolean;
-  entrance: "grow" | "fade";
   stagger: ArrivalStagger;
   children: React.ReactNode;
-}> = ({ animate, entrance, stagger, children }) => {
-  // A step redrawn somewhere new (a work card opening) is not arriving.
-  const hold = useContext(ArrivalHoldContext);
-  const [arrival] = useState<{ kind: "grow"; delayMs: number } | { kind: "fade" } | null>(() => {
-    if (!animate || hold.current) return null;
-    return entrance === "fade" ? { kind: "fade" } : { kind: "grow", delayMs: stagger.next(performance.now()) };
-  });
-  const [entering, setEntering] = useState(arrival !== null);
-  const growing = entering && arrival?.kind === "grow";
-  const fading = entering && arrival?.kind === "fade";
+}> = ({ animate, stagger, children }) => {
+  const [delayMs] = useState<number | null>(() => (animate ? stagger.next(performance.now()) : null));
+  const [entering, setEntering] = useState(delayMs !== null);
   return (
     <div
       className="agw-tool-step"
-      data-enter={growing || undefined}
-      data-fade={fading || undefined}
+      data-enter={entering || undefined}
       style={
-        growing && arrival?.kind === "grow"
-          ? ({ "--agw-enter-delay": `${Math.round(arrival.delayMs)}ms` } as React.CSSProperties)
+        entering && delayMs !== null
+          ? ({ "--agw-enter-delay": `${Math.round(delayMs)}ms` } as React.CSSProperties)
           : undefined
       }
       onAnimationEnd={(e) => {
         if (
-          (e.animationName === "agw-tool-slide-in" &&
-            (e.target as Element).parentElement === e.currentTarget) ||
-          (e.animationName === "agw-tool-fade-in" && e.target === e.currentTarget)
+          e.animationName === "agw-tool-slide-in" &&
+          (e.target as Element).parentElement === e.currentTarget
         ) {
           setEntering(false);
         }
@@ -187,65 +166,6 @@ const LiveLine: React.FC<{
 };
 
 /**
- * One step's content: its card, behind its own error boundary.
- *
- * Memoised on the step's CALLS, compared one by one. `groupToolRuns` rebuilds
- * every run array whenever the group's `tools` change, which happens each time
- * a call arrives or a result lands anywhere in the run. Without this every card
- * in the run drew again for each of those events, so a 40-call run did 40 card
- * renders per event. With two chats streaming tool-heavy turns that was the
- * dropped frames. A call object keeps its identity until that call itself is
- * patched (see `upsertToolEvent`), so identity is the right comparison.
- */
-const RunView = React.memo(
-  function RunView({
-    run,
-    isActivelyStreaming,
-  }: {
-    run: ToolCall[];
-    isActivelyStreaming: boolean;
-  }) {
-    return (
-      // One step's card can fail to draw (a model sends an argument in a shape
-      // no card expects). That is this step's problem, not the transcript's: the
-      // row says so and the rest of the window stays up. Retried once the call's
-      // result arrives, in case the failure was a half-streamed argument.
-      <ErrorBoundary
-        where={`tool step ${run[0].name}`}
-        resetKey={run[0].result ?? run[0].arguments}
-        fallback={() => <StepRenderFailed name={run[0].name} />}
-      >
-        {isChecklistCall(run[0]) ? (
-          <ChecklistBeatCard calls={run} isActivelyStreaming={isActivelyStreaming} />
-        ) : mcpServerIdForCard(run[0]) !== null ? (
-          <McpServerLane calls={run} isActivelyStreaming={isActivelyStreaming} />
-        ) : (
-          <ToolCallCard call={run[0]} isActivelyStreaming={isActivelyStreaming} />
-        )}
-      </ErrorBoundary>
-    );
-  },
-  (prev, next) =>
-    prev.isActivelyStreaming === next.isActivelyStreaming &&
-    prev.run.length === next.run.length &&
-    prev.run.every((call, i) => call === next.run[i]),
-);
-
-/**
- * What a step shows when its card threw while drawing. The call itself ran
- * and its result is in the conversation; only the picture of it is missing.
- */
-const StepRenderFailed: React.FC<{ name: string }> = ({ name }) => (
-  <div className="agw-tool-render-failed" role="status">
-    <AgentIcon name="alert" size={13} />
-    <span>
-      Aurora could not draw this step (<code>{name}</code>). The call itself ran; the
-      error is in the log.
-    </span>
-  </div>
-);
-
-/**
  * Renders a run of consecutive tool calls. ALWAYS used for a tools row (even a
  * single call) so the cards never remount: once the run reaches
  * `TOOL_GROUP_MIN`, the collapsible header simply animates IN above the same,
@@ -279,14 +199,7 @@ const ToolGroupImpl: React.FC<{
   // separate rows split that one line in two the moment the model moved on,
   // and moved the reply. It folds to the same one-line header a longer run
   // does — live, and when the conversation is reopened later.
-  //
-  // Inside a running work card (`LiveWorkCardContext`) none of this applies
-  // unless the reader asked for it: the run is plain rows, no header, no cap,
-  // no fold, no live line. The card already bounds the work.
-  const inLiveCard = useInLiveWorkCard();
-  const groupInCard = useAgentThemeStore((s) => s.transcriptWorkCardGroupRuns);
-  const flat = inLiveCard && !groupInCard;
-  const grouped = !flat && (runs.length >= TOOL_GROUP_MIN || (liveLineOn && runs.length >= 2));
+  const grouped = runs.length >= TOOL_GROUP_MIN || (liveLineOn && runs.length >= 2);
 
   const stats = useMemo(() => {
     let done = 0;
@@ -337,7 +250,7 @@ const ToolGroupImpl: React.FC<{
   // Once it stops being the live edge it is drawn by the ordinary path below:
   // a single row stays that row, two or more fold to their header (`grouped`)
   // in the same place the line was, so the reply does not move.
-  const lineMode = !flat && liveLineOn && isActivelyStreaming && liveEdge && mode === null;
+  const lineMode = liveLineOn && isActivelyStreaming && liveEdge && mode === null;
   // How many steps the line has already shown. Those steps are not new when the
   // run is handed back to ordinary rows (or opened by its count), so they must
   // not play their entrance as if they had just arrived; a call that lands
@@ -485,7 +398,6 @@ const ToolGroupImpl: React.FC<{
             <ToolStep
               key={run[0].id}
               animate={animateArrivals && index >= shownOnLine}
-              entrance={flat ? "fade" : "grow"}
               stagger={stagger}
             >
               {renderRun(run)}

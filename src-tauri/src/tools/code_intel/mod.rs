@@ -1015,6 +1015,16 @@ A project with automatic indexing off needs Build in Settings → Agent → Code
                     "Could not search the code index: {e:#}. Use grep or structural code lookups."
                 ))
             })?;
+            // Returned passages are source the agent has now seen, so an edit
+            // built from one passes the read-before-change rule.
+            if let Some(results) = result.get("results").and_then(Value::as_array) {
+                crate::tools::file_workspace_search::read_gate::record_shown(
+                    ctx,
+                    results
+                        .iter()
+                        .filter_map(|r| r.get("path").and_then(Value::as_str)),
+                );
+            }
             return Ok(result.to_string());
         }
 

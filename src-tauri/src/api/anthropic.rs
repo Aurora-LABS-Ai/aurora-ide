@@ -112,6 +112,9 @@ impl StreamingApiClient for AnthropicAdapter {
                 Err(err) => return Err(map_reqwest_error(err)),
             }
         };
+        // A kenari reply carries how much of the plan is left; nothing else
+        // is read here, and other providers pass straight through.
+        crate::api::kenari::usage::record_reply(&self.config, response.headers());
 
         let status = response.status();
         if !status.is_success() {

@@ -27,6 +27,7 @@ import {
   type ToolIconSetId,
   type TranscriptReasoning,
   type TranscriptTextPace,
+  type WorkCardGlide,
   APPEARANCE_PREFS,
   defaultAppearancePrefs,
   hasAppearancePrefChanges,
@@ -67,6 +68,7 @@ export type {
   ToolIconSetId,
   TranscriptReasoning,
   TranscriptTextPace,
+  WorkCardGlide,
 } from "@/apps/agent/theme/appearance-prefs";
 export { DEFAULT_CONTRAST, DEFAULT_RAIL_GLIDE_MS } from "@/apps/agent/theme/appearance-prefs";
 
@@ -214,7 +216,8 @@ interface AgentThemeState extends AppearancePrefs {
   setTranscriptSmoothTools: (v: boolean) => void;
   setTranscriptLiveLine: (v: boolean) => void;
   setTranscriptWorkCards: (v: boolean) => void;
-  setTranscriptWorkCardGroupRuns: (v: boolean) => void;
+  setTranscriptWorkCardGlide: (v: WorkCardGlide) => void;
+  setTranscriptWorkCardGlideMs: (v: number) => void;
   setTranscriptReplyLayout: (v: boolean) => void;
   setTranscriptTextPace: (v: TranscriptTextPace) => void;
   setTranscriptTurnSummary: (v: boolean) => void;
@@ -326,7 +329,8 @@ export const useAgentThemeStore = create<AgentThemeState>()(
       setTranscriptSmoothTools: (v) => set({ transcriptSmoothTools: v }),
       setTranscriptLiveLine: (v) => set({ transcriptLiveLine: v }),
       setTranscriptWorkCards: (v) => set({ transcriptWorkCards: v }),
-      setTranscriptWorkCardGroupRuns: (v) => set({ transcriptWorkCardGroupRuns: v }),
+      setTranscriptWorkCardGlide: (v) => set({ transcriptWorkCardGlide: v }),
+      setTranscriptWorkCardGlideMs: (v) => set({ transcriptWorkCardGlideMs: Math.round(v) }),
       setTranscriptReplyLayout: (v) => set({ transcriptReplyLayout: v }),
       setTranscriptTextPace: (v) => set({ transcriptTextPace: v }),
       setTranscriptTurnSummary: (v) => set({ transcriptTurnSummary: v }),

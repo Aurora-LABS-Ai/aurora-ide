@@ -25,6 +25,7 @@ import {
   useAgentThemeStore,
   type TranscriptReasoning,
   type TranscriptTextPace,
+  type WorkCardGlide,
 } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { useAgentTypingStore } from "@/apps/agent/store/composer/useAgentTypingStore";
 import {
@@ -150,8 +151,10 @@ export const PreferencesSettings: React.FC = () => {
   const setTranscriptLiveLine = useAgentThemeStore((s) => s.setTranscriptLiveLine);
   const transcriptWorkCards = useAgentThemeStore((s) => s.transcriptWorkCards);
   const setTranscriptWorkCards = useAgentThemeStore((s) => s.setTranscriptWorkCards);
-  const transcriptWorkCardGroupRuns = useAgentThemeStore((s) => s.transcriptWorkCardGroupRuns);
-  const setTranscriptWorkCardGroupRuns = useAgentThemeStore((s) => s.setTranscriptWorkCardGroupRuns);
+  const workCardGlide = useAgentThemeStore((s) => s.transcriptWorkCardGlide);
+  const setWorkCardGlide = useAgentThemeStore((s) => s.setTranscriptWorkCardGlide);
+  const workCardGlideMs = useAgentThemeStore((s) => s.transcriptWorkCardGlideMs);
+  const setWorkCardGlideMs = useAgentThemeStore((s) => s.setTranscriptWorkCardGlideMs);
   const transcriptReplyLayout = useAgentThemeStore((s) => s.transcriptReplyLayout);
   const setTranscriptReplyLayout = useAgentThemeStore((s) => s.setTranscriptReplyLayout);
   const transcriptTextPace = useAgentThemeStore((s) => s.transcriptTextPace);
@@ -983,11 +986,17 @@ export const PreferencesSettings: React.FC = () => {
 
         <SettingsRow
           label="Keep the question on screen"
-          hint="Pin your message to the top of the reply while the answer scrolls underneath it, so you can still see what you asked at the bottom of a long turn. The next question takes its place."
+          disabled={transcriptWorkCards}
+          hint={
+            transcriptWorkCards
+              ? "Turn off Work cards to use this. With Work cards on, your message sits at the top of its reply, slides away while the reply scrolls down, and comes back when you scroll up or the reply finishes."
+              : "Pin your message to the top of the reply while the answer scrolls underneath it, so you can still see what you asked at the bottom of a long turn. The next question takes its place."
+          }
         >
           <AgwSwitch
             checked={transcriptStickyUser}
             onChange={setTranscriptStickyUser}
+            disabled={transcriptWorkCards}
             ariaLabel="Pin the user message to the top while its reply scrolls"
           />
         </SettingsRow>
@@ -1055,18 +1064,51 @@ export const PreferencesSettings: React.FC = () => {
 
         {transcriptWorkCards && (
           <SettingsRow
-            label="Group tool calls while working"
+            label="Work card scrolling"
+            disabled={reduceMotion}
             hint={
-              transcriptWorkCardGroupRuns
-                ? "Inside a running work card, tool calls group the way they do in the transcript: a “N calls” line appears at the third call, and the run folds to it once the agent moves on."
-                : "Inside a running work card, every tool call is its own row that fades in where it lands, nothing folds until the work is done, and the card glides to its newest step. Calmer with fast models."
+              reduceMotion
+                ? "Steps appear at once because Reduce motion is on."
+                : workCardGlide === "spring"
+                  ? "While the agent works, the steps glide up as new ones arrive and keep their speed from one step to the next, so a fast model moves as one smooth climb."
+                  : workCardGlide === "steady"
+                    ? "The steps move up at an even speed, like a teleprompter. The calmest; in a burst the newest step can wait a moment below the edge."
+                    : "Each new step pushes the others up at once, with no glide."
             }
           >
-            <AgwSwitch
-              checked={transcriptWorkCardGroupRuns}
-              onChange={setTranscriptWorkCardGroupRuns}
-              ariaLabel="Group tool calls inside a running work card"
+            <AgwSegmented<WorkCardGlide>
+              value={workCardGlide}
+              ariaLabel="How a running work card scrolls"
+              options={[
+                { value: "spring", label: "Glide" },
+                { value: "steady", label: "Steady" },
+                { value: "off", label: "Instant" },
+              ]}
+              onChange={setWorkCardGlide}
             />
+          </SettingsRow>
+        )}
+
+        {transcriptWorkCards && workCardGlide !== "off" && (
+          <SettingsRow
+            label="Glide length"
+            disabled={reduceMotion}
+            hint="How long the steps take to settle after one arrives. Shorter keeps the newest step closer to the edge; longer is smoother. Default 0.34s."
+          >
+            <div className="agw-appr-range-wrap">
+              <input
+                type="range"
+                className="agw-appr-range"
+                min={150}
+                max={1000}
+                step={10}
+                value={workCardGlideMs}
+                disabled={reduceMotion}
+                onChange={(e) => setWorkCardGlideMs(Number(e.target.value))}
+                aria-label="Glide length"
+              />
+              <span className="agw-appr-range-val">{(workCardGlideMs / 1000).toFixed(2)}s</span>
+            </div>
           </SettingsRow>
         )}
 

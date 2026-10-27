@@ -13,13 +13,13 @@
 //! `replace_all`, rollback of a failed disk write, and the Review-panel diff payload
 //! all behave exactly as before.
 //!
-//! ## Read-before-edit guard
+//! ## Read before you change
 //!
-//! A surgical edit matches an exact `old_string` the agent must have
-//! seen. So `file_edit` refuses to touch a file the agent never read
-//! (or wrote) this session — see [`super::read_tracker`]. The refusal
-//! is a graceful `success:false` with a corrective hint, so the model
-//! simply reads the file and retries rather than hard-failing the turn.
+//! `file_edit` refuses to touch an existing file this conversation has not
+//! seen any of — a `file_read` window, a `grep` hit or a `code` passage all
+//! count. See [`super::read_gate`]. The refusal is a graceful `success:false`
+//! naming the file's size, so the model reads and retries rather than
+//! hard-failing the turn.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -100,10 +100,11 @@ impl ToolExecutor for FileEditTool {
                           Every edit matches against its file's original snapshot. An edit that \
                           fails is not applied and the others are: the result lists each failed \
                           edit by number with the reason, so send only those again. old_string must match \
-                          exactly and be unique unless replace_all=true. Copy old_string from text \
-                          you have actually seen (file_read, or a search result that returned the \
-                          line). replace_all=true additionally REQUIRES that the file was read this \
-                          session, because it rewrites occurrences you have not seen. When no match \
+                          exactly and be unique unless replace_all=true. An existing file must have \
+                          been seen in this conversation first: a file_read of any part, or a grep \
+                          or code search that returned its lines. Copy old_string from that text. \
+                          replace_all=true additionally REQUIRES a complete read of the current \
+                          file, because it rewrites occurrences you have not seen. When no match \
                           is found the failure names the closest text in the file and the exact \
                           characters that differ — correct those and send old_string again, rather \
                           than re-reading the file and guessing a second time. A successful \
@@ -230,12 +231,17 @@ impl ToolExecutor for FileEditTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        // `replace_all` is the one form the exact-match engine cannot police:
-        // it waives the uniqueness check, so a short pattern rewrites every
-        // occurrence — including ones in parts of the file the agent has never
-        // seen. That stays refused up front. See `blind_replace_all_json`.
-        if replace_all && !super::read_tracker::was_seen(&ctx.thread_id, &resolved_str) {
-            return Ok(blind_replace_all_json(&raw_path, &resolved_str));
+        // Read before you change — `read_gate`. This also covers `replace_all`,
+        // which used to be the only form gated here.
+        if let Some(refusal) = super::read_gate::refuse_unread(
+            ctx,
+            super::read_gate::Change::Edit,
+            &raw_path,
+            &resolved_str,
+        )
+        .await
+        {
+            return Ok(refusal.to_string());
         }
 
         let mut response = apply_search_replace(ApplySearchReplaceRequest {
@@ -291,21 +297,6 @@ impl ToolExecutor for FileEditTool {
                 );
             }
             impact = super::index_note_after_write(ctx, &resolved_str);
-        }
-
-        // The text was not there AND the agent never read this file — now the
-        // unread file is the actionable cause, so say that instead of "could
-        // not find the specified text", which invites another blind guess.
-        // A near match beats that advice: it names the fix outright (F32).
-        if matches!(
-            response,
-            SearchReplaceResponse::NotFound {
-                diagnosis: None,
-                ..
-            }
-        ) && !super::read_tracker::was_seen(&ctx.thread_id, &resolved_str)
-        {
-            return Ok(needs_read_json(&raw_path, &resolved_str));
         }
 
         let _ = Path::new("");
@@ -485,27 +476,10 @@ impl FileEditTool {
 
         let multi = groups.len() > 1;
 
-        // Read-before-edit, narrowed to the case where it protects something.
-        //
-        // It used to gate EVERY edit, and that produced false refusals on work
-        // the agent had done correctly: it would locate the exact line with
-        // `grep` or `code`, batch an edit across three files, and have the whole
-        // batch declined because one of them was never opened with `file_read` —
-        // even though the matched text came back in the search result it was
-        // looking at. The tracker cannot see any of the other legitimate ways
-        // the text reaches the agent (search hits, `code` output, an earlier
-        // diff, the user pasting it), so as a precondition it will always refuse
-        // some correct edits.
-        //
-        // What actually keeps a blind edit safe is the engine, not the tracker:
-        // `old_string` must match exactly and be unique, so a guessed edit fails
-        // to match and is not applied.
-        // The one exception is `replace_all`, which waives uniqueness and so can
-        // rewrite occurrences nobody has seen — that stays gated.
-        //
-        // For everything else the check moves to phase 1, where an unread file
-        // becomes the DIAGNOSIS for a match that failed rather than a barrier in
-        // front of one that would have succeeded.
+        // Read before you change — `read_gate`. A file this chat has not seen
+        // costs its own edits only; the other files in the call still apply.
+        // `grep` and `code` search hits count as seen, which is what the
+        // 2026-08-11 narrowing of the old gate was really asking for.
         //
         // Phase 1 — plan every file against its original snapshot. An edit that
         // fails is set aside with its own diagnosis and the file is planned
@@ -519,22 +493,25 @@ impl FileEditTool {
         for g in &groups {
             let mut items = g.items.clone();
             let mut numbers = g.numbers.clone();
-            if items.iter().any(|item| item.replace_all)
-                && !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved)
+            if let Some(mut refusal) = super::read_gate::refuse_unread(
+                ctx,
+                super::read_gate::Change::Edit,
+                &g.raw,
+                &g.resolved,
+            )
+            .await
             {
-                let rendered = if multi {
-                    render_multi_blind_replace_all(&g.raw, &g.resolved)
-                } else {
-                    blind_replace_all_json(&g.raw, &g.resolved)
-                };
-                take_where(&mut items, &mut numbers, |item| item.replace_all)
-                    .into_iter()
-                    .for_each(|number| {
-                        failed.push(FailedEdit {
-                            number,
-                            rendered: rendered.clone(),
-                        })
+                if multi {
+                    refusal["multiFile"] = json!(true);
+                }
+                let rendered = refusal.to_string();
+                for number in numbers.drain(..) {
+                    failed.push(FailedEdit {
+                        number,
+                        rendered: rendered.clone(),
                     });
+                }
+                items.clear();
             }
             while !items.is_empty() {
                 let resp = apply_multi_search_replace(ApplyMultiSearchReplaceRequest {
@@ -575,35 +552,16 @@ impl FileEditTool {
                 // model counts its `edits` array. Speak the model's numbers
                 // everywhere in the message (dogfood F32).
                 let resp = renumbered(resp, &numbers);
-                // Text missing from a file the agent never read — that is the
-                // cause worth reporting, and the recovery is one `file_read`
-                // rather than another guess at the surrounding context. When the
-                // engine found a near match anyway, that is the better answer.
-                let rendered = if matches!(
-                    resp,
-                    SearchReplaceResponse::NotFound {
-                        diagnosis: None,
-                        ..
-                    }
-                ) && !super::read_tracker::was_seen(&ctx.thread_id, &g.resolved)
-                {
+                let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
+                let sent: Vec<&str> = items.iter().map(|item| item.old_string.as_str()).collect();
+                let rendered = with_line_number_hint(
                     if multi {
-                        render_multi_needs_read(&g.raw, &g.resolved)
+                        render_multi_failure(&g.raw, &g.resolved, resp, window)
                     } else {
-                        needs_read_json(&g.raw, &g.resolved)
-                    }
-                } else {
-                    let window = super::read_tracker::last_window(&ctx.thread_id, &g.resolved);
-                    let sent: Vec<&str> = items.iter().map(|item| item.old_string.as_str()).collect();
-                    with_line_number_hint(
-                        if multi {
-                            render_multi_failure(&g.raw, &g.resolved, resp, window)
-                        } else {
-                            render_response(&g.raw, &g.resolved, resp, true, None, window)
-                        },
-                        &sent,
-                    )
-                };
+                        render_response(&g.raw, &g.resolved, resp, true, None, window)
+                    },
+                    &sent,
+                );
                 failed.push(FailedEdit {
                     number: numbers[at],
                     rendered,
@@ -1075,86 +1033,6 @@ fn describe_shape(value: &Value) -> String {
         Value::Array(items) => format!("an array of {}", items.len()),
         Value::Object(fields) => format!("an object with {} field(s)", fields.len()),
     }
-}
-
-/// Diagnosis for a match that failed on a file the agent never read.
-///
-/// Not a precondition any more — by the time this renders, the edit was
-/// attempted and the text genuinely was not there. Never having read the file
-/// is the most likely reason, and it is the one with a concrete next step, so
-/// it leads. Saying only "could not find the specified text" sends the agent
-/// back to guess at indentation it has never seen.
-fn needs_read_json(raw_path: &str, resolved_str: &str) -> String {
-    serde_json::to_string(&json!({
-        "success": false,
-        "error": format!(
-            "Could not find that text in {raw_path}, which has not been read this session — \
-             so the text being matched was never seen. That edit was not applied."
-        ),
-        "path": raw_path,
-        "fullPath": resolved_str,
-        "hint": "Call file_read on this path, then retry the edit with text copied from it.",
-        "needsRead": true,
-    }))
-    .unwrap()
-}
-
-/// Multi-file variant of the same diagnosis — names the offending file and
-/// says that this one edit was not applied.
-fn render_multi_needs_read(raw_path: &str, resolved_str: &str) -> String {
-    serde_json::to_string(&json!({
-        "success": false,
-        "multiFile": true,
-        "error": format!(
-            "Could not find that text in {raw_path}, which has not been read this session — \
-             so the text being matched was never seen. That edit was not applied."
-        ),
-        "path": raw_path,
-        "fullPath": resolved_str,
-        "hint": "Call file_read on this path, then send the edit again with text copied from it.",
-        "needsRead": true,
-    }))
-    .unwrap()
-}
-
-/// The one read-before-edit refusal that remains a PRECONDITION.
-///
-/// `replace_all` waives the uniqueness requirement, so it is the only form that
-/// can rewrite occurrences the agent has never laid eyes on. Refusing it on an
-/// unread file is not about trusting the match — the match may well be right —
-/// it is that neither the agent nor the user can know how many places it hits.
-fn blind_replace_all_json(raw_path: &str, resolved_str: &str) -> String {
-    serde_json::to_string(&json!({
-        "success": false,
-        "error": format!(
-            "replace_all on {raw_path} needs the file read first: it rewrites EVERY occurrence, \
-             including ones outside the part you have seen. That edit was not applied."
-        ),
-        "path": raw_path,
-        "fullPath": resolved_str,
-        "hint": "Either call file_read on this path and retry, or drop replace_all and match a \
-                 unique string instead.",
-        "needsRead": true,
-    }))
-    .unwrap()
-}
-
-/// Multi-file variant of the `replace_all` precondition.
-fn render_multi_blind_replace_all(raw_path: &str, resolved_str: &str) -> String {
-    serde_json::to_string(&json!({
-        "success": false,
-        "multiFile": true,
-        "error": format!(
-            "replace_all on {raw_path} needs the file read first: it rewrites EVERY occurrence, \
-             including ones outside the part you have seen. That edit was not applied."
-        ),
-        "path": raw_path,
-        "fullPath": resolved_str,
-        "hint": "Either call file_read on this path and retry, or drop replace_all and match a \
-                 unique string instead.",
-        "needsRead": true,
-    }))
-    .unwrap()
 }
 
 /// Render one failed edit of a multi-file batch. That edit was not applied;
@@ -2175,12 +2053,11 @@ mod tests {
         )))
     }
 
-    /// The false refusal this guard used to produce. The agent can obtain exact
-    /// text from a search hit or `code` output, neither of which the read
-    /// tracker can observe — so an exact, unique match on an unread file is a
-    /// legitimate edit and must apply.
+    /// Read before you change (`read_gate`): an existing file nobody in this
+    /// chat has seen is not edited, even when the text happens to match. The
+    /// refusal states the file's size, which is what a blind caller lacks.
     #[tokio::test]
-    async fn edits_an_unread_file_when_the_text_matches_exactly() {
+    async fn an_unread_file_is_refused_even_when_the_text_matches() {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("unseen.txt");
         std::fs::write(&file, "data\n").unwrap();
@@ -2194,12 +2071,42 @@ mod tests {
             .await
             .expect("ok");
         let parsed: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["success"], true);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "x\n");
+        assert_eq!(parsed["success"], false, "{out}");
+        assert_eq!(parsed["needsRead"], true);
+        assert_eq!(parsed["lines"], 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "data\n");
     }
 
-    /// When the match genuinely fails, never having read the file is the
-    /// actionable cause and must be what the result says.
+    /// Any part counts: one window of a long file is enough to edit it.
+    #[tokio::test]
+    async fn a_partial_read_is_enough_to_edit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("long.md");
+        let body: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(&file, &body).unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        let canonical = dunce::canonicalize(&file).unwrap();
+        super::super::read_tracker::record_window(
+            &ctx.thread_id,
+            &canonical.to_string_lossy(),
+            1,
+            30,
+            200,
+        );
+        let out = edit_tool()
+            .execute(
+                serde_json::json!({ "path": "long.md", "old_string": "line 150\n", "new_string": "LINE 150\n" }),
+                &ctx,
+            )
+            .await
+            .expect("ok");
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["success"], true, "{out}");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("LINE 150\n"));
+    }
+
+    /// The refusal arrives before any matching, so a missing string on an
+    /// unread file is reported as unread, not as a failed match.
     #[tokio::test]
     async fn an_unread_file_is_named_as_the_cause_when_the_text_is_missing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2248,8 +2155,7 @@ mod tests {
         assert!(parsed.get("needsRead").is_none());
     }
 
-    /// The one precondition that survives: `replace_all` waives uniqueness, so
-    /// on an unread file it can rewrite occurrences nobody has seen.
+    /// `replace_all` on an unread file is refused like any other edit.
     #[tokio::test]
     async fn replace_all_still_requires_a_prior_read() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2271,14 +2177,15 @@ mod tests {
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["needsRead"], true);
-        assert!(parsed["error"].as_str().unwrap().contains("replace_all"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "a a a\n");
     }
 
-    /// The exact shape that was reported: three files edited in one batch, one
-    /// of them located by search rather than opened. The batch must apply.
+    /// The 2026-08-11 report that narrowed the old gate: a batch across files,
+    /// one of them located with `grep` rather than opened. A grep hit is a
+    /// read, so the batch applies — through the real grep tool, not a seeded
+    /// tracker.
     #[tokio::test]
-    async fn a_batch_applies_when_only_some_targets_were_read() {
+    async fn a_batch_applies_when_a_target_was_found_by_grep() {
         let tmp = tempfile::tempdir().unwrap();
         let read_file = tmp.path().join("read.ts");
         let searched_file = tmp.path().join("searched.css");
@@ -2286,6 +2193,12 @@ mod tests {
         std::fs::write(&searched_file, ".rule { color: red }\n").unwrap();
         let ctx = ctx_for(Some(tmp.path().to_path_buf()));
         mark_read(&ctx, &read_file); // only this one was opened
+        let grep: Arc<dyn ToolExecutor> = Arc::new(super::super::grep::GrepTool);
+        let hits = grep
+            .execute(serde_json::json!({ "pattern": "color: red" }), &ctx)
+            .await
+            .expect("grep ran");
+        assert!(hits.contains("searched.css"), "{hits}");
 
         let out = edit_tool()
             .execute(
@@ -2307,6 +2220,35 @@ mod tests {
             std::fs::read_to_string(&searched_file).unwrap(),
             ".rule { color: blue }\n"
         );
+    }
+
+    /// An unread file in a batch costs its own edits only: the read file is
+    /// still edited, the unread one is untouched and reported.
+    #[tokio::test]
+    async fn an_unread_file_in_a_batch_costs_only_its_own_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let read_file = tmp.path().join("seen.ts");
+        let unread_file = tmp.path().join("unseen.ts");
+        std::fs::write(&read_file, "alpha\n").unwrap();
+        std::fs::write(&unread_file, "beta\n").unwrap();
+        let ctx = ctx_for(Some(tmp.path().to_path_buf()));
+        mark_read(&ctx, &read_file);
+
+        let out = edit_tool()
+            .execute(
+                serde_json::json!({
+                    "edits": [
+                        { "path": "seen.ts", "old_string": "alpha", "new_string": "ALPHA" },
+                        { "path": "unseen.ts", "old_string": "beta", "new_string": "BETA" }
+                    ]
+                }),
+                &ctx,
+            )
+            .await
+            .expect("ok");
+        assert_eq!(std::fs::read_to_string(&read_file).unwrap(), "ALPHA\n", "{out}");
+        assert_eq!(std::fs::read_to_string(&unread_file).unwrap(), "beta\n", "{out}");
+        assert!(out.contains("has not been read in this chat"), "{out}");
     }
 
     fn prepared(path: &str, original: &str, new_content: &str) -> PreparedEdit {

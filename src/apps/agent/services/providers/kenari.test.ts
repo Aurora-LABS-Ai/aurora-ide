@@ -6,92 +6,111 @@ vi.mock("@/kernel/lib/ipc/runtime", () => ({ auroraInvoke: invoke }));
 
 import {
   fetchKenariUsage,
+  fmtRupiah,
   kenariResetLabel,
-  kenariSessionStatus,
   KENARI_WINDOWS,
 } from "@/apps/agent/services/providers/kenari";
 
 /**
- * What crosses the IPC boundary — `commands/kenari.rs`'s `KenariUsage`, not
- * kenari's own `/api/subscription` body.
+ * What crosses the IPC boundary — `api/kenari/usage.rs`'s `KenariUsage`, not
+ * kenari's own `/v1/account/quota` body. Rust turns `resets_at` (RFC 3339)
+ * into a countdown and an instant, and judges `near_limit` against the
+ * account's `alert_pct`, so a fixture copied from the wire would pass through
+ * this layer reading `null` for both while looking correct.
  *
- * The distinction is the point. Rust flattens `web_search: {allowance,
- * used_today}` into two sibling fields, so a fixture copied from the wire
- * passes through this layer reading `null` for both while looking correct. It
- * did, the first time this test was written.
- *
- * Values are from a live Studio account on 2026-08-23.
+ * Values are from a live Studio account on 2026-10-26.
  */
 const STUDIO = {
   plan_name: "Studio",
-  plan_status: "active",
   window_5h: null,
-  window_week: { used_frac: 0.20203278766666666, resets_in_secs: 399967 },
-  window_month: null,
-  web_search_allowance: 200,
-  web_search_used_today: 0,
-  catalog_this_cycle_micro_idr: 235069296880,
-  market_this_cycle_micro_idr: 299652167845,
+  window_week: {
+    used_frac: 0.0088,
+    resets_in_secs: 511_359,
+    resets_at_ms: 1_793_499_699_000,
+    budget_rp: 300_000,
+    used_rp: 2_636,
+    remaining_rp: 297_364,
+  },
+  window_month: {
+    used_frac: 0.0022,
+    resets_in_secs: 2_498_559,
+    resets_at_ms: 1_795_486_899_000,
+    budget_rp: 1_200_000,
+    used_rp: 2_636,
+    remaining_rp: 1_197_364,
+  },
+  coupon: null,
+  alert_pct: 80,
   near_limit: false,
+  fetched_at_ms: 1_792_988_340_000,
 };
 
 beforeEach(() => invoke.mockReset());
 
 describe("kenari plan usage", () => {
-  it("reads a fraction as a fraction", async () => {
+  it("asks with the key and reads a fraction as a fraction", async () => {
     invoke.mockResolvedValue(STUDIO);
-    const usage = await fetchKenariUsage();
-    // The wire sends 0.202, not 20.2. Treated as a percent it would draw a
-    // 0.2%-full bar over a fifth-spent week — the failure this guards.
-    expect(usage.windowWeek?.usedFrac).toBeCloseTo(0.20203, 5);
-    expect(usage.windowWeek?.resetsInSecs).toBe(399967);
+    const usage = await fetchKenariUsage("kn-test");
+    expect(invoke).toHaveBeenCalledWith("kenari_usage", { apiKey: "kn-test" });
+    // The wire sends 0.0088, not 0.88. Treated as a percent it would draw the
+    // wrong bar — the failure this guards.
+    expect(usage.windowWeek?.usedFrac).toBeCloseTo(0.0088, 6);
+    expect(usage.windowWeek?.resetsInSecs).toBe(511_359);
+    expect(usage.windowWeek?.remainingRp).toBe(297_364);
+    expect(usage.fetchedAtMs).toBe(1_792_988_340_000);
   });
 
-  it("leaves a window the plan does not set absent", async () => {
+  it("leaves a window the plan does not cap absent", async () => {
     invoke.mockResolvedValue(STUDIO);
-    const usage = await fetchKenariUsage();
-    // Studio caps the week and nothing else. Drawn from a null these would be
-    // two bars reading "100% spent" over limits that do not exist.
+    const usage = await fetchKenariUsage("kn-test");
+    // Studio caps the week and the month and nothing else. Drawn from a null
+    // this would be a bar reading "100% spent" over a limit that does not exist.
     expect(usage.window5h).toBeNull();
-    expect(usage.windowMonth).toBeNull();
+    expect(usage.windowMonth).not.toBeNull();
   });
 
   it("keeps a window inside its own track", async () => {
     invoke.mockResolvedValue({ ...STUDIO, window_week: { used_frac: 1.35 } });
-    const usage = await fetchKenariUsage();
+    const usage = await fetchKenariUsage("kn-test");
     expect(usage.windowWeek?.usedFrac).toBe(1);
     // No countdown on the wire means no countdown drawn, rather than "resets
     // in 1m" invented from a missing field.
     expect(kenariResetLabel(usage.windowWeek)).toBeNull();
   });
 
-  it("carries the plan and the web-search allowance", async () => {
-    invoke.mockResolvedValue(STUDIO);
-    const usage = await fetchKenariUsage();
+  it("carries the plan, the threshold and a coupon", async () => {
+    invoke.mockResolvedValue({
+      ...STUDIO,
+      near_limit: true,
+      coupon: {
+        name: "Launch",
+        used_rp: 1000,
+        remaining_rp: null,
+        expires_at_ms: 1_800_000_000_000,
+        scope_models: ["glm-5.3", 7],
+      },
+    });
+    const usage = await fetchKenariUsage("kn-test");
     expect(usage.planName).toBe("Studio");
-    // Metered and reset separately from the quota windows, so this has to
-    // survive the boundary on its own.
-    expect(usage.webSearchAllowance).toBe(200);
-    expect(usage.webSearchUsedToday).toBe(0);
-    expect(usage.nearLimit).toBe(false);
+    expect(usage.alertPct).toBe(80);
+    expect(usage.nearLimit).toBe(true);
+    expect(usage.coupon?.name).toBe("Launch");
+    expect(usage.coupon?.remainingRp).toBeNull();
+    expect(usage.coupon?.scopeModels).toEqual(["glm-5.3"]);
   });
 
   it("says how long the window has left the way the other plans do", () => {
     // Two units, matching Codex and OpenCode — a plan resetting "in 4d 15h"
     // here and "4d" elsewhere reads as two different numbers.
-    expect(kenariResetLabel({ usedFrac: 0.2, resetsInSecs: 399967 })).toBe("resets in 4d 15h");
-    expect(kenariResetLabel({ usedFrac: 1, resetsInSecs: 0 })).toBe("resets now");
+    const win = { usedFrac: 0.2, resetsAtMs: null, budgetRp: null, usedRp: null, remainingRp: null };
+    expect(kenariResetLabel({ ...win, resetsInSecs: 399_967 })).toBe("resets in 4d 15h");
+    expect(kenariResetLabel({ ...win, usedFrac: 1, resetsInSecs: 0 })).toBe("resets now");
     expect(kenariResetLabel(null)).toBeNull();
   });
 
-  it("reports no sign-in as a state rather than throwing", async () => {
-    // Rust refuses when there is no session, and the card has to render that
-    // as an offer to connect — not as an unhandled rejection.
-    // Scoped to this one call on purpose: a rejecting implementation left
-    // installed is invoked again after the test body and fails the run.
-    invoke.mockRejectedValueOnce(new Error("Sign in to kenari to see plan usage."));
-    const status = await kenariSessionStatus();
-    expect(status).toEqual({ connected: false, email: null, savedAt: null });
+  it("writes Rupiah the way kenari's pages do", () => {
+    expect(fmtRupiah(297_364)).toBe("Rp 297,364");
+    expect(fmtRupiah(0)).toBe("Rp 0");
   });
 
   it("orders the windows by how soon they bite", () => {

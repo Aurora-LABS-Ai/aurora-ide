@@ -29,7 +29,6 @@ import { GLIDE } from "@/apps/agent/lib/motion/glide";
 import { AgentIcon } from "@/apps/agent/shared/AgentIcon";
 import { useAgentThemeStore } from "@/apps/agent/store/ui/useAgentThemeStore";
 import { formatWorkedDuration } from "@/apps/agent/components/conversation/timeline";
-import { useInLiveWorkCard, useInWorkCardWindow } from "@/apps/agent/components/conversation/work-card-context";
 
 const AgentThinkingBlockImpl: React.FC<{
   content: string;
@@ -38,7 +37,13 @@ const AgentThinkingBlockImpl: React.FC<{
   startedAt?: number;
   /** Settled wall-clock for the segment. Undefined = never measured. */
   durationMs?: number;
-}> = ({ content, isGenerating = false, startedAt, durationMs }) => {
+  /**
+   * Never open on its own; a click still opens it. Set inside a work card,
+   * where a thought is one line of a step list: opening while written and
+   * shutting when done moved every row above it twice (Alvan, 2026-10-24).
+   */
+  folded?: boolean;
+}> = ({ content, isGenerating = false, startedAt, durationMs, folded = false }) => {
   // Three states, not two. `null` follows the automatic behaviour (open while
   // reasoning, shut once it settles); `true`/`false` is the user's own choice
   // and OUTRANKS it. A plain boolean OR'd with `isGenerating` made the toggle
@@ -48,16 +53,7 @@ const AgentThinkingBlockImpl: React.FC<{
   // Transcript → Reasoning "Folded" drops the auto-open; the header still
   // shimmers and ticks, and a click still opens it.
   const autoOpen = useAgentThemeStore((s) => s.transcriptReasoning === "live");
-  // Inside a work card's running window the row is one line of a step list;
-  // opening the reasoning there filled the window with it (`work-card-context`).
-  const inWindow = useInWorkCardWindow();
-  // Inside an OPEN work card while the turn runs, the same: a thought that
-  // opened while written and snapped shut when done moved every row above it
-  // twice, under a panel pinned to its newest step (Alvan, 2026-10-24; probe
-  // `aurora-work-card-click-designs.html`, 06). It stays on its line; a click
-  // still opens it. Outside a work card nothing here changes.
-  const inLiveCard = useInLiveWorkCard();
-  const expanded = override ?? (autoOpen && isGenerating && !inWindow && !inLiveCard);
+  const expanded = override ?? (autoOpen && isGenerating && !folded);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // A clock, not derived state: the interval only advances `now` and the

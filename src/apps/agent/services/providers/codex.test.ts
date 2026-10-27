@@ -58,6 +58,17 @@ describe("codexCreditsLabel", () => {
     ).toBe("120");
   });
 
+  /** An account that never bought credits: the backend says no credits and a
+   *  zero balance. "Credits 0" there read as being broke (2026-10-26). */
+  it("says nothing for no credits and a zero balance", () => {
+    expect(
+      codexCreditsLabel({ hasCredits: false, unlimited: false, balance: "0" }),
+    ).toBeNull();
+    expect(
+      codexCreditsLabel({ hasCredits: false, unlimited: false, balance: "0.00" }),
+    ).toBeNull();
+  });
+
   it("passes through a balance the backend already worded", () => {
     expect(
       codexCreditsLabel({ hasCredits: true, unlimited: false, balance: "$1,000.00" }),

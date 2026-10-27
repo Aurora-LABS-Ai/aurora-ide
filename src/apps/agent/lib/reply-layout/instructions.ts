@@ -80,7 +80,13 @@ todo | Publish | After checks and signing`,
  *
  * Kept from earlier measurements (2026-10-15/16): a named moment (the final
  * summary of multi-step work), since without one models skipped blocks.
+ *
+ * 2026-10-27: "lays out its scannable parts in a fence" plus a guide that
+ * listed markdown as "prose, headings and code" read as "lists and tables
+ * belong in the fence, the rest is paragraphs". A DeepSeek architecture
+ * summary came back as one fence and 22 paragraphs averaging 467 characters.
+ * The fence now ADDS parts; structured markdown stays around it.
  */
 export const REPLY_LAYOUT_INSTRUCTIONS = `## Reply layout
-Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, lays out its scannable parts in an \`aurora-ui\` fence.
+Short answers stay plain markdown. A longer answer, and always the final summary of multi-step work, adds an \`aurora-ui\` fence for the parts it draws better than markdown (a diagram, a flow, stats, a checklist). Everything else stays structured markdown.
 Never write one from memory: call \`canvas_guidelines\` with \`topic: "reply-layout"\` first unless its text is already in this conversation, then follow it exactly.`;

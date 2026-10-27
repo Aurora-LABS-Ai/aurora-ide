@@ -67,6 +67,7 @@ import {
   type DeepSeekBalanceSnapshot,
 } from "./deepseek";
 import {
+  fmtRupiah,
   kenariResetLabel,
   KENARI_WINDOWS,
   type KenariUsage,
@@ -287,28 +288,27 @@ export function kenariPlanView(usage: KenariUsage): PlanView {
   for (const { key, label } of KENARI_WINDOWS) {
     const win = usage[key];
     if (!win) continue;
-    // A FRACTION on the wire (0.202), not a percent.
-    limits.push(quotaLine(label, win.usedFrac * 100, kenariResetLabel(win)));
+    // A FRACTION on the wire (0.0088), not a percent. The caption carries the
+    // Rupiah left when the endpoint gave it: on kenari the window is a sum of
+    // money, and "Rp 297,364 left" is what someone budgets a long job against.
+    const parts = [
+      win.remainingRp != null ? `${fmtRupiah(win.remainingRp)} left` : null,
+      kenariResetLabel(win),
+    ].filter((p): p is string => p !== null);
+    limits.push(quotaLine(label, win.usedFrac * 100, parts.length ? parts.join(" · ") : null));
   }
-  // Metered and reset separately from the plan windows, so having quota left
-  // says nothing about this. Counted in searches, because "18% left of 200" is
-  // arithmetic and "37 left" is the number someone acts on.
-  const allowance = usage.webSearchAllowance ?? 0;
-  if (allowance > 0) {
-    const used = usage.webSearchUsedToday ?? 0;
-    const spent = clamp((used / allowance) * 100);
-    limits.push({
-      name: "Web searches",
-      fillPercent: spent,
-      value: `${Math.max(0, allowance - used)} of ${allowance} left`,
-      caption: "resets daily",
-      tone: limitTone(spent),
-    });
-  }
+  // A coupon is spent apart from the plan, so it is a balance line, not a
+  // window: what is left on it, or that it has no limit.
+  const coupon = usage.coupon;
   return {
     title: usage.planName ? `${usage.planName} plan` : "kenari plan",
     limits,
-    balance: null,
+    balance: coupon
+      ? {
+          label: coupon.name ? `Coupon · ${coupon.name}` : "Coupon",
+          value: coupon.remainingRp != null ? `${fmtRupiah(coupon.remainingRp)} left` : "No limit",
+        }
+      : null,
     notice: null,
     flag: usage.nearLimit ? "near limit" : null,
   };

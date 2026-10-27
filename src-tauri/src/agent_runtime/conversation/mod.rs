@@ -78,9 +78,9 @@ use crate::api::ReasoningReplay;
 /// executed tools through an open-stream bridge.
 const MAX_STREAM_ATTEMPTS: u32 = 6;
 
-/// One free request rebuild after an endpoint teaches Aurora a lower context
-/// ceiling. The rebuild uses deterministic API-view trimming; it never starts
-/// another paid summary request from the overflow error path.
+/// Compactions a turn runs after the provider rejects a request as over its
+/// context window, each followed by one rebuilt request (Claude Code's
+/// reactive compact). Past this the overflow error reaches the user.
 const MAX_OVERFLOW_REBUILDS: u32 = 1;
 
 /// Base backoff before re-issuing a failed model call, doubling per attempt:
@@ -186,22 +186,16 @@ pub struct RuntimeConfig {
     /// per-turn `AgentChatRequest::temperature` override this.
     pub default_temperature: Option<f32>,
 
-    /// Provider's advertised context window for the chosen model.
-    /// `None` disables budget-aware trimming entirely (legacy
-    /// behaviour: send the whole session every iteration).
-    ///
-    /// When `Some(window)`, the runtime trims older messages from the
-    /// API view before each call so the request stays under
-    /// ~75% of `window - default_max_output_tokens * 1.1`. The
-    /// persisted JSONL is untouched — trim is purely an API-view
-    /// concern, mirroring how the repo map is injected.
+    /// Provider's advertised context window for the chosen model. What the
+    /// compaction threshold is a fraction of. `None` disables automatic
+    /// compaction (the whole session is sent every iteration).
     pub context_window: Option<u32>,
 
     /// Compaction trigger as a fraction of `context_window` (e.g. `0.80`).
     /// When the projected next-request size crosses this, the runtime
     /// summarizes older history into a persistent marker before continuing
     /// (see `DOCS/compaction-design.md`). `None` or `<= 0` disables
-    /// compaction entirely — the request then relies on `trim` alone.
+    /// automatic compaction; a provider overflow still compacts once.
     /// Has no effect when `context_window` is `None`.
     pub compaction_threshold: Option<f32>,
 
@@ -526,9 +520,8 @@ impl ConversationRuntime {
         // keeps on its fallback model reports that on EVERY request, and a
         // tool loop is dozens of requests; once per turn says it.
         let mut shown_notices: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // A provider overflow may teach us a smaller endpoint limit once. The
-        // next iteration rebuilds through deterministic trim; no paid summary
-        // is launched from the error path.
+        // A provider overflow teaches us a smaller endpoint limit and gets one
+        // compaction, then the request is rebuilt from the compacted session.
         let mut overflow_rebuilds: u32 = 0;
         // Automatic compaction may make at most one provider request in one
         // user turn, even if many tool iterations grow past the threshold.
@@ -567,9 +560,9 @@ impl ConversationRuntime {
             // ── Context compaction ─────────────────────────────────
             // Before every model call, if the projected request crosses
             // the configured threshold, summarize older history into a
-            // persistent marker (see `DOCS/compaction-design.md`). Runs
-            // ahead of `trim` (the last-resort net) and shrinks the
-            // model's working set across turns. Best-effort: any failure
+            // persistent marker (see `DOCS/compaction-design.md`). The
+            // only thing that shrinks the model's working set across
+            // turns. Best-effort: any failure
             // leaves the session untouched and the turn proceeds.
             if !auto_compaction_attempted {
                 auto_compaction_attempted = self
@@ -603,7 +596,7 @@ impl ConversationRuntime {
             // or older than the last compaction marker with its summary,
             // keeping the verbatim tail. The persisted JSONL keeps the full
             // history (the UI shows it); only this API view shrinks — the
-            // same contract the repo map and `trim` follow. A no-marker
+            // same contract the repo map follows. A no-marker
             // session round-trips unchanged.
             //
             // Then put each user message's saved context after its text.
@@ -628,36 +621,29 @@ impl ConversationRuntime {
                 None => None,
             };
 
-            // Budget-aware trim. Same API-view-only contract as the repo map:
-            // persisted session stays whole, only the request body shrinks.
-            // Disabled (no-op) when `context_window` is `None`.
-            let trim_input: Vec<ConversationMessage> = owned_messages.unwrap_or(compacted);
-            let effective_context_window = crate::agent_runtime::context_limits::effective_window(
-                &model,
-                self.config.context_window,
-            );
+            // Nothing drops old turns here. The only thing that shrinks the
+            // request is compaction (above, and on a provider overflow below),
+            // which summarises instead of forgetting. A budget "trim" used to
+            // run here and dropped every turn but the last two once the request
+            // passed 75% of (window − 1.1 × max output): 433K on a 1M model
+            // with a 384K output cap, long before the 80% compaction line, so
+            // compaction never ran and the history was silently lost (Alvan,
+            // 2026-10-27). Claude Code has no such step either.
+            let api_messages: Vec<ConversationMessage> = owned_messages.unwrap_or(compacted);
             // The system prompt every request carries: the composed prompt
-            // plus `<machine_tools>`. Built once per iteration and shared with
-            // the trim estimate below, so what is counted is what is sent.
+            // plus `<machine_tools>`.
             let base_system_prompt = self.request_system_prompt(&session.thread_id);
-            let trim_outcome = trim_to_budget(
-                trim_input,
-                effective_context_window,
-                self.config.default_max_output_tokens,
-                base_system_prompt.as_deref().unwrap_or(""),
-                self.config.reasoning_replay,
-            );
 
             // Last gate before the wire: every `tool_use` must be answered and
             // every `tool_result` earned, or the provider rejects the request
             // with a 400 before generating a token — and keeps rejecting it,
             // because the malformed history is on disk.
             //
-            // Runs LAST so it also covers orphans introduced by the two views
-            // above (a compaction marker or trim cut landing between a call and
-            // its result), not just the ones already in the session. API-view
+            // Runs LAST so it also covers orphans introduced by the views
+            // above (a compaction marker landing between a call and its
+            // result), not just the ones already in the session. API-view
             // only: the persisted JSONL keeps what actually happened.
-            let repair = repair_tool_pairing(trim_outcome.messages);
+            let repair = repair_tool_pairing(api_messages);
             if repair.changed() {
                 eprintln!(
                     "agent_runtime: repaired tool pairing for turn {turn_id} \
@@ -677,19 +663,7 @@ impl ConversationRuntime {
             let final_messages = repair.messages;
             let messages_for_api: &[ConversationMessage] = &final_messages;
 
-            // When the trim dropped messages, append a small notice to
-            // the system prompt so the model knows the early conversation
-            // has been omitted (and won't hallucinate having seen it).
-            let trim_notice: String;
-            let system_prompt: Option<&str> = if trim_outcome.dropped > 0 {
-                trim_notice = build_trim_notice(
-                    base_system_prompt.as_deref().unwrap_or(""),
-                    trim_outcome.dropped,
-                );
-                Some(trim_notice.as_str())
-            } else {
-                base_system_prompt.as_deref()
-            };
+            let system_prompt: Option<&str> = base_system_prompt.as_deref();
 
             // ── The model call, with retry ─────────────────────────
             //
@@ -916,24 +890,36 @@ impl ConversationRuntime {
                             self.projected_request_tokens(session),
                         );
                     }
+                    // Claude Code's reactive compact: one compaction, then the
+                    // request is rebuilt from the compacted session. If the
+                    // compaction does not commit, the overflow error goes to
+                    // the user below; nothing is silently dropped.
                     if api_err.is_context_overflow() && overflow_rebuilds < MAX_OVERFLOW_REBUILDS {
                         overflow_rebuilds = overflow_rebuilds.saturating_add(1);
-                        // Do not let the loop top turn the newly learned lower
-                        // ceiling into a paid auto-compaction. The rebuilt
-                        // request is bounded by deterministic trim instead.
+                        // This compaction is the turn's one; the loop top must
+                        // not start another.
                         auto_compaction_attempted = true;
                         crate::logging::log_warn(
                             "agent_runtime.turn",
                             &format!(
                                 "provider rejected turn {turn_id} (thread {}, model {model}) as \
                                  over its context window — the configured window is larger than \
-                                 what this endpoint serves. Rebuilding once with deterministic \
-                                 trim ({overflow_rebuilds}/{MAX_OVERFLOW_REBUILDS}) and \
-                                 re-issuing without a paid compaction request: {api_err}",
+                                 what this endpoint serves. Compacting once \
+                                 ({overflow_rebuilds}/{MAX_OVERFLOW_REBUILDS}) and re-issuing: \
+                                 {api_err}",
                                 session.thread_id,
                             ),
                         );
-                        continue;
+                        let outcome = self
+                            .compact_inner(session, &turn_id, &mut seq, &event_sink, &cancel_token, None)
+                            .await;
+                        if matches!(outcome, compaction::CompactionOutcome::Compacted { .. }) {
+                            session.auto_compaction_blocked = false;
+                            continue;
+                        }
+                        if matches!(outcome, compaction::CompactionOutcome::Failed { .. }) {
+                            session.auto_compaction_blocked = true;
+                        }
                     }
 
                     // Every failed model call leaves a trace on disk. The UI
@@ -970,7 +956,7 @@ impl ConversationRuntime {
             // transcript — which deliberately keeps every message — so it can't
             // see compaction and the context ring stays high even after we
             // shrank the real request. Emit a synthetic Usage carrying the
-            // tiktoken count of what we ACTUALLY sent (post compaction + trim),
+            // tiktoken count of what we ACTUALLY sent (post compaction),
             // so the ring reflects the true, compacted context size.
             let mut effective_usage = turn.usage;
             if effective_usage.input_tokens == 0 && effective_usage.output_tokens == 0 {
@@ -1450,7 +1436,6 @@ mod tool_dispatch;
 mod tool_exec;
 mod tool_result_budget;
 mod tool_results;
-mod trim;
 mod util;
 
 use context_injection::*;
@@ -1458,5 +1443,4 @@ use tokens::*;
 use tool_exec::*;
 use tool_result_budget::*;
 use tool_results::*;
-use trim::*;
 use util::*;

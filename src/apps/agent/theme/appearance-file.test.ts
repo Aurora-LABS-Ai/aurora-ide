@@ -42,6 +42,7 @@ function nonDefault(key: AppearancePrefKey): unknown {
   if (key === "modelSelectorPosition") return "top";
   if (key === "transcriptReasoning") return "folded";
   if (key === "transcriptTextPace") return "steady";
+  if (key === "transcriptWorkCardGlide") return "steady";
   if (key === "railEdge") return "shade";
   // Only `classic` exists until a drawn set ships; then the second id is the
   // non-default and these tests start exercising it with no edit here.

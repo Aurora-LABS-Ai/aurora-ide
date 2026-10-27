@@ -269,15 +269,20 @@ describe("arkPlanView", () => {
 describe("kenariPlanView", () => {
   const base: KenariUsage = {
     planName: "Studio",
-    planStatus: "active",
     window5h: null,
-    windowWeek: { usedFrac: 0.202, resetsInSecs: 400_000 },
+    windowWeek: {
+      usedFrac: 0.202,
+      resetsInSecs: 400_000,
+      resetsAtMs: null,
+      budgetRp: 300_000,
+      usedRp: 60_600,
+      remainingRp: 239_400,
+    },
     windowMonth: null,
-    webSearchAllowance: null,
-    webSearchUsedToday: null,
-    catalogThisCycleMicroIdr: null,
-    marketThisCycleMicroIdr: null,
+    coupon: null,
+    alertPct: 80,
     nearLimit: false,
+    fetchedAtMs: 0,
   };
 
   /**
@@ -291,24 +296,34 @@ describe("kenariPlanView", () => {
   });
 
   /**
-   * A plan reports an unset window as absent rather than as zero, and drawing
-   * one renders "no limit" as a bar that is fully spent.
+   * A plan reports an uncapped window as absent rather than as zero, and
+   * drawing one renders "no limit" as a bar that is fully spent.
    */
-  it("draws only the windows the plan actually sets", () => {
+  it("draws only the windows the plan actually caps", () => {
     const view = kenariPlanView(base);
     expect(view.limits.map((l) => l.name)).toEqual(["This week"]);
   });
 
-  /** Counts, not a percentage of 200 — "37 left" is what someone acts on. */
-  it("counts web searches in searches", () => {
-    const view = kenariPlanView({
+  /** The window is a sum of money on kenari; the caption says how much. */
+  it("captions a window with the Rupiah left and the reset", () => {
+    expect(kenariPlanView(base).limits[0].caption).toBe("Rp 239,400 left · resets in 4d 15h");
+    const bare = { ...base.windowWeek!, remainingRp: null, resetsInSecs: null };
+    expect(kenariPlanView({ ...base, windowWeek: bare }).limits[0].caption).toBeNull();
+  });
+
+  /** A coupon is spent apart from the plan: a balance line, not a window. */
+  it("shows a coupon as a balance", () => {
+    const named = kenariPlanView({
       ...base,
-      webSearchAllowance: 200,
-      webSearchUsedToday: 163,
+      coupon: { name: "Launch", usedRp: 1000, remainingRp: 49_000, expiresAtMs: null, scopeModels: [] },
     });
-    const search = view.limits.find((l) => l.name === "Web searches");
-    expect(search?.value).toBe("37 of 200 left");
-    expect(search?.fillPercent).toBeCloseTo(81.5);
+    expect(named.balance).toEqual({ label: "Coupon · Launch", value: "Rp 49,000 left" });
+    const unlimited = kenariPlanView({
+      ...base,
+      coupon: { name: null, usedRp: 1000, remainingRp: null, expiresAtMs: null, scopeModels: [] },
+    });
+    expect(unlimited.balance).toEqual({ label: "Coupon", value: "No limit" });
+    expect(kenariPlanView(base).balance).toBeNull();
   });
 
   it("carries kenari's own near-limit judgement rather than inventing one", () => {

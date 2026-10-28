@@ -8,13 +8,13 @@ use super::streaming::{
 use super::types::{AuroraProviderRequest, AuroraProviderResponse};
 use serde_json::Value;
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn cancel_aurora_provider_stream(request_id: String) -> Result<(), String> {
     cancel_stream(&request_id);
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_provider_chat(
     request: AuroraProviderRequest,
 ) -> Result<AuroraProviderResponse, String> {
@@ -49,9 +49,21 @@ pub async fn aurora_provider_chat(
     }
 }
 
+/// [`provider_stream`] with the window as the event sink.
+#[cfg(feature = "desktop")]
 #[tauri::command]
 pub async fn aurora_provider_stream(
     app: tauri::AppHandle,
+    request_id: String,
+    request: AuroraProviderRequest,
+) -> Result<(), String> {
+    provider_stream(std::sync::Arc::new(app), request_id, request).await
+}
+
+/// Stream one chat reply as `aurora-provider-stream-*` events through `app`
+/// (the host's event sink).
+pub async fn provider_stream(
+    app: crate::host_events::Events,
     request_id: String,
     request: AuroraProviderRequest,
 ) -> Result<(), String> {

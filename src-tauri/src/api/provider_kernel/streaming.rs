@@ -21,8 +21,9 @@ use super::types::{
 use futures_util::StreamExt;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
+
+use crate::host_events::Events;
 
 lazy_static::lazy_static! {
     static ref ACTIVE_PROVIDER_STREAMS: RwLock<HashMap<String, CancellationToken>> =
@@ -151,7 +152,7 @@ pub(crate) fn frame_payloads(frame: &str) -> Vec<String> {
 }
 
 pub(crate) async fn stream_openai_compatible(
-    app: tauri::AppHandle,
+    app: Events,
     request_id: &str,
     response: reqwest::Response,
     cancel_token: CancellationToken,
@@ -301,7 +302,7 @@ pub(crate) async fn stream_openai_compatible(
 }
 
 pub(crate) async fn stream_anthropic_compatible(
-    app: tauri::AppHandle,
+    app: Events,
     request_id: &str,
     response: reqwest::Response,
     cancel_token: CancellationToken,
@@ -361,7 +362,7 @@ pub(crate) async fn stream_anthropic_compatible(
 /// state `HashMap`s — separated from the I/O loop so the signature accumulator
 /// is easy to drive from unit tests.
 fn handle_anthropic_event(
-    app: &tauri::AppHandle,
+    app: &Events,
     request_id: &str,
     event: AnthropicStreamEvent,
     tool_calls: &mut HashMap<i32, AuroraToolCall>,
@@ -495,14 +496,14 @@ fn handle_anthropic_event(
     }
 }
 
-pub(crate) fn emit_error(app: &tauri::AppHandle, request_id: &str, message: &str) {
+pub(crate) fn emit_error(app: &Events, request_id: &str, message: &str) {
     let _ = app.emit(
         &format!("aurora-provider-error-{request_id}"),
         message.to_string(),
     );
 }
 
-fn emit_done(app: &tauri::AppHandle, request_id: &str, finish_reason: Option<String>) {
+fn emit_done(app: &Events, request_id: &str, finish_reason: Option<String>) {
     let _ = app.emit(
         &format!("aurora-provider-chunk-{request_id}"),
         AuroraStreamChunk {

@@ -94,6 +94,13 @@ pub fn start_engine(host: EngineHost) -> anyhow::Result<Engine> {
     // ever opens settings.
     shell::stored::bootstrap(db.clone());
 
+    // Terminal sessions announce agent-opened tabs and their endings to every
+    // front end (`terminal-opened`, `terminal-exited`).
+    let pty_events = events.clone();
+    crate::pty_sessions::install(Arc::new(move |notice| {
+        pty_events.emit_value(notice.event_name(), notice.payload());
+    }));
+
     // MCP servers start here, once per process. Global config only; a client
     // adds its project's `.mcp.json` through `mcp_set_workspace`.
     let mcp_events = events.clone();

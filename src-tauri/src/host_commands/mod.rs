@@ -17,7 +17,10 @@
 pub mod agent;
 pub mod cards;
 pub mod checkpoints;
+pub mod composer;
 pub mod conversation;
+pub mod delegate;
+pub mod explorer;
 pub mod files;
 pub mod git;
 pub mod insights;
@@ -30,6 +33,7 @@ pub mod shell;
 pub mod sign_ins;
 pub mod subagents;
 pub mod system;
+pub mod terminal;
 pub mod threads;
 pub mod tokens;
 
@@ -57,6 +61,11 @@ pub struct CommandContext {
     /// This host's checkpoint service (the window keeps its own as managed
     /// state).
     pub checkpoints: Arc<CheckpointState>,
+    /// This host's Files panel tree (the window keeps its own as managed
+    /// state).
+    pub explorer: crate::explorer::ExplorerStateHandle,
+    /// In-flight prompt rewrites, cancellable by request id.
+    pub refine: Arc<crate::prompt_refine::RefineState>,
 }
 
 impl CommandContext {
@@ -69,6 +78,8 @@ impl CommandContext {
             events,
             db,
             checkpoints: Arc::new(checkpoints),
+            explorer: Default::default(),
+            refine: Default::default(),
         }
     }
 
@@ -133,6 +144,10 @@ pub fn all_commands() -> impl Iterator<Item = &'static str> {
         .chain(sign_ins::COMMANDS)
         .chain(media::COMMANDS)
         .chain(insights::COMMANDS)
+        .chain(explorer::COMMANDS)
+        .chain(terminal::COMMANDS)
+        .chain(composer::COMMANDS)
+        .chain(delegate::COMMANDS)
         .copied()
 }
 
@@ -219,6 +234,13 @@ pub const WINDOW_ONLY: &[&str] = &[
     "speech_stream_validate",
     "speech_stream_write",
     "install_agent_media_permission_handler",
+    // Terminal output on a Tauri `Channel`; other clients use the `_events`
+    // forms in `host_commands::terminal`.
+    "terminal_pty_open",
+    "terminal_pty_attach",
+    // This computer's clipboard and save dialog (`tools::image::gallery`).
+    "chat_gallery_copy_image",
+    "chat_gallery_save_as",
     // Fonts installed on the machine the window draws on.
     "system_font_families",
     // Browser sign-ins that open a page on this machine and wait for its
@@ -226,6 +248,20 @@ pub const WINDOW_ONLY: &[&str] = &[
     "codex_auth_login",
     "antigravity_auth_login",
     "commandcode_auth_login",
+    // App-only features, by choice (they could be offered elsewhere later):
+    // composer typing assist, which window opens at launch, and Volcano
+    // Ark's sign-in, which reads cookies from a hidden WebView window.
+    "typing_assist_correct",
+    "typing_assist_ensure_ready",
+    "typing_assist_flush",
+    "typing_assist_learn",
+    "typing_assist_query",
+    "typing_assist_undo_correct",
+    "get_launch_surface",
+    "set_launch_surface",
+    "ark_connect",
+    "ark_disconnect",
+    "ark_usage",
     // Install into this machine's PATH and Explorer menu.
     "install_aurora_cli",
     "uninstall_aurora_cli",
@@ -311,7 +347,8 @@ pub async fn dispatch(
             }
             groups!(
                 settings, threads, files, shell, system, mcp, git, plans, checkpoints, subagents,
-                cards, conversation, tokens, providers, sign_ins, media, insights
+                cards, conversation, tokens, providers, sign_ins, media, insights, explorer,
+                terminal, composer, delegate
             );
             if WINDOW_ONLY.contains(&name) {
                 Err(CommandError::NotOnThisHost(name.to_string()))

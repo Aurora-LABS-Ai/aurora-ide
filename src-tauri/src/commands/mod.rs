@@ -52,7 +52,7 @@ pub mod fonts;
 pub use crate::workspace::git;
 pub mod icon_themes;
 pub use crate::api::kenari::commands as kenari;
-pub mod local_providers;
+pub use crate::api::local_providers;
 pub use crate::api::minimax::commands as minimax;
 pub use crate::api::modal;
 pub use crate::api::opencode;
@@ -61,7 +61,7 @@ pub mod conversation_stats;
 pub mod project_stats;
 pub mod prompt_refine;
 pub use crate::api::provider_catalog;
-pub mod provider_kernel;
+pub use crate::api::provider_kernel;
 pub use crate::api::provider_models;
 pub use crate::api::provider_test;
 pub mod settings;
@@ -361,7 +361,6 @@ pub async fn get_workspace_root() -> Result<String, String> {
 }
 
 // The file watcher for the window. The work is in [`crate::workspace::watch`].
-pub use crate::workspace::watch::{is_ignored_watch_path, FsEventPayload};
 
 /// Start a filesystem watcher that emits `fs-changed` events to the frontend.
 #[tauri::command]

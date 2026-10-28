@@ -9,6 +9,7 @@ use super::{arg, done, CommandContext, CommandError};
 use crate::agent_runtime::host::AgentRegistry;
 use crate::tools::image::config::ImageProviderConfig;
 use crate::tools::image::direct::{self, ImageDirectRequest};
+use crate::tools::image::gallery;
 use crate::tools::image::provider_commands;
 use crate::tools::video;
 
@@ -18,6 +19,11 @@ pub const COMMANDS: &[&str] = &[
     "image_provider_discover_models",
     "video_model_catalog",
     "chat_video_refresh",
+    "chat_gallery_list",
+    "chat_gallery_thumbnail",
+    "chat_gallery_read_image",
+    "chat_gallery_set_hidden",
+    "chat_gallery_delete",
 ];
 
 /// Run `name` if it is one of these; `None` hands it on.
@@ -35,6 +41,7 @@ pub(super) async fn dispatch(
             }
         };
     }
+    let chats = ctx.registry.chat_store().clone();
     Some(match name {
         "image_direct_generate" => {
             let request: ImageDirectRequest = get!("request");
@@ -54,6 +61,28 @@ pub(super) async fn dispatch(
             let job_id: String = get!("jobId");
             let provider: ImageProviderConfig = get!("provider");
             done(video_refresh(&ctx.registry, &thread_id, &job_id, provider).await)
+        }
+        "chat_gallery_list" => done(gallery::chat_gallery_list(chats).await),
+        "chat_gallery_thumbnail" => {
+            let thread_id: String = get!("threadId");
+            let name: String = get!("name");
+            done(gallery::chat_gallery_thumbnail(chats, thread_id, name).await)
+        }
+        "chat_gallery_read_image" => {
+            let thread_id: String = get!("threadId");
+            let name: String = get!("name");
+            done(gallery::chat_gallery_read_image(chats, thread_id, name).await)
+        }
+        "chat_gallery_set_hidden" => {
+            let thread_id: String = get!("threadId");
+            let name: String = get!("name");
+            let hidden: bool = get!("hidden");
+            done(gallery::chat_gallery_set_hidden(chats, thread_id, name, hidden).await)
+        }
+        "chat_gallery_delete" => {
+            let thread_id: String = get!("threadId");
+            let name: String = get!("name");
+            done(gallery::chat_gallery_delete(chats, thread_id, name).await)
         }
         _ => return None,
     })

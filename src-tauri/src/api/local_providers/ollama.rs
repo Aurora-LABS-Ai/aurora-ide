@@ -9,7 +9,8 @@ use reqwest::Client;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::Emitter;
+
+use crate::host_events::Events;
 
 lazy_static::lazy_static! {
     static ref ACTIVE_PULLS: Arc<RwLock<HashMap<String, bool>>> = Arc::new(RwLock::new(HashMap::new()));
@@ -105,7 +106,7 @@ pub async fn delete_model(base_url: &str, model_name: &str) -> bool {
 }
 
 pub async fn pull_model(
-    app: tauri::AppHandle,
+    events: Events,
     request_id: String,
     base_url: &str,
     model_name: &str,
@@ -167,7 +168,7 @@ pub async fn pull_model(
                 if progress.status == "success" {
                     success = true;
                 }
-                let _ = app.emit(
+                let _ = events.emit(
                     &format!("local-provider-pull-progress-{}", request_id),
                     progress,
                 );

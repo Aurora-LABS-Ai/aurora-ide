@@ -1,7 +1,7 @@
 //! HTTP / SSE provider adapters for the Rust agent runtime.
 //!
 //! Phase 2.2 lands a thin wrapper around Aurora's existing
-//! `commands::provider_kernel` machinery so that
+//! [`provider_kernel`] machinery so that
 //! [`crate::agent_runtime::api_client::StreamingApiClient`] can drive
 //! real Anthropic and OpenAI-compatible streaming calls. The adapters
 //! here intentionally **do not** modify provider_kernel — they rebuild
@@ -38,18 +38,17 @@
 //!
 //! ## Why we wrap, not call into, provider_kernel
 //!
-//! `commands::provider_kernel::streaming::stream_anthropic_compatible`
-//! and `stream_openai_compatible` take a [`tauri::AppHandle`] and emit
-//! events through `app.emit(...)`. There is no clean way to consume
-//! those Tauri events back into our `mpsc::Sender<AssistantEvent>`
-//! without spinning up a real Tauri runtime in tests, and the modules
-//! that hold the parsed JSON types (`commands::provider_kernel::types`)
-//! are `mod types;` (private to provider_kernel). Phase 2.2 therefore
+//! [`provider_kernel`] (the IDE chat's plain stream, `commands::provider_kernel`
+//! until 2026-10-28) emits each chunk as a named event through the host's
+//! event sink rather than returning them. There is no clean way to consume
+//! those events back into our `mpsc::Sender<AssistantEvent>`, and the
+//! modules that hold the parsed JSON types (`provider_kernel::types`) are
+//! `mod types;` (private to provider_kernel). Phase 2.2 therefore
 //! re-implements the minimum SSE plumbing in
 //! [`provider_kernel_adapter`] using exactly the same patterns the
 //! kernel uses (`SseFrameBuffer`, `frame_payloads`, byte-level
 //! buffering, `CancellationToken` via `tokio::select!`). Phase 5 will
-//! retire `commands::provider_kernel` and merge these modules.
+//! retire `provider_kernel` and merge these modules.
 
 pub mod anthropic;
 pub mod anthropic_api;
@@ -63,6 +62,7 @@ pub mod cursor;
 pub mod deepseek;
 pub mod deepseek_balance;
 pub mod kenari;
+pub mod local_providers;
 pub mod meta;
 pub mod minimax;
 pub(crate) mod model_config;
@@ -71,6 +71,7 @@ pub mod openai_compat;
 pub mod opencode;
 pub mod pool;
 pub mod provider_catalog;
+pub mod provider_kernel;
 pub mod provider_models;
 pub mod provider_kernel_adapter;
 pub mod provider_test;

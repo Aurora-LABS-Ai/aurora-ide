@@ -39,6 +39,8 @@ fn context() -> (CommandContext, tempfile::TempDir) {
         events: Arc::new(Recorded::default()),
         db: Arc::new(Mutex::new(crate::db::Database::in_memory().expect("in-memory database"))),
         checkpoints: Arc::new(crate::checkpoints::commands::CheckpointState::new()),
+        explorer: Default::default(),
+        refine: Default::default(),
     };
     (ctx, dir)
 }
@@ -74,6 +76,10 @@ const ACT_ON_THE_MACHINE: &[&str] = &[
     "chat_memory_list_facts",
     "chat_memory_stats",
     "code_index_list_storage",
+    // Probes LM Studio and Ollama ports on this machine.
+    "local_provider_detect",
+    // Clears the real "Aurora is open and accepting work" note.
+    "aurora_bridge_clear",
 ];
 
 /// The sign-in group is never run here: with no arguments its commands sign

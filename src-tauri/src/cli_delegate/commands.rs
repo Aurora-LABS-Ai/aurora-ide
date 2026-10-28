@@ -1,4 +1,6 @@
-//! The Tauri commands the Agent Window uses to run a dispatched task.
+//! The commands the Agent Window uses to run a dispatched task:
+//! `#[tauri::command]`s with `desktop`, served to other hosts by
+//! `host_commands::delegate`.
 //!
 //! The window receives a claimed task on the `cli-task` event
 //! ([`super::watcher::CLI_TASK_EVENT`]) and turns it into an ordinary turn:
@@ -50,7 +52,7 @@ pub struct CliTaskBinding {
 /// bound — a duplicate delivery of the same task — and the caller should not
 /// start a second turn for it. That is the frontend's idempotency check, and
 /// it matters because the watcher retries delivery while the window boots.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cli_task_bind(binding: CliTaskBinding) -> Result<bool, String> {
     Ok(mirror::bind(
         &binding.task_id,
@@ -69,7 +71,7 @@ pub async fn cli_task_bind(binding: CliTaskBinding) -> Result<bool, String> {
 /// Without this the terminal would wait out its timeout on a file nothing was
 /// ever going to write, and report "Aurora has not picked this task up" when
 /// in truth Aurora picked it up and could not run it.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cli_task_fail(task_id: String, turn_id: String, error: String) -> Result<(), String> {
     // Bind first so there is a transcript to close. A task that failed before
     // it ever started has no turn, so nothing else will have bound it.
@@ -84,7 +86,7 @@ pub async fn cli_task_fail(task_id: String, turn_id: String, error: String) -> R
 /// not buffered: a task claimed while the window was still booting was emitted
 /// to nobody. The watcher retries, but a pull on mount closes the race
 /// outright rather than relying on a retry landing in the right window.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cli_task_pending() -> Result<Vec<super::task::TaskRequest>, String> {
     Inbox::open().pending().map_err(|error| error.to_string())
 }
@@ -94,7 +96,7 @@ pub async fn cli_task_pending() -> Result<Vec<super::task::TaskRequest>, String>
 /// The same rename-to-claim the watcher uses, exposed so a window that found a
 /// task through [`cli_task_pending`] takes ownership the same way — one
 /// claimer wins, and a second window cannot run the task twice.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn cli_task_claim(task_id: String) -> Result<Option<super::task::TaskRequest>, String> {
     match Inbox::open().claim(&task_id) {
         Ok(request) => Ok(Some(request)),
@@ -143,7 +145,7 @@ pub struct BridgePublish {
 /// Called by the window on mount, whenever any published field changes, and on
 /// teardown. Cheap enough to call freely: one small write-then-rename, and the
 /// frontend only calls it when the snapshot actually differs.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_bridge_publish(state: BridgePublish) -> Result<(), String> {
     bridge::publish(&BridgeState {
         version: BRIDGE_FORMAT_VERSION,
@@ -167,7 +169,7 @@ pub async fn aurora_bridge_publish(state: BridgePublish) -> Result<(), String> {
 /// The window calls this as it unloads. Rust also does it on window destroy,
 /// because a webview that crashes never gets to run its own teardown — see the
 /// `agent-window` handler in `lib.rs`.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_bridge_clear() -> Result<(), String> {
     bridge::clear();
     Ok(())
@@ -193,7 +195,7 @@ pub struct McpClientConfig {
 /// an absolute path works in every case, including several Aurora builds
 /// installed side by side, where the bare name would reach whichever one won
 /// the PATH race rather than the one the user is looking at.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_mcp_client_config() -> Result<McpClientConfig, String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("could not find Aurora's own path: {error}"))?
@@ -226,7 +228,7 @@ pub async fn aurora_mcp_client_config() -> Result<McpClientConfig, String> {
 ///
 /// `spawn_blocking`: this reads and sometimes prunes files, and a sync command
 /// body runs on the UI thread in Tauri v2.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_mcp_clients() -> Result<Vec<McpClientSession>, String> {
     tokio::task::spawn_blocking(mcp::clients::list_live)
         .await

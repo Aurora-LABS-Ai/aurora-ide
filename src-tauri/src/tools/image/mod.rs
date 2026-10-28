@@ -31,6 +31,7 @@ pub mod client;
 pub mod codex;
 pub mod config;
 pub mod direct;
+pub mod gallery;
 pub mod ingest;
 pub mod minimax;
 pub mod provider_commands;

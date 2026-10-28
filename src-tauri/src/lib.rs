@@ -766,14 +766,9 @@ pub fn run_with_args(cli_args: CliArgs) {
             let _ = window.set_focus();
         })
         .setup(move |app| {
-            // Terminal sessions announce agent-opened tabs and their endings.
             // The interface in a browser (`AURORA_WEB=1`); off otherwise.
+            // Terminal notices are installed by `start_engine`.
             web_host::start_if_enabled(app.handle());
-
-            let pty_handle = app.handle().clone();
-            pty_sessions::install(std::sync::Arc::new(move |notice| {
-                let _ = pty_handle.emit(notice.event_name(), notice.payload());
-            }));
 
             // Devtools stay available in every build (the `devtools`
             // Cargo feature is on for the `tauri` crate), but we no

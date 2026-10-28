@@ -68,7 +68,6 @@ pub mod bridge;
 pub mod cancel;
 pub mod catalog;
 pub mod command;
-#[cfg(feature = "desktop")]
 pub mod commands;
 pub mod follow;
 pub mod inbox;

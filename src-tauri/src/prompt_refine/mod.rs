@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 mod cloud;
+pub mod commands;
 pub use cloud::refine_cloud;
 
 /// The one-shot completion binary we drive (modern llama.cpp split `llama-cli`

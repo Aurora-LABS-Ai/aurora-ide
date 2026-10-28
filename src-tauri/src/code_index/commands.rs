@@ -1,4 +1,5 @@
-//! Tauri commands behind the Settings → Agent index panel.
+//! Commands behind the Settings → Agent index panel: `#[tauri::command]`s with
+//! `desktop`, served to other hosts by `host_commands::code_index`.
 //!
 //! Local indexing runs in project-owned background jobs without a model.
 //!
@@ -31,7 +32,7 @@ fn workspace(path: String) -> Result<PathBuf, String> {
 }
 
 /// What is known right now, without building anything.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_status(workspace_path: String) -> Result<IndexStatus, String> {
     let root = workspace(workspace_path)?;
     blocking(move || Ok(service().status(&root))).await
@@ -44,7 +45,7 @@ pub async fn code_index_status(workspace_path: String) -> Result<IndexStatus, St
 /// answer to decide whether to offer an index — and a project that already has
 /// a valid one is simply made usable here, one message earlier than it would
 /// otherwise have been.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_probe(workspace_path: String) -> Result<IndexProbe, String> {
     let root = workspace(workspace_path)?;
     blocking(move || Ok(service().probe(&root))).await
@@ -52,10 +53,10 @@ pub async fn code_index_probe(workspace_path: String) -> Result<IndexProbe, Stri
 
 /// Parse the workspace from scratch and replace whatever was cached.
 ///
-/// `async` so it runs off the main thread: a sync `#[tauri::command] pub fn`
+/// `async` so it runs off the main thread: a sync `#[cfg_attr(feature = "desktop", tauri::command)] pub fn`
 /// executes on the UI thread in Tauri v2, and a multi-second parse there would
 /// freeze the window (see the 2026-07-01 note in `.knowledge/lesson.md`).
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_rebuild(workspace_path: String) -> Result<IndexStatus, String> {
     let root = workspace(workspace_path)?;
     blocking(move || {
@@ -75,7 +76,7 @@ pub struct BuildSnapshot {
     job: Option<BuildStatus>,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_build_status(workspace_path: String) -> Result<BuildSnapshot, String> {
     let root = workspace(workspace_path)?;
     blocking(move || {
@@ -89,7 +90,7 @@ pub async fn code_index_build_status(workspace_path: String) -> Result<BuildSnap
     .await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_save_settings(
     workspace_path: String,
     settings: IndexSettings,
@@ -105,7 +106,7 @@ pub async fn code_index_save_settings(
     .await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_start_build(
     workspace_path: String,
 ) -> Result<BuildStatus, String> {
@@ -117,7 +118,7 @@ pub async fn code_index_start_build(
     .await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_cancel_build(workspace_path: String) -> Result<(), String> {
     let root = workspace(workspace_path)?;
     blocking(move || jobs::manager().cancel(&service().project_index_dir(&root)?)).await
@@ -148,12 +149,12 @@ mod tests {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_list_storage() -> Result<Vec<crate::code_index::inventory::StoredIndex>, String> {
     blocking(|| crate::code_index::inventory::list(&crate::agent_runtime::project_dir::projects())).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn code_index_delete_storage(project_id: String) -> Result<(), String> {
     blocking(move || crate::code_index::inventory::delete(&crate::agent_runtime::project_dir::projects(), &project_id)).await
 }

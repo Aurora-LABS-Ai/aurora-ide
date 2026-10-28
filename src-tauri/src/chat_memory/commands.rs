@@ -1,6 +1,8 @@
-//! IPC for the Memory page — what Aurora remembers about the user.
+//! Commands for the Memory page — what Aurora remembers about the user.
+//! `#[tauri::command]`s with `desktop`; other hosts serve them through
+//! `host_commands::memory`.
 //!
-//! Every one of these is `async` + `spawn_blocking`. A sync `#[tauri::command]`
+//! Every one of these is `async` + `spawn_blocking`. A sync `#[cfg_attr(feature = "desktop", tauri::command)]`
 //! runs on the UI thread in Tauri v2, and these all touch SQLite; the same
 //! mistake froze the whole window during boot when the chat listing was
 //! synchronous. `commands/command_thread_safety.rs` has the test that pins the
@@ -23,9 +25,9 @@ fn memory() -> Result<&'static crate::chat_memory::ChatMemory, String> {
 }
 
 /// Everything Aurora has remembered, pinned first then newest.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_list_facts() -> Result<Vec<Fact>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    tokio::task::spawn_blocking(|| {
         memory()?
             .all_facts()
             .map_err(|err| format!("Could not read what Aurora remembers: {err}"))
@@ -38,9 +40,9 @@ pub async fn chat_memory_list_facts() -> Result<Vec<Fact>, String> {
 ///
 /// The quickest way to fix a fact the model got wrong is to write the right one
 /// yourself, which is why this exists alongside editing.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_add_fact(text: String) -> Result<Option<Fact>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         memory()?
             .add_fact_manually(&text)
             .map_err(|err| format!("Could not save that: {err}"))
@@ -50,9 +52,9 @@ pub async fn chat_memory_add_fact(text: String) -> Result<Option<Fact>, String> 
 }
 
 /// Rewrite a fact.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_update_fact(id: String, text: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         memory()?
             .update_fact(&id, &text)
             .map_err(|err| format!("Could not update that: {err}"))
@@ -62,9 +64,9 @@ pub async fn chat_memory_update_fact(id: String, text: String) -> Result<bool, S
 }
 
 /// Pin or unpin. Pinned facts are the ones injected first.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_set_fact_pinned(id: String, pinned: bool) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         memory()?
             .set_fact_pinned(&id, pinned)
             .map_err(|err| format!("Could not pin that: {err}"))
@@ -74,9 +76,9 @@ pub async fn chat_memory_set_fact_pinned(id: String, pinned: bool) -> Result<boo
 }
 
 /// Forget one fact, permanently.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_forget_fact(id: String) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         memory()?
             .forget_fact(&id)
             .map_err(|err| format!("Could not forget that: {err}"))
@@ -87,9 +89,9 @@ pub async fn chat_memory_forget_fact(id: String) -> Result<bool, String> {
 
 /// Search what Aurora remembers. Powers the Memory page's filter once the list
 /// is long enough to need one.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_search_facts(query: String, limit: Option<u32>) -> Result<Vec<Fact>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         memory()?
             .search_facts(&query, limit.unwrap_or(50) as usize)
             .map_err(|err| format!("Could not search memory: {err}"))
@@ -113,9 +115,9 @@ pub struct MemoryStats {
 /// The page needs this for the rebuild button to mean anything: "Rebuild" with
 /// no number beside it is a button whose effect you cannot see, and the whole
 /// point of exposing a rebuild is that you can tell whether it did something.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_stats() -> Result<MemoryStats, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    tokio::task::spawn_blocking(|| {
         let memory = memory()?;
         let indexed_chats = memory
             .list_chats()
@@ -142,9 +144,9 @@ pub async fn chat_memory_stats() -> Result<MemoryStats, String> {
 /// are not touched by a rebuild.
 ///
 /// Returns how many conversations were indexed.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn chat_memory_rebuild_index() -> Result<usize, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    tokio::task::spawn_blocking(|| {
         let dir = crate::paths::chats_dir();
         let store = crate::agent_runtime::session_store::SessionStore::new_folder(dir);
         memory()?

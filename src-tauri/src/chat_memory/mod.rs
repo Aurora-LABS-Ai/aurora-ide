@@ -13,6 +13,7 @@
 //! database is deleted and rebuilt, and the facts inside it are the only loss.
 //! See [`open`].
 
+pub mod commands;
 pub mod facts;
 pub mod index;
 pub mod query;

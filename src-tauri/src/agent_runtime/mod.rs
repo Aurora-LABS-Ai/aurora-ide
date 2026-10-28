@@ -54,6 +54,7 @@ pub mod recovery;
 pub mod session;
 pub mod session_index;
 pub mod session_store;
+pub mod stats;
 pub mod subagents;
 pub mod title;
 pub mod title_maker;

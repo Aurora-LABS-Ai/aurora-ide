@@ -67,6 +67,13 @@ const ACT_ON_THE_MACHINE: &[&str] = &[
     "shell_tools_inventory",
     "get_system_info",
     "checkpoint_init",
+    // The real log, issue file and Memory index: emptied, deleted, rebuilt.
+    "logs_clear",
+    "aurora_issues_clear",
+    "chat_memory_rebuild_index",
+    "chat_memory_list_facts",
+    "chat_memory_stats",
+    "code_index_list_storage",
 ];
 
 /// The sign-in group is never run here: with no arguments its commands sign

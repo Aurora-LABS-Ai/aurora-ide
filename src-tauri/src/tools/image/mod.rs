@@ -30,8 +30,10 @@ pub mod assets;
 pub mod client;
 pub mod codex;
 pub mod config;
+pub mod direct;
 pub mod ingest;
 pub mod minimax;
+pub mod provider_commands;
 pub mod qwen;
 pub mod wire;
 

@@ -37,6 +37,7 @@
 //! | [`tree_snapshot`] | the folder tree to depth 2 at the top of that block |
 //! | [`service`] | one index per workspace, cached per process |
 
+pub mod commands;
 pub mod extract;
 pub mod search;
 pub mod inventory;

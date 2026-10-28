@@ -24,15 +24,15 @@ pub mod artifacts;
 pub mod browser;
 pub mod chat;
 /// The Memory page — reading and editing what Aurora remembers about the user.
-pub mod chat_memory;
+pub use crate::chat_memory::commands as chat_memory;
 pub mod chat_gallery;
 pub mod chat_video;
 pub mod image_direct;
-pub mod image_providers;
+pub use crate::tools::image::provider_commands as image_providers;
 pub use crate::api::antigravity::commands as antigravity;
 pub mod checkpoints;
 pub use crate::api::claude_code::commands as claude_code;
-pub mod code_index;
+pub use crate::code_index::commands as code_index;
 pub use crate::api::codex::commands as codex;
 pub use crate::api::commandcode::commands as commandcode;
 /// Test-only: fails the build if a main-thread command waits on the database.
@@ -40,7 +40,7 @@ pub use crate::api::commandcode::commands as commandcode;
 mod command_thread_safety;
 pub mod cursor;
 pub use crate::api::deepseek_balance as deepseek;
-pub mod diagnostics;
+pub use crate::tools::diagnostics::commands as diagnostics;
 /// The editing commands ([`crate::workspace::edit`]) plus opening a file in the
 /// IDE window ([`ide_window`]), under the path `lib.rs` registers them by.
 pub mod editor_ops {

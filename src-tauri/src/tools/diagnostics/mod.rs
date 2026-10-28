@@ -30,6 +30,8 @@
 //! the thread id is what makes a report reproducible — neither should be its
 //! job, and a stamp it could forge is not a record.
 
+pub mod commands;
+
 use std::io::Write;
 use std::sync::Arc;
 

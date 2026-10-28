@@ -20,7 +20,9 @@ pub mod checkpoints;
 pub mod conversation;
 pub mod files;
 pub mod git;
+pub mod insights;
 pub mod mcp;
+pub mod media;
 pub mod plans;
 pub mod providers;
 pub mod settings;
@@ -129,6 +131,8 @@ pub fn all_commands() -> impl Iterator<Item = &'static str> {
         .chain(tokens::COMMANDS)
         .chain(providers::COMMANDS)
         .chain(sign_ins::COMMANDS)
+        .chain(media::COMMANDS)
+        .chain(insights::COMMANDS)
         .copied()
 }
 
@@ -307,7 +311,7 @@ pub async fn dispatch(
             }
             groups!(
                 settings, threads, files, shell, system, mcp, git, plans, checkpoints, subagents,
-                cards, conversation, tokens, providers, sign_ins
+                cards, conversation, tokens, providers, sign_ins, media, insights
             );
             if WINDOW_ONLY.contains(&name) {
                 Err(CommandError::NotOnThisHost(name.to_string()))

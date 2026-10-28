@@ -1,4 +1,5 @@
-//! Read-only video catalog and task refresh. Never creates a task.
+//! Read-only video catalog and task refresh. Never creates a task. The
+//! refresh is written once in `host_commands::media`.
 use crate::commands::agent_v2::AgentRegistry;
 use crate::tools::{image::config::ImageProviderConfig, video};
 use serde_json::Value;
@@ -19,10 +20,5 @@ pub async fn chat_video_refresh(
     job_id: String,
     provider: ImageProviderConfig,
 ) -> Result<Value, String> {
-    let providers = [provider];
-    // The row the caller handed over is the only candidate, and the job's own
-    // record decides the service, so neither needs narrowing here.
-    let provider = video::provider(&providers, None, None)?;
-    let job = video::jobs::refresh(state.chat_store(), &thread_id, provider, &job_id).await?;
-    Ok(video::jobs::result(&job))
+    crate::host_commands::media::video_refresh(&state, &thread_id, &job_id, provider).await
 }

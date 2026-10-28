@@ -45,7 +45,7 @@ pub struct DiscoveredImageModel {
     pub tagged: bool,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn image_provider_test(config: ImageProviderConfig) -> ImageProviderTestReport {
     let url = config.models_url();
     let started = Instant::now();
@@ -67,7 +67,7 @@ pub async fn image_provider_test(config: ImageProviderConfig) -> ImageProviderTe
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn image_provider_discover_models(
     config: ImageProviderConfig,
 ) -> Result<Vec<DiscoveredImageModel>, String> {

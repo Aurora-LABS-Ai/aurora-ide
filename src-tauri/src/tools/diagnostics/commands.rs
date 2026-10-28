@@ -1,5 +1,6 @@
-//! Diagnostics IPC — reading `aurora.log` back, and letting the web layer
-//! write into it.
+//! Diagnostics commands — reading `aurora.log` back, and letting the web layer
+//! write into it. `#[tauri::command]`s with `desktop`; any other host serves
+//! them through `host_commands::diagnostics`.
 //!
 //! The log has existed since the panic hook went in, with no way to reach it
 //! from the app: you had to know the path. These three commands are what
@@ -19,7 +20,7 @@ use crate::logging::{self, LogSnapshot};
 const MAX_ENTRIES: usize = 500;
 
 /// Recent log entries plus what is needed to describe the file honestly.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn logs_recent(limit: Option<usize>) -> Result<LogSnapshot, String> {
     let limit = limit.unwrap_or(MAX_ENTRIES).clamp(1, MAX_ENTRIES);
     Ok(logging::recent(limit))
@@ -29,13 +30,13 @@ pub async fn logs_recent(limit: Option<usize>) -> Result<LogSnapshot, String> {
 ///
 /// Deliberately infallible from the caller's side beyond transport: an error
 /// reporter that can itself raise an error is how one failure becomes a loop.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn logs_report(level: String, component: String, message: String) {
     logging::log_from_ui(&level, &component, &message);
 }
 
 /// Empty the log and drop the rotated backup.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn logs_clear() -> Result<(), String> {
     logging::clear()
 }
@@ -53,7 +54,7 @@ pub struct IssueReport {
 }
 
 /// Read back what the agent has reported about Aurora itself.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_issues_read() -> Result<IssueReport, String> {
     let path = crate::tools::diagnostics::issues_path();
     let exists = path.is_file();
@@ -75,7 +76,7 @@ pub async fn aurora_issues_read() -> Result<IssueReport, String> {
 /// Removed rather than truncated, so the page returns to "nothing reported yet"
 /// instead of showing an empty file that reads as a bug of its own. The tool
 /// recreates it on the next report.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn aurora_issues_clear() -> Result<(), String> {
     let path = crate::tools::diagnostics::issues_path();
     match std::fs::remove_file(&path) {

@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
-use sysinfo::{Disks, ProcessesToUpdate, System};
+use sysinfo::{Disks, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// How many processes the card lists.
 const TOP_PROCESSES: usize = 5;
@@ -80,7 +80,14 @@ pub fn read() -> Result<MachineStats, String> {
         .map_err(|_| "machine reader is poisoned".to_string())?;
     sys.refresh_cpu_usage();
     sys.refresh_memory();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
 
     let cpu_model = sys
         .cpus()
@@ -96,7 +103,10 @@ pub fn read() -> Result<MachineStats, String> {
         // so one server showed up five times as `tokio-runtime-w`. Processes only.
         .filter(|process| process.thread_kind().is_none())
         .map(|process| ProcessStats {
-            name: process.name().to_string_lossy().into_owned(),
+            name: display_name(
+                &process.name().to_string_lossy(),
+                process.cmd().first().map(|arg| arg.to_string_lossy()).as_deref(),
+            ),
             cpu_percent: process.cpu_usage(),
             memory: process.memory(),
         })
@@ -118,6 +128,29 @@ pub fn read() -> Result<MachineStats, String> {
         uptime_secs: System::uptime(),
         processes,
     })
+}
+
+/// Linux keeps a process's short name to 15 characters (`TASK_COMM_LEN`), so
+/// `next-server (v15.2.4)` arrives as `next-server (v1`. A name that long was
+/// probably cut, and the first command-line word is the whole one: a program
+/// path gives its file name, a title a program set for itself (with spaces)
+/// is kept as it is.
+fn display_name(short: &str, arg0: Option<&str>) -> String {
+    const SHORT_NAME_MAX: usize = 15;
+    let full = arg0.map(str::trim).filter(|arg| !arg.is_empty());
+    match full {
+        Some(arg) if short.chars().count() >= SHORT_NAME_MAX => {
+            if arg.contains(' ') {
+                arg.to_string()
+            } else {
+                std::path::Path::new(arg)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| arg.to_string())
+            }
+        }
+        _ => short.to_string(),
+    }
 }
 
 /// The disk holding the engine's data folder: the mount point that is the
@@ -224,6 +257,22 @@ mod tests {
         let me = std::env::current_exe().unwrap();
         let my_name = me.file_name().unwrap().to_string_lossy();
         assert!(stats.processes.iter().filter(|p| my_name.starts_with(&p.name)).count() <= 1);
+    }
+
+    #[test]
+    fn a_cut_short_name_takes_the_full_one_from_the_command_line() {
+        // What the Oracle box reported: comm cut at 15 characters.
+        assert_eq!(
+            display_name("next-server (v1", Some("next-server (v15.2.4)")),
+            "next-server (v15.2.4)"
+        );
+        assert_eq!(
+            display_name("tokio-runtime-w", Some("/home/ubuntu/aurora-serve/aurora")),
+            "aurora"
+        );
+        // A short name is whole already; a missing command line keeps it.
+        assert_eq!(display_name("postgres", Some("postgres: writer")), "postgres");
+        assert_eq!(display_name("kworker/u8:3-ev", None), "kworker/u8:3-ev");
     }
 
     #[test]

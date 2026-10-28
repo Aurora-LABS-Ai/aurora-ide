@@ -58,13 +58,16 @@ afterEach(async () => {
 });
 
 describe("IconRail", () => {
-  it("lists the destinations, then Providers, Settings and Account", async () => {
+  // The test DOM has no Tauri, so this is the web version: the machine cell
+  // ("This machine") is there and the desktop's browser-host cell is not.
+  it("lists the destinations, then the machine, Providers, Settings and Account", async () => {
     await render();
     expect(labels()).toEqual([
       "Home",
       "Images",
       "Library",
       "Plugins",
+      "This machine",
       "Providers",
       "Settings",
       "Account",

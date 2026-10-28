@@ -21,6 +21,7 @@ import React from "react";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { SubagentRail } from "@/apps/agent/components/shell/SubagentRail";
 import { WebHostCell } from "@/apps/agent/components/shell/WebHostCell";
+import { MachineCell } from "@/apps/agent/components/shell/MachineCell";
 import {
   DESTINATIONS,
   litRailCell,
@@ -113,6 +114,9 @@ export const IconRail: React.FC = () => {
 
       {/* The interface in a browser on this computer (desktop window only). */}
       <WebHostCell />
+
+      {/* How loaded the engine's machine is (web version only). */}
+      <MachineCell />
 
       {/* Providers has its own page: it carries its own list on the left, and
           inside Settings that made two sidebars side by side. */}

@@ -328,6 +328,12 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     crate::host_commands::system::get_system_info().await
 }
 
+/// How loaded this machine is (the web version's machine card).
+#[tauri::command]
+pub async fn machine_stats() -> Result<crate::machine::MachineStats, String> {
+    crate::host_commands::system::machine_stats().await
+}
+
 // File operations for the window. The work is in [`crate::workspace::fs`].
 
 /// Create a new file

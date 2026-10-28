@@ -58,6 +58,7 @@ import React from "react";
 
 export type AgentIconName =
   | "alert"
+  | "gauge"
   | "panel-left"
   | "panel-right"
   | "chevrons-left"
@@ -286,6 +287,13 @@ const SOLID: Partial<Record<AgentIconName, React.ReactNode>> = {
     <>
       <circle cx="12" cy="8" r="4" />
       <path d="M4.5 20.5c.8-3.8 3.9-6 7.5-6s6.7 2.2 7.5 6z" />
+    </>
+  ),
+  gauge: (
+    <>
+      <path d="M2.6 18.6a9.6 9.6 0 1 1 18.8 0z" />
+      <path d="M12 14.5l3.8-4.3" stroke={CUT} />
+      <circle cx="12" cy="14.5" r="1.5" fill={CUT} stroke="none" />
     </>
   ),
   cpu: (
@@ -1164,6 +1172,15 @@ const GLYPHS: Record<AgentIconName, React.ReactNode> = {
       <rect x="3.5" y="4" width="5" height="16" rx="1.6" />
       <rect x="10.5" y="4" width="5" height="16" rx="1.6" />
       <rect x="17.2" y="4.6" width="4.4" height="15.6" rx="1.5" transform="rotate(-12 19.4 12.4)" />
+    </>
+  ),
+
+  // Gauge — the machine the engine runs on (web version): how loaded it is.
+  gauge: (
+    <>
+      <path d="M3.6 18.5a9 9 0 1 1 16.8 0" />
+      <path d="M12 14.5l3.8-4.3" />
+      <circle cx="12" cy="14.5" r="1.4" />
     </>
   ),
 

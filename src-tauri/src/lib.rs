@@ -65,6 +65,7 @@ pub mod icon_pack;
 #[cfg(feature = "desktop")]
 mod launch_prefs;
 mod logging;
+mod machine;
 mod mcp;
 mod paths;
 mod plans;
@@ -296,6 +297,7 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::cancel_command_stream,
             commands::detach_command_stream,
             commands::get_system_info,
+            commands::machine_stats,
             // System fonts (Settings → Appearance → Typography)
             commands::fonts::system_font_families,
             commands::icon_themes::list_installed_icon_themes,

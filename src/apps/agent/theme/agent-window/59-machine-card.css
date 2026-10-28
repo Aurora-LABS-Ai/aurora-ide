@@ -1,0 +1,126 @@
+/* Agent Window — the machine card (web version only, `MachineCell.tsx`).
+ *
+ * Probe `Documents/aurora-machine-card-designs.html`, card 02: a meter per
+ * resource and the busiest processes. The surface is the floating family's
+ * (`.agw-menu`); this file only lays out what is inside it and places it
+ * beside the rail, its foot level with the cell's. Roles only, no colour of
+ * its own (01-root.css). */
+
+.agw-machine-card {
+  position: fixed;
+  left: 56px;
+  z-index: var(--agw-z-popover-raised);
+  width: 300px;
+  padding: 10px;
+  font-size: var(--agw-fs-ui);
+  line-height: var(--agw-lh-ui);
+  color: var(--agw-text);
+}
+
+.agw-machine-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 2px 4px 8px;
+}
+.agw-machine-title b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--agw-fw-strong);
+}
+.agw-machine-title span {
+  flex-shrink: 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-machine-meter {
+  padding: 5px 4px;
+}
+.agw-machine-meter-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agw-machine-meter-value {
+  color: var(--agw-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agw-machine-bar {
+  height: 4px;
+  margin-top: 5px;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-chart-track);
+  overflow: hidden;
+}
+.agw-machine-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: var(--agw-radius-pill);
+  background: var(--agw-accent);
+  transition: width var(--agw-dur-base) var(--agw-ease-out);
+}
+.agw-machine-bar > i[data-tone="warn"] {
+  background: var(--agw-warning);
+}
+.agw-machine-bar > i[data-tone="bad"] {
+  background: var(--agw-danger);
+}
+
+.agw-machine-gpu-names {
+  padding: 0 4px 4px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+
+.agw-machine-sep {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--agw-border);
+}
+.agw-machine-sub {
+  padding: 4px 4px 2px;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-label);
+}
+.agw-machine-proc {
+  display: grid;
+  grid-template-columns: 1fr 48px 64px;
+  padding: 3px 4px;
+  font-variant-numeric: tabular-nums;
+}
+.agw-machine-proc-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agw-machine-proc-num {
+  text-align: right;
+  color: var(--agw-text-muted);
+}
+
+.agw-machine-foot {
+  padding: 6px 4px 0;
+  color: var(--agw-text-subtle);
+  font-size: var(--agw-fs-micro);
+}
+.agw-machine-stale {
+  color: var(--agw-warning);
+}
+.agw-machine-empty {
+  padding: 8px 4px;
+  color: var(--agw-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agw-machine-bar > i {
+    transition: none;
+  }
+}
+.agw-root[data-reduce-motion] .agw-machine-bar > i {
+  transition: none;
+}

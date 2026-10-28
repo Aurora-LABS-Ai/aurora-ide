@@ -55,6 +55,10 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 async-trait = "0.1"            # `async fn` in traits with dyn-dispatch (agent_runtime)
 hostname = "0.4"
+# The machine the engine runs on: CPU load, memory, disks, the busiest
+# processes (`machine.rs`, the web version's machine card). Local reads only.
+# 0.37, not newer: 0.38+ needs a newer rustc than rust-toolchain.toml's 1.92.
+sysinfo = { version = "0.37", default-features = false, features = ["system", "disk"] }
 notify = "6"
 grep = "0.3"
 grep-regex = "0.1"

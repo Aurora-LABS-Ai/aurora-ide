@@ -20,6 +20,7 @@ pub const COMMANDS: &[&str] = &[
     "get_system_info",
     "get_workspace_root",
     "get_cache_stats",
+    "machine_stats",
 ];
 
 /// Run `name` if it is one of these; `None` hands it on.
@@ -32,6 +33,7 @@ pub(super) async fn dispatch(
         "get_system_info" => done(get_system_info().await),
         "get_workspace_root" => done(get_workspace_root()),
         "get_cache_stats" => done(Ok(crate::file_cache::get_file_cache().stats())),
+        "machine_stats" => done(machine_stats().await),
         _ => return None,
     })
 }
@@ -67,6 +69,13 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
     })
     .await
     .map_err(|e| format!("Failed to collect system info: {}", e))
+}
+
+/// How loaded the engine's machine is right now (`machine.rs`).
+pub async fn machine_stats() -> Result<crate::machine::MachineStats, String> {
+    tokio::task::spawn_blocking(crate::machine::read)
+        .await
+        .map_err(|e| format!("Failed to read the machine: {e}"))?
 }
 
 /// The folder the host process was started in.

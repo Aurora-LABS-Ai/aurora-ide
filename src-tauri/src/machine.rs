@@ -92,6 +92,9 @@ pub fn read() -> Result<MachineStats, String> {
     let mut processes: Vec<ProcessStats> = sys
         .processes()
         .values()
+        // On Linux every thread is listed as a task with its parent's memory,
+        // so one server showed up five times as `tokio-runtime-w`. Processes only.
+        .filter(|process| process.thread_kind().is_none())
         .map(|process| ProcessStats {
             name: process.name().to_string_lossy().into_owned(),
             cpu_percent: process.cpu_usage(),
@@ -217,6 +220,10 @@ mod tests {
             .processes
             .windows(2)
             .all(|pair| pair[0].memory >= pair[1].memory));
+        // This test binary runs threads; none of them may be listed as a process.
+        let me = std::env::current_exe().unwrap();
+        let my_name = me.file_name().unwrap().to_string_lossy();
+        assert!(stats.processes.iter().filter(|p| my_name.starts_with(&p.name)).count() <= 1);
     }
 
     #[test]

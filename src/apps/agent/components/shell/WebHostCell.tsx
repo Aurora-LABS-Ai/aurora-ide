@@ -3,7 +3,9 @@
  *
  * Opens the interface in a browser on this computer: starts the web host
  * (`web_host_start`, `src-tauri/src/web_host`) and opens its one-time sign-in
- * link, which leaves the browser holding a cookie. While the host runs, the
+ * link, which leaves the browser holding a cookie. When `aurora serve` is
+ * already running, the host hands back that engine's link instead of starting
+ * a second server (`external`); that one is stopped in its own terminal. While the host runs, the
  * cell carries the rail's dot and its menu offers the link again, a copy of
  * it, and Stop. Desktop window only: a page that is already in a browser has
  * nothing to open.
@@ -26,6 +28,8 @@ interface WebHostStatus {
   port: number;
   url: string | null;
   signInUrl: string | null;
+  /** Served by a separate `aurora serve`, which this window cannot stop. */
+  external: boolean;
 }
 
 const MENU_WIDTH = 300;
@@ -77,6 +81,14 @@ export const WebHostCell: React.FC = () => {
   if (!isDesktopRuntime()) return null;
 
   const running = status?.running ?? false;
+  const external = status?.external ?? false;
+
+  // `aurora serve` may have started or stopped since the last look.
+  const refresh = () => {
+    void auroraInvoke<WebHostStatus>("web_host_status")
+      .then(setStatus)
+      .catch((error: unknown) => console.warn("[web-host] status failed", error));
+  };
 
   const startAndOpen = async () => {
     setBusy(true);
@@ -120,9 +132,16 @@ export const WebHostCell: React.FC = () => {
     ? [
         { icon: "external", label: "Open in browser", run: () => void startAndOpen() },
         { icon: "copy", label: "Copy sign-in link", run: () => void copyLink() },
-        { icon: "stop", label: "Stop", run: () => void stop() },
+        // `aurora serve` is stopped in its own terminal, not from here.
+        ...(external ? [] : [{ icon: "stop" as const, label: "Stop", run: () => void stop() }]),
       ]
     : [{ icon: "browser", label: "Start and open in browser", run: () => void startAndOpen() }];
+
+  const note = external
+    ? `aurora serve is running at ${status?.url ?? ""}. It is a separate engine, so chats there do not update live in this window yet. Stop it in its terminal.`
+    : running
+      ? `Running at ${status?.url ?? ""}. Only this computer can reach it.`
+      : "Use Aurora from a browser on this computer. Same chats, same agent.";
 
   const portalTarget =
     typeof document !== "undefined"
@@ -145,6 +164,7 @@ export const WebHostCell: React.FC = () => {
             close();
             return;
           }
+          refresh();
           const rect = triggerRef.current?.getBoundingClientRect();
           if (rect) setMenu({ left: rect.right + 8, bottom: window.innerHeight - rect.bottom });
         }}
@@ -162,11 +182,7 @@ export const WebHostCell: React.FC = () => {
             aria-label="Open in a browser"
             style={{ left: menu.left, bottom: menu.bottom, width: MENU_WIDTH }}
           >
-            <div className="agw-projmenu-none">
-              {running
-                ? `Running at ${status?.url ?? ""}. Only this computer can reach it.`
-                : "Use Aurora from a browser on this computer. Same chats, same agent."}
-            </div>
+            <div className="agw-projmenu-none">{note}</div>
             {rows.map((row) => (
               <button
                 key={row.label}

@@ -75,11 +75,15 @@ pub struct WebHostStatus {
     pub url: Option<String>,
     /// The same address with the one-time token: opening it signs a browser in.
     pub sign_in_url: Option<String>,
+    /// Served by a separate `aurora serve` engine, not by this window: this
+    /// window cannot stop it, and its chats are not live here until the app
+    /// connects to that engine (`serve::discovery`).
+    pub external: bool,
 }
 
 pub fn status() -> WebHostStatus {
-    match RUNNING.lock().as_ref() {
-        Some(running) => WebHostStatus {
+    if let Some(running) = RUNNING.lock().as_ref() {
+        return WebHostStatus {
             running: true,
             port: running.port,
             url: Some(format!("http://127.0.0.1:{}/agent-window", running.port)),
@@ -87,12 +91,23 @@ pub fn status() -> WebHostStatus {
                 "http://127.0.0.1:{}/agent-window?token={}",
                 running.port, running.token
             )),
+            external: false,
+        };
+    }
+    match crate::serve::discovery::find() {
+        Some(engine) => WebHostStatus {
+            running: true,
+            port: engine.port,
+            url: Some(engine.url()),
+            sign_in_url: Some(engine.sign_in_url()),
+            external: true,
         },
         None => WebHostStatus {
             running: false,
             port: DEFAULT_PORT,
             url: None,
             sign_in_url: None,
+            external: false,
         },
     }
 }
@@ -116,8 +131,11 @@ pub fn start_if_enabled(app: &AppHandle) {
 /// its status unchanged. A fresh token every start, so a link from an earlier
 /// run stops working.
 pub async fn start(app: &AppHandle, port: Option<u16>) -> Result<WebHostStatus, String> {
-    if RUNNING.lock().is_some() {
-        return Ok(status());
+    // Already serving here, or `aurora serve` is: hand back that address and
+    // never start a second server beside it.
+    let current = status();
+    if current.running {
+        return Ok(current);
     }
     let port = port.unwrap_or(DEFAULT_PORT);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

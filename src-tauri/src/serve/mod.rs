@@ -22,6 +22,7 @@
 //! warns: anyone with the link can run commands on this machine.
 
 pub mod auth;
+pub mod discovery;
 pub mod hub;
 pub mod pages;
 
@@ -89,6 +90,17 @@ pub fn run(options: ServeOptions) -> i32 {
 }
 
 async fn serve(options: ServeOptions) -> Result<(), String> {
+    // One engine per machine: a second server would run a second copy of
+    // every turn and every MCP server against the same chats.
+    if let Some(running) = discovery::find() {
+        println!(
+            "Aurora is already serving on port {} (process {}). Open it in a browser:",
+            running.port, running.pid
+        );
+        println!();
+        println!("  {}", running.sign_in_url());
+        return Ok(());
+    }
     // This process owns the schema while it runs, as the desktop app does.
     let db = crate::db::Database::init().map_err(|e| {
         format!(
@@ -123,6 +135,10 @@ async fn serve(options: ServeOptions) -> Result<(), String> {
         dist: options.dist.clone(),
     });
 
+    // Held until the server stops; dropping it removes the note.
+    let _announced = discovery::announce(options.port, &token)
+        .map_err(|e| crate::logging::log_warn("serve", &format!("could not write the engine note: {e}")))
+        .ok();
     print_banner(&options, &token);
     crate::logging::log_info("serve", &format!("serving on http://{addr}"));
     axum::serve(listener, router(host))

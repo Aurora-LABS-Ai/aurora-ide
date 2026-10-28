@@ -23,7 +23,7 @@ EOF
 
 apt-get update -qq
 apt-get install -y -qq build-essential pkg-config curl ca-certificates \
-  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64 >/dev/null
+  libssl-dev gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libssl-dev:arm64 >/dev/null
 
 if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
   curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.92.0

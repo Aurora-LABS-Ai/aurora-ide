@@ -15,19 +15,24 @@
 //! - Everything else: the built interface from `--dist` (`pnpm build`'s
 //!   `dist/`), `index.html` for app addresses.
 //!
-//! Sign-in: a fresh token per start, printed as a link; opening it sets an
-//! HttpOnly cookie. The token is also written to `<root>/web/token`, so
-//! `pnpm dev`'s proxy reaches this server the same way it reaches the
-//! desktop host. Loopback only unless `--host` says otherwise, and then it
-//! warns: anyone with the link can run commands on this machine.
+//! It listens on 127.0.0.1 and nothing else, ever (Alvan, 2026-10-28: "only
+//! accessible via localhost, not over the internet"): there is no option to
+//! bind another address. Other machines reach it through an SSH tunnel, which
+//! is where the access list belongs.
+//!
+//! Sign-in: a fresh token per start, printed as a link (also written to
+//! `<root>/web/token` for `pnpm dev`'s proxy); and, once the owner sets one
+//! with `aurora serve password`, a password page. Either signs the browser
+//! into a 30-day session that survives restarts (`access`).
 
+pub mod access;
 pub mod auth;
 pub mod discovery;
 pub mod hub;
 pub mod pages;
 
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,19 +58,19 @@ pub const DEFAULT_PORT: u16 = 3721;
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
     pub port: u16,
-    /// The address to listen on; 127.0.0.1 unless the user chose otherwise.
-    pub host: IpAddr,
     /// The built interface; `None` serves the API only (use `pnpm dev`).
     pub dist: Option<PathBuf>,
 }
+
+/// The only address this server listens on.
+const LISTEN: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
 pub(crate) struct ServeHost {
     ctx: CommandContext,
     hub: Arc<EventHub>,
     token: String,
     port: u16,
-    /// Requests must name 127.0.0.1/localhost in `Host` (DNS rebinding).
-    loopback_only: bool,
+    access: access::Access,
     dist: Option<PathBuf>,
 }
 
@@ -122,16 +127,18 @@ async fn serve(options: ServeOptions) -> Result<(), String> {
     if let Err(error) = auth::write_token(&token) {
         crate::logging::log_warn("serve", &format!("could not write the token file: {error}"));
     }
-    let addr = SocketAddr::new(options.host, options.port);
+    let addr = SocketAddr::new(LISTEN.into(), options.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("could not listen on {addr}: {e}"))?;
+    let access = access::Access::open();
+    let password = access.password_set();
     let host = Arc::new(ServeHost {
         ctx: CommandContext::new(&engine, events, db),
         hub,
         token: token.clone(),
         port: options.port,
-        loopback_only: options.host.is_loopback(),
+        access,
         dist: options.dist.clone(),
     });
 
@@ -139,7 +146,7 @@ async fn serve(options: ServeOptions) -> Result<(), String> {
     let _announced = discovery::announce(options.port, &token)
         .map_err(|e| crate::logging::log_warn("serve", &format!("could not write the engine note: {e}")))
         .ok();
-    print_banner(&options, &token);
+    print_banner(&options, &token, password);
     crate::logging::log_info("serve", &format!("serving on http://{addr}"));
     axum::serve(listener, router(host))
         .with_graceful_shutdown(async {
@@ -149,15 +156,70 @@ async fn serve(options: ServeOptions) -> Result<(), String> {
         .map_err(|e| format!("the server stopped: {e}"))
 }
 
-fn print_banner(options: &ServeOptions, token: &str) {
-    let shown = if options.host.is_unspecified() || options.host.is_loopback() {
-        "127.0.0.1".to_string()
-    } else {
-        options.host.to_string()
+/// `aurora serve password [--clear]`: set (asked twice, not echoed) or remove
+/// the sign-in password on this machine. A running server picks it up.
+pub fn password_command(clear: bool) -> i32 {
+    let dir = crate::paths::root().join("web");
+    if clear {
+        return match access::clear_password(&dir) {
+            Ok(()) => {
+                println!("Password removed. Browsers are signed out; the printed link still works.");
+                0
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                1
+            }
+        };
+    }
+    let first = match rpassword::prompt_password("New Aurora password: ") {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("Error: could not read the password from this terminal: {error}");
+            return 1;
+        }
     };
-    println!("Aurora is serving on port {}.", options.port);
+    if first.chars().count() < 8 {
+        eprintln!("Error: use at least 8 characters.");
+        return 1;
+    }
+    match rpassword::prompt_password("Type it again: ") {
+        Ok(second) if second == first => {}
+        Ok(_) => {
+            eprintln!("Error: the two passwords are different. Nothing changed.");
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("Error: could not read the password from this terminal: {error}");
+            return 1;
+        }
+    }
+    match access::set_password(&dir, &first) {
+        Ok(()) => {
+            println!(
+                "Password saved (as a hash in {}). Browsers signed in before must sign in again; \
+                 a signed-in browser stays signed in for {} days.",
+                dir.join("config.json").display(),
+                access::SESSION_DAYS
+            );
+            0
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            1
+        }
+    }
+}
+
+fn print_banner(options: &ServeOptions, token: &str, password: bool) {
+    println!("Aurora is serving on 127.0.0.1:{} (this machine only).", options.port);
     println!();
-    println!("  Sign in:  http://{shown}:{}/agent-window?token={token}", options.port);
+    println!("  Sign in:  http://127.0.0.1:{}/agent-window?token={token}", options.port);
+    if password {
+        println!("  or open   http://127.0.0.1:{}/agent-window and type the password.", options.port);
+    } else {
+        println!("  Set a password to sign in without this link: aurora serve password");
+    }
     println!();
     match &options.dist {
         Some(dist) => println!("Interface: {}", dist.display()),
@@ -165,19 +227,6 @@ fn print_banner(options: &ServeOptions, token: &str) {
             "No built interface (pass --dist <folder> after `pnpm build`). \
              With `pnpm dev` running, open http://localhost:5273/agent-window instead."
         ),
-    }
-    println!(
-        "Commands served so far: {} (the rest of the interface answers \"unknown command\" until \
-         they move to this host).",
-        crate::host_commands::all_commands().count()
-    );
-    if !options.host.is_loopback() {
-        println!();
-        println!(
-            "WARNING: listening on {} — anyone who has the sign-in link can run commands, \
-             edit files and spend your API keys on this machine.",
-            options.host
-        );
     }
     println!("Ctrl+C stops it.");
 }
@@ -189,43 +238,116 @@ pub(crate) fn router(host: Arc<ServeHost>) -> Router {
         .route("/api/events/subscribe", post(subscribe))
         .route("/api/events/unsubscribe", post(unsubscribe))
         .route("/api/file", get(file))
+        .route("/api/logout", post(logout))
         .fallback(page)
         .layer(middleware::from_fn_with_state(host.clone(), guard))
         .with_state(host)
 }
 
-/// `Host` (when loopback only), then the token: bearer header, cookie, or a
-/// sign-in link that sets the cookie and drops the token from the address.
+/// `Host` must name 127.0.0.1/localhost (DNS rebinding), then one of: the
+/// token (bearer header or the old token cookie), a session cookie, the
+/// sign-in link, or the password form. A signed-out page gets the password
+/// page when a password is set.
 async fn guard(State(host): State<Arc<ServeHost>>, request: Request<Body>, next: Next) -> Response {
-    if host.loopback_only {
-        let host_ok = request
-            .headers()
-            .get(header::HOST)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| auth::is_loopback_host(value, host.port));
-        if !host_ok {
-            return (StatusCode::FORBIDDEN, "this Aurora only answers 127.0.0.1 and localhost")
-                .into_response();
-        }
+    let host_ok = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| auth::is_loopback_host(value, host.port));
+    if !host_ok {
+        return (StatusCode::FORBIDDEN, "this Aurora only answers 127.0.0.1 and localhost")
+            .into_response();
     }
     let token = host.token.as_bytes();
     if auth::is_signed_in(request.headers(), token) {
         return next.run(request).await;
     }
+    if access::session_from(request.headers()).is_some_and(|id| host.access.session_valid(&id)) {
+        return next.run(request).await;
+    }
+    if request.uri().path() == "/login" && request.method() == axum::http::Method::POST {
+        return login(&host, request).await;
+    }
     if let Some(rest) = auth::sign_in(&request, token) {
-        let mut response = Redirect::to(&rest).into_response();
-        if let Ok(value) = auth::sign_in_cookie(&host.token).parse() {
-            response.headers_mut().insert(header::SET_COOKIE, value);
-        }
-        return response;
+        return signed_in(&host, &rest);
     }
     if request.uri().path().starts_with("/api/") {
-        return (StatusCode::UNAUTHORIZED, "missing or wrong Aurora token").into_response();
+        return (StatusCode::UNAUTHORIZED, "not signed in to Aurora").into_response();
+    }
+    if host.access.password_set() {
+        let next = request
+            .uri()
+            .path_and_query()
+            .map(|p| p.as_str().to_string())
+            .unwrap_or_else(|| "/agent-window".into());
+        return pages::login(pages::safe_next(&next), None, StatusCode::UNAUTHORIZED);
     }
     pages::signed_out(
         "This address needs the sign-in link <code>aurora serve</code> printed when it \
-         started. A link from an earlier run stops working when the server restarts.",
+         started, or set a password on the machine with <code>aurora serve password</code> \
+         and sign in with that.",
     )
+}
+
+/// A new session and the browser sent on to `next`.
+fn signed_in(host: &ServeHost, next: &str) -> Response {
+    let session = match host.access.new_session() {
+        Ok(session) => session,
+        Err(error) => {
+            crate::logging::log_error("serve", &format!("could not start a session: {error}"));
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("could not sign in: {error}")).into_response();
+        }
+    };
+    let mut response = Redirect::to(pages::safe_next(next)).into_response();
+    if let Ok(value) = access::session_cookie(&session).parse() {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+/// The password form (`application/x-www-form-urlencoded`: `password`, `next`).
+async fn login(host: &ServeHost, request: Request<Body>) -> Response {
+    let bytes = match axum::body::to_bytes(request.into_body(), 16 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "sign-in form too large").into_response(),
+    };
+    let mut password = String::new();
+    let mut next = String::from("/agent-window");
+    for (key, value) in form_urlencoded::parse(&bytes) {
+        match key.as_ref() {
+            "password" => password = value.into_owned(),
+            "next" => next = value.into_owned(),
+            _ => {}
+        }
+    }
+    let next = pages::safe_next(&next).to_string();
+    match host.access.check_password(&password) {
+        Ok(()) => signed_in(host, &next),
+        Err(access::Refused::Wrong) => {
+            pages::login(&next, Some("That password is not right."), StatusCode::UNAUTHORIZED)
+        }
+        Err(access::Refused::TooMany { wait_secs }) => pages::login(
+            &next,
+            Some(&format!("Too many wrong passwords. Try again in {wait_secs} s.")),
+            StatusCode::TOO_MANY_REQUESTS,
+        ),
+        Err(access::Refused::NoPassword) => pages::signed_out(
+            "No password is set on this machine. Set one with <code>aurora serve password</code>, \
+             or use the sign-in link <code>aurora serve</code> printed.",
+        ),
+    }
+}
+
+/// End this browser's session.
+async fn logout(State(host): State<Arc<ServeHost>>, request: Request<Body>) -> Response {
+    if let Some(id) = access::session_from(request.headers()) {
+        host.access.end_session(&id);
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    if let Ok(value) = access::cleared_cookie().parse() {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
 }
 
 async fn invoke(

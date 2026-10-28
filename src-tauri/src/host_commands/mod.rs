@@ -123,7 +123,10 @@ where
     .map_err(|e| format!("the database task stopped: {e}"))?
 }
 
-/// Every command this host serves, across the groups.
+/// Every command this host serves, across the groups. Read by the tests that
+/// keep this list equal to what the window registers and what the interface
+/// calls; nothing at run time needs it since the serve banner stopped counting.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn all_commands() -> impl Iterator<Item = &'static str> {
     COMMANDS
         .iter()

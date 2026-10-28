@@ -42,7 +42,7 @@ async fn start(dist: Option<PathBuf>) -> (String, tempfile::TempDir) {
         hub,
         token: TOKEN.into(),
         port,
-        loopback_only: true,
+        access: access::Access::open_in(dir.path().join("web"), None),
         dist,
     });
     tokio::spawn(async move {
@@ -70,6 +70,14 @@ async fn nothing_answers_without_the_token() {
     let page = client().get(format!("{base}/agent-window")).send().await.unwrap();
     assert_eq!(page.status(), 401);
     assert!(page.text().await.unwrap().contains("sign-in link"));
+    // A cookie that is not a session gets nothing either.
+    let forged = client()
+        .post(format!("{base}/api/invoke/agent_active_turns"))
+        .header(header::COOKIE, "aurora_session=made-up")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), 401);
 }
 
 #[tokio::test]
@@ -113,8 +121,15 @@ async fn a_foreign_host_name_is_refused_even_with_the_token() {
     assert_eq!(response.status(), 403);
 }
 
+/// The `aurora_session=…` pair a response set.
+fn session_of(response: &reqwest::Response) -> String {
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap().to_string();
+    assert!(cookie.contains("HttpOnly") && cookie.contains("Max-Age=2592000"), "{cookie}");
+    cookie.split(';').next().unwrap().to_string()
+}
+
 #[tokio::test]
-async fn the_sign_in_link_sets_the_cookie_and_drops_the_token() {
+async fn the_sign_in_link_starts_a_session_and_drops_the_token() {
     let (base, _dir) = start(None).await;
     let response = client()
         .get(format!("{base}/agent-window?token={TOKEN}"))
@@ -123,18 +138,77 @@ async fn the_sign_in_link_sets_the_cookie_and_drops_the_token() {
         .unwrap();
     assert!(response.status().is_redirection());
     assert_eq!(response.headers()[header::LOCATION], "/agent-window");
-    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
-    assert!(cookie.starts_with(&format!("aurora_web={TOKEN}")) && cookie.contains("HttpOnly"));
+    let session = session_of(&response);
+    assert!(session.starts_with("aurora_session=") && !session.contains(TOKEN));
 
     let page = client()
         .get(format!("{base}/agent-window"))
-        .header(header::COOKIE, format!("aurora_web={TOKEN}"))
+        .header(header::COOKIE, &session)
         .send()
         .await
         .unwrap();
     // Signed in; no `--dist`, so the page says how to get an interface.
     assert_eq!(page.status(), 404);
     assert!(page.text().await.unwrap().contains("no built interface"));
+}
+
+#[tokio::test]
+async fn the_password_page_signs_in_and_a_wrong_password_does_not() {
+    let (base, dir) = start(None).await;
+    access::set_password(&dir.path().join("web"), "open sesame").unwrap();
+
+    let page = client().get(format!("{base}/agent-window/p/x")).send().await.unwrap();
+    assert_eq!(page.status(), 401);
+    let html = page.text().await.unwrap();
+    assert!(html.contains("type=\"password\"") && html.contains("value=\"/agent-window/p/x\""));
+
+    let wrong = client()
+        .post(format!("{base}/login"))
+        .form(&[("password", "nope"), ("next", "/agent-window")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+    assert!(wrong.headers().get(header::SET_COOKIE).is_none());
+
+    let right = client()
+        .post(format!("{base}/login"))
+        .form(&[("password", "open sesame"), ("next", "//evil.example/steal")])
+        .send()
+        .await
+        .unwrap();
+    assert!(right.status().is_redirection());
+    // Never sent to another site.
+    assert_eq!(right.headers()[header::LOCATION], "/agent-window");
+    let session = session_of(&right);
+
+    let api: Value = client()
+        .post(format!("{base}/api/invoke/agent_active_turns"))
+        .header(header::COOKIE, &session)
+        .json(&json!({ "args": {} }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(api, json!({ "ok": true, "data": [] }));
+
+    // Signing out ends it.
+    let out = client()
+        .post(format!("{base}/api/logout"))
+        .header(header::COOKIE, &session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out.status(), 204);
+    let after = client()
+        .post(format!("{base}/api/invoke/agent_active_turns"))
+        .header(header::COOKIE, &session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after.status(), 401);
 }
 
 #[tokio::test]

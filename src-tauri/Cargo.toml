@@ -59,6 +59,12 @@ hostname = "0.4"
 # processes (`machine.rs`, the web version's machine card). Local reads only.
 # 0.37, not newer: 0.38+ needs a newer rustc than rust-toolchain.toml's 1.92.
 sysinfo = { version = "0.37", default-features = false, features = ["system", "disk"] }
+# `aurora serve` sign-in (`serve/access.rs`): the owner's password stored as an
+# argon2id hash, typed without echo by `aurora serve password`, and the login
+# form's body.
+argon2 = "0.5"
+rpassword = "7"
+form_urlencoded = "1"
 notify = "6"
 grep = "0.3"
 grep-regex = "0.1"

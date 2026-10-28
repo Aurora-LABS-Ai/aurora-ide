@@ -16,6 +16,64 @@ pub fn signed_out(how: &str) -> Response {
         .into_response()
 }
 
+/// The password page `aurora serve` shows a signed-out browser when a password
+/// is set (`serve::access`). A plain form posting to `/login`, so it works
+/// before any script has loaded; `next` is where to go once signed in.
+/// Colours are Aurora Dark's (rails #181818 on a #141414 sheet, the field on
+/// the raised #232323, the accent button).
+pub fn login(next: &str, error: Option<&str>, status: StatusCode) -> Response {
+    let next = html_escape(next);
+    let error = error
+        .map(|text| format!("<p class=\"err\" role=\"alert\">{}</p>", html_escape(text)))
+        .unwrap_or_default();
+    (
+        status,
+        Html(format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+             <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+             <title>Sign in · Aurora</title><style>\
+             :root{{color-scheme:dark}}*{{box-sizing:border-box}}\
+             body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#141414;color:#f0f0f0;\
+             font:14px/1.5 -apple-system,BlinkMacSystemFont,\"Segoe UI\",system-ui,sans-serif}}\
+             form{{width:min(340px,calc(100vw - 32px));padding:24px;border-radius:12px;background:#181818;\
+             box-shadow:inset 0 0 0 1px rgba(255,255,255,.042),0 8px 16px -4px rgba(0,0,0,.12)}}\
+             h1{{margin:0 0 4px;font-size:16px;font-weight:600}}\
+             p{{margin:0 0 16px;color:rgba(240,240,240,.65);font-size:13px}}\
+             label{{display:block;margin-bottom:6px;font-size:13px;color:rgba(240,240,240,.65)}}\
+             input{{width:100%;height:32px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,255,255,.084);\
+             background:#232323;color:#f0f0f0;font:inherit;outline:none}}\
+             input:focus{{border-color:rgba(255,255,255,.3)}}\
+             button{{width:100%;height:32px;margin-top:12px;border:0;border-radius:8px;background:#2f90eb;\
+             color:#fff;font:inherit;font-weight:500;cursor:pointer}}button:hover{{background:#297dcc}}\
+             .err{{margin:10px 0 0;color:#fa423e}}\
+             </style></head><body><form method=\"post\" action=\"/login\">\
+             <h1>Sign in to Aurora</h1><p>The password set on this machine with <code>aurora serve password</code>.</p>\
+             <label for=\"pw\">Password</label>\
+             <input id=\"pw\" name=\"password\" type=\"password\" autocomplete=\"current-password\" autofocus required>\
+             <input type=\"hidden\" name=\"next\" value=\"{next}\">\
+             {error}<button type=\"submit\">Sign in</button></form></body></html>"
+        )),
+    )
+        .into_response()
+}
+
+/// Where a sign-in may send the browser: a path on this server, never another
+/// site (`//evil.example` and `https://…` fall back to the app).
+pub fn safe_next(next: &str) -> &str {
+    if next.starts_with('/') && !next.starts_with("//") && !next.contains('\\') {
+        next
+    } else {
+        "/agent-window"
+    }
+}
+
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Page addresses (`/agent-window/p/<slug>/<id>`) have no extension; files do.
 pub fn has_extension(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|last| last.contains('.'))
@@ -108,6 +166,14 @@ mod tests {
         assert!(!has_extension("agent-window/p/e--repo/7d5db95e-f37f"));
         assert!(has_extension("assets/index-abc123.js"));
         assert!(has_extension("favicon.ico"));
+    }
+
+    #[test]
+    fn a_sign_in_only_ever_returns_to_this_server() {
+        assert_eq!(safe_next("/agent-window/p/x"), "/agent-window/p/x");
+        assert_eq!(safe_next("//evil.example/x"), "/agent-window");
+        assert_eq!(safe_next("https://evil.example"), "/agent-window");
+        assert_eq!(safe_next("/\\evil.example"), "/agent-window");
     }
 
     #[test]

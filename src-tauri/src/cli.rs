@@ -128,21 +128,32 @@ pub enum CliCommand {
     #[command(flatten)]
     Delegate(crate::cli_delegate::command::DelegateCommand),
 
-    /// Serve Aurora's interface on an HTTP port, with no window: the engine
-    /// runs in this process and a browser is the client. Prints a one-time
-    /// sign-in link. Ctrl+C stops it.
+    /// Serve Aurora's interface on 127.0.0.1, with no window: the engine runs
+    /// in this process and a browser is the client. It never listens on any
+    /// other address; reach it from another machine through an SSH tunnel.
+    /// Prints a sign-in link. Ctrl+C stops it.
     Serve {
+        #[command(subcommand)]
+        action: Option<ServeAction>,
         /// Port to listen on.
         #[arg(long, default_value_t = crate::serve::DEFAULT_PORT)]
         port: u16,
-        /// Address to listen on. Anything but 127.0.0.1 lets other machines
-        /// reach it: anyone with the link can then run commands here.
-        #[arg(long, default_value = "127.0.0.1")]
-        host: std::net::IpAddr,
         /// The built interface (`pnpm build`'s `dist/`). Without it only the
         /// API is served; run `pnpm dev` for the interface.
         #[arg(long, value_name = "FOLDER")]
         dist: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ServeAction {
+    /// Set the password a browser signs in with (stored as a hash in
+    /// Aurora's data folder; every browser signs in again). Asks twice,
+    /// without showing what you type.
+    Password {
+        /// Remove the password instead; the printed link is then the only way in.
+        #[arg(long)]
+        clear: bool,
     },
 }
 
@@ -271,7 +282,11 @@ impl CliArgs {
                 DelegateCommand::Mcp(_) => run::run_mcp(),
                 DelegateCommand::Tui(args) => run::run_interactive(args.path),
             })),
-            Some(CliCommand::Serve { port, host, dist }) => {
+            Some(CliCommand::Serve {
+                action: Some(ServeAction::Password { clear }),
+                ..
+            }) => Ok(Some(crate::serve::password_command(*clear))),
+            Some(CliCommand::Serve { action: None, port, dist }) => {
                 // Relative to where the command was run.
                 let dist = dist.clone().map(|d| {
                     if d.is_absolute() {
@@ -282,7 +297,6 @@ impl CliArgs {
                 });
                 Ok(Some(crate::serve::run(crate::serve::ServeOptions {
                     port: *port,
-                    host: *host,
                     dist,
                 })))
             }

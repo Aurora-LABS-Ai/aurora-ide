@@ -157,7 +157,7 @@
    border firms up, the same signal a focused field gives — no ring. */
 .agw-imgbox[data-drop] {
   border-color: var(--agw-text-subtle);
-  background: color-mix(in srgb, var(--agw-composer-surface) 92%, var(--agw-text));
+  background: var(--agw-surface-elevated);
 }
 
 /* The picture to edit: a thumbnail chip above the text, like a composer

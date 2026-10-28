@@ -110,7 +110,7 @@
 }
 .agw-compaction-failed .agw-compaction-line,
 .agw-compaction-cancelled .agw-compaction-line {
-  background: color-mix(in srgb, var(--agw-warning) 45%, var(--agw-border));
+  background: var(--agw-warning-line);
 }
 
 /* ── Settings range control (compaction threshold / budget) ─────────────── */
@@ -144,7 +144,7 @@
   padding: 7px 11px;
   border-left: 2px solid var(--agw-accent);
   border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
-  background: color-mix(in srgb, var(--agw-accent) 8%, transparent);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
   /* A mid-turn note IS a user message — its size follows the same token as
    * the user bubble, on its own compact leading. */
@@ -192,7 +192,7 @@
   padding: 7px 11px;
   border-left: 2px solid var(--agw-warning);
   border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
-  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  background: var(--agw-warning-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
   line-height: 1.45;
@@ -231,7 +231,7 @@
   padding: 7px 11px;
   border-left: 2px solid var(--agw-warning);
   border-radius: 0 var(--agw-radius-md) var(--agw-radius-md) 0;
-  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  background: var(--agw-warning-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-md);
   line-height: 1.45;
@@ -241,7 +241,7 @@
   width: 12px;
   height: 12px;
   border-radius: var(--agw-radius-pill);
-  border: 1.6px solid color-mix(in srgb, var(--agw-warning) 28%, transparent);
+  border: 1.6px solid var(--agw-warning-line);
   border-top-color: var(--agw-warning);
   animation: agw-spin 0.7s linear infinite;
 }
@@ -344,16 +344,13 @@
  * status it does not have. */
 .agw-drule {
   --agw-dg-a: var(--agw-accent);
-  --agw-dg-b: #8b7ff0;
-  --agw-dg-c: #e07bb0;
+  --agw-dg-b: var(--agw-decor-2);
+  --agw-dg-c: var(--agw-decor-3);
   --agw-dg-o: 0.55;
 }
-/* Light needs more ink, not the same ink: these hues at dark-scheme lightness
- * wash out on paper, and a 0.55 overlap that reads as mixing on near-black
- * reads as a stain on white. */
+/* Light needs more ink: a 0.55 overlap that reads as mixing on near-black
+ * reads as a stain on white (the deeper light hues are in the role layer). */
 .agw-root[data-appearance="light"] .agw-drule {
-  --agw-dg-b: #5b4bd6;
-  --agw-dg-c: #b8447f;
   --agw-dg-o: 0.62;
 }
 
@@ -444,8 +441,8 @@
 /* Colour-only on hover, per the restraint rule — the card must not move under
  * the cursor while it is being read. */
 .agw-canvas-launch:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
-  background: color-mix(in srgb, var(--agw-accent) 5%, var(--agw-card-paint));
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 /* Focus is the card's own border going to accent — hover's language one step
  * stronger, never a detached ring wrapped around the control. */
@@ -495,11 +492,11 @@
   border-radius: 3px;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--agw-text) 7%, transparent) 0%,
-    color-mix(in srgb, var(--agw-text) 7%, transparent) 28%,
-    color-mix(in srgb, var(--agw-text) 20%, transparent) 50%,
-    color-mix(in srgb, var(--agw-text) 7%, transparent) 72%,
-    color-mix(in srgb, var(--agw-text) 7%, transparent) 100%
+    var(--agw-skeleton) 0%,
+    var(--agw-skeleton) 28%,
+    var(--agw-skeleton-shine) 50%,
+    var(--agw-skeleton) 72%,
+    var(--agw-skeleton) 100%
   );
   background-size: 200% 100%;
   animation: agw-shimmer 2.5s steps(60) infinite;
@@ -740,11 +737,11 @@
   }
   .agw-canvas-launch-rail > i {
     background-image: none;
-    background-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+    background-color: var(--agw-accent-line);
     animation: none;
   }
   .agw-canvas-launch-skel {
-    background: color-mix(in srgb, var(--agw-text) 9%, transparent);
+    background: var(--agw-skeleton);
     animation: none;
   }
   .agw-canvas-launch-title.agw-shimmer {
@@ -778,7 +775,7 @@
   width: min(100%, 520px);
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--agw-accent) 24%, var(--agw-border));
+  border: 1px solid var(--agw-accent-line);
   border-radius: var(--agw-radius-md);
   outline: none;
   background: var(--agw-card-paint);
@@ -789,7 +786,7 @@
   transition: border-color var(--agw-dur-fast) ease, background var(--agw-dur-fast) ease;
 }
 .agw-plan-launch:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--agw-accent) 58%, var(--agw-border));
+  border-color: var(--agw-accent);
   background: var(--agw-hover-paint);
 }
 .agw-plan-launch:focus-visible {

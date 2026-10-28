@@ -361,7 +361,7 @@
   max-height: 100%;
   object-fit: contain;
   border-radius: var(--agw-radius-sm);
-  box-shadow: 0 1px 14px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--agw-shadow-md);
   cursor: zoom-in;
 }
 .agw-fv-image[data-actual] {
@@ -376,8 +376,8 @@
   right: 12px;
   padding: 3px 8px;
   border-radius: var(--agw-radius-pill);
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  background: var(--agw-media-scrim);
+  color: var(--agw-on-media);
   font-family: var(--agw-font-code);
   font-size: var(--agw-fs-label);
   font-variant-numeric: tabular-nums;

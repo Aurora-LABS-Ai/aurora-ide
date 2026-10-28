@@ -32,7 +32,7 @@
  * that stands out. */
 .agw-abox .ac-row-title {
   font-weight: var(--agw-fw-body);
-  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  color: var(--agw-text);
 }
 .agw-abox .ac-row-value {
   font-weight: var(--agw-fw-medium);

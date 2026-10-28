@@ -476,9 +476,9 @@
   /* A quiet card seat — fill + hairline derived from the text color so the
      row separates from the rail in both themes instead of floating as bare
      text on a flat background. */
-  border: 1px solid color-mix(in srgb, var(--agw-text) 5%, transparent);
+  border: 1px solid var(--agw-border-subtle);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-text) 2.5%, transparent);
+  background: var(--agw-border-subtle);
   text-align: left;
   cursor: pointer;
   transition: background var(--agw-dur-fast) ease, border-color var(--agw-dur-fast) ease;
@@ -488,11 +488,11 @@
 }
 .agw-prov-item:hover {
   background: var(--agw-hover-paint);
-  border-color: color-mix(in srgb, var(--agw-text) 10%, transparent);
+  border-color: var(--agw-border);
 }
 .agw-prov-item[data-active] {
   background: var(--agw-state-selected);
-  border-color: color-mix(in srgb, var(--agw-text) 14%, transparent);
+  border-color: var(--agw-border-strong);
 }
 /* Pressed (after [data-active] so selecting an already-active row still
    acknowledges the click with a deeper shade). */
@@ -1085,7 +1085,7 @@
 }
 .agw-csel-trigger:active {
   border-color: var(--agw-border-strong);
-  background: color-mix(in srgb, var(--agw-canvas) 92%, var(--agw-text) 8%);
+  background: var(--agw-surface);
 }
 .agw-csel-trigger:focus-visible {
   box-shadow: var(--agw-focus-ring);
@@ -1241,7 +1241,7 @@
 /* Active while its popover is open — reads as connected to the menu, tinted
    FROM the composer surface so the pill stays in the composer's color family. */
 .agw-composer-pill[data-open] {
-  background: color-mix(in srgb, var(--agw-text) 7%, var(--agw-composer-surface));
+  background: var(--agw-surface-elevated);
 }
 
 /* Composer family: the model selector, the reasoning picker, and the @ / /
@@ -1264,7 +1264,7 @@
      The docked cards belong here too: they are attached to the composer and
      read as part of it, so they take the composer's surface rather than the
      transcript's. */
-  background: color-mix(in srgb, var(--agw-composer-surface) 95%, transparent);
+  background: var(--agw-composer-surface);
 }
 @supports not (backdrop-filter: blur(1px)) {
   .agw-model-menu,

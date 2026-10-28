@@ -152,7 +152,7 @@
 }
 .agw-settings-nav-item:active {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-set-nav-hover-bg) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
 }
 .agw-settings-nav-item[data-active] {
   color: var(--agw-set-nav-active-fg);
@@ -627,7 +627,7 @@
   cursor: pointer;
   transition: background var(--agw-dur-base) ease;
   outline: none;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 8%, transparent);
+  box-shadow: inset 0 0 0 1px var(--agw-border);
 }
 .agw-switch-knob {
   position: absolute;
@@ -756,11 +756,11 @@
    above the pill so their labels stay readable). */
 .agw-seg-btn:hover:not([data-active]) {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
+  background: var(--agw-hover-paint);
 }
 .agw-seg-btn:active:not([data-active]) {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-hover-paint) 88%, var(--agw-text) 8%);
+  background: var(--agw-press-paint);
 }
 .agw-seg-btn:focus-visible {
   box-shadow: var(--agw-focus-ring);
@@ -802,23 +802,23 @@
 }
 .agw-set-pill[data-tone="success"] {
   color: var(--agw-added);
-  border-color: color-mix(in srgb, var(--agw-added) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-added) 12%, transparent);
+  border-color: var(--agw-added-line);
+  background: var(--agw-added-soft);
 }
 .agw-set-pill[data-tone="warning"] {
   color: var(--agw-warning);
-  border-color: color-mix(in srgb, var(--agw-warning) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-warning) 12%, transparent);
+  border-color: var(--agw-warning-line);
+  background: var(--agw-warning-soft);
 }
 .agw-set-pill[data-tone="danger"] {
   color: var(--agw-removed);
-  border-color: color-mix(in srgb, var(--agw-removed) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+  border-color: var(--agw-removed-line);
+  background: var(--agw-removed-soft);
 }
 .agw-set-pill[data-tone="info"] {
   color: var(--agw-info);
-  border-color: color-mix(in srgb, var(--agw-info) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-info) 12%, transparent);
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 
 
@@ -901,7 +901,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--agw-text) 26%, transparent);
+  background: var(--agw-text-subtle);
 }
 .agw-set-connect-dot[data-on] {
   background: var(--agw-added);

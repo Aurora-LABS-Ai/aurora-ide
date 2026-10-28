@@ -4,8 +4,8 @@
 
 /* Success variant for the inline notice (import applied, copied, …). */
 .agw-set-notice[data-tone="success"] {
-  border: 1px solid color-mix(in srgb, var(--agw-added) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-added) 11%, transparent);
+  border: 1px solid var(--agw-added-line);
+  background: var(--agw-added-soft);
 }
 
 /* ── Preset theme cards ──────────────────────────────────────────────────── */
@@ -34,8 +34,8 @@
   box-shadow: var(--agw-set-shadow-hover);
 }
 .agw-appr-card[data-active] {
-  border-color: color-mix(in srgb, var(--agw-accent) 60%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 9%, transparent);
+  border-color: var(--agw-accent);
+  background: var(--agw-accent-soft);
 }
 .agw-appr-card-preview {
   display: grid;
@@ -76,7 +76,7 @@
   padding: 14px 16px;
   border: 1px dashed var(--agw-border-strong);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-canvas) 50%, transparent);
+  background: var(--agw-canvas);
   color: var(--agw-text-muted);
   font-size: var(--agw-fs-ui);
   line-height: 1.45;
@@ -88,8 +88,8 @@
   border-color: var(--agw-text-subtle);
 }
 .agw-appr-drop[data-over] {
-  border-color: color-mix(in srgb, var(--agw-accent) 70%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 10%, transparent);
+  border-color: var(--agw-accent);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
 }
 .agw-appr-drop strong {
@@ -124,9 +124,9 @@
   gap: 8px;
   width: 320px;
   padding: 10px 11px;
-  border: 1px solid color-mix(in srgb, var(--agw-warning) 34%, transparent);
+  border: 1px solid var(--agw-warning-line);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-warning) 10%, transparent);
+  background: var(--agw-warning-soft);
   text-align: left;
 }
 .agw-appr-warn > svg {
@@ -234,14 +234,7 @@
 }
 
 /* ── Translucent rail & dock (opt-in) ────────────────────────────────────── */
-/* Derive the frosted paint FROM the user's own rail/dock colours (not from
- * --agw-surface) so enabling this keeps whatever they picked in Appearance and
- * only adds transparency. Writing to the *-paint aliases — never the tokens —
- * is what makes that possible without a var() self-reference cycle. */
-.agw-root[data-translucent] {
-  --agw-rail-paint: color-mix(in srgb, var(--agw-rail) 55%, transparent);
-  --agw-dock-paint: color-mix(in srgb, var(--agw-dock) 55%, transparent);
-}
+/* The frosted paint itself is a role (01-root.css, `[data-translucent]`). */
 .agw-root[data-translucent] .agw-settings-nav,
 .agw-root[data-translucent] .agw-titlebar,
 .agw-root[data-translucent] .agw-canvas,

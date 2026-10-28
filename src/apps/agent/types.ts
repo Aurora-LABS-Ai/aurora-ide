@@ -8,6 +8,19 @@
 
 export type AgentAppearance = "dark" | "light";
 
+/** What a theme's colours are derived from (`theme/palette.ts`). */
+export interface PaletteInputs {
+  /** Window background. */
+  surface: string;
+  /** Foreground; borders, hovers and secondary text are ink at an alpha. */
+  ink: string;
+  accent: string;
+  /** 0–100. The variant's default is where the reference's resolved values come from. */
+  contrast: number;
+  diffAdded: string;
+  diffRemoved: string;
+}
+
 /**
  * The agent window's design contract. Applied as scoped CSS custom properties
  * (`--agw-*`) on `.agw-root`, fully isolated from the IDE's `--aurora-*` theme.
@@ -131,6 +144,12 @@ export interface AgentTheme {
   name: string;
   appearance: AgentAppearance;
   tokens: AgentThemeTokens;
+  /**
+   * What the colour tokens are derived from (`theme/palette.ts`). Set on the
+   * built-in themes, so the Contrast slider re-derives them; a custom theme
+   * saved as a flat token set has none and keeps its own colours.
+   */
+  palette?: PaletteInputs;
 }
 
 /**

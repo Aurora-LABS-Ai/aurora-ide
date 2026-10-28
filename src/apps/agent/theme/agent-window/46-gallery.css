@@ -181,9 +181,9 @@
 .agw-wall-tile[data-state="loading"] {
   background: linear-gradient(
     110deg,
-    var(--agw-surface) 35%,
-    color-mix(in srgb, var(--agw-surface) 88%, var(--agw-text)) 50%,
-    var(--agw-surface) 65%
+    var(--agw-skeleton) 35%,
+    var(--agw-skeleton-shine) 50%,
+    var(--agw-skeleton) 65%
   );
   background-size: 240% 100%;
   animation: agw-wall-sheen 1.4s linear infinite;
@@ -214,7 +214,7 @@
 }
 /* Selected: the tile's own edge takes the accent — no ring outside it. */
 .agw-wall-tile[data-selected] {
-  border-color: color-mix(in srgb, var(--agw-accent) 65%, transparent);
+  border-color: var(--agw-accent);
 }
 .agw-wall-open {
   display: block;
@@ -264,8 +264,8 @@
   right: 0;
   bottom: 0;
   padding: 20px 9px 7px;
-  background: linear-gradient(transparent, rgb(0 0 0 / 68%));
-  color: #fff;
+  background: linear-gradient(transparent, var(--agw-media-fade));
+  color: var(--agw-on-media);
   font-size: var(--agw-fs-micro);
   text-align: left;
   white-space: nowrap;
@@ -303,16 +303,16 @@
   padding: 0;
   border: 0;
   border-radius: var(--agw-radius-sm);
-  background: rgb(0 0 0 / 55%);
-  color: #fff;
+  background: var(--agw-media-scrim);
+  color: var(--agw-on-media);
   cursor: pointer;
   transition: background var(--agw-dur-fast) ease;
 }
 .agw-wall-action:hover {
-  background: rgb(0 0 0 / 75%);
+  background: var(--agw-media-scrim-hover);
 }
 .agw-wall-action:active {
-  background: rgb(0 0 0 / 88%);
+  background: var(--agw-media-scrim-press);
 }
 .agw-wall-action:focus-visible {
   outline: none;
@@ -325,8 +325,8 @@
   left: 7px;
   padding: 2px 7px;
   border-radius: var(--agw-radius-pill);
-  background: rgb(0 0 0 / 55%);
-  color: #fff;
+  background: var(--agw-media-scrim);
+  color: var(--agw-on-media);
   font-size: var(--agw-fs-micro);
 }
 .agw-wall-placeholder {
@@ -364,12 +364,12 @@
   background: conic-gradient(
     from var(--agw-drop-angle),
     transparent 0deg,
-    color-mix(in srgb, var(--agw-accent) 45%, transparent) 55deg,
-    color-mix(in srgb, var(--agw-accent) 80%, white) 80deg,
+    var(--agw-accent-line) 55deg,
+    var(--agw-info) 80deg,
     transparent 110deg,
     transparent 180deg,
-    color-mix(in srgb, var(--agw-accent) 45%, transparent) 235deg,
-    color-mix(in srgb, var(--agw-accent) 80%, white) 260deg,
+    var(--agw-accent-line) 235deg,
+    var(--agw-info) 260deg,
     transparent 290deg,
     transparent 360deg
   );
@@ -394,7 +394,7 @@
   animation: none;
 }
 .agw-wall-tile[data-state="failed"] {
-  border-color: color-mix(in srgb, var(--agw-danger) 40%, var(--agw-border));
+  border-color: var(--agw-removed-line);
 }
 .agw-wall-failed {
   position: absolute;
@@ -527,7 +527,7 @@
   max-width: 100%;
   overflow: hidden;
   border-radius: var(--agw-radius-md);
-  background: #000;
+  background: var(--agw-media-backdrop);
 }
 .agw-video-hole[data-dead="true"] {
   background: var(--agw-surface);
@@ -549,8 +549,8 @@
   align-items: center;
   gap: 8px;
   font-size: var(--agw-fs-micro);
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  color: var(--agw-on-media);
+  text-shadow: var(--agw-media-text-shadow);
 }
 .agw-video-facts {
   min-width: 0;
@@ -578,15 +578,15 @@
   line-height: 0;
   border: 0;
   border-radius: var(--agw-radius-sm);
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: var(--agw-media-glass);
+  color: var(--agw-on-media);
 }
 .agw-video-check:hover {
-  background: rgba(255, 255, 255, 0.26);
+  background: var(--agw-media-glass-hover);
 }
 .agw-video-check:focus-visible {
   outline: none;
-  background: rgba(255, 255, 255, 0.34);
+  background: var(--agw-media-glass-press);
 }
 .agw-video-check[aria-busy="true"] svg {
   animation-name: agw-video-spin;
@@ -616,16 +616,16 @@
   gap: 6px;
   padding: 3px 8px;
   border-radius: var(--agw-radius-pill);
-  font-size: 11px;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
+  font-size: var(--agw-fs-micro);
+  color: var(--agw-on-media);
+  background: var(--agw-media-scrim);
 }
 .agw-video-badge[data-tone="bad"] {
-  background: color-mix(in srgb, var(--agw-removed) 80%, rgba(0, 0, 0, 0.6));
+  background: var(--agw-removed);
 }
 .agw-video-badge[data-tone="warn"] {
-  background: color-mix(in srgb, var(--agw-warning) 78%, rgba(0, 0, 0, 0.6));
-  color: #1a1206;
+  background: var(--agw-warning);
+  color: var(--agw-on-warning);
 }
 .agw-video-meta {
   display: flex;

@@ -200,7 +200,7 @@
 .agw-modelcat-tag {
   padding: 2px 7px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  background: var(--agw-accent-soft);
   color: var(--agw-accent);
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);

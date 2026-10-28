@@ -18,7 +18,7 @@
   /* Black, not a token. The shader paints every pixel, so this shows only for
      the frame before the first draw and behind a `border-radius` corner —
      a surface colour there would rim the box in a lighter edge. */
-  background: #000;
+  background: var(--agw-media-backdrop);
 }
 
 .agw-silk-canvas {
@@ -63,18 +63,18 @@
   background: radial-gradient(
     ellipse at center,
     transparent 20%,
-    rgba(0, 0, 0, 0.4) 65%,
-    rgba(0, 0, 0, 0.9) 100%
+    var(--agw-vignette-mid) 65%,
+    var(--agw-vignette-edge) 100%
   );
 }
 
 .agw-silk-vignette-linear {
   background: linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.2) 0%,
+    var(--agw-vignette-top) 0%,
     transparent 30%,
     transparent 70%,
-    rgba(0, 0, 0, 0.3) 100%
+    var(--agw-vignette-bottom) 100%
   );
 }
 

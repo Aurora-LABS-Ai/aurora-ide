@@ -193,24 +193,14 @@
    * (2026-10-28) compared them side by side and the rail's plain fill is the
    * one that reads right. One hover, one setting that controls all of it. */
 
-  /* Near-opaque glass. The blur is kept for depth, but the tint is 95% so the
-   * BACKDROP contributes almost nothing to the final colour.
-   *
-   * At the previous 78%, a popover's rendered colour was 22% whatever sat
-   * behind it — so the rail context menu (over the rail, #161616) landed near
-   * #292929 while the context tooltip (over the conversation sheet, #0f0f0f)
-   * landed near #272727, despite sharing this exact rule. Translucent
-   * surfaces cannot be guaranteed to match; 95% makes the difference
-   * imperceptible while still reading as a floating, blurred panel. */
-  background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
-  /* Restrained glass: enough blur for depth, but no saturation push — the
-   * 140% boost recolored whatever sat behind the panel, which is part of what
-   * made popovers look like foreign material instead of the app's own. */
-  -webkit-backdrop-filter: blur(14px) saturate(112%);
-  backdrop-filter: blur(14px) saturate(112%);
-  border: 1px solid var(--agw-border-strong);
+  /* Codex's floating surface: OPAQUE (a menu is read, so nothing behind it may
+   * show through or change its colour), no 1px border. The edge is the 0.5px
+   * hairline inside `--agw-shadow-pop`, plus the faint inner line Codex adds in
+   * dark so the edge still reads against a dark ground. */
+  background: var(--agw-popover-surface);
+  border: 0;
   border-radius: var(--agw-radius-lg);
-  box-shadow: var(--agw-shadow-pop);
+  box-shadow: inset 0 0 0 1px var(--agw-border-subtle), var(--agw-shadow-pop);
   /* No entrance on `.agw-menu`: a menu opens in one frame, like a native one
      (the Codex reference turns menu animation off on desktop). It also leaves
      the members that animate in JS (model picker, rail chips, checklist,
@@ -262,12 +252,6 @@
 .agw-ctx-card {
   animation: agw-sweep-down var(--agw-dur-sweep) var(--agw-ease-snappy)
     var(--agw-sweep-delay) backwards;
-}
-@supports not (backdrop-filter: blur(1px)) {
-  .agw-menu,
-  .agw-ctx-card {
-    background: var(--agw-surface-elevated);
-  }
 }
 /* Shared popover entrance — a short rise + fade (never a hard pop into
    place). The ONE definition: a second keyframe of this name later in the

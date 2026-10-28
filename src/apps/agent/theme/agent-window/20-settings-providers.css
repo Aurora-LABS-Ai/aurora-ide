@@ -161,11 +161,7 @@
    it is a shortlist toggle drawn as a chip rather than a pill, and it still
    carries its on state by colour alone. */
 .agw-prov-chat-pick[data-on] {
-  border-color: color-mix(
-    in srgb,
-    var(--agw-control-accent, var(--agw-accent)) 45%,
-    var(--agw-border)
-  );
+  border-color: var(--agw-control-accent-line);
   color: var(--agw-control-accent, var(--agw-accent));
 }
 .agw-prov-chat-pick:focus-visible {
@@ -245,7 +241,7 @@
   border-top: 1px solid var(--agw-border);
 }
 .agw-prov-model[data-active] {
-  background: color-mix(in srgb, var(--agw-added) 8%, transparent);
+  background: var(--agw-added-soft);
 }
 /* The list container has `overflow: visible` on the provider page, so a row's
    background isn't clipped by the container's rounded corners. Round the first
@@ -332,9 +328,9 @@
   gap: 8px;
   margin: 0 0 8px;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--agw-removed) 34%, transparent);
+  border: 1px solid var(--agw-removed-line);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-removed) 10%, transparent);
+  background: var(--agw-removed-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-label);
   line-height: 1.45;
@@ -373,15 +369,15 @@
 }
 .agw-prov-test-btn[data-state="pass"] {
   color: var(--agw-added);
-  border-color: color-mix(in srgb, var(--agw-added) 34%, transparent);
+  border-color: var(--agw-added-line);
 }
 .agw-prov-test-btn[data-state="warn"] {
   color: var(--agw-warning);
-  border-color: color-mix(in srgb, var(--agw-warning) 38%, transparent);
+  border-color: var(--agw-warning-line);
 }
 .agw-prov-test-btn[data-state="fail"] {
   color: var(--agw-removed);
-  border-color: color-mix(in srgb, var(--agw-removed) 34%, transparent);
+  border-color: var(--agw-removed-line);
 }
 .agw-prov-test-btn:disabled {
   cursor: progress;
@@ -408,7 +404,7 @@
   max-width: 340px;
   padding: 9px 11px;
   pointer-events: none;
-  background: color-mix(in srgb, var(--agw-popover-surface) 95%, transparent);
+  background: var(--agw-popover-surface);
   -webkit-backdrop-filter: blur(14px) saturate(112%);
   backdrop-filter: blur(14px) saturate(112%);
   border: 1px solid var(--agw-border-strong);
@@ -511,7 +507,7 @@
    are capabilities (Vision, Tools) and stay quiet; this one is a deviation the
    reader has to notice, so it takes the accent — the only one on the row. */
 .agw-prov-chip[data-tone="override"] {
-  border-color: color-mix(in srgb, var(--agw-accent) 40%, transparent);
+  border-color: var(--agw-accent-line);
   color: var(--agw-accent);
 }
 .agw-prov-edit {
@@ -647,8 +643,8 @@
 }
 .agw-prov-cap[data-on] {
   color: var(--agw-accent);
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 
 .agw-prov-addwrap {
@@ -896,8 +892,8 @@
 /* The default is the one choice that matters at send time, so it alone takes
    the accent — every other chip stays neutral. */
 .agw-img-size[data-default] {
-  border-color: color-mix(in srgb, var(--agw-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 .agw-img-size-pick,
 .agw-img-size-remove,
@@ -1012,11 +1008,7 @@
 }
 .agw-limit-chip[aria-pressed="true"] {
   border-style: solid;
-  border-color: color-mix(
-    in srgb,
-    var(--agw-control-accent, var(--agw-accent)) 45%,
-    var(--agw-border)
-  );
+  border-color: var(--agw-control-accent-line);
   color: var(--agw-control-accent, var(--agw-accent));
 }
 

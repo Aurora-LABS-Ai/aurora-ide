@@ -125,7 +125,7 @@
   padding: 0;
   border: none;
   border-radius: var(--agw-radius-2xs);
-  background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
+  background: var(--agw-chart-2);
   cursor: pointer;
   outline: none;
   transition: background var(--agw-dur-fast) ease;
@@ -140,7 +140,7 @@
 /* A turn that contained a failed call. Outranks the longest-turn tint: a slow
    turn is a curiosity, a failed one is the thing you came to find. */
 .agw-sess-bar[data-fail] {
-  background: color-mix(in srgb, var(--agw-removed) 72%, transparent);
+  background: var(--agw-removed-line);
 }
 .agw-sess-bar[data-fail]:hover,
 .agw-sess-bar[data-fail][data-on] {
@@ -155,11 +155,11 @@
   border-bottom: 3px solid var(--agw-warning);
 }
 .agw-sess-bar[data-context] {
-  background: color-mix(in srgb, var(--agw-text) 22%, transparent);
+  background: var(--agw-border-strong);
   cursor: default;
 }
 .agw-sess-bar[data-context][data-on] {
-  background: color-mix(in srgb, var(--agw-text) 55%, transparent);
+  background: var(--agw-text-subtle);
 }
 
 /* The pointed-at turn's numbers, UNDER the strip. A floating tooltip would
@@ -175,7 +175,7 @@
   padding: 9px 10px;
   border: 1px solid var(--agw-border);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-surface) 60%, transparent);
+  background: var(--agw-surface);
 }
 .agw-sess-readout-head {
   display: flex;
@@ -242,7 +242,7 @@
   width: 8px;
   height: 8px;
   border-radius: var(--agw-radius-2xs);
-  background: color-mix(in srgb, var(--agw-accent) 48%, transparent);
+  background: var(--agw-chart-2);
 }
 .agw-sess-sw[data-fail] {
   background: var(--agw-removed);
@@ -261,7 +261,7 @@
   height: 6px;
   margin-bottom: 7px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-text) 10%, transparent);
+  background: var(--agw-chart-track);
   overflow: hidden;
 }
 .agw-sess-split i[data-tone="good"] {
@@ -339,7 +339,7 @@
 }
 .agw-sess-table td {
   padding: 5px 0;
-  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  border-top: 1px solid var(--agw-border-subtle);
   font-variant-numeric: tabular-nums;
   color: var(--agw-text-muted);
 }
@@ -367,7 +367,7 @@
   padding: 5px 0;
 }
 .agw-sess-kv + .agw-sess-kv {
-  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  border-top: 1px solid var(--agw-border-subtle);
 }
 .agw-sess-k {
   flex: 1;

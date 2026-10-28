@@ -22,28 +22,148 @@
    *   is what makes a modal read as "on top of a backdrop" — so a scrim is
    *   present by default even when --agw-overlay (the tint) is set transparent.
    *   The overlay token still tints on top of this blur. */
-  /* One elevation STEP above the frame, not three: at the raw elevated fill
-   * (#2e2e2e on a #161616 rail) a popover was the brightest thing on screen
-   * and read as a detached slab floating over the app. Mixing it back toward
-   * the rail keeps a visible lift while the panel still clearly belongs to
-   * the surface it opened from. Derived, so every theme keeps the ratio. */
-  --agw-popover-surface: color-mix(
-    in srgb,
-    var(--agw-surface-elevated) 55%,
-    var(--agw-rail)
-  );
+  /* ══ THE ROLE LAYER ═══════════════════════════════════════════════════════
+   * The one place a colour is derived. The base tokens come from the palette
+   * engine (`theme/palette.ts`, Codex's four inputs); every role below is one
+   * of those or a fixed alpha of one, with Codex's numbers. NO other partial
+   * may mix, tint or hard-code a colour: they name a role from here
+   * (`appearance-token-coverage.test.ts` fails on a `color-mix(`, `#hex`,
+   * `rgb(` or `hsl(` anywhere else). Roles are written as `color-mix(…,
+   * transparent)` rather than resolved values so they follow the user's own
+   * colour overrides in Appearance.
+   *
+   * Elevation, lowest to highest (dark sinks, raised lifts toward the ink):
+   *   sheet     --agw-conversation   the chat area
+   *   frame     --agw-rail / --agw-dock / --agw-canvas
+   *   raised    --agw-surface        cards, panels; --agw-composer-surface
+   *   floating  --agw-popover-surface menus, dropdowns, pickers, popovers,
+   *             with --agw-shadow-pop (0.5px hairline + one soft drop). */
+  --agw-popover-surface: var(--agw-surface-elevated);
   --agw-modal-blur: blur(8px) saturate(0.85);
 
-  /* Selected/active fill for rows, tabs and nav items. DERIVED from the text
-   * colour (not an absolute surface token) so it stays visible on ANY
-   * background combination the user picks in Appearance — absolute fills can
-   * be tuned to coincide with a panel colour and make selection invisible.
-   * Same 9% text-mix precedent as .agw-model-item.
-   * --agw-state-quiet is the resting tier of the same idea: quiet raised
-   * controls (rail search, inactive tabs) that must stay
-   * distinguishable from whatever panel colour they sit on. */
-  --agw-state-selected: color-mix(in srgb, var(--agw-text) 9%, transparent);
-  --agw-state-quiet: color-mix(in srgb, var(--agw-text) 5%, transparent);
+  /* Neutral fills, the ink at Codex's alphas (variant grid, `docs/COLOR.md`):
+   *   quiet     resting fill of quiet controls     secondary-soft     5.2%
+   *   hover     pointer over                       --agw-hover        7.8%
+   *   selected  the current row / tab / nav item   button-secondary-active 12%
+   *   press     pointer down                       ghost-active       16%
+   * Derived from the text colour, not a surface, so they stay visible on any
+   * background the user picks. */
+  --agw-state-quiet: var(--agw-control-muted);
+  --agw-state-selected: color-mix(in srgb, var(--agw-text) 12%, transparent);
+
+  /* Lines: subtle (4.2%), default --agw-border (8.4%), strong (15.6%). */
+  --agw-border-subtle: color-mix(in srgb, var(--agw-text) 4.2%, transparent);
+
+  /* The accent family (Codex `info`): soft fill 13%, its hover 25%, an outline
+   * at 40%; text on dark surfaces is --agw-info (the accent lifted toward white). */
+  --agw-accent-soft: color-mix(in srgb, var(--agw-accent) 13%, transparent);
+  --agw-accent-soft-hover: color-mix(in srgb, var(--agw-accent) 25%, transparent);
+  --agw-accent-line: color-mix(in srgb, var(--agw-accent) 40%, transparent);
+  /* Small-control tint (switches, chips that toggle): its own family so a
+     neutral brand accent cannot erase an on state. */
+  --agw-control-accent-line: color-mix(
+    in srgb,
+    var(--agw-control-accent, var(--agw-accent)) 40%,
+    transparent
+  );
+
+  /* Status families, same three steps each (Codex success / danger / warning
+   * soft-alpha and outline). Diff line fills stay --agw-added/removed-surface. */
+  --agw-added-soft: color-mix(in srgb, var(--agw-added) 15%, transparent);
+  --agw-added-soft-hover: color-mix(in srgb, var(--agw-added) 29%, transparent);
+  --agw-added-line: color-mix(in srgb, var(--agw-added) 40%, transparent);
+  --agw-removed-soft: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+  --agw-removed-soft-hover: color-mix(in srgb, var(--agw-removed) 30%, transparent);
+  --agw-removed-line: color-mix(in srgb, var(--agw-removed) 40%, transparent);
+  --agw-warning-soft: color-mix(in srgb, var(--agw-warning) 16%, transparent);
+  --agw-warning-soft-hover: color-mix(in srgb, var(--agw-warning) 33%, transparent);
+  --agw-warning-line: color-mix(in srgb, var(--agw-warning) 40%, transparent);
+  /* A settled success mark (a finished tool row, a copied state): the success
+     hue pulled toward the secondary grey, so a transcript full of finished
+     steps does not read as a status board. Failure keeps full strength. */
+  --agw-added-quiet: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+
+  /* Loading placeholders: the resting skeleton is the hover fill, its moving
+     shine the press fill, so a skeleton is always the same weight as the
+     controls around it. */
+  --agw-skeleton: var(--agw-hover);
+  --agw-skeleton-shine: color-mix(in srgb, var(--agw-text) 16%, transparent);
+
+  /* The decorative divider's three stops (`.agw-drule`): the accent, then a
+     violet and a rose. Art, not state, so they are fixed hues; light mode
+     takes deeper ones so the rule does not read as a stain on white. */
+  --agw-decor-2: #8b7ff0;
+  --agw-decor-3: #e07bb0;
+
+  /* Reasoning level (the model picker's "Low / High / Max" word): Off, Minimal
+     and Low plain, then each level a stronger mix of the accent into the grey,
+     Max the full accent (Alvan, 2026-10-28). */
+  --agw-effort-1: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-text-muted));
+  --agw-effort-2: color-mix(in srgb, var(--agw-accent) 65%, var(--agw-text-muted));
+  --agw-effort-3: color-mix(in srgb, var(--agw-accent) 85%, var(--agw-text-muted));
+  --agw-effort-4: var(--agw-accent);
+
+  /* The wordmark's passing glint: a white band, limited to the glyph strokes
+     by its mask. Light, not a theme colour. */
+  --agw-glint: #fff;
+
+  /* The home wordmark: letters filled with the ink fading downward, a bright
+     duplicate that lights them on arrival, a faint pool of light above and a
+     floor shadow under them. */
+  --agw-wordmark-top: color-mix(in srgb, var(--agw-text) 16%, transparent);
+  --agw-wordmark-mid: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  --agw-wordmark-low: color-mix(in srgb, var(--agw-text) 5%, transparent);
+  --agw-wordmark-lit: color-mix(in srgb, var(--agw-text) 88%, transparent);
+  --agw-wordmark-pool: color-mix(in srgb, var(--agw-text) 4.5%, transparent);
+  --agw-wordmark-floor: rgb(0 0 0 / 38%);
+
+  /* Charts: one sequential scale, the accent stepping up from the raised
+     surface (Codex `--color-chart-sequential-1…4`), and an empty track. */
+  --agw-chart-1: color-mix(in srgb, var(--agw-accent) 30%, var(--agw-surface));
+  --agw-chart-2: color-mix(in srgb, var(--agw-accent) 55%, var(--agw-surface));
+  --agw-chart-3: color-mix(in srgb, var(--agw-accent) 78%, var(--agw-surface));
+  --agw-chart-4: var(--agw-accent);
+  --agw-chart-track: var(--agw-hover);
+
+  /* Over media (a picture, a video, a device frame). These sit on content of
+     any colour, so they are fixed black and white rather than theme colours:
+     a theme's text colour on a photo is unreadable half the time. */
+  --agw-on-media: #fff;
+  --agw-media-scrim: rgb(0 0 0 / 55%);
+  --agw-media-scrim-hover: rgb(0 0 0 / 75%);
+  --agw-media-scrim-press: rgb(0 0 0 / 88%);
+  --agw-media-fade: rgb(0 0 0 / 68%);
+  --agw-media-glass: rgb(255 255 255 / 14%);
+  --agw-media-glass-hover: rgb(255 255 255 / 26%);
+  --agw-media-glass-press: rgb(255 255 255 / 34%);
+  --agw-media-text-shadow: 0 1px 3px rgb(0 0 0 / 80%);
+  --agw-media-backdrop: #000;
+  /* The picture placeholder's vignette, black over its black stage. */
+  --agw-vignette-edge: rgb(0 0 0 / 90%);
+  --agw-vignette-mid: rgb(0 0 0 / 40%);
+  --agw-vignette-top: rgb(0 0 0 / 20%);
+  --agw-vignette-bottom: rgb(0 0 0 / 30%);
+  /* A device preview's own status bar (browser dock), white with dark ink, or
+     light ink on a dark page. A device's colours, not the theme's. */
+  --agw-device-bar: #ffffff;
+  --agw-device-ink: #111111;
+  --agw-device-ink-light: #ffffff;
+  /* Dark ink for text on the warning hue, which is too light for white. */
+  --agw-on-warning: #1a1206;
+
+  /* A filled neutral (Codex `primary-solid`): the text colour as a fill, with
+   * the raised surface as its label. */
+  --agw-solid: var(--agw-text);
+  --agw-on-solid: var(--agw-surface-elevated);
+
+  /* Shadows are neutral black, never tinted (Codex `--shadow-*`, dark alphas). */
+  --agw-shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 0.2);
+  --agw-shadow-md: 0 4px 8px -2px rgb(0 0 0 / 0.36);
+  --agw-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.2), 0 4px 6px -4px rgb(0 0 0 / 0.2);
+  /* A panel attached to the composer casts onto what is behind it, up or
+     down depending on which side it opened (the @ / menu pickers). */
+  --agw-shadow-cast-up: 0 -8px 16px -4px rgb(0 0 0 / 0.3);
+  --agw-shadow-cast-down: 0 8px 16px -4px rgb(0 0 0 / 0.3);
 
   /* ── The focus mark ──────────────────────────────────────────────────────
    * ONE shadow for every keyboard-focus ring in the window. Rules say
@@ -153,7 +273,7 @@
    * `--agw-hover-paint` is: a var() inside a custom property resolves where the
    * property is DECLARED, so this one captures the ROOT hover value and would
    * ignore the popover's amplified one. */
-  --agw-press-paint: color-mix(in srgb, var(--agw-hover) 88%, var(--agw-text) 12%);
+  --agw-press-paint: color-mix(in srgb, var(--agw-text) 16%, transparent);
 
   /* ── Chrome type scale ───────────────────────────────────────────────────
    * Six sizes for the window's CHROME (12/13/14/15/16/17). The half-pixel
@@ -172,12 +292,20 @@
    * Interface text size). It is a smooth multiplier, NOT rounded per step:
    * rounding to whole px collapses `md` and `body` onto the same 14px at 90%,
    * which destroys a tier. Ratios stay exact instead. */
-  --agw-fs-micro: calc(12px * var(--agw-ui-text-scale, 1));  /* badges, eyebrows, code metadata      */
-  --agw-fs-label: calc(13px * var(--agw-ui-text-scale, 1));  /* section labels, sublines, chips      */
-  --agw-fs-ui: calc(14px * var(--agw-ui-text-scale, 1));     /* controls, inputs, list rows          */
-  --agw-fs-md: calc(15px * var(--agw-ui-text-scale, 1));     /* emphasized UI, headers, empty states */
-  --agw-fs-body: calc(16px * var(--agw-ui-text-scale, 1));   /* window default                       */
-  --agw-fs-title: calc(17px * var(--agw-ui-text-scale, 1));  /* pane titles                          */
+  /* Codex's app ladder (`docs/FOUNDATION.md`): 11 meta, 12 dense rows, 13
+   * menus and control labels, 14 body and composer, 16 emphasis. `md` and
+   * `body` meet at 14 on purpose: Codex has no 15. */
+  --agw-fs-micro: calc(11px * var(--agw-ui-text-scale, 1));  /* badges, eyebrows, code metadata      */
+  --agw-fs-label: calc(12px * var(--agw-ui-text-scale, 1));  /* section labels, sublines, chips      */
+  --agw-fs-ui: calc(13px * var(--agw-ui-text-scale, 1));     /* controls, menus, inputs, list rows   */
+  --agw-fs-md: calc(14px * var(--agw-ui-text-scale, 1));     /* emphasized UI, headers, empty states */
+  --agw-fs-body: calc(14px * var(--agw-ui-text-scale, 1));   /* window default                       */
+  --agw-fs-title: calc(16px * var(--agw-ui-text-scale, 1));  /* pane titles                          */
+  /* Line heights: the four Codex uses. */
+  --agw-lh-tight: 1.25;
+  --agw-lh-snug: 1.375;
+  --agw-lh-ui: 1.4;   /* 13px → 18px, Codex's menu / control-label line   */
+  --agw-lh-body: 1.5;
 
   /* ── Weight scale ────────────────────────────────────────────────────────
    * FOUR roles. Every `font-weight` in this file resolves through one of them,
@@ -192,6 +320,10 @@
    * `strong` is reserved for things that must out-rank their neighbours: pane
    * titles, the active tab/nav row, prose headings and `<strong>`. `display`
    * is for non-reading marks only — wordmark, avatars, hero numerals. */
+  /* 400 text, 500 labels, 600 headings. Codex writes 510 for labels, but on a
+   * static system face (Segoe UI: 400 / 600 / 700) CSS matching sends anything
+   * above 500 to the next HEAVIER face, so 510 renders every label semibold;
+   * 500 resolves to the regular face there and to a true 500 on a variable one. */
   --agw-fw-body: 400;
   --agw-fw-medium: 500;
   --agw-fw-strong: 600;
@@ -382,6 +514,35 @@
    * so transcript text is copyable; interactive controls opt back out below. */
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Translucent rail & dock (Appearance, opt-in): the frosted paint is derived
+ * FROM the user's own rail/dock colours, so enabling it keeps whatever they
+ * picked and only adds transparency. Written to the *-paint aliases, never the
+ * tokens, which avoids a var() self-reference cycle. */
+.agw-root[data-translucent] {
+  --agw-rail-paint: color-mix(in srgb, var(--agw-rail) 55%, transparent);
+  --agw-dock-paint: color-mix(in srgb, var(--agw-dock) 55%, transparent);
+}
+
+/* The icon rail's paint, declared beside `--agw-rail-paint` so it resolves
+ * against whatever that alias is (translucent mode included); Appearance →
+ * Rail edge "shade" sinks it halfway toward the chat sheet. */
+.agw-root {
+  --agw-iconrail-paint: var(--agw-rail-paint);
+  /* The selected fill made opaque over the rail (a solid glyph's inner cut). */
+  --agw-selected-on-rail: color-mix(in srgb, var(--agw-text) 12%, var(--agw-rail-paint));
+}
+.agw-root[data-rail-edge="shade"] {
+  --agw-iconrail-paint: color-mix(in srgb, var(--agw-rail-paint) 55%, var(--agw-conversation));
+}
+
+/* Light-scheme decorative hues: at dark-scheme lightness they wash out on paper. */
+.agw-root[data-appearance="light"] {
+  --agw-decor-2: #5b4bd6;
+  --agw-decor-3: #b8447f;
+  /* A floor shadow at dark-mode strength reads as dirt on white. */
+  --agw-wordmark-floor: rgb(0 0 0 / 12%);
 }
 
 /* ── V2: depth ──────────────────────────────────────────────────────────────

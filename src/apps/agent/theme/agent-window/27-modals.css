@@ -73,7 +73,7 @@
   color: var(--agw-on-danger);
 }
 .agw-confirm-danger:hover {
-  background: color-mix(in srgb, var(--agw-removed) 88%, #000);
+  background: var(--agw-removed);
 }
 
 /* ── Microphone consent (AgentMicPermissionModal) ─────────────────────────
@@ -125,8 +125,8 @@
   height: 44px;
   border-radius: var(--agw-radius-md);
   color: var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--agw-accent) 30%, transparent);
+  background: var(--agw-accent-soft);
+  border: 1px solid var(--agw-accent-line);
   margin-bottom: 2px;
 }
 .agw-mic-perm-title {
@@ -367,7 +367,7 @@
 }
 .agw-bubble-more:hover {
   color: var(--agw-text);
-  background: color-mix(in srgb, var(--agw-hover-paint) 55%, transparent);
+  background: var(--agw-hover-paint);
 }
 .agw-bubble-more:focus-visible {
   outline: none;

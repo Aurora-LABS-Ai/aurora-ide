@@ -19,8 +19,9 @@ describe("quoteFamily", () => {
 
 describe("primaryFamily", () => {
   it("returns the first family, unquoted", () => {
-    expect(primaryFamily(AGENT_UI_FONT_STACK)).toBe("Inter Variable");
-    expect(primaryFamily(CODE_FONT_STACK)).toBe("JetBrains Mono");
+    expect(primaryFamily(AGENT_UI_FONT_STACK)).toBe("-apple-system");
+    expect(primaryFamily(CODE_FONT_STACK)).toBe("ui-monospace");
+    expect(primaryFamily('"Inter Variable", "Inter", sans-serif')).toBe("Inter Variable");
     expect(primaryFamily("monospace")).toBe("monospace");
   });
 });

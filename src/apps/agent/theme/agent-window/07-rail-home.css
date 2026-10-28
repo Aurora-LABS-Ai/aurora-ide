@@ -131,12 +131,12 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 32px;
+  height: 30px;
   padding: 0 4px 0 8px;
   border: none;
   border-radius: var(--agw-radius-md);
   background: transparent;
-  color: var(--agw-text-muted);
+  color: var(--agw-text);
   font-size: var(--agw-fs-ui);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
@@ -205,7 +205,7 @@
   color: var(--agw-text-subtle);
 }
 .agw-rail-project[data-stale]:not(:hover) .agw-rail-project-meta {
-  color: color-mix(in srgb, var(--agw-text-subtle) 62%, transparent);
+  color: var(--agw-text-subtle);
 }
 .agw-rail-project-main:hover {
   color: var(--agw-text);
@@ -383,9 +383,9 @@
   color: transparent;
   background-image: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--agw-text) 16%, transparent) 0%,
-    color-mix(in srgb, var(--agw-text) 8%, transparent) 48%,
-    color-mix(in srgb, var(--agw-text) 5%, transparent) 92%
+    var(--agw-wordmark-top) 0%,
+    var(--agw-wordmark-mid) 48%,
+    var(--agw-wordmark-low) 92%
   );
   -webkit-background-clip: text;
   background-clip: text;
@@ -394,7 +394,7 @@
 /* Arrival light — a BRIGHT DUPLICATE of each glyph, faded in and out.
  *
  * The obvious implementation (animate a registered `@property` percentage
- * inside the `color-mix()` above) needs three separate things to hold: the
+ * inside the wordmark's colour mix) needs three separate things to hold: the
  * property registration, a calc() percentage inside color-mix, and the engine
  * re-resolving `background-image` every frame. Any one failing silently
  * produces a mark that never lights — which is exactly what it did. This
@@ -408,7 +408,7 @@
   content: attr(data-glyph);
   position: absolute;
   inset: 0;
-  color: color-mix(in srgb, var(--agw-text) 88%, transparent);
+  color: var(--agw-wordmark-lit);
   opacity: 0;
   pointer-events: none;
   /* LOOPS, with a long rest between passes, rather than firing once on mount.
@@ -695,7 +695,7 @@
   inset: -32% -14%;
   background: radial-gradient(
     52% 56% at 50% 36%,
-    color-mix(in srgb, var(--agw-text) 4.5%, transparent) 0%,
+    var(--agw-wordmark-pool) 0%,
     transparent 72%
   );
   z-index: -1;
@@ -711,17 +711,10 @@
   height: 22%;
   background: radial-gradient(
     50% 55% at 50% 0%,
-    rgba(0, 0, 0, 0.38) 0%,
+    var(--agw-wordmark-floor) 0%,
     transparent 70%
   );
   z-index: -1;
-}
-.agw-root[data-appearance="light"] .agw-home-wordmark::after {
-  background: radial-gradient(
-    50% 55% at 50% 0%,
-    rgba(0, 0, 0, 0.12) 0%,
-    transparent 70%
-  );
 }
 
 /* Suggestion starter — a PLAIN row (no box), divider between rows, à la Codex.

@@ -9,13 +9,15 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 34px;
-  padding: 0 10px;
+  height: 30px;
+  padding: 0 8px;
   border: none;
   border-radius: var(--agw-radius-md);
   background: transparent;
-  color: var(--agw-text-muted);
-  font-size: var(--agw-fs-md);
+  /* A chat title is what you read in the rail, so it is full text colour, as
+     in Codex's sidebar; the secondary grey is for the meta beside it. */
+  color: var(--agw-text);
+  font-size: var(--agw-fs-ui);
   cursor: pointer;
   text-align: left;
   transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
@@ -111,10 +113,12 @@
 .agw-rail-menu-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* Codex's desktop menu row: 13px on an 18px line, 4px × 8px padding, 6px
+     between icon and label (`components/menu.css`). */
+  gap: 6px;
   width: 100%;
-  height: 34px;
-  padding: 0 10px;
+  padding: 4px 8px;
+  line-height: var(--agw-lh-ui);
   /* `ui` is the token for controls and list rows — which is what a menu row is,
    * and what the tree rows this menu opens over already use. It was `body`
    * (16px, the window default for PROSE): the one-step-larger text made the
@@ -136,7 +140,7 @@
 }
 .agw-rail-menu-item svg {
   flex-shrink: 0;
-  color: var(--agw-text-subtle);
+  color: var(--agw-text-muted);
 }
 .agw-rail-menu-item[data-danger],
 .agw-rail-menu-item[data-danger]:hover,
@@ -201,7 +205,7 @@
   padding: 7px 10px;
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-surface-elevated) 92%, transparent);
+  background: var(--agw-popover-surface);
   box-shadow: var(--agw-shadow-pop);
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
@@ -214,7 +218,7 @@
   color: var(--agw-added);
 }
 .agw-rail-action-notice[data-tone="error"] {
-  border-color: color-mix(in srgb, var(--agw-removed) 38%, var(--agw-border));
+  border-color: var(--agw-removed-line);
 }
 .agw-rail-action-notice[data-tone="error"] svg {
   color: var(--agw-removed);
@@ -323,7 +327,7 @@
 
 /* Permanent-delete affordance in the Archived section — red on hover. */
 .agw-rail-del:hover {
-  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
+  background: var(--agw-removed-soft);
   color: var(--agw-removed);
 }
 
@@ -351,7 +355,7 @@
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 28%, transparent);
+  border: 2px solid var(--agw-control-accent-line);
   border-top-color: var(--agw-control-accent, var(--agw-accent));
   animation: agw-rail-spin 0.7s linear infinite;
 }
@@ -365,7 +369,7 @@
   margin: 0 2px;
   border-radius: 50%;
   background: var(--agw-control-accent, var(--agw-accent));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-control-accent, var(--agw-accent)) 22%, transparent);
+  box-shadow: 0 0 0 3px var(--agw-control-accent-line);
   animation: agw-done-pop var(--agw-dur-slow) var(--agw-ease-enter);
 }
 @keyframes agw-done-pop {

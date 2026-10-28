@@ -58,7 +58,7 @@
   height: 4px;
   border-radius: 2px;
   opacity: 0.75;
-  background: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  background: var(--agw-added-quiet);
 }
 .agw-iconrail-agent[data-status="failed"] .agw-railmx > i {
   background: var(--agw-danger);
@@ -130,13 +130,7 @@
 
 /* ── The card ─────────────────────────────────────────────────────────── */
 .agw-railcard {
-  /* The popover family's hover lift, restated: this card is not in that
-     family's selector because it does not take its glass. */
-  --agw-hover-paint: color-mix(
-    in srgb,
-    var(--agw-hover) 50%,
-    color-mix(in srgb, var(--agw-text) 14%, transparent) 50%
-  );
+  /* One hover everywhere, the popovers included (role layer). */
   position: fixed;
   top: 0;
   left: 56px;

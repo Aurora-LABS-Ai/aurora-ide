@@ -9,7 +9,8 @@
  */
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 import type { AgentTheme, AgentThemeTokens } from "@/apps/agent/types";
 import {
   AGENT_THEMES,
@@ -18,6 +19,7 @@ import {
   TYPOGRAPHY_TOKEN_KEYS,
 } from "@/apps/agent/theme/themes";
 import { applyContrast } from "@/apps/agent/theme/color";
+import { contrastInput, derivePalette } from "@/apps/agent/theme/palette";
 import {
   type AgentUiVersion,
   type AppearancePrefKey,
@@ -381,6 +383,8 @@ export const useAgentThemeStore = create<AgentThemeState>()(
     }),
     {
       name: "aurora-agent-window-theme",
+      // An engine preference: every client of one engine shows the same theme.
+      storage: createJSONStorage(() => enginePrefsStorage),
       version: 3,
       // v0 → v1: prune STALE typography overrides so old snapshots stop
       // silently overriding the shipped baseline. Two cases only, both safe:
@@ -454,7 +458,19 @@ export function resolveAgentTheme(state: AgentThemeState): AgentTheme {
     state.customThemes[state.activeThemeId] ??
     AGENT_THEMES[state.activeThemeId] ??
     AGENT_THEMES[DEFAULT_AGENT_THEME_ID];
-  const tokens = mergeAgentTokens(base.tokens, state.customizations[state.activeThemeId]);
+  const overrides = state.customizations[state.activeThemeId];
+  // A built-in theme re-derives its colours at the slider's contrast, so
+  // Contrast moves every line, hover and secondary text together; the user's
+  // own colour overrides then sit on top, untouched by it.
+  if (base.palette) {
+    const colours = derivePalette(
+      { ...base.palette, contrast: contrastInput(base.appearance, state.contrast) },
+      base.appearance,
+    );
+    return { ...base, tokens: mergeAgentTokens({ ...base.tokens, ...colours }, overrides) };
+  }
+  // A custom theme saved as flat colours has no inputs to re-derive from.
+  const tokens = mergeAgentTokens(base.tokens, overrides);
   return {
     ...base,
     tokens: applyContrast(tokens, base.appearance, state.contrast),

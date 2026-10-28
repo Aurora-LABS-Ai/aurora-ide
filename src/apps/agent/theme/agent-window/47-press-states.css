@@ -44,7 +44,7 @@
 }
 /* Close keeps the platform's red through the press, one step deeper. */
 .agw-titlebar-btn-close:active {
-  background: color-mix(in srgb, var(--agw-removed) 86%, #000 14%);
+  background: var(--agw-removed-line);
 }
 
 /* ── Composer ──────────────────────────────────────────────────────────── */

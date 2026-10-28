@@ -30,14 +30,14 @@
   max-width: 260px;
   padding: 0 10px 0 8px;
   border-radius: var(--agw-radius-pill);
-  border: 1px solid color-mix(in srgb, var(--agw-accent) 40%, var(--agw-border));
-  background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-canvas));
+  border: 1px solid var(--agw-accent-line);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-ui);
   cursor: pointer;
 }
 .agw-done-flash:hover {
-  background: color-mix(in srgb, var(--agw-accent) 18%, var(--agw-canvas));
+  background: var(--agw-accent-soft-hover);
 }
 .agw-done-flash > svg {
   color: var(--agw-accent);
@@ -247,7 +247,7 @@
   transition: background var(--agw-dur-fast) ease, color var(--agw-dur-fast) ease;
 }
 .agw-bgtask-stop:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+  background: var(--agw-removed-soft);
   color: var(--agw-removed);
 }
 .agw-bgtask-x:hover {
@@ -374,7 +374,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: color-mix(in srgb, var(--agw-code-surface) 60%, transparent);
+  background: var(--agw-code-surface);
   border-top: 1px solid var(--agw-border);
 }
 .agw-task-row {
@@ -393,7 +393,7 @@
 .agw-task-row[data-status="completed"] .agw-task-label {
   color: var(--agw-text-subtle);
   text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--agw-text-subtle) 45%, transparent);
+  text-decoration-color: var(--agw-border-strong);
 }
 .agw-task-row[data-status="cancelled"] .agw-task-label {
   color: var(--agw-text-subtle);
@@ -417,11 +417,11 @@
 }
 .agw-task-ico-done {
   color: var(--agw-added);
-  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+  background: var(--agw-added-soft);
 }
 .agw-task-ico-cancel {
   color: var(--agw-removed);
-  background: color-mix(in srgb, var(--agw-removed) 16%, transparent);
+  background: var(--agw-removed-soft);
 }
 .agw-task-ico-pending {
   width: 14px;
@@ -511,7 +511,7 @@
 .agw-taskind:active {
   /* A press must be felt, and hover-paint alone reads as "still hovering" on
      a control the pointer is already over. */
-  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+  background: var(--agw-state-selected);
 }
 .agw-taskind:focus-visible {
   box-shadow: var(--agw-focus-ring);
@@ -839,7 +839,7 @@
 .agw-ctx-quote {
   margin-top: 7px;
   padding-left: 8px;
-  border-left: 2px solid color-mix(in srgb, var(--agw-text) 16%, transparent);
+  border-left: 2px solid var(--agw-border-strong);
   font-size: var(--agw-fs-micro);
   line-height: 1.4;
   color: var(--agw-text-muted);
@@ -871,11 +871,11 @@
   font-weight: var(--agw-fw-medium);
   letter-spacing: 0.02em;
   color: var(--agw-text-subtle);
-  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  background: var(--agw-hover);
 }
 .agw-ctx-chip[data-tone="soft"] {
   color: var(--agw-warning);
-  background: color-mix(in srgb, var(--agw-warning) 14%, transparent);
+  background: var(--agw-warning-soft);
 }
 .agw-ctx-val {
   font-variant-numeric: tabular-nums;
@@ -887,7 +887,7 @@
   margin: 6px 0 4px;
   border-radius: var(--agw-radius-pill);
   overflow: hidden;
-  background: color-mix(in srgb, var(--agw-text) 12%, transparent);
+  background: var(--agw-chart-track);
 }
 .agw-ctx-bar-fill {
   height: 100%;

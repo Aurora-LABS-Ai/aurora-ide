@@ -5,7 +5,9 @@
   /* Body sits one step DIMMER than headings/strong (mixed toward the canvas so
    * it adapts to any theme). This two-tone hierarchy is what makes long answers
    * read layered instead of a flat wall of one brightness. */
-  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  /* Reply prose reads at the full text colour, as Codex's does; it was pulled
+     10% toward the canvas, which read as greyed out against the rest. */
+  color: var(--agw-text);
   /* The reference's reading tier, measured from its chat renderer (NOT from
    * its `body` default, which is 16/24 and styles nothing): reply text is 15px
    * on 1.75 leading — smaller glyphs, noticeably airier lines, ~26px per line
@@ -91,7 +93,7 @@
 .agw-md hr {
   border: none;
   /* Faded + airier — a section breath, not a harsh full-width cut. */
-  border-top: 1px solid color-mix(in srgb, var(--agw-border) 70%, transparent);
+  border-top: 1px solid var(--agw-border-subtle);
   margin: 20px 0;
 }
 .agw-md blockquote {
@@ -110,7 +112,7 @@
   font-size: var(--agw-fs-code);
   padding: 1px 5px;
   border-radius: var(--agw-radius-sm);
-  background: color-mix(in srgb, var(--agw-text) 7%, transparent);
+  background: var(--agw-state-quiet);
   color: inherit;
 }
 /* Inside headings the chip chrome drops entirely — mono face alone carries the
@@ -141,7 +143,7 @@
   /* Right inset matches the larger corner so the buttons sit clear of it. */
   padding: 6px 10px 6px 16px;
   border-bottom: 1px solid var(--agw-code-border);
-  background: color-mix(in srgb, var(--agw-text) 3%, transparent);
+  background: var(--agw-border-subtle);
 }
 .agw-codeblock-lang {
   font-size: var(--agw-fs-label);
@@ -307,8 +309,8 @@
   margin-left: 3px;
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--agw-border-strong) 72%, transparent),
-    color-mix(in srgb, var(--agw-border) 34%, transparent) 58%,
+    var(--agw-border-strong),
+    var(--agw-border-subtle) 58%,
     transparent
   );
   opacity: 0.64;
@@ -338,8 +340,8 @@
    * gradient that starts fading immediately reads as a smudge. */
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--agw-border-strong) 72%, transparent),
-    color-mix(in srgb, var(--agw-border-strong) 58%, transparent)
+    var(--agw-border-strong),
+    var(--agw-border)
   );
 }
 .agw-timeline-rule.agw-rule-tail {
@@ -434,14 +436,13 @@
   display: block;
   height: 10px;
   border-radius: var(--agw-radius-sm);
-  /* Bars sit just above the surface — built from the theme's text-subtle token
-   * (#727272 in the dark theme), not white. Low alpha + the container opacity
-   * above keep them a quiet placeholder rather than a bright block. */
+  /* The window's one skeleton (role layer), so a loading reply weighs the same
+   * as every other placeholder. */
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--agw-text-subtle) 40%, transparent) 0%,
-    color-mix(in srgb, var(--agw-text) 14%, var(--agw-text-subtle) 86%) 50%,
-    color-mix(in srgb, var(--agw-text-subtle) 40%, transparent) 100%
+    var(--agw-skeleton) 0%,
+    var(--agw-skeleton-shine) 50%,
+    var(--agw-skeleton) 100%
   );
   background-size: 200% 100%;
   /* Match the tool-call "Running…" sweep: highlight travels left → right. */

@@ -22,7 +22,7 @@
   --agw-agent-card-fold: 4.8em; /* the closed text area: about three lines */
   width: 100%;
   min-width: 0;
-  background: color-mix(in srgb, var(--agw-text) 4%, transparent);
+  background: var(--agw-border-subtle);
   border-radius: var(--agw-radius-lg);
   padding: 3px;
   display: flex;
@@ -161,7 +161,7 @@
   background: var(--agw-text-subtle);
 }
 .agw-agent-dot[data-status="completed"] {
-  background: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  background: var(--agw-added-quiet);
 }
 .agw-agent-dot[data-status="failed"] {
   background: var(--agw-removed);
@@ -485,7 +485,7 @@
 /* Running: the fixed window from the probe, so arriving lines never resize it. */
 .agw-tail-wrap[data-running] .agw-tail {
   height: 212px;
-  border-left-color: color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  border-left-color: var(--agw-accent-line);
 }
 /* The fade says "there is more above". Only when there is: on a tail that
    fits, it dimmed the first line for no reason. `data-clipped` is measured

@@ -211,7 +211,7 @@ button.agw-rl-step[aria-selected="true"] {
   padding: 8px 10px 0;
   font-size: var(--agw-rl-fs-body);
   line-height: var(--agw-msg-line-height, 1.75);
-  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  color: var(--agw-text);
   overflow-wrap: anywhere;
 }
 .agw-rl-step-branches {
@@ -285,7 +285,7 @@ button.agw-rl-step[aria-selected="true"] {
   margin: 8px 0 0;
   font-size: var(--agw-rl-fs-body);
   line-height: 1.55;
-  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  color: var(--agw-text);
 }
 
 /* A note's rows are the pairs' grid, values left-aligned. Right-aligned, a
@@ -359,7 +359,7 @@ button.agw-rl-step[aria-selected="true"] {
 .agw-rl-bar-fill {
   height: 100%;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-accent) 72%, var(--agw-card-paint));
+  background: var(--agw-chart-3);
 }
 .agw-rl-bar-caption {
   margin-top: 5px;
@@ -750,7 +750,7 @@ button.agw-rl-step[aria-selected="true"] {
 .agw-rl-pane-text {
   font-size: var(--agw-rl-fs-body);
   line-height: var(--agw-msg-line-height, 1.6);
-  color: color-mix(in srgb, var(--agw-text) 90%, var(--agw-canvas));
+  color: var(--agw-text);
   overflow-wrap: anywhere;
 }
 .agw-rl-pager {

@@ -44,10 +44,10 @@
 /* Error: a tinted edge and icon, never red text — under dark themes the
    danger colour is too dim to read as text on this surface. */
 .agw-toast[data-tone="error"] {
-  border-color: color-mix(in srgb, var(--agw-danger) 55%, var(--agw-border-strong));
+  border-color: var(--agw-removed-line);
 }
 .agw-toast[data-tone="error"] svg {
-  color: color-mix(in srgb, var(--agw-danger) 60%, var(--agw-text));
+  color: var(--agw-danger);
 }
 @keyframes agw-toast {
   0% {

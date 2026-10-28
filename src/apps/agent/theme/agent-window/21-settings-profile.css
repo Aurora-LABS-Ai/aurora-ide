@@ -65,7 +65,7 @@
   height: 42px;
   border: 1px solid var(--agw-border-strong);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-accent) 14%, var(--agw-canvas));
+  background: var(--agw-accent-soft);
   color: var(--agw-accent);
   font-size: 17px;
   font-weight: var(--agw-fw-display);
@@ -95,7 +95,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-radius: 0 0 var(--agw-radius-lg) var(--agw-radius-lg);
-  background: color-mix(in srgb, var(--agw-canvas) 45%, var(--agw-surface));
+  background: var(--agw-canvas);
 }
 .agw-profile-fact {
   display: flex;
@@ -238,11 +238,11 @@
 }
 .agw-profile-bar-in {
   flex: 1;
-  background: color-mix(in srgb, var(--agw-accent) 58%, transparent);
+  background: var(--agw-chart-3);
   transition: background var(--agw-dur-fast) ease;
 }
 .agw-profile-bar[data-active] .agw-profile-bar-in {
-  background: color-mix(in srgb, var(--agw-accent) 85%, transparent);
+  background: var(--agw-chart-4);
 }
 .agw-profile-bar[data-empty] .agw-profile-bar-fill {
   height: 1px !important;
@@ -254,7 +254,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  border-top: 1px dashed color-mix(in srgb, var(--agw-text-subtle) 50%, transparent);
+  border-top: 1px dashed var(--agw-border-strong);
   pointer-events: none;
 }
 .agw-profile-avg span {
@@ -290,7 +290,7 @@
   margin-right: 6px;
   border-radius: 2px;
   vertical-align: -0.5px;
-  background: color-mix(in srgb, var(--agw-accent) 58%, transparent);
+  background: var(--agw-chart-3);
 }
 .agw-profile-legend i[data-part="out"] {
   background: var(--agw-accent);
@@ -326,10 +326,10 @@
   border-radius: 2px;
   background: var(--agw-border);
 }
-.agw-profile-cell[data-level="1"] { background: color-mix(in srgb, var(--agw-accent) 30%, var(--agw-surface)); }
-.agw-profile-cell[data-level="2"] { background: color-mix(in srgb, var(--agw-accent) 55%, var(--agw-surface)); }
-.agw-profile-cell[data-level="3"] { background: color-mix(in srgb, var(--agw-accent) 78%, var(--agw-surface)); }
-.agw-profile-cell[data-level="4"] { background: var(--agw-accent); }
+.agw-profile-cell[data-level="1"] { background: var(--agw-chart-1); }
+.agw-profile-cell[data-level="2"] { background: var(--agw-chart-2); }
+.agw-profile-cell[data-level="3"] { background: var(--agw-chart-3); }
+.agw-profile-cell[data-level="4"] { background: var(--agw-chart-4); }
 .agw-profile-cell[data-active] {
   box-shadow: inset 0 0 0 1px var(--agw-text);
 }
@@ -382,7 +382,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 7px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--agw-border) 65%, transparent);
+  border-bottom: 1px solid var(--agw-border-subtle);
   font-size: var(--agw-fs-label);
 }
 .agw-profile-rhythm-facts > div:last-child {
@@ -504,7 +504,7 @@ button.agw-profile-th[aria-sort="descending"] {
   padding-top: 5px;
   padding-bottom: 5px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--agw-border) 65%, transparent);
+  border-bottom: 1px solid var(--agw-border-subtle);
   background: transparent;
   font: inherit;
   text-align: left;
@@ -637,9 +637,9 @@ button.agw-profile-row:focus-visible {
   gap: 18px;
   margin: 0 0 8px 50px;
   padding: 10px 12px 12px;
-  border-left: 2px solid color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
+  border-left: 2px solid var(--agw-accent-line);
   border-radius: 0 var(--agw-radius-sm) var(--agw-radius-sm) 0;
-  background: color-mix(in srgb, var(--agw-canvas) 65%, transparent);
+  background: var(--agw-canvas);
 }
 .agw-profile-detail-list {
   display: flex;
@@ -938,14 +938,14 @@ button.agw-profile-row:focus-visible {
   flex: 0 0 120px;
   height: 6px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  background: var(--agw-chart-track);
   overflow: hidden;
 }
 .agw-profile-provider-model-fill {
   display: block;
   height: 100%;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-accent) 62%, transparent);
+  background: var(--agw-chart-3);
 }
 .agw-profile-provider-model-count {
   flex: none;
@@ -974,14 +974,14 @@ button.agw-profile-row:focus-visible {
   flex: 1;
   height: 8px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-text) 8%, transparent);
+  background: var(--agw-chart-track);
   overflow: hidden;
 }
 .agw-profile-tool-fill {
   display: block;
   height: 100%;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-accent) 72%, transparent);
+  background: var(--agw-chart-3);
 }
 .agw-profile-tool-count {
   width: 48px;

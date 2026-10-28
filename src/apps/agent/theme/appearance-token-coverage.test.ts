@@ -37,6 +37,31 @@ describe("agent appearance token coverage", () => {
     expect(imported).toEqual(onDisk);
   });
 
+  /**
+   * One source of truth for colour. The palette engine (`palette.ts`) makes
+   * the base tokens and `01-root.css` derives every role from them; no other
+   * partial may mix, tint or name a colour. `#000` is allowed because it is
+   * how a `mask-image` gradient says "fully shown", not a colour anyone sees.
+   * Checked to fail on a `color-mix(` put back into a partial.
+   */
+  it("derives colour only in the role layer", () => {
+    const offenders: string[] = [];
+    for (const name of (readdirSync(partialsDir) as string[])
+      .filter((n) => n.endsWith(".css") && n !== "01-root.css")
+      .sort()) {
+      const code: string = readFileSync(`${partialsDir}/${name}`, "utf8").replace(
+        /\/\*[\s\S]*?\*\//g,
+        (comment: string) => comment.replace(/[^\n]/g, " "),
+      );
+      code.split("\n").forEach((line, index) => {
+        if (/color-mix\(|\brgba?\(|\bhsla?\(|(?<![\w-])#(?!000\b)[0-9a-fA-F]{3,8}\b/.test(line)) {
+          offenders.push(`${name}:${index + 1}  ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders, `colour derived outside 01-root.css:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
   it("wires every theme token to a rendered consumer", () => {
     for (const token of AGENT_TOKEN_KEYS) {
       const cssName = token.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`);
@@ -65,7 +90,8 @@ describe("agent appearance token coverage", () => {
 
   it("aligns transcript pills and treats response skeletons as placeholder text", () => {
     expect(css).toMatch(/\.agw-pill-inline\s*\{[^}]*vertical-align:\s*middle/s);
-    expect(css).toMatch(/\.agw-skeleton span\s*\{[^}]*var\(--agw-text-subtle\)/s);
+    // The window's one skeleton role, never a solid surface block.
+    expect(css).toMatch(/\.agw-skeleton span\s*\{[^}]*var\(--agw-skeleton\)/s);
     expect(css).not.toMatch(
       /\.agw-skeleton span\s*\{[^}]*var\(--agw-surface-elevated\)/s,
     );

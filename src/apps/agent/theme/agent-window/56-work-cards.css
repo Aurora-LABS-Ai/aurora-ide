@@ -53,7 +53,7 @@
   width: 6px;
   height: 6px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  background: var(--agw-added-quiet);
 }
 .agw-wc-what {
   flex: none;

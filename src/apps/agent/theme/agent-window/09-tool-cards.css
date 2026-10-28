@@ -107,7 +107,7 @@
 /* A server reached over the network. Not a status — a fact about where the
  * payload went — so it is a hairline on the mark and never a fill. */
 .agw-mcp-tile[data-remote] {
-  border-color: color-mix(in srgb, var(--agw-warning) 60%, var(--agw-border));
+  border-color: var(--agw-warning-line);
 }
 /* The operation, in the UI face. It is set as WORDS ("Execute SQL"), not as the
  * raw identifier, so it belongs in the same type as the `Read` title above it.
@@ -142,9 +142,7 @@
   transition: color var(--agw-dur-slow) ease;
 }
 .agw-tool-dot-done {
-  /* Softened toward muted — a full-saturation check on every settled row makes
-   * the transcript read as a status board. Failure keeps full strength. */
-  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  color: var(--agw-added-quiet);
 }
 .agw-tool-dot-failed {
   color: var(--agw-removed);
@@ -153,7 +151,7 @@
   width: 12px;
   height: 12px;
   border-radius: var(--agw-radius-pill);
-  border: 1.6px solid color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border: 1.6px solid var(--agw-accent-line);
   border-top-color: var(--agw-accent);
   animation: agw-spin 0.7s linear infinite;
 }
@@ -671,8 +669,8 @@
 }
 
 .agw-tool-chip[data-selected="true"] {
-  border-color: color-mix(in srgb, var(--agw-accent) 62%, var(--agw-border));
-  background: color-mix(in srgb, var(--agw-accent) 12%, var(--agw-chip-surface));
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
 }
 /* Body of a framed (.agw-rv) file/diff result. The FRAME owns the surface — the
@@ -759,7 +757,7 @@
  * Shared bordered panel: header (title · path · stats) over a scroll body.
  * These are the agent window's isolated re-creations of the IDE result views. */
 .agw-rv {
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-code-border);
   border-radius: var(--agw-radius-md);
   background: var(--agw-code-surface);
   overflow: hidden;
@@ -798,9 +796,7 @@
   flex: none;
 }
 .agw-rv-mark-ok {
-  /* Softened toward muted, exactly like the settled row check: a
-   * full-saturation tick on every finished command reads as a status board. */
-  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  color: var(--agw-added-quiet);
 }
 .agw-rv-mark-bad {
   /* Failure keeps full strength — it is the one someone has to act on. */
@@ -996,12 +992,12 @@
 .agw-rv-badge-ok {
   color: var(--agw-added);
   background: var(--agw-added-surface);
-  border: 1px solid color-mix(in srgb, var(--agw-added) 35%, transparent);
+  border: 1px solid var(--agw-added-line);
 }
 .agw-rv-badge-bad {
   color: var(--agw-removed);
   background: var(--agw-removed-surface);
-  border: 1px solid color-mix(in srgb, var(--agw-removed) 35%, transparent);
+  border: 1px solid var(--agw-removed-line);
 }
 .agw-rv-exit {
   font-family: var(--agw-font-code);
@@ -1188,8 +1184,8 @@
  * when the process exits — it simply stops moving and gains an exit code. */
 .agw-shell-live {
   color: var(--agw-accent);
-  border-color: color-mix(in srgb, var(--agw-accent) 34%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 12%, transparent);
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 .agw-shell-waiting {
   display: flex;
@@ -1216,7 +1212,7 @@
 .agw-shell-tail {
   margin: 2px 0 4px 8px;
   padding: 4px 0 4px 13px;
-  border-left: 1px solid color-mix(in srgb, var(--agw-accent) 45%, transparent);
+  border-left: 1px solid var(--agw-accent-line);
   height: calc(5 * 1.5 * var(--agw-fs-label) + 8px);
   display: flex;
   flex-direction: column;
@@ -1249,7 +1245,7 @@
   margin: -1px -4px -1px 0;
 }
 .agw-shell-copy[data-state="copied"] {
-  color: color-mix(in srgb, var(--agw-added) 62%, var(--agw-text-muted));
+  color: var(--agw-added-quiet);
 }
 .agw-shell-copy[data-state="failed"] {
   color: var(--agw-removed);
@@ -1270,7 +1266,7 @@
   background: var(--agw-code-surface);
 }
 .agw-shell-out-area > .agw-shell-copy:hover {
-  background: color-mix(in srgb, var(--agw-text) 8%, var(--agw-code-surface));
+  background: var(--agw-hover-paint);
 }
 
 /* ── "Run in background" ──────────────────────────────────────────────
@@ -1299,8 +1295,8 @@
 }
 .agw-shell-bg-btn:hover:not(:disabled) {
   color: var(--agw-text);
-  border-color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-border));
-  background: color-mix(in srgb, var(--agw-accent) 10%, transparent);
+  border-color: var(--agw-accent-line);
+  background: var(--agw-accent-soft);
 }
 /* Focus is shown through the control itself, not a ring outside it — the same
  * treatment `.agw-web-hit` and `.agw-tool-shot-canvas` use for a control that
@@ -1309,7 +1305,7 @@
   outline: none;
   color: var(--agw-text);
   border-color: var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 16%, transparent);
+  background: var(--agw-accent-soft-hover);
 }
 .agw-shell-bg-btn:disabled {
   /* Mid-hand-off. Still legible — this is a one-way action and the label is
@@ -1376,7 +1372,7 @@
    * finished. */
   overflow-x: hidden;
   overflow-y: auto;
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-code-border);
   border-radius: var(--agw-radius-md);
   background: var(--agw-code-surface);
 }
@@ -1481,7 +1477,7 @@
 }
 /* Empty filler half of an unbalanced change row — faint hatch, no number. */
 .agw-ds-empty {
-  background: color-mix(in srgb, var(--agw-text) 3%, transparent);
+  background: var(--agw-border-subtle);
 }
 .agw-dl-gap-split {
   grid-column: 1 / -1;
@@ -1490,7 +1486,7 @@
   padding: 10px 12px;
   font-size: var(--agw-fs-label);
   color: var(--agw-text-subtle);
-  border: 1px solid var(--agw-border);
+  border: 1px solid var(--agw-code-border);
   border-radius: var(--agw-radius-md);
   background: var(--agw-code-surface);
 }

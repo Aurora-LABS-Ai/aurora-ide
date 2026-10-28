@@ -57,7 +57,7 @@
   pointer-events: none;
   opacity: 0;
   /* Diagonal bright band; the mask limits it to the glyph strokes. */
-  background: linear-gradient(58deg, transparent 36%, #fff 50%, transparent 64%);
+  background: linear-gradient(58deg, transparent 36%, var(--agw-glint) 50%, transparent 64%);
   background-size: 260% 260%;
   -webkit-mask: var(--agw-mode-mask) center / contain no-repeat;
   mask: var(--agw-mode-mask) center / contain no-repeat;
@@ -105,7 +105,7 @@
   inset: 0;
   pointer-events: none;
   opacity: 0;
-  background: linear-gradient(58deg, transparent 36%, #fff 50%, transparent 64%);
+  background: linear-gradient(58deg, transparent 36%, var(--agw-glint) 50%, transparent 64%);
   background-size: 260% 260%;
   -webkit-mask: var(--agw-fast-mask) center / contain no-repeat;
   mask: var(--agw-fast-mask) center / contain no-repeat;
@@ -453,9 +453,11 @@ button.agw-model-group-label:focus-visible {
 .agw-model-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   width: 100%;
-  padding: 7px 8px;
+  /* Codex's menu row (`components/menu.css`): 4px × 8px on an 18px line. */
+  padding: 4px 8px;
+  line-height: var(--agw-lh-ui);
   border: 1px solid transparent;
   border-radius: var(--agw-radius-md);
   background: transparent;
@@ -587,16 +589,16 @@ button.agw-model-group-label:focus-visible {
  * 2026-10-28). Derived, so it follows the theme and Appearance → Accent; no
  * colour of its own. Levels come from `effortTier` (model-settings.ts). */
 :is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="1"] {
-  color: color-mix(in srgb, var(--agw-accent) 45%, var(--agw-text-muted));
+  color: var(--agw-effort-1);
 }
 :is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="2"] {
-  color: color-mix(in srgb, var(--agw-accent) 65%, var(--agw-text-muted));
+  color: var(--agw-effort-2);
 }
 :is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="3"] {
-  color: color-mix(in srgb, var(--agw-accent) 85%, var(--agw-text-muted));
+  color: var(--agw-effort-3);
 }
 :is(.agw-model-trigger-effort, .agw-model-effort, .agw-model-fly-label)[data-effort="4"] {
-  color: var(--agw-accent);
+  color: var(--agw-effort-4);
 }
 /* The check's column is always there, so names and values line up down the
    list whether or not a row is the one in use. */
@@ -703,11 +705,11 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-text);
 }
 .agw-model-mode-btn[data-active] {
-  background: color-mix(in srgb, var(--agw-accent) 18%, transparent);
+  background: var(--agw-accent-soft);
   color: var(--agw-accent);
 }
 .agw-model-mode-btn[data-mode="plan"][data-active] {
-  background: color-mix(in srgb, var(--agw-warning) 18%, transparent);
+  background: var(--agw-warning-soft);
   color: var(--agw-warning);
 }
 .agw-model-mode-btn:focus-visible {
@@ -756,8 +758,8 @@ button.agw-model-group-label:focus-visible {
   color: var(--agw-text);
 }
 /* The window's one selected fill (`--agw-state-selected`), as on the model
-   rows and the rail. It used to paint `--agw-surface`, which in the default
-   dark theme (#1d1d1d) is DARKER than the popover around it (about #232323),
+   rows and the rail. It used to paint `--agw-surface`, which in the old
+   default dark theme was DARKER than the popover around it,
    so a selected row read as a hole while every other selection is a lift. */
 .agw-menu-item[aria-selected="true"] {
   background: var(--agw-state-selected);

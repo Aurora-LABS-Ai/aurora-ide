@@ -204,13 +204,13 @@
 
 .agw-plan-marker-done {
   border-color: transparent;
-  background: color-mix(in srgb, var(--agw-added) 18%, transparent);
+  background: var(--agw-added-soft);
   color: var(--agw-added);
 }
 
 .agw-plan-marker-failed {
   border-color: transparent;
-  background: color-mix(in srgb, var(--agw-danger) 18%, transparent);
+  background: var(--agw-removed-soft);
   color: var(--agw-danger);
 }
 
@@ -223,7 +223,7 @@
   /* A half-filled ring: started, not finished, nothing driving it. */
   background: linear-gradient(
     to right,
-    color-mix(in srgb, var(--agw-warning) 45%, transparent) 50%,
+    var(--agw-warning-line) 50%,
     transparent 50%
   );
 }
@@ -231,7 +231,7 @@
 /* The spinner is the ONLY animated state, and it only renders when a run is
    genuinely streaming — see resolvePlanStepState. */
 .agw-plan-marker-running {
-  border-color: color-mix(in srgb, var(--agw-accent) 28%, transparent);
+  border-color: var(--agw-accent-line);
   border-top-color: var(--agw-accent);
   animation: agw-plan-spin 720ms linear infinite;
 }
@@ -246,7 +246,7 @@
   .agw-plan-marker-running {
     animation: none;
     border-color: var(--agw-accent);
-    background: color-mix(in srgb, var(--agw-accent) 35%, transparent);
+    background: var(--agw-accent-line);
   }
 
   .agw-plan-meter-fill,

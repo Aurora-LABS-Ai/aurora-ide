@@ -316,7 +316,7 @@
   background-color: var(--agw-conversation);
   background-image: radial-gradient(
     circle,
-    color-mix(in srgb, var(--agw-text-subtle) 24%, transparent) 1px,
+    var(--agw-border-strong) 1px,
     transparent 1px
   );
   cursor: grab;
@@ -381,7 +381,7 @@
   align-items: flex-start;
   width: min(440px, calc(100% - 40px));
   padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--agw-removed) 44%, var(--agw-border));
+  border: 1px solid var(--agw-removed-line);
   border-radius: var(--agw-radius-md);
   background: var(--agw-surface-elevated);
   color: var(--agw-removed);
@@ -482,7 +482,7 @@
   z-index: 2;
   padding: 4px 7px;
   border-radius: var(--agw-radius-sm);
-  background: color-mix(in srgb, var(--agw-conversation) 86%, transparent);
+  background: var(--agw-conversation);
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
   pointer-events: none;

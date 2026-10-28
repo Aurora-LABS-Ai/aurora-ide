@@ -16,14 +16,7 @@
  * is the one rule that makes a press paint at equal specificity.
  */
 
-/* The rail's own paint. Declared on the root beside `--agw-rail-paint` so it
-   resolves against whatever that alias is there — translucent mode included. */
-.agw-root {
-  --agw-iconrail-paint: var(--agw-rail-paint);
-}
-.agw-root[data-rail-edge="shade"] {
-  --agw-iconrail-paint: color-mix(in srgb, var(--agw-rail-paint) 55%, var(--agw-conversation));
-}
+/* The rail's own paint, `--agw-iconrail-paint`, is a role (01-root.css). */
 .agw-root[data-rail-edge="shade"] .agw-titlebar {
   background: var(--agw-iconrail-paint);
 }
@@ -66,10 +59,9 @@
 .agw-iconrail-btn[data-active] {
   background: var(--agw-state-selected);
   color: var(--agw-text);
-  /* The selected glyph is drawn solid; its inner detail is painted in this.
-     Opaque on purpose: --agw-state-selected is translucent, and a translucent
-     cut would let the solid fill show through. */
-  --agw-icon-cut: color-mix(in srgb, var(--agw-text) 9%, var(--agw-rail-paint));
+  /* The selected glyph is drawn solid; its inner detail is painted in the
+     opaque form of the selected fill, or the solid would show through. */
+  --agw-icon-cut: var(--agw-selected-on-rail);
 }
 .agw-iconrail-btn:active {
   background: var(--agw-press-paint);

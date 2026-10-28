@@ -127,9 +127,8 @@
  * shadow. That combination is what reads as a raised plate on a near-black
  * strip; a flat fill only ever reads as "a bit brighter".
  *
- * The hairline is COOL-TINTED (`rgba(176,199,217,…)`), not white alpha. Flat
- * neutral borders are the single biggest tell of generated dark UI, and at 24px
- * this one line does most of the work.
+ * (Since 2026-10-28 the selected tab is drawn from the role layer like every
+ * other selection; the gloss and cool-tinted edge are gone.)
  *
  * Nothing moves on hover, deliberately: in a strip that can hold a dozen tabs,
  * movement under the pointer makes the whole row feel unstable. */
@@ -148,25 +147,16 @@
     box-shadow var(--agw-dur-fast) ease;
 }
 .agw-term-pill:hover {
-  background: color-mix(in srgb, var(--agw-text) 6%, transparent);
+  background: var(--agw-hover-paint);
   color: var(--agw-text);
 }
+/* The selected tab is the window's one selected fill plus a hairline, the way
+   every other selected tab and row is drawn; no gloss or tinted edge of its own. */
 .agw-term-pill[data-active] {
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--agw-text) 15%, transparent),
-    color-mix(in srgb, var(--agw-text) 8%, transparent)
-  );
-  border-color: rgba(176, 199, 217, 0.16);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 2px 6px rgba(0, 0, 0, 0.45);
+  background: var(--agw-state-selected);
+  border-color: var(--agw-border);
+  box-shadow: var(--agw-shadow-sm);
   color: var(--agw-text);
-}
-/* Light mode has no near-black to lift off, so the gloss line and the heavy
-   shadow would read as grime. Same shape, paper weight. */
-.agw-root[data-appearance="light"] .agw-term-pill[data-active] {
-  background: var(--agw-surface);
-  border-color: var(--agw-border-strong);
-  box-shadow: 0 1px 2px rgba(16, 22, 33, 0.1);
 }
 .agw-term-pill-main {
   display: inline-flex;
@@ -204,10 +194,10 @@
   /* Kept faint on purpose. At full strength a 6px dot with a bright halo reads
      as an LED bolted onto the tab; the job is only to separate "running" from
      "stopped" at a glance, and a hint of light does that. */
-  box-shadow: 0 0 3px color-mix(in srgb, var(--agw-added) 22%, transparent);
+  box-shadow: 0 0 3px var(--agw-added-soft);
 }
 .agw-term-pill[data-active] .agw-term-dot {
-  box-shadow: 0 0 4px color-mix(in srgb, var(--agw-added) 36%, transparent);
+  box-shadow: 0 0 4px var(--agw-added-line);
 }
 .agw-term-dot[data-dead],
 .agw-term-pill[data-active] .agw-term-dot[data-dead] {
@@ -360,8 +350,8 @@
  * `tools/browser/halo.rs`). A permanent badge would be true all session and
  * would therefore say nothing. */
 .agw-br-bar[data-agw-driving] {
-  border-bottom-color: color-mix(in srgb, var(--agw-accent) 55%, transparent);
-  box-shadow: 0 3px 12px -4px color-mix(in srgb, var(--agw-accent) 55%, transparent);
+  border-bottom-color: var(--agw-accent-line);
+  box-shadow: 0 3px 12px -4px var(--agw-accent-line);
 }
 .agw-br-driving {
   display: inline-flex;
@@ -394,11 +384,11 @@
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--agw-accent) 45%, transparent);
+    box-shadow: 0 0 0 0 var(--agw-accent-line);
   }
   50% {
     opacity: 0.55;
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--agw-accent) 0%, transparent);
+    box-shadow: 0 0 0 3px transparent;
   }
 }
 /* ── Emulated screen size ────────────────────────────────────────────
@@ -560,7 +550,7 @@
 .agw-devstage {
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--agw-conversation) 72%, #000);
+  background: var(--agw-conversation);
   pointer-events: none;
 }
 /* Carries the frame and status bar sideways with the page window during the
@@ -583,8 +573,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #ffffff;
-  color: #111111;
+  background: var(--agw-device-bar);
+  color: var(--agw-device-ink);
   transition: background-color var(--agw-dur-slow) ease, color var(--agw-dur-slow) ease;
   font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-weight: var(--agw-fw-strong);
@@ -592,7 +582,7 @@
   font-variant-numeric: tabular-nums;
 }
 .agw-devstatus[data-ink="light"] {
-  color: #ffffff;
+  color: var(--agw-device-ink-light);
 }
 .agw-devstatus[data-device="android"] {
   font-weight: 500;
@@ -633,7 +623,7 @@
   height: 22px;
   padding: 0 4px 0 8px;
   border-radius: var(--agw-radius-pill);
-  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-label);
   max-width: 220px;

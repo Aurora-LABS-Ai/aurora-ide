@@ -24,19 +24,24 @@ export const UI_FONT_FALLBACK =
   '"Segoe UI", system-ui, -apple-system, sans-serif';
 
 /**
- * Agent-window UI stack. "Inter Variable" is the family the bundled
- * @fontsource-variable face registers — it is NOT interchangeable with
- * "Inter" (the static face), so it must come first or the variable weight
- * axis is never used and half-step weights (550/650) snap to statics.
+ * Agent-window UI stack: the machine's own UI face, as the Codex desktop app
+ * uses (`--font-sans-default`, `thirdparty/aurora-visual-foundation-reference`).
+ * A system face is rendered by the platform's own text stack (DirectWrite with
+ * ClearType hinting on Windows), which is what makes Codex's text read crisp
+ * and full; the bundled Inter webfont it replaced rendered thinner and softer
+ * on Windows at chrome sizes (Alvan's side-by-side, 2026-10-28). `system-ui`
+ * before the generic is Aurora's one addition, for Linux desktops. The bundled
+ * faces stay available as picks in Appearance.
  */
-export const AGENT_UI_FONT_STACK = `"Inter Variable", "Inter", ${UI_FONT_FALLBACK}`;
+export const AGENT_UI_FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 
 /**
- * Code stack, shared by BOTH windows. JetBrains Mono is bundled (400 + 600),
- * so it resolves identically on every machine; the rest is defensive.
+ * Code stack, shared by BOTH windows: the system monospace, as Codex uses
+ * (`--font-mono-default`): SF Mono on macOS, Consolas on Windows. JetBrains
+ * Mono stays bundled as a pick.
  */
 export const CODE_FONT_STACK =
-  '"JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Fira Code", ui-monospace, monospace';
+  'ui-monospace, "SFMono-Regular", "SF Mono", menlo, consolas, "Liberation Mono", monospace';
 
 /** Quote a family name for CSS unless it is a bare identifier or already quoted. */
 export function quoteFamily(family: string): string {

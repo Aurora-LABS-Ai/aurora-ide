@@ -20,7 +20,7 @@
   overflow: hidden;
   /* The silk is black at its edges; under a rounded corner a surface colour
      would rim the box. Black is the only truthful backing here. */
-  background: #000;
+  background: var(--agw-media-backdrop);
 }
 
 .agw-direct-image-silk {
@@ -82,8 +82,8 @@
   padding: 5px 9px;
   border: 0;
   border-radius: var(--agw-radius-sm);
-  background: rgba(0, 0, 0, 0.55);
-  color: rgba(255, 255, 255, 0.86);
+  background: var(--agw-media-scrim);
+  color: var(--agw-on-media);
   font-size: var(--agw-fs-micro);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
@@ -101,8 +101,8 @@
 
 .agw-direct-image-canvas:hover,
 .agw-direct-image-canvas:focus-visible {
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
+  background: var(--agw-media-scrim-hover);
+  color: var(--agw-on-media);
 }
 
 /* A failure keeps the hole's shape and says why in it. Not a frame, not a

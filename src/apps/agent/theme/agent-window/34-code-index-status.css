@@ -59,7 +59,7 @@
 /* The shared rail ring, re-tinted. It occupies the same 26px box the glyph
    does, so starting a build shifts nothing in the header. */
 .agw-idxstat-spin {
-  border-color: color-mix(in srgb, var(--agw-warning) 28%, transparent);
+  border-color: var(--agw-warning-line);
   border-top-color: var(--agw-warning);
 }
 

@@ -44,7 +44,7 @@
   border-color: var(--agw-border-strong);
 }
 .agw-mcp-card[data-draft] {
-  border-color: color-mix(in srgb, var(--agw-added) 38%, var(--agw-border));
+  border-color: var(--agw-added-line);
 }
 
 .agw-mcp-card-head {
@@ -86,8 +86,8 @@
 }
 .agw-mcp-card-ico[data-draft] {
   color: var(--agw-added);
-  border-color: color-mix(in srgb, var(--agw-added) 32%, transparent);
-  background: color-mix(in srgb, var(--agw-added) 10%, transparent);
+  border-color: var(--agw-added-line);
+  background: var(--agw-added-soft);
 }
 /* Status LED on the icon badge corner. */
 .agw-mcp-card-dot {

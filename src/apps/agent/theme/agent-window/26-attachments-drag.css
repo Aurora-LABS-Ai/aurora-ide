@@ -46,8 +46,8 @@
   pointer-events: none;
   z-index: -1;
   box-shadow:
-    0 8px 26px -8px color-mix(in srgb, var(--agw-accent) 11%, transparent),
-    0 16px 56px -10px color-mix(in srgb, var(--agw-accent) 5%, transparent);
+    0 8px 26px -8px var(--agw-accent-soft),
+    0 16px 56px -10px var(--agw-accent-soft);
   animation: agw-drop-arm var(--agw-dur-slow) ease-out both;
 }
 
@@ -69,12 +69,12 @@
   background: conic-gradient(
     from var(--agw-drop-angle),
     transparent 0deg,
-    color-mix(in srgb, var(--agw-accent) 45%, transparent) 55deg,
-    color-mix(in srgb, var(--agw-accent) 80%, white) 80deg,
+    var(--agw-accent-line) 55deg,
+    var(--agw-info) 80deg,
     transparent 110deg,
     transparent 180deg,
-    color-mix(in srgb, var(--agw-accent) 45%, transparent) 235deg,
-    color-mix(in srgb, var(--agw-accent) 80%, white) 260deg,
+    var(--agw-accent-line) 235deg,
+    var(--agw-info) 260deg,
     transparent 290deg,
     transparent 360deg
   );
@@ -145,8 +145,8 @@
   max-width: 280px;
   padding: 3px 8px;
   border-radius: var(--agw-radius-sm);
-  border: 1px solid color-mix(in srgb, var(--agw-accent) 38%, transparent);
-  background: color-mix(in srgb, var(--agw-accent) 16%, var(--agw-surface-elevated));
+  border: 1px solid var(--agw-accent-line);
+  background: var(--agw-accent-soft);
   box-shadow: var(--agw-shadow-pop);
   color: var(--agw-accent);
   font-family: var(--agw-font-ui);
@@ -230,8 +230,8 @@ body[data-agw-dragging] * {
   height: 16px;
   border: none;
   border-radius: 50%;
-  background: color-mix(in srgb, #000 55%, transparent);
-  color: #fff;
+  background: var(--agw-media-scrim);
+  color: var(--agw-on-media);
   cursor: pointer;
   opacity: 0;
   transition: opacity var(--agw-dur-fast) ease;

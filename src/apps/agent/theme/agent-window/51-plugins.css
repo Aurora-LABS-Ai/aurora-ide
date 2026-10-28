@@ -166,20 +166,23 @@
   border: 1px solid transparent;
   border-radius: var(--agw-radius-pill);
   background: transparent;
-  color: var(--agw-warning);
+  /* A filter, not an alarm: secondary ink at rest, the warning fill only when on. */
+  color: var(--agw-text-muted);
   font-size: var(--agw-fs-label);
   font-weight: var(--agw-fw-medium);
   cursor: pointer;
 }
 .agw-plug-attn:hover {
-  background: color-mix(in srgb, var(--agw-warning) 12%, transparent);
+  background: var(--agw-hover-paint);
+  color: var(--agw-text);
 }
 .agw-plug-attn[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--agw-warning) 16%, transparent);
-  border-color: color-mix(in srgb, var(--agw-warning) 40%, transparent);
+  background: var(--agw-warning-soft);
+  border-color: var(--agw-warning-line);
+  color: var(--agw-warning);
 }
 .agw-plug-attn:active {
-  background: color-mix(in srgb, var(--agw-warning) 22%, transparent);
+  background: var(--agw-warning-soft-hover);
 }
 .agw-plug-attn:focus-visible {
   outline: none;
@@ -290,9 +293,10 @@
   color: var(--agw-text-subtle);
   font-size: var(--agw-fs-label);
 }
-.agw-plug-tile-line[data-issue] {
-  color: var(--agw-warning);
-}
+/* "No key" / "Needs an address and a key" is a provider not set up yet, not a
+   fault: the line stays the quiet meta grey and the dot on the mark carries
+   the state, as Codex lists an unconfigured item. Only a real failure is red.
+   (Fifteen orange lines on one page read as fifteen alarms.) */
 .agw-plug-tile-line[data-issue="error"] {
   color: var(--agw-removed);
 }
@@ -379,7 +383,7 @@
   background: var(--agw-set-nav-hover-bg);
 }
 .agw-plug-side:active {
-  background: color-mix(in srgb, var(--agw-set-nav-hover-bg) 88%, var(--agw-text) 12%);
+  background: var(--agw-press-paint);
 }
 .agw-plug-side[data-active] {
   color: var(--agw-set-nav-active-fg);

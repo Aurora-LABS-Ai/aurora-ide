@@ -225,31 +225,31 @@
   border-color: var(--agw-accent-hover);
 }
 .agw-set-btn[data-variant="primary"]:active:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
-  border-color: color-mix(in srgb, var(--agw-accent-hover) 86%, #000 14%);
+  background: var(--agw-accent-hover);
+  border-color: var(--agw-accent-hover);
 }
 .agw-set-btn[data-variant="danger"] {
   color: var(--agw-removed);
-  border-color: color-mix(in srgb, var(--agw-removed) 40%, transparent);
+  border-color: var(--agw-removed-line);
 }
 .agw-set-btn[data-variant="danger"]:hover {
-  background: color-mix(in srgb, var(--agw-removed) 12%, transparent);
+  background: var(--agw-removed-soft);
 }
 .agw-set-btn[data-variant="danger"]:active:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-removed) 20%, transparent);
-  border-color: color-mix(in srgb, var(--agw-removed) 55%, transparent);
+  background: var(--agw-removed-soft-hover);
+  border-color: var(--agw-removed);
 }
 .agw-set-btn[data-variant="success"] {
   color: var(--agw-added);
-  border-color: color-mix(in srgb, var(--agw-added) 42%, transparent);
+  border-color: var(--agw-added-line);
 }
 .agw-set-btn[data-variant="success"]:hover {
-  background: color-mix(in srgb, var(--agw-added) 12%, transparent);
-  border-color: color-mix(in srgb, var(--agw-added) 58%, transparent);
+  background: var(--agw-added-soft);
+  border-color: var(--agw-added);
 }
 .agw-set-btn[data-variant="success"]:active:not(:disabled) {
-  background: color-mix(in srgb, var(--agw-added) 20%, transparent);
-  border-color: color-mix(in srgb, var(--agw-added) 66%, transparent);
+  background: var(--agw-added-soft-hover);
+  border-color: var(--agw-added);
 }
 .agw-set-btn:disabled {
   opacity: 0.45;
@@ -276,7 +276,7 @@
   border-color: var(--agw-accent-hover);
   box-shadow:
     var(--agw-set-shadow-soft),
-    inset 0 0 0 2px color-mix(in srgb, var(--agw-on-accent) 72%, transparent);
+    inset 0 0 0 2px var(--agw-on-accent);
 }
 
 /* ── Text input ───────────────────────────────────────────────────────── */

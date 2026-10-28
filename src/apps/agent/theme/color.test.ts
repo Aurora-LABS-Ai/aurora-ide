@@ -135,13 +135,14 @@ describe("the shipped themes pass their own check", () => {
    * short we are.
    */
   it("records how far the brand accents sit below WCAG AA for button labels", () => {
+    // Both themes share one accent (`palette.ts` AURORA_INPUTS, `#2f90eb`).
     expect(contrastRatio(agentDark.tokens.onAccent, agentDark.tokens.accent)).toBeCloseTo(
-      3.42,
+      3.33,
       2,
     );
     expect(
       contrastRatio(agentLight.tokens.onAccent, agentLight.tokens.accent),
-    ).toBeCloseTo(4.3, 2);
+    ).toBeCloseTo(3.33, 2);
     expect(AA_NORMAL_TEXT_CONTRAST).toBe(4.5);
   });
 });

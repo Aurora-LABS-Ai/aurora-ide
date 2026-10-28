@@ -138,10 +138,10 @@ export const MIN_ACCENT_CONTRAST = 3;
  * What a LABEL on a filled accent button should clear before we say anything.
  *
  * WCAG AA for 14px/500 text is 4.5:1, and this is 3:1 — a deliberate gap, not
- * an oversight. **Both shipped accents are already under 4.5**: Aurora Dark's
- * `#3994bc` gives 3.42:1 under white, Daylight's `#4f6bff` gives 4.30:1
- * (`color.test.ts` pins both numbers, so a future accent change is measured
- * rather than guessed). Warning at 4.5 would therefore flag a fresh install on
+ * an oversight. **The shipped accent is already under 4.5**: `#2f90eb` (Codex's
+ * blue walked to clear 3:1, `palette.ts`) gives 3.33:1 under white in both
+ * themes (`color.test.ts` pins the number, so a future accent change is
+ * measured rather than guessed). Warning at 4.5 would therefore flag a fresh install on
  * first open, which teaches people to ignore the warning.
  *
  * 3:1 is where a label stops being merely low-contrast and starts being hard

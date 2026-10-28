@@ -260,9 +260,9 @@
   flex: none;
   margin: 8px 12px 0;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--agw-removed) 45%, var(--agw-border));
+  border: 1px solid var(--agw-removed-line);
   border-radius: var(--agw-radius-md);
-  background: color-mix(in srgb, var(--agw-removed) 10%, transparent);
+  background: var(--agw-removed-soft);
   color: var(--agw-text);
   font-size: var(--agw-fs-micro);
 }
@@ -299,7 +299,7 @@
 
 .agw-model-deep[data-on] {
   border-color: var(--agw-accent);
-  background: color-mix(in srgb, var(--agw-accent) 14%, transparent);
+  background: var(--agw-accent-soft);
   color: var(--agw-text);
 }
 

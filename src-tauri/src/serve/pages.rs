@@ -79,6 +79,13 @@ pub fn has_extension(path: &str) -> bool {
     path.rsplit('/').next().is_some_and(|last| last.contains('.'))
 }
 
+/// A browser only ever gets the agent window: `/` (and any other page address)
+/// would mount the editor, which carries no agent and runs its own first-launch
+/// tour. `path` has no leading slash.
+pub fn is_agent_window(path: &str) -> bool {
+    path == "agent-window" || path.starts_with("agent-window/")
+}
+
 pub fn message(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\

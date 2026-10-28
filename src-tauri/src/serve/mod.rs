@@ -455,6 +455,9 @@ async fn page(State(host): State<Arc<ServeHost>>, request: Request<Body>) -> Res
             .into_response();
     };
     let wanted = if path.is_empty() || !pages::has_extension(path) {
+        if !pages::is_agent_window(path) {
+            return Redirect::to("/agent-window").into_response();
+        }
         "index.html"
     } else {
         path

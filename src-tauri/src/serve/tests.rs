@@ -238,6 +238,19 @@ async fn app_addresses_get_the_built_index_and_files_come_from_dist() {
         script.headers()[header::CONTENT_TYPE],
         "text/javascript; charset=utf-8"
     );
+
+    // `/` would mount the editor and its first-launch tour; a browser only gets
+    // the agent window.
+    for address in ["/", "/settings", "/agent-windowx"] {
+        let response = client()
+            .get(format!("{base}{address}"))
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection(), "{address}");
+        assert_eq!(response.headers()[header::LOCATION], "/agent-window", "{address}");
+    }
 }
 
 #[test]

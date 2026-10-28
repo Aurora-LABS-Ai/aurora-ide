@@ -15,7 +15,7 @@ use crate::api::kenari::usage::{self, KenariUsage};
 ///
 /// `async` with the request awaited inline: a sync `#[tauri::command]` runs on
 /// the UI thread in Tauri v2, and this one makes a network call.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn kenari_usage(api_key: String) -> Result<KenariUsage, String> {
     usage::fetch_usage(&api_key).await
 }

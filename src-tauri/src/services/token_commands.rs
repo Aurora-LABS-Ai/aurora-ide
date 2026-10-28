@@ -1,6 +1,7 @@
 //! Token Counting Commands
 //!
-//! Tauri commands for accurate token counting using tiktoken-rs
+//! Commands for accurate token counting using tiktoken-rs: `#[tauri::command]`s
+//! with `desktop`, served to other hosts by `host_commands::tokens`.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +17,7 @@ pub struct CountTokensRequest {
 }
 
 /// Count tokens for text
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn count_tokens(request: CountTokensRequest) -> Result<TokenCount, String> {
     if let Some(model) = request.model {
         TokenService::count_tokens_for_model(&request.text, &model)
@@ -40,7 +41,7 @@ pub struct CountChatTokensRequest {
 }
 
 /// Count tokens for a single chat message
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn count_chat_tokens(request: CountChatTokensRequest) -> Result<TokenCount, String> {
     TokenService::count_chat_tokens(&request.role, &request.content, &request.model)
 }
@@ -54,19 +55,19 @@ pub struct CountMessagesTokensRequest {
 }
 
 /// Count tokens for a list of messages (conversation history)
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn count_messages_tokens(request: CountMessagesTokensRequest) -> Result<TokenCount, String> {
     TokenService::count_messages_tokens(&request.messages, &request.model)
 }
 
 /// Detect encoding for a model
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn detect_model_encoding(model: String) -> String {
     format!("{:?}", TokenService::detect_encoding(&model)).to_lowercase()
 }
 
 /// Quick estimate without loading tokenizer (fast fallback)
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn estimate_tokens_quick(text: String) -> usize {
     TokenService::estimate_tokens_quick(&text)
 }
@@ -81,7 +82,7 @@ pub struct TruncateTextRequest {
 }
 
 /// Truncate text to fit within token limit
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub fn truncate_to_tokens(request: TruncateTextRequest) -> Result<String, String> {
     let encoding = request
         .model

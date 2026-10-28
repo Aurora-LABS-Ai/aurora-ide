@@ -17,7 +17,7 @@ use crate::api::minimax::usage::{self, MinimaxUsageSnapshot};
 ///
 /// `async` with the request awaited inline: a sync `#[tauri::command]` runs on
 /// the UI thread in Tauri v2, and this one makes a network call.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn minimax_usage_get(api_key: String) -> Result<MinimaxUsageSnapshot, String> {
     usage::fetch_usage(&api_key).await
 }

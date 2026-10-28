@@ -1,9 +1,12 @@
-//! Tauri commands for the Codex (ChatGPT) provider.
+//! Commands for the Codex (ChatGPT) provider: `#[tauri::command]`s with
+//! `desktop`, served to other hosts by `host_commands::sign_ins`.
 //!
 //! Thin wrappers over [`crate::api::codex`] — the auth/usage logic is
 //! tauri-free; this layer only adds the system-browser open for the
-//! PKCE login and the IPC surface for the settings card.
+//! PKCE login (desktop only: it opens a browser on this machine) and the
+//! IPC surface for the settings card.
 
+#[cfg(feature = "desktop")]
 use tauri_plugin_shell::ShellExt;
 
 use crate::api::codex::accounts;
@@ -11,11 +14,12 @@ use crate::api::codex::auth::{self, CodexAuthStatus};
 use crate::api::codex::usage::{self, CodexUsageSnapshot};
 
 /// How long the browser sign-in may take before we give up.
+#[cfg(feature = "desktop")]
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
 /// Current sign-in state (reads `~/.codex/auth.json` — a Codex CLI
 /// login is picked up automatically).
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_auth_status() -> Result<CodexAuthStatus, String> {
     tokio::task::spawn_blocking(auth::status)
         .await
@@ -25,7 +29,8 @@ pub async fn codex_auth_status() -> Result<CodexAuthStatus, String> {
 /// Run the browser PKCE sign-in end to end: open the authorize URL in
 /// the system browser, wait for the loopback callback, persist the
 /// tokens, and return the resulting status.
-#[tauri::command]
+#[cfg(feature = "desktop")]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_auth_login(app: tauri::AppHandle) -> Result<CodexAuthStatus, String> {
     let (auth_url, done) = auth::begin_login().await?;
 
@@ -52,7 +57,7 @@ pub async fn codex_auth_login(app: tauri::AppHandle) -> Result<CodexAuthStatus, 
 }
 
 /// Abort a pending browser sign-in.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_auth_cancel_login() -> Result<(), String> {
     auth::cancel_login();
     Ok(())
@@ -60,7 +65,7 @@ pub async fn codex_auth_cancel_login() -> Result<(), String> {
 
 /// Sign out of the account serving requests. Only removes Aurora's own
 /// entry — Codex CLI keeps whatever it is signed into.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_auth_logout() -> Result<(), String> {
     tokio::task::spawn_blocking(auth::logout)
         .await
@@ -68,7 +73,7 @@ pub async fn codex_auth_logout() -> Result<(), String> {
 }
 
 /// Live subscription usage (5-hour + weekly windows) for the card.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_usage_get() -> Result<CodexUsageSnapshot, String> {
     usage::fetch_usage().await
 }
@@ -121,7 +126,7 @@ pub struct CodexAccountsSnapshot {
 /// endpoint. One account failing leaves its row present with `usageError` set
 /// rather than dropping it — a row you cannot poll is still a row you can make
 /// main.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_accounts_list() -> Result<CodexAccountsSnapshot, String> {
     let store = accounts::load();
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -191,7 +196,7 @@ fn parse_balance(raw: &str) -> Option<f64> {
 }
 
 /// Make this account the one that serves requests.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_account_set_main(account_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::set_main(&account_id))
         .await
@@ -199,7 +204,7 @@ pub async fn codex_account_set_main(account_id: String) -> Result<(), String> {
 }
 
 /// Forget one account. Codex CLI is unaffected.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_account_remove(account_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::remove(&account_id))
         .await
@@ -208,7 +213,7 @@ pub async fn codex_account_remove(account_id: String) -> Result<(), String> {
 
 /// Clear the "spent" mark so this account is eligible again — for when the
 /// user knows the window reset sooner than the backend implied.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_account_clear_limit(account_id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::clear_exhausted(&account_id))
         .await
@@ -216,7 +221,7 @@ pub async fn codex_account_clear_limit(account_id: String) -> Result<(), String>
 }
 
 /// Add whatever Codex CLI is signed into, without disturbing it.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn codex_account_import_cli() -> Result<String, String> {
     tokio::task::spawn_blocking(auth::import_from_cli)
         .await

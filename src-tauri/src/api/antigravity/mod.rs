@@ -39,6 +39,7 @@
 pub mod accounts;
 pub mod adapter;
 pub mod auth;
+pub mod commands;
 pub mod models;
 pub mod quota;
 pub mod schema;

@@ -35,6 +35,7 @@ async fn start(dist: Option<PathBuf>) -> (String, tempfile::TempDir) {
             db: Arc::new(std::sync::Mutex::new(
                 crate::db::Database::in_memory().expect("in-memory database"),
             )),
+            checkpoints: Arc::new(crate::checkpoints::commands::CheckpointState::new()),
         },
         hub,
         token: TOKEN.into(),

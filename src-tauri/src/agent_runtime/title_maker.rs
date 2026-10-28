@@ -64,7 +64,7 @@ fn title_input(message: &str, output: &str) -> Result<String, String> {
 /// Generate a thread title from the user's first message via an OpenAI-compatible
 /// endpoint. Returns the cleaned title, or `Err` (the caller then keeps the
 /// derived title — every error path here is non-fatal by design).
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn generate_thread_title(
     base_url: String,
     api_key: Option<String>,
@@ -131,7 +131,7 @@ pub async fn generate_thread_title(
 /// provider speaks. The same adapter factory a turn uses, so the sign-in
 /// providers and the Anthropic-shaped ones work here too; the endpoint
 /// command above stays for a bare OpenAI-compatible URL with no provider row.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn generate_thread_title_cloud(
     config: crate::api::client::ProviderConfigSnapshot,
     model: String,

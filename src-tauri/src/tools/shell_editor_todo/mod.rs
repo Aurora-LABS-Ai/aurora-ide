@@ -72,6 +72,7 @@ pub mod shell_read_output;
 pub mod shell_spawn;
 pub mod tasks;
 pub mod terminal;
+pub mod todo_commands;
 pub mod todo_store;
 
 pub use ide_event_sink::{

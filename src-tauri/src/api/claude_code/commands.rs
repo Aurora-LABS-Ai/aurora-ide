@@ -1,4 +1,6 @@
-//! Tauri commands for the Claude Code (claude.ai subscription) provider.
+//! Commands for the Claude Code (claude.ai subscription) provider:
+//! `#[tauri::command]`s with `desktop`, served to other hosts by
+//! `host_commands::sign_ins`.
 //!
 //! Thin wrappers over [`crate::api::claude_code`] — the auth/usage logic is
 //! tauri-free; this layer is only the IPC surface for the settings card.
@@ -16,7 +18,7 @@ use crate::api::claude_code::auth::{self, ClaudeCodeAuthStatus};
 use crate::api::claude_code::usage::{self, ClaudeCodeUsageSnapshot};
 
 /// Sign-in state of the main account, from Aurora's own account list.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_auth_status() -> Result<ClaudeCodeAuthStatus, String> {
     tokio::task::spawn_blocking(auth::status)
         .await
@@ -25,27 +27,27 @@ pub async fn claude_code_auth_status() -> Result<ClaudeCodeAuthStatus, String> {
 
 /// Start a sign-in. Returns the authorize URL for the user to open; the
 /// PKCE secret it belongs to stays in memory until the code is pasted.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_auth_begin() -> Result<String, String> {
     Ok(auth::begin_login())
 }
 
 /// Finish the sign-in with the code (or callback address) the user pasted.
 /// Exchanges it, saves the tokens, and returns the resulting status.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_auth_complete(input: String) -> Result<ClaudeCodeAuthStatus, String> {
     auth::complete_login(&input).await
 }
 
 /// Abandon a started sign-in so its link can no longer be completed.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_auth_cancel() -> Result<(), String> {
     auth::cancel_login();
     Ok(())
 }
 
 /// Sign out of the main account. Only Aurora's list changes.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_auth_logout() -> Result<(), String> {
     tokio::task::spawn_blocking(auth::logout)
         .await
@@ -57,7 +59,7 @@ pub async fn claude_code_auth_logout() -> Result<(), String> {
 /// Answered from the last chat reply's headers when they are recent; the
 /// usage endpoint is asked only otherwise, or when `force` is set (the card's
 /// refresh button). The endpoint refuses a handful of reads a minute.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_usage_get(force: Option<bool>) -> Result<ClaudeCodeUsageSnapshot, String> {
     usage::fetch_usage(force.unwrap_or(false)).await
 }
@@ -81,7 +83,7 @@ pub struct ClaudeCodeAccountRow {
 ///
 /// Polled concurrently: the requests are independent, and serially the list
 /// would sit blank for one round trip per account.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_accounts_list() -> Result<Vec<ClaudeCodeAccountRow>, String> {
     let store = tokio::task::spawn_blocking(accounts::load)
         .await
@@ -117,7 +119,7 @@ pub async fn claude_code_accounts_list() -> Result<Vec<ClaudeCodeAccountRow>, St
 }
 
 /// Send chats to this account.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_account_set_main(id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::set_main(&id))
         .await
@@ -125,7 +127,7 @@ pub async fn claude_code_account_set_main(id: String) -> Result<(), String> {
 }
 
 /// Forget one account. Claude Code on this machine is unaffected.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_account_remove(id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::remove(&id))
         .await
@@ -134,7 +136,7 @@ pub async fn claude_code_account_remove(id: String) -> Result<(), String> {
 
 /// Copy the account Claude Code is signed into. Reads Claude Code's
 /// credentials once; never writes them.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn claude_code_account_import_cli() -> Result<ClaudeCodeAuthStatus, String> {
     auth::import_from_cli().await
 }

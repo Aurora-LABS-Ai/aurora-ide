@@ -13,6 +13,7 @@
 //! chat replies; both were checked live the same day
 //! (`scripts/probe-kenari-quota.py`).
 
+pub mod commands;
 pub mod usage;
 
 /// Every account read hangs off the API origin, the same one chat uses.

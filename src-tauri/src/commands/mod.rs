@@ -1,21 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
-// Windows-specific imports for hiding console window
-#[cfg(target_os = "windows")]
+// The process tests below start a hidden `cmd`.
+#[cfg(all(test, target_os = "windows"))]
 use std::os::windows::process::CommandExt;
-
-// Windows creation flags
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-use notify::{recommended_watcher, Config, Event, EventKind, RecursiveMode, Watcher};
-use tauri::Emitter;
 
 // The request/response types keep their old `commands::` paths; the helpers
 // are imported for the tests below, which still live in this file.
@@ -35,17 +29,17 @@ pub mod chat_gallery;
 pub mod chat_video;
 pub mod image_direct;
 pub mod image_providers;
-pub mod antigravity;
+pub use crate::api::antigravity::commands as antigravity;
 pub mod checkpoints;
-pub mod claude_code;
+pub use crate::api::claude_code::commands as claude_code;
 pub mod code_index;
-pub mod codex;
-pub mod commandcode;
+pub use crate::api::codex::commands as codex;
+pub use crate::api::commandcode::commands as commandcode;
 /// Test-only: fails the build if a main-thread command waits on the database.
 #[cfg(test)]
 mod command_thread_safety;
 pub mod cursor;
-pub mod deepseek;
+pub use crate::api::deepseek_balance as deepseek;
 pub mod diagnostics;
 /// The editing commands ([`crate::workspace::edit`]) plus opening a file in the
 /// IDE window ([`ide_window`]), under the path `lib.rs` registers them by.
@@ -55,21 +49,21 @@ pub mod editor_ops {
 }
 pub mod ide_window;
 pub mod fonts;
-pub mod git;
+pub use crate::workspace::git;
 pub mod icon_themes;
-pub mod kenari;
+pub use crate::api::kenari::commands as kenari;
 pub mod local_providers;
-pub mod minimax;
-pub mod modal;
-pub mod opencode;
-pub mod plans;
+pub use crate::api::minimax::commands as minimax;
+pub use crate::api::modal;
+pub use crate::api::opencode;
+pub use crate::plans::commands as plans;
 pub mod conversation_stats;
 pub mod project_stats;
 pub mod prompt_refine;
-pub mod provider_catalog;
+pub use crate::api::provider_catalog;
 pub mod provider_kernel;
 pub use crate::api::provider_models;
-pub mod provider_test;
+pub use crate::api::provider_test;
 pub mod settings;
 pub mod shell_profiles;
 pub mod speech;
@@ -79,9 +73,9 @@ pub use crate::process::tree as terminal;
 pub mod terminal_pty;
 pub mod themes;
 pub mod threads;
-pub mod title_maker;
-pub mod todos;
-pub mod tokens;
+pub use crate::agent_runtime::title_maker;
+pub use crate::services::token_commands as tokens;
+pub use crate::tools::shell_editor_todo::todo_commands as todos;
 pub mod typing_assist;
 pub mod undo_redo;
 pub mod usage_stats;
@@ -151,14 +145,7 @@ pub async fn execute_command_stream(
     .await
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SystemInfo {
-    pub os: String,         // e.g., "windows", "macos", "linux"
-    pub os_version: String, // e.g., "10.0.26200" for Windows
-    pub arch: String,       // e.g., "x86_64", "aarch64"
-    pub hostname: String,
-    pub shell: Option<String>, // Default shell path
-}
+pub use crate::host_commands::system::SystemInfo;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,12 +254,6 @@ pub async fn ripgrep_search(
     crate::workspace::ripgrep_search(request).await
 }
 
-static FS_WATCHER: OnceLock<Mutex<Option<notify::RecommendedWatcher>>> = OnceLock::new();
-
-fn get_watcher_handle() -> &'static Mutex<Option<notify::RecommendedWatcher>> {
-    FS_WATCHER.get_or_init(|| Mutex::new(None))
-}
-
 /// Search the web, or read one page.
 ///
 /// The work lives in [`crate::websearch`]; this is the IPC edge. It resolves
@@ -341,419 +322,57 @@ pub async fn list_filesystem_roots() -> crate::workspace::fs::FilesystemRoots {
     crate::workspace::fs::filesystem_roots()
 }
 
-/// Get system information (Cursor-style detailed info)
+/// Get system information. The work is in [`crate::host_commands::system`].
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
-    let os = std::env::consts::OS.to_string();
-    let arch = std::env::consts::ARCH.to_string();
-
-    tokio::task::spawn_blocking(move || {
-        // These helpers use blocking I/O / process execution, so run off the async runtime.
-        let os_version = get_os_version();
-        let shell = get_default_shell();
-
-        SystemInfo {
-            os,
-            os_version,
-            arch,
-            hostname: hostname::get()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "unknown".to_string()),
-            shell,
-        }
-    })
-    .await
-    .map_err(|e| format!("Failed to collect system info: {}", e))
+    crate::host_commands::system::get_system_info().await
 }
 
-/// Get OS version string
-fn get_os_version() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        // Try to get Windows version from registry or environment
-        if let Ok(output) = Command::new("cmd")
-            .args(["/c", "ver"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-        {
-            let version_str = String::from_utf8_lossy(&output.stdout);
-            // Parse "Microsoft Windows [Version 10.0.26200.2605]"
-            if let Some(start) = version_str.find("Version ") {
-                if let Some(end) = version_str[start..].find(']') {
-                    let ver = &version_str[start + 8..start + end];
-                    // Return just major.minor.build (e.g., "10.0.26200")
-                    let parts: Vec<&str> = ver.split('.').collect();
-                    if parts.len() >= 3 {
-                        return format!("{}.{}.{}", parts[0], parts[1], parts[2]);
-                    }
-                    return ver.to_string();
-                }
-            }
-        }
-        "unknown".to_string()
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = Command::new("sw_vers").arg("-productVersion").output() {
-            return String::from_utf8_lossy(&output.stdout).trim().to_string();
-        }
-        "unknown".to_string()
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // Try to read from /etc/os-release
-        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-            for line in content.lines() {
-                if line.starts_with("VERSION_ID=") {
-                    return line
-                        .trim_start_matches("VERSION_ID=")
-                        .trim_matches('"')
-                        .to_string();
-                }
-            }
-        }
-        // Fallback to uname
-        if let Ok(output) = Command::new("uname").arg("-r").output() {
-            return String::from_utf8_lossy(&output.stdout).trim().to_string();
-        }
-        "unknown".to_string()
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        "unknown".to_string()
-    }
-}
-
-/// Get default shell path
-fn get_default_shell() -> Option<String> {
-    #[cfg(target_os = "windows")]
-    {
-        // Check for PowerShell 7 first, then fall back to PowerShell 5, then cmd
-        let ps7_paths = [
-            r"C:\Program Files\PowerShell\7\pwsh.exe",
-            r"C:\Program Files (x86)\PowerShell\7\pwsh.exe",
-        ];
-
-        for path in ps7_paths {
-            if Path::new(path).exists() {
-                return Some(path.to_string());
-            }
-        }
-
-        // Check for Windows PowerShell
-        if let Ok(system_root) = std::env::var("SystemRoot") {
-            let ps5_path = format!(
-                r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
-                system_root
-            );
-            if Path::new(&ps5_path).exists() {
-                return Some(ps5_path);
-            }
-        }
-
-        // Fallback to cmd.exe
-        Some(
-            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".to_string()),
-        )
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Unix-like: check SHELL env var
-        std::env::var("SHELL")
-            .ok()
-            .or_else(|| Some("/bin/sh".to_string()))
-    }
-}
+// File operations for the window. The work is in [`crate::workspace::fs`].
 
 /// Create a new file
 #[tauri::command]
 pub async fn create_file(path: String) -> Result<(), String> {
-    let file_path = Path::new(&path);
-
-    // Check if file already exists
-    if file_path.exists() {
-        return Err(format!("File already exists: {}", path));
-    }
-
-    // Create parent directories if they don't exist
-    if let Some(parent) = file_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directories: {}", e))?;
-        }
-    }
-
-    // Create empty file
-    fs::File::create(file_path).map_err(|e| format!("Failed to create file: {}", e))?;
-
-    Ok(())
+    crate::workspace::fs::create_file(path).await
 }
 
 /// Delete a file or folder
 #[tauri::command]
 pub async fn delete_path(path: String) -> Result<(), String> {
-    let target_path = Path::new(&path);
-
-    if !target_path.exists() {
-        return Err(format!("Path does not exist: {}", path));
-    }
-
-    let result = if target_path.is_dir() {
-        // Invalidate all cached files under this directory
-        crate::file_cache::get_file_cache().invalidate_prefix(&path);
-        fs::remove_dir_all(target_path).map_err(|e| format!("Failed to delete folder: {}", e))
-    } else {
-        // Invalidate the specific file
-        crate::file_cache::get_file_cache().invalidate(&path);
-        fs::remove_file(target_path).map_err(|e| format!("Failed to delete file: {}", e))
-    };
-
-    result
+    crate::workspace::fs::delete_path(path).await
 }
 
 /// Rename a file or folder
 #[tauri::command]
 pub async fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
-    let old = Path::new(&old_path);
-    let new = Path::new(&new_path);
-
-    if !old.exists() {
-        return Err(format!("Path does not exist: {}", old_path));
-    }
-
-    if new.exists() {
-        return Err(format!("Destination already exists: {}", new_path));
-    }
-
-    // Invalidate old path from cache (it's being renamed)
-    let cache = crate::file_cache::get_file_cache();
-    if old.is_dir() {
-        cache.invalidate_prefix(&old_path);
-    } else {
-        cache.invalidate(&old_path);
-    }
-
-    fs::rename(old, new).map_err(|e| format!("Failed to rename: {}", e))
+    crate::workspace::fs::rename_path(old_path, new_path).await
 }
 
 /// Copy a file or folder to a new location
 #[tauri::command]
 pub async fn copy_path(source: String, destination: String) -> Result<(), String> {
-    let src = Path::new(&source);
-    let dest = Path::new(&destination);
-
-    if !src.exists() {
-        return Err(format!("Source does not exist: {}", source));
-    }
-
-    if dest.exists() {
-        return Err(format!("Destination already exists: {}", destination));
-    }
-
-    // Create parent directories if needed
-    if let Some(parent) = dest.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directories: {}", e))?;
-        }
-    }
-
-    if src.is_file() {
-        fs::copy(src, dest).map_err(|e| format!("Failed to copy file: {}", e))?;
-    } else if src.is_dir() {
-        copy_dir_recursive(src, dest)?;
-    }
-
-    Ok(())
-}
-
-/// Recursively copy a directory
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| format!("Failed to create directory: {}", e))?;
-
-    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))? {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let src_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dest_path)?;
-        } else {
-            fs::copy(&src_path, &dest_path).map_err(|e| format!("Failed to copy file: {}", e))?;
-        }
-    }
-
-    Ok(())
+    crate::workspace::fs::copy_path(source, destination).await
 }
 
 /// Get the current workspace root directory
 #[tauri::command]
 pub async fn get_workspace_root() -> Result<String, String> {
-    std::env::current_dir()
-        .map(|path| path.to_string_lossy().to_string())
-        .map_err(|e| format!("Failed to get current directory: {}", e))
+    crate::host_commands::system::get_workspace_root()
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub struct FsEventPayload {
-    pub paths: Vec<String>,
-    pub kind: String,
-}
-
-/// Subtrees that produce constant churn but never carry user-relevant
-/// content. Any path whose components contain one of these names is
-/// dropped before the watcher emits an `fs-changed` event.
-///
-/// Keep this list tight — anything we add here will go invisible to
-/// the file explorer's auto-refresh + the in-IDE git status reload.
-const WATCH_IGNORED_DIR_NAMES: &[&str] = &[
-    ".git",
-    "node_modules",
-    "target",
-    "build",
-    "dist",
-    ".next",
-    ".turbo",
-    ".cache",
-    ".vite",
-    ".parcel-cache",
-    ".pnpm-store",
-    ".yarn",
-];
-
-/// File suffixes that are always editor/build noise (lock files,
-/// SQLite WAL/SHM, sourcemap rebuilds, …). Filtering these costs us
-/// nothing because they're never opened in the editor.
-const WATCH_IGNORED_FILE_SUFFIXES: &[&str] = &[
-    ".lock",
-    ".tmp",
-    ".swp",
-    ".swo",
-    "~",
-    ".db-wal",
-    ".db-shm",
-    ".sqlite-wal",
-    ".sqlite-shm",
-];
-
-#[inline]
-pub fn is_ignored_watch_path(path: &Path) -> bool {
-    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-        if WATCH_IGNORED_FILE_SUFFIXES
-            .iter()
-            .any(|suffix| file_name.ends_with(suffix))
-        {
-            return true;
-        }
-    }
-    path.components().any(|component| {
-        component
-            .as_os_str()
-            .to_str()
-            .map(|name| WATCH_IGNORED_DIR_NAMES.contains(&name))
-            .unwrap_or(false)
-    })
-}
+// The file watcher for the window. The work is in [`crate::workspace::watch`].
+pub use crate::workspace::watch::{is_ignored_watch_path, FsEventPayload};
 
 /// Start a filesystem watcher that emits `fs-changed` events to the frontend.
 #[tauri::command]
 pub async fn start_fs_watcher(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("Watch path does not exist: {}", path));
-    }
-
-    // Stop existing watcher if any
-    {
-        let mut guard = get_watcher_handle()
-            .lock()
-            .map_err(|e| format!("Failed to lock watcher: {}", e))?;
-        *guard = None;
-    }
-
-    let app_handle = app.clone();
-    let mut watcher = recommended_watcher(move |res: Result<Event, notify::Error>| {
-        if let Ok(event) = res {
-            // Skip Access events outright — they fire on every read
-            // (mtime/atime stat) and the frontend ignores them anyway.
-            // Without this filter, running `git status` or HMR scans
-            // alone produces thousands of IPC roundtrips per second.
-            if matches!(event.kind, EventKind::Access(_) | EventKind::Other) {
-                return;
-            }
-
-            // Drop events that touch only IGNORED subtrees (`.git/`,
-            // `node_modules/`, `target/`, `build/`, `dist/`, etc).
-            // Cargo, pnpm and Vite churn these directories thousands
-            // of times during a dev rebuild and every modification
-            // would otherwise:
-            //   1. Invalidate the Rust file cache for that path
-            //   2. Schedule a debounced `git_get_status` reload
-            // Both are pure overhead — none of those files are user
-            // content. We filter event-level (not path-level) so that
-            // a single mixed event still fires for the user-content
-            // paths it carries.
-            let kept_paths: Vec<String> = event
-                .paths
-                .iter()
-                .filter(|p| !is_ignored_watch_path(p))
-                .map(|p| p.to_string_lossy().to_string())
-                .collect();
-
-            if kept_paths.is_empty() {
-                return;
-            }
-
-            let kind_str = match event.kind {
-                EventKind::Create(_) => "create",
-                EventKind::Modify(_) => "modify",
-                EventKind::Remove(_) => "remove",
-                EventKind::Any => "any",
-                EventKind::Access(_) => "access",
-                EventKind::Other => "other",
-            };
-
-            let _ = app_handle.emit(
-                "fs-changed",
-                FsEventPayload {
-                    paths: kept_paths,
-                    kind: kind_str.to_string(),
-                },
-            );
-        }
-    })
-    .map_err(|e| format!("Failed to create watcher: {}", e))?;
-
-    watcher
-        .configure(Config::default().with_compare_contents(false))
-        .map_err(|e| format!("Failed to configure watcher: {}", e))?;
-
-    watcher
-        .watch(target, RecursiveMode::Recursive)
-        .map_err(|e| format!("Failed to watch path: {}", e))?;
-
-    {
-        let mut guard = get_watcher_handle()
-            .lock()
-            .map_err(|e| format!("Failed to lock watcher: {}", e))?;
-        *guard = Some(watcher);
-    }
-
-    Ok(())
+    crate::workspace::watch::start_fs_watcher(std::sync::Arc::new(app), path).await
 }
 
 /// Stop the filesystem watcher
 #[tauri::command]
 pub async fn stop_fs_watcher() -> Result<(), String> {
-    let mut guard = get_watcher_handle()
-        .lock()
-        .map_err(|e| format!("Failed to lock watcher: {}", e))?;
-    *guard = None;
-    Ok(())
+    crate::workspace::watch::stop_fs_watcher().await
 }
 
 /// Reveal a file or folder in the system file explorer
@@ -924,12 +543,7 @@ pub async fn read_files_batch(paths: Vec<String>) -> HashMap<String, Result<Stri
 /// Call this after external file modifications
 #[tauri::command]
 pub async fn invalidate_file_cache(path: String, is_prefix: bool) -> Result<(), String> {
-    let cache = crate::file_cache::get_file_cache();
-    if is_prefix {
-        cache.invalidate_prefix(&path);
-    } else {
-        cache.invalidate(&path);
-    }
+    crate::workspace::fs::invalidate_file_cache(&path, is_prefix);
     Ok(())
 }
 

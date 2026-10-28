@@ -1,4 +1,5 @@
-//! Tauri command backing the Agent Window's task checklist.
+//! The command backing the Agent Window's task checklist (a `#[tauri::command]`
+//! with `desktop`; `host_commands::conversation` serves it to other hosts).
 //!
 //! The checklist used to be rebuilt on the frontend by parsing `todo_write`
 //! tool-call arguments as they streamed. That copy could only ever be as good
@@ -16,9 +17,9 @@ use crate::tools::shell_editor_todo::todo_store;
 /// An unknown thread is an empty list, not an error — a conversation that never
 /// tracked anything is the normal case, and a panel is not worth failing a
 /// window open over.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn todo_list_for_thread(thread_id: String) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let trimmed = thread_id.trim();
         if trimmed.is_empty() {
             return Err("thread_id must not be empty".into());

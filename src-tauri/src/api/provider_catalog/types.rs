@@ -2,6 +2,15 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// The Modal gateway base URL for a region — what a Modal provider row
+/// stores. The region list itself (`us-west` default, `us-east`,
+/// `ca-central`, `eu-west`, `ap-south`) is the settings card's, in
+/// `services/providers/modal.ts`.
+#[must_use]
+pub fn modal_gateway_base_url(region: &str) -> String {
+    format!("https://inference.{region}.modal.direct/v1")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCatalogPreset {
@@ -906,7 +915,7 @@ pub fn built_in_provider_presets() -> Vec<ProviderCatalogPreset> {
             // the model id — so the models are the endpoints, refreshed from
             // the gateway, and the base URL only says which region routes the
             // traffic. See `commands/modal.rs`.
-            base_url: crate::commands::modal::gateway_base_url("us-west"),
+            base_url: modal_gateway_base_url("us-west"),
             // No seeded model: the list is whatever the workspace has deployed
             // right now, and a guessed hostname would 404 as
             // `unknown inference model`.
@@ -1060,7 +1069,7 @@ mod tests {
         assert_eq!(modal.provider_type, "modal");
         assert_eq!(
             modal.base_url,
-            crate::commands::modal::gateway_base_url("us-west")
+            modal_gateway_base_url("us-west")
         );
         assert!(modal.requires_api_key);
         assert!(modal.model_pricing.is_none(), "endpoints bill GPU time, not tokens");

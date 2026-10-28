@@ -184,6 +184,131 @@ pub async fn create_folder(path: String) -> Result<(), String> {
     fs::create_dir_all(dir_path).map_err(|e| format!("Failed to create folder: {}", e))
 }
 
+/// Create a new file
+pub async fn create_file(path: String) -> Result<(), String> {
+    let file_path = Path::new(&path);
+
+    // Check if file already exists
+    if file_path.exists() {
+        return Err(format!("File already exists: {}", path));
+    }
+
+    // Create parent directories if they don't exist
+    if let Some(parent) = file_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+
+    // Create empty file
+    fs::File::create(file_path).map_err(|e| format!("Failed to create file: {}", e))?;
+
+    Ok(())
+}
+
+/// Delete a file or folder
+pub async fn delete_path(path: String) -> Result<(), String> {
+    let target_path = Path::new(&path);
+
+    if !target_path.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    if target_path.is_dir() {
+        // Invalidate all cached files under this directory
+        crate::file_cache::get_file_cache().invalidate_prefix(&path);
+        fs::remove_dir_all(target_path).map_err(|e| format!("Failed to delete folder: {}", e))
+    } else {
+        // Invalidate the specific file
+        crate::file_cache::get_file_cache().invalidate(&path);
+        fs::remove_file(target_path).map_err(|e| format!("Failed to delete file: {}", e))
+    }
+}
+
+/// Rename a file or folder
+pub async fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
+    let old = Path::new(&old_path);
+    let new = Path::new(&new_path);
+
+    if !old.exists() {
+        return Err(format!("Path does not exist: {}", old_path));
+    }
+
+    if new.exists() {
+        return Err(format!("Destination already exists: {}", new_path));
+    }
+
+    // Invalidate old path from cache (it's being renamed)
+    let cache = crate::file_cache::get_file_cache();
+    if old.is_dir() {
+        cache.invalidate_prefix(&old_path);
+    } else {
+        cache.invalidate(&old_path);
+    }
+
+    fs::rename(old, new).map_err(|e| format!("Failed to rename: {}", e))
+}
+
+/// Copy a file or folder to a new location
+pub async fn copy_path(source: String, destination: String) -> Result<(), String> {
+    let src = Path::new(&source);
+    let dest = Path::new(&destination);
+
+    if !src.exists() {
+        return Err(format!("Source does not exist: {}", source));
+    }
+
+    if dest.exists() {
+        return Err(format!("Destination already exists: {}", destination));
+    }
+
+    // Create parent directories if needed
+    if let Some(parent) = dest.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+    }
+
+    if src.is_file() {
+        fs::copy(src, dest).map_err(|e| format!("Failed to copy file: {}", e))?;
+    } else if src.is_dir() {
+        copy_dir_recursive(src, dest)?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            fs::copy(&src_path, &dest_path).map_err(|e| format!("Failed to copy file: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Forget cached file contents: one file, or everything under a folder.
+pub fn invalidate_file_cache(path: &str, is_prefix: bool) {
+    let cache = crate::file_cache::get_file_cache();
+    if is_prefix {
+        cache.invalidate_prefix(path);
+    } else {
+        cache.invalidate(path);
+    }
+}
+
 /// Where a folder picker can start: the user's home and every drive (or `/`).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

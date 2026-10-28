@@ -12,7 +12,6 @@
 //! Aurora as an MCP *server* lives in `cli_delegate::mcp`, not here.
 
 pub mod client;
-#[cfg(feature = "desktop")]
 pub mod commands;
 pub mod config;
 pub mod convert;

@@ -60,13 +60,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The gateway base URL for a region — what a Modal provider row stores. The
-/// region list itself (`us-west` default, `us-east`, `ca-central`, `eu-west`,
-/// `ap-south`) is the settings card's, in `services/providers/modal.ts`.
-#[must_use]
-pub fn gateway_base_url(region: &str) -> String {
-    format!("https://inference.{region}.modal.direct/v1")
-}
 
 /// How long the CLI may take for a non-interactive command.
 const CLI_TIMEOUT: Duration = Duration::from_secs(60);
@@ -218,7 +211,7 @@ pub fn normalize_base_url(raw: &str) -> String {
 }
 
 /// The endpoints a workspace token can reach through `base_url`'s gateway.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_workspace_models(
     base_url: String,
     token: String,
@@ -641,7 +634,7 @@ fn strip_box_sides(line: &str) -> &str {
 /// nothing has been cached yet. Opening the settings card must not cost two
 /// Python process starts every time, and the card's refresh control is the one
 /// place that asks for a fresh answer.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_cli_status(refresh: Option<bool>) -> ModalCliStatus {
     if refresh != Some(true) {
         if let Some(cached) = cached_status() {
@@ -841,7 +834,7 @@ fn persist_workspaces(file: &WorkspaceFile) -> Result<(), String> {
 }
 
 /// The workspaces Aurora holds a token for, and which one is showing.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_workspaces() -> ModalWorkspaceList {
     let Ok(file) = workspaces().lock() else {
         return ModalWorkspaceList {
@@ -866,7 +859,7 @@ pub async fn modal_workspaces() -> ModalWorkspaceList {
 }
 
 /// Put the row on this workspace: mark it active and hand back what it holds.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_use_workspace(workspace: String) -> Result<ModalWorkspaceRecord, String> {
     let workspace = workspace.trim().to_string();
     if workspace.is_empty() {
@@ -896,7 +889,7 @@ pub async fn modal_use_workspace(workspace: String) -> Result<ModalWorkspaceReco
 /// Called whenever anything about the row changes — a token minted, endpoints
 /// refreshed, a region switched, a price edited — and once more just before
 /// switching away, so the workspace being left is stored as it actually was.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_save_workspace(
     workspace: String,
     token: String,
@@ -926,7 +919,7 @@ pub async fn modal_save_workspace(
 
 /// Drop a workspace. Its token is gone from Aurora; Modal still has it, and it
 /// keeps billing until deleted there.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_forget_workspace(workspace: String) -> Result<(), String> {
     let mut file = workspaces()
         .lock()
@@ -1059,7 +1052,7 @@ fn parse_version(stdout: &str) -> Option<String> {
 }
 
 /// Mint a proxy token for a workspace. The secret comes back exactly once.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_cli_create_proxy_token(profile: String) -> Result<ModalProxyToken, String> {
     let profile = profile.trim().to_string();
     if profile.is_empty() {
@@ -1112,7 +1105,7 @@ pub fn parse_proxy_token_json(stdout: &str) -> Result<ModalProxyToken, String> {
 /// Aurora addresses profiles by `MODAL_PROFILE` on every call and never reads
 /// the active one, so it has nothing to gain from activation and a real
 /// surprise to hand out.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_cli_sign_in() -> Result<ModalSignIn, String> {
     let (stdout, stderr, ok) =
         run_cli(&["token", "new", "--no-activate"], None, SIGN_IN_TIMEOUT).await?;
@@ -1212,7 +1205,7 @@ pub fn parse_billing_summary(stdout: &str, cycle: &str) -> Result<ModalBillingSu
 /// unless `refresh` is true or the workspace has never been read. A cached
 /// figure carries the moment it was taken, which the card shows: an hour-old
 /// spend labelled as such is useful, and one presented as current is not.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn modal_cli_billing_summary(
     profile: String,
     cycle: Option<String>,
@@ -1324,7 +1317,8 @@ mod tests {
                 "{raw:?}"
             );
         }
-        assert_eq!(gateway_base_url("eu-west"), "https://inference.eu-west.modal.direct/v1");
+        use crate::api::provider_catalog::types::modal_gateway_base_url as gateway_base_url;
+        assert_eq!(gateway_base_url("eu-west"),"https://inference.eu-west.modal.direct/v1");
     }
 
     #[test]

@@ -94,7 +94,7 @@ pub struct ProviderTestReport {
 /// Takes the fully-resolved snapshot the frontend would send for a real
 /// turn — including the model's own overrides — so what is tested is
 /// what will actually run.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn provider_test_model(
     config: ProviderConfigSnapshot,
     model: String,

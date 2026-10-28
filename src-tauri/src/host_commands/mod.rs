@@ -15,8 +15,21 @@
 //! [`CommandError::NotOnThisHost`].
 
 pub mod agent;
+pub mod cards;
+pub mod checkpoints;
+pub mod conversation;
+pub mod files;
+pub mod git;
+pub mod mcp;
+pub mod plans;
+pub mod providers;
 pub mod settings;
+pub mod shell;
+pub mod sign_ins;
+pub mod subagents;
+pub mod system;
 pub mod threads;
+pub mod tokens;
 
 use std::sync::Arc;
 
@@ -26,6 +39,7 @@ use serde_json::Value;
 
 use crate::agent_runtime::host::{AgentRegistry, Engine, HostEmitter};
 use crate::agent_runtime::ipc::AgentChatRequest;
+use crate::checkpoints::commands::CheckpointState;
 use crate::db::{Database, DatabaseAccess};
 use crate::host_events::Events;
 use crate::tools::permissions::PermissionRouter;
@@ -38,15 +52,21 @@ pub struct CommandContext {
     pub permissions: Arc<PermissionRouter>,
     pub events: Events,
     pub db: Arc<dyn DatabaseAccess>,
+    /// This host's checkpoint service (the window keeps its own as managed
+    /// state).
+    pub checkpoints: Arc<CheckpointState>,
 }
 
 impl CommandContext {
     pub fn new(engine: &Engine, events: Events, db: Arc<dyn DatabaseAccess>) -> Self {
+        let checkpoints = CheckpointState::new();
+        checkpoints.init(crate::paths::checkpoints_dir());
         Self {
             registry: engine.registry.clone(),
             permissions: engine.permission_router.clone(),
             events,
             db,
+            checkpoints: Arc::new(checkpoints),
         }
     }
 
@@ -60,24 +80,34 @@ impl CommandContext {
         T: Send + 'static,
         F: FnOnce(&Database) -> Result<T, String> + Send + 'static,
     {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut f = Some(f);
-            let mut out = None;
-            let reached = db.with_db(&mut |db| {
-                if let Some(f) = f.take() {
-                    out = Some(f(db));
-                }
-            });
-            match out {
-                Some(result) => result,
-                None if !reached => Err("Aurora's database is not available".to_string()),
-                None => Err("the database call did not run".to_string()),
-            }
-        })
-        .await
-        .map_err(|e| format!("the database task stopped: {e}"))?
+        run_db(self.db.clone(), f).await
     }
+}
+
+/// Run `f` against `db`, off the async threads (SQLite blocks). For command
+/// bodies that both hosts call: the window passes its `AppHandle`, a server
+/// its own database.
+pub(crate) async fn run_db<T, F>(db: Arc<dyn DatabaseAccess>, f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Database) -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let mut f = Some(f);
+        let mut out = None;
+        let reached = db.with_db(&mut |db| {
+            if let Some(f) = f.take() {
+                out = Some(f(db));
+            }
+        });
+        match out {
+            Some(result) => result,
+            None if !reached => Err("Aurora's database is not available".to_string()),
+            None => Err("the database call did not run".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("the database task stopped: {e}"))?
 }
 
 /// Every command this host serves, across the groups.
@@ -86,6 +116,19 @@ pub fn all_commands() -> impl Iterator<Item = &'static str> {
         .iter()
         .chain(settings::COMMANDS)
         .chain(threads::COMMANDS)
+        .chain(files::COMMANDS)
+        .chain(shell::COMMANDS)
+        .chain(system::COMMANDS)
+        .chain(mcp::COMMANDS)
+        .chain(git::COMMANDS)
+        .chain(plans::COMMANDS)
+        .chain(checkpoints::COMMANDS)
+        .chain(subagents::COMMANDS)
+        .chain(cards::COMMANDS)
+        .chain(conversation::COMMANDS)
+        .chain(tokens::COMMANDS)
+        .chain(providers::COMMANDS)
+        .chain(sign_ins::COMMANDS)
         .copied()
 }
 
@@ -136,12 +179,56 @@ pub const COMMANDS: &[&str] = &[
 /// Commands that need a window. Answered with a clear refusal instead of
 /// "unknown", so a client can hide what it cannot use.
 pub const WINDOW_ONLY: &[&str] = &[
+    // The browser dock: native WebView children of the window.
     "browser_eval_value",
+    "browser_activate_inspector",
+    "browser_capture_screenshot",
+    "browser_deactivate_inspector",
+    "browser_eval",
+    "browser_get_url",
+    "browser_local_servers",
+    "browser_navigate",
+    "browser_page_title",
+    "browser_refresh",
+    "browser_set_bounds",
+    "browser_set_corner_radius",
+    "browser_set_device",
+    "browser_set_visible",
+    "browser_set_zoom",
+    "close_browser_webview",
+    "create_browser_webview",
+    "list_browser_windows",
     // Writes the user's clipboard; the server's clipboard is not theirs.
     "thread_copy_markdown",
+    // Open something on the machine's own desktop.
     "reveal_in_explorer",
+    "open_in_terminal",
+    "open_ide_window",
+    "agent_open_in_ide",
+    // Voice input records from the window's microphone.
     "speech_transcribe_pcm",
     "speech_validate_config",
+    "speech_stream_arm",
+    "speech_stream_cancel",
+    "speech_stream_shutdown",
+    "speech_stream_stop",
+    "speech_stream_validate",
+    "speech_stream_write",
+    "install_agent_media_permission_handler",
+    // Fonts installed on the machine the window draws on.
+    "system_font_families",
+    // Browser sign-ins that open a page on this machine and wait for its
+    // callback (`host_commands::sign_ins`).
+    "codex_auth_login",
+    "antigravity_auth_login",
+    "commandcode_auth_login",
+    // Install into this machine's PATH and Explorer menu.
+    "install_aurora_cli",
+    "uninstall_aurora_cli",
+    "is_aurora_cli_installed",
+    "install_aurora_context_menu",
+    "uninstall_aurora_context_menu",
+    "is_aurora_context_menu_installed",
     "web_host_start",
     "web_host_stop",
     "web_host_status",
@@ -210,12 +297,18 @@ pub async fn dispatch(
             )
         }
         _ => {
-            if let Some(result) = settings::dispatch(ctx, name, &args).await {
-                return result;
+            // Each group answers its own names and hands the rest on.
+            macro_rules! groups {
+                ($($group:ident),*) => {
+                    $(if let Some(result) = $group::dispatch(ctx, name, &args).await {
+                        return result;
+                    })*
+                };
             }
-            if let Some(result) = threads::dispatch(ctx, name, &args).await {
-                return result;
-            }
+            groups!(
+                settings, threads, files, shell, system, mcp, git, plans, checkpoints, subagents,
+                cards, conversation, tokens, providers, sign_ins
+            );
             if WINDOW_ONLY.contains(&name) {
                 Err(CommandError::NotOnThisHost(name.to_string()))
             } else {

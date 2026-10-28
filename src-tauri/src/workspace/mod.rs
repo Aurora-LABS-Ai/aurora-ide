@@ -8,7 +8,9 @@
 
 pub mod edit;
 pub mod fs;
+pub mod git;
 pub mod ripgrep;
+pub mod watch;
 
 pub use fs::{read_directory, FileEntry};
 

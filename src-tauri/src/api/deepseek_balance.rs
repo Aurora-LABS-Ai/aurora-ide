@@ -126,7 +126,7 @@ pub fn balance_url(base_url: &str) -> String {
 /// matter are both fixable — a rejected key and an unreachable host — and a
 /// card that silently shows nothing would read as "no balance", which on a
 /// pay-as-you-go account is the one reading that is never true.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn deepseek_balance_get(
     api_key: String,
     base_url: Option<String>,

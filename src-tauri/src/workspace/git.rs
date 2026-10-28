@@ -1,5 +1,6 @@
 //! Git commands for Aurora IDE
-//! Provides native git integration via shell commands
+//! Provides native git integration via shell commands. `#[tauri::command]`s
+//! with `desktop`; any other host serves them through `host_commands::git`.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -123,14 +124,14 @@ async fn read_file_lossy(path: &Path) -> Result<String, String> {
 // ============================================================================
 
 /// Check if directory is a git repository
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_is_repository(workspace_path: String) -> Result<bool, String> {
     let git_dir = Path::new(&workspace_path).join(".git");
     Ok(git_dir.exists())
 }
 
 /// Get current git status
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_get_status(workspace_path: String) -> Result<GitStatus, String> {
     // Get porcelain status
     let status_output =
@@ -236,7 +237,7 @@ async fn get_ahead_behind(workspace_path: &str) -> Result<(i32, i32), String> {
 }
 
 /// Get all branches
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, String> {
     // Get current branch
     let current = run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -289,7 +290,7 @@ pub async fn git_get_branches(workspace_path: String) -> Result<BranchResult, St
 }
 
 /// Get commit history
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_get_commits(workspace_path: String, limit: u32) -> Result<Vec<GitCommit>, String> {
     let format = "%H|%h|%s|%an|%ae|%ci|%D";
     let output = run_git_command(
@@ -336,7 +337,7 @@ pub async fn git_get_commits(workspace_path: String, limit: u32) -> Result<Vec<G
 }
 
 /// Get current branch name
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_current_branch(workspace_path: String) -> Result<String, String> {
     run_git_command(&workspace_path, &["rev-parse", "--abbrev-ref", "HEAD"])
         .await
@@ -344,35 +345,35 @@ pub async fn git_current_branch(workspace_path: String) -> Result<String, String
 }
 
 /// Stage a file
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_stage_file(workspace_path: String, file_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["add", &file_path]).await?;
     Ok(())
 }
 
 /// Unstage a file
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_unstage_file(workspace_path: String, file_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["reset", "HEAD", &file_path]).await?;
     Ok(())
 }
 
 /// Stage all changes
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_stage_all(workspace_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["add", "-A"]).await?;
     Ok(())
 }
 
 /// Unstage all changes
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_unstage_all(workspace_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["reset", "HEAD"]).await?;
     Ok(())
 }
 
 /// Discard changes in a file
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_discard_changes(workspace_path: String, file_path: String) -> Result<(), String> {
     // First try checkout for tracked files
     let result = run_git_command(&workspace_path, &["checkout", "--", &file_path]).await;
@@ -386,7 +387,7 @@ pub async fn git_discard_changes(workspace_path: String, file_path: String) -> R
 }
 
 /// Create a commit
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_commit(workspace_path: String, message: String) -> Result<String, String> {
     let output = run_git_command(&workspace_path, &["commit", "-m", &message]).await?;
     Ok(output)
@@ -394,7 +395,7 @@ pub async fn git_commit(workspace_path: String, message: String) -> Result<Strin
 
 /// Checkout a branch
 /// If the branch doesn't exist locally but exists remotely, creates a tracking branch
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), String> {
     // First, try normal checkout
     let result = run_git_command(&workspace_path, &["checkout", &branch]).await;
@@ -421,28 +422,28 @@ pub async fn git_checkout(workspace_path: String, branch: String) -> Result<(), 
 }
 
 /// Create a new branch
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_create_branch(workspace_path: String, name: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["checkout", "-b", &name]).await?;
     Ok(())
 }
 
 /// Pull from remote
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_pull(workspace_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["pull"]).await?;
     Ok(())
 }
 
 /// Push to remote
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_push(workspace_path: String) -> Result<(), String> {
     run_git_command(&workspace_path, &["push"]).await?;
     Ok(())
 }
 
 /// Get diff for a file
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_get_diff(
     workspace_path: String,
     file_path: String,
@@ -458,7 +459,7 @@ pub async fn git_get_diff(
 /// Get full file versions for split diff view.
 /// For staged files: compares HEAD -> index.
 /// For unstaged files: compares index -> working tree.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn git_get_file_versions(
     workspace_path: String,
     file_path: String,

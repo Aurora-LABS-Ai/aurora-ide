@@ -33,6 +33,7 @@
 //! - Invalidation cascades `tools → system → messages`: changing a level
 //!   invalidates it and everything after it.
 
+pub mod commands;
 pub mod usage;
 
 /// Base URL for the Anthropic-compatible Messages wire. The adapter appends

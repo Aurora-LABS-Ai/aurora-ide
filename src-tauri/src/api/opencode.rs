@@ -72,7 +72,7 @@ fn auth_path() -> Option<PathBuf> {
 /// the card simply offers the paste field instead. Only a genuinely unreadable
 /// or malformed file returns `Err`, since that is worth saying out loud rather
 /// than silently showing "no key found" over a file that exists.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn opencode_local_key() -> Result<Option<String>, String> {
     tokio::task::spawn_blocking(read_local_key)
         .await
@@ -118,7 +118,7 @@ fn pick_key(entries: &std::collections::HashMap<String, AuthEntry>) -> Option<St
 /// Where Aurora looked — shown when nothing was found, so a user with a
 /// relocated install can see the path that came up empty instead of being told
 /// "not found" with nowhere to go.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn opencode_auth_path() -> Result<Option<String>, String> {
     Ok(auth_path().map(|p| p.display().to_string()))
 }
@@ -187,13 +187,13 @@ async fn get_json(path: &str, api_key: Option<&str>) -> Result<serde_json::Value
 }
 
 /// The models this plan can reach. Needs no key — the list is public.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn opencode_models() -> Result<serde_json::Value, String> {
     get_json("/models", None).await
 }
 
 /// How much of the plan is left, per window. Needs the subscription key.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn opencode_usage(api_key: String) -> Result<serde_json::Value, String> {
     let key = api_key.trim();
     if key.is_empty() {

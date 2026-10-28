@@ -68,6 +68,7 @@
 
 pub mod adapter;
 pub mod auth;
+pub mod commands;
 pub mod usage;
 
 /// API root the billing and account routes hang off.

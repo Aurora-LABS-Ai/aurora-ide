@@ -22,6 +22,7 @@
 //!    running when its `runId` matches a live run; otherwise it is interrupted.
 //!    See [`model::PlanStep::is_live_under`].
 
+pub mod commands;
 pub mod document;
 pub mod model;
 pub mod store;

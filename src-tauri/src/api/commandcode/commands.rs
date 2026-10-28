@@ -1,8 +1,9 @@
-//! Tauri commands for the Command Code provider.
+//! Commands for the Command Code provider: `#[tauri::command]`s with
+//! `desktop`, served to other hosts by `host_commands::sign_ins`.
 //!
 //! Thin wrappers over [`crate::api::commandcode`]. The auth and catalog
 //! logic is tauri-free; this layer adds the system-browser open for the
-//! sign-in and the IPC surface the provider card talks to.
+//! sign-in (desktop only) and the IPC surface the provider card talks to.
 //!
 //! Two ways to get a key, both first-class:
 //!
@@ -14,6 +15,7 @@
 
 use serde::Serialize;
 
+#[cfg(feature = "desktop")]
 use tauri_plugin_shell::ShellExt;
 
 use crate::api::commandcode::auth::{self, CommandCodeAuthStatus};
@@ -21,6 +23,7 @@ use crate::api::commandcode::usage::{self, CommandCodeUsageSnapshot};
 use crate::api::commandcode::COMMANDCODE_MODELS_URL;
 
 /// How long the browser sign-in may take before we give up.
+#[cfg(feature = "desktop")]
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
 /// One row of the model catalog, as the provider page renders it.
@@ -36,7 +39,7 @@ pub struct CommandCodeModel {
 
 /// Whether the CLI is installed, whether a key is on disk, and which
 /// version header this machine will send.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_auth_status() -> Result<CommandCodeAuthStatus, String> {
     tokio::task::spawn_blocking(auth::status)
         .await
@@ -49,7 +52,8 @@ pub async fn commandcode_auth_status() -> Result<CommandCodeAuthStatus, String> 
 /// Optional. Pasting a key on the provider page does the same job without
 /// leaving the window; this exists because it is the shorter path for
 /// anyone who already has a Command Code account open in a browser.
-#[tauri::command]
+#[cfg(feature = "desktop")]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_auth_login(app: tauri::AppHandle) -> Result<CommandCodeAuthStatus, String> {
     let (auth_url, done) = auth::begin_login().await?;
 
@@ -77,7 +81,7 @@ pub async fn commandcode_auth_login(app: tauri::AppHandle) -> Result<CommandCode
 }
 
 /// Abort a pending browser sign-in.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_auth_cancel_login() -> Result<(), String> {
     auth::cancel_login();
     Ok(())
@@ -88,7 +92,7 @@ pub async fn commandcode_auth_cancel_login() -> Result<(), String> {
 /// This signs the Command Code CLI out too, because it is one shared
 /// credential file. A key pasted into the provider row is untouched: that
 /// one is Aurora's own and is cleared by clearing the field.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_auth_logout() -> Result<CommandCodeAuthStatus, String> {
     tokio::task::spawn_blocking(auth::logout)
         .await
@@ -101,7 +105,7 @@ pub async fn commandcode_auth_logout() -> Result<CommandCodeAuthStatus, String> 
 /// Not required to use the provider. Offered because someone who pastes a
 /// key into Aurora usually wants `cmd` on the same account rather than a
 /// second sign-in in a terminal.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_auth_store_key(api_key: String) -> Result<CommandCodeAuthStatus, String> {
     tokio::task::spawn_blocking(move || auth::store_pasted_key(&api_key))
         .await
@@ -113,7 +117,7 @@ pub async fn commandcode_auth_store_key(api_key: String) -> Result<CommandCodeAu
 ///
 /// `api_key` is the provider row's key; empty falls back to the CLI's stored
 /// one, the same order a real request uses.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_usage_get(api_key: String) -> Result<CommandCodeUsageSnapshot, String> {
     usage::fetch(&api_key).await
 }
@@ -124,7 +128,7 @@ pub async fn commandcode_usage_get(api_key: String) -> Result<CommandCodeUsageSn
 /// stored one, the same order a real request uses. The catalog is the same
 /// on every plan: an out-of-plan model is listed here and refused at
 /// request time, so nothing is filtered out on the way through.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn commandcode_list_models(api_key: String) -> Result<Vec<CommandCodeModel>, String> {
     let (key, _source) = tokio::task::spawn_blocking(move || auth::resolve_api_key(&api_key))
         .await

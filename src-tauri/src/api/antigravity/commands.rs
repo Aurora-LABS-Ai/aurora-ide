@@ -1,11 +1,13 @@
-//! Tauri commands for the Antigravity provider.
+//! Commands for the Antigravity provider: `#[tauri::command]`s with
+//! `desktop`, served to other hosts by `host_commands::sign_ins`.
 //!
 //! Thin wrappers over [`crate::api::antigravity`]; the auth logic is
 //! tauri-free and this layer is only the IPC surface for the settings card.
 //! Sign-in opens Google's page in the system browser and waits for the
-//! loopback callback. Import reads Antigravity IDE's sign-in once and never
-//! writes it.
+//! loopback callback (desktop only). Import reads Antigravity IDE's sign-in
+//! once and never writes it.
 
+#[cfg(feature = "desktop")]
 use tauri_plugin_shell::ShellExt;
 
 use crate::api::antigravity::accounts::{self, AccountSource};
@@ -14,10 +16,11 @@ use crate::api::antigravity::models::{self, AntigravityCatalogue};
 use crate::api::antigravity::quota::{self, AntigravityQuota};
 
 /// How long the browser sign-in may take before Aurora stops listening.
+#[cfg(feature = "desktop")]
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
 /// Sign-in state of the main account.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_auth_status() -> Result<AntigravityAuthStatus, String> {
     tokio::task::spawn_blocking(auth::status)
         .await
@@ -27,7 +30,8 @@ pub async fn antigravity_auth_status() -> Result<AntigravityAuthStatus, String> 
 /// Run the browser sign-in end to end: open Google's page, wait for the
 /// callback, save the account, return its status. Adding an account never
 /// changes which one chats use.
-#[tauri::command]
+#[cfg(feature = "desktop")]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_auth_login(
     app: tauri::AppHandle,
 ) -> Result<AntigravityAuthStatus, String> {
@@ -51,14 +55,14 @@ pub async fn antigravity_auth_login(
 }
 
 /// Abort a pending browser sign-in.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_auth_cancel_login() -> Result<(), String> {
     auth::cancel_login();
     Ok(())
 }
 
 /// Forget the main account. Only Aurora's list changes.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_auth_logout() -> Result<(), String> {
     tokio::task::spawn_blocking(auth::logout)
         .await
@@ -85,7 +89,7 @@ pub struct AntigravityAccountRow {
 /// Every stored account, each with its own quota. Polled concurrently: the
 /// requests are independent, and serially the list would wait one round trip
 /// per account.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_accounts_list() -> Result<Vec<AntigravityAccountRow>, String> {
     let store = tokio::task::spawn_blocking(accounts::load)
         .await
@@ -126,20 +130,20 @@ pub async fn antigravity_accounts_list() -> Result<Vec<AntigravityAccountRow>, S
 
 /// The main account's quota: per model group, a weekly bucket and (on paid
 /// plans) a 5-hour one.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_quota_get() -> Result<AntigravityQuota, String> {
     quota::fetch_quota().await
 }
 
 /// The main account's models, in Antigravity's picker order, with the quota
 /// left on each.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_models_list() -> Result<AntigravityCatalogue, String> {
     models::fetch_catalogue().await
 }
 
 /// Send chats to this account.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_account_set_main(id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::set_main(&id))
         .await
@@ -147,7 +151,7 @@ pub async fn antigravity_account_set_main(id: String) -> Result<(), String> {
 }
 
 /// Forget one account. Antigravity IDE on this machine is unaffected.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_account_remove(id: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || accounts::remove(&id))
         .await
@@ -155,7 +159,7 @@ pub async fn antigravity_account_remove(id: String) -> Result<(), String> {
 }
 
 /// Copy the account Antigravity IDE is signed into.
-#[tauri::command]
+#[cfg_attr(feature = "desktop", tauri::command)]
 pub async fn antigravity_account_import_ide() -> Result<AntigravityAuthStatus, String> {
     auth::import_from_ide().await
 }

@@ -33,6 +33,7 @@
 
 pub mod adapter;
 pub mod auth;
+pub mod commands;
 pub mod frame;
 pub mod history;
 pub mod models;

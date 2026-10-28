@@ -84,6 +84,7 @@ import {
   SettingsSection,
 } from "./primitives";
 import { useSettingsQuery } from "./settings-search";
+import { isDesktopRuntime } from "@/kernel/lib/ipc/runtime";
 import { AgentIcon, type AgentIconName } from "@/apps/agent/shared/AgentIcon";
 import { useAgentUiStore, type PreferencesTab } from "@/apps/agent/store/ui/useAgentUiStore";
 import { SpeechSettings } from "./SpeechSettings";
@@ -174,7 +175,13 @@ export const PreferencesSettings: React.FC = () => {
     null,
   );
 
+  // Which window the app icon opens, and installing Aurora into this
+  // computer's PATH and Explorer menu: questions about the desktop app, which a
+  // browser on `aurora serve` is not.
+  const desktop = isDesktopRuntime();
+
   React.useEffect(() => {
+    if (!desktop) return;
     let cancelled = false;
     void getLaunchSurface().then((surface) => {
       if (!cancelled) setLaunchSurfaceState(surface);
@@ -182,7 +189,7 @@ export const PreferencesSettings: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [desktop]);
 
   // Optimistic, then reverted if the write fails. A startup preference that
   // shows the new value while the next launch still does the old thing is worse
@@ -408,7 +415,7 @@ export const PreferencesSettings: React.FC = () => {
               "aria-labelledby": `agw-pref-tab-${tab}`,
             })}
       >
-      {shows("general") && (
+      {desktop && shows("general") && (
       <SettingsSection
         icon="external"
         title="Startup"
@@ -442,7 +449,7 @@ export const PreferencesSettings: React.FC = () => {
       {/* Beside Startup on purpose: "which window opens" and "how you open it
           from outside" are the same question. Moved here from the IDE window's
           General tab, which is two windows away from everything it launches. */}
-      {shows("general") && <SystemIntegrationSettings />}
+      {desktop && shows("general") && <SystemIntegrationSettings />}
 
       {shows("general") && (
       <SettingsSection

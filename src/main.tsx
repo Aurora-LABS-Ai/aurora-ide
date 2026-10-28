@@ -26,7 +26,7 @@ import { createRoot } from 'react-dom/client'
 // family a surface uses is decided in kernel/lib/fonts/stacks.ts.
 import '@/kernel/lib/fonts/bundled'
 import './index.css'
-import App from './App.tsx'
+import { hydrateEnginePrefs } from '@/kernel/lib/prefs/engine-prefs'
 import { disableNativeTooltips } from '@/kernel/lib/disable-native-tooltips'
 import { startFontProbe } from '@/kernel/lib/fonts/font-probe'
 import { applyCachedUiPreferences, preloadBundledFonts } from '@/kernel/lib/fonts/boot'
@@ -42,12 +42,6 @@ import { startAgentFileSync } from '@/bridge/agent-file-sync'
 // module's docstring for rationale and trade-offs. Buttons that should
 // have hover hints can still use the themed <Tooltip /> wrapper.
 disableNativeTooltips()
-
-// Route web-layer failures into the same aurora.log the backend writes to, so
-// Settings → Diagnostics shows a whole failure rather than its Rust half.
-// Installed here, after App.tsx has registered its own rejection filter, so an
-// expected cancellation is already marked as handled by the time we see it.
-installErrorReporter()
 
 // Report which font families are ACTUALLY rendering, in both windows, and say
 // so again whenever that changes. Font stacks here are user-editable and
@@ -77,10 +71,27 @@ initTypographyDebug() // No-op unless switched on — see the import note above.
 
 applyCachedUiPreferences()
 
-void preloadBundledFonts().then(() => {
+// The user's preferences (theme, pinned projects, recent models) are the
+// engine's, with a copy in browser storage. That copy is made equal to the
+// engine's BEFORE the interface's modules load, because their persisted stores
+// read it the moment they are created. Hence `App` is imported only after.
+async function boot(): Promise<void> {
+  await hydrateEnginePrefs()
+  // Font preload reads the theme's chosen faces, so it follows the copy too.
+  await preloadBundledFonts()
+  const { default: App } = await import('./App.tsx')
+  // Route web-layer failures into the same aurora.log the backend writes to, so
+  // Settings → Diagnostics shows a whole failure rather than its Rust half.
+  // Installed after App.tsx has registered its own rejection filter, so an
+  // expected cancellation is already marked as handled by the time we see it.
+  installErrorReporter()
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />
     </StrictMode>,
   )
+}
+
+void boot().catch((error: unknown) => {
+  console.error('[main] Aurora failed to start', error)
 })

@@ -15,7 +15,7 @@ pub use models::{
     ProviderModel, ThreadState, TokenUsage, ToolCall, ToolSetting, WorkspaceState,
 };
 pub use repositories::{
-    CheckpointRepository, CursorModel, CursorModelsRepository, EditorRepository,
+    CheckpointRepository, ClientPrefs, CursorModel, CursorModelsRepository, EditorRepository,
     ExplorerRepository, ModelsRepository, SettingsRepository, ThemeRepository, WorkspaceRepository,
 };
 

@@ -3,7 +3,7 @@
  *
  * The page has no conversation to pin a model on, so the choice lives here:
  * the ready image models flattened from the provider rows, and the user's last
- * pick remembered in localStorage. A pick that stopped being ready (provider
+ * pick remembered as an engine preference (`kernel/lib/prefs/engine-prefs.ts`). A pick that stopped being ready (provider
  * disabled, key removed, model deleted) falls back to the first ready model
  * rather than to nothing — the page should never open with a dead picker.
  *
@@ -18,6 +18,7 @@ import {
   type ImageModel,
   type ImageProvider,
 } from "@/apps/agent/services/providers/image-providers";
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 
 export interface ReadyImageModel {
   provider: ImageProvider;
@@ -28,7 +29,7 @@ export interface ReadyImageModel {
   label: string;
 }
 
-const CHOICE_KEY = "agw-images-model";
+export const CHOICE_KEY = "agw-images-model";
 
 /** Every model of every provider that can be called right now, in row order. */
 export function readyImageModels(providers: readonly ImageProvider[]): ReadyImageModel[] {
@@ -50,15 +51,12 @@ export function loadImageModelChoice(): string | null {
   }
 }
 
+/** Kept by the engine; private mode / quota only costs the local copy. */
 export function saveImageModelChoice(selection: string): void {
-  try {
-    localStorage.setItem(CHOICE_KEY, selection);
-  } catch {
-    /* private mode / quota — the page still works for this session */
-  }
+  enginePrefsStorage.setItem(CHOICE_KEY, selection);
 }
 
-const SIZE_KEY = "agw-images-size";
+export const SIZE_KEY = "agw-images-size";
 
 /**
  * The size last chosen for each model, by selection. Per model, because a
@@ -81,11 +79,7 @@ export function loadImageSizeChoice(selection: string): string | null {
 }
 
 export function saveImageSizeChoice(selection: string, size: string): void {
-  try {
-    localStorage.setItem(SIZE_KEY, JSON.stringify({ ...readSizes(), [selection]: size }));
-  } catch {
-    /* private mode / quota — the page still works for this session */
-  }
+  enginePrefsStorage.setItem(SIZE_KEY, JSON.stringify({ ...readSizes(), [selection]: size }));
 }
 
 /** The remembered pick while it is still ready; otherwise the first ready model; otherwise none. */

@@ -12,13 +12,16 @@
  * people make per model ("Grok always fast, Opus never") rather than once
  * globally.
  *
- * Storage is localStorage, read synchronously — the send path resolves the id
+ * Storage is the engine (an engine preference, `kernel/lib/prefs/engine-prefs.ts`)
+ * through its localStorage copy, read synchronously — the send path resolves the id
  * to send without awaiting anything, and an IPC round-trip in front of every
  * turn to answer a boolean would be a poor trade.
  *
  * Pure module: no React, no side effects beyond the two explicit read/write
  * helpers, so it is testable on its own.
  */
+
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 
 /** localStorage key. */
 export const CURSOR_FAST_KEY = "agw:cursor-fast";
@@ -71,12 +74,10 @@ function load(): FastPreferences {
 
 export function writeFastPreferences(next: FastPreferences): void {
   cache = next;
-  try {
-    localStorage.setItem(CURSOR_FAST_KEY, JSON.stringify(next));
-  } catch {
-    // Storage full or blocked — the in-memory value still holds for this
-    // session, which is better than refusing the toggle.
-  }
+  // Kept by the engine, so every client sends the same lane. Storage full or
+  // blocked: the in-memory value still holds for this session, which is
+  // better than refusing the toggle.
+  enginePrefsStorage.setItem(CURSOR_FAST_KEY, JSON.stringify(next));
 }
 
 /** Whether Fast is on for a stable provider-model row id. */

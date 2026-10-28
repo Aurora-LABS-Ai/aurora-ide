@@ -1,9 +1,12 @@
 /**
- * Pinned providers — a client-side rail preference, exactly like the left
- * rail's pinned projects (`lib/workspace/project-order.ts`): providers are
- * store rows but "pinned in the settings rail" is a display preference of
- * this window, so it lives in localStorage rather than the provider record.
+ * Pinned providers — a rail preference, exactly like the left rail's pinned
+ * projects (`lib/workspace/project-order.ts`): providers are store rows but
+ * "pinned in the settings rail" is a display preference, so it is an engine
+ * preference (`kernel/lib/prefs/engine-prefs.ts`) rather than part of the
+ * provider record. The folds and the selection below stay in this browser.
  */
+
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 
 export const PINNED_PROVIDERS_KEY = "agw-prov-pinned-providers";
 
@@ -20,13 +23,10 @@ export function loadPinnedProviders(): string[] {
   }
 }
 
+/** Storage full or blocked: the pin still applies for this session. */
 export function savePinnedProviders(ids: string[]): void {
   if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(PINNED_PROVIDERS_KEY, JSON.stringify(ids));
-  } catch {
-    // Storage full or blocked — the pin still applies for this session.
-  }
+  enginePrefsStorage.setItem(PINNED_PROVIDERS_KEY, JSON.stringify(ids));
 }
 
 /**

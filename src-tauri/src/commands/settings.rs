@@ -56,6 +56,21 @@ pub fn set_setting(key: String, value: String, db: State<'_, Mutex<Database>>) -
     locked(&db, |db| core::set_setting(db, &key, &value))
 }
 
+#[tauri::command(async)]
+pub fn client_prefs_get(
+    db: State<'_, Mutex<Database>>,
+) -> Result<crate::db::ClientPrefs, String> {
+    locked(&db, core::client_prefs_get)
+}
+
+#[tauri::command(async)]
+pub fn client_prefs_save(
+    entries: Vec<(String, Option<String>)>,
+    db: State<'_, Mutex<Database>>,
+) -> Result<(), String> {
+    locked(&db, |db| core::client_prefs_save(db, &entries))
+}
+
 // ============================================================
 // LLM PROVIDER COMMANDS
 // ============================================================

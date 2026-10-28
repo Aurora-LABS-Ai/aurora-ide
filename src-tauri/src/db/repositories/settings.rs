@@ -72,6 +72,30 @@ pub const APP_SETTING_KEYS: &[&str] = &[
     "speechLive",
 ];
 
+/// Row prefix of a client preference (`clientPref:<key>`). Never an app
+/// setting: `get_app_settings` ignores rows it does not name.
+pub const CLIENT_PREF_PREFIX: &str = "clientPref:";
+/// Present once any client has saved preferences to this engine.
+const CLIENT_PREFS_SEEDED: &str = "clientPrefsSeeded";
+/// One preference's stored text. Custom icon packs are the largest today.
+const CLIENT_PREF_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// What [`SettingsRepository::client_prefs`] returns.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientPrefs {
+    /// Whether any client has ever saved preferences here.
+    pub seeded: bool,
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+/// A browser-storage key: short, printable, no spaces.
+fn is_client_pref_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key.chars().all(|c| c.is_ascii_graphic())
+}
+
 /// Repository for app settings operations
 pub struct SettingsRepository<'a> {
     conn: &'a Connection,
@@ -732,6 +756,72 @@ impl<'a> SettingsRepository<'a> {
     }
 
     // ============================================================
+    // CLIENT PREFERENCES
+    // ============================================================
+
+    /// The interface's own preferences (theme, pinned projects, recent
+    /// models, …): opaque strings under the keys the interface stores them by,
+    /// one row each under [`CLIENT_PREF_PREFIX`]. Kept in the engine so every
+    /// client of one engine sees the same ones, and a client of a different
+    /// engine never sees them.
+    pub fn client_prefs(&self) -> DbResult<ClientPrefs> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value FROM app_settings WHERE substr(key, 1, ?1) = ?2 OR key = ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                CLIENT_PREF_PREFIX.len() as i64,
+                CLIENT_PREF_PREFIX,
+                CLIENT_PREFS_SEEDED
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        let mut prefs = ClientPrefs::default();
+        for row in rows {
+            let (key, value) = row?;
+            match key.strip_prefix(CLIENT_PREF_PREFIX) {
+                Some(name) => {
+                    prefs.values.insert(name.to_string(), value);
+                }
+                None => prefs.seeded = true,
+            }
+        }
+        Ok(prefs)
+    }
+
+    /// Set (`Some`) or remove (`None`) client preferences in one transaction,
+    /// and mark the engine as holding them, so a later client knows these are
+    /// the engine's own and not empty because nobody ever saved any.
+    pub fn save_client_prefs(&self, entries: &[(String, Option<String>)]) -> DbResult<()> {
+        for (key, value) in entries {
+            if !is_client_pref_key(key) {
+                return Err(DbError::InvalidData(format!(
+                    "`{key}` is not a valid preference key"
+                )));
+            }
+            if value.as_ref().is_some_and(|v| v.len() > CLIENT_PREF_MAX_BYTES) {
+                return Err(DbError::InvalidData(format!(
+                    "preference `{key}` is larger than {CLIENT_PREF_MAX_BYTES} bytes"
+                )));
+            }
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in entries {
+            let row = format!("{CLIENT_PREF_PREFIX}{key}");
+            match value {
+                Some(value) => self.set_setting(&row, value)?,
+                None => {
+                    self.conn
+                        .execute("DELETE FROM app_settings WHERE key = ?1", params![row])?;
+                }
+            }
+        }
+        self.set_setting(CLIENT_PREFS_SEEDED, "true")?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // ============================================================
     // LLM PROVIDERS
     // ============================================================
 
@@ -1003,6 +1093,41 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         crate::db::schema::initialize_schema(&conn).expect("schema");
         conn
+    }
+
+    #[test]
+    fn client_prefs_round_trip_and_mark_the_engine_seeded() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        assert_eq!(repo.client_prefs().unwrap(), ClientPrefs::default());
+
+        repo.save_client_prefs(&[
+            ("aurora-agent-window-theme".into(), Some(r#"{"state":{}}"#.into())),
+            ("agw:cursor-fast".into(), Some("[]".into())),
+        ])
+        .unwrap();
+        repo.save_client_prefs(&[("agw:cursor-fast".into(), None)]).unwrap();
+
+        let prefs = repo.client_prefs().unwrap();
+        assert!(prefs.seeded);
+        assert_eq!(prefs.values.len(), 1);
+        assert_eq!(prefs.values["aurora-agent-window-theme"], r#"{"state":{}}"#);
+        // Preference rows never surface as app settings, and app settings
+        // never surface as preferences.
+        repo.save_app_settings(&AppSettings::default()).unwrap();
+        assert_eq!(repo.client_prefs().unwrap(), prefs);
+    }
+
+    #[test]
+    fn a_bad_client_pref_key_saves_nothing() {
+        let conn = db();
+        let repo = SettingsRepository::new(&conn);
+        let result = repo.save_client_prefs(&[
+            ("good".into(), Some("1".into())),
+            ("has space".into(), Some("2".into())),
+        ]);
+        assert!(result.is_err());
+        assert_eq!(repo.client_prefs().unwrap(), ClientPrefs::default());
     }
 
     /// The accepted-key list must be exactly what a full save writes, or a

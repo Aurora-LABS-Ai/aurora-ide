@@ -19,6 +19,8 @@
  * read/write helpers, so the ranking is testable on its own.
  */
 
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
+
 /** localStorage key. Named for the old timestamp map it grew out of. */
 export const MODEL_USAGE_KEY = "agw:model-recent";
 
@@ -127,11 +129,10 @@ export function parseModelUsage(parsed: unknown): Record<string, ModelUsage> {
   return out;
 }
 
-/** Persist the history. Best-effort: a full or blocked quota must not break a pick. */
+/**
+ * Persist the history, in the engine (it follows the user to every client).
+ * Best-effort: a full or blocked quota must not break a pick.
+ */
 export function writeModelUsage(usage: Record<string, ModelUsage>): void {
-  try {
-    localStorage.setItem(MODEL_USAGE_KEY, JSON.stringify(usage));
-  } catch {
-    /* best-effort persistence */
-  }
+  enginePrefsStorage.setItem(MODEL_USAGE_KEY, JSON.stringify(usage));
 }

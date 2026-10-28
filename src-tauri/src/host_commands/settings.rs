@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::{arg, done, CommandContext, CommandError};
 use crate::db::{
-    AppSettings, Database, EditorState, ExplorerState, LLMProvider, ProviderModel, ToolSetting,
+    AppSettings, ClientPrefs, Database, EditorState, ExplorerState, LLMProvider, ProviderModel, ToolSetting,
     WorkspaceState,
 };
 
@@ -22,6 +22,8 @@ pub const COMMANDS: &[&str] = &[
     "get_global_skills_path",
     "get_setting",
     "set_setting",
+    "client_prefs_get",
+    "client_prefs_save",
     "get_all_providers",
     "get_provider",
     "save_provider",
@@ -71,6 +73,11 @@ pub(super) async fn dispatch(
             let key: String = match arg(n, args, "key") { Ok(v) => v, Err(e) => return Some(Err(e)) };
             let value: String = match arg(n, args, "value") { Ok(v) => v, Err(e) => return Some(Err(e)) };
             done(ctx.with_db(move |db| set_setting(db, &key, &value)).await)
+        }
+        "client_prefs_get" => done(ctx.with_db(client_prefs_get).await),
+        "client_prefs_save" => {
+            let entries: Vec<(String, Option<String>)> = match arg(n, args, "entries") { Ok(v) => v, Err(e) => return Some(Err(e)) };
+            done(ctx.with_db(move |db| client_prefs_save(db, &entries)).await)
         }
         "get_all_providers" => done(ctx.with_db(get_all_providers).await),
         "get_provider" => {
@@ -199,6 +206,21 @@ pub fn set_setting(db: &Database, key: &str, value: &str) -> Result<(), String> 
     db.settings()
         .set_setting(key, value)
         .map_err(|e| format!("Failed to set setting: {:?}", e))
+}
+
+/// The interface's own preferences held by this engine
+/// (`kernel/lib/prefs/engine-prefs.ts`).
+pub fn client_prefs_get(db: &Database) -> Result<ClientPrefs, String> {
+    db.settings()
+        .client_prefs()
+        .map_err(|e| format!("Failed to read preferences: {e}"))
+}
+
+/// `[key, value]` pairs; a `null` value removes the key.
+pub fn client_prefs_save(db: &Database, entries: &[(String, Option<String>)]) -> Result<(), String> {
+    db.settings()
+        .save_client_prefs(entries)
+        .map_err(|e| format!("Failed to save preferences: {e}"))
 }
 
 // ── Providers ───────────────────────────────────────────────────────────

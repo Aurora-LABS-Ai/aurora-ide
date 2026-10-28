@@ -379,6 +379,8 @@ pub fn run_with_args(cli_args: CliArgs) {
             commands::settings::get_global_skills_path,
             commands::settings::get_setting,
             commands::settings::set_setting,
+            commands::settings::client_prefs_get,
+            commands::settings::client_prefs_save,
             commands::provider_test::provider_test_model,
             commands::image_providers::image_provider_test,
             commands::image_providers::image_provider_discover_models,

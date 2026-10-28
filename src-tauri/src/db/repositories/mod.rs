@@ -12,6 +12,6 @@ pub use cursor_models::{CursorModel, CursorModelsRepository};
 pub use editor::EditorRepository;
 pub use explorer::ExplorerRepository;
 pub use models::ModelsRepository;
-pub use settings::SettingsRepository;
+pub use settings::{ClientPrefs, SettingsRepository};
 pub use themes::ThemeRepository;
 pub use workspace::WorkspaceRepository;

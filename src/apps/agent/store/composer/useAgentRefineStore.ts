@@ -8,7 +8,8 @@
  */
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 
 // Type-only: erased at build time, so this does not close an import cycle with
 // the adapter (which imports RefineDevice back from here).
@@ -75,7 +76,11 @@ export const useAgentRefineStore = create<AgentRefineState>()(
       setReplySuggestionsEnabled: (v) => set({ replySuggestionsEnabled: v }),
       setReplySuggestModel: (v) => set({ replySuggestModel: v }),
     }),
-    { name: "aurora-agent-window-refine" },
+    {
+      name: "aurora-agent-window-refine",
+      // An engine preference: the paths are on the engine's machine.
+      storage: createJSONStorage(() => enginePrefsStorage),
+    },
   ),
 );
 

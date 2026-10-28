@@ -30,6 +30,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { writeClipboardText } from "@/kernel/lib/clipboard";
+import { enginePrefsStorage } from "@/kernel/lib/prefs/engine-prefs";
 import { openFileDialog, openInTerminal, revealInExplorer } from "@/kernel/lib/ipc/tauri";
 import { deriveThreadTitle } from "@/apps/agent/lib/thread/thread-title";
 import { describeThreadTime } from "@/apps/agent/lib/time/thread-time";
@@ -63,10 +64,12 @@ import {
   type ProjectSort,
 } from "@/apps/agent/lib/workspace/project-order";
 
-// Project identity, ordering and its two localStorage preferences live in
+// Project identity, ordering and its two preferences (engine preferences, so
+// every client of one engine shows the same pins and order) live in
 // `lib/project-order` so the home screen's switcher lists projects in exactly
 // this order — two lists of the same thing disagreeing in front of the user is
-// the bug that sharing them prevents.
+// the bug that sharing them prevents. The folds and "show all" below stay in
+// this browser: they depend on the screen.
 const SHOW_ALL_PROJECTS_KEY = "agw-rail-projects-show-all";
 
 /** Codex-style: collapse a long project list to this many rows, with a
@@ -471,11 +474,7 @@ export const LeftRail: React.FC = () => {
   const cycleSort = () => {
     const next = SORT_ORDER[(SORT_ORDER.indexOf(sortMode) + 1) % SORT_ORDER.length];
     setSortMode(next);
-    try {
-      localStorage.setItem(SORT_KEY, next);
-    } catch {
-      /* ignore quota / privacy-mode failures */
-    }
+    enginePrefsStorage.setItem(SORT_KEY, next);
   };
 
   const toggleProject = (root: string) => {
@@ -529,11 +528,7 @@ export const LeftRail: React.FC = () => {
   const toggleProjectPin = (root: string) => {
     setPinnedProjects((prev) => {
       const next = prev.includes(root) ? prev.filter((p) => p !== root) : [...prev, root];
-      try {
-        localStorage.setItem(PINNED_PROJECTS_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore quota / privacy-mode failures */
-      }
+      enginePrefsStorage.setItem(PINNED_PROJECTS_KEY, JSON.stringify(next));
       return next;
     });
   };

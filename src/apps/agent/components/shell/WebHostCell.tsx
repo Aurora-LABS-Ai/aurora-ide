@@ -33,6 +33,8 @@ interface WebHostStatus {
 }
 
 const MENU_WIDTH = 300;
+/** How often the dot re-checks a separate `aurora serve` it cannot hear stop. */
+const EXTERNAL_RECHECK_MS = 5_000;
 
 export const WebHostCell: React.FC = () => {
   const [status, setStatus] = useState<WebHostStatus | null>(null);
@@ -58,6 +60,19 @@ export const WebHostCell: React.FC = () => {
     };
   }, []);
 
+  // A separate `aurora serve` sends this window no event when it stops, so
+  // while the dot stands for one, look again every few seconds.
+  const external = status?.external ?? false;
+  useEffect(() => {
+    if (!external) return;
+    const timer = window.setInterval(() => {
+      void auroraInvoke<WebHostStatus>("web_host_status")
+        .then(setStatus)
+        .catch((error: unknown) => console.warn("[web-host] status failed", error));
+    }, EXTERNAL_RECHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [external]);
+
   const close = useCallback(() => setMenu(null), []);
 
   useEffect(() => {
@@ -81,7 +96,6 @@ export const WebHostCell: React.FC = () => {
   if (!isDesktopRuntime()) return null;
 
   const running = status?.running ?? false;
-  const external = status?.external ?? false;
 
   // `aurora serve` may have started or stopped since the last look.
   const refresh = () => {

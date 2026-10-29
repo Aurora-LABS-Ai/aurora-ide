@@ -342,7 +342,7 @@ async fn stop(id: u32, ctx: &ToolContext) -> Result<String, ToolError> {
     let session = find(id)?;
     owned(&session, ctx)?;
     drop(session);
-    tokio::task::spawn_blocking(move || pty_sessions::kill(id))
+    tokio::task::spawn_blocking(move || pty_sessions::kill(id, pty_sessions::EndedBy::Agent))
         .await
         .map_err(|error| ToolError::Execution(format!("terminal stop task failed: {error}")))?
         .map_err(ToolError::Execution)?;

@@ -80,6 +80,22 @@ impl PtyNotice {
 
 pub type PtyNotices = Arc<dyn Fn(PtyNotice) + Send + Sync>;
 
+/// Who ended a session through [`kill`]. A session that ends by itself (its
+/// program finished or crashed) has none.
+///
+/// Without this every ending looked the same to the agent: closing a tab ends
+/// the shell with a non-zero code, so the agent was told its terminal had
+/// "Failed · exit 1" when the person had simply closed it, and its next read
+/// answered "it was closed, or never existed" — leaving the agent to guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EndedBy {
+    /// Closed from the Terminal panel (or a web client's tab).
+    User,
+    /// Stopped by the agent's own `terminal {id, stop}`.
+    Agent,
+}
+
 /// Who a session belongs to and what it is called.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +130,9 @@ pub struct Session {
     received: AtomicU64,
     running: AtomicBool,
     exit_code: Mutex<Option<u32>>,
+    /// Set by [`kill`] before the shell is ended, so the exit that follows can
+    /// say who ended it. `None` when it ended by itself.
+    ended_by: Mutex<Option<EndedBy>>,
     /// The screen line where the output of the most recent Enter begins.
     last_input_line: Mutex<Option<usize>>,
 }
@@ -148,13 +167,36 @@ fn notify(notice: PtyNotice) {
     }
 }
 
+/// Sessions ended through [`kill`]: id → (title, who). Kept so a later read of
+/// that id can say what happened instead of "closed, or never existed". A few
+/// dozen bytes per closed terminal, for the life of the app.
+fn ended() -> &'static Mutex<HashMap<u32, (String, EndedBy)>> {
+    static ENDED: OnceLock<Mutex<HashMap<u32, (String, EndedBy)>>> = OnceLock::new();
+    ENDED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Why `id` is not in the table, in words a reader can act on.
+fn missing_reason(id: u32) -> String {
+    match ended().lock().ok().and_then(|map| map.get(&id).cloned()) {
+        Some((title, EndedBy::User)) => format!(
+            "Terminal {id} (\"{title}\") was closed by the user from the Terminal panel. That \
+             was their choice, not a crash, and its output closed with it. Do not start it \
+             again unless they ask."
+        ),
+        Some((title, EndedBy::Agent)) => {
+            format!("Terminal {id} (\"{title}\") was stopped by you earlier; its output went with it.")
+        }
+        None => format!("No terminal {id}: it was closed, or never existed."),
+    }
+}
+
 pub fn session(id: u32) -> Result<Arc<Session>, String> {
     sessions()
         .lock()
         .map_err(|_| "terminal session table is poisoned".to_string())?
         .get(&id)
         .cloned()
-        .ok_or_else(|| format!("No terminal {id}: it was closed, or never existed."))
+        .ok_or_else(|| missing_reason(id))
 }
 
 pub fn all() -> Vec<Arc<Session>> {
@@ -469,6 +511,7 @@ pub fn spawn(request: Spawn<'_>) -> Result<Arc<Session>, String> {
         received: AtomicU64::new(0),
         running: AtomicBool::new(true),
         exit_code: Mutex::new(None),
+        ended_by: Mutex::new(None),
         last_input_line: Mutex::new(None),
     });
     sessions()
@@ -584,11 +627,19 @@ impl Session {
         let Some(owner) = info.owner_thread.clone() else {
             return;
         };
+        let ended_by = self.ended_by.lock().ok().and_then(|by| *by);
+        // The agent's own stop already answered it ("Stopped terminal N"). A
+        // second note saying the same terminal "Failed · exit 1" is what made
+        // it doubt its own action.
+        if ended_by == Some(EndedBy::Agent) {
+            return;
+        }
         notify(PtyNotice::Exited(TerminalExited {
             id: self.id,
             title: info.title,
             exit_code: code,
             owner_thread: owner,
+            ended_by,
         }));
     }
 }
@@ -600,6 +651,9 @@ pub struct TerminalExited {
     title: String,
     exit_code: u32,
     owner_thread: String,
+    /// `user` when the person closed the tab; absent when it ended by itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ended_by: Option<EndedBy>,
 }
 
 #[derive(Clone, Serialize)]
@@ -662,7 +716,10 @@ pub fn open_for_agent(
 /// closes the job handle — a second guarantee from the kernel. Without a job
 /// (another platform, or adoption failed) the process-tree kill runs instead.
 /// A session that is already gone is not an error: the close button must work.
-pub fn kill(id: u32) -> Result<(), String> {
+///
+/// `by` is recorded before anything is ended, so the exit that follows is
+/// reported as a close, not a failure (see [`EndedBy`]).
+pub fn kill(id: u32, by: EndedBy) -> Result<(), String> {
     let removed = sessions()
         .lock()
         .map_err(|_| "terminal session table is poisoned".to_string())?
@@ -670,6 +727,12 @@ pub fn kill(id: u32) -> Result<(), String> {
     let Some(session) = removed else {
         return Ok(());
     };
+    if let Ok(mut slot) = session.ended_by.lock() {
+        *slot = Some(by);
+    }
+    if let Ok(mut map) = ended().lock() {
+        map.insert(id, (session.info().title, by));
+    }
     let mut failures = Vec::new();
     match &session.job {
         Some(job) => {

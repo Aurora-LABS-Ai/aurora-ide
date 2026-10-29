@@ -151,9 +151,10 @@ pub async fn write(id: u32, data: String) -> Result<(), String> {
         .map_err(|error| format!("terminal write task failed: {error}"))?
 }
 
-/// End a session: the shell and everything it started.
+/// End a session: the shell and everything it started. Only the window's
+/// close button calls this, so the person is the one who ended it.
 pub async fn kill(id: u32) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || pty_sessions::kill(id))
+    tokio::task::spawn_blocking(move || pty_sessions::kill(id, pty_sessions::EndedBy::User))
         .await
         .map_err(|error| format!("terminal kill task failed: {error}"))?
 }

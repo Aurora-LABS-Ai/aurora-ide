@@ -5,10 +5,11 @@
  *
  * - `terminal-opened` — the agent started a terminal. It gets a tab in the
  *   Terminal panel, which opens so the person can watch it.
- * - `terminal-exited` — one of the agent's terminals ended. The tab says so,
- *   and if that conversation is mid-turn the agent is told (queued into the
- *   turn, like a background process ending). An idle conversation is not
- *   woken: the tab shows the ending, and the agent sees it next time it reads.
+ * - `terminal-exited` — one of the agent's terminals ended by itself, or the
+ *   person closed its tab. The tab says so, and if that conversation is
+ *   mid-turn the agent is told (queued into the turn, like a background
+ *   process ending), with who ended it. An idle conversation is not woken: a
+ *   later read of that id answers "closed by the user" from Rust.
  *
  * Mounted once, from `AgentWindow`, for the life of the window.
  */
@@ -30,11 +31,42 @@ interface TerminalOpened {
   command?: string | null;
 }
 
-interface TerminalExited {
+export interface TerminalExited {
   id: number;
   title: string;
   exitCode: number;
   ownerThread: string;
+  /** `user` when the person closed the tab; absent when it ended by itself.
+   * The agent's own stop sends no notice at all. */
+  endedBy?: "user";
+}
+
+/**
+ * The row shown in the conversation and the note the agent reads.
+ *
+ * Closing a tab ends the shell with a non-zero code, so before `endedBy`
+ * existed the person closing a terminal they no longer needed reached the
+ * agent as "Failed … · exit 1" plus an invitation to read output that was
+ * already gone. The agent then guessed, re-read, or restarted it.
+ */
+export function terminalExitNotice(exited: TerminalExited): { summary: string; detail: string } {
+  if (exited.endedBy === "user") {
+    return {
+      summary: `Closed ${exited.title} · by you`,
+      detail:
+        `The user closed your terminal "${exited.title}" (id ${exited.id}) from the Terminal ` +
+        `panel. This was deliberate, not a crash: exit code ${exited.exitCode} comes from the ` +
+        `close, and the terminal's output closed with it, so there is nothing to read. Do not ` +
+        `start it again unless the user asks; carry on without it.`,
+    };
+  }
+  const verb = exited.exitCode === 0 ? "Finished" : "Failed";
+  return {
+    summary: `${verb} ${exited.title} · exit ${exited.exitCode}`,
+    detail:
+      `Your terminal "${exited.title}" (id ${exited.id}) has exited with code ` +
+      `${exited.exitCode}. Read what it printed with terminal {"id": "${exited.id}"}.`,
+  };
 }
 
 const SHELLS: ShellProfile[] = ["pwsh", "powershell", "bash", "zsh", "sh", "cmd"];
@@ -56,11 +88,7 @@ function onExited(exited: TerminalExited): void {
   useAgentTerminalStore.getState().setPtyExited(exited.id);
   const chat = useAgentChatStore.getState();
   if (!chat.liveTurns[exited.ownerThread]) return;
-  const verb = exited.exitCode === 0 ? "Finished" : "Failed";
-  const summary = `${verb} ${exited.title} · exit ${exited.exitCode}`;
-  const detail =
-    `Your terminal "${exited.title}" (id ${exited.id}) has exited with code ` +
-    `${exited.exitCode}. Read what it printed with terminal {"id": "${exited.id}"}.`;
+  const { summary, detail } = terminalExitNotice(exited);
   void chat
     .enqueueMessage(exited.ownerThread, summary, { origin: "process", modelText: detail })
     .catch((error: unknown) => {

@@ -20,6 +20,28 @@ fn invalid_bytes_are_replaced_and_do_not_stall_the_stream() {
     assert!(pending.is_empty());
 }
 
+/// A terminal the person closed used to read back as "closed, or never
+/// existed", which left the agent guessing whether to restart it.
+#[cfg(target_os = "windows")]
+#[test]
+fn a_closed_terminal_says_who_closed_it() {
+    let by_user = cmd_session("ping -n 30 127.0.0.1 >nul");
+    let by_agent = cmd_session("ping -n 30 127.0.0.1 >nul");
+    let (user_id, agent_id) = (by_user.id, by_agent.id);
+    drop((by_user, by_agent));
+    kill(user_id, EndedBy::User).expect("user close");
+    kill(agent_id, EndedBy::Agent).expect("agent stop");
+
+    let user = session(user_id).err().expect("gone");
+    assert!(user.contains("closed by the user"), "{user}");
+    assert!(user.contains("not a crash"), "{user}");
+    let agent = session(agent_id).err().expect("gone");
+    assert!(agent.contains("stopped by you"), "{agent}");
+
+    let never = session(u32::MAX).err().expect("never existed");
+    assert!(never.contains("never existed"), "{never}");
+}
+
 #[cfg(target_os = "windows")]
 fn cmd_session(command: &str) -> Arc<Session> {
     spawn(Spawn {
@@ -72,7 +94,7 @@ fn closing_a_session_stops_what_its_shell_started_even_through_a_dead_parent() {
 
     let id = session.id;
     drop(session);
-    kill(id).expect("kill");
+    kill(id, EndedBy::User).expect("kill");
     std::thread::sleep(Duration::from_millis(500));
     for pid in pings {
         assert!(!pid_alive(pid), "ping {pid} survived the close");
@@ -93,5 +115,5 @@ fn a_finished_session_reads_as_text_and_keeps_its_exit_code() {
     assert_eq!(session.exit_code(), Some(3));
     let read = session.read(screen::Scope::All, 40, 40);
     assert!(read.text.contains("hello from aurora"), "{:?}", read.text);
-    let _ = kill(session.id);
+    let _ = kill(session.id, EndedBy::User);
 }

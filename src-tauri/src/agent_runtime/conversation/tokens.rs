@@ -162,10 +162,13 @@ pub(super) fn estimate_message_tokens(
                 // so counting them would inflate the context ring against
                 // tokens that are never sent.
             }
-            ContentBlock::ProcessEvent { detail, .. } | ContentBlock::AgentReport { detail, .. } => {
+            ContentBlock::ProcessEvent { detail, .. }
+            | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. } => {
                 // This one IS sent, so it is priced — and priced on `detail`,
                 // the copy that goes on the wire, not on the one-line `summary`
-                // the transcript shows. A sub-agent's report is the same.
+                // the transcript shows. A sub-agent's report is the same, and
+                // so is the running-agents trailer.
                 total = total.saturating_add(estimate_text_tokens(detail));
             }
             ContentBlock::Image { .. } => {

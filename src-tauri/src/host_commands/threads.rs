@@ -356,6 +356,9 @@ fn session_to_db_messages_rich(
                             // when the process ended (or the sub-agent
                             // finished), and is surfaced there.
                         }
+                        ContentBlock::AgentActivity { .. } => {
+                            // Model only: never drawn, live or on reload.
+                        }
                     }
                 }
                 let thinking_opt = if thinking.is_empty() {
@@ -662,8 +665,11 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                         // A process event never sits on an assistant message —
                         // it rides the tool message the runtime was building
                         // when the process ended. Handled in that branch. An
-                        // agent report is the same.
-                        ContentBlock::ProcessEvent { .. } | ContentBlock::AgentReport { .. } => {}
+                        // agent report is the same. The running-agents
+                        // trailer is for the model only and is never drawn.
+                        ContentBlock::ProcessEvent { .. }
+                        | ContentBlock::AgentReport { .. }
+                        | ContentBlock::AgentActivity { .. } => {}
                     }
                 }
                 let content_opt = if content.is_empty() {
@@ -710,7 +716,8 @@ fn session_to_api_messages(messages: &[ConversationMessage]) -> Vec<ApiMessage> 
                         // every provider already accepts here.
                         // A finished sub-agent's report goes the same way.
                         ContentBlock::ProcessEvent { detail, .. }
-                        | ContentBlock::AgentReport { detail, .. } => {
+                        | ContentBlock::AgentReport { detail, .. }
+                        | ContentBlock::AgentActivity { detail, .. } => {
                             push_with_newline(&mut injected_text, detail);
                         }
                         _ => {}
@@ -752,8 +759,9 @@ fn collect_text_blocks(blocks: &[ContentBlock]) -> String {
 fn collect_model_text_blocks(blocks: &[ContentBlock]) -> String {
     let mut out = collect_text_blocks(blocks);
     for block in blocks {
-        if let ContentBlock::ProcessEvent { detail, .. } | ContentBlock::AgentReport { detail, .. } =
-            block
+        if let ContentBlock::ProcessEvent { detail, .. }
+        | ContentBlock::AgentReport { detail, .. }
+        | ContentBlock::AgentActivity { detail, .. } = block
         {
             push_with_newline(&mut out, detail);
         }

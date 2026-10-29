@@ -37,7 +37,7 @@ const TOOL_GUIDE: &[(&str, &str)] = &[
     ),
     (
         "design_guidelines",
-        "Call `design_guidelines` before creating or reviewing user-facing UI or copy. Choose its `topic` for the work: `build`, `writing`, `audit`, or `redesign`.",
+        "Call `design_guidelines` before creating or reviewing user-facing UI or copy. Choose its `topic` for the work: `build`, `writing`, `audit`, or `redesign`, and name the `platform`: `web`, `desktop`, or `mobile`.",
     ),
     (
         "canvas_guidelines",
@@ -270,6 +270,12 @@ pub fn parent_instructions(catalog: &Catalog) -> String {
          yourself while it runs — you would pay twice for one answer. Do other work that does \
          not overlap with any agent's task, or, when there is none, tell the user what is \
          running and end your turn; their reports start you again.\n\n\
+         While any agent runs, every tool result you get ends with an `<agents_running>` \
+         block: each running agent by name with its last two steps (a tool it ran, or what it \
+         was thinking or saying). That is your view of them; it comes free with your own work, \
+         so do not call `get_task_output` just to look. An agent that has finished is not in \
+         it: its report is a message of its own. Use it to notice one that is off track or \
+         stuck, and redirect or stop it then.\n\n\
          When several agents are out, each report starts you again and says which are still \
          running. Take in what it says. If you can act on it now, do; if what you need waits \
          on the others, write one short line — who finished, who is still running — and end \
@@ -419,5 +425,18 @@ mod tests {
         assert!(text.contains("says which are still running"), "{text}");
         assert!(text.contains("That short turn is expected, not wasted"), "{text}");
         assert!(text.contains("once the last report is in"), "{text}");
+    }
+
+    /// The trailer only helps if the parent knows what it is and that it
+    /// replaces looking.
+    #[test]
+    fn parent_instructions_explain_the_running_agents_trailer() {
+        let text = parent_instructions(&Catalog::built_in());
+        assert!(text.contains("`<agents_running>`"), "{text}");
+        assert!(text.contains("last two steps"), "{text}");
+        assert!(
+            text.contains("do not call `get_task_output` just to look"),
+            "{text}"
+        );
     }
 }

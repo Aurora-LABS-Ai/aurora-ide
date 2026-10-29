@@ -315,6 +315,11 @@ pub struct ConversationRuntime {
     /// and a per-batch count never reached two (Kimi K3, 2026-10-15: nine
     /// identical failing `TaskUpdate` calls, nine separate messages, no note).
     failure_guard: Arc<std::sync::Mutex<(String, tool_exec::FailureLoopGuard)>>,
+    /// The sub-agent registry, on a parent turn with the switch on. Read at
+    /// every tool boundary for the `<agents_running>` trailer
+    /// ([`super::subagents::trailer`]); `None` means no trailer, ever, which
+    /// is every turn that cannot have running agents.
+    running_agents: Option<Arc<super::subagents::TaskRegistry>>,
 }
 
 impl std::fmt::Debug for ConversationRuntime {
@@ -345,7 +350,18 @@ impl ConversationRuntime {
             repo_map: Arc::new(std::sync::OnceLock::new()),
             memory: Arc::new(std::sync::OnceLock::new()),
             failure_guard: Arc::default(),
+            running_agents: None,
         }
+    }
+
+    /// Let this turn see its running sub-agents: every tool result it hands
+    /// the model then ends with the `<agents_running>` trailer while any of
+    /// them runs. Only a parent turn with the sub-agent switch on gets this;
+    /// see [`super::subagents::trailer`].
+    #[must_use]
+    pub fn with_running_agents(mut self, registry: Arc<super::subagents::TaskRegistry>) -> Self {
+        self.running_agents = Some(registry);
+        self
     }
 
     /// Run the summarization call on its own provider and model instead of the
@@ -1402,6 +1418,22 @@ impl ConversationRuntime {
                 };
                 seq = seq.saturating_add(1);
                 let _ = event_sink.send(envelope).await;
+            }
+
+            // ── Running sub-agents ───────────────────────────────────
+            //
+            // Last on the message, after any report that just arrived: the
+            // parent reads its tool output, then what finished, then who is
+            // still out and what they are doing. Written once, here, and
+            // never rebuilt (see `ContentBlock::AgentActivity`). No event:
+            // the user never sees this block.
+            if let Some(block) = self.running_agents.as_deref().and_then(|registry| {
+                super::subagents::trailer::running_agents_block(registry, &session.thread_id)
+            }) {
+                tool_msg.blocks.push(ContentBlock::AgentActivity {
+                    detail: block,
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                });
             }
 
             session.append_message(tool_msg.clone());

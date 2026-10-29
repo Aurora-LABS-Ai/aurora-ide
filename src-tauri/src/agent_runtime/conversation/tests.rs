@@ -1349,6 +1349,137 @@ async fn run_turn_dispatches_tool_then_loops_for_final_text() {
     }
 }
 
+/// One scripted tool turn: the model calls `echo`, then answers "done".
+fn echo_then_done() -> Arc<MockApi> {
+    Arc::new(MockApi::new(vec![
+        TurnScript {
+            events: vec![AssistantEvent::ToolUse {
+                id: "call-1".into(),
+                name: "echo".into(),
+                input: serde_json::json!({"msg": "hi"}),
+            }],
+            result: Ok(turn_usage(
+                assistant_tool_use("call-1", "echo", serde_json::json!({"msg": "hi"})),
+                "tool_use",
+            )),
+        },
+        TurnScript {
+            events: vec![AssistantEvent::TextDelta {
+                delta: "done".into(),
+            }],
+            result: Ok(turn_usage(assistant_text("done"), "end_turn")),
+        },
+    ]))
+}
+
+fn echo_tools() -> Arc<ToolRegistry> {
+    let tools = Arc::new(ToolRegistry::new());
+    tools.register(Arc::new(RecordingTool {
+        name: "echo",
+        seen: Arc::new(Mutex::new(Vec::new())),
+        response: "hi".into(),
+    }));
+    tools
+}
+
+/// The `<agents_running>` trailer (Alvan, 2026-10-29): while this parent's
+/// sub-agents run, every tool result ends with their last two steps, saved
+/// as its own block on the Tool message; written once; absent otherwise.
+#[tokio::test]
+async fn a_tool_result_ends_with_the_running_agents_while_any_runs() {
+    use crate::agent_runtime::subagents::record::{TaskRecord, TaskRegistry, TaskStatus};
+    use crate::agent_runtime::subagents::host::SubagentUsage;
+
+    let registry = Arc::new(TaskRegistry::new());
+    let scout = Arc::new(TaskRecord::new(
+        "agent_scout",
+        "t",
+        "explore",
+        Some("scout".into()),
+        "Find the login flow",
+        true,
+        CancellationToken::new(),
+    ));
+    scout.observe(&AssistantEvent::ToolUse {
+        id: "c1".into(),
+        name: "grep".into(),
+        input: serde_json::json!({"pattern": "useAuth"}),
+    });
+    registry.insert(scout.clone());
+    // A finished sibling must not be listed.
+    let done = Arc::new(TaskRecord::new(
+        "agent_done",
+        "t",
+        "explore",
+        Some("auth-check".into()),
+        "Check the auth flow",
+        true,
+        CancellationToken::new(),
+    ));
+    done.finish(TaskStatus::Completed, Some("ok".into()), None, SubagentUsage::default());
+    registry.insert(done);
+
+    let runtime = ConversationRuntime::new(echo_then_done(), echo_tools(), RuntimeConfig::default())
+        .with_running_agents(registry.clone());
+    let mut session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(32);
+    let summary = runtime
+        .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+        .await
+        .expect("ok");
+
+    let tool_msg = &summary.tool_results[0];
+    assert_eq!(tool_msg.blocks.len(), 2, "result + trailer: {:?}", tool_msg.blocks);
+    match &tool_msg.blocks[1] {
+        ContentBlock::AgentActivity { detail, .. } => {
+            assert_eq!(
+                detail,
+                "<agents_running>\nscout: ran grep useAuth\n</agents_running>"
+            );
+        }
+        other => panic!("expected the trailer last, got {other:?}"),
+    }
+    // Saved exactly as sent, so a reload sends the same bytes.
+    let saved = session.messages().iter().find(|m| m.role == MessageRole::Tool).unwrap();
+    assert_eq!(saved.blocks, tool_msg.blocks);
+    // The wire shape is the snake-case tag, like every other block.
+    let json = serde_json::to_value(&tool_msg.blocks[1]).unwrap();
+    assert_eq!(json["type"], "agent_activity");
+
+    // Second gate: the same parent with nothing running gets no trailer.
+    scout.finish(TaskStatus::Completed, Some("ok".into()), None, SubagentUsage::default());
+    let runtime = ConversationRuntime::new(echo_then_done(), echo_tools(), RuntimeConfig::default())
+        .with_running_agents(registry);
+    let mut session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(32);
+    let summary = runtime
+        .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+        .await
+        .expect("ok");
+    assert_eq!(summary.tool_results[0].blocks.len(), 1, "{:?}", summary.tool_results[0].blocks);
+}
+
+/// First gate: a turn never handed the registry (the switch off, Plan, Chat,
+/// a child) has no trailer even while agents run somewhere.
+#[tokio::test]
+async fn a_turn_without_the_switch_never_gets_the_trailer() {
+    let runtime = ConversationRuntime::new(echo_then_done(), echo_tools(), RuntimeConfig::default());
+    let mut session = Session::new("t");
+    let (tx, _rx) = mpsc::channel(32);
+    let summary = runtime
+        .run_turn(&mut session, user_msg("hi"), tx, CancellationToken::new())
+        .await
+        .expect("ok");
+    assert!(
+        summary.tool_results[0]
+            .blocks
+            .iter()
+            .all(|b| !matches!(b, ContentBlock::AgentActivity { .. })),
+        "{:?}",
+        summary.tool_results[0].blocks
+    );
+}
+
 #[tokio::test]
 async fn run_turn_returns_tool_result_with_is_error_when_tool_not_found() {
     let api = Arc::new(MockApi::new(vec![

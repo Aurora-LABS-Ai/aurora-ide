@@ -1571,7 +1571,8 @@ fn message_blocks_to_anthropic_content(blocks: &[ContentBlock], supports_vision:
             // so the detail copy goes on the wire as ordinary text.
             // A finished sub-agent's report is the same kind of fact.
             ContentBlock::ProcessEvent { detail, .. }
-            | ContentBlock::AgentReport { detail, .. } => {
+            | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. } => {
                 arr.push(json!({ "type": "text", "text": detail }));
             }
             // A directly made picture: one line of text. Anthropic rejects
@@ -2740,7 +2741,8 @@ pub(crate) fn collect_text(blocks: &[ContentBlock]) -> String {
             //
             // A sub-agent's report goes the same way for the same reason.
             ContentBlock::ProcessEvent { detail, .. }
-            | ContentBlock::AgentReport { detail, .. } => Some(detail.clone()),
+            | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. } => Some(detail.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()

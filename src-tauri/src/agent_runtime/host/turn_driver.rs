@@ -722,15 +722,23 @@ impl<E: EventEmitter> TurnDriver<E> {
         if matches!(&scope, ToolScope::Child { report_required: false, .. }) {
             runtime_config.max_iterations = Some(crate::agent_runtime::subagents::messaging::MESSAGE_MAX_ITERATIONS);
         }
+        // The first gate of the `<agents_running>` trailer: only a parent
+        // turn (the switch on, project Agent mode) can have running agents,
+        // so only it is handed the registry to read them from.
+        let is_parent = matches!(&scope, ToolScope::Parent { .. });
+        let mut runtime = ConversationRuntime::new(
+            api_client,
+            Arc::new(per_turn_tools),
+            runtime_config,
+        )
+        // Oversized tool output lands beside the thread rather than being
+        // clamped away, so the model can read the part it needs back.
+        .with_store(&store);
+        if is_parent {
+            runtime = runtime.with_running_agents(self.registry.subagent_tasks().clone());
+        }
         let runtime = with_compaction_model(
-            ConversationRuntime::new(
-                api_client,
-                Arc::new(per_turn_tools),
-                runtime_config,
-            )
-            // Oversized tool output lands beside the thread rather than being
-            // clamped away, so the model can read the part it needs back.
-            .with_store(&store),
+            runtime,
             &self.registry,
             &request,
         )?;

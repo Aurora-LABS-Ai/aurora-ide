@@ -184,6 +184,28 @@ pub enum ContentBlock {
         created_at: i64,
     },
 
+    /// What the parent's running sub-agents were doing when this tool
+    /// result was handed back: each one by name with its last two steps
+    /// (`<agents_running>`, built by
+    /// [`crate::agent_runtime::subagents::trailer`]).
+    ///
+    /// For the model only. The parent is told not to poll its agents; this
+    /// is how it still sees them move, as a side effect of its own tool
+    /// calls, without a call of its own. The user never sees it: nothing in
+    /// the window draws this block, live or on reload. It IS sent to the
+    /// model and priced like a process event.
+    ///
+    /// Written once into the Tool message and never rebuilt: a provider's
+    /// cached prefix survives only if earlier messages keep their bytes, so
+    /// each request pays for its own newest trailer and nothing else. Only
+    /// present when sub-agents are on AND at least one is running; a chat
+    /// that never spawns anything has no such block anywhere.
+    AgentActivity {
+        detail: String,
+        /// Unix epoch milliseconds when the trailer was written.
+        created_at: i64,
+    },
+
     /// A picture Aurora Chat made DIRECTLY — the conversation's model is an
     /// image model, so the user's message went to it as the prompt and this is
     /// the reply. Carried on an [`MessageRole::Assistant`] message.

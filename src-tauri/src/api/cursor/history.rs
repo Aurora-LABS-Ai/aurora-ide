@@ -89,6 +89,7 @@ fn text_of(blocks: &[ContentBlock]) -> String {
             // A sub-agent's report wakes the conversation the same way.
             ContentBlock::ProcessEvent { detail, .. }
             | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. }
                 if !detail.is_empty() =>
             {
                 parts.push(detail.as_str());

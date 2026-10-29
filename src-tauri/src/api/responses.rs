@@ -464,7 +464,8 @@ fn responses_instructions_and_input(
                         // A process event rides the Tool message, never an
                         // assistant one — handled in that branch below.
                         | ContentBlock::ProcessEvent { .. }
-                        | ContentBlock::AgentReport { .. } => {}
+                        | ContentBlock::AgentReport { .. }
+                        | ContentBlock::AgentActivity { .. } => {}
                     }
                 }
             }
@@ -512,7 +513,8 @@ fn responses_instructions_and_input(
                         // injected text uses.
                         // A finished sub-agent's report rides the same way.
                         ContentBlock::ProcessEvent { detail, .. }
-                        | ContentBlock::AgentReport { detail, .. } => {
+                        | ContentBlock::AgentReport { detail, .. }
+                        | ContentBlock::AgentActivity { detail, .. } => {
                             if !injected_text.is_empty() {
                                 injected_text.push_str("\n\n");
                             }

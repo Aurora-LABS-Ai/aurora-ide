@@ -280,7 +280,8 @@ fn model_parts(message: &ConversationMessage, claude: bool) -> Vec<Value> {
                 parts.push(part);
             }
             ContentBlock::ProcessEvent { detail, .. }
-            | ContentBlock::AgentReport { detail, .. } => {
+            | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. } => {
                 parts.push(json!({ "text": detail }));
             }
             ContentBlock::Image { .. } => {
@@ -350,7 +351,8 @@ fn user_parts(
                 }));
             }
             ContentBlock::ProcessEvent { detail, .. }
-            | ContentBlock::AgentReport { detail, .. } => {
+            | ContentBlock::AgentReport { detail, .. }
+            | ContentBlock::AgentActivity { detail, .. } => {
                 parts.push(json!({ "text": detail }));
             }
             ContentBlock::Image { .. } => {

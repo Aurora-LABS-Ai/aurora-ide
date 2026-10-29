@@ -62,6 +62,7 @@ pub mod rail_state;
 pub mod record;
 pub mod report;
 pub mod store;
+pub mod trailer;
 
 pub use catalog::AgentDefinition;
 pub use events::SubagentEvent;

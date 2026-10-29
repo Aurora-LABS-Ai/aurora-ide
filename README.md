@@ -43,6 +43,14 @@ plus sign-in providers: Claude Code, Codex (ChatGPT), Cursor, Antigravity,
 OpenCode Go, CommandCode, Atlas Cloud and AgentRouter. Any OpenAI-compatible
 endpoint works as a custom row. Every chat keeps its own model.
 
+<div align="center">
+
+![A conversation beside a docked canvas: an interactive overview of the project the agent built](public/showcase/canvas-dock.png)
+
+*The agent explored a project, then presented an interactive overview of it in the dock.*
+
+</div>
+
 ## What the agent can do
 
 - **Read, search, edit, run.** Line-numbered reads, exact-text edits, glob and
@@ -68,6 +76,18 @@ endpoint works as a custom row. Every chat keeps its own model.
   calls for them.
 - **Hear you.** Dictation runs out of process against a runtime you point it
   at: CrispASR when you stop, Phonon-2 as you speak.
+
+<div align="center">
+
+![A running work card: thoughts, tool calls and the artifact as they land](public/showcase/work-card.png)
+
+*A turn in progress: the work card keeps every thought, tool call and result in one place.*
+
+![A reply drawn as blocks: stats, a diagram of how the pieces connect, a flow and a table](public/showcase/reply-layout.png)
+
+*The same project explained with the reply layout: stats, a diagram, a flow, and where to start reading.*
+
+</div>
 
 ## Install
 

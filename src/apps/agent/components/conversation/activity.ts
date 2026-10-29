@@ -81,6 +81,7 @@ const TOOL_GERUND: Record<string, string> = {
   shell_spawn: "Starting",
   shell_kill: "Stopping a process",
   shell_list_processes: "Listing processes",
+  shell_notify: "Choosing whether to be told when it ends",
   auroro_websearch: "Searching the web for",
   // "the plan" is a different thing in this product (a Plan-mode document in
   // the Canvas). This is the working checklist in the window header.

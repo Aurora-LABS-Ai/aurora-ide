@@ -84,6 +84,7 @@ export const enhancedToolRiskLevels: Record<string, 'low' | 'medium' | 'high'> =
   shell_spawn: 'high',             // KEEP HIGH - background processes
   shell_kill: 'high',              // Changed from 'medium' - killing processes is risky
   shell_list_processes: 'low',     // Read operation
+  shell_notify: 'low',             // Only records whether an ending wakes the agent
 
   // ============================================
   // EDITOR TOOLS - ALL AUTO-APPROVED

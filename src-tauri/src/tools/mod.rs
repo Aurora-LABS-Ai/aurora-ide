@@ -151,7 +151,9 @@ pub mod transcript;
 /// Raised 49 -> 50 on 2026-10-23 by `terminal`, which moved the window's two
 /// read-only `terminal_list` / `terminal_read` into one Rust tool that can also
 /// start, type into and stop the agent's own Terminal-panel tabs.
-pub const BUILTIN_TOOL_COUNT: usize = 50;
+/// Raised 50 -> 51 by `shell_notify`: the agent decides whether a background
+/// process's ending should wake it (2026-10-29).
+pub const BUILTIN_TOOL_COUNT: usize = 51;
 
 /// Tools whose result only a vision model can read (`browser_screenshot`
 /// returns an image). Lives here rather than in the browser bucket because
@@ -316,7 +318,7 @@ mod tests {
 
     #[test]
     fn builtin_tool_count_is_correct() {
-        assert_eq!(BUILTIN_TOOL_COUNT, 50);
+        assert_eq!(BUILTIN_TOOL_COUNT, 51);
         // `BUILTIN_TOOL_COUNT` names the full roster. A build without the
         // `browser` feature registers everything but the 19 `browser_*` tools.
         #[cfg(feature = "browser")]

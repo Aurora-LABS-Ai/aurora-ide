@@ -212,7 +212,19 @@ pub(super) fn pin_for(selection: Option<&str>, wire_model: &str, provider_id: &s
 
 /// Sub-agent reports still in a thread's queue when no turn is running on it
 /// were queued too late to be injected. Each becomes a `Report` event so the
-/// window starts a turn for it; everything else stays queued, in order.
+/// window starts a turn for it. A background process's ending goes the same
+/// way, as a [`super::ProcessReportLeftover`] the window parks and starts a
+/// turn with; a person's message stays queued, in order.
+///
+/// The process case is Claude Code's rule (`query.ts` removes only the queued
+/// commands a turn actually consumed; the idle `processQueueIfReady` starts a
+/// turn with the rest). Without it, an installer build that finished one
+/// second before the turn's final reply was requeued here and sat until the
+/// person next typed, while the agent had promised to open the installer
+/// "when it finishes" (2026-10-29).
+///
+/// A sub-agent's own thread keeps its process endings queued: it has no window
+/// turn, and reads them at its next step or when the parent gives it work.
 ///
 /// Called when a turn ends, and by a reporter that queued into a turn which
 /// ended between its "is a turn running" check and its enqueue. Draining is
@@ -228,7 +240,16 @@ pub(super) fn sweep_leftover_reports<E: EventEmitter + ?Sized>(
     if leftover.is_empty() {
         return;
     }
+    let is_subagent_thread = thread_id.starts_with("agent_");
     for queued in leftover {
+        if queued.origin == InjectedOrigin::Process && !is_subagent_thread {
+            emitter.emit_process_report_leftover(&super::ProcessReportLeftover {
+                thread_id: thread_id.to_string(),
+                summary: queued.display_text.unwrap_or_else(|| queued.text.clone()),
+                detail: queued.text,
+            });
+            continue;
+        }
         if queued.origin != InjectedOrigin::Subagent {
             registry.requeue(thread_id, queued);
             continue;

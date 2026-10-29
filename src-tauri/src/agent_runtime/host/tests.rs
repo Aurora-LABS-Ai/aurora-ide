@@ -510,9 +510,13 @@ struct MockEmitter {
     tool_pendings: StdMutex<Vec<ToolBridgeRequest>>,
     subagent_events: StdMutex<Vec<crate::agent_runtime::subagents::SubagentEvent>>,
     thread_changes: StdMutex<Vec<ThreadChanged>>,
+    process_leftovers: StdMutex<Vec<super::ProcessReportLeftover>>,
 }
 
 impl MockEmitter {
+    fn snapshot_process_leftovers(&self) -> Vec<super::ProcessReportLeftover> {
+        self.process_leftovers.lock().expect("process_leftovers mutex").clone()
+    }
     fn snapshot_thread_changes(&self) -> Vec<ThreadChanged> {
         self.thread_changes.lock().expect("thread_changes mutex").clone()
     }
@@ -576,6 +580,12 @@ impl EventEmitter for MockEmitter {
             .lock()
             .expect("thread_changes mutex")
             .push(change.clone());
+    }
+    fn emit_process_report_leftover(&self, report: &super::ProcessReportLeftover) {
+        self.process_leftovers
+            .lock()
+            .expect("process_leftovers mutex")
+            .push(report.clone());
     }
 }
 
@@ -4685,6 +4695,73 @@ mod subagents {
         let left = registry.drain_queued("thread-sweep");
         assert_eq!(left.len(), 1, "the person's message is still waiting");
         assert_eq!(left[0].text, "and also this");
+    }
+
+    /// 2026-10-29: an installer build finished one second before the turn's
+    /// final reply. Its ending was queued into that turn, the turn had no
+    /// tool boundary left, and the sweep put it back in the queue, where it sat
+    /// until the person typed. It must be handed to the window to start a turn,
+    /// while a person's queued message stays where the composer expects it.
+    #[tokio::test]
+    async fn a_process_ending_left_in_the_queue_after_the_turn_is_handed_back() {
+        let api = Arc::new(MockApi::new(vec![text_reply("I'll open it when it finishes")]));
+        let factory = Arc::new(MockApiFactory::from_api(api));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(AgentRegistry::new(factory, dir.path().to_path_buf()));
+        let emitter = Arc::new(MockEmitter::default());
+        registry
+            .enqueue_message(
+                "thread-build",
+                "The background process \"pnpm desktop:dist\" has ended with exit code 0.".into(),
+                Some("Finished pnpm desktop:dist · exit 0".into()),
+                None,
+                crate::agent_runtime::types::InjectedOrigin::Process,
+            )
+            .await
+            .unwrap();
+        registry
+            .enqueue_message(
+                "thread-build",
+                "and also this".into(),
+                None,
+                None,
+                crate::agent_runtime::types::InjectedOrigin::User,
+            )
+            .await
+            .unwrap();
+
+        let driver = TurnDriver::new(registry.clone(), emitter.clone());
+        driver
+            .run_turn(make_request("t-build", "thread-build", "build it"))
+            .await
+            .expect("turn");
+
+        let leftovers = emitter.snapshot_process_leftovers();
+        assert_eq!(leftovers.len(), 1, "{leftovers:?}");
+        assert_eq!(leftovers[0].thread_id, "thread-build");
+        assert_eq!(leftovers[0].summary, "Finished pnpm desktop:dist · exit 0");
+        assert!(leftovers[0].detail.contains("exit code 0"), "{:?}", leftovers[0]);
+        let left = registry.drain_queued("thread-build");
+        assert_eq!(left.len(), 1, "only the person's message is still waiting: {left:?}");
+        assert_eq!(left[0].text, "and also this");
+    }
+
+    /// A sub-agent has no window turn to start; its process endings stay
+    /// queued for its next step.
+    #[test]
+    fn a_subagents_process_ending_stays_queued() {
+        let (registry, _dir) = temp_registry();
+        let emitter = MockEmitter::default();
+        registry
+            .enqueue_in_order(
+                "agent_x",
+                "process bg-1 ended".into(),
+                crate::agent_runtime::types::InjectedOrigin::Process,
+            )
+            .unwrap();
+        super::turn_driver::sweep_leftover_reports(&registry, &emitter, "agent_x");
+        assert!(emitter.snapshot_process_leftovers().is_empty());
+        assert_eq!(registry.drain_queued("agent_x").len(), 1);
     }
 
     // ── Messaging and resume ────────────────────────────────────────

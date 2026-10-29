@@ -187,6 +187,26 @@ pub trait EventEmitter: Send + Sync + 'static {
     /// follows its stream; this is how the others learn to refresh their chat
     /// list or reload the chat they show. Defaulted to a no-op.
     fn emit_thread_changed(&self, _change: &ThreadChanged) {}
+
+    /// A background process's ending was queued into a turn that then ended
+    /// without another tool boundary, so the model never read it. Wire-channel:
+    /// [`PROCESS_REPORT_LEFTOVER_EVENT`]; the window parks it as an idle report
+    /// and starts a turn with it. Defaulted to a no-op.
+    fn emit_process_report_leftover(&self, _report: &ProcessReportLeftover) {}
+}
+
+/// Event name for [`ProcessReportLeftover`].
+pub const PROCESS_REPORT_LEFTOVER_EVENT: &str = "agent_process_report_leftover";
+
+/// See [`EventEmitter::emit_process_report_leftover`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessReportLeftover {
+    pub thread_id: String,
+    /// The one-line beat ("Finished pnpm desktop:dist · exit 0").
+    pub summary: String,
+    /// What the model reads: id, exit code, where the output is.
+    pub detail: String,
 }
 
 /// Event name for [`ThreadChanged`].

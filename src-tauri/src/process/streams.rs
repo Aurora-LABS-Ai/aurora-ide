@@ -142,6 +142,29 @@ pub struct CommandStreamInfo {
     /// conversation on screen told the parent about a process it never
     /// started and left the child that did unaware it had ended.
     pub thread_id: Option<String>,
+    /// The agent's own choice, set with `shell_notify`: `Some(true)` wake it
+    /// when this ends however long that takes, `Some(false)` do not wake it
+    /// (it hears with the person's next message). `None` until it decides; the
+    /// window then wakes it only if the ending comes soon after its turn.
+    pub wake: Option<bool>,
+}
+
+/// Record the agent's choice for a running process (see
+/// [`CommandStreamInfo::wake`]). Returns the process id and its name.
+pub fn set_process_wake(identifier: &str, wake: bool) -> Result<(String, String), String> {
+    let request_id = command_stream_key(identifier).ok_or_else(|| {
+        format!(
+            "No running background process matches '{identifier}'. It may have ended already; \
+             list processes and retry with a current process ID."
+        )
+    })?;
+    let mut streams = ACTIVE_COMMAND_STREAMS.write();
+    let stream = streams
+        .get_mut(&request_id)
+        .ok_or_else(|| format!("Background process '{identifier}' has already ended."))?;
+    stream.wake = Some(wake);
+    let name = stream.name.clone().unwrap_or_else(|| stream.command.clone());
+    Ok((stream.process_id.clone(), name))
 }
 
 /// Record which conversation a just-registered process belongs to.
@@ -192,6 +215,7 @@ pub fn register_command_stream(
             job: None,
             detached: false,
             thread_id: None,
+            wake: None,
         });
 }
 
@@ -949,6 +973,9 @@ struct ProcessEnded {
     /// told to that conversation — a sub-agent's, not whichever is on screen.
     #[serde(skip_serializing_if = "Option::is_none")]
     thread_id: Option<String>,
+    /// The agent's `shell_notify` choice; absent when it never made one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wake: Option<bool>,
 }
 
 /// Emit [`ProcessEnded`]. Called before the stream leaves the ledger, which is
@@ -962,8 +989,8 @@ fn emit_process_ended(
     let owner = ACTIVE_COMMAND_STREAMS
         .read()
         .get(request_id)
-        .map(|stream| (stream.process_id.clone(), stream.thread_id.clone()));
-    let Some((process_id, thread_id)) = owner else { return };
+        .map(|stream| (stream.process_id.clone(), stream.thread_id.clone(), stream.wake));
+    let Some((process_id, thread_id, wake)) = owner else { return };
     let _ = app.emit(
         "shell-process-ended",
         ProcessEnded {
@@ -972,6 +999,7 @@ fn emit_process_ended(
             exit_code,
             outcome,
             thread_id,
+            wake,
         },
     );
 }

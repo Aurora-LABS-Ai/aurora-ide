@@ -9,7 +9,10 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
-use super::{EventEmitter, ThreadChanged, THREAD_CHANGED_EVENT};
+use super::{
+    EventEmitter, ProcessReportLeftover, ThreadChanged, PROCESS_REPORT_LEFTOVER_EVENT,
+    THREAD_CHANGED_EVENT,
+};
 use crate::agent_runtime::bridge::ToolBridgeRequest;
 use crate::agent_runtime::event_batch::{Coalescer, FLUSH_INTERVAL};
 use crate::agent_runtime::events::TurnCompletion;
@@ -72,6 +75,18 @@ impl EventEmitter for HostEmitter {
 
     fn emit_thread_changed(&self, change: &ThreadChanged) {
         let _ = self.send(THREAD_CHANGED_EVENT, change);
+    }
+
+    fn emit_process_report_leftover(&self, report: &ProcessReportLeftover) {
+        if let Err(error) = self.send(PROCESS_REPORT_LEFTOVER_EVENT, report) {
+            crate::logging::log_warn(
+                "agent_runtime.queue",
+                &format!(
+                    "could not hand a late process report on thread {} to the window: {error}",
+                    report.thread_id
+                ),
+            );
+        }
     }
 
     fn emit_turn_complete(&self, turn_id: &str, summary: &TurnCompletion) {

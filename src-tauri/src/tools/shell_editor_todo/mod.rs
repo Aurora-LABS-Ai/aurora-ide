@@ -68,6 +68,7 @@ pub mod ide_event_sink;
 pub mod shell_execute;
 pub mod shell_kill;
 pub mod shell_list_processes;
+pub mod shell_notify;
 pub mod shell_read_output;
 pub mod shell_spawn;
 pub mod tasks;
@@ -97,6 +98,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "shell_kill",
     "shell_list_processes",
     "shell_read_output",
+    "shell_notify",
     "terminal",
     "TaskCreate",
     "TaskUpdate",
@@ -119,6 +121,7 @@ pub fn register(reg: &mut ToolRegistry, sink: Arc<dyn IdeEventSink>) {
     reg.register(Arc::new(shell_spawn::ShellSpawnTool::new(sink.clone())));
     reg.register(Arc::new(shell_kill::ShellKillTool));
     reg.register(Arc::new(shell_list_processes::ShellListProcessesTool));
+    reg.register(Arc::new(shell_notify::ShellNotifyTool));
     reg.register(Arc::new(shell_read_output::ShellReadOutputTool::new(
         sink.clone(),
     )));

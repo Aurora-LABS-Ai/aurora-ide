@@ -236,12 +236,16 @@ impl ToolExecutor for ShellExecuteTool {
                 "note": format!(
                     "Still running. The user moved this command to the background, so it was not \
                      waited for and the output above is only what it had printed by then — it is \
-                     not the result. The process id is {}. When it exits, Aurora tells you with \
-                     its exit code, so do not poll it or wait on it to learn whether it finished. \
-                     Read what it has printed since with shell_read_output only when you need \
-                     that output now, and stop it with shell_kill. Do not re-run the command \
-                     because this result has no exit code; it does not have one yet.",
-                    ctx.tool_call_id
+                     not the result. The process id is {id}. Decide now whether its ending should \
+                     wake you: call shell_notify {{\"processId\": \"{id}\", \"wake\": true}} if \
+                     you have something to do with the result (especially if you are about to \
+                     tell the user you will act when it finishes), or wake: false if not. If you \
+                     do not decide, you are woken only if it ends within a few minutes of your \
+                     turn. Do not poll it or wait on it to learn whether it finished. Read what \
+                     it has printed since with shell_read_output only when you need that output \
+                     now, and stop it with shell_kill. Do not re-run the command because this \
+                     result has no exit code; it does not have one yet.",
+                    id = ctx.tool_call_id
                 ),
             })
             .to_string()),

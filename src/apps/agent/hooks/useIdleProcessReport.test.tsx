@@ -15,7 +15,13 @@ import {
   clearProcessReportFlights,
   useIdleProcessReport,
 } from "@/apps/agent/hooks/useIdleProcessReport";
-import { clearIdleReports } from "@/apps/agent/hooks/useBackgroundProcessWatch";
+import {
+  clearIdleReports,
+  idleDelivery,
+  noteTurnEnded,
+  peekRideAlong,
+  WAKE_WINDOW_MS,
+} from "@/apps/agent/hooks/useBackgroundProcessWatch";
 import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatStore";
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import { useAgentBackgroundStore } from "@/apps/agent/store/conversation/useAgentBackgroundStore";
@@ -62,14 +68,30 @@ const seedRunning = () => {
 };
 
 /** Rust announcing the ending on its app-wide event. */
-const endProcess = async (exitCode: number | null = 1, processId = "bg-1") => {
+const endProcess = async (
+  exitCode: number | null = 1,
+  processId = "bg-1",
+  wake?: boolean,
+) => {
   await act(async () => {
     listeners.forEach((handler) =>
-      handler({ payload: { processId, exitCode, outcome: "exited" } }),
+      handler({ payload: { processId, exitCode, outcome: "exited", wake } }),
     );
     await Promise.resolve();
   });
 };
+
+/** Rust handing back an ending a turn ended without reading. */
+const leftover = async (detail: string) => {
+  await act(async () => {
+    listeners.forEach((handler) =>
+      handler({ payload: { threadId: THREAD, summary: "Finished build · exit 0", detail } }),
+    );
+    await Promise.resolve();
+  });
+};
+
+const enqueue = vi.fn(() => Promise.resolve());
 
 describe("waking an idle conversation for a finished process", () => {
   let container: HTMLDivElement;
@@ -95,13 +117,21 @@ describe("waking an idle conversation for a finished process", () => {
     clearProcessReportFlights();
     send.mockClear();
     send.mockImplementation(() => Promise.resolve("started"));
+    enqueue.mockClear();
     useAgentChatStore.setState({
       currentThreadId: THREAD,
       liveTurns: {},
       queuedByThread: {},
+      enqueueMessage: enqueue as never,
     });
     useAgentDraftStore.setState({ drafts: {} });
     seedRunning();
+    // The common case: the agent's turn ended a moment ago.
+    noteTurnEnded(THREAD, Date.now());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   afterEach(() => {
@@ -265,6 +295,71 @@ describe("waking an idle conversation for a finished process", () => {
     });
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[1][0]).toContain("bg-2");
+  });
+
+  it("does not wake the agent for an ending long after its turn; it rides the next turn", async () => {
+    noteTurnEnded(THREAD, Date.now() - WAKE_WINDOW_MS - 1_000);
+    await mount();
+    await endProcess(0);
+    expect(send).not.toHaveBeenCalled();
+    expect(peekRideAlong(THREAD)).toHaveLength(1);
+
+    // The person sends their next message: the ending goes into that turn.
+    await act(async () => {
+      useAgentChatStore.setState({ liveTurns: { [THREAD]: { id: THREAD } as never } });
+      await Promise.resolve();
+    });
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(enqueue.mock.calls[0]).toEqual(
+      expect.arrayContaining([THREAD, "Finished pnpm test · exit 0"]),
+    );
+    expect(peekRideAlong(THREAD)).toHaveLength(0);
+  });
+
+  it("wakes the agent however late when it asked to be woken", async () => {
+    noteTurnEnded(THREAD, Date.now() - 60 * 60 * 1000);
+    await mount();
+    await endProcess(0, "bg-1", true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not wake the agent soon after its turn when it said not to", async () => {
+    await mount();
+    await endProcess(0, "bg-1", false);
+    expect(send).not.toHaveBeenCalled();
+    expect(peekRideAlong(THREAD)).toHaveLength(1);
+  });
+
+  // 2026-10-29: the installer build ended one second before the turn's final
+  // reply; the turn had no tool boundary left to read it.
+  it("wakes the agent for an ending its last turn never read", async () => {
+    await mount();
+    await leftover("The background process \"build\" has ended with exit code 0.");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][1]).toBe("Finished build · exit 0");
+  });
+
+  it("keeps a parked ending too old to wake for, rather than dropping it", async () => {
+    useAgentDraftStore.setState({ drafts: { [THREAD]: "typing" } });
+    await mount();
+    await endProcess(0);
+    vi.useFakeTimers({ now: Date.now() + 31 * 60 * 1000 });
+    await act(async () => {
+      useAgentDraftStore.setState({ drafts: {} });
+      useAgentChatStore.setState({ liveTurns: {} });
+      await Promise.resolve();
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(peekRideAlong(THREAD)).toHaveLength(1);
+  });
+
+  it("decides by the agent's choice first, then by the clock", () => {
+    const turnEnd = 1_000_000;
+    expect(idleDelivery(true, turnEnd + 10 * WAKE_WINDOW_MS, turnEnd)).toBe("wake");
+    expect(idleDelivery(false, turnEnd + 1, turnEnd)).toBe("ride");
+    expect(idleDelivery(undefined, turnEnd + WAKE_WINDOW_MS, turnEnd)).toBe("wake");
+    expect(idleDelivery(undefined, turnEnd + WAKE_WINDOW_MS + 1, turnEnd)).toBe("ride");
+    expect(idleDelivery(undefined, turnEnd, undefined)).toBe("ride");
   });
 
   it("sends nothing at all when no process was ever tracked", async () => {

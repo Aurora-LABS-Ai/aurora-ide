@@ -24,10 +24,14 @@
  * - **The person is not mid-sentence.** A draft in the composer, or a message
  *   already queued, means they are about to speak. They go first, and the
  *   report rides the turn they start.
- * - **It is still news.** Older than {@link IDLE_REPORT_MAX_AGE_MS} and it is
- *   dropped: the dock row and the log still say what happened, and a
- *   conversation that opens with two-hour-old housekeeping is worse than one
- *   that says nothing.
+ * - **It is still news.** Older than {@link IDLE_REPORT_MAX_AGE_MS} and it no
+ *   longer starts a turn (unless the agent asked to be woken with
+ *   `shell_notify`); it goes in with the next message instead, so the agent
+ *   still learns how the run ended.
+ *
+ * Which endings get parked here at all is decided in
+ * `useBackgroundProcessWatch` (`idleDelivery`): the agent's `shell_notify`
+ * choice, or, undecided, whether it ended within five minutes of the turn.
  *
  * The turn it starts is an ordinary one — same system prompt, same tools, same
  * model — carrying `origin: "process"`, which changes only how the message is
@@ -43,6 +47,7 @@ import { useAgentChatStore } from "@/apps/agent/store/conversation/useAgentChatS
 import { useAgentDraftStore } from "@/apps/agent/store/conversation/useAgentDraftStore";
 import {
   IDLE_REPORT_MAX_AGE_MS,
+  parkRideAlong,
   peekIdleReport,
   requeueIdleReport,
   subscribeToIdleReports,
@@ -106,7 +111,12 @@ export const useIdleProcessReport = (
       // Claim it before the await so a second drain cannot send it twice.
       const claimed = takeIdleReport(threadId);
       if (!claimed) return;
-      if (Date.now() - claimed.endedAtMs > IDLE_REPORT_MAX_AGE_MS) return;
+      // Too old to start a turn for, unless the agent asked to be woken. It is
+      // not dropped: it goes in with the next message instead.
+      if (!claimed.watched && Date.now() - claimed.endedAtMs > IDLE_REPORT_MAX_AGE_MS) {
+        parkRideAlong(threadId, claimed);
+        return;
+      }
 
       inFlight.add(threadId);
       void sendRef

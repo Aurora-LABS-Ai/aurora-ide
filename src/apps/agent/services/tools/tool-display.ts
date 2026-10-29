@@ -27,6 +27,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   shell_execute: "Run Command",
   shell_kill: "Stop Background Process",
   shell_list_processes: "List Running Processes",
+  shell_notify: "Notify When Done",
   shell_spawn: "Start Background Process",
   // Sub-agents. "Start agent" rather than "Spawn": the card's chip carries the
   // agent's name, so the title is the act.

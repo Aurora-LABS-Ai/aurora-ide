@@ -54,6 +54,63 @@ interface ProcessEnded {
   outcome?: "exited" | "stopped";
   /** The conversation whose `shell_spawn` started it, when known. */
   threadId?: string;
+  /** The agent's `shell_notify` choice; absent when it never made one. */
+  wake?: boolean;
+}
+
+/**
+ * How long after a turn ends an UNDECIDED ending still wakes the agent.
+ *
+ * Inside it, the agent's last words are probably about this process ("I'll
+ * open the installer when the build finishes") and the person is probably
+ * still here. After it, they have moved on, and starting a turn would be
+ * Aurora talking to itself; the ending rides in with the next message instead.
+ * The agent can override either way with `shell_notify`.
+ */
+export const WAKE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * What an ending that lands while the conversation is idle does: start a turn
+ * (`wake`), or wait for the next message (`ride`). Pure, so the rule is tested
+ * on its own.
+ *
+ * - The agent chose (`shell_notify`): its choice, whatever the clock says.
+ * - Undecided: wake only within {@link WAKE_WINDOW_MS} of the turn ending. A
+ *   turn end this window never saw (the app was restarted since) is treated as
+ *   long ago.
+ */
+export function idleDelivery(
+  wake: boolean | undefined,
+  endedAtMs: number,
+  turnEndedAtMs: number | undefined,
+): "wake" | "ride" {
+  if (wake === true) return "wake";
+  if (wake === false) return "ride";
+  if (turnEndedAtMs === undefined) return "ride";
+  return endedAtMs - turnEndedAtMs <= WAKE_WINDOW_MS ? "wake" : "ride";
+}
+
+/** When each conversation's last turn ended, as this window saw it. */
+const turnEndedAt = new Map<string, number>();
+
+/** Test seam: pretend a turn ended at `atMs`. */
+export const noteTurnEnded = (threadId: string, atMs: number): void => {
+  turnEndedAt.set(threadId, atMs);
+};
+
+/**
+ * Endings queued into a running turn, by the text the model would read, with
+ * the agent's choice. If the turn ends before reading one, Rust hands it back
+ * (`agent_process_report_leftover`) and this says whether it wakes or rides.
+ */
+const queuedWake = new Map<string, boolean | undefined>();
+
+/** Rust's `agent_process_report_leftover` (`host::ProcessReportLeftover`). */
+export const PROCESS_REPORT_LEFTOVER_EVENT = "agent_process_report_leftover";
+interface ProcessReportLeftover {
+  threadId: string;
+  summary: string;
+  detail: string;
 }
 
 /** The thread a process is filed under, which is where its ending belongs. */
@@ -131,6 +188,7 @@ const reportEnding = (row: BackgroundProcess | null, ended: ProcessEnded) => {
   // A sub-agent has no window turn: Rust's queue for it is read at its next
   // step, or — if it has finished — when the parent gives it more work.
   if (ownedByAgent || chat.liveTurns[threadId]) {
+    if (!ownedByAgent) queuedWake.set(detail, ended.wake);
     void chat
       .enqueueMessage(threadId, summary, { origin: "process", modelText: detail })
       .catch(() => {
@@ -140,7 +198,45 @@ const reportEnding = (row: BackgroundProcess | null, ended: ProcessEnded) => {
     return;
   }
 
-  parkIdleReport(threadId, { summary, detail, endedAtMs: Date.now() });
+  const endedAtMs = Date.now();
+  const report = { summary, detail, endedAtMs, watched: ended.wake === true };
+  if (idleDelivery(ended.wake, endedAtMs, turnEndedAt.get(threadId)) === "wake") {
+    parkIdleReport(threadId, report);
+  } else {
+    parkRideAlong(threadId, report);
+  }
+};
+
+/**
+ * Endings that do not start a turn: they go into the next turn that starts in
+ * that conversation (normally the person's next message), queued the moment it
+ * opens so the agent reads them at its first tool boundary.
+ */
+const rideAlong = new Map<string, IdleReport[]>();
+
+export const parkRideAlong = (threadId: string, report: IdleReport): void => {
+  rideAlong.set(threadId, [...(rideAlong.get(threadId) ?? []), report]);
+};
+
+export const peekRideAlong = (threadId: string): IdleReport[] => rideAlong.get(threadId) ?? [];
+
+/** A turn opened on `threadId`: queue everything riding along into it. */
+const sendRideAlong = (threadId: string): void => {
+  const reports = rideAlong.get(threadId);
+  if (!reports?.length) return;
+  rideAlong.delete(threadId);
+  const chat = useAgentChatStore.getState();
+  for (const report of reports) {
+    // If this turn also ends before a tool boundary, the leftover comes back
+    // and rides again rather than waking anyone.
+    queuedWake.set(report.detail, false);
+    void chat
+      .enqueueMessage(threadId, report.summary, { origin: "process", modelText: report.detail })
+      .catch((error: unknown) => {
+        console.error("[background] could not attach a process ending to the turn:", error);
+        parkRideAlong(threadId, report);
+      });
+  }
 };
 
 /**
@@ -157,6 +253,8 @@ export interface IdleReport {
   summary: string;
   detail: string;
   endedAtMs: number;
+  /** The agent asked to be woken (`shell_notify`): no age limit applies. */
+  watched?: boolean;
 }
 const idleReports = new Map<string, IdleReport>();
 const idleReportChanged = new Set<() => void>();
@@ -171,6 +269,7 @@ const parkIdleReport = (threadId: string, report: IdleReport): void => {
           summary: `${existing.summary} · ${report.summary}`,
           detail: `${existing.detail}\n\n${report.detail}`,
           endedAtMs: existing.endedAtMs,
+          watched: existing.watched || report.watched,
         }
       : report,
   );
@@ -197,6 +296,7 @@ export const requeueIdleReport = (threadId: string, report: IdleReport): void =>
           summary: `${report.summary} · ${existing.summary}`,
           detail: `${report.detail}\n\n${existing.detail}`,
           endedAtMs: report.endedAtMs,
+          watched: report.watched || existing.watched,
         }
       : report,
   );
@@ -214,15 +314,17 @@ export const subscribeToIdleReports = (listener: () => void): (() => void) => {
 /** Test seam. */
 export const clearIdleReports = (): void => {
   idleReports.clear();
+  rideAlong.clear();
+  turnEndedAt.clear();
+  queuedWake.clear();
 };
 
 /**
- * How stale an ending may be before it is dropped rather than announced.
+ * How stale a parked ending may be before it stops starting a turn.
  *
- * A process that finished two hours ago is not news, and waking a conversation
- * to say so would be Aurora talking about its own housekeeping. The log is
- * still on disk and the dock row still says what happened, so nothing is lost
- * by staying quiet — only by shouting late.
+ * A process that finished two hours ago is not worth waking a conversation
+ * for, unless the agent asked (`watched`). It is not dropped either: it rides
+ * in with the next message, so the agent still learns how the run ended.
  */
 export const IDLE_REPORT_MAX_AGE_MS = 30 * 60 * 1000;
 
@@ -260,9 +362,51 @@ export const useBackgroundProcessWatch = (threadId: string | null) => {
         // instantly. Degraded, and still not wrong.
       });
 
+    // An ending queued into a turn that then ended without another tool
+    // boundary: the model never read it. Rust hands it back at turn end and it
+    // is parked like any idle ending, so the next idle moment starts a turn
+    // with it (Claude Code's rule: what a turn did not consume runs next).
+    let unlistenLeftover: (() => void) | null = null;
+    void auroraListen<ProcessReportLeftover>(PROCESS_REPORT_LEFTOVER_EVENT, (event) => {
+      const leftover = event?.payload;
+      if (disposed || !leftover?.threadId || !leftover.detail) return;
+      const wake = queuedWake.get(leftover.detail);
+      queuedWake.delete(leftover.detail);
+      const report = {
+        summary: leftover.summary || leftover.detail,
+        detail: leftover.detail,
+        endedAtMs: Date.now(),
+        watched: wake === true,
+      };
+      // It ended while the turn was still running, so the clock is inside the
+      // window by definition; only the agent's own "do not wake me" (or a note
+      // that was already riding along) keeps it waiting for the next message.
+      if (wake === false) parkRideAlong(leftover.threadId, report);
+      else parkIdleReport(leftover.threadId, report);
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlistenLeftover = dispose;
+      })
+      .catch((error: unknown) => {
+        console.error("[background] could not listen for late process reports:", error);
+      });
+
+    // Turn boundaries, for every conversation: an ending starts the
+    // wake-window clock, a start carries whatever is riding along.
+    let live = new Set(Object.keys(useAgentChatStore.getState().liveTurns));
+    const unsubscribeTurns = useAgentChatStore.subscribe((state) => {
+      const now = new Set(Object.keys(state.liveTurns).filter((id) => state.liveTurns[id]));
+      for (const id of live) if (!now.has(id)) turnEndedAt.set(id, Date.now());
+      for (const id of now) if (!live.has(id)) sendRideAlong(id);
+      live = now;
+    });
+
     return () => {
       disposed = true;
       unlisten?.();
+      unlistenLeftover?.();
+      unsubscribeTurns();
     };
   }, []);
 

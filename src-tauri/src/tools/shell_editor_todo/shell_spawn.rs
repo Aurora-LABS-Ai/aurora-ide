@@ -122,9 +122,11 @@ impl ToolExecutor for ShellSpawnTool {
                 "Start a long-running process in the background (a dev server, a watcher), typed \
                  exactly as you would at the shell's prompt, and return a process ID. Its output \
                  is written to a file you can follow with shell_read_output; list it with \
-                 shell_list_processes and stop it with shell_kill. When it exits, Aurora tells \
-                 you with its exit code, so do not poll it to learn whether it finished; read its \
-                 output only when you need what it printed, such as confirming a server came up.",
+                 shell_list_processes and stop it with shell_kill. Whether its ending wakes you is \
+                 your call: shell_notify with wake true (you need the result) or false (the user \
+                 is watching it). Undecided, you are woken only if it ends within a few minutes \
+                 of your turn. Do not poll it to learn whether it finished; read its output only \
+                 when you need what it printed, such as confirming a server came up.",
             ),
             input_schema: json!({
                 "type": "object",

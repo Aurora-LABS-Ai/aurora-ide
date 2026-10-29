@@ -388,13 +388,15 @@ fn a_guide_reaches_the_model_whole_with_a_store_attached() {
 /// say so. This fails the moment the payload outgrows its cap again.
 #[test]
 fn the_doctrine_reaches_the_model_whole() {
-    use crate::tools::design::doctrine::{AUDIT, CORE, PATTERNS, WRITING};
+    use crate::tools::design::doctrine::{
+        AUDIT, CORE, DESKTOP, MOBILE, PATTERNS, SEARCH, WEB, WRITING,
+    };
 
-    // The widest reading the tool will hand over (`topic: "all"`), composed the
-    // way `DesignGuidelinesTool` composes it.
-    let all = [CORE, PATTERNS, WRITING, AUDIT].join("\n\n---\n\n");
+    // The widest reading the tool will hand over (`topic: "all"` with every
+    // platform), composed the way `DesignGuidelinesTool` composes it.
+    let all = [CORE, PATTERNS, WRITING, AUDIT, WEB, DESKTOP, MOBILE, SEARCH].join("\n\n---\n\n");
 
-    for payload in [CORE, PATTERNS, WRITING, AUDIT, all.as_str()] {
+    for payload in [CORE, PATTERNS, WRITING, AUDIT, WEB, DESKTOP, MOBILE, SEARCH, all.as_str()] {
         let kept = truncate_tool_content("design_guidelines", payload.to_string());
         assert_eq!(
             kept,
@@ -407,9 +409,10 @@ fn the_doctrine_reaches_the_model_whole() {
 
     // Sections that sit at the TAIL of their document, so a cap that clips
     // again is caught by name rather than by a byte count.
-    assert!(all.contains("## 8. Ethical psychology"));
-    assert!(all.contains("## 10. Hard fails"));
-    assert!(all.contains("## 13. Report format"));
+    assert!(all.contains("## 7. Ethical psychology"));
+    assert!(all.contains("## 8. Hard fails"));
+    assert!(all.contains("## 6. Report format"));
+    assert!(all.contains("Offer a layout switch"));
     assert!(!all.contains("[truncated"));
 }
 

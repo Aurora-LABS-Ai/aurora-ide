@@ -15,21 +15,29 @@
 //!
 //! ## The topics are the source skill's own routing table
 //!
-//! `surface-philosophy` v5 is a router: a short core plus three references
-//! loaded per task. The topics here are those rows, so asking for the wrong
-//! one is asking for the wrong document rather than for a slice of prose:
+//! `surface-philosophy` is a router: a core, a shared foundation, one file per
+//! platform, and a writing and an audit file, loaded per task. The topics here
+//! are those rows, so asking for the wrong one is asking for the wrong document
+//! rather than for a slice of prose:
 //!
-//! | topic      | returns                       | for                          |
-//! |------------|-------------------------------|------------------------------|
-//! | `build`    | core + patterns               | build, restyle, implement UI |
-//! | `writing`  | core + writing                | copy only                    |
-//! | `audit`    | core + audit + patterns       | review, QA, ship gate        |
-//! | `redesign` | core + patterns + writing     | a whole page or product      |
-//! | `all`      | everything                    | rare                         |
+//! | topic      | returns                            | for                          |
+//! |------------|------------------------------------|------------------------------|
+//! | `build`    | core + foundation                  | build, restyle, implement UI |
+//! | `writing`  | core + writing                     | copy only                    |
+//! | `audit`    | core + audit + foundation          | review, QA, ship gate        |
+//! | `redesign` | core + foundation + writing        | a whole page or product      |
+//! | `all`      | core + foundation + writing + audit | rare                        |
 //!
-//! [`doctrine::CORE`] prepends every one of them. It is short, and it carries
-//! the classification step and the authority order — without those the rest is
-//! a pile of defaults with no rule for what happens when two disagree.
+//! `platform` (`web`, `desktop`, `mobile`, one or several) appends each
+//! platform's section plus the shared search-and-filter section to every topic
+//! that carries the foundation. `writing` ignores it: the words are the same on
+//! every platform. Without a platform the answer ends with a line naming the
+//! argument, rather than paying for all three sections (they would also push
+//! `all` past the doctrine cap).
+//!
+//! [`doctrine::CORE`] prepends every one of them. It carries the classification
+//! step and the authority order; without those the rest is a pile of defaults
+//! with no rule for what happens when two disagree.
 //!
 //! The previous two-topic set (`visual` / `writing` / `both`) is still
 //! accepted, mapped onto the nearest row. A thread that was mid-turn when this
@@ -58,12 +66,67 @@ const DEFAULT_TOPIC: &str = "build";
 /// The topics offered in the schema, in the order they are listed there.
 const TOPICS: &[&str] = &["build", "writing", "audit", "redesign", "all"];
 
+/// The platforms offered in the schema, in the order their sections are added.
+const PLATFORMS: &[&str] = &["web", "desktop", "mobile"];
+
+/// Closes a foundation reading that named no platform, so the model knows the
+/// platform half exists instead of assuming it was handed everything.
+const PLATFORM_HINT: &str = "No platform was named, so the platform sections were left out. \
+For sizes, navigation, menus, sheets, and the search-and-filter rules, call again with \
+`platform`: `web` (pages people read), `desktop` (apps and tools used with a pointer and \
+keyboard, including web apps and Aurora's own window), or `mobile` (used with a thumb).";
+
+fn platform_section(platform: &str) -> &'static str {
+    match platform {
+        "web" => doctrine::WEB,
+        "desktop" => doctrine::DESKTOP,
+        _ => doctrine::MOBILE,
+    }
+}
+
+/// Read `platform` as one string or a list, deduplicated, in [`PLATFORMS`]
+/// order so the same request always composes the same text.
+fn parse_platforms(input: &Value) -> Result<Vec<&'static str>, ToolError> {
+    let named: Vec<String> = match input.get("platform") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(one)) => vec![one.trim().to_ascii_lowercase()],
+        Some(Value::Array(many)) => many
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .ok_or_else(|| ToolError::InvalidInput("platform entries must be strings".into()))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => {
+            return Err(ToolError::InvalidInput(
+                "platform must be a string or a list of strings".into(),
+            ))
+        }
+    };
+
+    for name in named.iter().filter(|name| !name.is_empty()) {
+        if !PLATFORMS.contains(&name.as_str()) {
+            return Err(ToolError::InvalidInput(format!(
+                "platform `{name}` is not one of [{}]",
+                PLATFORMS.join(", ")
+            )));
+        }
+    }
+
+    Ok(PLATFORMS
+        .iter()
+        .copied()
+        .filter(|platform| named.iter().any(|name| name == platform))
+        .collect())
+}
+
 /// Assemble the requested reading. [`doctrine::CORE`] leads every one of them.
 ///
 /// `visual` and `both` are the pre-v5 topic names, kept as aliases — see the
 /// module docs for why an unknown-topic error would be the wrong answer there.
-fn compose(topic: &str) -> Result<String, ToolError> {
-    let parts: Vec<&str> = match topic {
+fn compose(topic: &str, platforms: &[&str]) -> Result<String, ToolError> {
+    let mut parts: Vec<&str> = match topic {
         "build" | "visual" => vec![doctrine::CORE, doctrine::PATTERNS],
         "writing" => vec![doctrine::CORE, doctrine::WRITING],
         "audit" => vec![doctrine::CORE, doctrine::AUDIT, doctrine::PATTERNS],
@@ -81,6 +144,15 @@ fn compose(topic: &str) -> Result<String, ToolError> {
             )))
         }
     };
+
+    if parts.contains(&doctrine::PATTERNS) {
+        if platforms.is_empty() {
+            parts.push(PLATFORM_HINT);
+        } else {
+            parts.extend(platforms.iter().map(|platform| platform_section(platform)));
+            parts.push(doctrine::SEARCH);
+        }
+    }
 
     Ok(parts.join("\n\n---\n\n"))
 }
@@ -102,14 +174,20 @@ panel, component, form, empty/loading/error state, label, button, or piece of co
 
 Every topic returns the same core first: how to classify the work, and the authority order that \
 settles which rule wins. Pick the topic by the job:
-- `build` (default) — building, restyling, or implementing UI. Adds layout, type, colour, states, \
-assets, motion, dark surfaces, responsive, and performance.
+- `build` (default) — building, restyling, or implementing UI. Adds the shared foundation: the \
+behaviour every component keeps, tokens, colour, type, spacing, elevation, focus, motion, and \
+accessibility numbers.
 - `writing` — copy only. Labels, buttons, help text, empty/error/success states, pricing and \
 billing wording, and ethical interaction psychology.
 - `audit` — reviewing, QA, or gating a release. Adds the blocker list, severity levels, the slop \
 signals, and the report format.
 - `redesign` — a whole page or product, where the words and the layout are decided together.
-- `all` — everything. Rare; prefer the narrower topic.
+- `all` — everything except the platform sections. Rare; prefer the narrower topic.
+
+Also name the `platform` the surface lives on, so you get its sizes, navigation, and \
+conventions: `web` (pages people read), `desktop` (apps and tools used with a pointer and \
+keyboard, including web apps, dashboards, and Aurora's own window), `mobile` (used with a \
+thumb). Name several when the product spans them. `writing` ignores it.
 
 This is standing guidance, not reference trivia: the result tells you what will be rejected, so \
 read it before you write the code, not after."
@@ -121,6 +199,11 @@ read it before you write the code, not after."
                         "type": "string",
                         "enum": ["build", "writing", "audit", "redesign", "all"],
                         "description": "Which part of the doctrine to load. Defaults to build."
+                    },
+                    "platform": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["web", "desktop", "mobile"] },
+                        "description": "Where the surface lives. One or more of web, desktop, mobile."
                     }
                 }
             }),
@@ -136,8 +219,9 @@ read it before you write the code, not after."
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or(DEFAULT_TOPIC);
+        let platforms = parse_platforms(&input)?;
 
-        Ok(compose(topic)?)
+        Ok(compose(topic, &platforms)?)
     }
 }
 
@@ -242,6 +326,77 @@ mod tests {
             .await
             .expect("`both` is the old name for `redesign`");
         assert!(both.contains(PATTERNS_MARK) && both.contains(WRITING_MARK));
+    }
+
+    const WEB_MARK: &str = "# Web pages";
+    const DESKTOP_MARK: &str = "# Desktop app UI";
+    const MOBILE_MARK: &str = "# Mobile app UI";
+    const SEARCH_MARK: &str = "# Search, filters, and catalogs";
+
+    /// Without a platform the foundation still arrives, and the answer says
+    /// the platform half exists rather than letting the model assume it was
+    /// handed everything.
+    #[tokio::test]
+    async fn no_platform_names_the_argument_instead_of_sending_all_three() {
+        let out = DesignGuidelinesTool
+            .execute(json!({}), &ctx())
+            .await
+            .expect("ok");
+        for mark in [WEB_MARK, DESKTOP_MARK, MOBILE_MARK, SEARCH_MARK] {
+            assert!(!out.contains(mark), "no platform was named, yet {mark} came back");
+        }
+        assert!(out.ends_with(PLATFORM_HINT));
+    }
+
+    #[tokio::test]
+    async fn a_named_platform_adds_its_section_and_search() {
+        let out = DesignGuidelinesTool
+            .execute(json!({"platform": ["desktop"]}), &ctx())
+            .await
+            .expect("ok");
+        assert!(out.contains(DESKTOP_MARK) && out.contains(SEARCH_MARK));
+        assert!(!out.contains(WEB_MARK) && !out.contains(MOBILE_MARK));
+        assert!(!out.contains(PLATFORM_HINT));
+
+        // A bare string is accepted too, in any case, and duplicates collapse.
+        let one = DesignGuidelinesTool
+            .execute(json!({"topic": "audit", "platform": "Mobile"}), &ctx())
+            .await
+            .expect("a single string is a platform");
+        assert!(one.contains(MOBILE_MARK) && one.contains(AUDIT_MARK));
+
+        let twice = DesignGuidelinesTool
+            .execute(json!({"platform": ["web", "mobile", "web"]}), &ctx())
+            .await
+            .expect("ok");
+        assert_eq!(twice.matches(WEB_MARK).count(), 1);
+        assert!(
+            twice.find(WEB_MARK) < twice.find(MOBILE_MARK),
+            "sections come in a fixed order, whatever order they were asked in"
+        );
+    }
+
+    /// Words are the same on every platform, so a copy task never pays for a
+    /// platform section.
+    #[tokio::test]
+    async fn writing_ignores_the_platform() {
+        let out = DesignGuidelinesTool
+            .execute(json!({"topic": "writing", "platform": ["web"]}), &ctx())
+            .await
+            .expect("ok");
+        assert!(!out.contains(WEB_MARK) && !out.contains(PLATFORM_HINT));
+    }
+
+    #[tokio::test]
+    async fn rejects_an_unknown_platform_with_the_valid_set() {
+        let err = DesignGuidelinesTool
+            .execute(json!({"platform": ["tv"]}), &ctx())
+            .await
+            .expect_err("must reject");
+        let message = format!("{err:?}");
+        for platform in PLATFORMS {
+            assert!(message.contains(platform), "{message} omits `{platform}`");
+        }
     }
 
     #[tokio::test]

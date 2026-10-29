@@ -63,7 +63,7 @@ pub(super) const MAX_WEB_RESULT_LENGTH: usize = 512 * 1024;
 /// Model-history cap for the built-in surface doctrine.
 ///
 /// `design_guidelines` returns a FIXED string compiled into the binary —
-/// `doctrine::VISUAL`, `doctrine::WRITING`, or both — so it carries none of the
+/// sections of `tools/design/doctrine.rs` chosen by topic and platform — so it carries none of the
 /// unbounded-growth risk the 8 KiB cap exists to contain. Under that cap the
 /// default `both` (10,185 chars) lost its last 2,121: the model was handed the
 /// doctrine with `**Errors**`, `**Warnings**`, the whole ethical-psychology
@@ -74,8 +74,9 @@ pub(super) const MAX_WEB_RESULT_LENGTH: usize = 512 * 1024;
 ///
 /// Sized well clear of the current payload so ordinary edits to the doctrine do
 /// not need to touch this number; `the_doctrine_reaches_the_model_whole` fails
-/// if it ever grows past it.
-pub(super) const MAX_DOCTRINE_RESULT_LENGTH: usize = 32 * 1024;
+/// if it ever grows past it. Raised 32 → 64 KiB on 2026-10-29 when the platform
+/// sections arrived: `all` with web, desktop and mobile is ~48,000 chars.
+pub(super) const MAX_DOCTRINE_RESULT_LENGTH: usize = 64 * 1024;
 
 /// A `*_guidelines` tool: a fixed text compiled into Aurora that the model is
 /// told to follow. It reaches the model whole or not at all.
